@@ -55,7 +55,7 @@ impl NoteListVisitor {
                     .push((data.to_owned(), details.to_owned()));
             }
         } else {
-            // debug!("Add note: {}", data.path);
+            debug!("Add note: {}", data.path);
             let details = data
                 .get_details(&self.workspace_path, &data.path)
                 .expect("Can't get Details for note");

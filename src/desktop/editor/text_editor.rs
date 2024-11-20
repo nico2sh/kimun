@@ -1,12 +1,11 @@
 use dioxus::prelude::*;
-use log::{error, info};
 
 use crate::noters::{nfs::NotePath, NoteVault};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct TextEditorProps {
-    pub note_vault: NoteVault,
-    pub note_path: Signal<Option<NotePath>>,
+    note_vault: NoteVault,
+    note_path: Signal<Option<NotePath>>,
 }
 
 #[allow(non_snake_case)]
@@ -62,7 +61,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
             } else {
                 textarea {
                     // size full to fill all the space
-                    class: "p-1 size-full",
+                    class: "p-1 outline-none size-full",
                     id: "edit-content",
                     wrap: "hard",
                     resize: "none",

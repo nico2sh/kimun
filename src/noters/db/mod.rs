@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use log::debug;
+use log::{debug, error};
 use rusqlite::{config::DbConfig, params, Connection, Transaction};
 
 use crate::noters::error::DBErrors;
@@ -110,10 +110,15 @@ pub fn get_notes<P: AsRef<Path>>(
     connection: &mut Connection,
     base_path: P,
     path: &NotePath,
+    recursive: bool,
 ) -> anyhow::Result<Vec<(NoteData, NoteDetails)>> {
-    // debug!("getting notes");
-    let mut stmt = connection
-        .prepare("SELECT path, size, modified, hash, noteName FROM notes where basePath = ?1")?;
+    debug!("Getting notes");
+    let sql = if recursive {
+        "SELECT path, size, modified, hash, noteName FROM notes where basePath LIKE (?1 || '%')"
+    } else {
+        "SELECT path, size, modified, hash, noteName FROM notes where basePath = ?1"
+    };
+    let mut stmt = connection.prepare(sql)?;
     let res = stmt
         .query_map([path.to_string()], |row| {
             let path: String = row.get(0)?;
@@ -166,6 +171,7 @@ pub fn get_directories<P: AsRef<Path>>(
 
 pub fn insert_notes(tx: &Transaction, notes: &Vec<(NoteData, NoteDetails)>) -> anyhow::Result<()> {
     if !notes.is_empty() {
+        debug!("Inserting {} notes", notes.len());
         for (data, details) in notes {
             let mut details = details.clone();
             insert_note(tx, data, &mut details)?;
@@ -175,8 +181,8 @@ pub fn insert_notes(tx: &Transaction, notes: &Vec<(NoteData, NoteDetails)>) -> a
 }
 
 pub fn update_notes(tx: &Transaction, notes: &Vec<(NoteData, NoteDetails)>) -> anyhow::Result<()> {
-    // debug!("Updating {} notes", notes.len());
     if !notes.is_empty() {
+        debug!("Updating {} notes", notes.len());
         for (data, details) in notes {
             let mut details = details.clone();
             update_note(tx, data, &mut details)?;
@@ -200,10 +206,12 @@ fn insert_note(
     details: &mut NoteDetails,
 ) -> Result<(), DBErrors> {
     let (base_path, name) = details.note_path.get_parent_path();
-    tx.execute(
+    if let Err(e) = tx.execute(
         "INSERT INTO notes (path, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![details.note_path.to_string(), data.size, data.modified_secs, details.get_hash(), base_path.to_string(), name],
-    )?;
+    ){
+        error!("Error inserting note {}", e);
+    }
     tx.execute(
         "INSERT INTO notesContent (path, content) VALUES (?1, ?2)",
         params![details.note_path.to_string(), details.get_content()],

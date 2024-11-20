@@ -10,7 +10,7 @@ use std::{
 
 use db::ConnectionBuilder;
 use error::NoteInitError;
-use log::debug;
+use log::{debug, info};
 use nfs::{
     visitors::{list::NoteListVisitorBuilder, sync::NoteSyncVisitorBuilder},
     NoteEntry, NotePath,
@@ -74,7 +74,7 @@ impl NoteVault {
         debug!("Start fetching files at {}", path);
         let walker = nfs::get_file_walker(self.workspace_path.clone(), path, false);
 
-        let cached_notes = db::get_notes(connection, &self.workspace_path, path)?;
+        let cached_notes = db::get_notes(connection, &self.workspace_path, path, false)?;
         let cached_directories = db::get_directories(connection, &self.workspace_path, path)?;
         let mut builder =
             NoteSyncVisitorBuilder::new(&self.workspace_path, cached_notes, cached_directories);
@@ -108,15 +108,18 @@ impl NoteVault {
         &self,
         path: P,
         sender: Sender<NoteEntry>,
+        recursive: bool,
     ) -> anyhow::Result<()> {
         let start = std::time::SystemTime::now();
         debug!("Start fetching files");
         let workspace_path = self.workspace_path.clone();
         let note_path = path.into();
-        let walker = nfs::get_file_walker(self.workspace_path.clone(), &note_path, false);
+        let walker = nfs::get_file_walker(self.workspace_path.clone(), &note_path, recursive);
 
         let mut connection = ConnectionBuilder::new(workspace_path).build().unwrap();
-        let cached_notes = db::get_notes(&mut connection, &self.workspace_path, &note_path)?;
+        let cached_notes =
+            db::get_notes(&mut connection, &self.workspace_path, &note_path, recursive)?;
+        info!("Cached notes {}", cached_notes.len());
         let cached_directories =
             db::get_directories(&mut connection, &self.workspace_path, &note_path)?;
         let mut builder = NoteListVisitorBuilder::new(

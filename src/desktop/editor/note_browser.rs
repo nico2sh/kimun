@@ -1,17 +1,16 @@
 use std::sync::mpsc;
 
 use dioxus::{hooks::use_signal, prelude::*};
-use log::info;
 
 use crate::noters::{
-    nfs::{EntryData, NoteEntry, NotePath},
+    nfs::{EntryData, NotePath},
     NoteVault,
 };
 
 #[derive(Props, Clone, PartialEq)]
 pub struct NoteBrowserProps {
-    pub note_vault: NoteVault,
-    pub note_path: Signal<Option<NotePath>>,
+    note_vault: NoteVault,
+    note_path: Signal<Option<NotePath>>,
 }
 
 #[allow(non_snake_case)]
@@ -111,7 +110,7 @@ impl NotesAndDirs {
         let (tx, rx) = mpsc::channel();
         // TODO: manage error
         self.vault
-            .get_notes_at(&self.current_path, tx)
+            .get_notes_at(&self.current_path, tx, false)
             .expect("Error fetching Entries");
         self.entries.clear();
         while let Ok(entry) = rx.recv() {
