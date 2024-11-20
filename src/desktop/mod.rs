@@ -24,10 +24,11 @@ pub fn app() -> Element {
     let note_vault = NoteVault::new(settings.workspace_dir.unwrap()).unwrap();
 
     let current_note_path: Signal<Option<NotePath>> = use_signal(|| Some(NotePath::root()));
-    let mut selector_open = use_signal(|| SelectionState::Unset);
+    let mut selector_open = use_signal(SelectionState::close_dialog);
 
     rsx! {
         Selector {
+            filter_text: "jour".to_string(),
             note_vault: note_vault.clone(),
             state: selector_open,
         }
@@ -38,11 +39,11 @@ pub fn app() -> Element {
                 let modifiers = e.data.modifiers();
                 if modifiers.meta() && key == Code::KeyO {
                     info!("Key pressed");
-                     *selector_open.write() = SelectionState::Open(NotePath::root());
+                     *selector_open.write() = SelectionState::open_dialog(NotePath::root());
                 }
             },
             // We close the modal if we click on the main UI
-            onclick: move |_e| {*selector_open.write() = SelectionState::Unset;
+            onclick: move |_e| {*selector_open.write() = SelectionState::close_dialog();
                     info!("Close dialog");},
             div {
                 // class: "flex h-full border-solid border-2 border-orange-600",

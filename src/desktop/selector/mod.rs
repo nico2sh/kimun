@@ -1,12 +1,10 @@
 mod row_item;
 
-use std::{
-    rc::Rc,
-    sync::{mpsc::Receiver, Arc, Mutex},
-};
+use std::rc::Rc;
 
 use dioxus::prelude::*;
 use log::{error, info};
+use nucleo::Matcher;
 
 use crate::noters::{
     nfs::{NoteEntry, NotePath},
@@ -14,29 +12,56 @@ use crate::noters::{
 };
 
 #[derive(Clone, Debug)]
-pub enum SelectionState {
+pub struct SelectionState {
+    filter_text: String,
+    note_path: NotePath,
+    entries: Vec<NoteEntry>,
+    filtered: Vec<NoteEntry>,
+    state: LoadState,
+}
+
+impl SelectionState {
+    pub fn close_dialog() -> Self {
+        Self {
+            filter_text: "".to_string(),
+            note_path: NotePath::root(),
+            entries: vec![],
+            filtered: vec![],
+            state: LoadState::Unset,
+        }
+    }
+    pub fn open_dialog(path: NotePath) -> Self {
+        Self {
+            filter_text: "".to_string(),
+            note_path: path,
+            entries: vec![],
+            filtered: vec![],
+            state: LoadState::Open,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum LoadState {
     Unset,
-    Open(NotePath),
-    Loading(Rc<Receiver<NoteEntry>>),
-    Loaded(Vec<NoteEntry>),
-    Filtered {
-        entries: Vec<NoteEntry>,
-        filtered: Vec<NoteEntry>,
-    },
+    Open,
+    Loaded,
+    Filtered,
 }
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SelectorProps {
+    filter_text: String,
     note_vault: NoteVault,
     state: Signal<SelectionState>,
 }
 
 fn open(
     dialog: Signal<Option<Rc<MountedData>>>,
-    note_path: NotePath,
     vault: NoteVault,
     state: &mut Signal<SelectionState>,
 ) {
+    let note_path = state.read().note_path.clone();
     let path = if note_path.is_note() {
         note_path.get_parent_path().0
     } else {
@@ -56,54 +81,58 @@ fn open(
         error!("{}", e);
     }
 
-    *state.write() = SelectionState::Loading(Rc::new(rx));
-}
-
-fn load_items(rx: Rc<Receiver<NoteEntry>>, state: &mut Signal<SelectionState>) {
     let mut items = vec![];
     while let Ok(row) = rx.recv() {
         if crate::noters::nfs::EntryData::Attachment != row.data {
             items.push(row);
         }
     }
-    state.set(SelectionState::Loaded(items));
+    let mut new_state = state.read().clone();
+    new_state.entries = items;
+    new_state.state = LoadState::Loaded;
+    state.set(new_state);
 }
 
-fn filter_items(items: Vec<NoteEntry>, state: &mut Signal<SelectionState>) {
-    let filtered = items.clone();
-    std::thread::spawn(move || {});
-    state.set(SelectionState::Filtered {
-        entries: items,
-        filtered,
-    });
+fn filter_items(state: &mut Signal<SelectionState>) {
+    let current_state = state.read().clone();
+    let items = current_state.entries;
+    let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
+    let filtered = nucleo::pattern::Pattern::parse(
+        current_state.filter_text.as_ref(),
+        nucleo::pattern::CaseMatching::Ignore,
+        nucleo::pattern::Normalization::Smart,
+    )
+    .match_list(items.clone(), &mut matcher)
+    .iter()
+    .map(|e| e.0.to_owned())
+    .collect::<Vec<NoteEntry>>();
+    let mut new_state = state.read().clone();
+    new_state.filtered = filtered;
+    new_state.state = LoadState::Filtered;
+    state.set(new_state);
 }
 
 #[allow(non_snake_case)]
 pub fn Selector(props: SelectorProps) -> Element {
+    let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
+
     let mut state = props.state;
     let vault = props.note_vault;
-    let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let current_state = state.read().clone();
-    let (visible, rows) = match current_state {
-        SelectionState::Unset => (false, vec![]),
-        SelectionState::Open(note_path) => {
-            open(dialog, note_path, vault, &mut state);
+    let (visible, rows) = match current_state.state {
+        LoadState::Unset => (false, vec![]),
+        LoadState::Open => {
+            open(dialog, vault, &mut state);
             (true, vec![])
         }
-        SelectionState::Loading(rx) => {
-            load_items(rx, &mut state);
+        LoadState::Loaded => {
+            filter_items(&mut state);
             (true, vec![])
         }
-        SelectionState::Loaded(vec) => {
-            filter_items(vec, &mut state);
-            (true, vec![])
-        }
-        SelectionState::Filtered {
-            entries: _,
-            filtered,
-        } => (true, filtered),
+        LoadState::Filtered => (true, current_state.filtered),
     };
 
+    let filter_text = state.read().filter_text.clone();
     rsx! {
         dialog {
             class: "h-48 p-2 rounded-lg shadow",
@@ -112,7 +141,7 @@ pub fn Selector(props: SelectorProps) -> Element {
             onkeydown: move |e: Event<KeyboardData>| {
                 let key = e.data.code();
                 if key == Code::Escape {
-                     state.set(SelectionState::Unset);
+                     state.set(SelectionState::close_dialog());
                 }
             },
             div {
@@ -120,12 +149,16 @@ pub fn Selector(props: SelectorProps) -> Element {
                 class: "size-full",
                 input {
                     class: "w-full",
-                    r#type: "text",
+                    r#type: "search",
+                    value: "{filter_text}",
                     onmounted: move |e| {
                         info!("input");
                         *dialog.write() = Some(e.data());
                     },
-                    "search"
+                    oninput: move |e| {
+                        state.write().filter_text = e.value().clone().to_string();
+                        filter_items(&mut state);
+                    },
                 }
                 div {
                     class: "h-full overflow-auto",
