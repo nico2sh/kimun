@@ -1,40 +1,91 @@
+html,
 body {
-    background-color: #111216;
+  height: 100%;
+  margin: 0;
+  display: flex;
+  background-color: var(--background);
+  color: var(--text);
 }
 
-#main {
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif
+.container {
+  height: 100vh;
+  width: 100vw;
+  display: grid;
+  grid-template-columns: 192px 1fr;
+  grid-template-rows: 48px 1fr 48px;
+  gap: 0px 0px;
+  grid-auto-flow: row;
+  grid-template-areas:
+    "sidebar header"
+    "sidebar main"
+    "sidebar footer";
 }
 
-#links {
-    width: 400px;
-    text-align: left;
-    font-size: x-large;
-    color: white;
-    display: flex;
-    flex-direction: column;
+aside.sidebar {
+  display: flex;
+  flex-direction: column;
+  grid-area: sidebar;
+  border: solid 2px var(--border);
+  padding: 5px;
 }
 
-#links a {
-    color: white;
-    text-decoration: none;
-    margin-top: 20px;
-    margin: 10px;
-    border: white 1px solid;
-    border-radius: 5px;
-    padding: 10px;
+.sideheader {
+  color: var(--text-0);
 }
 
-#links a:hover {
-    background-color: #1f1f1f;
-    cursor: pointer;
+.list {
+  flex: 1;
+  padding: 5px;
+  overflow: auto;
 }
 
-#header {
-    max-width: 1200px;
+.list > .element:hover {
+  cursor: pointer;
+}
+
+.list > .element.selected {
+  background-color: var(--overlay);
+}
+
+.header {
+  grid-area: header;
+}
+
+.mainarea {
+  display: flex;
+  padding: 1em;
+  grid-area: main;
+}
+
+.edittext {
+  flex: 1;
+  resize: none;
+  outline: none;
+  border: none;
+  border-radius: 5px;
+  padding: 10px;
+  background-color: var(--surface-0);
+}
+
+.footer {
+  grid-area: footer;
+}
+
+.search_modal {
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  width: 50%;
+  max-width: 600px;
+  height: 192px;
+  border-radius: 3%;
+  border-width: 2px;
+  border-color: var(--border);
+  background-color: var(--surface-1);
+  color: var(--text-1);
+}
+
+.search_box {
+  width: 100%;
+  margin-bottom: 10px;
 }

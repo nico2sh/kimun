@@ -1,16 +1,19 @@
 use dioxus::prelude::*;
 
-use crate::noters::{nfs::NotePath, NoteVault};
+use crate::{
+    desktop::AppContext,
+    noters::{nfs::NotePath, NoteVault},
+};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct TextEditorProps {
-    note_vault: NoteVault,
     note_path: Signal<Option<NotePath>>,
 }
 
 #[allow(non_snake_case)]
 pub fn TextEditor(props: TextEditorProps) -> Element {
-    let vault = props.note_vault.clone();
+    let app_context: AppContext = use_context();
+    let vault: NoteVault = app_context.vault;
     let content = props
         .note_path
         .read()
@@ -46,28 +49,25 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
         // link { rel: "stylesheet", href: "code-input.css" },
         // script { src: "prism.js" },
         // script { src: "code-input.js" }
-        div {
-            class: "size-full rounded-lg shadow",
-            if use_highlighter {
-                code-input {
-                    id: "edit-content",
-                    // language: "Markdown",
-                    // template: "syntax-highlighted",
-                    wrap: "hard",
-                    resize: "none",
-                    placeholder: "Insert your note text",
-                    "{content}",
-                }
-            } else {
-                textarea {
-                    // size full to fill all the space
-                    class: "p-1 outline-none size-full",
-                    id: "edit-content",
-                    wrap: "hard",
-                    resize: "none",
-                    placeholder: "Insert your note text",
-                    "{content}",
-                }
+        if use_highlighter {
+            code-input {
+                id: "edit-content",
+                language: "Markdown",
+                // template: "syntax-highlighted",
+                wrap: "hard",
+                resize: "none",
+                placeholder: "Insert your note text",
+                "{content}",
+            }
+        } else {
+            textarea {
+                // size full to fill all the space
+                class: "edittext",
+                id: "edit-content",
+                wrap: "hard",
+                resize: "none",
+                placeholder: "Insert your note text",
+                "{content}",
             }
         }
     }

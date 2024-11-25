@@ -4,65 +4,76 @@
 )]
 
 mod editor;
+mod modal;
 mod selector;
 
 mod settings;
 use dioxus::prelude::*;
 use editor::{note_browser::NoteBrowser, text_editor::TextEditor};
 use log::info;
-use selector::{SelectionState, Selector};
+use modal::Modal;
 use settings::Settings;
 
-use crate::noters::{
-    nfs::{NoteEntry, NotePath},
-    NoteVault,
-};
+use crate::noters::{nfs::NotePath, NoteVault};
 
-pub fn app() -> Element {
-    let settings = Settings::load().unwrap();
-    info!("Settings loaded");
-    let note_vault = NoteVault::new(settings.workspace_dir.unwrap()).unwrap();
+#[derive(Debug, Clone)]
+pub struct AppContext {
+    pub vault: NoteVault,
+}
+
+#[allow(non_snake_case)]
+pub fn App() -> Element {
+    let settings = use_signal(|| {
+        info!("Settings loaded");
+        Settings::load().unwrap()
+    });
+    use_context_provider(|| {
+        let workspace_path = settings.read();
+        let vault = NoteVault::new(workspace_path.workspace_dir.clone().unwrap()).unwrap();
+        AppContext { vault }
+    });
 
     let current_note_path: Signal<Option<NotePath>> = use_signal(|| Some(NotePath::root()));
-    let mut selector_open = use_signal(SelectionState::close_dialog);
+    let mut modal = use_signal(Modal::new);
 
     rsx! {
-        Selector {
-            filter_text: "jour".to_string(),
-            note_vault: note_vault.clone(),
-            state: selector_open,
-        }
+        link { rel: "stylesheet", href: "theme.css"}
+        link { rel: "stylesheet", href: "main.css"}
         div {
-            class: "flex flex-col h-screen border-solid border-2 border-green-500 p-2",
-            onkeydown: move |e: Event<KeyboardData>| {
-                let key = e.data.code();
-                let modifiers = e.data.modifiers();
+            class: "container",
+            onkeydown: move |event: Event<KeyboardData>| {
+                let key = event.data.code();
+                let modifiers = event.data.modifiers();
                 if modifiers.meta() && key == Code::KeyO {
-                    info!("Key pressed");
-                     *selector_open.write() = SelectionState::open_dialog(NotePath::root());
+                    info!("Open Modal");
+                    modal.write().set_note_search();
                 }
             },
-            // We close the modal if we click on the main UI
-            onclick: move |_e| {*selector_open.write() = SelectionState::close_dialog();
-                    info!("Close dialog");},
+            // We close any modal if we click on the main UI
+            onclick: move |_e| {
+                if modal.read().is_open() {
+                    modal.write().close();
+                    info!("Close dialog");
+                }
+            },
+            aside {
+                class: "sidebar",
+                NoteBrowser {
+                    note_path: current_note_path,
+                }
+            }
+            header {
+                class: "header"
+            }
             div {
-                // class: "flex h-full border-solid border-2 border-orange-600",
-                class: "flex flex-row h-full border-solid border-2 border-orange-600",
-
-                aside {
-                    class: "w-48",
-                    NoteBrowser {
-                        note_vault: note_vault.clone(),
-                        note_path: current_note_path,
-                    }
+                class: "mainarea",
+                { Modal::get_element(modal) },
+                TextEditor {
+                    note_path: current_note_path,
                 }
-                main {
-                    class: "size-full",
-                    TextEditor {
-                        note_vault: note_vault.clone(),
-                        note_path: current_note_path,
-                    }
-                }
+            }
+            footer {
+                class: "footer"
             }
         }
     }

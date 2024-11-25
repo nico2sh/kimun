@@ -36,4 +36,4 @@ regex = "1.11"
 dirs = "5.0"
 # Fuzzy search
 nucleo = "0.5"
-manganis = "0.2"
+# manganis = "0.2"

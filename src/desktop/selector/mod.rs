@@ -3,102 +3,56 @@ mod row_item;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use log::{error, info};
+use log::{debug, error, info, warn};
 use nucleo::Matcher;
 
-use crate::noters::{
-    nfs::{NoteEntry, NotePath},
-    NoteVault,
+use crate::{
+    desktop::AppContext,
+    noters::{
+        nfs::{NoteEntry, NotePath},
+        NoteVault,
+    },
 };
 
-#[derive(Clone, Debug)]
-pub struct SelectionState {
-    filter_text: String,
-    note_path: NotePath,
-    entries: Vec<NoteEntry>,
-    filtered: Vec<NoteEntry>,
-    state: LoadState,
-}
+use super::modal::Modal;
 
-impl SelectionState {
-    pub fn close_dialog() -> Self {
-        Self {
-            filter_text: "".to_string(),
-            note_path: NotePath::root(),
-            entries: vec![],
-            filtered: vec![],
-            state: LoadState::Unset,
-        }
-    }
-    pub fn open_dialog(path: NotePath) -> Self {
-        Self {
-            filter_text: "".to_string(),
-            note_path: path,
-            entries: vec![],
-            filtered: vec![],
-            state: LoadState::Open,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LoadState {
-    Unset,
-    Open,
-    Loaded,
-    Filtered,
+    Closed,
+    Open(NotePath),
+    Loaded(Vec<NoteEntry>),
 }
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SelectorProps {
+    modal: Signal<Modal>,
     filter_text: String,
-    note_vault: NoteVault,
-    state: Signal<SelectionState>,
 }
 
-fn open(
-    dialog: Signal<Option<Rc<MountedData>>>,
-    vault: NoteVault,
-    state: &mut Signal<SelectionState>,
-) {
-    let note_path = state.read().note_path.clone();
+fn open(note_path: NotePath, vault: &NoteVault) -> Vec<NoteEntry> {
     let path = if note_path.is_note() {
         note_path.get_parent_path().0
     } else {
         note_path
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    spawn(async move {
-        loop {
-            if let Some(e) = dialog.with(|f| f.clone()) {
-                info!("focus input");
-                let _ = e.set_focus(true).await;
-                break;
-            }
-        }
-    });
     if let Err(e) = vault.get_notes_at(path, tx, true) {
         error!("{}", e);
     }
 
     let mut items = vec![];
     while let Ok(row) = rx.recv() {
-        if crate::noters::nfs::EntryData::Attachment != row.data {
+        if let crate::noters::nfs::EntryData::Note(_) = row.data {
             items.push(row);
         }
     }
-    let mut new_state = state.read().clone();
-    new_state.entries = items;
-    new_state.state = LoadState::Loaded;
-    state.set(new_state);
+    items
 }
 
-fn filter_items(state: &mut Signal<SelectionState>) {
-    let current_state = state.read().clone();
-    let items = current_state.entries;
+fn filter_items(items: Vec<NoteEntry>, filter_text: String) -> Vec<NoteEntry> {
     let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
     let filtered = nucleo::pattern::Pattern::parse(
-        current_state.filter_text.as_ref(),
+        filter_text.as_ref(),
         nucleo::pattern::CaseMatching::Ignore,
         nucleo::pattern::Normalization::Smart,
     )
@@ -106,68 +60,145 @@ fn filter_items(state: &mut Signal<SelectionState>) {
     .iter()
     .map(|e| e.0.to_owned())
     .collect::<Vec<NoteEntry>>();
-    let mut new_state = state.read().clone();
-    new_state.filtered = filtered;
-    new_state.state = LoadState::Filtered;
-    state.set(new_state);
+    filtered
 }
 
 #[allow(non_snake_case)]
 pub fn Selector(props: SelectorProps) -> Element {
-    let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
+    warn!("Opening Selector");
+    let mut modal = props.modal;
+    let app_context: AppContext = use_context();
+    let vault: NoteVault = app_context.vault;
+    let mut load_state = use_signal(|| LoadState::Open(NotePath::root()));
+    let mut filter_text = use_signal(|| props.filter_text);
 
-    let mut state = props.state;
-    let vault = props.note_vault;
-    let current_state = state.read().clone();
-    let (visible, rows) = match current_state.state {
-        LoadState::Unset => (false, vec![]),
-        LoadState::Open => {
-            open(dialog, vault, &mut state);
-            (true, vec![])
+    let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
+    let current_state = load_state.read().to_owned();
+    let visible = match current_state {
+        LoadState::Closed => false,
+        LoadState::Open(_note_path) => true,
+        LoadState::Loaded(_) => {
+            spawn(async move {
+                loop {
+                    if let Some(e) = dialog.with(|f| f.clone()) {
+                        info!("Focus input");
+                        let _ = e.set_focus(true).await;
+                        break;
+                    }
+                }
+            });
+            true
         }
-        LoadState::Loaded => {
-            filter_items(&mut state);
-            (true, vec![])
-        }
-        LoadState::Filtered => (true, current_state.filtered),
     };
 
-    let filter_text = state.read().filter_text.clone();
+    let _loading_rows = use_resource(move || {
+        let vault = vault.clone();
+        let current_state = load_state.read().to_owned();
+        async move {
+            if let LoadState::Open(note_path) = current_state {
+                let items = open(note_path.to_owned(), &vault);
+                debug!("Loaded {} items", items.len());
+                load_state.set(LoadState::Loaded(items));
+            }
+        }
+    });
+
+    // We asynchronously filter
+    let rows = use_resource(move || {
+        let current_state = load_state.read().to_owned();
+        async move {
+            if let LoadState::Loaded(items) = current_state {
+                // dependencies
+                if !items.is_empty() {
+                    let filter = filter_text();
+                    debug!("filtering {}", filter);
+                    filter_items(items, filter)
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        }
+    });
+    let mut selected = use_signal(|| None);
+
     rsx! {
         dialog {
-            class: "h-48 p-2 rounded-lg shadow",
+            class: "search_modal",
             open: visible,
             autofocus: "true",
             onkeydown: move |e: Event<KeyboardData>| {
                 let key = e.data.code();
                 if key == Code::Escape {
-                     state.set(SelectionState::close_dialog());
+                    load_state.set(LoadState::Closed);
+                    modal.write().close();
+                }
+                if key == Code::ArrowDown {
+                    let r = rows.read().as_ref().map_or_else(|| 0, |e| e.len());
+                    let max_items = r;
+                    let new_selected = if max_items == 0 {
+                        None
+                    } else if let Some(ref current_selected) = *selected.read() {
+                        let current_selected = current_selected.to_owned();
+                        if current_selected < max_items - 1 {
+                            Some(current_selected + 1)
+                        } else {
+                            Some(0)
+                        }
+                    } else {
+                        Some(0)
+                    };
+                    selected.set(new_selected);
+                }
+                if key == Code::ArrowUp {
+                    let r = rows.read().as_ref().map_or_else(|| 0, |e| e.len());
+                    let max_items = r;
+                    let new_selected = if max_items == 0 {
+                        None
+                    } else if let Some(current_selected) = *selected.read() {
+                        if current_selected > 0 {
+                            Some(current_selected - 1)
+                        } else {
+                            Some(max_items - 1)
+                        }
+                    } else {
+                        Some(0)
+                    };
+                    selected.set(new_selected);
                 }
             },
+            input {
+                class: "search_box",
+                r#type: "search",
+                value: "{filter_text}",
+                onmounted: move |e| {
+                    info!("input");
+                    *dialog.write() = Some(e.data());
+                },
+                oninput: move |e| {
+                    filter_text.set(e.value().clone().to_string());
+                },
+            }
             div {
-                // class: "flex flex-col border-1",
-                class: "size-full",
-                input {
-                    class: "w-full",
-                    r#type: "search",
-                    value: "{filter_text}",
-                    onmounted: move |e| {
-                        info!("input");
-                        *dialog.write() = Some(e.data());
-                    },
-                    oninput: move |e| {
-                        state.write().filter_text = e.value().clone().to_string();
-                        filter_items(&mut state);
-                    },
-                }
-                div {
-                    class: "h-full overflow-auto",
-                    // style: "max-height: 70%",
-                    for row in rows.iter() {
-                        div {
-                            "{row.to_string()}",
+                class: "list",
+                match &*rows.read() {
+                    Some(rows) => rsx! {
+                        for row in rows.iter().enumerate() {
+                            div {
+                                onmouseenter: move |_e| {
+                                    *selected.write() = Some(row.0);
+                                },
+                                class: if *selected.read() == Some(row.0) {
+                                    "element selected"
+                                } else {
+                                    "element"
+                                },
+                                "{row.1.to_string()}"
+                            }
                         }
-                    }
+                    },
+                    None =>  rsx! { p { "Loading..." } }
                 }
             }
         }

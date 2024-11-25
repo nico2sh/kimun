@@ -6,7 +6,7 @@ use noters::desktop;
 
 use log::info;
 
-const _TAILWIND_URL: &str = manganis::mg!(file("./public/tailwind.css"));
+// const _TAILWIND_URL: &str = manganis::mg!(file("./public/tailwind.css"));
 
 fn main() {
     // Init logger
@@ -16,5 +16,5 @@ fn main() {
     info!("starting app");
     // Urls are relative to your Cargo.toml file
 
-    dioxus::launch(desktop::app);
+    dioxus::launch(desktop::App);
 }

@@ -2,54 +2,55 @@ use std::sync::mpsc;
 
 use dioxus::{hooks::use_signal, prelude::*};
 
-use crate::noters::{
-    nfs::{EntryData, NotePath},
-    NoteVault,
+use crate::{
+    desktop::AppContext,
+    noters::{
+        nfs::{EntryData, NotePath},
+        NoteVault,
+    },
 };
 
 #[derive(Props, Clone, PartialEq)]
 pub struct NoteBrowserProps {
-    note_vault: NoteVault,
     note_path: Signal<Option<NotePath>>,
 }
 
 #[allow(non_snake_case)]
 pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
     let mut note_path = props.note_path;
-    let mut notes_and_dirs = use_signal(|| NotesAndDirs::new(props.note_vault, &note_path.read()));
+    let app_context: AppContext = use_context();
+    let vault: NoteVault = app_context.vault;
+    let mut notes_and_dirs = use_signal(|| NotesAndDirs::new(vault, &note_path.read()));
     let entries = notes_and_dirs.read().entries.clone();
     let current_path = notes_and_dirs.read().get_current();
     rsx! {
         div {
-            class: "flex flex-col h-full border border-solid border-2 border-blue-400",
-            div {
-                class: "flex shrink-0",
-                "Files: " {current_path.to_string()}
-            }
-            div {
-                class: "flex flex-col flex-1 overflow-hidden hover:overflow-auto border border-solid border-2 border-lime-400",
-                if current_path != NotePath::root() {
-                    div {
-                        onclick: move |_| notes_and_dirs.write().go_up(),
-                        "[UP]"
-                    }
+            class: "sideheader",
+            "Files: " {current_path.to_string()}
+        }
+        div {
+            class: "list",
+            if current_path != NotePath::root() {
+                div {
+                    onclick: move |_| notes_and_dirs.write().go_up(),
+                    "[UP]"
                 }
-                for entry in entries {
-                    {
-                        match entry {
-                            NavEntry::Note(path) => rsx! {
-                                div {
-                                    onclick: move |_| *note_path.write() = Some(path.clone()),
-                                    { path.get_name() }
-                                }
-                            },
-                            NavEntry::Directory(path) => rsx! {
-                                div {
-                                    onclick: move |_| notes_and_dirs.write().enter_dir(&path),
-                                    { path.get_name() }
-                                }
-                            },
-                        }
+            }
+            for entry in entries {
+                {
+                    match entry {
+                        NavEntry::Note(path) => rsx! {
+                            div {
+                                onclick: move |_| *note_path.write() = Some(path.clone()),
+                                { path.get_name() }
+                            }
+                        },
+                        NavEntry::Directory(path) => rsx! {
+                            div {
+                                onclick: move |_| notes_and_dirs.write().enter_dir(&path),
+                                { path.get_name() }
+                            }
+                        },
                     }
                 }
             }
@@ -57,7 +58,7 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum NavEntry {
     Note(NotePath),
     Directory(NotePath),
@@ -72,6 +73,7 @@ impl NavEntry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 struct NotesAndDirs {
     vault: NoteVault,
     current_path: NotePath,

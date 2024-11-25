@@ -18,7 +18,7 @@ use nfs::{
 use rusqlite::Connection;
 use utilities::path_to_string;
 
-#[derive(Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NoteVault {
     workspace_path: PathBuf,
 }
