@@ -109,9 +109,13 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBErrors> {
 pub fn search_terms<S: AsRef<str>>(
     connection: &mut Connection,
     terms: S,
-    wildcard: bool,
+    include_path: bool,
 ) -> anyhow::Result<Vec<NotePath>> {
-    let sql = "SELECT path FROM notesContent WHERE content MATCH ?1";
+    let sql = if include_path {
+        "SELECT path FROM notesContent WHERE notesContent MATCH ?1"
+    } else {
+        "SELECT path FROM notesContent WHERE content MATCH ?1"
+    };
 
     let mut stmt = connection.prepare(sql)?;
     let res = stmt

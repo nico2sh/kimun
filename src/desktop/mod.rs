@@ -52,7 +52,11 @@ pub fn App() -> Element {
                 let key = event.data.code();
                 let modifiers = event.data.modifiers();
                 if modifiers.meta() && key == Code::KeyO {
-                    info!("Open Modal");
+                    info!("Open Note Select");
+                    modal.write().set_note_select();
+                }
+                if modifiers.meta() && key == Code::KeyS {
+                    info!("Open Note Search");
                     modal.write().set_note_search();
                 }
             },

@@ -11,7 +11,7 @@ use std::{
 
 use db::ConnectionBuilder;
 use error::NoteInitError;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use nfs::{visitors::list::NoteListVisitorBuilder, NoteEntry, NotePath};
 use rusqlite::Connection;
 use utilities::path_to_string;

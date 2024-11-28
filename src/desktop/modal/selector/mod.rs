@@ -1,4 +1,5 @@
 pub mod note_search;
+pub mod note_select;
 mod row_item;
 
 use std::rc::Rc;
@@ -6,6 +7,8 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 use log::{debug, info};
 use row_item::RowItem;
+
+use crate::noters::nfs::NotePath;
 
 use super::Modal;
 
@@ -32,6 +35,7 @@ where
 
 #[allow(non_snake_case)]
 fn SelectorView<R, F, I, P>(
+    hint: String,
     filter_text: String,
     mut modal: Signal<Modal>,
     on_init: I,
@@ -163,6 +167,10 @@ where
                 }
             },
             div {
+                class: "hint",
+                "{hint}"
+            }
+            div {
                 class: "search",
                 input {
                     class: "search_box",
@@ -205,17 +213,50 @@ where
             }
             div {
                 class: "preview",
-                match *preview_text.state().read() {
-                    UseResourceState::Ready => {
-                        let text = preview_text.value().unwrap();
-                        rsx! {
-                            "{text}"
-                        }
-                    }
-                    _ => rsx! {
-                        "Loading..."
-                    },
+                match &*preview_text.read() {
+                    Some(text) => rsx! { p { "{text}" } },
+                    None => rsx! { "Loading..." }
                 }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct PathEntry {
+    path: NotePath,
+    path_str: String,
+    path_signal: Signal<Option<NotePath>>,
+}
+
+impl PathEntry {
+    pub fn from_note_path(path: NotePath, path_signal: Signal<Option<NotePath>>) -> Self {
+        let path_str = path.to_string();
+        Self {
+            path,
+            path_str,
+            path_signal,
+        }
+    }
+}
+
+impl AsRef<str> for PathEntry {
+    fn as_ref(&self) -> &str {
+        self.path_str.as_str()
+    }
+}
+
+impl RowItem for PathEntry {
+    fn on_select(&self) -> Box<dyn FnMut()> {
+        let p = self.path.clone();
+        let mut s = self.path_signal;
+        Box::new(move || s.set(Some(p.clone())))
+    }
+
+    fn get_view(&self) -> Element {
+        rsx! {
+            div {
+                "{self.path.to_string()}"
             }
         }
     }

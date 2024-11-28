@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use selector::note_search::NoteSelector;
+use selector::{note_search::NoteSearch, note_select::NoteSelector};
 
 use crate::noters::nfs::NotePath;
 
@@ -9,6 +9,7 @@ mod selector;
 enum ModalType {
     None,
     NoteBrowser,
+    NoteSearch,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,14 +29,24 @@ impl Modal {
     pub fn close(&mut self) {
         self.modal_type = ModalType::None;
     }
-    pub fn set_note_search(&mut self) {
+    pub fn set_note_select(&mut self) {
         self.modal_type = ModalType::NoteBrowser;
+    }
+    pub fn set_note_search(&mut self) {
+        self.modal_type = ModalType::NoteSearch;
     }
     pub fn get_element(modal: Signal<Self>, note_path: Signal<Option<NotePath>>) -> Element {
         match &modal.read().modal_type {
             ModalType::None => rsx! {},
             ModalType::NoteBrowser => rsx! {
                 NoteSelector {
+                    modal,
+                    note_path,
+                    filter_text: "".to_string(),
+                }
+            },
+            ModalType::NoteSearch => rsx! {
+                NoteSearch {
                     modal,
                     note_path,
                     filter_text: "".to_string(),
