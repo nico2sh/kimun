@@ -106,13 +106,30 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBErrors> {
     Ok(())
 }
 
+pub fn search_terms<S: AsRef<str>>(
+    connection: &mut Connection,
+    terms: S,
+    wildcard: bool,
+) -> anyhow::Result<Vec<NotePath>> {
+    let sql = "SELECT path FROM notesContent WHERE content MATCH ?1";
+
+    let mut stmt = connection.prepare(sql)?;
+    let res = stmt
+        .query_map([terms.as_ref()], |row| {
+            let path: String = row.get(0)?;
+            Ok(NotePath::new(path))
+        })?
+        .map(|el| el.map_err(DBErrors::DBError))
+        .collect::<Result<Vec<NotePath>, DBErrors>>()?;
+    Ok(res)
+}
+
 pub fn get_notes<P: AsRef<Path>>(
     connection: &mut Connection,
     base_path: P,
     path: &NotePath,
     recursive: bool,
 ) -> anyhow::Result<Vec<(NoteData, NoteDetails)>> {
-    debug!("Getting notes");
     let sql = if recursive {
         "SELECT path, size, modified, hash, noteName FROM notes where basePath LIKE (?1 || '%')"
     } else {

@@ -5,20 +5,23 @@ use std::{
 };
 
 use ignore::{ParallelVisitor, ParallelVisitorBuilder};
-use log::{debug, error};
+use log::error;
 
-use crate::noters::nfs::{
-    DirectoryData, DirectoryDetails, EntryData, NoteData, NoteDetails, NoteEntry, NotePath,
+use crate::noters::{
+    nfs::{DirectoryData, DirectoryDetails, EntryData, NoteData, NoteDetails, NoteEntry, NotePath},
+    NotesValidation,
 };
 
 struct NoteListVisitor {
     workspace_path: PathBuf,
-    notes_to_delete: Arc<Mutex<HashMap<NotePath, NoteData>>>,
+    validation: NotesValidation,
+    entries_found: Arc<Mutex<Vec<NoteEntry>>>,
+    notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteData, NoteDetails)>>>,
     directories_to_delete: Arc<Mutex<HashSet<NotePath>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteData, NoteDetails)>>>,
     notes_to_add: Arc<Mutex<Vec<(NoteData, NoteDetails)>>>,
     directories_to_add: Arc<Mutex<Vec<NotePath>>>,
-    sender: Sender<NoteEntry>,
+    sender: Option<Sender<NoteEntry>>,
 }
 
 impl NoteListVisitor {
@@ -30,22 +33,32 @@ impl NoteListVisitor {
         }
     }
 
-    fn verify_cached_note(&self, data: &NoteData) {
-        let modified_secs = data.modified_secs;
-        let size = data.size;
+    fn has_changed_fast_check(&self, cached: &NoteData, disk: &NoteData) -> bool {
+        let modified_secs = disk.modified_secs;
+        let size = disk.size;
+        let modified_sec_cached = cached.modified_secs;
+        let size_cached = cached.size;
+        size != size_cached || modified_secs != modified_sec_cached
+    }
 
+    fn has_changed_deep_check(&self, cached: &mut NoteDetails, disk: &NoteData) -> bool {
+        let mut details = disk.get_details(&self.workspace_path, &disk.path).unwrap();
+        let details_hash = details.get_hash();
+        let cached_hash = cached.get_hash();
+        !details_hash.eq(&cached_hash)
+    }
+
+    fn verify_cached_note(&self, data: &NoteData) {
         let mut ntd = self.notes_to_delete.lock().unwrap();
         let cached_option = ntd.remove(&data.path);
-        if let Some(cached) = cached_option {
-            let modified_sec_cached = cached.modified_secs;
-            let size_cached = cached.size;
+        if let Some((cached_data, mut cached_details)) = cached_option {
             // entry exists
-            if size != size_cached || modified_secs != modified_sec_cached {
-                debug!("Modify note, size: {} != {}", size, size_cached);
-                debug!(
-                    "Modify note, modified: {} != {}",
-                    modified_secs, modified_sec_cached
-                );
+            let changed = match self.validation {
+                NotesValidation::Full => self.has_changed_deep_check(&mut cached_details, data),
+                NotesValidation::Fast => self.has_changed_fast_check(&cached_data, data),
+                NotesValidation::None => false,
+            };
+            if changed {
                 let details = data
                     .get_details(&self.workspace_path, &data.path)
                     .expect("Can't get details for note");
@@ -55,7 +68,6 @@ impl NoteListVisitor {
                     .push((data.to_owned(), details.to_owned()));
             }
         } else {
-            debug!("Add note: {}", data.path);
             let details = data
                 .get_details(&self.workspace_path, &data.path)
                 .expect("Can't get Details for note");
@@ -86,11 +98,13 @@ impl ParallelVisitor for NoteListVisitor {
                 let npe = NoteEntry::from_path(&self.workspace_path, dir.path());
                 match npe {
                     Ok(entry) => {
-                        if let Err(e) = self.sender.send(entry.clone()) {
-                            error!("{}", e)
+                        if let Some(sender) = &self.sender {
+                            if let Err(e) = sender.send(entry.clone()) {
+                                error!("{}", e)
+                            }
+                        } else {
+                            self.entries_found.lock().unwrap().push(entry.clone());
                         }
-                        // artificially adding latency
-                        // std::thread::sleep(Duration::from_millis(200));
                         self.verify_cache(&entry);
                     }
                     Err(e) => {
@@ -109,32 +123,37 @@ impl ParallelVisitor for NoteListVisitor {
 
 pub struct NoteListVisitorBuilder {
     workspace_path: PathBuf,
-    notes_to_delete: Arc<Mutex<HashMap<NotePath, NoteData>>>,
+    validation: NotesValidation,
+    entries_found: Arc<Mutex<Vec<NoteEntry>>>,
+    notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteData, NoteDetails)>>>,
     directories_to_delete: Arc<Mutex<HashSet<NotePath>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteData, NoteDetails)>>>,
     notes_to_add: Arc<Mutex<Vec<(NoteData, NoteDetails)>>>,
     directories_to_add: Arc<Mutex<Vec<NotePath>>>,
-    sender: Sender<NoteEntry>,
+    sender: Option<Sender<NoteEntry>>,
 }
 
 impl NoteListVisitorBuilder {
     pub fn new<P: AsRef<Path>>(
         workspace_path: P,
+        validation: NotesValidation,
         cached_notes: Vec<(NoteData, NoteDetails)>,
         cached_directories: Vec<(DirectoryData, DirectoryDetails)>,
-        sender: Sender<NoteEntry>,
+        sender: Option<Sender<NoteEntry>>,
     ) -> Self {
         let mut notes_to_delete = HashMap::new();
         let mut directories_to_delete = HashSet::new();
-        for entry in cached_notes {
-            let path = entry.1.note_path.clone();
-            notes_to_delete.insert(path, entry.0);
+        for cached in cached_notes {
+            let path = cached.1.note_path.clone();
+            notes_to_delete.insert(path, cached);
         }
-        for entry in cached_directories {
-            directories_to_delete.insert(entry.0.path);
+        for (directory_data, _directory_details) in cached_directories {
+            directories_to_delete.insert(directory_data.path);
         }
         Self {
             workspace_path: workspace_path.as_ref().to_path_buf(),
+            validation,
+            entries_found: Arc::new(Mutex::new(Vec::new())),
             notes_to_delete: Arc::new(Mutex::new(notes_to_delete)),
             notes_to_modify: Arc::new(Mutex::new(Vec::new())),
             notes_to_add: Arc::new(Mutex::new(Vec::new())),
@@ -142,6 +161,15 @@ impl NoteListVisitorBuilder {
             directories_to_add: Arc::new(Mutex::new(Vec::new())),
             sender,
         }
+    }
+
+    pub fn get_entries_found(&self) -> Vec<NoteEntry> {
+        self.entries_found
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|n| n.to_owned())
+            .collect()
     }
 
     pub fn get_notes_to_delete(&self) -> Vec<NotePath> {
@@ -194,6 +222,8 @@ impl<'s> ParallelVisitorBuilder<'s> for NoteListVisitorBuilder {
     fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {
         let dbv = NoteListVisitor {
             workspace_path: self.workspace_path.clone(),
+            validation: self.validation.clone(),
+            entries_found: self.entries_found.clone(),
             notes_to_delete: self.notes_to_delete.clone(),
             notes_to_modify: self.notes_to_modify.clone(),
             notes_to_add: self.notes_to_add.clone(),

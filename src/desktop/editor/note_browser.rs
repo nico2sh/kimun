@@ -1,12 +1,13 @@
 use std::sync::mpsc;
 
 use dioxus::{hooks::use_signal, prelude::*};
+use log::warn;
 
 use crate::{
     desktop::AppContext,
     noters::{
         nfs::{EntryData, NotePath},
-        NoteVault,
+        NoteVault, NotesGetterOptions,
     },
 };
 
@@ -17,12 +18,25 @@ pub struct NoteBrowserProps {
 
 #[allow(non_snake_case)]
 pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
-    let mut note_path = props.note_path;
     let app_context: AppContext = use_context();
+    let mut note_path = props.note_path;
     let vault: NoteVault = app_context.vault;
-    let mut notes_and_dirs = use_signal(|| NotesAndDirs::new(vault, &note_path.read()));
-    let entries = notes_and_dirs.read().entries.clone();
-    let current_path = notes_and_dirs.read().get_current();
+    let mut browsing_directory = use_signal(move || {
+        if let Some(path) = &*note_path.read() {
+            if path.is_note() {
+                path.get_parent_path().0
+            } else {
+                path.to_owned()
+            }
+        } else {
+            NotePath::root()
+        }
+    });
+    let notes_and_dirs = NotesAndDirs::new(vault, browsing_directory);
+    let entries = notes_and_dirs.get_entries();
+    let current_path = notes_and_dirs.get_current();
+    warn!("Notes and dirs: {:?}", browsing_directory);
+
     rsx! {
         div {
             class: "sideheader",
@@ -32,23 +46,33 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
             class: "list",
             if current_path != NotePath::root() {
                 div {
-                    onclick: move |_| notes_and_dirs.write().go_up(),
+                    class: "element",
+                    onclick: move |_| {
+                        let parent_path = browsing_directory.read().get_parent_path().0;
+                        browsing_directory.set(parent_path);
+                    },
                     "[UP]"
                 }
             }
             for entry in entries {
                 {
                     match entry {
-                        NavEntry::Note(path) => rsx! {
-                            div {
-                                onclick: move |_| *note_path.write() = Some(path.clone()),
-                                { path.get_name() }
+                        NavEntry::Note(path) => {
+                            rsx! {
+                                div {
+                                    class: "element",
+                                    onclick: move |_| *note_path.write() = Some(path.clone()),
+                                    { path.get_name() }
+                                }
                             }
                         },
-                        NavEntry::Directory(path) => rsx! {
-                            div {
-                                onclick: move |_| notes_and_dirs.write().enter_dir(&path),
-                                { path.get_name() }
+                        NavEntry::Directory(path) => {
+                            rsx! {
+                                div {
+                                    class: "element",
+                                    onclick: move |_| browsing_directory.set(path.to_owned()),
+                                    { path.get_name() }
+                                }
                             }
                         },
                     }
@@ -58,7 +82,7 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 enum NavEntry {
     Note(NotePath),
     Directory(NotePath),
@@ -73,83 +97,59 @@ impl NavEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 struct NotesAndDirs {
-    vault: NoteVault,
-    current_path: NotePath,
-    entries: Vec<NavEntry>,
-    err: Option<String>,
+    current_path: Signal<NotePath>,
+    entries: Resource<Vec<NavEntry>>,
 }
 
 impl NotesAndDirs {
-    fn new(vault: NoteVault, path: &Option<NotePath>) -> Self {
-        let current_path = if let Some(path) = path {
-            if path.is_note() {
-                path.get_parent_path().0
-            } else {
-                path.to_owned()
-            }
-        } else {
-            NotePath::root()
-        };
-        let entries = vec![];
-        let err = None;
-        let mut notes_and_dirs = Self {
-            vault,
-            current_path,
-            entries,
-            err,
-        };
-        notes_and_dirs.load_current_dir();
-        notes_and_dirs
-    }
-
-    fn open_note(&self, path: &NotePath) -> anyhow::Result<String> {
-        self.vault.load_note(path)
-    }
-
-    fn load_current_dir(&mut self) {
-        let (tx, rx) = mpsc::channel();
-        // TODO: manage error
-        self.vault
-            .get_notes_at(&self.current_path, tx, false)
-            .expect("Error fetching Entries");
-        self.entries.clear();
-        while let Ok(entry) = rx.recv() {
-            let nav_entry = match &entry.data {
-                EntryData::Note(note_data) => Some(NavEntry::Note(note_data.path.clone())),
-                EntryData::Directory(directory_data) => {
-                    if directory_data.path == self.current_path {
-                        None
-                    } else {
-                        Some(NavEntry::Directory(directory_data.path.clone()))
-                    }
+    fn new(vault: NoteVault, path: Signal<NotePath>) -> Self {
+        // Since this is a resource that depends on the current_path
+        // the entries change every time the current_path is changed
+        let entries = use_resource(move || {
+            let vault = vault.clone();
+            async move {
+                let (tx, rx) = mpsc::channel();
+                let current_path = path.read().clone();
+                let mut entries = vec![];
+                vault
+                    .get_notes(
+                        &current_path,
+                        NotesGetterOptions::default()
+                            .set_sender(tx)
+                            .full_validation(),
+                    )
+                    .expect("Error fetching Entries");
+                while let Ok(entry) = rx.recv() {
+                    match &entry.data {
+                        EntryData::Note(note_data) => {
+                            entries.push(NavEntry::Note(note_data.path.clone()))
+                        }
+                        EntryData::Directory(directory_data) => {
+                            if directory_data.path != current_path {
+                                entries.push(NavEntry::Directory(directory_data.path.clone()))
+                            }
+                        }
+                        EntryData::Attachment => {}
+                    };
                 }
-                EntryData::Attachment => None,
-            };
-            if let Some(e) = nav_entry {
-                self.entries.push(e);
+                entries.sort_by_key(|b| std::cmp::Reverse(b.sort_string()));
+                entries
             }
+        });
+        Self {
+            current_path: path,
+            entries,
         }
-        self.entries
-            .sort_by_key(|b| std::cmp::Reverse(b.sort_string()));
+    }
+
+    fn get_entries(&self) -> Vec<NavEntry> {
+        let res = self.entries.value().read().to_owned().unwrap_or_default();
+        res
     }
 
     fn get_current(&self) -> NotePath {
-        self.current_path.clone()
-    }
-
-    fn go_up(&mut self) {
-        self.current_path = self.current_path.get_parent_path().0;
-        self.load_current_dir();
-    }
-
-    fn enter_dir(&mut self, path: &NotePath) {
-        self.current_path = path.to_owned();
-        self.load_current_dir();
-    }
-
-    fn cleat_err(&mut self) {
-        self.err = None;
+        self.current_path.read().clone()
     }
 }

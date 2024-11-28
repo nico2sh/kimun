@@ -14,11 +14,14 @@ pub struct TextEditorProps {
 pub fn TextEditor(props: TextEditorProps) -> Element {
     let app_context: AppContext = use_context();
     let vault: NoteVault = app_context.vault;
-    let content = props
-        .note_path
-        .read()
-        .clone()
-        .map_or_else(String::new, |e| vault.load_note(&e).unwrap());
+    let note_path = props.note_path;
+    let content = use_memo(move || {
+        note_path.read().as_ref().map_or_else(String::new, |e| {
+            vault.load_note(e).unwrap_or_else(|_e| "".to_string())
+        })
+    });
+
+    // info!("Content: {}", content.read());
     // let eval = eval(
     //     r#"codeInput.registerTemplate("syntax-highlighted", codeInput.templates.prism(Prism, [] /* Array of plugins */));"#,
     // );
@@ -46,28 +49,23 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     let use_highlighter = false;
 
     rsx! {
-        // link { rel: "stylesheet", href: "code-input.css" },
-        // script { src: "prism.js" },
-        // script { src: "code-input.js" }
         if use_highlighter {
             code-input {
-                id: "edit-content",
                 language: "Markdown",
                 // template: "syntax-highlighted",
-                wrap: "hard",
+                // wrap: "hard",
                 resize: "none",
                 placeholder: "Insert your note text",
-                "{content}",
+                value: "{content}",
             }
         } else {
             textarea {
-                // size full to fill all the space
                 class: "edittext",
-                id: "edit-content",
+                spellcheck: false,
                 wrap: "hard",
                 resize: "none",
                 placeholder: "Insert your note text",
-                "{content}",
+                value: "{content}",
             }
         }
     }

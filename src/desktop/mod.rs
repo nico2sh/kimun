@@ -5,7 +5,6 @@
 
 mod editor;
 mod modal;
-mod selector;
 
 mod settings;
 use dioxus::prelude::*;
@@ -19,6 +18,7 @@ use crate::noters::{nfs::NotePath, NoteVault};
 #[derive(Debug, Clone)]
 pub struct AppContext {
     pub vault: NoteVault,
+    pub current_error: Signal<Option<String>>,
 }
 
 #[allow(non_snake_case)]
@@ -28,10 +28,17 @@ pub fn App() -> Element {
         Settings::load().unwrap()
     });
     use_context_provider(|| {
+        let error: Signal<Option<String>> = Signal::new(None);
         let workspace_path = settings.read();
         let vault = NoteVault::new(workspace_path.workspace_dir.clone().unwrap()).unwrap();
-        AppContext { vault }
+        AppContext {
+            vault,
+            current_error: error,
+        }
     });
+
+    let app_context: AppContext = use_context();
+    let error: Signal<Option<String>> = app_context.current_error;
 
     let current_note_path: Signal<Option<NotePath>> = use_signal(|| Some(NotePath::root()));
     let mut modal = use_signal(Modal::new);
@@ -67,13 +74,16 @@ pub fn App() -> Element {
             }
             div {
                 class: "mainarea",
-                { Modal::get_element(modal) },
+                { Modal::get_element(modal, current_note_path) },
                 TextEditor {
                     note_path: current_note_path,
                 }
             }
             footer {
-                class: "footer"
+                class: "footer",
+                if let Some(err) = &*error.read() {
+                        p{"{err}"}
+                }
             }
         }
     }

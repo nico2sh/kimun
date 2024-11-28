@@ -19,7 +19,7 @@ const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|]"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NoteEntry {
-    path: NotePath,
+    pub path: NotePath,
     pub path_string: String,
     pub data: EntryData,
 }
