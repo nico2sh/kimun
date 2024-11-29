@@ -7,9 +7,11 @@ mod editor;
 mod modal;
 
 mod settings;
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 use editor::{note_browser::NoteBrowser, text_editor::TextEditor};
-use log::info;
+use log::{debug, info};
 use modal::Modal;
 use settings::Settings;
 
@@ -42,6 +44,18 @@ pub fn App() -> Element {
 
     let current_note_path: Signal<Option<NotePath>> = use_signal(|| Some(NotePath::root()));
     let mut modal = use_signal(Modal::new);
+    let editor_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
+    if !modal.read().is_open() {
+        spawn(async move {
+            loop {
+                if let Some(e) = editor_signal.with(|f| f.clone()) {
+                    info!("Focus input on Editor");
+                    let _ = e.set_focus(true).await;
+                    break;
+                }
+            }
+        });
+    }
 
     rsx! {
         link { rel: "stylesheet", href: "theme.css"}
@@ -52,11 +66,11 @@ pub fn App() -> Element {
                 let key = event.data.code();
                 let modifiers = event.data.modifiers();
                 if modifiers.meta() && key == Code::KeyO {
-                    info!("Open Note Select");
+                    debug!("Trigger Open Note Select");
                     modal.write().set_note_select();
                 }
                 if modifiers.meta() && key == Code::KeyS {
-                    info!("Open Note Search");
+                    debug!("Trigger Open Note Search");
                     modal.write().set_note_search();
                 }
             },
@@ -81,6 +95,7 @@ pub fn App() -> Element {
                 { Modal::get_element(modal, current_note_path) },
                 TextEditor {
                     note_path: current_note_path,
+                    editor_signal,
                 }
             }
             footer {

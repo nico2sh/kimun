@@ -40,7 +40,7 @@ fn SelectorView<R, F, I, P>(
     mut modal: Signal<Modal>,
     on_init: I,
     on_filter_change: F,
-    on_preview: P,
+    on_preview: Option<P>,
 ) -> Element
 where
     R: RowItem + 'static,
@@ -48,7 +48,6 @@ where
     F: Fn(String, Vec<R>) -> Vec<R> + Clone + 'static,
     P: Fn(&R) -> String + Clone + 'static,
 {
-    debug!("Opening Dialog View");
     let mut filter_text = use_signal(|| filter_text);
     let mut load_state = use_signal(|| LoadState::Open);
     let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
@@ -56,6 +55,7 @@ where
     let visible = match current_state {
         LoadState::Closed => false,
         LoadState::Open => {
+            debug!("Opening Dialog View");
             // when the dialog is open and starts initializing
             spawn(async move {
                 loop {
@@ -73,6 +73,7 @@ where
             true
         }
     };
+    let mut selected: Signal<Option<usize>> = use_signal(|| None);
 
     let _loading_rows = use_resource(move || {
         let current_state = load_state.read().to_owned();
@@ -92,6 +93,7 @@ where
         let function = on_filter_change.clone();
         async move {
             if let LoadState::Loaded(items) = current_state {
+                selected.set(None);
                 function(filter_text, items)
             } else {
                 vec![]
@@ -99,17 +101,22 @@ where
         }
     });
 
-    let rs: Vec<R> = rows.value().read().clone().unwrap_or_default();
-    let mut selected: Signal<Option<usize>> = use_signal(|| None);
-    let preview_text = use_resource(move || {
-        let rows = rs.clone();
-        let function = on_preview.clone();
-        async move {
-            let selection = selected.read().unwrap_or_default();
-            let entry = rows.get(selection);
-            entry.map_or_else(|| "".to_string(), &function)
-        }
-    });
+    let show_preview = on_preview.is_some();
+    let preview_text = match on_preview {
+        Some(on_preview) => use_resource(move || {
+            let rows: Vec<R> = rows.value().read().clone().unwrap_or_default();
+            let function = on_preview.clone();
+            async move {
+                if let Some(selection) = *selected.read() {
+                    let entry = rows.get(selection);
+                    entry.map(&function)
+                } else {
+                    None
+                }
+            }
+        }),
+        None => use_resource(move || async move { None }),
+    };
 
     let row_number = rows.value().read().clone().unwrap_or_default().len();
 
@@ -211,11 +218,17 @@ where
                     }
                 }
             }
-            div {
-                class: "preview",
-                match &*preview_text.read() {
-                    Some(text) => rsx! { p { "{text}" } },
-                    None => rsx! { "Loading..." }
+            if show_preview {
+                div {
+                    class: "preview",
+                    match &*preview_text.read() {
+                        Some(text) => if let Some(t) = text {
+                            rsx! { p { "{t}" } }
+                        } else {
+                            rsx!{}
+                        },
+                        None => rsx! { "Loading..." }
+                    }
                 }
             }
         }

@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use log::{debug, error, warn};
+use log::{debug, error};
 use nucleo::Matcher;
 
 use crate::{
@@ -62,13 +62,13 @@ fn filter_items(items: Vec<PathEntry>, filter_text: String) -> Vec<PathEntry> {
 
 #[allow(non_snake_case)]
 pub fn NoteSelector(props: SelectorProps) -> Element {
-    warn!("Opening Selector");
     let current_note_path = props.note_path;
     let app_context: AppContext = use_context();
     let vault: NoteVault = app_context.vault;
 
     let moved_vault = vault.clone();
     let init = move || {
+        debug!("Opening Note Selector");
         let items = open(NotePath::root(), &moved_vault)
             .iter()
             .map(|e| PathEntry::from_note_path(e.path.clone(), current_note_path))
@@ -103,6 +103,6 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
         props.modal,
         Box::new(init),
         Box::new(filter),
-        Box::new(preview),
+        Some(preview),
     )
 }

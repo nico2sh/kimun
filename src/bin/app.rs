@@ -6,7 +6,9 @@ use noters::desktop;
 
 use log::info;
 
-// const _TAILWIND_URL: &str = manganis::mg!(file("./public/tailwind.css"));
+const _FONTS: &str = manganis::mg!(file("./assets/fonts.css"));
+const _COLORS: &str = manganis::mg!(file("./assets/theme.css"));
+const _STYLE: &str = manganis::mg!(file("./assets/main.css"));
 
 fn main() {
     // Init logger

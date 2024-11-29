@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use log::{error, warn};
+use log::{debug, error};
 
 use crate::{
     desktop::{modal::selector::SelectorView, AppContext},
@@ -17,12 +17,14 @@ pub struct SearchProps {
 
 #[allow(non_snake_case)]
 pub fn NoteSearch(props: SearchProps) -> Element {
-    warn!("Opening Selector");
     let current_note_path = props.note_path;
     let app_context: AppContext = use_context();
     let vault: NoteVault = app_context.vault;
 
-    let init = move || vec![];
+    let init = move || {
+        debug!("Opening Note Search");
+        vec![]
+    };
 
     let moved_vault = vault.clone();
     let filter = move |filter_text: String, _items: Vec<PathEntry>| match moved_vault
@@ -52,6 +54,6 @@ pub fn NoteSearch(props: SearchProps) -> Element {
         props.modal,
         Box::new(init),
         Box::new(filter),
-        Box::new(preview),
+        Some(preview),
     )
 }
