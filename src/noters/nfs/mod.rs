@@ -537,6 +537,6 @@ mod tests {
 
         let entry = NotePath::from_path(&workspace, &path).unwrap();
 
-        assert_eq!("workspace/note.md", entry.to_string());
+        assert_eq!("/workspace/note.md", entry.to_string());
     }
 }

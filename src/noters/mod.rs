@@ -1,6 +1,7 @@
 mod db;
 pub mod error;
 pub mod nfs;
+mod parser;
 pub mod utilities;
 
 use std::{
@@ -181,6 +182,10 @@ impl NoteVault {
         } else {
             Ok(None)
         }
+    }
+    fn parse_note_text<P: Into<NotePath>>(&self, path: P) -> anyhow::Result<()> {
+        let text = self.load_note(path)?;
+        Ok(())
     }
 }
 
