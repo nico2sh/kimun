@@ -1,3 +1,0 @@
-cargo:rerun-if-env-changed=MANGANIS_SUPPORT
-cargo:warning=It looks like you are compiling with a tool that does not support collecting assets. The assets that the assets macro collects may not be available to the application.
-HINT: If you are using cargo to run this program, try using the dioxus-cli instead (https://crates.io/crates/dioxus-cli).

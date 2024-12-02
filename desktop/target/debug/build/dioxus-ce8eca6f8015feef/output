@@ -1,5 +1,0 @@
-cargo:rerun-if-env-changed=CARGO_FEATURE_LAUNCH
-cargo:rerun-if-env-changed=CARGO_FEATURE_THIRD_PARTY_RENDERER
-cargo:rerun-if-env-changed=CARGO_FEATURE_DESKTOP
-cargo:rerun-if-env-changed=CARGO_FEATURE_FULLSTACK
-cargo:rerun-if-env-changed=CARGO_FEATURE_LIVEVIEW
