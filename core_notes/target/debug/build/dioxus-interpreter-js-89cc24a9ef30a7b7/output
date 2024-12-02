@@ -1,7 +1,0 @@
-cargo:rerun-if-changed=src/ts/form.ts
-cargo:rerun-if-changed=src/ts/core.ts
-cargo:rerun-if-changed=src/ts/serialize.ts
-cargo:rerun-if-changed=src/ts/set_attribute.ts
-cargo:rerun-if-changed=src/ts/common.ts
-cargo:rerun-if-changed=src/ts/eval.ts
-cargo:rerun-if-changed=src/ts/native_eval.ts

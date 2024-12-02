@@ -1,9 +1,0 @@
-/Users/nhormazabal/development/personal/noters/core/target/debug/deps/libdioxus_core_macro-9f5a757f20996eed.dylib: /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/lib.rs /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/component.rs /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/props/mod.rs /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/utils.rs /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/../README.md
-
-/Users/nhormazabal/development/personal/noters/core/target/debug/deps/dioxus_core_macro-9f5a757f20996eed.d: /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/lib.rs /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/component.rs /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/props/mod.rs /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/utils.rs /Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/../README.md
-
-/Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/lib.rs:
-/Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/component.rs:
-/Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/props/mod.rs:
-/Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/utils.rs:
-/Users/nhormazabal/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dioxus-core-macro-0.5.6/src/../README.md:
