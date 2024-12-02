@@ -1,16 +1,15 @@
+use core_notes::{
+    nfs::{NoteEntry, NotePath},
+    NoteVault, NotesGetterOptions,
+};
+
 use dioxus::prelude::*;
 use log::{debug, error};
 use nucleo::Matcher;
 
-use crate::{
-    desktop::{modal::selector::SelectorView, AppContext},
-    noters::{
-        nfs::{NoteEntry, NotePath},
-        NoteVault, NotesGetterOptions,
-    },
-};
+use crate::AppContext;
 
-use super::{Modal, PathEntry};
+use super::{Modal, PathEntry, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SelectorProps {
@@ -36,7 +35,7 @@ fn open(note_path: NotePath, vault: &NoteVault) -> Vec<NoteEntry> {
 
     let mut items = vec![];
     while let Ok(row) = rx.recv() {
-        if let crate::noters::nfs::EntryData::Note(_) = row.data {
+        if let core_notes::nfs::EntryData::Note(_) = row.data {
             items.push(row);
         }
     }

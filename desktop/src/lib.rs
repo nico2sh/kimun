@@ -15,7 +15,7 @@ use log::{debug, info};
 use modal::Modal;
 use settings::Settings;
 
-use crate::noters::{nfs::NotePath, NoteVault};
+use core_notes::{nfs::NotePath, NoteVault};
 
 #[derive(Debug, Clone)]
 pub struct AppContext {

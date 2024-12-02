@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use log::{debug, info};
 use row_item::RowItem;
 
-use crate::noters::nfs::NotePath;
+use core_notes::nfs::NotePath;
 
 use super::Modal;
 

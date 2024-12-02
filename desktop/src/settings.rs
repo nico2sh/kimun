@@ -1,10 +1,10 @@
+use core_notes::error::NoteInitError;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use std::fs::File;
 
-use crate::noters::error::NoteInitError;
-use crate::noters::nfs::NotePath;
+use core_notes::nfs::NotePath;
 
 const BASE_CONFIG_FILE: &str = ".note.toml";
 

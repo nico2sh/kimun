@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use log::{debug, error};
 use rusqlite::{config::DbConfig, params, Connection, Transaction};
 
-use crate::noters::error::DBErrors;
+use crate::error::DBErrors;
 
 use super::{
     nfs::{DirectoryData, DirectoryDetails, NoteData, NoteDetails},

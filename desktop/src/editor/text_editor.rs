@@ -1,11 +1,9 @@
+use core_notes::{nfs::NotePath, NoteVault};
 use std::rc::Rc;
 
 use dioxus::prelude::*;
 
-use crate::{
-    desktop::AppContext,
-    noters::{nfs::NotePath, NoteVault},
-};
+use crate::AppContext;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct TextEditorProps {

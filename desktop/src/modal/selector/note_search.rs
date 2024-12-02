@@ -1,12 +1,11 @@
+use core_notes::{nfs::NotePath, NoteVault};
+
 use dioxus::prelude::*;
 use log::{debug, error};
 
-use crate::{
-    desktop::{modal::selector::SelectorView, AppContext},
-    noters::{nfs::NotePath, NoteVault},
-};
+use crate::AppContext;
 
-use super::{Modal, PathEntry};
+use super::{Modal, PathEntry, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SearchProps {

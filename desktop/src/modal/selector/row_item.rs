@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use log::info;
 
-use crate::noters::nfs::NoteEntry;
+use core_notes::nfs::NoteEntry;
 
 pub trait RowItem: PartialEq + Eq + Clone {
     fn on_select(&self) -> Box<dyn FnMut()>;

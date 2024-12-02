@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use selector::{note_search::NoteSearch, note_select::NoteSelector};
 
-use crate::noters::nfs::NotePath;
+use core_notes::nfs::NotePath;
 
 mod selector;
 

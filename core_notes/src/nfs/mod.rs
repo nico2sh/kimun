@@ -278,7 +278,7 @@ pub fn load_content<P: AsRef<Path>>(
     Ok(content)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct NotePath {
     slices: Vec<NotePathSlice>,
 }
@@ -483,7 +483,7 @@ pub fn get_file_walker<P: AsRef<Path>>(
 mod tests {
     use std::path::PathBuf;
 
-    use crate::noters::utilities::path_to_string;
+    use crate::utilities::path_to_string;
 
     use super::{NotePath, NotePathSlice};
 

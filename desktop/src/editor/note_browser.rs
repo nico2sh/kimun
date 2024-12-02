@@ -1,15 +1,13 @@
+use core_notes::{
+    nfs::{EntryData, NotePath},
+    NoteVault, NotesGetterOptions,
+};
 use std::sync::mpsc;
 
 use dioxus::{hooks::use_signal, prelude::*};
 use log::warn;
 
-use crate::{
-    desktop::AppContext,
-    noters::{
-        nfs::{EntryData, NotePath},
-        NoteVault, NotesGetterOptions,
-    },
-};
+use crate::AppContext;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct NoteBrowserProps {
