@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 
-use crate::AppContext;
+use crate::{editor::markdown::Markdown, AppContext};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct TextEditorProps {
@@ -51,7 +51,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     //     }
     // };
     let use_highlighter = false;
-
+    let class = use_signal(|| String::from("content"));
     rsx! {
         if use_highlighter {
             code-input {
@@ -63,17 +63,21 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                 value: "{content}",
             }
         } else {
-            textarea {
-                class: "edittext",
-                onmounted: move |e| {
-                    *editor.write() = Some(e.data());
-                },
-                spellcheck: false,
-                wrap: "hard",
-                resize: "none",
-                placeholder: "Insert your note text",
-                value: "{content}",
+            Markdown {
+                class: class,
+                content: "{content}"
             }
+            // textarea {
+            //     class: "edittext",
+            //     onmounted: move |e| {
+            //         *editor.write() = Some(e.data());
+            //     },
+            //     spellcheck: false,
+            //     wrap: "hard",
+            //     resize: "none",
+            //     placeholder: "Insert your note text",
+            //     value: "{content}",
+            // }
         }
     }
 }

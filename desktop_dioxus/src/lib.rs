@@ -59,6 +59,8 @@ pub fn App() -> Element {
 
     rsx! {
         link { rel: "stylesheet", href: "theme.css"}
+        link { rel: "stylesheet", href: "fonts.css"}
+        link { rel: "stylesheet", href: "icons.css"}
         link { rel: "stylesheet", href: "main.css"}
         div {
             class: "container",

@@ -13,12 +13,13 @@ use data::EditorData;
 use eframe::egui;
 use highlighter::MemoizedNoteHighlighter;
 
+use crate::fonts;
+
 use super::{
     filtered_list::{
         row::{RowItem, RowMessage},
         FilteredList,
     },
-    icons,
     settings::Settings,
     Message, View,
 };
@@ -76,7 +77,9 @@ impl Editor {
 
         let output = egui::TextEdit::multiline(&mut self.data.text)
             .desired_width(f32::INFINITY)
+            .code_editor()
             .font(egui::TextStyle::Monospace) // for cursor height
+            .lock_focus(true)
             .layouter(&mut layouter);
         let response = ui.add_sized(ui.available_size(), output);
 
@@ -95,9 +98,9 @@ impl Editor {
 impl RowItem for NoteEntry {
     fn get_label(&self, ui: &mut egui::Ui) -> egui::Response {
         let icon = match &self.data {
-            EntryData::Note(_note_data) => icons::NOTE,
-            EntryData::Directory(_directory_data) => icons::DIRECTORY,
-            EntryData::Attachment => icons::ATTACHMENT,
+            EntryData::Note(_note_data) => fonts::icons::NOTE,
+            EntryData::Directory(_directory_data) => fonts::icons::DIRECTORY,
+            EntryData::Attachment => fonts::icons::ATTACHMENT,
         };
         ui.label(format!("{}   {}", icon, self.path_string))
     }
@@ -136,11 +139,6 @@ impl View for Editor {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             self.get_editor(ui);
-            // let output = egui::TextEdit::multiline(&mut self.data.text)
-            //     .desired_width(f32::INFINITY)
-            //     .code_editor()
-            //     .lock_focus(true);
-            // let res = ui.add_sized(ui.available_size(), output);
         });
         if let Some(filtered_list) = self.selector.as_mut() {
             let message = filtered_list.view(ui);

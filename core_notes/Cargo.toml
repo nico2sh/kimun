@@ -27,3 +27,4 @@ regex = "1.11"
 dirs = "5.0"
 # Fuzzy search
 markdown = "1.0.0-alpha.21"
+pulldown-cmark = "0.12"

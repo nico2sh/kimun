@@ -44,12 +44,12 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
             class: "list",
             if current_path != NotePath::root() {
                 div {
-                    class: "element",
+                    class: "icon-folder element",
                     onclick: move |_| {
                         let parent_path = browsing_directory.read().get_parent_path().0;
                         browsing_directory.set(parent_path);
                     },
-                    "[UP]"
+                    ".."
                 }
             }
             for entry in entries {
@@ -58,7 +58,7 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
                         NavEntry::Note(path) => {
                             rsx! {
                                 div {
-                                    class: "element",
+                                    class: "icon-note element",
                                     onclick: move |_| *note_path.write() = Some(path.clone()),
                                     { path.get_name() }
                                 }
@@ -67,7 +67,7 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
                         NavEntry::Directory(path) => {
                             rsx! {
                                 div {
-                                    class: "element",
+                                    class: "icon-folder element",
                                     onclick: move |_| browsing_directory.set(path.to_owned()),
                                     { path.get_name() }
                                 }

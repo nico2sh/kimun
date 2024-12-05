@@ -75,6 +75,7 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBErrors> {
     tx.execute(
         "CREATE TABLE notes (
             path VARCHAR(255) PRIMARY KEY,
+            title VARCHAR(255),
             size INTEGER,
             modified INTEGER,
             hash INTEGER,
@@ -135,17 +136,18 @@ pub fn get_notes<P: AsRef<Path>>(
     recursive: bool,
 ) -> anyhow::Result<Vec<(NoteData, NoteDetails)>> {
     let sql = if recursive {
-        "SELECT path, size, modified, hash, noteName FROM notes where basePath LIKE (?1 || '%')"
+        "SELECT path, title, size, modified, hash, noteName FROM notes where basePath LIKE (?1 || '%')"
     } else {
-        "SELECT path, size, modified, hash, noteName FROM notes where basePath = ?1"
+        "SELECT path, title, size, modified, hash, noteName FROM notes where basePath = ?1"
     };
     let mut stmt = connection.prepare(sql)?;
     let res = stmt
         .query_map([path.to_string()], |row| {
             let path: String = row.get(0)?;
-            let size = row.get(1)?;
-            let modified = row.get(2)?;
-            let hash: i64 = row.get(3)?;
+            let title = row.get(1)?;
+            let size = row.get(2)?;
+            let modified = row.get(3)?;
+            let hash: i64 = row.get(4)?;
             let note_path = NotePath::new(&path);
             let data = NoteData {
                 path: note_path.clone(),
@@ -156,6 +158,7 @@ pub fn get_notes<P: AsRef<Path>>(
                 base_path.as_ref().to_path_buf(),
                 note_path,
                 Some(u32::try_from(hash).unwrap()),
+                Some(title),
                 None,
             );
             Ok((data, det))
@@ -228,8 +231,8 @@ fn insert_note(
 ) -> Result<(), DBErrors> {
     let (base_path, name) = details.note_path.get_parent_path();
     if let Err(e) = tx.execute(
-        "INSERT INTO notes (path, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![details.note_path.to_string(), data.size, data.modified_secs, details.get_hash(), base_path.to_string(), name],
+        "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![details.note_path.to_string(), details.get_title(), data.size, data.modified_secs, details.get_hash(), base_path.to_string(), name],
     ){
         error!("Error inserting note {}", e);
     }
@@ -246,13 +249,15 @@ fn update_note(
     data: &NoteData,
     details: &mut NoteDetails,
 ) -> Result<(), DBErrors> {
+    let title = details.get_title();
     let hash = details.get_hash();
     let content = details.get_content();
     let path = details.note_path.clone();
     tx.execute(
-        "UPDATE notes SET size = ?2, modified = ?3, hash = ?4 WHERE path = ?1",
+        "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
         params![
             path.to_string(),
+            title,
             data.size,
             data.modified_secs,
             i64::from(hash)
