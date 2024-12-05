@@ -1,12 +1,17 @@
 [package]
-name = "core_notes"
+name = "desktop_dioxus"
 version = "0.1.0"
 authors = ["Nico Hormazábal <mail@nico2sh.com>"]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+core_notes = { path = "../core_notes" }
+
+dioxus = { version = "0.5", features = ["desktop"] }
+dioxus-sdk = { version = "0.5", features = [] }
+dioxus-radio = { version = "0.2.4" }
+dioxus-desktop = "0.5"
+
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
@@ -15,16 +20,14 @@ toml = "0.8"
 log = "0.4"
 env_logger = "0.11"
 # Error Handling
-thiserror = "2.0"
 anyhow = "1.0"
 
-rusqlite = { version = "0.32", features = ["bundled"] }
-ignore = "0.4.23"
-gxhash = "3.4.1"
+rfd = "0.15"
 
 regex = "1.11"
 # Where the home dir is
 dirs = "5.0"
 # Fuzzy search
-markdown = "1.0.0-alpha.21"
+nucleo = "0.5"
+manganis = "0.2"
 pulldown-cmark = "0.12"

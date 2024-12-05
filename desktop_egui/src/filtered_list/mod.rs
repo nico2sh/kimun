@@ -32,7 +32,6 @@ where
 {
     pub fn new(elements: Vec<R>) -> Self {
         let selector = Selector::new(elements);
-        // let (tx, rx) = std::sync::mpsc::channel();
 
         Self {
             filter_text: String::new(),

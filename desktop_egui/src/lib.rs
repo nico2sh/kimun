@@ -5,12 +5,11 @@ use editor::Editor;
 use eframe::egui;
 use eframe::{App, CreationContext};
 use filtered_list::row::{RowItem, RowMessage};
-use icons::set_icon_fonts;
 use settings::Settings;
 
 mod editor;
 pub mod filtered_list;
-pub mod icons;
+mod fonts;
 pub mod settings;
 
 #[derive(PartialEq, Eq)]
@@ -44,7 +43,6 @@ pub struct DesktopApp {
 impl DesktopApp {
     pub fn new(cc: &CreationContext) -> anyhow::Result<Self> {
         let mut settings = Settings::load()?;
-        set_icon_fonts(&cc.egui_ctx);
         if settings.workspace_dir.is_none() {
             let ws = pick_workspace()?;
             settings.workspace_dir = Some(ws);
@@ -53,6 +51,8 @@ impl DesktopApp {
         let current_view = Box::new(Editor::new(&settings)?);
         let left_view = None;
         let right_view = None;
+
+        fonts::set_fonts(&cc.egui_ctx);
 
         Ok(Self {
             settings,

@@ -10,6 +10,8 @@ use std::{
 use ignore::{WalkBuilder, WalkParallel};
 use serde::{de::Visitor, Deserialize, Serialize};
 
+use crate::parser;
+
 use super::{error::IOErrors, utilities::path_to_string};
 
 const HASH_SEED: i64 = 0;
@@ -84,15 +86,17 @@ impl NoteData {
         workspace_path: P,
         path: &NotePath,
     ) -> anyhow::Result<NoteDetails> {
-        let content = Some(load_content(&workspace_path, path, true)?);
-        let hash = content
-            .as_ref()
-            .map(|content| gxhash::gxhash32(content.as_bytes(), HASH_SEED));
+        let content = load_content(&workspace_path, path)?;
+
+        let title = Some(parser::extract_title(&content).unwrap_or_else(|| self.path.get_name()));
+        let hash = Some(gxhash::gxhash32(content.as_bytes(), HASH_SEED));
+        let content = Some(content);
         Ok(NoteDetails {
             base_path: workspace_path.as_ref().to_path_buf(),
             note_path: path.clone(),
-            content,
+            title,
             hash,
+            content,
         })
     }
 }
@@ -192,15 +196,14 @@ impl Display for NoteEntry {
 pub enum NoteEntryDetails {
     // Hash
     Note(NoteDetails),
-    // contents size
     Directory(DirectoryDetails),
     None,
 }
 
 impl NoteEntryDetails {
-    pub fn get_content(&mut self) -> String {
+    pub fn get_title(&mut self) -> String {
         match self {
-            NoteEntryDetails::Note(note_details) => note_details.get_content(),
+            NoteEntryDetails::Note(note_details) => note_details.get_title(),
             NoteEntryDetails::Directory(_directory_details) => String::new(),
             NoteEntryDetails::None => String::new(),
         }
@@ -213,6 +216,7 @@ pub struct NoteDetails {
     pub note_path: NotePath,
     // Content and hash may be lazy fetched
     hash: Option<u32>,
+    title: Option<String>,
     content: Option<String>,
 }
 
@@ -221,30 +225,34 @@ impl NoteDetails {
         base_path: PathBuf,
         note_path: NotePath,
         hash: Option<u32>,
+        title: Option<String>,
         content: Option<String>,
     ) -> Self {
         Self {
             base_path,
             note_path,
             hash,
+            title,
             content,
         }
     }
 
-    fn update_content(&mut self) -> (String, u32) {
-        let content = load_content(&self.base_path, &self.note_path, true).unwrap_or_default();
+    fn update_content(&mut self) -> (String, String, u32) {
+        let content = load_content(&self.base_path, &self.note_path).unwrap_or_default();
+        let title = parser::extract_title(&content).unwrap_or_else(|| self.note_path.get_name());
         let hash = gxhash::gxhash32(content.as_bytes(), HASH_SEED);
-        self.content = Some(content.clone());
+        self.title = Some(title.clone());
         self.hash = Some(hash);
-        (content, hash)
+        self.content = Some(content.clone());
+        (title, content, hash)
     }
-    pub fn get_content(&mut self) -> String {
-        let content = self.content.clone();
-        if let Some(content) = content {
-            content
+    pub fn get_title(&mut self) -> String {
+        let title = self.title.clone();
+        if let Some(title) = title {
+            title
         } else {
-            let (content, _) = self.update_content();
-            content
+            let (title, _, _) = self.update_content();
+            title
         }
     }
     pub fn get_hash(&mut self) -> u32 {
@@ -252,8 +260,18 @@ impl NoteDetails {
         if let Some(hash) = hash {
             hash
         } else {
-            let (_, hash) = self.update_content();
+            let (_, _, hash) = self.update_content();
             hash
+        }
+    }
+
+    pub fn get_content(&mut self) -> String {
+        let content = self.content.clone();
+        if let Some(content) = content {
+            content
+        } else {
+            let (_, content, _) = self.update_content();
+            content
         }
     }
 }
@@ -264,17 +282,10 @@ pub struct DirectoryDetails {
     pub note_path: NotePath,
 }
 
-pub fn load_content<P: AsRef<Path>>(
-    workspace_path: P,
-    path: &NotePath,
-    no_special_chars: bool,
-) -> anyhow::Result<String> {
+pub fn load_content<P: AsRef<Path>>(workspace_path: P, path: &NotePath) -> anyhow::Result<String> {
     let os_path = path.into_path(&workspace_path);
     let file = std::fs::read(&os_path)?;
-    let mut content = String::from_utf8(file)?;
-    if no_special_chars {
-        content = super::utilities::remove_diacritics(&content);
-    }
+    let content = String::from_utf8(file)?;
     Ok(content)
 }
 
@@ -307,8 +318,8 @@ impl Serialize for NotePath {
     }
 }
 
-struct NotePathVisitor;
-impl<'de> Visitor<'de> for NotePathVisitor {
+struct DeserializeNotePathVisitor;
+impl<'de> Visitor<'de> for DeserializeNotePathVisitor {
     type Value = NotePath;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -325,7 +336,7 @@ impl<'de> Deserialize<'de> for NotePath {
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_str(NotePathVisitor)
+        deserializer.deserialize_str(DeserializeNotePathVisitor)
     }
 }
 
@@ -364,10 +375,6 @@ impl NotePath {
             path = path.join(&slice);
         }
         path
-    }
-
-    pub fn get_slices(&self) -> Vec<NotePathSlice> {
-        self.slices.clone()
     }
 
     pub fn get_name(&self) -> String {
@@ -438,7 +445,7 @@ impl Display for NotePath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct NotePathSlice {
+struct NotePathSlice {
     slice: String,
 }
 
