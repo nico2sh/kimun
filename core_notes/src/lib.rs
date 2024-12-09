@@ -183,6 +183,7 @@ impl NoteVault {
             Ok(None)
         }
     }
+
     fn parse_note_text<P: Into<NotePath>>(&self, path: P) -> anyhow::Result<()> {
         let text = self.load_note(path)?;
         Ok(())

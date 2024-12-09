@@ -88,7 +88,11 @@ impl NoteData {
     ) -> anyhow::Result<NoteDetails> {
         let content = load_content(&workspace_path, path)?;
 
-        let title = Some(parser::extract_title(&content).unwrap_or_else(|| self.path.get_name()));
+        let title = Some(
+            parser::parse(&content)
+                .title
+                .unwrap_or_else(|| self.path.get_name()),
+        );
         let hash = Some(gxhash::gxhash32(content.as_bytes(), HASH_SEED));
         let content = Some(content);
         Ok(NoteDetails {
@@ -239,7 +243,9 @@ impl NoteDetails {
 
     fn update_content(&mut self) -> (String, String, u32) {
         let content = load_content(&self.base_path, &self.note_path).unwrap_or_default();
-        let title = parser::extract_title(&content).unwrap_or_else(|| self.note_path.get_name());
+        let title = parser::parse(&content)
+            .title
+            .unwrap_or_else(|| self.note_path.get_name());
         let hash = gxhash::gxhash32(content.as_bytes(), HASH_SEED);
         self.title = Some(title.clone());
         self.hash = Some(hash);

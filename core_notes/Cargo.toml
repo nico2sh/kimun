@@ -25,6 +25,5 @@ gxhash = "3.4.1"
 regex = "1.11"
 # Where the home dir is
 dirs = "5.0"
-# Fuzzy search
-markdown = "1.0.0-alpha.21"
+# Markdown
 pulldown-cmark = "0.12"

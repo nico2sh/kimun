@@ -1,173 +1,260 @@
+use std::cmp::min;
+
+use log::error;
+use pulldown_cmark::{Event, Parser, Tag};
+
 const MAX_TITLE_LENGTH: usize = 20;
 
-pub fn parse(md_text: String) -> NoteContent {
-    let title = extract_title(&md_text);
-    let content = super::utilities::remove_diacritics(&md_text);
-    let md_tree = markdown::to_mdast(&content, &parse_options()).unwrap();
-    let ch = if let Some(nodes) = md_tree.children() {
-        parse_nodes(nodes)
-    } else {
-        vec![]
-    };
-    NoteContent { title, content: ch }
-}
+pub fn parse(md_text: &str) -> NoteContent {
+    let (frontmatter, text) = remove_frontmatter(md_text);
 
-pub fn extract_title(text: &str) -> Option<String> {
-    let root_node = markdown::to_mdast(text, &parse_options()).unwrap();
-    root_node.children().and_then(|children| {
-        children.iter().find_map(|n| {
-            if matches!(
-                n,
-                markdown::mdast::Node::Yaml(_) | markdown::mdast::Node::Toml(_)
-            ) {
-                None
-            } else if let markdown::mdast::Node::List(list) = n {
-                list.children.iter().find_map(|e| {
-                    let title = e.to_string();
-                    if title.is_empty() {
-                        None
-                    } else {
-                        Some(title)
-                    }
-                })
-            } else {
-                let title = n.to_string();
-                if title.is_empty() {
-                    None
-                } else {
-                    Some(title)
-                }
-            }
+    let mut note_content = parse_text(&text);
+    if !frontmatter.is_empty() {
+        note_content.content.push(ContentHierarchy {
+            breadcrumb: vec!["FrontMatter".to_string()],
+            content: frontmatter,
         })
-    })
-}
-
-fn parse_options() -> markdown::ParseOptions {
-    let constructs = markdown::Constructs {
-        frontmatter: true,
-        ..Default::default()
     };
-
-    markdown::ParseOptions {
-        constructs,
-        ..Default::default()
-    }
+    note_content
 }
 
-fn parse_nodes(nodes: &Vec<markdown::mdast::Node>) -> Vec<ContentHierarchy> {
+fn parse_text(md_text: &str) -> NoteContent {
+    let mut title = None;
     let mut ch = vec![];
     let mut current_breadcrumb: Vec<(u8, String)> = vec![];
     let mut current_content = vec![];
-    for node in nodes {
-        match node {
-            markdown::mdast::Node::Heading(heading) => {
+
+    let mut parser = pulldown_cmark::Parser::new(md_text);
+    while let Some(event) = parser.next() {
+        let tt = match event {
+            Event::Start(tag) => parse_start_tag(tag, &mut parser),
+            Event::End(_tag_end) => {
+                panic!("Non Matching Tags")
+            }
+            Event::Text(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::Code(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::InlineMath(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::DisplayMath(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::Html(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::InlineHtml(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::FootnoteReference(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::SoftBreak => TextType::None,
+            Event::HardBreak => TextType::None,
+            Event::Rule => TextType::None,
+            Event::TaskListMarker(result) => TextType::Text(result.to_string()),
+        };
+
+        if title.is_none() {
+            let title_cand = match &tt {
+                TextType::Header(_, text) => text.to_owned(),
+                TextType::Text(text) => text.to_owned(),
+                TextType::None => String::new(),
+            };
+            title = title_cand
+                .lines()
+                .next()
+                .map(|t| t[..min(MAX_TITLE_LENGTH, t.len())].to_string());
+        }
+
+        match tt {
+            TextType::Header(level, text) => {
                 if !current_breadcrumb.is_empty() || !current_content.is_empty() {
                     let breadcrumb = current_breadcrumb.clone();
+                    let content =
+                        super::utilities::remove_diacritics(&current_content.clone().join("\n"));
                     ch.push(ContentHierarchy {
-                        breadcrumb,
-                        content: current_content
-                            .clone()
-                            .into_iter()
-                            .collect::<String>()
-                            .trim()
-                            .to_string(),
+                        breadcrumb: breadcrumb.into_iter().map(|c| c.1).collect(),
+                        content,
                     });
                 }
-                let children = &heading.children;
-                let head = children.iter().map(|n| n.to_string()).collect::<String>();
                 while !current_breadcrumb.is_empty()
-                    && current_breadcrumb.last().unwrap().0 >= heading.depth
+                    && current_breadcrumb.last().unwrap().0 >= level
                 {
                     current_breadcrumb.remove(current_breadcrumb.len() - 1);
                 }
-                current_breadcrumb.push((heading.depth, head));
+                current_breadcrumb.push((level, text));
                 current_content.clear();
             }
-            markdown::mdast::Node::Yaml(yaml) => {
-                // We add frontmatters in its special section
-                ch.push(ContentHierarchy {
-                    breadcrumb: vec![(0, "FrontMatter".to_owned())],
-                    content: yaml.value.clone(),
-                })
+            TextType::Text(text) => {
+                current_content.push(text);
             }
-            markdown::mdast::Node::Toml(toml) => {
-                // We add frontmatters in its special section
-                ch.push(ContentHierarchy {
-                    breadcrumb: vec![(0, "FrontMatter".to_owned())],
-                    content: toml.value.clone(),
-                })
-            }
-            markdown::mdast::Node::List(list) => {
-                for list_node in &list.children {
-                    add_node_to_content_string(list_node, &mut current_content);
-                }
-            }
-            markdown::mdast::Node::Table(table) => {
-                for list_node in &table.children {
-                    add_node_to_content_string(list_node, &mut current_content);
-                }
-            }
-            // We add anything else as content
-            node => {
-                add_node_to_content_string(node, &mut current_content);
+            TextType::None => {
+                // Don't do anything
             }
         }
     }
+
     if !current_breadcrumb.is_empty() || !current_content.is_empty() {
+        let content = super::utilities::remove_diacritics(&current_content.clone().join("\n"));
         ch.push(ContentHierarchy {
-            breadcrumb: current_breadcrumb,
-            content: current_content
+            breadcrumb: current_breadcrumb
                 .into_iter()
-                .collect::<String>()
-                .trim()
-                .to_string(),
+                .map(|c| c.1.clone())
+                .collect(),
+            content,
         });
     }
-    ch
+    NoteContent { title, content: ch }
 }
 
-fn add_node_to_content_string(node: &markdown::mdast::Node, current_content: &mut Vec<String>) {
-    let content_string = node.to_string().trim().to_owned();
-    println!("{:?}", node);
-    if !content_string.is_empty() {
-        current_content.push(content_string);
-        if matches!(
-            node,
-            markdown::mdast::Node::Paragraph(_)
-                | markdown::mdast::Node::ListItem(_)
-                | markdown::mdast::Node::Break(_)
-                | markdown::mdast::Node::Code(_)
-                | markdown::mdast::Node::InlineCode(_)
-                | markdown::mdast::Node::Math(_)
-                | markdown::mdast::Node::InlineMath(_)
-                | markdown::mdast::Node::TableRow(_)
-                | markdown::mdast::Node::TableCell(_)
-        ) {
-            // We add an extra space
-            current_content.push(" ".to_string());
+fn remove_frontmatter(text: &str) -> (String, String) {
+    let mut lines = text.lines();
+    let first_line = lines.next();
+    if let Some(line) = first_line {
+        if line == "---" || line == "+++" {
+            let close = line;
+            let mut frontmatter = vec![];
+            let mut content = vec![];
+            let mut closed_fm = false;
+            for next_line in lines {
+                if next_line == close {
+                    closed_fm = true;
+                } else if closed_fm {
+                    content.push(next_line);
+                } else {
+                    frontmatter.push(next_line);
+                }
+            }
+            if closed_fm {
+                (frontmatter.join("\n"), content.join("\n"))
+            } else {
+                ("".to_string(), frontmatter.join("\n"))
+            }
+        } else {
+            ("".to_string(), text.to_string())
+        }
+    } else {
+        ("".to_string(), "".to_string())
+    }
+}
+
+enum TextType {
+    None,
+    Header(u8, String),
+    Text(String),
+}
+
+fn parse_start_tag(tag: Tag, parser: &mut Parser) -> TextType {
+    match tag {
+        Tag::Heading {
+            level,
+            id: _,
+            classes: _,
+            attrs: _,
+        } => {
+            let level = match level {
+                pulldown_cmark::HeadingLevel::H1 => 1,
+                pulldown_cmark::HeadingLevel::H2 => 2,
+                pulldown_cmark::HeadingLevel::H3 => 3,
+                pulldown_cmark::HeadingLevel::H4 => 4,
+                pulldown_cmark::HeadingLevel::H5 => 5,
+                pulldown_cmark::HeadingLevel::H6 => 6,
+            };
+            let text = get_text_till_end(parser);
+            TextType::Header(level, text)
+        }
+        Tag::Link {
+            link_type: _,
+            dest_url: _,
+            title,
+            id: _,
+        } => {
+            let mut text = if title.is_empty() {
+                vec![]
+            } else {
+                vec![title.to_string()]
+            };
+            text.push(get_text_till_end(parser));
+            TextType::Text(text.join(" "))
+        }
+        Tag::Image {
+            link_type: _,
+            dest_url: _,
+            title,
+            id: _,
+        } => {
+            let mut text = if title.is_empty() {
+                vec![]
+            } else {
+                vec![title.to_string()]
+            };
+            text.push(get_text_till_end(parser));
+            TextType::Text(text.join(" "))
+        }
+        _ => {
+            let text = get_text_till_end(parser);
+            TextType::Text(text)
         }
     }
+}
+
+fn get_text_till_end(parser: &mut Parser) -> String {
+    let mut open_tags = 1;
+    let mut text_vec = vec![];
+    let mut current_text = String::new();
+    while open_tags > 0 {
+        let event = &parser.next();
+        if let Some(event) = event {
+            match event {
+                Event::Start(tag) => {
+                    let breaks = !matches!(
+                        tag,
+                        Tag::Emphasis
+                            | Tag::Strong
+                            | Tag::Link {
+                                link_type: _,
+                                dest_url: _,
+                                title: _,
+                                id: _,
+                            }
+                    );
+                    open_tags += 1;
+                    if !current_text.is_empty() && breaks {
+                        text_vec.push(current_text);
+                        current_text = String::new();
+                    }
+                }
+                Event::End(_tag) => {
+                    open_tags -= 1;
+                }
+                Event::Text(cow_str) => current_text.push_str(cow_str.as_ref()),
+                Event::Code(cow_str) => current_text.push_str(cow_str.as_ref()),
+                Event::InlineMath(cow_str) => current_text.push_str(cow_str.as_ref()),
+                Event::DisplayMath(cow_str) => current_text.push_str(cow_str.as_ref()),
+                Event::Html(cow_str) => current_text.push_str(cow_str.as_ref()),
+                Event::InlineHtml(cow_str) => current_text.push_str(cow_str.as_ref()),
+                Event::FootnoteReference(cow_str) => current_text.push_str(cow_str.as_ref()),
+                Event::SoftBreak => current_text.push('\n'),
+                Event::HardBreak => current_text.push('\n'),
+                Event::Rule => current_text.push('\n'),
+                Event::TaskListMarker(_) => current_text.push('\n'),
+            }
+        } else {
+            error!("Error parsing markdown");
+            open_tags = 0;
+        }
+    }
+    if !current_text.is_empty() {
+        text_vec.push(current_text);
+    }
+    text_vec.join("\n")
 }
 
 #[derive(Debug)]
 pub struct NoteContent {
-    title: Option<String>,
+    pub title: Option<String>,
     content: Vec<ContentHierarchy>,
 }
 
 #[derive(Debug)]
 pub struct ContentHierarchy {
-    breadcrumb: Vec<(u8, String)>,
+    breadcrumb: Vec<String>,
     content: String,
 }
 
 impl ContentHierarchy {
     pub fn get_breadcrumb(&self) -> String {
-        self.breadcrumb
-            .iter()
-            .map(|b| b.1.clone())
-            .collect::<Vec<String>>()
-            .join(">")
+        self.breadcrumb.join(">")
     }
 
     fn get_content(&self) -> &str {
@@ -187,14 +274,14 @@ other: else
 ---
 
 title"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(2, ch.content.len());
         assert_eq!(Some("title".to_string()), ch.title);
-        assert_eq!("FrontMatter", ch.content[0].get_breadcrumb());
-        assert_eq!("something: nice\nother: else", ch.content[0].get_content());
-        assert_eq!("", ch.content[1].get_breadcrumb());
-        assert_eq!("title", ch.content[1].get_content());
+        assert_eq!("", ch.content[0].get_breadcrumb());
+        assert_eq!("title", ch.content[0].get_content());
+        assert_eq!("FrontMatter", ch.content[1].get_breadcrumb());
+        assert_eq!("something: nice\nother: else", ch.content[1].get_content());
     }
 
     #[test]
@@ -205,14 +292,14 @@ other: else
 +++
 
 title"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(2, ch.content.len());
         assert_eq!(Some("title".to_string()), ch.title);
-        assert_eq!("FrontMatter", ch.content[0].get_breadcrumb());
-        assert_eq!("something: nice\nother: else", ch.content[0].get_content());
-        assert_eq!("", ch.content[1].get_breadcrumb());
-        assert_eq!("title", ch.content[1].get_content());
+        assert_eq!("", ch.content[0].get_breadcrumb());
+        assert_eq!("title", ch.content[0].get_content());
+        assert_eq!("FrontMatter", ch.content[1].get_breadcrumb());
+        assert_eq!("something: nice\nother: else", ch.content[1].get_content());
     }
 
     #[test]
@@ -221,13 +308,13 @@ title"#;
 - Second Item
 
 Some text"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(1, ch.content.len());
         assert_eq!(Some("First Item".to_string()), ch.title);
         assert_eq!("", ch.content[0].get_breadcrumb());
         assert_eq!(
-            "First Item Second Item Some text",
+            "First Item\nSecond Item\nSome text",
             ch.content[0].get_content()
         );
     }
@@ -237,19 +324,19 @@ Some text"#;
         let markdown = r#"[No header](https://example.com)
 
 Some text"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(1, ch.content.len());
         assert_eq!(Some("No header".to_string()), ch.title);
         assert_eq!("", ch.content[0].get_breadcrumb());
-        assert_eq!("No header Some text", ch.content[0].get_content());
+        assert_eq!("No header\nSome text", ch.content[0].get_content());
     }
 
     #[test]
     fn check_hierarchy_one() {
         let markdown = r#"# Title
 Some text"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(1, ch.content.len());
         assert_eq!(Some("Title".to_string()), ch.title);
@@ -264,7 +351,7 @@ Some text
 
 ## Subtitle
 More text"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(2, ch.content.len());
         assert_eq!(Some("Title".to_string()), ch.title);
@@ -284,7 +371,7 @@ More text
 
 ### Subsubtitle
 Even more text"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(3, ch.content.len());
         assert_eq!(Some("Title".to_string()), ch.title);
@@ -309,7 +396,7 @@ Even more text
 
 ## Level 2 Title
 There is text here"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(4, ch.content.len());
         assert_eq!(Some("Title".to_string()), ch.title);
@@ -343,7 +430,7 @@ Before last text
 # Main Title
 Another main content
 "#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(6, ch.content.len());
         assert_eq!(Some("Title".to_string()), ch.title);
@@ -384,7 +471,7 @@ Before last text
 # Main Title
 Another main content
 "#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(6, ch.content.len());
         assert_eq!(Some("Title".to_string()), ch.title);
@@ -409,7 +496,7 @@ Another main content
     fn check_title_with_link() {
         let markdown = r#"# [Title link](https://nico.red)
 Some text"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(1, ch.content.len());
         assert_eq!(Some("Title link".to_string()), ch.title);
@@ -421,7 +508,7 @@ Some text"#;
     fn check_title_with_style() {
         let markdown = r#"# Title **bold** *italic*
 Some text"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(1, ch.content.len());
         assert_eq!(Some("Title bold italic".to_string()), ch.title);
@@ -436,7 +523,7 @@ Some text"#;
 # Title
 
 Some text"#;
-        let ch = parse(markdown.to_string());
+        let ch = parse(markdown);
 
         assert_eq!(2, ch.content.len());
         assert_eq!(Some("Intro text".to_string()), ch.title);
