@@ -31,14 +31,13 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
         }
     });
     let notes_and_dirs = NotesAndDirs::new(vault, browsing_directory);
-    let entries = notes_and_dirs.get_entries();
     let current_path = notes_and_dirs.get_current();
     warn!("Notes and dirs: {:?}", browsing_directory);
 
     rsx! {
         div {
             class: "sideheader",
-            "Files: " {current_path.to_string()}
+            "Files: {current_path.to_string()}"
         }
         div {
             class: "list",
@@ -52,29 +51,27 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
                     ".."
                 }
             }
-            for entry in entries {
-                {
+            if let Some(entries) = notes_and_dirs.entries.value().read().clone() {
+                for entry in entries {
                     match entry {
                         NavEntry::Note(path) => {
-                            rsx! {
-                                div {
-                                    class: "icon-note element",
-                                    onclick: move |_| *note_path.write() = Some(path.clone()),
-                                    { path.get_name() }
-                                }
-                            }
+                            rsx!{div {
+                                class: "icon-note element",
+                                onclick: move |_| *note_path.write() = Some(path.clone()),
+                                "{path.get_name()}"
+                            }}
                         },
                         NavEntry::Directory(path) => {
-                            rsx! {
-                                div {
-                                    class: "icon-folder element",
-                                    onclick: move |_| browsing_directory.set(path.to_owned()),
-                                    { path.get_name() }
-                                }
-                            }
+                            rsx!{div {
+                                class: "icon-folder element",
+                                onclick: move |_| browsing_directory.set(path.to_owned()),
+                                "{path.get_name()}"
+                            }}
                         },
                     }
                 }
+            } else {
+                div { "Loading..." }
             }
         }
     }
@@ -107,9 +104,9 @@ impl NotesAndDirs {
         // the entries change every time the current_path is changed
         let entries = use_resource(move || {
             let vault = vault.clone();
-            let current_path = path.read().clone();
             let mut entries = vec![];
             async move {
+                let current_path = path.read().clone();
                 let (tx, rx) = mpsc::channel();
                 let task = smol::spawn(async move {
                     vault
@@ -133,7 +130,9 @@ impl NotesAndDirs {
                                 entries.push(NavEntry::Directory(directory_data.path.clone()))
                             }
                         }
-                        EntryData::Attachment => {}
+                        EntryData::Attachment => {
+                            // Do nothing
+                        }
                     };
                 }
                 entries.sort_by_key(|b| std::cmp::Reverse(b.sort_string()));
