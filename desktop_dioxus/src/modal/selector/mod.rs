@@ -198,27 +198,28 @@ where
                 }
                 div {
                     class: "list",
-                    {
-                        let rs = rows.value().read().clone().unwrap_or_default();
-                        rsx! {
-                            for (index, row) in rs.clone().into_iter().enumerate() {
-                                    div {
-                                        onmouseover: move |_e| {
-                                            selected.set(Some(index));
-                                        },
-                                        onclick: move |_e| {
-                                            row.on_select()();
-                                            load_state.set(LoadState::Closed);
-                                            modal.write().close();
-                                        },
-                                        class: if *selected.read() == Some(index) {
-                                            "element selected"
-                                        } else {
-                                            "element"
-                                        },
-                                        { row.get_view() }
-                                    }
+                    if let Some(rs) = rows.value().read().clone() {
+                        for (index, row) in rs.into_iter().enumerate() {
+                            div {
+                                onmouseover: move |_e| {
+                                    selected.set(Some(index));
+                                },
+                                onclick: move |_e| {
+                                    row.on_select()();
+                                    load_state.set(LoadState::Closed);
+                                    modal.write().close();
+                                },
+                                class: if *selected.read() == Some(index) {
+                                    "element selected"
+                                } else {
+                                    "element"
+                                },
+                                { row.get_view() }
                             }
+                        }
+                    } else {
+                        div {
+                            "Loading..."
                         }
                     }
                 }

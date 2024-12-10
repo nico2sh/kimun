@@ -9,7 +9,6 @@ core_notes = { path = "../core_notes" }
 
 dioxus = { version = "0.6", features = ["desktop"] }
 dioxus-sdk = { version = "0.6", features = [] }
-dioxus-radio = { version = "0.2.4" }
 dioxus-desktop = "0.6"
 
 # Serialization
