@@ -24,7 +24,7 @@ title = "noters"
 reload_html = true
 
 # which files or dirs will be watcher monitoring
-watch_path = ["src", "assets"]
+watch_path = ["src", "assets", "../core_notes/src"]
 
 # include `assets` in web platform
 [web.resource]

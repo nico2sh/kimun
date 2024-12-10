@@ -11,7 +11,7 @@ use super::{Modal, PathEntry, SelectorView};
 pub struct SearchProps {
     modal: Signal<Modal>,
     filter_text: String,
-    note_path: Signal<Option<NotePath>>,
+    note_path: SyncSignal<Option<NotePath>>,
 }
 
 #[allow(non_snake_case)]
