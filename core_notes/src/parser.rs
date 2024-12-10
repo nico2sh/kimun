@@ -50,10 +50,10 @@ fn parse_text(md_text: &str) -> NoteContent {
                 TextType::Text(text) => text.to_owned(),
                 TextType::None => String::new(),
             };
-            title = title_cand
-                .lines()
-                .next()
-                .map(|t| t[..min(MAX_TITLE_LENGTH, t.len())].to_string());
+            title = title_cand.lines().next().map(|t| {
+                let title_length = min(MAX_TITLE_LENGTH, t.len());
+                t.chars().take(title_length).collect()
+            });
         }
 
         match tt {

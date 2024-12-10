@@ -30,7 +30,7 @@ where
 {
     filter_text: Signal<String>,
     load_state: Signal<LoadState<R>>,
-    modal: Signal<Modal>,
+    modal: SyncSignal<Modal>,
 }
 
 #[allow(non_snake_case)]
@@ -43,16 +43,16 @@ fn SelectorView<R, F, I, P>(
     on_preview: Option<P>,
 ) -> Element
 where
-    R: RowItem + 'static,
-    I: Fn() -> Vec<R> + Clone + 'static,
-    F: Fn(String, Vec<R>) -> Vec<R> + Clone + 'static,
-    P: Fn(&R) -> String + Clone + 'static,
+    R: RowItem + Send + Sync + 'static,
+    I: Fn() -> Vec<R> + Clone + Send + 'static,
+    F: Fn(String, Vec<R>) -> Vec<R> + Clone + Send + 'static,
+    P: Fn(&R) -> String + Clone + Send + 'static,
 {
     let mut filter_text = use_signal(|| filter_text);
-    let mut load_state = use_signal(|| LoadState::Open);
+    let mut load_state = use_signal_sync(|| LoadState::Open);
     let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let current_state = load_state.read().to_owned();
-    let visible = match current_state {
+    let visible = match &current_state {
         LoadState::Closed => false,
         LoadState::Open => {
             debug!("Opening Dialog View");
@@ -75,26 +75,24 @@ where
     };
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
 
-    let _loading_rows = use_resource(move || {
-        let current_state = load_state.read().to_owned();
-        let function = on_init.clone();
+    let rows = use_resource(move || {
+        let current_state = current_state.clone();
+        let filter_text = filter_text.read().clone();
+        let on_init = on_init.clone();
+        let on_filter_change = on_filter_change.clone();
         async move {
             if let LoadState::Open = current_state {
-                let items = function();
-                debug!("Loaded {} items", items.len());
-                load_state.set(LoadState::Loaded(items));
-            }
-        }
-    });
-
-    let rows = use_resource(move || {
-        let current_state = load_state.read().to_owned();
-        let filter_text = filter_text.read().to_owned();
-        let function = on_filter_change.clone();
-        async move {
-            if let LoadState::Loaded(items) = current_state {
+                let init_task = smol::spawn(async move {
+                    let items = on_init();
+                    debug!("Loaded {} items", items.len());
+                    load_state.set(LoadState::Loaded(items.clone()));
+                    on_filter_change(filter_text, items)
+                });
+                init_task.await
+            } else if let LoadState::Loaded(items) = current_state {
                 selected.set(None);
-                function(filter_text, items)
+                let task = smol::spawn(async move { on_filter_change(filter_text, items) });
+                task.await
             } else {
                 vec![]
             }
@@ -105,11 +103,18 @@ where
     let preview_text = match on_preview {
         Some(on_preview) => use_resource(move || {
             let rows: Vec<R> = rows.value().read().clone().unwrap_or_default();
-            let function = on_preview.clone();
+            let function_preview = on_preview.clone();
+            let selected = selected.read().to_owned();
             async move {
-                if let Some(selection) = *selected.read() {
+                if let Some(selection) = selected {
                     let entry = rows.get(selection);
-                    entry.map(&function)
+                    if let Some(value) = entry {
+                        let value_copy = value.to_owned();
+                        let task = smol::spawn(async move { function_preview(&value_copy) });
+                        Some(task.await)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -199,7 +204,7 @@ where
                             for (index, row) in rs.clone().into_iter().enumerate() {
                                     div {
                                         onmouseover: move |_e| {
-                                            *selected.write() = Some(index);
+                                            selected.set(Some(index));
                                         },
                                         onclick: move |_e| {
                                             row.on_select()();
@@ -239,11 +244,11 @@ where
 pub struct PathEntry {
     path: NotePath,
     path_str: String,
-    path_signal: Signal<Option<NotePath>>,
+    path_signal: SyncSignal<Option<NotePath>>,
 }
 
 impl PathEntry {
-    pub fn from_note_path(path: NotePath, path_signal: Signal<Option<NotePath>>) -> Self {
+    pub fn from_note_path(path: NotePath, path_signal: SyncSignal<Option<NotePath>>) -> Self {
         let path_str = path.to_string();
         Self {
             path,

@@ -35,7 +35,7 @@ impl Modal {
     pub fn set_note_search(&mut self) {
         self.modal_type = ModalType::NoteSearch;
     }
-    pub fn get_element(modal: Signal<Self>, note_path: Signal<Option<NotePath>>) -> Element {
+    pub fn get_element(modal: Signal<Self>, note_path: SyncSignal<Option<NotePath>>) -> Element {
         match &modal.read().modal_type {
             ModalType::None => rsx! {},
             ModalType::NoteBrowser => rsx! {

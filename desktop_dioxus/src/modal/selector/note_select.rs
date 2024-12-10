@@ -15,7 +15,7 @@ use super::{Modal, PathEntry, SelectorView};
 pub struct SelectorProps {
     modal: Signal<Modal>,
     filter_text: String,
-    note_path: Signal<Option<NotePath>>,
+    note_path: SyncSignal<Option<NotePath>>,
 }
 
 fn open(note_path: NotePath, vault: &NoteVault) -> Vec<NoteEntry> {
@@ -90,7 +90,7 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
 
     let moved_vault = vault.clone();
     let preview = move |path: &PathEntry| {
-        // sleep(Duration::from_millis(1000));
+        // sleep(Duration::from_millis(2000));
         moved_vault
             .load_note(&path.path)
             .unwrap_or_else(|_e| "Error loading preview...".to_string())

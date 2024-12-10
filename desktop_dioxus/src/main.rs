@@ -17,6 +17,22 @@ use settings::Settings;
 
 use core_notes::{nfs::NotePath, NoteVault};
 
+// Urls are relative to your Cargo.toml file
+const THEME: Asset = asset!("./assets/theme.css");
+const FONTS: Asset = asset!("./assets/fonts.css");
+const ICONS: Asset = asset!("./assets/icons.css");
+const STYLE: Asset = asset!("./assets/main.css");
+
+fn main() {
+    // Init logger
+    env_logger::Builder::new()
+        .filter(Some("noters"), log::LevelFilter::max())
+        .init();
+    info!("starting app");
+
+    dioxus::launch(App);
+}
+
 #[derive(Debug, Clone)]
 pub struct AppContext {
     pub vault: NoteVault,
@@ -42,7 +58,8 @@ pub fn App() -> Element {
     let app_context: AppContext = use_context();
     let error: Signal<Option<String>> = app_context.current_error;
 
-    let current_note_path: Signal<Option<NotePath>> = use_signal(|| Some(NotePath::root()));
+    let current_note_path: SyncSignal<Option<NotePath>> =
+        use_signal_sync(|| Some(NotePath::root()));
     let mut modal = use_signal(Modal::new);
     let editor_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     if !modal.read().is_open() {
@@ -58,10 +75,10 @@ pub fn App() -> Element {
     }
 
     rsx! {
-        link { rel: "stylesheet", href: "theme.css"}
-        link { rel: "stylesheet", href: "fonts.css"}
-        link { rel: "stylesheet", href: "icons.css"}
-        link { rel: "stylesheet", href: "main.css"}
+        document::Link { rel: "stylesheet", href: THEME }
+        document::Link { rel: "stylesheet", href: FONTS }
+        document::Link { rel: "stylesheet", href: ICONS }
+        document::Link { rel: "stylesheet", href: STYLE }
         div {
             class: "container",
             onkeydown: move |event: Event<KeyboardData>| {

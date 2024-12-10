@@ -11,7 +11,7 @@ use crate::AppContext;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct NoteBrowserProps {
-    note_path: Signal<Option<NotePath>>,
+    note_path: SyncSignal<Option<NotePath>>,
 }
 
 #[allow(non_snake_case)]
@@ -107,18 +107,22 @@ impl NotesAndDirs {
         // the entries change every time the current_path is changed
         let entries = use_resource(move || {
             let vault = vault.clone();
+            let current_path = path.read().clone();
+            let mut entries = vec![];
             async move {
                 let (tx, rx) = mpsc::channel();
+                let task = smol::spawn(async move {
+                    vault
+                        .get_notes(
+                            &current_path,
+                            NotesGetterOptions::default()
+                                .set_sender(tx)
+                                .full_validation(),
+                        )
+                        .expect("Error fetching Entries");
+                });
+                task.await;
                 let current_path = path.read().clone();
-                let mut entries = vec![];
-                vault
-                    .get_notes(
-                        &current_path,
-                        NotesGetterOptions::default()
-                            .set_sender(tx)
-                            .full_validation(),
-                    )
-                    .expect("Error fetching Entries");
                 while let Ok(entry) = rx.recv() {
                     match &entry.data {
                         EntryData::Note(note_data) => {
