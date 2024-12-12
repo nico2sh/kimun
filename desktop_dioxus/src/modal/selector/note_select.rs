@@ -78,7 +78,6 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
                     filter_text.to_owned(),
                     current_note_path,
                 ));
-                result.push(NoteSelectEntry::Separator);
             }
             debug!("Filtering {}", filter_text);
             let mut fi = filter_items(items, filter_text);
@@ -128,7 +127,6 @@ pub enum NoteSelectEntry {
         name: String,
         path_signal: SyncSignal<Option<NotePath>>,
     },
-    Separator,
 }
 
 impl NoteSelectEntry {
@@ -154,8 +152,10 @@ impl AsRef<str> for NoteSelectEntry {
                 search_str,
                 path_signal: _,
             } => search_str.as_str(),
-            NoteSelectEntry::Create { name, path_signal } => name,
-            NoteSelectEntry::Separator => "",
+            NoteSelectEntry::Create {
+                name,
+                path_signal: _,
+            } => name,
         }
     }
 }
@@ -172,12 +172,18 @@ impl RowItem for NoteSelectEntry {
                 let mut s = *path_signal;
                 Box::new(move || s.set(Some(p.clone())))
             }
-            NoteSelectEntry::Create { name, path_signal } => {
-                let p = NotePath::new(name);
-                let mut s = *path_signal;
-                Box::new(move || s.set(Some(p.clone())))
-            }
-            NoteSelectEntry::Separator => Box::new(|| {}),
+            NoteSelectEntry::Create { name, path_signal } => match NotePath::file_from(name) {
+                Ok(p) => {
+                    let mut s = *path_signal;
+                    Box::new(move || s.set(Some(p.clone())))
+                }
+                Err(err) => {
+                    let app_context: AppContext = use_context();
+                    let mut error = app_context.current_error;
+                    error.set(Some(format!("{}", err)));
+                    Box::new(|| {})
+                }
+            },
         }
     }
 
@@ -214,13 +220,6 @@ impl RowItem for NoteSelectEntry {
                             class: "strong",
                             "`{name}`"
                         }
-                    }
-                }
-            }
-            NoteSelectEntry::Separator => {
-                rsx! {
-                    div {
-                        class: "separator"
                     }
                 }
             }

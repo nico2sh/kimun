@@ -127,7 +127,7 @@ pub fn search_terms<P: AsRef<Path>, S: AsRef<str>>(
             let size = row.get(2)?;
             let modified = row.get(3)?;
             let hash: i64 = row.get(4)?;
-            let note_path = NotePath::new(&path);
+            let note_path = NotePath::from(&path);
             let data = NoteData {
                 path: note_path.clone(),
                 size,
@@ -166,7 +166,7 @@ pub fn get_notes<P: AsRef<Path>>(
             let size = row.get(2)?;
             let modified = row.get(3)?;
             let hash: i64 = row.get(4)?;
-            let note_path = NotePath::new(&path);
+            let note_path = NotePath::from(&path);
             let data = NoteData {
                 path: note_path.clone(),
                 size,
@@ -196,7 +196,7 @@ pub fn get_directories<P: AsRef<Path>>(
     let res = stmt
         .query_map([path.to_string()], |row| {
             let path: String = row.get(0)?;
-            let note_path = NotePath::new(&path);
+            let note_path = NotePath::from(&path);
             let data = DirectoryData {
                 path: note_path.clone(),
             };

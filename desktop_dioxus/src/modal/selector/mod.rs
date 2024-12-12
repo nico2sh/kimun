@@ -6,8 +6,6 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 use log::{debug, info};
 
-use core_notes::nfs::{NoteDetails, NotePath};
-
 use super::Modal;
 
 pub trait RowItem: PartialEq + Eq + Clone {
