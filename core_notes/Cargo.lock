@@ -73,12 +73,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.93"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c95c10ba0b00a02636238b814946408b1322d5ac4760326e6fb8ec956d85775"
-
-[[package]]
 name = "bitflags"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -119,7 +113,6 @@ checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
 name = "core_notes"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "dirs",
  "env_logger",
  "gxhash",
