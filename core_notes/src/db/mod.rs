@@ -107,25 +107,43 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBErrors> {
     Ok(())
 }
 
-pub fn search_terms<S: AsRef<str>>(
+pub fn search_terms<P: AsRef<Path>, S: AsRef<str>>(
     connection: &mut Connection,
+    base_path: P,
     terms: S,
     include_path: bool,
-) -> anyhow::Result<Vec<NotePath>> {
+) -> anyhow::Result<Vec<(NoteData, NoteDetails)>> {
     let sql = if include_path {
-        "SELECT path FROM notesContent WHERE notesContent MATCH ?1"
+        "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
     } else {
-        "SELECT path FROM notesContent WHERE content MATCH ?1"
+        "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE content MATCH ?1"
     };
 
     let mut stmt = connection.prepare(sql)?;
     let res = stmt
         .query_map([terms.as_ref()], |row| {
             let path: String = row.get(0)?;
-            Ok(NotePath::new(path))
+            let title = row.get(1)?;
+            let size = row.get(2)?;
+            let modified = row.get(3)?;
+            let hash: i64 = row.get(4)?;
+            let note_path = NotePath::new(&path);
+            let data = NoteData {
+                path: note_path.clone(),
+                size,
+                modified_secs: modified,
+            };
+            let det = NoteDetails::new(
+                base_path.as_ref().to_path_buf(),
+                note_path,
+                u32::try_from(hash).unwrap(),
+                title,
+                None,
+            );
+            Ok((data, det))
         })?
         .map(|el| el.map_err(DBErrors::DBError))
-        .collect::<Result<Vec<NotePath>, DBErrors>>()?;
+        .collect::<Result<Vec<(NoteData, NoteDetails)>, DBErrors>>()?;
     Ok(res)
 }
 
@@ -157,8 +175,8 @@ pub fn get_notes<P: AsRef<Path>>(
             let det = NoteDetails::new(
                 base_path.as_ref().to_path_buf(),
                 note_path,
-                Some(u32::try_from(hash).unwrap()),
-                Some(title),
+                u32::try_from(hash).unwrap(),
+                title,
                 None,
             );
             Ok((data, det))
@@ -184,7 +202,7 @@ pub fn get_directories<P: AsRef<Path>>(
             };
             let det = DirectoryDetails {
                 base_path: base_path.as_ref().to_path_buf(),
-                note_path,
+                path: note_path,
             };
             Ok((data, det))
         })?
@@ -229,16 +247,16 @@ fn insert_note(
     data: &NoteData,
     details: &mut NoteDetails,
 ) -> Result<(), DBErrors> {
-    let (base_path, name) = details.note_path.get_parent_path();
+    let (base_path, name) = details.path.get_parent_path();
     if let Err(e) = tx.execute(
         "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![details.note_path.to_string(), details.get_title(), data.size, data.modified_secs, details.get_hash(), base_path.to_string(), name],
+        params![details.path.to_string(), details.title, data.size, data.modified_secs, details.hash, base_path.to_string(), name],
     ){
         error!("Error inserting note {}", e);
     }
     tx.execute(
         "INSERT INTO notesContent (path, content) VALUES (?1, ?2)",
-        params![details.note_path.to_string(), details.get_content()],
+        params![details.path.to_string(), details.get_content()],
     )?;
 
     Ok(())
@@ -249,10 +267,10 @@ fn update_note(
     data: &NoteData,
     details: &mut NoteDetails,
 ) -> Result<(), DBErrors> {
-    let title = details.get_title();
-    let hash = details.get_hash();
+    let title = details.title.clone();
+    let hash = details.hash;
     let content = details.get_content();
-    let path = details.note_path.clone();
+    let path = details.path.clone();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
         params![

@@ -12,8 +12,10 @@ use std::{
 
 use db::ConnectionBuilder;
 use error::NoteInitError;
-use log::{debug, warn};
-use nfs::{visitors::list::NoteListVisitorBuilder, NoteEntry, NotePath};
+use log::{debug, info, warn};
+use nfs::{
+    visitors::list::NoteListVisitorBuilder, DirectoryDetails, NoteDetails, NotePath, VaultEntry,
+};
 use rusqlite::Connection;
 use utilities::path_to_string;
 
@@ -39,24 +41,23 @@ impl NoteVault {
             })?;
         };
 
-        let note = Self {
+        let vault = Self {
             workspace_path: workspace,
         };
-        note.create_full_index()?;
-        Ok(note)
+        vault.create_tables()?;
+        vault.create_index()?;
+        Ok(vault)
     }
 
-    pub fn create_full_index(&self) -> anyhow::Result<()> {
+    fn create_tables(&self) -> anyhow::Result<()> {
         let mut connection = ConnectionBuilder::new(self.workspace_path.clone()).build()?;
         db::init_db(&mut connection)?;
         connection.close().expect("Error closing the DB");
-        self.create_index()?;
-
         Ok(())
     }
 
     fn create_index(&self) -> anyhow::Result<()> {
-        debug!("Start indexing files");
+        info!("Start indexing files");
         let start = std::time::SystemTime::now();
         let workspace_path = self.workspace_path.clone();
         let mut connection = ConnectionBuilder::new(workspace_path).build().unwrap();
@@ -65,7 +66,7 @@ impl NoteVault {
         let time = std::time::SystemTime::now()
             .duration_since(start)
             .expect("Something's wrong with the time");
-        debug!(
+        info!(
             "Files indexed in the DB in {} milliseconds",
             time.as_millis()
         );
@@ -101,7 +102,7 @@ impl NoteVault {
             self.create_index_for(connection, &directory)?;
         }
 
-        warn!("Initialized");
+        info!("Initialized");
 
         Ok(())
     }
@@ -113,28 +114,28 @@ impl NoteVault {
         Ok(content)
     }
 
+    // Search notes using terms
     pub fn search_notes<S: AsRef<str>>(
         &self,
         terms: S,
         wildcard: bool,
-    ) -> anyhow::Result<Vec<NotePath>> {
+    ) -> anyhow::Result<Vec<NoteDetails>> {
         let mut connection = ConnectionBuilder::new(&self.workspace_path)
             .build()
             .unwrap();
-        db::search_terms(&mut connection, terms, wildcard)
+        db::search_terms(&mut connection, &self.workspace_path, terms, wildcard)
+            .map(|vec| vec.into_iter().map(|(_data, details)| details).collect())
     }
 
-    pub fn get_notes<P: Into<NotePath>>(
+    pub fn get_notes_channel<P: Into<NotePath>>(
         &self,
         path: P,
         options: NotesGetterOptions,
-    ) -> anyhow::Result<Option<Vec<NoteEntry>>> {
+    ) -> anyhow::Result<()> {
         let start = std::time::SystemTime::now();
-        debug!("Start fetching files with Options:\n{}", options);
+        debug!("> Start fetching files with Options:\n{}", options);
         let workspace_path = self.workspace_path.clone();
         let note_path = path.into();
-        let walker =
-            nfs::get_file_walker(self.workspace_path.clone(), &note_path, options.recursive);
 
         let mut connection = ConnectionBuilder::new(workspace_path).build().unwrap();
         let cached_notes = db::get_notes(
@@ -146,23 +147,16 @@ impl NoteVault {
         let cached_directories =
             db::get_directories(&mut connection, &self.workspace_path, &note_path)?;
 
-        if matches!(options.validation, NotesValidation::None) {
-            let result = collect_from_cache(&cached_notes, &cached_directories, options.sender);
-            let time = std::time::SystemTime::now()
-                .duration_since(start)
-                .expect("Something's wrong with the time");
-            debug!("Files fetched in {} milliseconds", time.as_millis());
-            return result;
-        }
-
         let mut builder = NoteListVisitorBuilder::new(
             &self.workspace_path,
             options.validation,
             cached_notes,
             cached_directories,
-            options.sender.clone(),
+            Some(options.sender.clone()),
         );
         // We traverse the directory
+        let walker =
+            nfs::get_file_walker(self.workspace_path.clone(), &note_path, options.recursive);
         walker.visit(&mut builder);
 
         let tx = connection.transaction()?;
@@ -175,53 +169,58 @@ impl NoteVault {
         let time = std::time::SystemTime::now()
             .duration_since(start)
             .expect("Something's wrong with the time");
-        debug!("Files fetched in {} milliseconds", time.as_millis());
+        debug!("> Files fetched in {} milliseconds", time.as_millis());
 
-        if options.sender.is_none() {
-            Ok(Some(builder.get_entries_found()))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn parse_note_text<P: Into<NotePath>>(&self, path: P) -> anyhow::Result<()> {
-        let text = self.load_note(path)?;
         Ok(())
     }
+
+    pub fn get_notes<P: Into<NotePath>>(
+        &self,
+        path: P,
+        recursive: bool,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        let start = std::time::SystemTime::now();
+        debug!("> Start fetching files from cache");
+        let workspace_path = self.workspace_path.clone();
+        let note_path = path.into();
+
+        let mut connection = ConnectionBuilder::new(workspace_path).build().unwrap();
+        let cached_notes =
+            db::get_notes(&mut connection, &self.workspace_path, &note_path, recursive)?;
+        let cached_directories =
+            db::get_directories(&mut connection, &self.workspace_path, &note_path)?;
+
+        let result = collect_from_cache(&cached_notes, &cached_directories);
+        connection.close().unwrap();
+        let time = std::time::SystemTime::now()
+            .duration_since(start)
+            .expect("Something's wrong with the time");
+        debug!("> Files fetched in {} milliseconds", time.as_millis());
+        result
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum SearchResult {
+    Note(NoteDetails),
+    Directory(DirectoryDetails),
+    Attachment(NotePath),
 }
 
 fn collect_from_cache(
     cached_notes: &[(nfs::NoteData, nfs::NoteDetails)],
     cached_directories: &[(nfs::DirectoryData, nfs::DirectoryDetails)],
-    sender: Option<Sender<NoteEntry>>,
-) -> Result<Option<Vec<NoteEntry>>, anyhow::Error> {
-    let notes = cached_notes.iter().map(|(note_data, note_details)| {
-        let path = note_details.note_path.clone();
-        NoteEntry {
-            path_string: path.to_string(),
-            path,
-            data: nfs::EntryData::Note(note_data.to_owned()),
-        }
-    });
-    let directories = cached_directories
+) -> Result<Vec<SearchResult>, anyhow::Error> {
+    let notes = cached_notes
         .iter()
-        .map(|(directory_data, directory_details)| {
-            let path = directory_details.note_path.clone();
-            NoteEntry {
-                path_string: path.to_string(),
-                path,
-                data: nfs::EntryData::Directory(directory_data.to_owned()),
-            }
-        });
-    let result = directories.chain(notes);
-    if let Some(rx) = sender {
-        for entry in result {
-            let _ = rx.send(entry);
-        }
-        Ok(None)
-    } else {
-        Ok(Some(result.collect()))
-    }
+        .map(|(_note_data, note_details)| SearchResult::Note(note_details.clone()));
+    let result = cached_directories
+        .iter()
+        .map(|(_directory_data, directory_details)| {
+            SearchResult::Directory(directory_details.clone())
+        })
+        .chain(notes);
+    Ok(result.collect())
 }
 
 #[derive(Debug)]
@@ -230,35 +229,37 @@ fn collect_from_cache(
 /// If a Sender is set, then it returns `None`, if there's no Sender, it returns
 /// the NoteEntry
 pub struct NotesGetterOptions {
-    sender: Option<Sender<NoteEntry>>,
     validation: NotesValidation,
     recursive: bool,
+    sender: Sender<SearchResult>,
 }
 
 impl Display for NotesGetterOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Notes Getter Options - [Using Channel: {}|Validation Type: {}|Recursive: {}]",
-            self.sender.is_some(),
-            self.validation,
-            self.recursive
+            "Notes Getter Options - [Validation Type: {}|Recursive: {}]",
+            self.validation, self.recursive
         )
     }
 }
 
 impl NotesGetterOptions {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set_sender(mut self, sender: Sender<NoteEntry>) -> Self {
-        self.sender = Some(sender);
-        self
+    pub fn new(sender: Sender<SearchResult>) -> Self {
+        Self {
+            validation: NotesValidation::None,
+            recursive: false,
+            sender,
+        }
     }
 
     pub fn recursive(mut self) -> Self {
         self.recursive = true;
+        self
+    }
+
+    pub fn non_recursive(mut self) -> Self {
+        self.recursive = false;
         self
     }
 
@@ -275,16 +276,6 @@ impl NotesGetterOptions {
     pub fn no_validation(mut self) -> Self {
         self.validation = NotesValidation::None;
         self
-    }
-}
-
-impl Default for NotesGetterOptions {
-    fn default() -> Self {
-        Self {
-            sender: None,
-            validation: NotesValidation::None,
-            recursive: false,
-        }
     }
 }
 

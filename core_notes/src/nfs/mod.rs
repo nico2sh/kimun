@@ -20,37 +20,13 @@ const PATH_SEPARATOR: char = '/';
 const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|]"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NoteEntry {
+pub struct VaultEntry {
     pub path: NotePath,
     pub path_string: String,
     pub data: EntryData,
 }
 
-// impl PartialOrd for NoteEntry {
-//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-//         match self.data.get_ord().partial_cmp(&other.data.get_ord()) {
-//             Some(core::cmp::Ordering::Equal) => {}
-//             ord => return ord,
-//         }
-//         // match self.path.to_string().partial_cmp(&other.path.to_string()) {
-//         //     Some(core::cmp::Ordering::Equal) => {}
-//         //     ord => return ord,
-//         // }
-//         self.path_string.partial_cmp(&other.path_string)
-//     }
-// }
-
-// impl Ord for NoteEntry {
-//     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-//         if let Some(ord) = self.partial_cmp(other) {
-//             ord
-//         } else {
-//             core::cmp::Ordering::Equal
-//         }
-//     }
-// }
-
-impl AsRef<str> for NoteEntry {
+impl AsRef<str> for VaultEntry {
     fn as_ref(&self) -> &str {
         self.path_string.as_ref()
     }
@@ -64,40 +40,29 @@ pub enum EntryData {
     Attachment,
 }
 
-impl EntryData {
-    fn get_ord(&self) -> u8 {
-        match self {
-            EntryData::Directory(_directory_data) => 0,
-            EntryData::Note(_note_data) => 1,
-            EntryData::Attachment => 2,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NoteData {
     pub path: NotePath,
     pub size: u64,
     pub modified_secs: u64,
 }
+
 impl NoteData {
-    pub fn get_details<P: AsRef<Path>>(
+    pub fn load_details<P: AsRef<Path>>(
         &self,
         workspace_path: P,
         path: &NotePath,
     ) -> anyhow::Result<NoteDetails> {
         let content = load_content(&workspace_path, path)?;
 
-        let title = Some(
-            parser::parse(&content)
-                .title
-                .unwrap_or_else(|| self.path.get_name()),
-        );
-        let hash = Some(gxhash::gxhash32(content.as_bytes(), HASH_SEED));
+        let title = parser::parse(&content)
+            .title
+            .unwrap_or_else(|| self.path.get_name());
+        let hash = gxhash::gxhash32(content.as_bytes(), HASH_SEED);
         let content = Some(content);
         Ok(NoteDetails {
             base_path: workspace_path.as_ref().to_path_buf(),
-            note_path: path.clone(),
+            path: path.clone(),
             title,
             hash,
             content,
@@ -116,7 +81,7 @@ impl DirectoryData {
     ) -> anyhow::Result<DirectoryDetails> {
         Ok(DirectoryDetails {
             base_path: workspace_path.as_ref().to_path_buf(),
-            note_path: self.path.clone(),
+            path: self.path.clone(),
         })
     }
 }
@@ -142,7 +107,7 @@ fn _get_dir_content_size<P: AsRef<Path>>(
     Ok(content_size)
 }
 
-impl NoteEntry {
+impl VaultEntry {
     pub fn new<P: AsRef<Path>>(workspace_path: P, path: NotePath) -> Result<Self, IOErrors> {
         let os_path = path.into_path(&workspace_path);
         if !os_path.exists() {
@@ -170,7 +135,7 @@ impl NoteEntry {
         };
         let path_string = path.to_string();
 
-        Ok(NoteEntry {
+        Ok(VaultEntry {
             path,
             path_string,
             data: kind,
@@ -186,7 +151,7 @@ impl NoteEntry {
     }
 }
 
-impl Display for NoteEntry {
+impl Display for VaultEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.data {
             EntryData::Note(_details) => write!(f, "[NOT] {}", self.path),
@@ -207,20 +172,20 @@ pub enum NoteEntryDetails {
 impl NoteEntryDetails {
     pub fn get_title(&mut self) -> String {
         match self {
-            NoteEntryDetails::Note(note_details) => note_details.get_title(),
+            NoteEntryDetails::Note(note_details) => note_details.title.clone(),
             NoteEntryDetails::Directory(_directory_details) => String::new(),
             NoteEntryDetails::None => String::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoteDetails {
     pub base_path: PathBuf,
-    pub note_path: NotePath,
-    // Content and hash may be lazy fetched
-    hash: Option<u32>,
-    title: Option<String>,
+    pub path: NotePath,
+    // Content may be lazy fetched
+    pub hash: u32,
+    pub title: String,
     content: Option<String>,
 }
 
@@ -228,13 +193,13 @@ impl NoteDetails {
     pub fn new(
         base_path: PathBuf,
         note_path: NotePath,
-        hash: Option<u32>,
-        title: Option<String>,
+        hash: u32,
+        title: String,
         content: Option<String>,
     ) -> Self {
         Self {
             base_path,
-            note_path,
+            path: note_path,
             hash,
             title,
             content,
@@ -242,33 +207,15 @@ impl NoteDetails {
     }
 
     fn update_content(&mut self) -> (String, String, u32) {
-        let content = load_content(&self.base_path, &self.note_path).unwrap_or_default();
+        let content = load_content(&self.base_path, &self.path).unwrap_or_default();
         let title = parser::parse(&content)
             .title
-            .unwrap_or_else(|| self.note_path.get_name());
+            .unwrap_or_else(|| self.path.get_name());
         let hash = gxhash::gxhash32(content.as_bytes(), HASH_SEED);
-        self.title = Some(title.clone());
-        self.hash = Some(hash);
+        self.title = title.clone();
+        self.hash = hash;
         self.content = Some(content.clone());
         (title, content, hash)
-    }
-    pub fn get_title(&mut self) -> String {
-        let title = self.title.clone();
-        if let Some(title) = title {
-            title
-        } else {
-            let (title, _, _) = self.update_content();
-            title
-        }
-    }
-    pub fn get_hash(&mut self) -> u32 {
-        let hash = self.hash;
-        if let Some(hash) = hash {
-            hash
-        } else {
-            let (_, _, hash) = self.update_content();
-            hash
-        }
     }
 
     pub fn get_content(&mut self) -> String {
@@ -285,7 +232,7 @@ impl NoteDetails {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectoryDetails {
     pub base_path: PathBuf,
-    pub note_path: NotePath,
+    pub path: NotePath,
 }
 
 pub fn load_content<P: AsRef<Path>>(workspace_path: P, path: &NotePath) -> anyhow::Result<String> {
