@@ -3,7 +3,7 @@ use std::cmp::min;
 use log::error;
 use pulldown_cmark::{Event, Parser, Tag};
 
-const MAX_TITLE_LENGTH: usize = 20;
+const MAX_TITLE_LENGTH: usize = 40;
 
 pub fn parse(md_text: &str) -> NoteContent {
     let (frontmatter, text) = remove_frontmatter(md_text);
