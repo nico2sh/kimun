@@ -4,6 +4,7 @@ use std::{
     ffi::OsStr,
     fmt::Display,
     path::{Path, PathBuf},
+    str::FromStr,
     time::UNIX_EPOCH,
 };
 
@@ -16,6 +17,7 @@ use super::utilities::path_to_string;
 
 const HASH_SEED: i64 = 0;
 const PATH_SEPARATOR: char = '/';
+const NOTE_EXTENSION: &str = ".md";
 // non valid chars
 const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|]"#;
 
@@ -308,8 +310,14 @@ impl From<String> for NotePath {
     }
 }
 
+impl From<&String> for NotePath {
+    fn from(value: &String) -> Self {
+        NotePath::new(value)
+    }
+}
+
 impl NotePath {
-    pub fn new<S: AsRef<str>>(path: S) -> Self {
+    fn new<S: AsRef<str>>(path: S) -> Self {
         let path_list = path
             .as_ref()
             .split(PATH_SEPARATOR)
@@ -320,8 +328,24 @@ impl NotePath {
         Self { slices: path_list }
     }
 
+    pub fn file_from<S: AsRef<str>>(path: S) -> Result<Self, VaultError> {
+        let path = path.as_ref();
+        if !path.ends_with(PATH_SEPARATOR) {
+            let p = if !path.ends_with(NOTE_EXTENSION) {
+                [path, NOTE_EXTENSION].concat()
+            } else {
+                path.to_owned()
+            };
+            Ok(NotePath::new(p))
+        } else {
+            Err(VaultError::InvalidPath {
+                path: path.to_string(),
+            })
+        }
+    }
+
     pub fn root() -> Self {
-        Self::new("")
+        Self { slices: Vec::new() }
     }
 
     pub fn into_path<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
@@ -461,7 +485,7 @@ mod tests {
     #[test]
     fn test_path_create_from_string() {
         let path = "this/is/five/level/path";
-        let path = NotePath::new(path);
+        let path = NotePath::from(path);
 
         assert_eq!(5, path.slices.len());
         assert_eq!("this", path.slices[0].slice);
@@ -474,7 +498,7 @@ mod tests {
     #[test]
     fn test_path_with_unvalid_chars() {
         let path = "t*his/i+s/caca?/";
-        let path = NotePath::new(path);
+        let path = NotePath::from(path);
 
         assert_eq!(3, path.slices.len());
         assert_eq!("t_his", path.slices[0].slice);
@@ -486,7 +510,7 @@ mod tests {
     fn test_to_path_buf() {
         let workspace_path = PathBuf::from("/usr/john/notes");
         let path = "/some/subpath";
-        let path = NotePath::new(path);
+        let path = NotePath::from(path);
         let path_buf = path.into_path(&workspace_path);
 
         let path_string = path_to_string(path_buf);

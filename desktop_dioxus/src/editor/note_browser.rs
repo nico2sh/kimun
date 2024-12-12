@@ -40,12 +40,12 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
             class: "list",
             if current_path != NotePath::root() {
                 div {
-                    class: "icon-folder element",
+                    class: "element",
                     onclick: move |_| {
                         let parent_path = browsing_directory.read().get_parent_path().0;
                         browsing_directory.set(parent_path);
                     },
-                    ".."
+                    div { class: "icon-folder title", ".."}
                 }
             }
             if let Some(entries) = notes_and_dirs.entries.value().read().clone() {
@@ -69,7 +69,7 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
                                 // div { class: "details", "{directory}"}
                             }}
                         },
-                        SearchResult::Attachment(_) => { rsx!{ div { "This shouldn't show up" } } }
+                        SearchResult::Attachment(_path) => { rsx!{ div { "This shouldn't show up" } } }
                     }
                 }
             } else {

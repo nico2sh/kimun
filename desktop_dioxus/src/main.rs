@@ -58,8 +58,20 @@ pub fn App() -> Element {
     let app_context: AppContext = use_context();
     let error: Signal<Option<String>> = app_context.current_error;
 
-    let current_note_path: SyncSignal<Option<NotePath>> =
-        use_signal_sync(|| Some(NotePath::root()));
+    let current_note_path: SyncSignal<Option<NotePath>> = use_signal_sync(|| None);
+    let note_path_display = use_memo(move || {
+        let d = match &*current_note_path.read() {
+            Some(path) => {
+                if path.is_note() {
+                    path.to_string()
+                } else {
+                    String::new()
+                }
+            }
+            None => String::new(),
+        };
+        d
+    });
     let mut modal = use_signal(Modal::new);
     let editor_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     if !modal.read().is_open() {
@@ -107,7 +119,11 @@ pub fn App() -> Element {
                 }
             }
             header {
-                class: "header"
+                class: "header",
+                div {
+                    class: "path",
+                    "{note_path_display}"
+                }
             }
             div {
                 class: "mainarea",
