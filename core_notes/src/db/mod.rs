@@ -112,7 +112,7 @@ pub fn search_terms<P: AsRef<Path>, S: AsRef<str>>(
     base_path: P,
     terms: S,
     include_path: bool,
-) -> anyhow::Result<Vec<(NoteData, NoteDetails)>> {
+) -> Result<Vec<(NoteData, NoteDetails)>, DBErrors> {
     let sql = if include_path {
         "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
     } else {
@@ -152,7 +152,7 @@ pub fn get_notes<P: AsRef<Path>>(
     base_path: P,
     path: &NotePath,
     recursive: bool,
-) -> anyhow::Result<Vec<(NoteData, NoteDetails)>> {
+) -> Result<Vec<(NoteData, NoteDetails)>, DBErrors> {
     let sql = if recursive {
         "SELECT path, title, size, modified, hash, noteName FROM notes where basePath LIKE (?1 || '%')"
     } else {
@@ -190,7 +190,7 @@ pub fn get_directories<P: AsRef<Path>>(
     connection: &mut Connection,
     base_path: P,
     path: &NotePath,
-) -> anyhow::Result<Vec<(DirectoryData, DirectoryDetails)>> {
+) -> Result<Vec<(DirectoryData, DirectoryDetails)>, DBErrors> {
     // debug!("getting directories");
     let mut stmt = connection.prepare("SELECT path FROM directories where basePath = ?1")?;
     let res = stmt
@@ -211,7 +211,10 @@ pub fn get_directories<P: AsRef<Path>>(
     Ok(res)
 }
 
-pub fn insert_notes(tx: &Transaction, notes: &Vec<(NoteData, NoteDetails)>) -> anyhow::Result<()> {
+pub fn insert_notes(
+    tx: &Transaction,
+    notes: &Vec<(NoteData, NoteDetails)>,
+) -> Result<(), DBErrors> {
     if !notes.is_empty() {
         debug!("Inserting {} notes", notes.len());
         for (data, details) in notes {
@@ -222,7 +225,10 @@ pub fn insert_notes(tx: &Transaction, notes: &Vec<(NoteData, NoteDetails)>) -> a
     Ok(())
 }
 
-pub fn update_notes(tx: &Transaction, notes: &Vec<(NoteData, NoteDetails)>) -> anyhow::Result<()> {
+pub fn update_notes(
+    tx: &Transaction,
+    notes: &Vec<(NoteData, NoteDetails)>,
+) -> Result<(), DBErrors> {
     if !notes.is_empty() {
         debug!("Updating {} notes", notes.len());
         for (data, details) in notes {
@@ -233,7 +239,7 @@ pub fn update_notes(tx: &Transaction, notes: &Vec<(NoteData, NoteDetails)>) -> a
     Ok(())
 }
 
-pub fn delete_notes(tx: &Transaction, paths: &Vec<NotePath>) -> anyhow::Result<()> {
+pub fn delete_notes(tx: &Transaction, paths: &Vec<NotePath>) -> Result<(), DBErrors> {
     if !paths.is_empty() {
         for path in paths {
             delete_note(tx, path)?;
@@ -289,7 +295,7 @@ fn update_note(
     Ok(())
 }
 
-fn delete_note(tx: &Transaction, path: &NotePath) -> anyhow::Result<()> {
+fn delete_note(tx: &Transaction, path: &NotePath) -> Result<(), DBErrors> {
     tx.execute(
         "DELETE FROM notes WHERE path = ?1",
         params![path.to_string()],
@@ -302,7 +308,7 @@ fn delete_note(tx: &Transaction, path: &NotePath) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn delete_directories(tx: &Transaction, directories: &Vec<NotePath>) -> anyhow::Result<()> {
+pub fn delete_directories(tx: &Transaction, directories: &Vec<NotePath>) -> Result<(), DBErrors> {
     if !directories.is_empty() {
         for directory in directories {
             delete_directory(tx, directory)?;
@@ -311,7 +317,7 @@ pub fn delete_directories(tx: &Transaction, directories: &Vec<NotePath>) -> anyh
     Ok(())
 }
 
-pub fn _insert_directories(tx: &Transaction, directories: &Vec<NotePath>) -> anyhow::Result<()> {
+pub fn _insert_directories(tx: &Transaction, directories: &Vec<NotePath>) -> Result<(), DBErrors> {
     if !directories.is_empty() {
         for directory in directories {
             insert_directory(tx, directory)?;
@@ -329,7 +335,7 @@ pub fn insert_directory(tx: &Transaction, path: &NotePath) -> Result<(), DBError
     Ok(())
 }
 
-fn delete_directory(tx: &Transaction, directory_path: &NotePath) -> anyhow::Result<()> {
+fn delete_directory(tx: &Transaction, directory_path: &NotePath) -> Result<(), DBErrors> {
     let path_string = directory_path.to_string();
     let sql1 = "DELETE FROM notes WHERE path LIKE (?1 || '%')";
     let sql2 = "DELETE FROM notesContent WHERE path LIKE (?1 || '%')";
@@ -341,6 +347,17 @@ fn delete_directory(tx: &Transaction, directory_path: &NotePath) -> anyhow::Resu
 
     Ok(())
 }
+
+pub fn execute_in_transaction(
+    connection: &mut Connection,
+    fun: Box<dyn Fn(&Transaction) -> Result<(), DBErrors>>,
+) -> Result<(), DBErrors> {
+    let tx = connection.transaction()?;
+    fun(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
 // We use a builder to create connection in a thread
 pub struct ConnectionBuilder {
     workspace_path: PathBuf,
@@ -353,7 +370,7 @@ impl ConnectionBuilder {
         }
     }
 
-    pub fn build(&self) -> anyhow::Result<Connection> {
+    pub fn build(&self) -> Result<Connection, DBErrors> {
         // debug!("Opening Database");
         let db_path = self.workspace_path.join(DB_FILE);
         let connection = Connection::open(&db_path)?;

@@ -7,15 +7,14 @@ pub mod utilities;
 use std::{
     fmt::Display,
     path::{Path, PathBuf},
-    sync::mpsc::Sender,
+    rc::Rc,
+    sync::{mpsc::Sender, RwLock},
 };
 
 use db::ConnectionBuilder;
-use error::NoteInitError;
-use log::{debug, info, warn};
-use nfs::{
-    visitors::list::NoteListVisitorBuilder, DirectoryDetails, NoteDetails, NotePath, VaultEntry,
-};
+use error::VaultError;
+use log::{debug, info};
+use nfs::{visitors::list::NoteListVisitorBuilder, DirectoryDetails, NoteDetails, NotePath};
 use rusqlite::Connection;
 use utilities::path_to_string;
 
@@ -25,18 +24,18 @@ pub struct NoteVault {
 }
 
 impl NoteVault {
-    pub fn new<P: AsRef<Path>>(workspace_path: P) -> anyhow::Result<Self> {
+    pub fn new<P: AsRef<Path>>(workspace_path: P) -> Result<Self, VaultError> {
         let workspace_path = workspace_path.as_ref();
         let workspace = workspace_path.to_path_buf();
 
         let path = workspace.clone();
         if !path.exists() {
-            return Err(NoteInitError::PathNotFound {
+            return Err(VaultError::PathNotFound {
                 path: path_to_string(path),
             })?;
         }
         if !path.is_dir() {
-            return Err(NoteInitError::PathIsNotDirectory {
+            return Err(VaultError::PathIsNotDirectory {
                 path: path_to_string(path),
             })?;
         };
@@ -49,14 +48,14 @@ impl NoteVault {
         Ok(vault)
     }
 
-    fn create_tables(&self) -> anyhow::Result<()> {
+    fn create_tables(&self) -> Result<(), VaultError> {
         let mut connection = ConnectionBuilder::new(self.workspace_path.clone()).build()?;
         db::init_db(&mut connection)?;
         connection.close().expect("Error closing the DB");
         Ok(())
     }
 
-    fn create_index(&self) -> anyhow::Result<()> {
+    fn create_index(&self) -> Result<(), VaultError> {
         info!("Start indexing files");
         let start = std::time::SystemTime::now();
         let workspace_path = self.workspace_path.clone();
@@ -73,7 +72,11 @@ impl NoteVault {
         Ok(())
     }
 
-    fn create_index_for(&self, connection: &mut Connection, path: &NotePath) -> anyhow::Result<()> {
+    fn create_index_for(
+        &self,
+        connection: &mut Connection,
+        path: &NotePath,
+    ) -> Result<(), VaultError> {
         debug!("Start fetching files at {}", path);
         let walker = nfs::get_file_walker(self.workspace_path.clone(), path, false);
 
@@ -87,19 +90,45 @@ impl NoteVault {
             None,
         );
         walker.visit(&mut builder);
-        let tx = connection.transaction()?;
-        db::insert_directory(&tx, path)?;
-
-        db::delete_notes(&tx, &builder.get_notes_to_delete())?;
-        db::insert_notes(&tx, &builder.get_notes_to_add())?;
-        db::update_notes(&tx, &builder.get_notes_to_modify())?;
+        let directories_to_insert = Rc::new(RwLock::new(Vec::new()));
+        let notes_to_add = builder.get_notes_to_add();
+        let notes_to_delete = builder.get_notes_to_delete();
+        let notes_to_modify = builder.get_notes_to_modify();
         let directories_to_delete = builder.get_directories_to_delete();
-        db::delete_directories(&tx, &directories_to_delete)?;
-        let directories_to_insert = builder.get_directories_to_add();
-        tx.commit()?;
+        let dir_path = path.clone();
+        let dti = directories_to_insert.clone();
+        db::execute_in_transaction(
+            connection,
+            Box::new(move |tx| {
+                db::insert_directory(tx, &dir_path)?;
 
-        for directory in directories_to_insert.into_iter().filter(|p| !p.eq(path)) {
-            self.create_index_for(connection, &directory)?;
+                db::delete_notes(tx, &notes_to_delete)?;
+                db::insert_notes(tx, &notes_to_add)?;
+                db::update_notes(tx, &notes_to_modify)?;
+                db::delete_directories(tx, &directories_to_delete)?;
+                let mut ins = dti.write().unwrap();
+                *ins = builder.get_directories_to_add();
+                Ok(())
+            }),
+        )?;
+        // let tx = connection.transaction()?;
+        // db::insert_directory(&tx, path)?;
+        //
+        // db::delete_notes(&tx, &builder.get_notes_to_delete())?;
+        // db::insert_notes(&tx, &builder.get_notes_to_add())?;
+        // db::update_notes(&tx, &builder.get_notes_to_modify())?;
+        // let directories_to_delete = builder.get_directories_to_delete();
+        // db::delete_directories(&tx, &directories_to_delete)?;
+        // let directories_to_insert = builder.get_directories_to_add();
+        // tx.commit()?;
+
+        for directory in directories_to_insert
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|p| !p.eq(&path))
+        {
+            self.create_index_for(connection, directory)?;
         }
 
         info!("Initialized");
@@ -107,7 +136,7 @@ impl NoteVault {
         Ok(())
     }
 
-    pub fn load_note<P: Into<NotePath>>(&self, path: P) -> anyhow::Result<String> {
+    pub fn load_note<P: Into<NotePath>>(&self, path: P) -> Result<String, VaultError> {
         let os_path = path.into().into_path(&self.workspace_path);
         let file = std::fs::read(&os_path)?;
         let content = String::from_utf8(file)?;
@@ -119,19 +148,26 @@ impl NoteVault {
         &self,
         terms: S,
         wildcard: bool,
-    ) -> anyhow::Result<Vec<NoteDetails>> {
+    ) -> Result<Vec<NoteDetails>, VaultError> {
         let mut connection = ConnectionBuilder::new(&self.workspace_path)
             .build()
             .unwrap();
-        db::search_terms(&mut connection, &self.workspace_path, terms, wildcard)
-            .map(|vec| vec.into_iter().map(|(_data, details)| details).collect())
+
+        let a = db::search_terms(&mut connection, &self.workspace_path, terms, wildcard).map(
+            |vec| {
+                vec.into_iter()
+                    .map(|(_data, details)| details)
+                    .collect::<Vec<NoteDetails>>()
+            },
+        )?;
+        Ok(a)
     }
 
     pub fn get_notes_channel<P: Into<NotePath>>(
         &self,
         path: P,
         options: NotesGetterOptions,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
         let workspace_path = self.workspace_path.clone();
@@ -159,11 +195,23 @@ impl NoteVault {
             nfs::get_file_walker(self.workspace_path.clone(), &note_path, options.recursive);
         walker.visit(&mut builder);
 
-        let tx = connection.transaction()?;
-        db::delete_notes(&tx, &builder.get_notes_to_delete())?;
-        db::insert_notes(&tx, &builder.get_notes_to_add())?;
-        db::update_notes(&tx, &builder.get_notes_to_modify())?;
-        tx.commit()?;
+        let notes_to_add = builder.get_notes_to_add();
+        let notes_to_delete = builder.get_notes_to_delete();
+        let notes_to_modify = builder.get_notes_to_modify();
+        db::execute_in_transaction(
+            &mut connection,
+            Box::new(move |tx| {
+                db::insert_notes(tx, &notes_to_add)?;
+                db::delete_notes(tx, &notes_to_delete)?;
+                db::update_notes(tx, &notes_to_modify)?;
+                Ok(())
+            }),
+        )?;
+        // let tx = connection.transaction()?;
+        // db::delete_notes(&tx, &builder.get_notes_to_delete())?;
+        // db::insert_notes(&tx, &builder.get_notes_to_add())?;
+        // db::update_notes(&tx, &builder.get_notes_to_modify())?;
+        // tx.commit()?;
         connection.close().unwrap();
 
         let time = std::time::SystemTime::now()
@@ -178,7 +226,7 @@ impl NoteVault {
         &self,
         path: P,
         recursive: bool,
-    ) -> anyhow::Result<Vec<SearchResult>> {
+    ) -> Result<Vec<SearchResult>, VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files from cache");
         let workspace_path = self.workspace_path.clone();
@@ -210,7 +258,7 @@ pub enum SearchResult {
 fn collect_from_cache(
     cached_notes: &[(nfs::NoteData, nfs::NoteDetails)],
     cached_directories: &[(nfs::DirectoryData, nfs::DirectoryDetails)],
-) -> Result<Vec<SearchResult>, anyhow::Error> {
+) -> Result<Vec<SearchResult>, VaultError> {
     let notes = cached_notes
         .iter()
         .map(|(_note_data, note_details)| SearchResult::Note(note_details.clone()));

@@ -66,6 +66,33 @@ aside.sidebar {
   overflow-x: hidden;
 }
 
+.list > .element > .note_create {
+  padding: 0.2em 0.2em 0.2em 0.2em;
+  margin-bottom: 0.1em; 
+}
+
+.emphasized {
+  font-style: italic;
+}
+
+.strong {
+  font-weight: bold;
+}
+
+.list > .element > .separator {
+  margin: 0.5em 0.2em;
+  border-bottom: 1px solid;
+}
+
+.list > .element > .separator:hover {
+  background-color: transparent;
+}
+
+.list > .element > .separator.selected {
+  background-color: transparent;
+}
+
+
 .list > .element > .details {
   font-size: small;
   font-style: italic;

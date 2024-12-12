@@ -10,9 +10,9 @@ use std::{
 use ignore::{WalkBuilder, WalkParallel};
 use serde::{de::Visitor, Deserialize, Serialize};
 
-use crate::parser;
+use crate::{error::VaultError, parser};
 
-use super::{error::IOErrors, utilities::path_to_string};
+use super::utilities::path_to_string;
 
 const HASH_SEED: i64 = 0;
 const PATH_SEPARATOR: char = '/';
@@ -52,7 +52,7 @@ impl NoteData {
         &self,
         workspace_path: P,
         path: &NotePath,
-    ) -> anyhow::Result<NoteDetails> {
+    ) -> Result<NoteDetails, VaultError> {
         let content = load_content(&workspace_path, path)?;
 
         let title = parser::parse(&content)
@@ -78,7 +78,7 @@ impl DirectoryData {
     pub fn get_details<P: AsRef<Path>>(
         &self,
         workspace_path: P,
-    ) -> anyhow::Result<DirectoryDetails> {
+    ) -> Result<DirectoryDetails, VaultError> {
         Ok(DirectoryDetails {
             base_path: workspace_path.as_ref().to_path_buf(),
             path: self.path.clone(),
@@ -89,7 +89,7 @@ impl DirectoryData {
 fn _get_dir_content_size<P: AsRef<Path>>(
     workspace_path: P,
     path: &NotePath,
-) -> Result<u64, IOErrors> {
+) -> Result<u64, VaultError> {
     let os_path = path.into_path(&workspace_path);
     let walker = ignore::WalkBuilder::new(&os_path)
         .max_depth(Some(1))
@@ -108,10 +108,10 @@ fn _get_dir_content_size<P: AsRef<Path>>(
 }
 
 impl VaultEntry {
-    pub fn new<P: AsRef<Path>>(workspace_path: P, path: NotePath) -> Result<Self, IOErrors> {
+    pub fn new<P: AsRef<Path>>(workspace_path: P, path: NotePath) -> Result<Self, VaultError> {
         let os_path = path.into_path(&workspace_path);
         if !os_path.exists() {
-            return Err(IOErrors::NoFileOrDirectoryFound {
+            return Err(VaultError::NoFileOrDirectoryFound {
                 path: path_to_string(os_path),
             });
         }
@@ -145,7 +145,7 @@ impl VaultEntry {
     pub fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
         workspace_path: P,
         full_path: F,
-    ) -> Result<Self, IOErrors> {
+    ) -> Result<Self, VaultError> {
         let note_path = NotePath::from_path(&workspace_path, &full_path)?;
         Self::new(&workspace_path, note_path)
     }
@@ -235,7 +235,10 @@ pub struct DirectoryDetails {
     pub path: NotePath,
 }
 
-pub fn load_content<P: AsRef<Path>>(workspace_path: P, path: &NotePath) -> anyhow::Result<String> {
+pub fn load_content<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &NotePath,
+) -> Result<String, VaultError> {
     let os_path = path.into_path(&workspace_path);
     let file = std::fs::read(&os_path)?;
     let content = String::from_utf8(file)?;
@@ -339,11 +342,11 @@ impl NotePath {
     pub fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
         workspace_path: P,
         full_path: F,
-    ) -> Result<Self, IOErrors> {
+    ) -> Result<Self, VaultError> {
         let fp = full_path.as_ref();
         let relative = fp
             .strip_prefix(workspace_path)
-            .map_err(|_e| IOErrors::InvalidPath {
+            .map_err(|_e| VaultError::InvalidPath {
                 path: path_to_string(&full_path),
             })?;
         let path_list = relative
