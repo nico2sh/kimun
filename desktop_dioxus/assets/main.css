@@ -53,6 +53,26 @@ aside.sidebar {
   background-color: var(--overlay);
 }
 
+.list > .element {
+  display: flex;
+  text-wrap-mode: nowrap;
+  flex-direction: column;
+}
+
+.list > .element > .title {
+  font-weight: bold;
+  font-size: medium;
+  text-wrap-mode: nowrap;
+  overflow-x: hidden;
+}
+
+.list > .element > .details {
+  font-size: small;
+  font-style: italic;
+  overflow-x: hidden;
+  padding-left: 1em;
+}
+
 .header {
   grid-area: header;
 }

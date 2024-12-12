@@ -31,7 +31,7 @@ pub fn NoteSearch(props: SearchProps) -> Element {
     {
         Ok(res) => res
             .into_iter()
-            .map(|p| PathEntry::from_note_path(p, current_note_path))
+            .map(|p| PathEntry::from_note_details(p, current_note_path))
             .collect::<Vec<PathEntry>>(),
         Err(e) => {
             error!("Error searching notes: {}", e);
@@ -40,10 +40,10 @@ pub fn NoteSearch(props: SearchProps) -> Element {
     };
 
     let moved_vault = vault.clone();
-    let preview = move |path: &PathEntry| {
+    let preview = move |entry: &PathEntry| {
         // sleep(Duration::from_millis(1000));
         moved_vault
-            .load_note(&path.path)
+            .load_note(&entry.note.path)
             .unwrap_or_else(|_e| "Error loading preview...".to_string())
     };
 

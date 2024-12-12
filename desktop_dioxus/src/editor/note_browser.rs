@@ -1,7 +1,4 @@
-use core_notes::{
-    nfs::{EntryData, NotePath},
-    NoteVault, NotesGetterOptions,
-};
+use core_notes::{nfs::NotePath, NoteVault, NotesGetterOptions, SearchResult};
 use std::sync::mpsc;
 
 use dioxus::{hooks::use_signal, prelude::*};
@@ -54,20 +51,25 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
             if let Some(entries) = notes_and_dirs.entries.value().read().clone() {
                 for entry in entries {
                     match entry {
-                        NavEntry::Note(path) => {
+                        SearchResult::Note(details) => {
+                            let (_directory, file) = details.path.get_parent_path();
                             rsx!{div {
-                                class: "icon-note element",
-                                onclick: move |_| *note_path.write() = Some(path.clone()),
-                                "{path.get_name()}"
+                                class: "element",
+                                onclick: move |_| *note_path.write() = Some(details.path.clone()),
+                                div { class: "icon-note title", "{details.title}"}
+                                div { class: "details", "{file}"}
                             }}
                         },
-                        NavEntry::Directory(path) => {
+                        SearchResult::Directory(details) => {
+                            let (_directory, path) = details.path.get_parent_path();
                             rsx!{div {
-                                class: "icon-folder element",
-                                onclick: move |_| browsing_directory.set(path.to_owned()),
-                                "{path.get_name()}"
+                                class: "element",
+                                onclick: move |_| browsing_directory.set(details.path.to_owned()),
+                                div { class: "icon-folder title", "{path}"}
+                                // div { class: "details", "{directory}"}
                             }}
                         },
+                        SearchResult::Attachment(_) => { rsx!{ div { "This shouldn't show up" } } }
                     }
                 }
             } else {
@@ -78,24 +80,9 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
 }
 
 #[derive(Clone)]
-enum NavEntry {
-    Note(NotePath),
-    Directory(NotePath),
-}
-
-impl NavEntry {
-    fn sort_string(&self) -> String {
-        match self {
-            NavEntry::Directory(note_path) => format!("1-{}", note_path),
-            NavEntry::Note(note_path) => format!("2-{}", note_path),
-        }
-    }
-}
-
-#[derive(Clone)]
 struct NotesAndDirs {
     current_path: Signal<NotePath>,
-    entries: Resource<Vec<NavEntry>>,
+    entries: Resource<Vec<SearchResult>>,
 }
 
 impl NotesAndDirs {
@@ -110,32 +97,28 @@ impl NotesAndDirs {
                 let (tx, rx) = mpsc::channel();
                 let task = smol::spawn(async move {
                     vault
-                        .get_notes(
+                        .get_notes_channel(
                             &current_path,
-                            NotesGetterOptions::default()
-                                .set_sender(tx)
-                                .full_validation(),
+                            NotesGetterOptions::new(tx).full_validation(),
                         )
                         .expect("Error fetching Entries");
                 });
                 task.await;
                 let current_path = path.read().clone();
                 while let Ok(entry) = rx.recv() {
-                    match &entry.data {
-                        EntryData::Note(note_data) => {
-                            entries.push(NavEntry::Note(note_data.path.clone()))
-                        }
-                        EntryData::Directory(directory_data) => {
-                            if directory_data.path != current_path {
-                                entries.push(NavEntry::Directory(directory_data.path.clone()))
+                    match &entry {
+                        SearchResult::Note(_note_details) => entries.push(entry.to_owned()),
+                        SearchResult::Directory(_directory_details) => {
+                            if _directory_details.path != current_path {
+                                entries.push(entry.to_owned())
                             }
                         }
-                        EntryData::Attachment => {
+                        SearchResult::Attachment(_) => {
                             // Do nothing
                         }
                     };
                 }
-                entries.sort_by_key(|b| std::cmp::Reverse(b.sort_string()));
+                entries.sort_by_key(|b| std::cmp::Reverse(sort_string(b)));
                 entries
             }
         });
@@ -145,12 +128,15 @@ impl NotesAndDirs {
         }
     }
 
-    fn get_entries(&self) -> Vec<NavEntry> {
-        let res = self.entries.value().read().to_owned().unwrap_or_default();
-        res
-    }
-
     fn get_current(&self) -> NotePath {
         self.current_path.read().clone()
+    }
+}
+
+fn sort_string(entry: &SearchResult) -> String {
+    match entry {
+        SearchResult::Directory(details) => format!("1-{}", details.path),
+        SearchResult::Note(details) => format!("2-{}", details.path),
+        SearchResult::Attachment(details) => format!("3-{}", details),
     }
 }

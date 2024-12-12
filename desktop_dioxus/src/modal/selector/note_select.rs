@@ -1,10 +1,10 @@
 use core_notes::{
-    nfs::{NoteEntry, NotePath},
-    NoteVault, NotesGetterOptions,
+    nfs::{NoteDetails, NotePath},
+    NoteVault, SearchResult,
 };
 
 use dioxus::prelude::*;
-use log::{debug, error};
+use log::debug;
 use nucleo::Matcher;
 
 use crate::AppContext;
@@ -18,31 +18,24 @@ pub struct SelectorProps {
     note_path: SyncSignal<Option<NotePath>>,
 }
 
-fn open(note_path: NotePath, vault: &NoteVault) -> Vec<NoteEntry> {
+fn open(note_path: NotePath, vault: &NoteVault) -> Vec<NoteDetails> {
     let path = if note_path.is_note() {
         note_path.get_parent_path().0
     } else {
         note_path
     };
-    let (tx, rx) = std::sync::mpsc::channel();
-    let options = NotesGetterOptions::default()
-        .no_validation()
-        .set_sender(tx)
-        .recursive();
-    if let Err(e) = vault.get_notes(path, options) {
-        error!("{}", e);
-    }
-
-    let mut items = vec![];
-    while let Ok(row) = rx.recv() {
-        if let core_notes::nfs::EntryData::Note(_) = row.data {
-            items.push(row);
-        }
-    }
-
-    // let options = NotesGetterOptions::default().recursive();
-    // let items = vault.get_notes(path, options).unwrap().unwrap();
-    items
+    vault
+        .get_notes(path, true)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|sr| {
+            if let SearchResult::Note(note) = sr {
+                Some(note)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn filter_items(items: Vec<PathEntry>, filter_text: String) -> Vec<PathEntry> {
@@ -69,8 +62,8 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
     let init = move || {
         debug!("Opening Note Selector");
         let items = open(NotePath::root(), &moved_vault)
-            .iter()
-            .map(|e| PathEntry::from_note_path(e.path.clone(), current_note_path))
+            .into_iter()
+            .map(|e| PathEntry::from_note_details(e, current_note_path))
             .collect::<Vec<PathEntry>>();
         debug!("Loaded {} items", items.len());
         items
@@ -89,10 +82,10 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
     };
 
     let moved_vault = vault.clone();
-    let preview = move |path: &PathEntry| {
+    let preview = move |entry: &PathEntry| {
         // sleep(Duration::from_millis(2000));
         moved_vault
-            .load_note(&path.path)
+            .load_note(&entry.note.path)
             .unwrap_or_else(|_e| "Error loading preview...".to_string())
     };
 
