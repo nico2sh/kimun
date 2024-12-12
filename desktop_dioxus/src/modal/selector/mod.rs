@@ -1,16 +1,19 @@
 pub mod note_search;
 pub mod note_select;
-mod row_item;
 
 use std::rc::Rc;
 
 use dioxus::prelude::*;
 use log::{debug, info};
-use row_item::RowItem;
 
-use core_notes::nfs::NotePath;
+use core_notes::nfs::{NoteDetails, NotePath};
 
 use super::Modal;
+
+pub trait RowItem: PartialEq + Eq + Clone {
+    fn on_select(&self) -> Box<dyn FnMut()>;
+    fn get_view(&self) -> Element;
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoadState<R>
@@ -243,17 +246,17 @@ where
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct PathEntry {
-    path: NotePath,
-    path_str: String,
+    note: NoteDetails,
+    search_str: String,
     path_signal: SyncSignal<Option<NotePath>>,
 }
 
 impl PathEntry {
-    pub fn from_note_path(path: NotePath, path_signal: SyncSignal<Option<NotePath>>) -> Self {
-        let path_str = path.to_string();
+    pub fn from_note_details(note: NoteDetails, path_signal: SyncSignal<Option<NotePath>>) -> Self {
+        let path_str = format!("{} {}", note.path, note.title);
         Self {
-            path,
-            path_str,
+            note,
+            search_str: path_str,
             path_signal,
         }
     }
@@ -261,13 +264,13 @@ impl PathEntry {
 
 impl AsRef<str> for PathEntry {
     fn as_ref(&self) -> &str {
-        self.path_str.as_str()
+        self.search_str.as_str()
     }
 }
 
 impl RowItem for PathEntry {
     fn on_select(&self) -> Box<dyn FnMut()> {
-        let p = self.path.clone();
+        let p = self.note.path.clone();
         let mut s = self.path_signal;
         Box::new(move || s.set(Some(p.clone())))
     }
@@ -275,7 +278,12 @@ impl RowItem for PathEntry {
     fn get_view(&self) -> Element {
         rsx! {
             div {
-                "{self.path.to_string()}"
+                class: "title",
+                "{self.note.title}"
+            }
+            div {
+                class: "details",
+                "{self.note.path.to_string()}"
             }
         }
     }
