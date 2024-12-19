@@ -96,9 +96,15 @@ impl NotesAndDirs {
             async move {
                 let current_path = path.read().clone();
                 let (tx, rx) = mpsc::channel();
-                vault
-                    .get_notes_channel(&current_path, NotesGetterOptions::new(tx).full_validation())
-                    .expect("Error fetching Entries");
+                let _ = tokio::spawn(async move {
+                    vault
+                        .get_notes_channel(
+                            &current_path,
+                            NotesGetterOptions::new(tx).full_validation(),
+                        )
+                        .expect("Error fetching Entries");
+                })
+                .await;
                 let current_path = path.read().clone();
                 while let Ok(entry) = rx.recv() {
                     match &entry {

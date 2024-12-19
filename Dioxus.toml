@@ -1,7 +1,7 @@
 [application]
 
 # App (Project) Name
-name = "noters"
+name = "notes"
 
 # Dioxus App Default Platform
 # web, desktop, fullstack
@@ -16,7 +16,7 @@ asset_dir = "assets"
 [web.app]
 
 # HTML title tag content
-title = "noters"
+title = "notes"
 
 [web.watcher]
 
