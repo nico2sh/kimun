@@ -25,17 +25,13 @@ struct SearchFunctions {
 }
 
 impl SelectorFunctions<NoteSearchEntry> for SearchFunctions {
-    async fn init(&self) -> Vec<NoteSearchEntry> {
+    fn init(&self) -> Vec<NoteSearchEntry> {
         debug!("Opening Note Search");
         vec![]
     }
 
-    async fn filter(
-        &self,
-        filter_text: String,
-        _items: Vec<NoteSearchEntry>,
-    ) -> Vec<NoteSearchEntry> {
-        match self.vault.search_notes(filter_text, true).await {
+    fn filter(&self, filter_text: String, _items: Vec<NoteSearchEntry>) -> Vec<NoteSearchEntry> {
+        match self.vault.search_notes(filter_text, true) {
             Ok(res) => res
                 .into_iter()
                 .map(|p| NoteSearchEntry::from_note_details(p, self.current_note_path))
@@ -47,11 +43,10 @@ impl SelectorFunctions<NoteSearchEntry> for SearchFunctions {
         }
     }
 
-    async fn preview(&self, element: &NoteSearchEntry) -> Option<String> {
+    fn preview(&self, element: &NoteSearchEntry) -> Option<String> {
         let preview = self
             .vault
             .load_note(&element.note.path)
-            .await
             .unwrap_or_else(|_e| "Error loading preview...".to_string());
         Some(preview)
     }

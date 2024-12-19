@@ -5,6 +5,7 @@ use crate::{
 use std::sync::mpsc;
 
 use dioxus::{hooks::use_signal, prelude::*};
+use dioxus_logger::tracing::info;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct NoteBrowserProps {
@@ -13,6 +14,7 @@ pub struct NoteBrowserProps {
 
 #[allow(non_snake_case)]
 pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
+    info!("Open Note Browser");
     let app_context: AppContext = use_context();
     let mut note_path = props.note_path;
     let vault: NoteVault = app_context.vault;
@@ -96,7 +98,6 @@ impl NotesAndDirs {
                 let (tx, rx) = mpsc::channel();
                 vault
                     .get_notes_channel(&current_path, NotesGetterOptions::new(tx).full_validation())
-                    .await
                     .expect("Error fetching Entries");
                 let current_path = path.read().clone();
                 while let Ok(entry) = rx.recv() {

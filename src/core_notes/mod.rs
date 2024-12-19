@@ -12,8 +12,9 @@ use std::{
     time::Duration,
 };
 
+use db::VaultDB;
 // use db::async_sqlite::AsyncConnection;
-use db::async_db::AsyncConnection;
+// use db::async_db::AsyncConnection;
 use error::{DBError, VaultError};
 use log::{debug, info};
 use nfs::{visitors::list::NoteListVisitorBuilder, DirectoryDetails, NoteDetails, NotePath};
@@ -22,6 +23,7 @@ use utilities::path_to_string;
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteVault {
     workspace_path: PathBuf,
+    vault_db: VaultDB,
 }
 
 impl NoteVault {
@@ -40,41 +42,30 @@ impl NoteVault {
                 path: path_to_string(path),
             })?;
         };
-
+        let vault_db = VaultDB::new(workspace_path);
         Ok(Self {
             workspace_path: workspace,
+            vault_db,
         })
     }
-    pub async fn init(&self) -> Result<(), VaultError> {
-        self.create_tables().await?;
-        println!("Creating Indices");
-        self.create_index().await?;
+    pub fn init(&self) -> Result<(), VaultError> {
+        self.create_tables()?;
+        self.create_index()?;
         Ok(())
     }
 
-    async fn create_tables(&self) -> Result<(), VaultError> {
-        println!("Start Creating Tables");
-        let connection = AsyncConnection::open(&self.workspace_path).await?;
-        connection
-            .call(|conn| {
-                println!("Creating the tables");
-                db::init_db(conn)
-            })
-            .await?;
-        connection.close().await?;
+    fn create_tables(&self) -> Result<(), VaultError> {
+        self.vault_db.call(db::init_db)?;
         Ok(())
     }
 
-    async fn create_index(&self) -> Result<(), VaultError> {
+    fn create_index(&self) -> Result<(), VaultError> {
         info!("Start indexing files");
         let start = std::time::SystemTime::now();
         let workspace_path = self.workspace_path.clone();
-        let connection = AsyncConnection::open(&self.workspace_path).await?;
-        connection
-            .call(move |conn| create_index_for(&workspace_path, conn, &NotePath::root()))
-            .await?;
+        self.vault_db
+            .call(move |conn| create_index_for(&workspace_path, conn, &NotePath::root()))?;
 
-        connection.close().await?;
         let time = std::time::SystemTime::now()
             .duration_since(start)
             .expect("Something's wrong with the time");
@@ -85,15 +76,15 @@ impl NoteVault {
         Ok(())
     }
 
-    pub async fn load_note<P: Into<NotePath>>(&self, path: P) -> Result<String, VaultError> {
+    pub fn load_note<P: Into<NotePath>>(&self, path: P) -> Result<String, VaultError> {
         let os_path = path.into().into_path(&self.workspace_path);
-        let file = tokio::fs::read(&os_path).await?;
+        let file = std::fs::read(&os_path)?;
         let content = String::from_utf8(file)?;
         Ok(content)
     }
 
     // Search notes using terms
-    pub async fn search_notes<S: AsRef<str>>(
+    pub fn search_notes<S: AsRef<str>>(
         &self,
         terms: S,
         wildcard: bool,
@@ -102,24 +93,20 @@ impl NoteVault {
         //     .build()
         //     .unwrap();
         let base_path = self.workspace_path.clone();
-        let connection = AsyncConnection::open(&base_path).await?;
         let terms = terms.as_ref().to_owned();
 
-        let a = connection
-            .call(move |conn| {
-                db::search_terms(conn, base_path, terms, wildcard).map(|vec| {
-                    vec.into_iter()
-                        .map(|(_data, details)| details)
-                        .collect::<Vec<NoteDetails>>()
-                })
+        let a = self.vault_db.call(move |conn| {
+            db::search_terms(conn, base_path, terms, wildcard).map(|vec| {
+                vec.into_iter()
+                    .map(|(_data, details)| details)
+                    .collect::<Vec<NoteDetails>>()
             })
-            .await?;
+        })?;
 
-        connection.close().await?;
         Ok(a)
     }
 
-    pub async fn get_notes_channel<P: Into<NotePath>>(
+    pub fn get_notes_channel<P: Into<NotePath>>(
         &self,
         path: P,
         options: NotesGetterOptions,
@@ -129,15 +116,13 @@ impl NoteVault {
         let workspace_path = self.workspace_path.clone();
         let note_path = path.into();
 
+        // TODO: See if we can put everything inside the closure
         let query_path = note_path.clone();
-        let connection = AsyncConnection::open(&self.workspace_path).await?;
-        let (cached_notes, cached_directories) = connection
-            .call(move |conn| {
-                let notes = db::get_notes(conn, &workspace_path, &query_path, options.recursive)?;
-                let dirs = db::get_directories(conn, &workspace_path, &query_path)?;
-                Ok((notes, dirs))
-            })
-            .await?;
+        let (cached_notes, cached_directories) = self.vault_db.call(move |conn| {
+            let notes = db::get_notes(conn, &workspace_path, &query_path, options.recursive)?;
+            let dirs = db::get_directories(conn, &workspace_path, &query_path)?;
+            Ok((notes, dirs))
+        })?;
 
         let mut builder = NoteListVisitorBuilder::new(
             &self.workspace_path,
@@ -155,18 +140,14 @@ impl NoteVault {
         let notes_to_delete = builder.get_notes_to_delete();
         let notes_to_modify = builder.get_notes_to_modify();
 
-        connection
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                db::insert_notes(&tx, &notes_to_add)?;
-                db::delete_notes(&tx, &notes_to_delete)?;
-                db::update_notes(&tx, &notes_to_modify)?;
-                tx.commit()?;
-                Ok(())
-            })
-            .await?;
-
-        connection.close().await?;
+        self.vault_db.call(move |conn| {
+            let tx = conn.transaction()?;
+            db::insert_notes(&tx, &notes_to_add)?;
+            db::delete_notes(&tx, &notes_to_delete)?;
+            db::update_notes(&tx, &notes_to_modify)?;
+            tx.commit()?;
+            Ok(())
+        })?;
 
         let time = std::time::SystemTime::now()
             .duration_since(start)
@@ -176,7 +157,7 @@ impl NoteVault {
         Ok(())
     }
 
-    pub async fn get_notes<P: Into<NotePath>>(
+    pub fn get_notes<P: Into<NotePath>>(
         &self,
         path: P,
         recursive: bool,
@@ -186,17 +167,13 @@ impl NoteVault {
         let workspace_path = self.workspace_path.clone();
         let note_path = path.into();
 
-        let connection = AsyncConnection::open(&workspace_path).await?;
-        let (cached_notes, cached_directories) = connection
-            .call(move |conn| {
-                let notes = db::get_notes(conn, &workspace_path, &note_path, recursive)?;
-                let dirs = db::get_directories(conn, &workspace_path, &note_path)?;
-                Ok((notes, dirs))
-            })
-            .await?;
+        let (cached_notes, cached_directories) = self.vault_db.call(move |conn| {
+            let notes = db::get_notes(conn, &workspace_path, &note_path, recursive)?;
+            let dirs = db::get_directories(conn, &workspace_path, &note_path)?;
+            Ok((notes, dirs))
+        })?;
 
         let result = collect_from_cache(&cached_notes, &cached_directories);
-        connection.close().await?;
         let time = std::time::SystemTime::now()
             .duration_since(start)
             .expect("Something's wrong with the time");
@@ -204,7 +181,7 @@ impl NoteVault {
         result
     }
 
-    pub async fn save_note(&self, path: NotePath, content: String) {
+    pub fn save_note(&self, path: NotePath, content: String) {
         // TODO: Save it
         sleep(Duration::from_secs(3));
     }

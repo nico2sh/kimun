@@ -22,7 +22,7 @@ pub enum VaultError {
 
 #[derive(Error, Debug)]
 pub enum DBError {
-    #[error("Error reading DB: {0}")]
+    #[error("Database Error: {0}")]
     DBError(#[from] rusqlite::Error),
     #[error("Error DB Connection Closed")]
     DBConnectionClosed,
@@ -30,12 +30,6 @@ pub enum DBError {
     QueryError(String),
     #[error("Error reading Filesystem: {0}")]
     NonCritical(String),
-    #[error("Async Oneshot Receive Message Error: {0}")]
-    AsyncCall(#[from] futures_channel::oneshot::Canceled),
-    #[error("Sync Receive Message Error: {0}")]
-    RcvCall(#[from] crossbeam_channel::RecvError),
-    // #[error("Sync Receive Message Error: {0}")]
-    // SendCall(#[from] crossbeam_channel::SendError<Command>),
     #[error("DB related error: {0}")]
     Other(String),
 }

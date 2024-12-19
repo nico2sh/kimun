@@ -12,9 +12,9 @@ trait SelectorFunctions<R>: Clone
 where
     R: RowItem,
 {
-    async fn init(&self) -> Vec<R>;
-    async fn filter(&self, filter_text: String, items: Vec<R>) -> Vec<R>;
-    async fn preview(&self, element: &R) -> Option<String>;
+    fn init(&self) -> Vec<R>;
+    fn filter(&self, filter_text: String, items: Vec<R>) -> Vec<R>;
+    fn preview(&self, element: &R) -> Option<String>;
 }
 
 pub trait RowItem: PartialEq + Eq + Clone {
@@ -95,9 +95,9 @@ where
         // let on_filter_change = on_filter_change.clone();
         async move {
             if let LoadState::Open = current_state {
-                let items = functions.init().await;
+                let items = functions.init();
                 load_state.set(LoadState::Loaded(items.clone()));
-                functions.filter(filter_text, items).await
+                functions.filter(filter_text, items)
                 // let init_task = smol::spawn(async move {
                 //     let items = on_init();
                 //     debug!("Loaded {} items", items.len());
@@ -107,7 +107,7 @@ where
                 // init_task.await
             } else if let LoadState::Loaded(items) = current_state {
                 selected.set(None);
-                functions.filter(filter_text, items).await
+                functions.filter(filter_text, items)
                 // let task = smol::spawn(async move { on_filter_change(filter_text, items) });
                 // task.await
                 // vec![]
@@ -126,7 +126,7 @@ where
                 let entry = rows.get(selection);
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
-                    functions.preview(&value_copy).await
+                    functions.preview(&value_copy)
                 } else {
                     None
                 }
