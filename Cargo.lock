@@ -917,7 +917,6 @@ dependencies = [
  "dioxus",
  "dioxus-desktop",
  "dioxus-logger",
- "dioxus-router",
  "dioxus-sdk",
  "dirs",
  "env_logger",
@@ -931,6 +930,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "thiserror 2.0.8",
+ "tokio",
  "toml",
 ]
 
@@ -1275,34 +1275,6 @@ dependencies = [
  "jni",
  "libc",
  "once_cell",
-]
-
-[[package]]
-name = "dioxus-router"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0299dea6f8759eb766ecf79247d50139f4b640056c3e60e8af254ea6921fb60d"
-dependencies = [
- "dioxus-cli-config",
- "dioxus-history",
- "dioxus-lib",
- "dioxus-router-macro",
- "rustversion",
- "tracing",
- "url",
- "urlencoding",
-]
-
-[[package]]
-name = "dioxus-router-macro"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "149652f16bb41cdcb4477829947bdefd7847660986e7eabaa26fd7bf43acc985"
-dependencies = [
- "proc-macro2",
- "quote",
- "slab",
- "syn 2.0.90",
 ]
 
 [[package]]
@@ -4531,6 +4503,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

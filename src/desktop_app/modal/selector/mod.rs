@@ -95,9 +95,16 @@ where
         // let on_filter_change = on_filter_change.clone();
         async move {
             if let LoadState::Open = current_state {
-                let items = functions.init();
-                load_state.set(LoadState::Loaded(items.clone()));
-                functions.filter(filter_text, items)
+                tokio::spawn(async move {
+                    let items = functions.init();
+                    load_state.set(LoadState::Loaded(items.clone()));
+                    functions.filter(filter_text, items)
+                })
+                .await
+                .unwrap()
+                // let items = functions.init();
+                // load_state.set(LoadState::Loaded(items.clone()));
+                // functions.filter(filter_text, items)
                 // let init_task = smol::spawn(async move {
                 //     let items = on_init();
                 //     debug!("Loaded {} items", items.len());
@@ -107,7 +114,9 @@ where
                 // init_task.await
             } else if let LoadState::Loaded(items) = current_state {
                 selected.set(None);
-                functions.filter(filter_text, items)
+                tokio::spawn(async move { functions.filter(filter_text, items) })
+                    .await
+                    .unwrap()
                 // let task = smol::spawn(async move { on_filter_change(filter_text, items) });
                 // task.await
                 // vec![]
@@ -126,7 +135,9 @@ where
                 let entry = rows.get(selection);
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
-                    functions.preview(&value_copy)
+                    tokio::spawn(async move { functions.preview(&value_copy) })
+                        .await
+                        .unwrap()
                 } else {
                     None
                 }
