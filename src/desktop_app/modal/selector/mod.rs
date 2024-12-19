@@ -43,11 +43,6 @@ where
     modal: SyncSignal<Modal>,
 }
 
-trait Sel {
-    type S;
-}
-// pub fn use_resource<T, F>(mut future: impl FnMut() -> F + 'static) -> Resource<T>
-
 #[allow(non_snake_case)]
 fn SelectorView<R, F>(
     hint: String,
@@ -91,8 +86,6 @@ where
         let current_state = current_state.clone();
         let filter_text = filter_text.read().clone();
         let functions = functions_load.clone();
-        // let on_init = on_init.clone();
-        // let on_filter_change = on_filter_change.clone();
         async move {
             if let LoadState::Open = current_state {
                 tokio::spawn(async move {
@@ -102,24 +95,11 @@ where
                 })
                 .await
                 .unwrap()
-                // let items = functions.init();
-                // load_state.set(LoadState::Loaded(items.clone()));
-                // functions.filter(filter_text, items)
-                // let init_task = smol::spawn(async move {
-                //     let items = on_init();
-                //     debug!("Loaded {} items", items.len());
-                //     load_state.set(LoadState::Loaded(items.clone()));
-                //     on_filter_change(filter_text, items)
-                // });
-                // init_task.await
             } else if let LoadState::Loaded(items) = current_state {
                 selected.set(None);
                 tokio::spawn(async move { functions.filter(filter_text, items) })
                     .await
                     .unwrap()
-                // let task = smol::spawn(async move { on_filter_change(filter_text, items) });
-                // task.await
-                // vec![]
             } else {
                 vec![]
             }
