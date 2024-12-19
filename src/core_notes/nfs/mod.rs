@@ -4,7 +4,6 @@ use std::{
     ffi::OsStr,
     fmt::Display,
     path::{Path, PathBuf},
-    str::FromStr,
     time::UNIX_EPOCH,
 };
 
@@ -277,7 +276,7 @@ impl Serialize for NotePath {
 }
 
 struct DeserializeNotePathVisitor;
-impl<'de> Visitor<'de> for DeserializeNotePathVisitor {
+impl Visitor<'_> for DeserializeNotePathVisitor {
     type Value = NotePath;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -470,7 +469,7 @@ pub fn get_file_walker<P: AsRef<Path>>(
 mod tests {
     use std::path::PathBuf;
 
-    use crate::utilities::path_to_string;
+    use crate::core_notes::utilities::path_to_string;
 
     use super::{NotePath, NotePathSlice};
 

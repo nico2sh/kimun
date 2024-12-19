@@ -264,7 +264,7 @@ impl ContentHierarchy {
 
 #[cfg(test)]
 mod test {
-    use crate::parser::parse;
+    use crate::core_notes::parser::parse;
 
     #[test]
     fn check_title_yaml_frontmatter() {

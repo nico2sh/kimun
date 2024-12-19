@@ -10,7 +10,7 @@ use std::{path::Path, thread};
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::oneshot::{self};
 
-use crate::error::DBError;
+use crate::core_notes::error::DBError;
 
 const DB_FILE: &str = "note.sqlite";
 const BUG_TEXT: &str = "bug in tokio-rusqlite, please report";
@@ -211,4 +211,3 @@ fn event_loop(mut conn: rusqlite::Connection, receiver: Receiver<Message>) {
     }
     println!("We are done here");
 }
-
