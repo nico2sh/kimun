@@ -37,7 +37,7 @@ pub fn App() -> Element {
         let note_vault = note_vault.clone();
         async move {
             debug!("Start initializing vault");
-            note_vault.init().await.expect("Error initializing the DB");
+            note_vault.init().expect("Error initializing the DB");
             debug!("Finish initializing vault");
         }
     });
@@ -71,11 +71,13 @@ pub fn App() -> Element {
     let mut modal = use_signal(Modal::new);
     let editor_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     if !modal.read().is_open() {
+        // TODO: Try with use_future
         spawn(async move {
             loop {
                 if let Some(e) = editor_signal.with(|f| f.clone()) {
                     info!("Focus input on Editor");
                     let _ = e.set_focus(true).await;
+                    info!("Focused input on Editor");
                     break;
                 }
             }

@@ -1,4 +1,4 @@
-pub mod async_db;
+// pub mod async_db;
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +14,32 @@ use super::{
 
 const VERSION: &str = "0.1";
 const DB_FILE: &str = "notes.sqlite";
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct VaultDB {
+    workspace_path: PathBuf,
+}
+
+impl VaultDB {
+    pub(super) fn new<P: AsRef<Path>>(workspace_path: P) -> Self {
+        Self {
+            workspace_path: workspace_path.as_ref().to_owned(),
+        }
+    }
+
+    /// Executes a function with a connection, the connection is closed right
+    /// after the funciton closes
+    pub fn call<F, R>(&self, function: F) -> Result<R, DBError>
+    where
+        F: FnOnce(&mut rusqlite::Connection) -> Result<R, DBError> + 'static + Send,
+    {
+        let mut conn = ConnectionBuilder::new(&self.workspace_path).build()?;
+        let res = function(&mut conn);
+        conn.close().map_err(|(_conn, e)| e)?;
+
+        res
+    }
+}
 
 pub fn init_db(connection: &mut Connection) -> Result<(), DBError> {
     delete_db(connection)?;

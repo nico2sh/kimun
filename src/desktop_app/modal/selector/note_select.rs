@@ -26,10 +26,9 @@ struct SelectFunctions {
 }
 
 impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
-    async fn init(&self) -> Vec<NoteSelectEntry> {
+    fn init(&self) -> Vec<NoteSelectEntry> {
         debug!("Opening Note Selector");
         let items = open(NotePath::root(), &self.vault)
-            .await
             .into_iter()
             .map(|e| NoteSelectEntry::from_note_details(e, self.current_note_path))
             .collect::<Vec<NoteSelectEntry>>();
@@ -37,11 +36,7 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
         items
     }
 
-    async fn filter(
-        &self,
-        filter_text: String,
-        items: Vec<NoteSelectEntry>,
-    ) -> Vec<NoteSelectEntry> {
+    fn filter(&self, filter_text: String, items: Vec<NoteSelectEntry>) -> Vec<NoteSelectEntry> {
         if !items.is_empty() {
             let mut result = Vec::new();
             if !filter_text.is_empty() {
@@ -60,7 +55,7 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
         }
     }
 
-    async fn preview(&self, element: &NoteSelectEntry) -> Option<String> {
+    fn preview(&self, element: &NoteSelectEntry) -> Option<String> {
         let preview = if let NoteSelectEntry::Note {
             note,
             search_str: _,
@@ -69,7 +64,6 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
         {
             self.vault
                 .load_note(&note.path)
-                .await
                 .unwrap_or_else(|_e| "Error loading preview...".to_string())
         } else {
             "".to_string()
@@ -78,7 +72,7 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
     }
 }
 
-async fn open(note_path: NotePath, vault: &NoteVault) -> Vec<NoteDetails> {
+fn open(note_path: NotePath, vault: &NoteVault) -> Vec<NoteDetails> {
     let path = if note_path.is_note() {
         note_path.get_parent_path().0
     } else {
@@ -86,7 +80,6 @@ async fn open(note_path: NotePath, vault: &NoteVault) -> Vec<NoteDetails> {
     };
     vault
         .get_notes(path, true)
-        .await
         .unwrap_or_default()
         .into_iter()
         .filter_map(|sr| {

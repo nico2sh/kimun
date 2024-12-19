@@ -8,7 +8,8 @@ use std::{path::Path, thread};
 
 // use crossbeam::channel::{Receiver, Sender};
 use crossbeam_channel::{Receiver, Sender};
-use tokio::sync::oneshot::{self};
+// use tokio::sync::oneshot::{self};
+use futures_channel::oneshot;
 
 use crate::core_notes::error::DBError;
 

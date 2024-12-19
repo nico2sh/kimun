@@ -27,9 +27,9 @@ regex = "1.11"
 # Markdown parsing
 pulldown-cmark = "0.12"
 ## Async stuff
-tokio = { version = "1.42", features = ["full"] }
+# tokio = { version = "1.42", features = ["full"] }
 crossbeam-channel = "0.5"
-futures-channel = "0.3"
+# futures-channel = "0.3"
 
 ###############
 # Desktop App #
@@ -37,8 +37,8 @@ futures-channel = "0.3"
 dioxus = { version = "0.6", features = ["desktop"] }
 dioxus-sdk = { version = "0.6", features = [] }
 dioxus-desktop = "0.6"
-dioxus-logger = "0.6.0"
-dioxus-router = "0.6.0"
+dioxus-logger = "0.6"
+dioxus-router = "0.6"
 ## Error Handling
 anyhow = "1.0"
 ## File dialog
@@ -65,3 +65,15 @@ inherits = "dev"
 
 [profile.android-dev]
 inherits = "dev"
+
+# [profile]
+#
+# [profile.wasm-dev]
+# inherits = "dev"
+# opt-level = 1
+#
+# [profile.server-dev]
+# inherits = "dev"
+#
+# [profile.android-dev]
+# inherits = "dev"

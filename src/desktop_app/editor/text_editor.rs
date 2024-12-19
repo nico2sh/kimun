@@ -2,7 +2,7 @@ use crate::{
     core_notes::{nfs::NotePath, NoteVault},
     desktop_app::AppContext,
 };
-use dioxus_logger::tracing::debug;
+use dioxus_logger::tracing::{debug, info};
 use std::{
     fmt::{Display, Formatter},
     rc::Rc,
@@ -20,6 +20,7 @@ pub struct TextEditorProps {
 pub fn TextEditor(props: TextEditorProps) -> Element {
     // to recover the focus
     let mut editor = props.editor_signal;
+    info!("Open Text Editor");
 
     let app_context: AppContext = use_context();
     let vault: NoteVault = app_context.vault;
@@ -41,11 +42,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
             } else {
                 let np = &*note_path.read();
                 if let Some(path) = np {
-                    vault
-                        .load_note(path.to_owned())
-                        .await
-                        .ok()
-                        .unwrap_or_default()
+                    vault.load_note(path.to_owned()).ok().unwrap_or_default()
                 } else {
                     "".to_string()
                 }
@@ -61,7 +58,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
         async move {
             loop {
                 // smol::Timer::after(Duration::from_secs(5)).await;
-                content_edit.write().save_async().await;
+                content_edit.write().save();
                 // let content = content_edit.read().content.to_owned();
                 // let path = content_edit.read().path.to_owned();
                 // // gloo_timers::future::TimeoutFuture::new(5_000).await;
@@ -144,21 +141,21 @@ impl ContentEdit {
         }
     }
 
-    async fn save_async(&mut self) {
-        if self.has_changed {
-            if let Some(path) = self.path.clone() {
-                self.has_changed = false;
-                debug!("=================");
-                debug!("About to Save");
-                let vault = self.vault.clone();
-                let path = path.clone();
-                let content = self.content.clone();
-                vault.save_note(path, content).await;
-                debug!("Content Saved:\n{}", self.content);
-                debug!("=================");
-            }
-        }
-    }
+    // async fn save_async(&mut self) {
+    //     if self.has_changed {
+    //         if let Some(path) = self.path.clone() {
+    //             self.has_changed = false;
+    //             debug!("=================");
+    //             debug!("About to Save");
+    //             let vault = self.vault.clone();
+    //             let path = path.clone();
+    //             let content = self.content.clone();
+    //             vault.save_note(path, content);
+    //             debug!("Content Saved:\n{}", self.content);
+    //             debug!("=================");
+    //         }
+    //     }
+    // }
 
     fn replace_content<S: AsRef<str>>(&mut self, content: S, path: Option<NotePath>) {
         self.save();
