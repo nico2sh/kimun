@@ -66,29 +66,36 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+struct Content {
+    text: String,
+    has_changed: bool,
+}
+
 #[derive(Debug, PartialEq)]
 struct ContentEdit {
-    content: RefCell<String>,
-    has_changed: bool,
+    content: RefCell<Content>,
     vault: NoteVault,
     path: Option<NotePath>,
 }
 
 impl Display for ContentEdit {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.content.borrow().to_owned())
+        write!(f, "{}", self.content.borrow().text)
     }
 }
 
 impl ContentEdit {
     fn new(vault: &NoteVault, path: Option<NotePath>) -> Self {
-        let content = match &path {
+        let text = match &path {
             Some(path) => vault.load_note(path).unwrap_or_else(|_e| "".to_string()),
             None => "".to_string(),
         };
         Self {
-            content: RefCell::new(content),
-            has_changed: false,
+            content: RefCell::new(Content {
+                text,
+                has_changed: false,
+            }),
             vault: vault.clone(),
             path,
         }
@@ -98,14 +105,15 @@ impl ContentEdit {
         self.path.is_some()
     }
 
-    fn save(&mut self) {
-        if self.has_changed {
+    fn save(&self) {
+        let mut content = self.content.borrow_mut();
+        if content.has_changed {
             if let Some(path) = self.path.clone() {
-                self.has_changed = false;
+                content.has_changed = false;
                 debug!("=================");
                 debug!("About to Save");
-                let vault = self.vault.clone();
-                vault.save_note(path, self.get_content());
+                // let vault = self.vault.clone();
+                self.vault.save_note(path, self.get_content());
                 debug!("Content Saved:\n{}", self.get_content());
                 debug!("=================");
             }
@@ -113,7 +121,7 @@ impl ContentEdit {
     }
 
     fn get_content(&self) -> String {
-        self.content.borrow().to_owned()
+        self.content.borrow().text.to_owned()
     }
 
     // async fn save_async(&mut self) {
@@ -138,17 +146,16 @@ impl ContentEdit {
     //     self.path = path;
     // }
 
-    fn update_content(&self, content: String) {
-        // debug!("=================");
-        // debug!("Updating content:\n{}", content);
-        // debug!("=================");
-        *self.content.borrow_mut() = content;
-        // self.has_changed = true;
+    fn update_content(&self, text: String) {
+        let mut content = self.content.borrow_mut();
+        content.text = text;
+        content.has_changed = true;
     }
 }
 
 impl Drop for ContentEdit {
     fn drop(&mut self) {
         info!("SAVE ME: {}", self.get_content());
+        self.save();
     }
 }
