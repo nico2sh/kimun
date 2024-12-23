@@ -920,6 +920,7 @@ dependencies = [
  "dioxus-sdk",
  "dirs",
  "env_logger",
+ "futures",
  "gxhash",
  "ignore",
  "log",

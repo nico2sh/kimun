@@ -29,7 +29,7 @@ pulldown-cmark = "0.12"
 ## Async stuff
 tokio = { version = "1.42", features = ["full"] }
 crossbeam-channel = "0.5"
-# futures-channel = "0.3"
+futures = "0.3"
 
 ###############
 # Desktop App #
