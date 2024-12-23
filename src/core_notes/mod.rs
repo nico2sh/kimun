@@ -181,7 +181,7 @@ impl NoteVault {
         result
     }
 
-    pub fn save_note(&self, path: NotePath, content: String) {
+    pub fn save_note<S: AsRef<str>>(&self, path: &NotePath, content: S) {
         // TODO: Save it
         sleep(Duration::from_secs(3));
     }
