@@ -75,9 +75,7 @@ pub fn App() -> Element {
         spawn(async move {
             loop {
                 if let Some(e) = editor_signal.with(|f| f.clone()) {
-                    info!("Focus input on Editor");
                     let _ = e.set_focus(true).await;
-                    info!("Focused input on Editor");
                     break;
                 }
             }
