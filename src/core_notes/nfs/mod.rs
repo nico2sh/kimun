@@ -54,20 +54,7 @@ impl NoteData {
         workspace_path: P,
         path: &NotePath,
     ) -> Result<NoteDetails, VaultError> {
-        let content = load_content(&workspace_path, path)?;
-
-        let title = parser::parse(&content)
-            .title
-            .unwrap_or_else(|| self.path.get_name());
-        let hash = gxhash::gxhash32(content.as_bytes(), HASH_SEED);
-        let content = Some(content);
-        Ok(NoteDetails {
-            base_path: workspace_path.as_ref().to_path_buf(),
-            path: path.clone(),
-            title,
-            hash,
-            content,
-        })
+        NoteDetails::from_path(workspace_path, path)
     }
 }
 
@@ -184,9 +171,9 @@ impl NoteEntryDetails {
 pub struct NoteDetails {
     pub base_path: PathBuf,
     pub path: NotePath,
-    // Content may be lazy fetched
     pub hash: u32,
     pub title: String,
+    // Content may be lazy fetched
     content: Option<String>,
 }
 
@@ -207,25 +194,39 @@ impl NoteDetails {
         }
     }
 
-    fn update_content(&mut self) -> (String, String, u32) {
-        let content = load_content(&self.base_path, &self.path).unwrap_or_default();
-        let title = parser::parse(&content)
-            .title
-            .unwrap_or_else(|| self.path.get_name());
-        let hash = gxhash::gxhash32(content.as_bytes(), HASH_SEED);
-        self.title = title.clone();
-        self.hash = hash;
-        self.content = Some(content.clone());
-        (title, content, hash)
+    fn from_path<P: AsRef<Path>>(base_path: P, note_path: &NotePath) -> Result<Self, VaultError> {
+        let (title, content, hash) = NoteDetails::extract_content_data(&base_path, note_path)?;
+        Ok(Self {
+            base_path: base_path.as_ref().to_path_buf(),
+            path: note_path.to_owned(),
+            hash,
+            title,
+            content: Some(content),
+        })
     }
 
-    pub fn get_content(&mut self) -> String {
+    fn extract_content_data<P: AsRef<Path>>(
+        base_path: P,
+        note_path: &NotePath,
+    ) -> Result<(String, String, u32), VaultError> {
+        let content = load_content(base_path, note_path)?;
+        let title = parser::parse(&content)
+            .title
+            .unwrap_or_else(|| note_path.get_name());
+        let hash = gxhash::gxhash32(content.as_bytes(), HASH_SEED);
+        Ok((title, content, hash))
+    }
+
+    pub fn get_content(&mut self) -> Result<String, VaultError> {
         let content = self.content.clone();
+        // Content may be lazy loaded from disk since it's
+        // the only data that is not stored in the DB
         if let Some(content) = content {
-            content
+            Ok(content)
         } else {
-            let (_, content, _) = self.update_content();
-            content
+            let (_, content, _) = NoteDetails::extract_content_data(&self.base_path, &self.path)?;
+            self.content = Some(content.clone());
+            Ok(content)
         }
     }
 }

@@ -283,7 +283,10 @@ fn insert_note(
     }
     tx.execute(
         "INSERT INTO notesContent (path, content) VALUES (?1, ?2)",
-        params![details.path.to_string(), details.get_content()],
+        params![
+            details.path.to_string(),
+            details.get_content().unwrap_or_default()
+        ],
     )?;
 
     Ok(())
@@ -296,7 +299,7 @@ fn update_note(
 ) -> Result<(), DBError> {
     let title = details.title.clone();
     let hash = details.hash;
-    let content = details.get_content();
+    let content = details.get_content().unwrap_or_default();
     let path = details.path.clone();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
