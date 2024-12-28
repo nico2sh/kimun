@@ -8,9 +8,10 @@ use rusqlite::{config::DbConfig, params, Connection, Transaction};
 use super::error::DBError;
 
 use super::{
-    nfs::{DirectoryData, DirectoryDetails, NoteData, NoteDetails},
+    nfs::{DirectoryEntryData, NoteEntryData},
     NotePath,
 };
+use super::{DirectoryDetails, NoteDetails};
 
 const VERSION: &str = "0.1";
 const DB_FILE: &str = "notes.sqlite";
@@ -134,12 +135,11 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
     Ok(())
 }
 
-pub fn search_terms<P: AsRef<Path>, S: AsRef<str>>(
+pub fn search_terms<S: AsRef<str>>(
     connection: &mut Connection,
-    base_path: P,
     terms: S,
     include_path: bool,
-) -> Result<Vec<(NoteData, NoteDetails)>, DBError> {
+) -> Result<Vec<(NoteEntryData, NoteDetails)>, DBError> {
     let sql = if include_path {
         "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
     } else {
@@ -155,31 +155,24 @@ pub fn search_terms<P: AsRef<Path>, S: AsRef<str>>(
             let modified = row.get(3)?;
             let hash: i64 = row.get(4)?;
             let note_path = NotePath::from(&path);
-            let data = NoteData {
+            let data = NoteEntryData {
                 path: note_path.clone(),
                 size,
                 modified_secs: modified,
             };
-            let det = NoteDetails::new(
-                base_path.as_ref().to_path_buf(),
-                note_path,
-                u32::try_from(hash).unwrap(),
-                title,
-                None,
-            );
+            let det = NoteDetails::new(note_path, u32::try_from(hash).unwrap(), title, None);
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(NoteData, NoteDetails)>, DBError>>()?;
+        .collect::<Result<Vec<(NoteEntryData, NoteDetails)>, DBError>>()?;
     Ok(res)
 }
 
-pub fn get_notes<P: AsRef<Path>>(
+pub fn get_notes(
     connection: &mut Connection,
-    base_path: P,
     path: &NotePath,
     recursive: bool,
-) -> Result<Vec<(NoteData, NoteDetails)>, DBError> {
+) -> Result<Vec<(NoteEntryData, NoteDetails)>, DBError> {
     let sql = if recursive {
         "SELECT path, title, size, modified, hash, noteName FROM notes where basePath LIKE (?1 || '%')"
     } else {
@@ -194,22 +187,16 @@ pub fn get_notes<P: AsRef<Path>>(
             let modified = row.get(3)?;
             let hash: i64 = row.get(4)?;
             let note_path = NotePath::from(&path);
-            let data = NoteData {
+            let data = NoteEntryData {
                 path: note_path.clone(),
                 size,
                 modified_secs: modified,
             };
-            let det = NoteDetails::new(
-                base_path.as_ref().to_path_buf(),
-                note_path,
-                u32::try_from(hash).unwrap(),
-                title,
-                None,
-            );
+            let det = NoteDetails::new(note_path, u32::try_from(hash).unwrap(), title, None);
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(NoteData, NoteDetails)>, DBError>>()?;
+        .collect::<Result<Vec<(NoteEntryData, NoteDetails)>, DBError>>()?;
     Ok(res)
 }
 
@@ -217,14 +204,14 @@ pub fn get_directories<P: AsRef<Path>>(
     connection: &mut Connection,
     base_path: P,
     path: &NotePath,
-) -> Result<Vec<(DirectoryData, DirectoryDetails)>, DBError> {
+) -> Result<Vec<(DirectoryEntryData, DirectoryDetails)>, DBError> {
     // debug!("getting directories");
     let mut stmt = connection.prepare("SELECT path FROM directories where basePath = ?1")?;
     let res = stmt
         .query_map([path.to_string()], |row| {
             let path: String = row.get(0)?;
             let note_path = NotePath::from(&path);
-            let data = DirectoryData {
+            let data = DirectoryEntryData {
                 path: note_path.clone(),
             };
             let det = DirectoryDetails {
@@ -234,27 +221,35 @@ pub fn get_directories<P: AsRef<Path>>(
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(DirectoryData, DirectoryDetails)>, DBError>>()?;
+        .collect::<Result<Vec<(DirectoryEntryData, DirectoryDetails)>, DBError>>()?;
     Ok(res)
 }
 
-pub fn insert_notes(tx: &Transaction, notes: &Vec<(NoteData, NoteDetails)>) -> Result<(), DBError> {
+pub fn insert_notes<P: AsRef<Path>>(
+    tx: &Transaction,
+    base_path: P,
+    notes: &Vec<(NoteEntryData, NoteDetails)>,
+) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Inserting {} notes", notes.len());
         for (data, details) in notes {
             let mut details = details.clone();
-            insert_note(tx, data, &mut details)?;
+            insert_note(tx, base_path.as_ref(), data, &mut details)?;
         }
     }
     Ok(())
 }
 
-pub fn update_notes(tx: &Transaction, notes: &Vec<(NoteData, NoteDetails)>) -> Result<(), DBError> {
+pub fn update_notes<P: AsRef<Path>>(
+    tx: &Transaction,
+    base_path: P,
+    notes: &Vec<(NoteEntryData, NoteDetails)>,
+) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Updating {} notes", notes.len());
         for (data, details) in notes {
             let mut details = details.clone();
-            update_note(tx, data, &mut details)?;
+            update_note(tx, base_path.as_ref(), data, &mut details)?;
         }
     }
     Ok(())
@@ -269,15 +264,16 @@ pub fn delete_notes(tx: &Transaction, paths: &Vec<NotePath>) -> Result<(), DBErr
     Ok(())
 }
 
-fn insert_note(
+fn insert_note<P: AsRef<Path>>(
     tx: &Transaction,
-    data: &NoteData,
+    base_path: P,
+    data: &NoteEntryData,
     details: &mut NoteDetails,
 ) -> Result<(), DBError> {
-    let (base_path, name) = details.path.get_parent_path();
+    let (parent_path, name) = details.path.get_parent_path();
     if let Err(e) = tx.execute(
         "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![details.path.to_string(), details.title, data.size, data.modified_secs, details.hash, base_path.to_string(), name],
+        params![details.path.to_string(), details.get_title(), data.size, data.modified_secs, details.data.hash, parent_path.to_string(), name],
     ){
         error!("Error inserting note {}", e);
     }
@@ -285,21 +281,22 @@ fn insert_note(
         "INSERT INTO notesContent (path, content) VALUES (?1, ?2)",
         params![
             details.path.to_string(),
-            details.get_content().unwrap_or_default()
+            details.get_content(base_path).unwrap_or_default()
         ],
     )?;
 
     Ok(())
 }
 
-fn update_note(
+fn update_note<P: AsRef<Path>>(
     tx: &Transaction,
-    data: &NoteData,
+    base_path: P,
+    data: &NoteEntryData,
     details: &mut NoteDetails,
 ) -> Result<(), DBError> {
-    let title = details.title.clone();
-    let hash = details.hash;
-    let content = details.get_content().unwrap_or_default();
+    let title = details.get_title();
+    let hash = details.data.hash;
+    let content = details.get_content(base_path).unwrap_or_default();
     let path = details.path.clone();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",

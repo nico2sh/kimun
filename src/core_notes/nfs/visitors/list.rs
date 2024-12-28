@@ -9,7 +9,8 @@ use log::error;
 
 use crate::core_notes::{
     nfs::{
-        DirectoryData, DirectoryDetails, EntryData, NoteData, NoteDetails, NotePath, VaultEntry,
+        DirectoryDetails, DirectoryEntryData, EntryData, NoteDetails, NoteEntryData, NotePath,
+        VaultEntry,
     },
     NotesValidation, SearchResult,
 };
@@ -17,10 +18,10 @@ use crate::core_notes::{
 struct NoteListVisitor {
     workspace_path: PathBuf,
     validation: NotesValidation,
-    notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteData, NoteDetails)>>>,
+    notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteEntryData, NoteDetails)>>>,
     directories_to_delete: Arc<Mutex<HashSet<NotePath>>>,
-    notes_to_modify: Arc<Mutex<Vec<(NoteData, NoteDetails)>>>,
-    notes_to_add: Arc<Mutex<Vec<(NoteData, NoteDetails)>>>,
+    notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
+    notes_to_add: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
     directories_to_add: Arc<Mutex<Vec<NotePath>>>,
     sender: Option<Sender<SearchResult>>,
 }
@@ -41,7 +42,7 @@ impl NoteListVisitor {
         }
     }
 
-    fn has_changed_fast_check(&self, cached: &NoteData, disk: &NoteData) -> bool {
+    fn has_changed_fast_check(&self, cached: &NoteEntryData, disk: &NoteEntryData) -> bool {
         let modified_secs = disk.modified_secs;
         let size = disk.size;
         let modified_sec_cached = cached.modified_secs;
@@ -49,14 +50,14 @@ impl NoteListVisitor {
         size != size_cached || modified_secs != modified_sec_cached
     }
 
-    fn has_changed_deep_check(&self, cached: &mut NoteDetails, disk: &NoteData) -> bool {
+    fn has_changed_deep_check(&self, cached: &mut NoteDetails, disk: &NoteEntryData) -> bool {
         let details = disk.load_details(&self.workspace_path, &disk.path).unwrap();
-        let details_hash = details.hash;
-        let cached_hash = cached.hash;
+        let details_hash = details.data.hash;
+        let cached_hash = cached.data.hash;
         !details_hash.eq(&cached_hash)
     }
 
-    fn verify_cached_note(&self, data: &NoteData) -> NoteDetails {
+    fn verify_cached_note(&self, data: &NoteEntryData) -> NoteDetails {
         let mut ntd = self.notes_to_delete.lock().unwrap();
         let cached_option = ntd.remove(&data.path);
 
@@ -92,7 +93,7 @@ impl NoteListVisitor {
         details
     }
 
-    fn verify_cached_directory(&self, data: &DirectoryData) -> DirectoryDetails {
+    fn verify_cached_directory(&self, data: &DirectoryEntryData) -> DirectoryDetails {
         let mut dtd = self.directories_to_delete.lock().unwrap();
         if !dtd.remove(&data.path) {
             // debug!("Add dir: {}", data.path);
@@ -135,10 +136,10 @@ impl ParallelVisitor for NoteListVisitor {
 pub struct NoteListVisitorBuilder {
     workspace_path: PathBuf,
     validation: NotesValidation,
-    notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteData, NoteDetails)>>>,
+    notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteEntryData, NoteDetails)>>>,
     directories_to_delete: Arc<Mutex<HashSet<NotePath>>>,
-    notes_to_modify: Arc<Mutex<Vec<(NoteData, NoteDetails)>>>,
-    notes_to_add: Arc<Mutex<Vec<(NoteData, NoteDetails)>>>,
+    notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
+    notes_to_add: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
     directories_to_add: Arc<Mutex<Vec<NotePath>>>,
     sender: Option<Sender<SearchResult>>,
 }
@@ -147,8 +148,8 @@ impl NoteListVisitorBuilder {
     pub fn new<P: AsRef<Path>>(
         workspace_path: P,
         validation: NotesValidation,
-        cached_notes: Vec<(NoteData, NoteDetails)>,
-        cached_directories: Vec<(DirectoryData, DirectoryDetails)>,
+        cached_notes: Vec<(NoteEntryData, NoteDetails)>,
+        cached_directories: Vec<(DirectoryEntryData, DirectoryDetails)>,
         sender: Option<Sender<SearchResult>>,
     ) -> Self {
         let mut notes_to_delete = HashMap::new();
@@ -181,7 +182,7 @@ impl NoteListVisitorBuilder {
             .collect()
     }
 
-    pub fn get_notes_to_add(&self) -> Vec<(NoteData, NoteDetails)> {
+    pub fn get_notes_to_add(&self) -> Vec<(NoteEntryData, NoteDetails)> {
         self.notes_to_add
             .lock()
             .unwrap()
@@ -190,7 +191,7 @@ impl NoteListVisitorBuilder {
             .collect()
     }
 
-    pub fn get_notes_to_modify(&self) -> Vec<(NoteData, NoteDetails)> {
+    pub fn get_notes_to_modify(&self) -> Vec<(NoteEntryData, NoteDetails)> {
         self.notes_to_modify
             .lock()
             .unwrap()
