@@ -1,7 +1,7 @@
+mod content_data;
 mod db;
 pub mod error;
 pub mod nfs;
-mod parser;
 pub mod utilities;
 
 use std::{
@@ -12,12 +12,13 @@ use std::{
     time::Duration,
 };
 
+use content_data::NoteContentData;
 use db::VaultDB;
 // use db::async_sqlite::AsyncConnection;
 // use db::async_db::AsyncConnection;
 use error::{DBError, VaultError};
 use log::{debug, info};
-use nfs::{visitors::list::NoteListVisitorBuilder, DirectoryDetails, NoteDetails, NotePath};
+use nfs::{load_content, visitors::list::NoteListVisitorBuilder, NotePath};
 use utilities::path_to_string;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,11 +93,10 @@ impl NoteVault {
         // let mut connection = ConnectionBuilder::new(&self.workspace_path)
         //     .build()
         //     .unwrap();
-        let base_path = self.workspace_path.clone();
         let terms = terms.as_ref().to_owned();
 
         let a = self.vault_db.call(move |conn| {
-            db::search_terms(conn, base_path, terms, wildcard).map(|vec| {
+            db::search_terms(conn, terms, wildcard).map(|vec| {
                 vec.into_iter()
                     .map(|(_data, details)| details)
                     .collect::<Vec<NoteDetails>>()
@@ -119,7 +119,7 @@ impl NoteVault {
         // TODO: See if we can put everything inside the closure
         let query_path = note_path.clone();
         let (cached_notes, cached_directories) = self.vault_db.call(move |conn| {
-            let notes = db::get_notes(conn, &workspace_path, &query_path, options.recursive)?;
+            let notes = db::get_notes(conn, &query_path, options.recursive)?;
             let dirs = db::get_directories(conn, &workspace_path, &query_path)?;
             Ok((notes, dirs))
         })?;
@@ -140,11 +140,12 @@ impl NoteVault {
         let notes_to_delete = builder.get_notes_to_delete();
         let notes_to_modify = builder.get_notes_to_modify();
 
+        let workspace_path = self.workspace_path.clone();
         self.vault_db.call(move |conn| {
             let tx = conn.transaction()?;
-            db::insert_notes(&tx, &notes_to_add)?;
+            db::insert_notes(&tx, &workspace_path, &notes_to_add)?;
             db::delete_notes(&tx, &notes_to_delete)?;
-            db::update_notes(&tx, &notes_to_modify)?;
+            db::update_notes(&tx, &workspace_path, &notes_to_modify)?;
             tx.commit()?;
             Ok(())
         })?;
@@ -168,7 +169,7 @@ impl NoteVault {
         let note_path = path.into();
 
         let (cached_notes, cached_directories) = self.vault_db.call(move |conn| {
-            let notes = db::get_notes(conn, &workspace_path, &note_path, recursive)?;
+            let notes = db::get_notes(conn, &note_path, recursive)?;
             let dirs = db::get_directories(conn, &workspace_path, &note_path)?;
             Ok((notes, dirs))
         })?;
@@ -182,9 +183,80 @@ impl NoteVault {
     }
 
     pub fn save_note<S: AsRef<str>>(&self, path: &NotePath, content: S) {
+        // Save to disk
+        let details = NoteDetails::from_content(content, path);
+
+        // Save to DB
+
         // TODO: Save it
         sleep(Duration::from_secs(3));
     }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NoteDetails {
+    pub path: NotePath,
+    pub data: NoteContentData,
+    // Content may be lazy fetched
+    // if the details are taken from the DB, the content is
+    // likely not going to be there, so the `get_content` function
+    // will take it from disk, and store in the cache
+    cached_content: Option<String>,
+}
+
+impl NoteDetails {
+    pub fn new(note_path: NotePath, hash: u32, title: String, content: Option<String>) -> Self {
+        let data = NoteContentData {
+            hash,
+            title: Some(title),
+            content_chunks: vec![],
+        };
+        Self {
+            path: note_path,
+            data,
+            cached_content: content,
+        }
+    }
+
+    fn from_content<S: AsRef<str>>(content: S, note_path: &NotePath) -> Self {
+        let data = content_data::extract_data(&content);
+        Self {
+            path: note_path.to_owned(),
+            data,
+            cached_content: Some(content.as_ref().to_owned()),
+        }
+    }
+
+    fn from_path<P: AsRef<Path>>(base_path: P, note_path: &NotePath) -> Result<Self, VaultError> {
+        let content = load_content(&base_path, note_path)?;
+        Ok(Self::from_content(content, note_path))
+    }
+
+    pub fn get_content<P: AsRef<Path>>(&mut self, base_path: P) -> Result<String, VaultError> {
+        let content = self.cached_content.clone();
+        // Content may be lazy loaded from disk since it's
+        // the only data that is not stored in the DB
+        if let Some(content) = content {
+            Ok(content)
+        } else {
+            let content = load_content(base_path, &self.path)?;
+            self.cached_content = Some(content.clone());
+            Ok(content)
+        }
+    }
+
+    pub fn get_title(&self) -> String {
+        self.data
+            .title
+            .clone()
+            .unwrap_or_else(|| self.path.get_parent_path().1)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectoryDetails {
+    pub base_path: PathBuf,
+    pub path: NotePath,
 }
 
 #[derive(Debug, Clone)]
@@ -195,8 +267,8 @@ pub enum SearchResult {
 }
 
 fn collect_from_cache(
-    cached_notes: &[(nfs::NoteData, nfs::NoteDetails)],
-    cached_directories: &[(nfs::DirectoryData, nfs::DirectoryDetails)],
+    cached_notes: &[(nfs::NoteEntryData, NoteDetails)],
+    cached_directories: &[(nfs::DirectoryEntryData, DirectoryDetails)],
 ) -> Result<Vec<SearchResult>, VaultError> {
     let notes = cached_notes
         .iter()
@@ -212,9 +284,7 @@ fn collect_from_cache(
 
 #[derive(Debug)]
 /// Options to traverse the Notes
-/// You can set an optional sync::mpsc::Sender to use a channel to receive the entries
-/// If a Sender is set, then it returns `None`, if there's no Sender, it returns
-/// the NoteEntry
+/// You need a sync::mpsc::Sender to use a channel to receive the entries
 pub struct NotesGetterOptions {
     validation: NotesValidation,
     recursive: bool,
@@ -296,7 +366,7 @@ fn create_index_for<P: AsRef<Path>>(
     let workspace_path = workspace_path.as_ref();
     let walker = nfs::get_file_walker(workspace_path, path, false);
 
-    let cached_notes = db::get_notes(connection, workspace_path, path, false)?;
+    let cached_notes = db::get_notes(connection, path, false)?;
     let cached_directories = db::get_directories(connection, workspace_path, path)?;
     let mut builder = NoteListVisitorBuilder::new(
         workspace_path,
@@ -315,8 +385,8 @@ fn create_index_for<P: AsRef<Path>>(
     let tx = connection.transaction()?;
     db::insert_directory(&tx, &dir_path)?;
     db::delete_notes(&tx, &notes_to_delete)?;
-    db::insert_notes(&tx, &notes_to_add)?;
-    db::update_notes(&tx, &notes_to_modify)?;
+    db::insert_notes(&tx, workspace_path, &notes_to_add)?;
+    db::update_notes(&tx, workspace_path, &notes_to_modify)?;
     db::delete_directories(&tx, &directories_to_delete)?;
     tx.commit()?;
 

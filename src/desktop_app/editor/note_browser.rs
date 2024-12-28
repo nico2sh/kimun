@@ -57,7 +57,7 @@ pub fn NoteBrowser(props: NoteBrowserProps) -> Element {
                             rsx!{div {
                                 class: "element",
                                 onclick: move |_| *note_path.write() = Some(details.path.clone()),
-                                div { class: "icon-note title", "{details.title}"}
+                                div { class: "icon-note title", "{details.get_title()}"}
                                 div { class: "details", "{file}"}
                             }}
                         },

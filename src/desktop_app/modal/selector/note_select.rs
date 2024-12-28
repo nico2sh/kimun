@@ -1,8 +1,5 @@
 use crate::{
-    core_notes::{
-        nfs::{NoteDetails, NotePath},
-        NoteVault, SearchResult,
-    },
+    core_notes::{nfs::NotePath, NoteDetails, NoteVault, SearchResult},
     desktop_app::AppContext,
 };
 
@@ -189,7 +186,7 @@ pub enum NoteSelectEntry {
 
 impl NoteSelectEntry {
     pub fn from_note_details(note: NoteDetails, path_signal: SyncSignal<Option<NotePath>>) -> Self {
-        let path_str = format!("{} {}", note.path, note.title);
+        let path_str = format!("{} {}", note.path, note.get_title());
         Self::Note {
             note,
             search_str: path_str,
@@ -255,7 +252,7 @@ impl RowItem for NoteSelectEntry {
                 rsx! {
                     div {
                         class: "title",
-                        "{note.title}"
+                        "{note.get_title()}"
                     }
                     div {
                         class: "details",

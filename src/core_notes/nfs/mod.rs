@@ -10,11 +10,10 @@ use std::{
 use ignore::{WalkBuilder, WalkParallel};
 use serde::{de::Visitor, Deserialize, Serialize};
 
-use super::{error::VaultError, parser};
+use super::{error::VaultError, DirectoryDetails, NoteDetails};
 
 use super::utilities::path_to_string;
 
-const HASH_SEED: i64 = 0;
 const PATH_SEPARATOR: char = '/';
 const NOTE_EXTENSION: &str = ".md";
 // non valid chars
@@ -35,20 +34,20 @@ impl AsRef<str> for VaultEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EntryData {
-    // File size, for fast check
-    Note(NoteData),
-    Directory(DirectoryData),
+    Note(NoteEntryData),
+    Directory(DirectoryEntryData),
     Attachment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NoteData {
+pub struct NoteEntryData {
     pub path: NotePath,
+    // File size, for fast check
     pub size: u64,
     pub modified_secs: u64,
 }
 
-impl NoteData {
+impl NoteEntryData {
     pub fn load_details<P: AsRef<Path>>(
         &self,
         workspace_path: P,
@@ -59,10 +58,10 @@ impl NoteData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DirectoryData {
+pub struct DirectoryEntryData {
     pub path: NotePath,
 }
-impl DirectoryData {
+impl DirectoryEntryData {
     pub fn get_details<P: AsRef<Path>>(
         &self,
         workspace_path: P,
@@ -105,7 +104,7 @@ impl VaultEntry {
         }
 
         let kind = if os_path.is_dir() {
-            EntryData::Directory(DirectoryData { path: path.clone() })
+            EntryData::Directory(DirectoryEntryData { path: path.clone() })
         } else if path.is_note() {
             let metadata = os_path.metadata()?;
             let size = metadata.len();
@@ -113,7 +112,7 @@ impl VaultEntry {
                 .modified()
                 .map(|t| t.duration_since(UNIX_EPOCH).unwrap().as_secs())
                 .unwrap_or_else(|_e| 0);
-            EntryData::Note(NoteData {
+            EntryData::Note(NoteEntryData {
                 path: path.clone(),
                 size,
                 modified_secs,
@@ -160,81 +159,11 @@ pub enum NoteEntryDetails {
 impl NoteEntryDetails {
     pub fn get_title(&mut self) -> String {
         match self {
-            NoteEntryDetails::Note(note_details) => note_details.title.clone(),
+            NoteEntryDetails::Note(note_details) => note_details.get_title(),
             NoteEntryDetails::Directory(_directory_details) => String::new(),
             NoteEntryDetails::None => String::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct NoteDetails {
-    pub base_path: PathBuf,
-    pub path: NotePath,
-    pub hash: u32,
-    pub title: String,
-    // Content may be lazy fetched
-    content: Option<String>,
-}
-
-impl NoteDetails {
-    pub fn new(
-        base_path: PathBuf,
-        note_path: NotePath,
-        hash: u32,
-        title: String,
-        content: Option<String>,
-    ) -> Self {
-        Self {
-            base_path,
-            path: note_path,
-            hash,
-            title,
-            content,
-        }
-    }
-
-    fn from_path<P: AsRef<Path>>(base_path: P, note_path: &NotePath) -> Result<Self, VaultError> {
-        let (title, content, hash) = NoteDetails::extract_content_data(&base_path, note_path)?;
-        Ok(Self {
-            base_path: base_path.as_ref().to_path_buf(),
-            path: note_path.to_owned(),
-            hash,
-            title,
-            content: Some(content),
-        })
-    }
-
-    fn extract_content_data<P: AsRef<Path>>(
-        base_path: P,
-        note_path: &NotePath,
-    ) -> Result<(String, String, u32), VaultError> {
-        let content = load_content(base_path, note_path)?;
-        let title = parser::parse(&content)
-            .title
-            .unwrap_or_else(|| note_path.get_name());
-        let hash = gxhash::gxhash32(content.as_bytes(), HASH_SEED);
-        Ok((title, content, hash))
-    }
-
-    pub fn get_content(&mut self) -> Result<String, VaultError> {
-        let content = self.content.clone();
-        // Content may be lazy loaded from disk since it's
-        // the only data that is not stored in the DB
-        if let Some(content) = content {
-            Ok(content)
-        } else {
-            let (_, content, _) = NoteDetails::extract_content_data(&self.base_path, &self.path)?;
-            self.content = Some(content.clone());
-            Ok(content)
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct DirectoryDetails {
-    pub base_path: PathBuf,
-    pub path: NotePath,
 }
 
 pub fn load_content<P: AsRef<Path>>(
