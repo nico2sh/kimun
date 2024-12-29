@@ -38,7 +38,7 @@ dioxus = { version = "0.6", features = ["desktop"] }
 dioxus-sdk = { version = "0.6", features = [] }
 dioxus-desktop = "0.6"
 dioxus-logger = "0.6"
-# dioxus-router = "0.6"
+dioxus-router = "0.6"
 ## Error Handling
 anyhow = "1.0"
 ## File dialog

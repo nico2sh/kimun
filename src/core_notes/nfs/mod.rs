@@ -11,7 +11,7 @@ use std::{
 use ignore::{WalkBuilder, WalkParallel};
 use serde::{de::Visitor, Deserialize, Serialize};
 
-use super::{error::VaultError, DirectoryDetails, NoteDetails};
+use super::{error::FSError, DirectoryDetails, NoteDetails};
 
 use super::utilities::path_to_string;
 
@@ -53,15 +53,16 @@ impl NoteEntryData {
         &self,
         workspace_path: P,
         path: &NotePath,
-    ) -> Result<NoteDetails, VaultError> {
-        NoteDetails::from_path(workspace_path, path)
+    ) -> Result<NoteDetails, FSError> {
+        let content = load_note(workspace_path, path)?;
+        Ok(NoteDetails::from_content(content, path))
     }
 
     fn from_path<P: AsRef<Path>>(
         workspace_path: P,
         path: &NotePath,
-    ) -> Result<NoteEntryData, VaultError> {
-        let file_path = path.into_path(&workspace_path);
+    ) -> Result<NoteEntryData, FSError> {
+        let file_path = path.to_pathbuf(&workspace_path);
 
         let metadata = file_path.metadata()?;
         let size = metadata.len();
@@ -82,9 +83,8 @@ pub struct DirectoryEntryData {
     pub path: NotePath,
 }
 impl DirectoryEntryData {
-    pub fn get_details<P: AsRef<Path>>(&self, workspace_path: P) -> DirectoryDetails {
+    pub fn get_details<P: AsRef<Path>>(&self) -> DirectoryDetails {
         DirectoryDetails {
-            base_path: workspace_path.as_ref().to_path_buf(),
             path: self.path.clone(),
         }
     }
@@ -93,8 +93,8 @@ impl DirectoryEntryData {
 fn _get_dir_content_size<P: AsRef<Path>>(
     workspace_path: P,
     path: &NotePath,
-) -> Result<u64, VaultError> {
-    let os_path = path.into_path(&workspace_path);
+) -> Result<u64, FSError> {
+    let os_path = path.to_pathbuf(&workspace_path);
     let walker = ignore::WalkBuilder::new(&os_path)
         .max_depth(Some(1))
         .filter_entry(filter_files)
@@ -112,10 +112,10 @@ fn _get_dir_content_size<P: AsRef<Path>>(
 }
 
 impl VaultEntry {
-    pub fn new<P: AsRef<Path>>(workspace_path: P, path: NotePath) -> Result<Self, VaultError> {
-        let os_path = path.into_path(&workspace_path);
+    pub fn new<P: AsRef<Path>>(workspace_path: P, path: NotePath) -> Result<Self, FSError> {
+        let os_path = path.to_pathbuf(&workspace_path);
         if !os_path.exists() {
-            return Err(VaultError::NoFileOrDirectoryFound {
+            return Err(FSError::NoFileOrDirectoryFound {
                 path: path_to_string(os_path),
             });
         }
@@ -140,7 +140,7 @@ impl VaultEntry {
     pub fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
         workspace_path: P,
         full_path: F,
-    ) -> Result<Self, VaultError> {
+    ) -> Result<Self, FSError> {
         let note_path = NotePath::from_path(&workspace_path, &full_path)?;
         Self::new(&workspace_path, note_path)
     }
@@ -174,8 +174,8 @@ impl VaultEntryDetails {
     }
 }
 
-pub fn load_note<P: AsRef<Path>>(workspace_path: P, path: &NotePath) -> Result<String, VaultError> {
-    let os_path = path.into_path(&workspace_path);
+pub fn load_note<P: AsRef<Path>>(workspace_path: P, path: &NotePath) -> Result<String, FSError> {
+    let os_path = path.to_pathbuf(&workspace_path);
     let file = std::fs::read(&os_path)?;
     let text = String::from_utf8(file)?;
     Ok(text)
@@ -185,14 +185,14 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     workspace_path: P,
     path: &NotePath,
     text: S,
-) -> Result<NoteEntryData, VaultError> {
+) -> Result<NoteEntryData, FSError> {
     if !path.is_note() {
-        return Err(VaultError::InvalidPath {
+        return Err(FSError::InvalidPath {
             path: path.to_string(),
         });
     }
     let (parent, note) = path.get_parent_path();
-    let base_path = parent.into_path(&workspace_path);
+    let base_path = parent.to_pathbuf(&workspace_path);
     let full_path = base_path.join(note);
     std::fs::create_dir_all(base_path)?;
 
@@ -288,7 +288,7 @@ impl NotePath {
         Self { slices: path_list }
     }
 
-    pub fn file_from<S: AsRef<str>>(path: S) -> Result<Self, VaultError> {
+    pub fn file_from<S: AsRef<str>>(path: S) -> Result<Self, FSError> {
         let path = path.as_ref();
         if !path.ends_with(PATH_SEPARATOR) {
             let p = if !path.ends_with(NOTE_EXTENSION) {
@@ -298,7 +298,7 @@ impl NotePath {
             };
             Ok(NotePath::new(p))
         } else {
-            Err(VaultError::InvalidPath {
+            Err(FSError::InvalidPath {
                 path: path.to_string(),
             })
         }
@@ -308,7 +308,7 @@ impl NotePath {
         Self { slices: Vec::new() }
     }
 
-    fn into_path<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
+    fn to_pathbuf<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
         let mut path = workspace_path.as_ref().to_path_buf();
         for p in &self.slices {
             let slice = p.slice.clone();
@@ -326,11 +326,11 @@ impl NotePath {
     pub fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
         workspace_path: P,
         full_path: F,
-    ) -> Result<Self, VaultError> {
+    ) -> Result<Self, FSError> {
         let fp = full_path.as_ref();
         let relative = fp
             .strip_prefix(workspace_path)
-            .map_err(|_e| VaultError::InvalidPath {
+            .map_err(|_e| FSError::InvalidPath {
                 path: path_to_string(&full_path),
             })?;
         let path_list = relative
@@ -417,7 +417,7 @@ pub fn get_file_walker<P: AsRef<Path>>(
     path: &NotePath,
     recurse: bool,
 ) -> WalkParallel {
-    let w = WalkBuilder::new(path.into_path(base_path))
+    let w = WalkBuilder::new(path.to_pathbuf(base_path))
         .max_depth(if recurse { None } else { Some(1) })
         .filter_entry(filter_files)
         // .threads(0)
@@ -471,7 +471,7 @@ mod tests {
         let workspace_path = PathBuf::from("/usr/john/notes");
         let path = "/some/subpath";
         let path = NotePath::from(path);
-        let path_buf = path.into_path(&workspace_path);
+        let path_buf = path.to_pathbuf(&workspace_path);
 
         let path_string = path_to_string(path_buf);
         assert_eq!("/usr/john/notes/some/subpath", path_string);

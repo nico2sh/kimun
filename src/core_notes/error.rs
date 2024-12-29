@@ -10,6 +10,12 @@ pub enum VaultError {
     PathIsNotDirectory { path: String },
     #[error("DB Error: {0}")]
     DBError(#[from] DBError),
+    #[error("FS Error: {0}")]
+    FSError(#[from] FSError),
+}
+
+#[derive(Error, Debug)]
+pub enum FSError {
     #[error("IO Error: {0}")]
     ReadFileError(#[from] std::io::Error),
     #[error("Decoding Error: {0}")]
