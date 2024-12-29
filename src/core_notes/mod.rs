@@ -18,7 +18,10 @@ use db::VaultDB;
 // use db::async_db::AsyncConnection;
 use error::{DBError, VaultError};
 use log::{debug, info};
-use nfs::{load_content, visitors::list::NoteListVisitorBuilder, NotePath};
+use nfs::{
+    load_note, save_note, visitor::NoteListVisitorBuilder, EntryData, NoteEntryData, NotePath,
+    VaultEntry,
+};
 use utilities::path_to_string;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,11 +80,9 @@ impl NoteVault {
         Ok(())
     }
 
-    pub fn load_note<P: Into<NotePath>>(&self, path: P) -> Result<String, VaultError> {
-        let os_path = path.into().into_path(&self.workspace_path);
-        let file = std::fs::read(&os_path)?;
-        let content = String::from_utf8(file)?;
-        Ok(content)
+    pub fn load_note(&self, path: &NotePath) -> Result<String, VaultError> {
+        let text = load_note(&self.workspace_path, path)?;
+        Ok(text)
     }
 
     // Search notes using terms
@@ -182,14 +183,18 @@ impl NoteVault {
         result
     }
 
-    pub fn save_note<S: AsRef<str>>(&self, path: &NotePath, content: S) {
+    pub fn save_note<S: AsRef<str>>(&self, path: &NotePath, text: S) -> Result<(), VaultError> {
         // Save to disk
-        let details = NoteDetails::from_content(content, path);
+        let entry_data = save_note(&self.workspace_path, path, &text)?;
+
+        let details = entry_data.load_details(&self.workspace_path, path)?;
 
         // Save to DB
+        let text = text.as_ref().to_owned();
+        self.vault_db
+            .call(move |conn| db::save_note(conn, text, &entry_data, &details))?;
 
-        // TODO: Save it
-        sleep(Duration::from_secs(3));
+        Ok(())
     }
 }
 
@@ -201,11 +206,11 @@ pub struct NoteDetails {
     // if the details are taken from the DB, the content is
     // likely not going to be there, so the `get_content` function
     // will take it from disk, and store in the cache
-    cached_content: Option<String>,
+    cached_text: Option<String>,
 }
 
 impl NoteDetails {
-    pub fn new(note_path: NotePath, hash: u32, title: String, content: Option<String>) -> Self {
+    pub fn new(note_path: NotePath, hash: u32, title: String, text: Option<String>) -> Self {
         let data = NoteContentData {
             hash,
             title: Some(title),
@@ -214,33 +219,33 @@ impl NoteDetails {
         Self {
             path: note_path,
             data,
-            cached_content: content,
+            cached_text: text,
         }
     }
 
-    fn from_content<S: AsRef<str>>(content: S, note_path: &NotePath) -> Self {
-        let data = content_data::extract_data(&content);
+    fn from_content<S: AsRef<str>>(text: S, note_path: &NotePath) -> Self {
+        let data = content_data::extract_data(&text);
         Self {
             path: note_path.to_owned(),
             data,
-            cached_content: Some(content.as_ref().to_owned()),
+            cached_text: Some(text.as_ref().to_owned()),
         }
     }
 
     fn from_path<P: AsRef<Path>>(base_path: P, note_path: &NotePath) -> Result<Self, VaultError> {
-        let content = load_content(&base_path, note_path)?;
+        let content = load_note(&base_path, note_path)?;
         Ok(Self::from_content(content, note_path))
     }
 
-    pub fn get_content<P: AsRef<Path>>(&mut self, base_path: P) -> Result<String, VaultError> {
-        let content = self.cached_content.clone();
+    pub fn get_text<P: AsRef<Path>>(&mut self, base_path: P) -> Result<String, VaultError> {
+        let content = self.cached_text.clone();
         // Content may be lazy loaded from disk since it's
         // the only data that is not stored in the DB
         if let Some(content) = content {
             Ok(content)
         } else {
-            let content = load_content(base_path, &self.path)?;
-            self.cached_content = Some(content.clone());
+            let content = load_note(base_path, &self.path)?;
+            self.cached_text = Some(content.clone());
             Ok(content)
         }
     }
@@ -380,10 +385,8 @@ fn create_index_for<P: AsRef<Path>>(
     let notes_to_delete = builder.get_notes_to_delete();
     let notes_to_modify = builder.get_notes_to_modify();
     let directories_to_delete = builder.get_directories_to_delete();
-    let dir_path = path.clone();
 
     let tx = connection.transaction()?;
-    db::insert_directory(&tx, &dir_path)?;
     db::delete_notes(&tx, &notes_to_delete)?;
     db::insert_notes(&tx, workspace_path, &notes_to_add)?;
     db::update_notes(&tx, workspace_path, &notes_to_modify)?;

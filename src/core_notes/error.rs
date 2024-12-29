@@ -28,7 +28,7 @@ pub enum DBError {
     DBConnectionClosed,
     #[error("Error Querying Data: {0}")]
     QueryError(String),
-    #[error("Error reading Filesystem: {0}")]
+    #[error("Error reading cached notes in the DB: {0}")]
     NonCritical(String),
     #[error("DB related error: {0}")]
     Other(String),

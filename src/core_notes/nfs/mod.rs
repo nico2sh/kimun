@@ -1,8 +1,9 @@
-pub mod visitors;
+pub mod visitor;
 // Contains the structs to support the data types
 use std::{
     ffi::OsStr,
     fmt::Display,
+    io::Write,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -55,6 +56,25 @@ impl NoteEntryData {
     ) -> Result<NoteDetails, VaultError> {
         NoteDetails::from_path(workspace_path, path)
     }
+
+    fn from_path<P: AsRef<Path>>(
+        workspace_path: P,
+        path: &NotePath,
+    ) -> Result<NoteEntryData, VaultError> {
+        let file_path = path.into_path(&workspace_path);
+
+        let metadata = file_path.metadata()?;
+        let size = metadata.len();
+        let modified_secs = metadata
+            .modified()
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap().as_secs())
+            .unwrap_or_else(|_e| 0);
+        Ok(NoteEntryData {
+            path: path.clone(),
+            size,
+            modified_secs,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -62,14 +82,11 @@ pub struct DirectoryEntryData {
     pub path: NotePath,
 }
 impl DirectoryEntryData {
-    pub fn get_details<P: AsRef<Path>>(
-        &self,
-        workspace_path: P,
-    ) -> Result<DirectoryDetails, VaultError> {
-        Ok(DirectoryDetails {
+    pub fn get_details<P: AsRef<Path>>(&self, workspace_path: P) -> DirectoryDetails {
+        DirectoryDetails {
             base_path: workspace_path.as_ref().to_path_buf(),
             path: self.path.clone(),
-        })
+        }
     }
 }
 
@@ -106,17 +123,8 @@ impl VaultEntry {
         let kind = if os_path.is_dir() {
             EntryData::Directory(DirectoryEntryData { path: path.clone() })
         } else if path.is_note() {
-            let metadata = os_path.metadata()?;
-            let size = metadata.len();
-            let modified_secs = metadata
-                .modified()
-                .map(|t| t.duration_since(UNIX_EPOCH).unwrap().as_secs())
-                .unwrap_or_else(|_e| 0);
-            EntryData::Note(NoteEntryData {
-                path: path.clone(),
-                size,
-                modified_secs,
-            })
+            let note_entry_data = NoteEntryData::from_path(workspace_path, &path)?;
+            EntryData::Note(note_entry_data)
         } else {
             EntryData::Attachment
         };
@@ -149,31 +157,54 @@ impl Display for VaultEntry {
 }
 
 #[derive(Debug, Clone)]
-pub enum NoteEntryDetails {
+pub enum VaultEntryDetails {
     // Hash
     Note(NoteDetails),
     Directory(DirectoryDetails),
     None,
 }
 
-impl NoteEntryDetails {
+impl VaultEntryDetails {
     pub fn get_title(&mut self) -> String {
         match self {
-            NoteEntryDetails::Note(note_details) => note_details.get_title(),
-            NoteEntryDetails::Directory(_directory_details) => String::new(),
-            NoteEntryDetails::None => String::new(),
+            VaultEntryDetails::Note(note_details) => note_details.get_title(),
+            VaultEntryDetails::Directory(_directory_details) => String::new(),
+            VaultEntryDetails::None => String::new(),
         }
     }
 }
 
-pub fn load_content<P: AsRef<Path>>(
-    workspace_path: P,
-    path: &NotePath,
-) -> Result<String, VaultError> {
+pub fn load_note<P: AsRef<Path>>(workspace_path: P, path: &NotePath) -> Result<String, VaultError> {
     let os_path = path.into_path(&workspace_path);
     let file = std::fs::read(&os_path)?;
-    let content = String::from_utf8(file)?;
-    Ok(content)
+    let text = String::from_utf8(file)?;
+    Ok(text)
+}
+
+pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
+    workspace_path: P,
+    path: &NotePath,
+    text: S,
+) -> Result<NoteEntryData, VaultError> {
+    if !path.is_note() {
+        return Err(VaultError::InvalidPath {
+            path: path.to_string(),
+        });
+    }
+    let (parent, note) = path.get_parent_path();
+    let base_path = parent.into_path(&workspace_path);
+    let full_path = base_path.join(note);
+    std::fs::create_dir_all(base_path)?;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(full_path)?;
+    file.write_all(text.as_ref().as_bytes())?;
+
+    let entry = NoteEntryData::from_path(workspace_path, path)?;
+    Ok(entry)
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
@@ -277,7 +308,7 @@ impl NotePath {
         Self { slices: Vec::new() }
     }
 
-    pub fn into_path<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
+    fn into_path<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
         let mut path = workspace_path.as_ref().to_path_buf();
         for p in &self.slices {
             let slice = p.slice.clone();
