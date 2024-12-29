@@ -1,5 +1,6 @@
 // pub mod async_db;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use log::{debug, error};
@@ -59,7 +60,6 @@ fn delete_db(connection: &mut Connection) -> Result<(), DBError> {
 
     while let Some(row) = table_rows.next()? {
         let table_name: String = row.get(0)?;
-        // debug!("Table to delete: {}", table_name);
 
         tables.push(table_name);
     }
@@ -200,28 +200,6 @@ pub fn get_notes(
         })?
         .map(|el| el.map_err(DBError::DBError))
         .collect::<Result<Vec<(NoteEntryData, NoteDetails)>, DBError>>()?;
-    Ok(res)
-}
-
-pub fn get_directories(
-    connection: &mut Connection,
-    path: &NotePath,
-) -> Result<Vec<(DirectoryEntryData, DirectoryDetails)>, DBError> {
-    let mut stmt = connection
-        .prepare("SELECT DISTINCT(basePath) from notes WHERE basePath LIKE (?1 || '%')")?;
-    // let mut stmt = connection.prepare("SELECT path FROM directories where basePath = ?1")?;
-    let res = stmt
-        .query_map([path.to_string()], |row| {
-            let path: String = row.get(0)?;
-            let note_path = NotePath::from(&path);
-            let data = DirectoryEntryData {
-                path: note_path.clone(),
-            };
-            let det = DirectoryDetails { path: note_path };
-            Ok((data, det))
-        })?
-        .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(DirectoryEntryData, DirectoryDetails)>, DBError>>()?;
     Ok(res)
 }
 
