@@ -186,7 +186,7 @@ pub enum NoteSelectEntry {
 
 impl NoteSelectEntry {
     pub fn from_note_details(note: NoteDetails, path_signal: SyncSignal<Option<NotePath>>) -> Self {
-        let path_str = format!("{} {}", note.path, note.get_title());
+        let path_str = format!("{} {}", note.get_title(), note.path);
         Self::Note {
             note,
             search_str: path_str,

@@ -308,6 +308,13 @@ impl NotePath {
         Self { slices: Vec::new() }
     }
 
+    pub fn get_slices(&self) -> Vec<String> {
+        self.slices
+            .iter()
+            .map(|slice| slice.slice.to_owned())
+            .collect()
+    }
+
     fn to_pathbuf<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
         let mut path = workspace_path.as_ref().to_path_buf();
         for p in &self.slices {

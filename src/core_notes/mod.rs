@@ -5,6 +5,7 @@ pub mod nfs;
 pub mod utilities;
 
 use std::{
+    collections::HashSet,
     fmt::Display,
     path::{Path, PathBuf},
     sync::mpsc::Sender,
@@ -113,17 +114,15 @@ impl NoteVault {
 
         // TODO: See if we can put everything inside the closure
         let query_path = note_path.clone();
-        let (cached_notes, cached_directories) = self.vault_db.call(move |conn| {
+        let cached_notes = self.vault_db.call(move |conn| {
             let notes = db::get_notes(conn, &query_path, options.recursive)?;
-            let dirs = db::get_directories(conn, &query_path)?;
-            Ok((notes, dirs))
+            Ok(notes)
         })?;
 
         let mut builder = NoteListVisitorBuilder::new(
             &self.workspace_path,
             options.validation,
             cached_notes,
-            cached_directories,
             Some(options.sender.clone()),
         );
         // We traverse the directory
@@ -162,13 +161,12 @@ impl NoteVault {
         debug!("> Start fetching files from cache");
         let note_path = path.into();
 
-        let (cached_notes, cached_directories) = self.vault_db.call(move |conn| {
+        let cached_notes = self.vault_db.call(move |conn| {
             let notes = db::get_notes(conn, &note_path, recursive)?;
-            let dirs = db::get_directories(conn, &note_path)?;
-            Ok((notes, dirs))
+            Ok(notes)
         })?;
 
-        let result = collect_from_cache(&cached_notes, &cached_directories);
+        let result = collect_from_cache(&cached_notes);
         let time = std::time::SystemTime::now()
             .duration_since(start)
             .expect("Something's wrong with the time");
@@ -260,15 +258,21 @@ pub enum SearchResult {
 
 fn collect_from_cache(
     cached_notes: &[(nfs::NoteEntryData, NoteDetails)],
-    cached_directories: &[(nfs::DirectoryEntryData, DirectoryDetails)],
 ) -> Result<Vec<SearchResult>, VaultError> {
-    let notes = cached_notes
+    let mut directories = HashSet::new();
+    let mut notes = vec![];
+
+    for (_note_data, note_details) in cached_notes {
+        directories.insert(note_details.path.get_parent_path().0);
+        notes.push(SearchResult::Note(note_details.clone()));
+    }
+
+    let result = directories
         .iter()
-        .map(|(_note_data, note_details)| SearchResult::Note(note_details.clone()));
-    let result = cached_directories
-        .iter()
-        .map(|(_directory_data, directory_details)| {
-            SearchResult::Directory(directory_details.clone())
+        .map(|directory_path| {
+            SearchResult::Directory(DirectoryDetails {
+                path: directory_path.clone(),
+            })
         })
         .chain(notes);
     Ok(result.collect())
@@ -359,28 +363,20 @@ fn create_index_for<P: AsRef<Path>>(
     let walker = nfs::get_file_walker(workspace_path, path, false);
 
     let cached_notes = db::get_notes(connection, path, false)?;
-    let cached_directories = db::get_directories(connection, path)?;
-    let mut builder = NoteListVisitorBuilder::new(
-        workspace_path,
-        NotesValidation::Full,
-        cached_notes,
-        cached_directories,
-        None,
-    );
+    let mut builder =
+        NoteListVisitorBuilder::new(workspace_path, NotesValidation::Full, cached_notes, None);
     walker.visit(&mut builder);
     let notes_to_add = builder.get_notes_to_add();
     let notes_to_delete = builder.get_notes_to_delete();
     let notes_to_modify = builder.get_notes_to_modify();
-    let directories_to_delete = builder.get_directories_to_delete();
 
     let tx = connection.transaction()?;
     db::delete_notes(&tx, &notes_to_delete)?;
     db::insert_notes(&tx, workspace_path, &notes_to_add)?;
     db::update_notes(&tx, workspace_path, &notes_to_modify)?;
-    db::delete_directories(&tx, &directories_to_delete)?;
     tx.commit()?;
 
-    let directories_to_insert = builder.get_directories_to_add();
+    let directories_to_insert = builder.get_directories_found();
     for directory in directories_to_insert.iter().filter(|p| !p.eq(&path)) {
         create_index_for(workspace_path, connection, directory)?;
     }

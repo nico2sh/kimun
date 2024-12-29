@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{mpsc::Sender, Arc, Mutex},
 };
@@ -8,10 +8,7 @@ use ignore::{ParallelVisitor, ParallelVisitorBuilder};
 use log::error;
 
 use crate::core_notes::{
-    nfs::{
-        DirectoryDetails, DirectoryEntryData, EntryData, NoteDetails, NoteEntryData, NotePath,
-        VaultEntry,
-    },
+    nfs::{DirectoryDetails, EntryData, NoteDetails, NoteEntryData, NotePath, VaultEntry},
     NotesValidation, SearchResult,
 };
 
@@ -19,10 +16,9 @@ struct NoteListVisitor {
     workspace_path: PathBuf,
     validation: NotesValidation,
     notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteEntryData, NoteDetails)>>>,
-    directories_to_delete: Arc<Mutex<HashSet<NotePath>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
     notes_to_add: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
-    directories_to_add: Arc<Mutex<Vec<NotePath>>>,
+    directories_found: Arc<Mutex<Vec<NotePath>>>,
     sender: Option<Sender<SearchResult>>,
 }
 
@@ -31,7 +27,14 @@ impl NoteListVisitor {
         let result = match &entry.data {
             EntryData::Note(note_data) => SearchResult::Note(self.verify_cached_note(note_data)),
             EntryData::Directory(directory_data) => {
-                SearchResult::Directory(self.verify_cached_directory(directory_data))
+                let details = DirectoryDetails {
+                    path: directory_data.path.clone(),
+                };
+                self.directories_found
+                    .lock()
+                    .unwrap()
+                    .push(directory_data.path.clone());
+                SearchResult::Directory(details)
             }
             EntryData::Attachment => SearchResult::Attachment(entry.path.clone()),
         };
@@ -92,20 +95,6 @@ impl NoteListVisitor {
         };
         details
     }
-
-    fn verify_cached_directory(&self, data: &DirectoryEntryData) -> DirectoryDetails {
-        let mut dtd = self.directories_to_delete.lock().unwrap();
-        if !dtd.remove(&data.path) {
-            // debug!("Add dir: {}", data.path);
-            self.directories_to_add
-                .lock()
-                .unwrap()
-                .push(data.path.clone());
-        };
-        DirectoryDetails {
-            path: data.path.clone(),
-        }
-    }
 }
 
 impl ParallelVisitor for NoteListVisitor {
@@ -136,10 +125,9 @@ pub struct NoteListVisitorBuilder {
     workspace_path: PathBuf,
     validation: NotesValidation,
     notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteEntryData, NoteDetails)>>>,
-    directories_to_delete: Arc<Mutex<HashSet<NotePath>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
     notes_to_add: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
-    directories_to_add: Arc<Mutex<Vec<NotePath>>>,
+    directories_found: Arc<Mutex<Vec<NotePath>>>,
     sender: Option<Sender<SearchResult>>,
 }
 
@@ -148,17 +136,12 @@ impl NoteListVisitorBuilder {
         workspace_path: P,
         validation: NotesValidation,
         cached_notes: Vec<(NoteEntryData, NoteDetails)>,
-        cached_directories: Vec<(DirectoryEntryData, DirectoryDetails)>,
         sender: Option<Sender<SearchResult>>,
     ) -> Self {
         let mut notes_to_delete = HashMap::new();
-        let mut directories_to_delete = HashSet::new();
         for cached in cached_notes {
             let path = cached.1.path.clone();
             notes_to_delete.insert(path, cached);
-        }
-        for (directory_data, _directory_details) in cached_directories {
-            directories_to_delete.insert(directory_data.path);
         }
         Self {
             workspace_path: workspace_path.as_ref().to_path_buf(),
@@ -166,8 +149,7 @@ impl NoteListVisitorBuilder {
             notes_to_delete: Arc::new(Mutex::new(notes_to_delete)),
             notes_to_modify: Arc::new(Mutex::new(Vec::new())),
             notes_to_add: Arc::new(Mutex::new(Vec::new())),
-            directories_to_delete: Arc::new(Mutex::new(directories_to_delete)),
-            directories_to_add: Arc::new(Mutex::new(Vec::new())),
+            directories_found: Arc::new(Mutex::new(Vec::new())),
             sender,
         }
     }
@@ -199,17 +181,8 @@ impl NoteListVisitorBuilder {
             .collect()
     }
 
-    pub fn get_directories_to_add(&self) -> Vec<NotePath> {
-        self.directories_to_add
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|n| n.to_owned())
-            .collect()
-    }
-
-    pub fn get_directories_to_delete(&self) -> Vec<NotePath> {
-        self.directories_to_delete
+    pub fn get_directories_found(&self) -> Vec<NotePath> {
+        self.directories_found
             .lock()
             .unwrap()
             .iter()
@@ -226,8 +199,7 @@ impl<'s> ParallelVisitorBuilder<'s> for NoteListVisitorBuilder {
             notes_to_delete: self.notes_to_delete.clone(),
             notes_to_modify: self.notes_to_modify.clone(),
             notes_to_add: self.notes_to_add.clone(),
-            directories_to_delete: self.directories_to_delete.clone(),
-            directories_to_add: self.directories_to_add.clone(),
+            directories_found: self.directories_found.clone(),
             sender: self.sender.clone(),
         };
         Box::new(dbv)
