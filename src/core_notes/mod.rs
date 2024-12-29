@@ -8,8 +8,6 @@ use std::{
     fmt::Display,
     path::{Path, PathBuf},
     sync::mpsc::Sender,
-    thread::sleep,
-    time::Duration,
 };
 
 use content_data::NoteContentData;
@@ -18,10 +16,7 @@ use db::VaultDB;
 // use db::async_db::AsyncConnection;
 use error::{DBError, VaultError};
 use log::{debug, info};
-use nfs::{
-    load_note, save_note, visitor::NoteListVisitorBuilder, EntryData, NoteEntryData, NotePath,
-    VaultEntry,
-};
+use nfs::{load_note, save_note, visitor::NoteListVisitorBuilder, NotePath};
 use utilities::path_to_string;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,14 +109,13 @@ impl NoteVault {
     ) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
-        let workspace_path = self.workspace_path.clone();
         let note_path = path.into();
 
         // TODO: See if we can put everything inside the closure
         let query_path = note_path.clone();
         let (cached_notes, cached_directories) = self.vault_db.call(move |conn| {
             let notes = db::get_notes(conn, &query_path, options.recursive)?;
-            let dirs = db::get_directories(conn, &workspace_path, &query_path)?;
+            let dirs = db::get_directories(conn, &query_path)?;
             Ok((notes, dirs))
         })?;
 
@@ -166,12 +160,11 @@ impl NoteVault {
     ) -> Result<Vec<SearchResult>, VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files from cache");
-        let workspace_path = self.workspace_path.clone();
         let note_path = path.into();
 
         let (cached_notes, cached_directories) = self.vault_db.call(move |conn| {
             let notes = db::get_notes(conn, &note_path, recursive)?;
-            let dirs = db::get_directories(conn, &workspace_path, &note_path)?;
+            let dirs = db::get_directories(conn, &note_path)?;
             Ok((notes, dirs))
         })?;
 
@@ -232,11 +225,6 @@ impl NoteDetails {
         }
     }
 
-    fn from_path<P: AsRef<Path>>(base_path: P, note_path: &NotePath) -> Result<Self, VaultError> {
-        let content = load_note(&base_path, note_path)?;
-        Ok(Self::from_content(content, note_path))
-    }
-
     pub fn get_text<P: AsRef<Path>>(&mut self, base_path: P) -> Result<String, VaultError> {
         let content = self.cached_text.clone();
         // Content may be lazy loaded from disk since it's
@@ -260,7 +248,6 @@ impl NoteDetails {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectoryDetails {
-    pub base_path: PathBuf,
     pub path: NotePath,
 }
 
@@ -372,7 +359,7 @@ fn create_index_for<P: AsRef<Path>>(
     let walker = nfs::get_file_walker(workspace_path, path, false);
 
     let cached_notes = db::get_notes(connection, path, false)?;
-    let cached_directories = db::get_directories(connection, workspace_path, path)?;
+    let cached_directories = db::get_directories(connection, path)?;
     let mut builder = NoteListVisitorBuilder::new(
         workspace_path,
         NotesValidation::Full,

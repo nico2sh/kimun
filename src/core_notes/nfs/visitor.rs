@@ -103,7 +103,6 @@ impl NoteListVisitor {
                 .push(data.path.clone());
         };
         DirectoryDetails {
-            base_path: self.workspace_path.clone(),
             path: data.path.clone(),
         }
     }

@@ -203,9 +203,8 @@ pub fn get_notes(
     Ok(res)
 }
 
-pub fn get_directories<P: AsRef<Path>>(
+pub fn get_directories(
     connection: &mut Connection,
-    base_path: P,
     path: &NotePath,
 ) -> Result<Vec<(DirectoryEntryData, DirectoryDetails)>, DBError> {
     let mut stmt = connection
@@ -218,10 +217,7 @@ pub fn get_directories<P: AsRef<Path>>(
             let data = DirectoryEntryData {
                 path: note_path.clone(),
             };
-            let det = DirectoryDetails {
-                base_path: base_path.as_ref().to_path_buf(),
-                path: note_path,
-            };
+            let det = DirectoryDetails { path: note_path };
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
@@ -263,7 +259,7 @@ pub fn update_notes<P: AsRef<Path>>(
                 tx,
                 details.get_text(&base_path).unwrap_or_default(),
                 data,
-                &mut details,
+                &details,
             )?;
         }
     }
