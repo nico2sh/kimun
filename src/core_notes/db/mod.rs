@@ -112,21 +112,10 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
         (), // empty list of parameters.
     )?;
     tx.execute(
-        "CREATE TABLE directories (
-            path VARCHAR(255) PRIMARY KEY,
-            basePath VARCHAR(255)
-        )",
-        (), // empty list of parameters.
-    )?;
-    tx.execute(
         "CREATE VIRTUAL TABLE notesContent USING fts4(
             path,
-            content
+            text
         )",
-        (), // empty list of parameters.
-    )?;
-    tx.execute(
-        "CREATE VIRTUAL TABLE notes_terms USING fts4aux(notesContent);",
         (), // empty list of parameters.
     )?;
 
@@ -143,7 +132,7 @@ pub fn search_terms<S: AsRef<str>>(
     let sql = if include_path {
         "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
     } else {
-        "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE content MATCH ?1"
+        "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE text MATCH ?1"
     };
 
     let mut stmt = connection.prepare(sql)?;
@@ -166,6 +155,20 @@ pub fn search_terms<S: AsRef<str>>(
         .map(|el| el.map_err(DBError::DBError))
         .collect::<Result<Vec<(NoteEntryData, NoteDetails)>, DBError>>()?;
     Ok(res)
+}
+
+fn note_exists(connection: &mut Connection, path: &NotePath) -> Result<bool, DBError> {
+    let sql = "SELECT count(*) FROM notes where path = ?1";
+    let mut stmt = connection.prepare(sql)?;
+    let res = stmt.query_row([path.to_string()], |row| row.get(0))?;
+    match res {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DBError::Other(format!(
+            "Unexpected error, the DB contains more than one ({}) entry for path {}",
+            res, path
+        ))),
+    }
 }
 
 pub fn get_notes(
@@ -205,8 +208,9 @@ pub fn get_directories<P: AsRef<Path>>(
     base_path: P,
     path: &NotePath,
 ) -> Result<Vec<(DirectoryEntryData, DirectoryDetails)>, DBError> {
-    // debug!("getting directories");
-    let mut stmt = connection.prepare("SELECT path FROM directories where basePath = ?1")?;
+    let mut stmt = connection
+        .prepare("SELECT DISTINCT(basePath) from notes WHERE basePath LIKE (?1 || '%')")?;
+    // let mut stmt = connection.prepare("SELECT path FROM directories where basePath = ?1")?;
     let res = stmt
         .query_map([path.to_string()], |row| {
             let path: String = row.get(0)?;
@@ -234,7 +238,13 @@ pub fn insert_notes<P: AsRef<Path>>(
         debug!("Inserting {} notes", notes.len());
         for (data, details) in notes {
             let mut details = details.clone();
-            insert_note(tx, base_path.as_ref(), data, &mut details)?;
+            insert_note(
+                tx,
+                // TODO: Fix this, should not have to read from disk
+                details.get_text(&base_path).unwrap_or_default(),
+                data,
+                &details,
+            )?;
         }
     }
     Ok(())
@@ -249,7 +259,12 @@ pub fn update_notes<P: AsRef<Path>>(
         debug!("Updating {} notes", notes.len());
         for (data, details) in notes {
             let mut details = details.clone();
-            update_note(tx, base_path.as_ref(), data, &mut details)?;
+            update_note(
+                tx,
+                details.get_text(&base_path).unwrap_or_default(),
+                data,
+                &mut details,
+            )?;
         }
     }
     Ok(())
@@ -264,11 +279,28 @@ pub fn delete_notes(tx: &Transaction, paths: &Vec<NotePath>) -> Result<(), DBErr
     Ok(())
 }
 
-fn insert_note<P: AsRef<Path>>(
-    tx: &Transaction,
-    base_path: P,
+pub fn save_note<S: AsRef<str>>(
+    connection: &mut Connection,
+    text: S,
     data: &NoteEntryData,
-    details: &mut NoteDetails,
+    details: &NoteDetails,
+) -> Result<(), DBError> {
+    let exists = note_exists(connection, &data.path)?;
+    let tx = connection.transaction()?;
+    if exists {
+        update_note(&tx, text, data, details)
+    } else {
+        insert_note(&tx, text, data, details)
+    }?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn insert_note<S: AsRef<str>>(
+    tx: &Transaction,
+    text: S,
+    data: &NoteEntryData,
+    details: &NoteDetails,
 ) -> Result<(), DBError> {
     let (parent_path, name) = details.path.get_parent_path();
     if let Err(e) = tx.execute(
@@ -278,25 +310,21 @@ fn insert_note<P: AsRef<Path>>(
         error!("Error inserting note {}", e);
     }
     tx.execute(
-        "INSERT INTO notesContent (path, content) VALUES (?1, ?2)",
-        params![
-            details.path.to_string(),
-            details.get_content(base_path).unwrap_or_default()
-        ],
+        "INSERT INTO notesContent (path, text) VALUES (?1, ?2)",
+        params![details.path.to_string(), text.as_ref()],
     )?;
 
     Ok(())
 }
 
-fn update_note<P: AsRef<Path>>(
+fn update_note<S: AsRef<str>>(
     tx: &Transaction,
-    base_path: P,
+    text: S,
     data: &NoteEntryData,
-    details: &mut NoteDetails,
+    details: &NoteDetails,
 ) -> Result<(), DBError> {
     let title = details.get_title();
     let hash = details.data.hash;
-    let content = details.get_content(base_path).unwrap_or_default();
     let path = details.path.clone();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
@@ -309,8 +337,8 @@ fn update_note<P: AsRef<Path>>(
         ],
     )?;
     tx.execute(
-        "UPDATE notesContent SET content = ?2 WHERE path = ?1",
-        params![path.to_string(), content],
+        "UPDATE notesContent SET text = ?2 WHERE path = ?1",
+        params![path.to_string(), text.as_ref()],
     )?;
 
     Ok(())
@@ -338,33 +366,15 @@ pub fn delete_directories(tx: &Transaction, directories: &Vec<NotePath>) -> Resu
     Ok(())
 }
 
-pub fn _insert_directories(tx: &Transaction, directories: &Vec<NotePath>) -> Result<(), DBError> {
-    if !directories.is_empty() {
-        for directory in directories {
-            insert_directory(tx, directory)?;
-        }
-    }
-    Ok(())
-}
-
-pub fn insert_directory(tx: &Transaction, path: &NotePath) -> Result<(), DBError> {
-    tx.execute(
-        "INSERT OR IGNORE INTO directories (path, basePath) VALUES (?1, ?2)",
-        params![path.to_string(), path.get_parent_path().0.to_string()],
-    )?;
-
-    Ok(())
-}
-
 fn delete_directory(tx: &Transaction, directory_path: &NotePath) -> Result<(), DBError> {
     let path_string = directory_path.to_string();
     let sql1 = "DELETE FROM notes WHERE path LIKE (?1 || '%')";
     let sql2 = "DELETE FROM notesContent WHERE path LIKE (?1 || '%')";
-    let sql3 = "DELETE FROM directories WHERE path LIKE (?1 || '%')";
+    // let sql3 = "DELETE FROM directories WHERE path LIKE (?1 || '%')";
 
     tx.execute(sql1, params![path_string])?;
     tx.execute(sql2, params![path_string])?;
-    tx.execute(sql3, params![path_string])?;
+    // tx.execute(sql3, params![path_string])?;
 
     Ok(())
 }
