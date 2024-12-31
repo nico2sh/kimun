@@ -5,6 +5,7 @@ mod settings;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
+use dioxus_desktop::use_wry_event_handler;
 use dioxus_logger::tracing::{debug, info, Level};
 use editor::{note_browser::NoteBrowser, text_editor::TextEditor};
 use modal::Modal;
@@ -81,6 +82,8 @@ pub fn App() -> Element {
             }
         });
     }
+
+    use_wry_event_handler(|event, e| {});
 
     rsx! {
         document::Link { rel: "stylesheet", href: THEME }

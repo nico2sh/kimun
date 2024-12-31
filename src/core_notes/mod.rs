@@ -8,7 +8,7 @@ use std::{
     collections::HashSet,
     fmt::Display,
     path::{Path, PathBuf},
-    sync::mpsc::Sender,
+    sync::mpsc::{Receiver, Sender},
 };
 
 use content_data::NoteContentData;
@@ -103,17 +103,12 @@ impl NoteVault {
         Ok(a)
     }
 
-    pub fn get_notes_channel<P: Into<NotePath>>(
-        &self,
-        path: P,
-        options: NotesGetterOptions,
-    ) -> Result<(), VaultError> {
+    pub fn browse_vault(&self, options: VaultBrowseOptions) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
-        let note_path = path.into();
 
         // TODO: See if we can put everything inside the closure
-        let query_path = note_path.clone();
+        let query_path = options.path.clone();
         let cached_notes = self.vault_db.call(move |conn| {
             let notes = db::get_notes(conn, &query_path, options.recursive)?;
             Ok(notes)
@@ -126,8 +121,11 @@ impl NoteVault {
             Some(options.sender.clone()),
         );
         // We traverse the directory
-        let walker =
-            nfs::get_file_walker(self.workspace_path.clone(), &note_path, options.recursive);
+        let walker = nfs::get_file_walker(
+            self.workspace_path.clone(),
+            &options.path,
+            options.recursive,
+        );
         walker.visit(&mut builder);
 
         let notes_to_add = builder.get_notes_to_add();
@@ -152,11 +150,11 @@ impl NoteVault {
         Ok(())
     }
 
-    pub fn get_notes<P: Into<NotePath>>(
+    pub fn get_notes(
         &self,
-        path: P,
+        path: &NotePath,
         recursive: bool,
-    ) -> Result<Vec<SearchResult>, VaultError> {
+    ) -> Result<Vec<NoteDetails>, VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files from cache");
         let note_path = path.into();
@@ -166,12 +164,15 @@ impl NoteVault {
             Ok(notes)
         })?;
 
-        let result = collect_from_cache(&cached_notes);
+        let result = cached_notes
+            .iter()
+            .map(|(_data, details)| details.to_owned())
+            .collect::<Vec<NoteDetails>>();
         let time = std::time::SystemTime::now()
             .duration_since(start)
             .expect("Something's wrong with the time");
         debug!("> Files fetched in {} milliseconds", time.as_millis());
-        result
+        Ok(result)
     }
 
     pub fn save_note<S: AsRef<str>>(&self, path: &NotePath, text: S) -> Result<(), VaultError> {
@@ -244,7 +245,7 @@ impl NoteDetails {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DirectoryDetails {
     pub path: NotePath,
 }
@@ -278,32 +279,33 @@ fn collect_from_cache(
     Ok(result.collect())
 }
 
-#[derive(Debug)]
-/// Options to traverse the Notes
-/// You need a sync::mpsc::Sender to use a channel to receive the entries
-pub struct NotesGetterOptions {
+pub struct VaultBrowseOptionsBuilder {
+    path: NotePath,
     validation: NotesValidation,
     recursive: bool,
-    sender: Sender<SearchResult>,
 }
 
-impl Display for NotesGetterOptions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Notes Getter Options - [Validation Type: {}|Recursive: {}]",
-            self.validation, self.recursive
+impl VaultBrowseOptionsBuilder {
+    pub fn new(path: &NotePath) -> Self {
+        Self::default().path(path.clone())
+    }
+
+    pub fn build(self) -> (VaultBrowseOptions, Receiver<SearchResult>) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        (
+            VaultBrowseOptions {
+                path: self.path,
+                validation: self.validation,
+                recursive: self.recursive,
+                sender,
+            },
+            receiver,
         )
     }
-}
 
-impl NotesGetterOptions {
-    pub fn new(sender: Sender<SearchResult>) -> Self {
-        Self {
-            validation: NotesValidation::None,
-            recursive: false,
-            sender,
-        }
+    pub fn path(mut self, path: NotePath) -> Self {
+        self.path = path;
+        self
     }
 
     pub fn recursive(mut self) -> Self {
@@ -329,6 +331,36 @@ impl NotesGetterOptions {
     pub fn no_validation(mut self) -> Self {
         self.validation = NotesValidation::None;
         self
+    }
+}
+
+impl Default for VaultBrowseOptionsBuilder {
+    fn default() -> Self {
+        Self {
+            path: NotePath::root(),
+            validation: NotesValidation::None,
+            recursive: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+/// Options to traverse the Notes
+/// You need a sync::mpsc::Sender to use a channel to receive the entries
+pub struct VaultBrowseOptions {
+    path: NotePath,
+    validation: NotesValidation,
+    recursive: bool,
+    sender: Sender<SearchResult>,
+}
+
+impl Display for VaultBrowseOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Vault Browse Options - [Path: `{}`|Validation Type: `{}`|Recursive: `{}`]",
+            self.path, self.validation, self.recursive
+        )
     }
 }
 

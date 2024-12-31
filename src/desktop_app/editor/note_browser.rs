@@ -1,5 +1,7 @@
 use crate::{
-    core_notes::{nfs::NotePath, NoteVault, NotesGetterOptions, SearchResult},
+    core_notes::{
+        nfs::NotePath, NoteVault, SearchResult, VaultBrowseOptions, VaultBrowseOptionsBuilder,
+    },
     desktop_app::AppContext,
 };
 use std::sync::mpsc;
@@ -95,13 +97,13 @@ impl NotesAndDirs {
             let mut entries = vec![];
             async move {
                 let current_path = path.read().clone();
-                let (tx, rx) = mpsc::channel();
+                let (search_options, rx) = VaultBrowseOptionsBuilder::new(&current_path)
+                    .full_validation()
+                    .non_recursive()
+                    .build();
                 let _ = tokio::spawn(async move {
                     vault
-                        .get_notes_channel(
-                            &current_path,
-                            NotesGetterOptions::new(tx).full_validation(),
-                        )
+                        .browse_vault(search_options)
                         .expect("Error fetching Entries");
                 })
                 .await;
