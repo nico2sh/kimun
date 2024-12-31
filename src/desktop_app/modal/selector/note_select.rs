@@ -1,5 +1,8 @@
 use crate::{
-    core_notes::{nfs::NotePath, NoteDetails, NoteVault, SearchResult},
+    core_notes::{
+        nfs::NotePath, DirectoryDetails, NoteDetails, NoteVault, SearchResult, VaultBrowseOptions,
+        VaultBrowseOptionsBuilder,
+    },
     desktop_app::AppContext,
 };
 
@@ -20,15 +23,44 @@ pub struct SelectorProps {
 struct SelectFunctions {
     vault: NoteVault,
     current_note_path: SyncSignal<Option<NotePath>>,
+    current_base_path: SyncSignal<NotePath>,
+}
+
+impl SelectFunctions {
+    fn open(&self) -> Vec<NoteSelectEntry> {
+        let (search_options, rx) = VaultBrowseOptionsBuilder::new(&self.current_base_path.read())
+            .no_validation()
+            .non_recursive()
+            .build();
+        let res = self.vault.browse_vault(search_options);
+
+        let mut result = vec![];
+        while let Ok(sr) = rx.recv() {
+            match sr {
+                SearchResult::Note(note_details) => {
+                    result.push(NoteSelectEntry::from_note_details(
+                        note_details,
+                        self.current_note_path,
+                    ));
+                }
+                SearchResult::Directory(directory_details) => {
+                    result.push(NoteSelectEntry::from_directory_details(
+                        directory_details,
+                        self.current_base_path,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        result
+    }
 }
 
 impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
     fn init(&self) -> Vec<NoteSelectEntry> {
         debug!("Opening Note Selector");
-        let items = open(NotePath::root(), &self.vault)
-            .into_iter()
-            .map(|e| NoteSelectEntry::from_note_details(e, self.current_note_path))
-            .collect::<Vec<NoteSelectEntry>>();
+
+        let items = self.open().into_iter().collect::<Vec<NoteSelectEntry>>();
         debug!("Loaded {} items", items.len());
         items
     }
@@ -69,26 +101,6 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
     }
 }
 
-fn open(note_path: NotePath, vault: &NoteVault) -> Vec<NoteDetails> {
-    let path = if note_path.is_note() {
-        note_path.get_parent_path().0
-    } else {
-        note_path
-    };
-    vault
-        .get_notes(path, true)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|sr| {
-            if let SearchResult::Note(note) = sr {
-                Some(note)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 fn filter_items(items: Vec<NoteSelectEntry>, filter_text: String) -> Vec<NoteSelectEntry> {
     let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
     let filtered = nucleo::pattern::Pattern::parse(
@@ -106,62 +118,27 @@ fn filter_items(items: Vec<NoteSelectEntry>, filter_text: String) -> Vec<NoteSel
 #[allow(non_snake_case)]
 pub fn NoteSelector(props: SelectorProps) -> Element {
     let current_note_path = props.note_path;
+    let current_base_path = use_signal_sync(|| {
+        current_note_path
+            .read()
+            .to_owned()
+            .map_or_else(NotePath::root, |path| {
+                if path.is_note() {
+                    path.get_parent_path().0
+                } else {
+                    path
+                }
+            })
+    });
     let app_context: AppContext = use_context();
     let vault: NoteVault = app_context.vault;
 
     let moved_vault = vault.clone();
-    // let init = move || async {
-    //     debug!("Opening Note Selector");
-    //     let items = open(NotePath::root(), &moved_vault)
-    //         .await
-    //         .into_iter()
-    //         .map(|e| NoteSelectEntry::from_note_details(e, current_note_path))
-    //         .collect::<Vec<NoteSelectEntry>>();
-    //     debug!("Loaded {} items", items.len());
-    //     items
-    // };
-    //
-    // let filter = move |filter_text: String, items: Vec<NoteSelectEntry>| async {
-    //     // dependencies
-    //     if !items.is_empty() {
-    //         let mut result = Vec::new();
-    //         if !filter_text.is_empty() {
-    //             result.push(NoteSelectEntry::create_from_name(
-    //                 filter_text.to_owned(),
-    //                 current_note_path,
-    //             ));
-    //         }
-    //         debug!("Filtering {}", filter_text);
-    //         let mut fi = filter_items(items, filter_text);
-    //         debug!("Filtered {} items", fi.len());
-    //         result.append(&mut fi);
-    //         result
-    //     } else {
-    //         vec![]
-    //     }
-    // };
-    //
-    // let moved_vault = vault.clone();
-    // let preview = move |entry: &NoteSelectEntry| async {
-    //     // sleep(Duration::from_millis(2000));
-    //     if let NoteSelectEntry::Note {
-    //         note,
-    //         search_str: _,
-    //         path_signal: _,
-    //     } = entry
-    //     {
-    //         moved_vault
-    //             .load_note(&note.path)
-    //             .await
-    //             .unwrap_or_else(|_e| "Error loading preview...".to_string())
-    //     } else {
-    //         "".to_string()
-    //     }
-    // };
 
     let select_functions = SelectFunctions {
         vault: moved_vault,
         current_note_path,
+        current_base_path,
     };
     SelectorView(
         "Use keywords to find notes, search is case insensitive and special characters are ignored.".to_string(),
@@ -177,6 +154,11 @@ pub enum NoteSelectEntry {
         note: NoteDetails,
         search_str: String,
         path_signal: SyncSignal<Option<NotePath>>,
+    },
+    Directory {
+        dir: DirectoryDetails,
+        name: String,
+        base_path_signal: SyncSignal<NotePath>,
     },
     Create {
         name: String,
@@ -194,6 +176,17 @@ impl NoteSelectEntry {
         }
     }
 
+    pub fn from_directory_details(
+        dir: DirectoryDetails,
+        base_path_signal: SyncSignal<NotePath>,
+    ) -> Self {
+        let name = dir.path.get_parent_path().1;
+        Self::Directory {
+            dir,
+            name,
+            base_path_signal,
+        }
+    }
     pub fn create_from_name(name: String, path_signal: SyncSignal<Option<NotePath>>) -> Self {
         Self::Create { name, path_signal }
     }
@@ -207,6 +200,11 @@ impl AsRef<str> for NoteSelectEntry {
                 search_str,
                 path_signal: _,
             } => search_str.as_str(),
+            NoteSelectEntry::Directory {
+                dir: _,
+                name,
+                base_path_signal: _,
+            } => name.as_str(),
             NoteSelectEntry::Create {
                 name,
                 path_signal: _,
@@ -226,6 +224,15 @@ impl RowItem for NoteSelectEntry {
                 let p = note.path.clone();
                 let mut s = *path_signal;
                 Box::new(move || s.set(Some(p.clone())))
+            }
+            NoteSelectEntry::Directory {
+                dir,
+                name: _,
+                base_path_signal,
+            } => {
+                let p = dir.path.clone();
+                let mut s = *base_path_signal;
+                Box::new(move || s.set(p.clone()))
             }
             NoteSelectEntry::Create { name, path_signal } => match NotePath::file_from(name) {
                 Ok(p) => {
@@ -257,6 +264,18 @@ impl RowItem for NoteSelectEntry {
                     div {
                         class: "details",
                         "{note.path.to_string()}"
+                    }
+                }
+            }
+            NoteSelectEntry::Directory {
+                dir: _,
+                name,
+                base_path_signal: _,
+            } => {
+                rsx! {
+                    div {
+                        class: "title",
+                        "{name}"
                     }
                 }
             }
