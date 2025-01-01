@@ -7,7 +7,7 @@ use std::{
 use ignore::{ParallelVisitor, ParallelVisitorBuilder};
 use log::error;
 
-use crate::core_notes::{
+use crate::{
     nfs::{DirectoryDetails, EntryData, NoteDetails, NoteEntryData, NotePath, VaultEntry},
     NotesValidation, SearchResult,
 };
