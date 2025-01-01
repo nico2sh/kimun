@@ -835,17 +835,13 @@ dependencies = [
  "eframe",
  "egui_extras",
  "env_logger",
- "gxhash",
- "ignore",
  "log",
  "notes_core",
  "nucleo",
  "rayon",
- "regex",
  "rfd",
  "serde",
  "toml",
- "walkdir",
 ]
 
 [[package]]
