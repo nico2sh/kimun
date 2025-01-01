@@ -5,19 +5,17 @@ edition = "2021"
 
 [dependencies]
 notes_core = { path = "../core" }
-eframe = { version = "0.29", default-features = false, features = [
+eframe = { version = "0.30", default-features = false, features = [
   # accesskit struggles with threading
   "default_fonts",
   "wayland",
   "x11",
   "wgpu",
-  "puffin",
 ] }
-egui_extras = { version = "0.29", features = ["all_loaders", "syntect"] }
+egui_extras = { version = "0.30", features = ["all_loaders", "syntect"] }
 
 rfd = "0.15"
 
-# regex = "1.11"
 dirs = "5.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
@@ -29,8 +27,5 @@ env_logger = { version = "0.11", default-features = false, features = [
   "auto-color",
   "humantime",
 ] }
-# gxhash = "3.4"
-# ignore = "0.4"
-# walkdir = "2.5"
 rayon = "1.10"
 anyhow = "1.0"

@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use anyhow::anyhow;
 use editor::Editor;
 use eframe::egui;
-use eframe::{App, CreationContext};
 use filtered_list::row::{RowItem, RowMessage};
 use icons::set_icon_fonts;
 use settings::Settings;
@@ -18,14 +17,14 @@ fn main() -> eframe::Result {
         .filter(Some("note"), log::LevelFilter::max())
         .init();
 
-    let options = eframe::NativeOptions {
+    let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 768.0]),
         ..Default::default()
     };
 
     eframe::run_native(
         "Note",
-        options,
+        native_options,
         Box::new(|cc| Ok(Box::new(DesktopApp::new(cc)?))),
     )
 }
@@ -37,20 +36,6 @@ pub enum Message {
     CloseWindow,
 }
 
-impl RowItem for String {
-    fn get_label(&self, ui: &mut egui::Ui) -> egui::Response {
-        ui.label(self)
-    }
-
-    fn get_sort_string(&self) -> String {
-        self.clone()
-    }
-
-    fn get_message(&self) -> filtered_list::row::RowMessage {
-        filtered_list::row::RowMessage::Nothing
-    }
-}
-
 pub struct DesktopApp {
     settings: Settings,
     main_view: Box<dyn View>,
@@ -59,7 +44,7 @@ pub struct DesktopApp {
 }
 
 impl DesktopApp {
-    pub fn new(cc: &CreationContext) -> anyhow::Result<Self> {
+    pub fn new(cc: &eframe::CreationContext) -> anyhow::Result<Self> {
         let mut settings = Settings::load()?;
         set_icon_fonts(&cc.egui_ctx);
         if settings.workspace_dir.is_none() {
@@ -80,8 +65,8 @@ impl DesktopApp {
     }
 }
 
-impl App for DesktopApp {
-    fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
+impl eframe::App for DesktopApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(left_view) = self.left_view.as_mut() {
             egui::SidePanel::left("Left Panel").show(ctx, |ui| {
                 left_view.view(ui);
