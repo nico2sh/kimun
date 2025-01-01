@@ -1,8 +1,12 @@
+use std::sync::Arc;
+
 use eframe::egui;
 
 pub fn set_icon_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert("icons".into(), font_data());
+    fonts
+        .font_data
+        .insert("icons".into(), Arc::new(font_data()));
     if let Some(font_keys) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
         font_keys.insert(1, "icons".into());
     }
