@@ -276,7 +276,7 @@ impl ContentChunk {
 
 #[cfg(test)]
 mod test {
-    use crate::core_notes::content_data::extract_data;
+    use crate::content_data::extract_data;
 
     #[test]
     fn check_title_yaml_frontmatter() {

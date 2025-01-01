@@ -437,7 +437,7 @@ pub fn get_file_walker<P: AsRef<Path>>(
 mod tests {
     use std::path::PathBuf;
 
-    use crate::core_notes::utilities::path_to_string;
+    use crate::utilities::path_to_string;
 
     use super::{NotePath, NotePathSlice};
 
