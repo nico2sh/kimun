@@ -1,6 +1,9 @@
 use eframe::egui;
 /// Highlight easymark, memoizing previous output to save CPU.
 /// In practice, the highlighter is fast enough not to need any caching.
+///
+/// Taken from egui's examples at:
+/// https://github.com/emilk/egui/blob/master/crates/egui_demo_lib/src/easy_mark/easy_mark_highlighter.rs
 #[derive(Default)]
 pub struct MemoizedNoteHighlighter {
     style: egui::Style,
