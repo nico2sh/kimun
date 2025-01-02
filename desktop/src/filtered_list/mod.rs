@@ -2,12 +2,10 @@ pub mod row;
 mod selector;
 
 use core::f32;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 
 use eframe::egui;
 
-use log::{debug, info};
-use notes_core::SearchResult;
 use row::{RowItem, RowMessage};
 use selector::Selector;
 
@@ -35,7 +33,6 @@ where
 {
     pub fn new(elements: Vec<R>) -> Self {
         let selector = Selector::new(elements);
-        // let (tx, rx) = std::sync::mpsc::channel();
 
         Self {
             filter_text: String::new(),
@@ -93,76 +90,64 @@ where
 
         self.update_filter();
 
-        let window = egui::Window::new("")
-            .id(egui::Id::new(ID_POPUP_OPEN)) // required since we change the title
-            .resizable(false)
-            .constrain(true)
-            .collapsible(false)
-            .title_bar(false)
-            .scroll(false)
-            .enabled(true)
-            .anchor(egui::Align2::CENTER_TOP, egui::Vec2::new(0.0, 100.0));
+        let _text_height = egui::TextStyle::Body
+            .resolve(ui.style())
+            .size
+            .max(ui.spacing().interact_size.y);
+        let _available_height = ui.available_height();
 
-        window.show(ui.ctx(), |ui| {
-            let _text_height = egui::TextStyle::Body
-                .resolve(ui.style())
-                .size
-                .max(ui.spacing().interact_size.y);
-            let _available_height = ui.available_height();
+        ui.with_layout(
+            egui::Layout {
+                main_dir: egui::Direction::TopDown,
+                main_wrap: false,
+                main_align: egui::Align::Center,
+                main_justify: false,
+                cross_align: egui::Align::Min,
+                cross_justify: false,
+            },
+            |ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.filter_text)
+                        .desired_width(f32::INFINITY)
+                        .id(ID_SEARCH.into()),
+                );
 
-            ui.with_layout(
-                egui::Layout {
-                    main_dir: egui::Direction::TopDown,
-                    main_wrap: false,
-                    main_align: egui::Align::Center,
-                    main_justify: false,
-                    cross_align: egui::Align::Min,
-                    cross_justify: false,
-                },
-                |ui| {
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.filter_text)
-                            .desired_width(f32::INFINITY)
-                            .id(ID_SEARCH.into()),
-                    );
-
-                    let mut selected = self.selector.get_selected();
-                    egui::scroll_area::ScrollArea::vertical()
-                        .auto_shrink(true)
-                        .show(ui, |ui| {
-                            self.selector.get_elements().iter().enumerate().for_each(
-                                |(pos, element)| {
-                                    let mut frame = egui::Frame {
-                                        inner_margin: egui::Margin::same(6.0),
-                                        ..Default::default()
+                let mut selected = self.selector.get_selected();
+                egui::scroll_area::ScrollArea::vertical()
+                    .auto_shrink(true)
+                    .show(ui, |ui| {
+                        self.selector.get_elements().iter().enumerate().for_each(
+                            |(pos, element)| {
+                                let mut frame = egui::Frame {
+                                    inner_margin: egui::Margin::same(6.0),
+                                    ..Default::default()
+                                }
+                                .begin(ui);
+                                {
+                                    // everything here in their own scope
+                                    let response = element.get_label(&mut frame.content_ui);
+                                    if response.hovered() {
+                                        selected = Some(pos);
                                     }
-                                    .begin(ui);
-                                    {
-                                        // everything here in their own scope
-                                        let response = element.get_label(&mut frame.content_ui);
-                                        if response.hovered() {
-                                            selected = Some(pos);
-                                        }
-                                        if Some(pos) == selected {
-                                            response.highlight();
-                                            // frame.frame.fill = egui::Color32::LIGHT_GRAY;
-                                        }
+                                    if Some(pos) == selected {
+                                        response.highlight();
+                                        // frame.frame.fill = egui::Color32::LIGHT_GRAY;
                                     }
-                                    ui.allocate_space(ui.available_size());
-                                    frame.allocate_space(ui);
+                                }
+                                ui.allocate_space(ui.available_size());
+                                frame.allocate_space(ui);
 
-                                    frame.paint(ui);
-                                },
-                            )
-                        });
-                    self.selector.set_selected(selected);
+                                frame.paint(ui);
+                            },
+                        )
+                    });
+                self.selector.set_selected(selected);
 
-                    if response.changed() {
-                        self.selector.filter_content(&self.filter_text);
-                    }
-                },
-            );
-        });
+                if response.changed() {
+                    self.selector.filter_content(&self.filter_text);
+                }
+            },
+        );
 
         if self.requested_focus {
             ui.ctx()

@@ -3,18 +3,19 @@ use std::path::PathBuf;
 use anyhow::anyhow;
 use editor::Editor;
 use eframe::egui;
-use filtered_list::row::{RowItem, RowMessage};
+// use filtered_list::row::{RowItem, RowMessage};
 use icons::set_icon_fonts;
 use settings::Settings;
 
 mod editor;
-pub mod filtered_list;
+// pub mod filtered_list;
 pub mod icons;
+pub mod modals;
 pub mod settings;
 
 fn main() -> eframe::Result {
     env_logger::Builder::new()
-        .filter(Some("note"), log::LevelFilter::max())
+        .filter(Some("notes_"), log::LevelFilter::max())
         .init();
 
     let native_options = eframe::NativeOptions {
@@ -32,7 +33,7 @@ fn main() -> eframe::Result {
 #[derive(PartialEq, Eq)]
 pub enum Message {
     None,
-    SelectionMessage(RowMessage),
+    // SelectionMessage(RowMessage),
     CloseWindow,
 }
 
