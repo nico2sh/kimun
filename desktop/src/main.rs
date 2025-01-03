@@ -1,3 +1,7 @@
+mod editor;
+pub mod icons;
+pub mod settings;
+
 use std::path::PathBuf;
 
 use anyhow::anyhow;
@@ -6,12 +10,6 @@ use eframe::egui;
 // use filtered_list::row::{RowItem, RowMessage};
 use icons::set_icon_fonts;
 use settings::Settings;
-
-mod editor;
-// pub mod filtered_list;
-pub mod icons;
-pub mod modals;
-pub mod settings;
 
 fn main() -> eframe::Result {
     env_logger::Builder::new()
@@ -85,7 +83,7 @@ impl eframe::App for DesktopApp {
 }
 
 pub trait View {
-    fn view(&mut self, ui: &mut egui::Ui) -> Message;
+    fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()>;
 }
 
 fn pick_workspace() -> anyhow::Result<PathBuf> {

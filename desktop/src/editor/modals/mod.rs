@@ -1,23 +1,28 @@
-mod vault_browser;
+mod vault_browse;
+
+use std::sync::mpsc::Sender;
+
+use eframe::egui;
+use log::debug;
+use notes_core::{nfs::NotePath, NoteVault};
+use vault_browse::VaultBrowse;
 
 use crate::View;
-use eframe::egui;
-use log::{debug, info};
-use notes_core::{nfs::NotePath, NoteVault, SearchResult};
-use vault_browser::{SelectorEntry, VaultBrowser};
+
+use super::EditorMessage;
 
 pub struct ModalManager {
+    message_sender: Sender<EditorMessage>,
     vault: NoteVault,
     current_modal: Option<Box<dyn EditorModal>>,
 }
 
 pub enum Modals {
-    None,
     VaultBrowser(NotePath),
 }
 
 impl View for ModalManager {
-    fn view(&mut self, ui: &mut egui::Ui) -> crate::Message {
+    fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
         if let Some(current_modal) = self.current_modal.as_mut() {
             let modal = egui::Modal::new(egui::Id::new("")).show(ui.ctx(), |ui| {
                 ui.set_width(400.0);
@@ -28,13 +33,14 @@ impl View for ModalManager {
                 self.current_modal = None;
             }
         }
-        crate::Message::None
+        Ok(())
     }
 }
 
 impl ModalManager {
-    pub fn new(vault: NoteVault) -> Self {
+    pub fn new(vault: NoteVault, message_bus: Sender<EditorMessage>) -> Self {
         Self {
+            message_sender: message_bus,
             vault,
             current_modal: None,
         }
@@ -42,14 +48,17 @@ impl ModalManager {
 
     pub fn set_modal(&mut self, modal: Modals) {
         match modal {
-            Modals::None => {}
             Modals::VaultBrowser(path) => {
                 debug!("show browser");
-                let mut content = VaultBrowser::new(self.vault.clone());
-                content.browse_path(&path);
+                let content =
+                    VaultBrowse::new(self.vault.clone(), &path, self.message_sender.clone());
                 self.current_modal = Some(Box::new(content));
             }
         }
+    }
+
+    pub fn close_modal(&mut self) {
+        self.current_modal = None;
     }
 }
 
