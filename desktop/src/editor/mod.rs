@@ -1,31 +1,23 @@
 mod data;
 mod highlighter;
+mod modals;
 mod parser;
 
-use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 
 use anyhow::bail;
 use data::EditorData;
 use eframe::egui;
 use highlighter::MemoizedNoteHighlighter;
-use notes_core::{nfs::NotePath, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
+use modals::{ModalManager, Modals};
+use notes_core::{nfs::NotePath, NoteVault};
 
-use crate::modals::{ModalManager, Modals};
-
-use super::{
-    // filtered_list::{
-    //     row::{RowItem, RowMessage},
-    //     FilteredList,
-    // },
-    icons,
-    settings::Settings,
-    Message,
-    View,
-};
+use super::{settings::Settings, View};
 
 pub struct Editor {
     data: EditorData,
     modal_manager: ModalManager,
+    message_receiver: Receiver<EditorMessage>,
     current_directory: NotePath,
     // selector: Option<FilteredList<SelectorEntry, SearchResult>>,
     highlighter: MemoizedNoteHighlighter,
@@ -34,9 +26,11 @@ pub struct Editor {
 impl Editor {
     pub fn new(settings: &Settings) -> anyhow::Result<Self> {
         if let Some(workspace_dir) = &settings.workspace_dir {
+            let (sender, receiver) = std::sync::mpsc::channel();
             Ok(Self {
                 data: EditorData::new(workspace_dir)?,
-                modal_manager: ModalManager::new(NoteVault::new(workspace_dir)?),
+                modal_manager: ModalManager::new(NoteVault::new(workspace_dir)?, sender),
+                message_receiver: receiver,
                 current_directory: settings.last_path.clone(),
                 highlighter: MemoizedNoteHighlighter::default(),
             })
@@ -44,29 +38,6 @@ impl Editor {
             bail!("Path not provided")
         }
     }
-
-    // fn show_path_browse(
-    //     vault: &Arc<NoteVault>,
-    //     filtered_list: &mut FilteredList<SelectorEntry, SearchResult>,
-    //     search_path: &NotePath,
-    // ) {
-    //     filtered_list.clear();
-    //     let search_path = if search_path.is_note() {
-    //         search_path.get_parent_path().0
-    //     } else {
-    //         search_path.clone()
-    //     };
-    //     let (browse_options, receiver) = VaultBrowseOptionsBuilder::new(&search_path).build();
-    //     filtered_list.set_channel_rows(receiver);
-    //     let vault = Arc::clone(vault);
-    //
-    //     std::thread::spawn(move || {
-    //         vault
-    //             .browse_vault(browse_options)
-    //             .expect("Error getting notes");
-    //     });
-    //     filtered_list.request_focus();
-    // }
 
     fn get_editor(&mut self, ui: &mut egui::Ui) {
         let mut layouter = |ui: &egui::Ui, easymark: &str, wrap_width: f32| {
@@ -94,7 +65,7 @@ impl Editor {
 }
 
 impl View for Editor {
-    fn view(&mut self, ui: &mut eframe::egui::Ui) -> Message {
+    fn view(&mut self, ui: &mut eframe::egui::Ui) -> anyhow::Result<()> {
         if ui
             .ctx()
             .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::O))
@@ -103,33 +74,28 @@ impl View for Editor {
                 .set_modal(Modals::VaultBrowser(NotePath::root()));
         }
 
-        self.modal_manager.view(ui);
+        self.modal_manager.view(ui)?;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             self.get_editor(ui);
         });
-        // if let Some(filtered_list) = self.selector.as_mut() {
-        //     let message = filtered_list.view(ui);
-        //
-        //     match message {
-        //         Message::None => {}
-        //         // Message::SelectionMessage(row_message) => match row_message {
-        //         //     RowMessage::Nothing => {}
-        //         //     RowMessage::OpenNote(note_path) => {
-        //         //         let content = self.data.note.load_note(&note_path).unwrap();
-        //         //         self.data.text = content;
-        //         //         self.data.note_path = Some(note_path.clone());
-        //         //         self.current_directory = note_path.get_parent_path().0;
-        //         //         self.selector = None;
-        //         //     }
-        //         //     RowMessage::OpenDirectory(directory_path) => {
-        //         //         Self::show_path_browse(&self.data.note, filtered_list, &directory_path);
-        //         //     }
-        //         // },
-        //         Message::CloseWindow => self.selector = None,
-        //     }
-        // }
 
-        Message::None
+        while let Ok(message) = self.message_receiver.try_recv() {
+            match message {
+                EditorMessage::OpenNote(note_path) => {
+                    let content = self.data.note.load_note(&note_path).unwrap();
+                    self.data.text = content;
+                    self.data.note_path = Some(note_path.clone());
+                    self.current_directory = note_path.get_parent_path().0;
+                    self.modal_manager.close_modal();
+                }
+            }
+        }
+
+        Ok(())
     }
+}
+
+pub(crate) enum EditorMessage {
+    OpenNote(NotePath),
 }

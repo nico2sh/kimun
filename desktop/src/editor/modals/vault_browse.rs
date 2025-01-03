@@ -1,4 +1,7 @@
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    mpsc::{self, Receiver},
+    Arc, Mutex,
+};
 
 use eframe::egui;
 use log::{debug, error};
@@ -7,79 +10,117 @@ use rayon::slice::ParallelSliceMut;
 
 use crate::icons;
 
-use super::EditorModal;
+use super::{EditorMessage, EditorModal};
 
 pub const ID_SEARCH: &str = "Search Popup";
 
-pub(super) struct VaultBrowser {
+pub(super) struct VaultBrowse {
     filter_text: String,
     selector: Selector,
-    rx: Option<mpsc::Receiver<SearchResult>>,
+    message_sender: mpsc::Sender<EditorMessage>,
+    rx: mpsc::Receiver<SearchResult>,
     to_clear: bool,
     requested_focus: bool,
+    requested_scroll: bool,
     vault: Arc<NoteVault>,
 }
 
-impl VaultBrowser {
-    pub fn new(vault: NoteVault) -> Self {
+impl VaultBrowse {
+    pub fn new(
+        vault: NoteVault,
+        path: &NotePath,
+        message_sender: mpsc::Sender<EditorMessage>,
+    ) -> Self {
         let selector = Selector::new();
+        let vault = Arc::new(vault);
+        let rx = Self::browse_path(vault.clone(), path);
 
         Self {
             filter_text: String::new(),
             selector,
-            rx: None,
+            message_sender,
+            rx,
             to_clear: false,
             requested_focus: true,
-            vault: Arc::new(vault),
+            requested_scroll: false,
+            vault,
         }
     }
 
-    pub fn browse_path(&mut self, path: &NotePath) {
+    fn browse_path(vault: Arc<NoteVault>, path: &NotePath) -> Receiver<SearchResult> {
         let search_path = if path.is_note() {
             path.get_parent_path().0
         } else {
             path.to_owned()
         };
         let (browse_options, receiver) = VaultBrowseOptionsBuilder::new(&search_path).build();
-        let vault = Arc::clone(&self.vault);
-        self.rx = Some(receiver);
 
+        // We fetch the data asynchronously
         std::thread::spawn(move || {
             debug!("Retreiving notes for dialog");
             vault
                 .browse_vault(browse_options)
                 .expect("Error getting notes");
         });
+
+        receiver
     }
 
-    pub fn _clear(&mut self) {
+    pub fn clear(&mut self) {
         self.to_clear = true;
     }
 
-    pub fn _request_focus(&mut self) {
+    pub fn request_focus(&mut self) {
         self.requested_focus = true;
     }
 
     fn update_filter(&mut self) {
-        if let Some(rx) = &self.rx {
-            let trigger_filter = if let Ok(row) = rx.try_recv() {
-                // info!("adding to list {}", row.as_ref());
-                self.selector.add_element(row.into());
-                true
-            } else {
-                false
-            };
-            while let Ok(row) = rx.try_recv() {
-                self.selector.add_element(row.into());
+        self.selector.update_elements();
+
+        let trigger_filter = if let Ok(row) = self.rx.try_recv() {
+            // info!("adding to list {}", row.as_ref());
+            let mut elements = self.selector.elements.lock().unwrap();
+            elements.push(row.into());
+            while let Ok(row) = self.rx.recv() {
+                elements.push(row.into());
             }
-            if trigger_filter {
-                self.selector.filter_content(&self.filter_text);
+            true
+        } else {
+            false
+        };
+        if trigger_filter {
+            self.selector.filter_content(&self.filter_text);
+        }
+    }
+
+    fn open_note(&self, path: &NotePath) {
+        if let Err(e) = self
+            .message_sender
+            .send(EditorMessage::OpenNote(path.clone()))
+        {
+            error!(
+                "Can't send the message to open the note at {}, Err: {}",
+                path, e
+            )
+        };
+    }
+
+    fn select(&mut self, selected: &SelectorEntry) {
+        match selected.entry_type {
+            SelectorEntryType::Note { title: _ } => {
+                self.open_note(&selected.path);
             }
+            SelectorEntryType::Directory => {
+                self.clear();
+                self.rx = Self::browse_path(self.vault.clone(), &selected.path);
+                self.request_focus();
+            }
+            SelectorEntryType::Attachment => {}
         }
     }
 }
 
-impl EditorModal for VaultBrowser {
+impl EditorModal for VaultBrowse {
     fn update(&mut self, ui: &mut egui::Ui) {
         if self.to_clear {
             self.selector.clear();
@@ -87,12 +128,6 @@ impl EditorModal for VaultBrowser {
         }
 
         self.update_filter();
-
-        let _text_height = egui::TextStyle::Body
-            .resolve(ui.style())
-            .size
-            .max(ui.spacing().interact_size.y);
-        let _available_height = ui.available_height();
 
         ui.with_layout(
             egui::Layout {
@@ -111,34 +146,32 @@ impl EditorModal for VaultBrowser {
                 );
 
                 let mut selected = self.selector.get_selected();
-                egui::scroll_area::ScrollArea::vertical()
-                    .auto_shrink(true)
-                    .show(ui, |ui| {
-                        self.selector.get_elements().iter().enumerate().for_each(
-                            |(pos, element)| {
-                                let mut frame = egui::Frame {
-                                    inner_margin: egui::Margin::same(6.0),
-                                    ..Default::default()
+                let scroll_area = egui::scroll_area::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .auto_shrink(false);
+                scroll_area.show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        // TODO: Avoid cloning the elements
+                        for (pos, element) in
+                            self.selector.get_elements().clone().iter().enumerate()
+                        {
+                            let response = element.get_label(ui);
+                            if response.clicked() {
+                                self.select(element);
+                            }
+                            if response.hovered() {
+                                selected = Some(pos);
+                            }
+                            if Some(pos) == selected {
+                                if self.requested_scroll {
+                                    response.scroll_to_me(Some(egui::Align::Center));
+                                    self.requested_scroll = false;
                                 }
-                                .begin(ui);
-                                {
-                                    // everything here in their own scope
-                                    let response = element.get_label(&mut frame.content_ui);
-                                    if response.hovered() {
-                                        selected = Some(pos);
-                                    }
-                                    if Some(pos) == selected {
-                                        response.highlight();
-                                        // frame.frame.fill = egui::Color32::LIGHT_GRAY;
-                                    }
-                                }
-                                ui.allocate_space(ui.available_size());
-                                frame.allocate_space(ui);
-
-                                frame.paint(ui);
-                            },
-                        )
+                                response.highlight();
+                            }
+                        }
                     });
+                });
                 self.selector.set_selected(selected);
 
                 if response.changed() {
@@ -152,13 +185,31 @@ impl EditorModal for VaultBrowser {
                 .memory_mut(|mem| mem.request_focus(ID_SEARCH.into()));
             self.requested_focus = false;
         }
+
+        if ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+            self.selector.select_prev();
+            self.requested_scroll = true;
+        }
+        if ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+            self.selector.select_next();
+            self.requested_scroll = true;
+        }
+
+        if ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+            let selected = self.selector.get_selection().cloned();
+            if let Some(selected) = selected {
+                self.select(&selected);
+            } else {
+                // Select the first one
+            };
+        }
     }
 }
 
-pub struct Selector {
+struct Selector {
     elements: Arc<Mutex<Vec<SelectorEntry>>>,
-    selected: Option<usize>,
     filtered_elements: Vec<SelectorEntry>,
+    selected: Option<usize>,
     tx: mpsc::Sender<Vec<SelectorEntry>>,
     rx: mpsc::Receiver<Vec<SelectorEntry>>,
 }
@@ -168,15 +219,11 @@ impl Selector {
         let (tx, rx) = mpsc::channel();
         Self {
             elements: Arc::new(Mutex::new(vec![])),
-            selected: None,
             filtered_elements: vec![],
+            selected: None,
             tx,
             rx,
         }
-    }
-
-    pub fn get_selected(&self) -> Option<usize> {
-        self.selected
     }
 
     pub fn get_selection(&self) -> Option<&SelectorEntry> {
@@ -185,6 +232,10 @@ impl Selector {
         } else {
             None
         }
+    }
+
+    pub fn get_selected(&self) -> Option<usize> {
+        self.selected
     }
 
     pub fn set_selected(&mut self, number: Option<usize>) {
@@ -229,47 +280,42 @@ impl Selector {
         }
     }
 
-    fn filter_elements(elements: &Vec<SelectorEntry>, filter: &str) -> Vec<SelectorEntry> {
-        let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
-        let res = nucleo::pattern::Pattern::parse(
-            filter,
-            nucleo::pattern::CaseMatching::Ignore,
-            nucleo::pattern::Normalization::Smart,
-        )
-        .match_list(elements, &mut matcher)
-        .iter()
-        .map(|e| e.0.to_owned())
-        .collect::<Vec<SelectorEntry>>();
-        res
-    }
-
     pub fn clear(&mut self) {
         self.elements.lock().unwrap().clear();
         self.filtered_elements.clear();
     }
 
-    pub fn add_element(&mut self, element: SelectorEntry) {
-        self.elements.lock().unwrap().push(element);
-    }
-
-    pub fn filter_content(&mut self, filter_text: &String) {
+    fn filter_content<S: AsRef<str>>(&mut self, filter_text: S) {
         let tx = self.tx.clone();
         let elements = Arc::clone(&self.elements);
-        let filter_text = filter_text.to_owned();
+        let filter_text = filter_text.as_ref().to_owned();
         std::thread::spawn(move || {
-            let filtered = Self::filter_elements(&elements.lock().unwrap(), &filter_text);
+            let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
+            let filtered = nucleo::pattern::Pattern::parse(
+                &filter_text,
+                nucleo::pattern::CaseMatching::Ignore,
+                nucleo::pattern::Normalization::Smart,
+            )
+            .match_list(elements.lock().unwrap().iter(), &mut matcher)
+            .iter()
+            .map(|e| e.0.to_owned())
+            .collect::<Vec<SelectorEntry>>();
+
             if let Err(e) = tx.send(filtered) {
                 error!("Error sending filtered results: {}", e)
             }
         });
     }
 
-    pub fn get_elements(&mut self) -> &Vec<SelectorEntry> {
+    fn update_elements(&mut self) {
         if let Some(elements) = self.rx.try_iter().last() {
             self.filtered_elements = elements;
+            self.filtered_elements
+                .par_sort_by(|a, b| a.get_sort_string().cmp(&b.get_sort_string()));
         }
-        self.filtered_elements
-            .par_sort_by(|a, b| a.get_sort_string().cmp(&b.get_sort_string()));
+    }
+
+    fn get_elements(&self) -> &Vec<SelectorEntry> {
         &self.filtered_elements
     }
 }
@@ -283,7 +329,7 @@ pub struct SelectorEntry {
 
 #[derive(Clone)]
 enum SelectorEntryType {
-    Note,
+    Note { title: String },
     Directory,
     Attachment,
 }
@@ -293,17 +339,19 @@ impl From<SearchResult> for SelectorEntry {
         match value {
             SearchResult::Note(note_details) => SelectorEntry {
                 path: note_details.path.clone(),
-                path_str: note_details.path.to_string(),
-                entry_type: SelectorEntryType::Note,
+                path_str: note_details.path.get_parent_path().1,
+                entry_type: SelectorEntryType::Note {
+                    title: note_details.get_title(),
+                },
             },
             SearchResult::Directory(directory_details) => SelectorEntry {
                 path: directory_details.path.clone(),
-                path_str: directory_details.path.to_string(),
+                path_str: directory_details.path.get_parent_path().1,
                 entry_type: SelectorEntryType::Directory,
             },
             SearchResult::Attachment(path) => SelectorEntry {
                 path: path.clone(),
-                path_str: path.to_string(),
+                path_str: path.get_parent_path().1,
                 entry_type: SelectorEntryType::Attachment,
             },
         }
@@ -313,7 +361,7 @@ impl From<SearchResult> for SelectorEntry {
 impl SelectorEntry {
     fn get_label(&self, ui: &mut egui::Ui) -> egui::Response {
         let icon = match &self.entry_type {
-            SelectorEntryType::Note => icons::NOTE,
+            SelectorEntryType::Note { title: _ } => icons::NOTE,
             SelectorEntryType::Directory => icons::DIRECTORY,
             SelectorEntryType::Attachment => icons::ATTACHMENT,
         };
@@ -322,9 +370,9 @@ impl SelectorEntry {
 
     fn get_sort_string(&self) -> String {
         match &self.entry_type {
-            SelectorEntryType::Note => format!("2{}", self.path_str),
-            SelectorEntryType::Directory => format!("1{}", self.path_str),
-            SelectorEntryType::Attachment => format!("3{}", self.path_str),
+            SelectorEntryType::Note { title: _ } => format!("2{}", self.path),
+            SelectorEntryType::Directory => format!("1{}", self.path),
+            SelectorEntryType::Attachment => format!("3{}", self.path),
         }
     }
 }
