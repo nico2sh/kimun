@@ -88,6 +88,7 @@ impl View for Editor {
                     self.data.note_path = Some(note_path.clone());
                     self.current_directory = note_path.get_parent_path().0;
                     self.modal_manager.close_modal();
+                    ui.ctx().request_repaint();
                 }
             }
         }
