@@ -5,9 +5,6 @@ use std::{
 
 use eframe::egui;
 use log::{debug, error, info};
-use notes_core::{nfs::NotePath, SearchResult};
-
-use crate::icons;
 
 use super::{EditorMessage, EditorModal};
 
@@ -16,20 +13,20 @@ pub const ID_SEARCH: &str = "Search Popup";
 #[derive(Debug)]
 enum SelectorState<P, D>
 where
-    D: Send + Clone + 'static,
+    D: ListElement + 'static,
     P: Send + Sync + Clone + 'static,
 {
     Initializing,
     Initialized { provider: P },
     Filtering,
-    Filtered { filter: String, data: D },
+    Filtered { filter: String, data: Vec<D> },
     Ready { filter: String },
 }
 
 impl<P, D> std::fmt::Display for SelectorState<P, D>
 where
-    D: Send + Clone + 'static,
     P: Send + Sync + Clone + 'static,
+    D: ListElement + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -48,9 +45,9 @@ where
 
 pub trait FilteredListFunctions<P, D>: Clone + Send {
     fn init(&self) -> P;
-    fn filter<S: AsRef<str>>(&self, filter_text: S, provider: &P) -> D;
-    fn get_elements(&self, data: &D) -> Vec<SelectorEntry>;
-    fn on_entry(&mut self, element: &SelectorEntry) -> Option<FilteredListFunctionMessage>;
+    fn filter<S: AsRef<str>>(&self, filter_text: S, provider: &P) -> Vec<D>;
+    // fn get_elements(&self, data: &D) -> Vec<impl ListElement>;
+    fn on_entry(&mut self, element: &D) -> Option<FilteredListFunctionMessage>;
 }
 
 pub enum FilteredListFunctionMessage {
@@ -61,8 +58,8 @@ pub enum FilteredListFunctionMessage {
 pub(super) struct FilteredList<F, P, D>
 where
     F: FilteredListFunctions<P, D> + 'static,
-    D: Send + Clone + 'static,
     P: Send + Sync + Clone + 'static,
+    D: ListElement + 'static,
 {
     state_manager: SelectorStateManager<F, P, D>,
     message_sender: mpsc::Sender<EditorMessage>,
@@ -74,8 +71,8 @@ where
 impl<F, P, D> FilteredList<F, P, D>
 where
     F: FilteredListFunctions<P, D> + 'static,
-    D: Send + Clone + 'static,
     P: Send + Sync + Clone + 'static,
+    D: ListElement + 'static,
 {
     pub fn new(functions: F, message_sender: mpsc::Sender<EditorMessage>) -> Self {
         let mut state_manager = SelectorStateManager::new(functions);
@@ -93,7 +90,7 @@ where
         self.requested_focus = true;
     }
 
-    fn select(&mut self, selected: &SelectorEntry) {
+    fn select(&mut self, selected: &D) {
         if let Some(message) = self.state_manager.functions.on_entry(selected) {
             match message {
                 FilteredListFunctionMessage::ToEditor(editor_message) => {
@@ -115,8 +112,8 @@ where
 impl<F, P, D> EditorModal for FilteredList<F, P, D>
 where
     F: FilteredListFunctions<P, D>,
-    D: Send + Clone + 'static,
     P: Send + Sync + Clone + 'static,
+    D: ListElement + 'static,
 {
     fn update(&mut self, ui: &mut egui::Ui) {
         if self.requested_clear {
@@ -151,7 +148,7 @@ where
                         // TODO: sadly we need to clone here, so we may have some innefficiencies
                         let elements = self.state_manager.get_elements().to_owned();
                         for (pos, element) in elements.iter().enumerate() {
-                            let response = element.get_label(ui);
+                            let response = element.draw_element(ui);
                             if response.clicked() {
                                 self.select(element);
                             }
@@ -201,13 +198,13 @@ where
 struct SelectorStateManager<F, P, D>
 where
     F: FilteredListFunctions<P, D> + 'static,
-    D: Send + Clone + 'static,
     P: Send + Sync + Clone + 'static,
+    D: ListElement + 'static,
 {
     state: SelectorState<P, D>,
     filter_text: String,
     provider: Option<Arc<P>>,
-    state_data: Vec<SelectorEntry>,
+    state_data: Vec<D>,
     functions: F,
     selected: Option<usize>,
     tx: mpsc::Sender<SelectorState<P, D>>,
@@ -218,8 +215,8 @@ where
 impl<F, P, D> SelectorStateManager<F, P, D>
 where
     F: FilteredListFunctions<P, D> + 'static,
-    D: Send + Clone + 'static,
     P: Send + Sync + Clone + 'static,
+    D: ListElement + 'static,
 {
     pub fn new(functions: F) -> Self {
         let (tx, rx) = mpsc::channel();
@@ -238,6 +235,7 @@ where
 
     pub fn initialize(&mut self) {
         debug!("Initializing");
+        self.state = SelectorState::Initializing;
         self.state_data.clear();
         let tx = self.tx.clone();
         let functions = self.functions.clone();
@@ -280,11 +278,11 @@ where
         }
     }
 
-    pub fn get_elements(&self) -> &Vec<SelectorEntry> {
+    pub fn get_elements(&self) -> &Vec<D> {
         &self.state_data
     }
 
-    pub fn get_selection(&self) -> Option<SelectorEntry> {
+    pub fn get_selection(&self) -> Option<D> {
         if let Some(selected) = self.selected {
             let elements = self.get_elements();
             let sel = elements.get(selected);
@@ -380,7 +378,7 @@ where
                 }
                 SelectorState::Filtering => {}
                 SelectorState::Filtered { filter, data } => {
-                    self.state_data = self.functions.get_elements(data);
+                    self.state_data = data.to_owned();
                     self.state = SelectorState::Ready {
                         filter: filter.to_owned(),
                     };
@@ -398,105 +396,6 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct SelectorEntry {
-    pub path: NotePath,
-    pub path_str: String,
-    pub entry_type: SelectorEntryType,
-}
-
-#[derive(Clone, Debug)]
-pub enum SelectorEntryType {
-    Note { title: String },
-    Directory,
-    Attachment,
-}
-
-impl From<SearchResult> for SelectorEntry {
-    fn from(value: SearchResult) -> Self {
-        match value {
-            SearchResult::Note(note_details) => SelectorEntry {
-                path: note_details.path.clone(),
-                path_str: note_details.path.get_parent_path().1,
-                entry_type: SelectorEntryType::Note {
-                    title: note_details.get_title(),
-                },
-            },
-            SearchResult::Directory(directory_details) => SelectorEntry {
-                path: directory_details.path.clone(),
-                path_str: directory_details.path.get_parent_path().1,
-                entry_type: SelectorEntryType::Directory,
-            },
-            SearchResult::Attachment(path) => SelectorEntry {
-                path: path.clone(),
-                path_str: path.get_parent_path().1,
-                entry_type: SelectorEntryType::Attachment,
-            },
-        }
-    }
-}
-
-impl SelectorEntry {
-    fn get_label(&self, ui: &mut egui::Ui) -> egui::Response {
-        match &self.entry_type {
-            SelectorEntryType::Note { title } => {
-                let icon = icons::NOTE;
-                let path = self.path_str.to_owned();
-                ui.label(format!("{}  {}\n{}", icon, title, path))
-                // let mut job = egui::text::LayoutJob::default();
-                // job.append(
-                //     format!("{}   {}\n", icon, title).as_str(),
-                //     0.0,
-                //     egui::TextFormat::default(),
-                // );
-                // job.append(
-                //     path.as_str(),
-                //     0.0,
-                //     egui::TextFormat {
-                //         italics: true,
-                //         ..Default::default()
-                //     },
-                // );
-                // ui.label(job)
-            }
-            SelectorEntryType::Directory => {
-                let icon = icons::DIRECTORY;
-                let path = self.path_str.to_owned();
-                ui.label(format!("{}  {}", icon, path))
-                // let mut job = egui::text::LayoutJob::default();
-                // job.append(
-                //     format!("{}   {}", icon, self.path_str).as_str(),
-                //     0.0,
-                //     egui::TextFormat::default(),
-                // );
-                // ui.label(job)
-            }
-            SelectorEntryType::Attachment => {
-                let icon = icons::ATTACHMENT;
-                let path = self.path_str.to_owned();
-                ui.label(format!("{}  {}", icon, path))
-                // let mut job = egui::text::LayoutJob::default();
-                // job.append(
-                //     format!("{}   {}", icon, self.path_str).as_str(),
-                //     0.0,
-                //     egui::TextFormat::default(),
-                // );
-                // ui.label(job)
-            }
-        }
-    }
-
-    pub fn get_sort_string(&self) -> String {
-        match &self.entry_type {
-            SelectorEntryType::Note { title: _ } => format!("2{}", self.path),
-            SelectorEntryType::Directory => format!("1{}", self.path),
-            SelectorEntryType::Attachment => format!("3{}", self.path),
-        }
-    }
-}
-
-impl AsRef<str> for SelectorEntry {
-    fn as_ref(&self) -> &str {
-        &self.path_str
-    }
+pub trait ListElement: Send + Sync + Clone {
+    fn draw_element(&self, ui: &mut egui::Ui) -> egui::Response;
 }
