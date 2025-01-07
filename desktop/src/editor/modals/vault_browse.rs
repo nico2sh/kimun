@@ -38,7 +38,15 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
 
         let mut results = vec![];
         while let Ok(entry) = receiver.recv() {
-            results.push(entry.into());
+            match &entry {
+                SearchResult::Note(_note_details) => results.push(entry.into()),
+                SearchResult::Directory(directory_details) => {
+                    if directory_details.path != self.path {
+                        results.push(entry.into());
+                    }
+                }
+                SearchResult::Attachment(_note_path) => {}
+            }
         }
         debug!("Retrieved {} elements", results.len());
         results
@@ -59,6 +67,9 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
         .iter()
         .map(|e| e.0.to_owned())
         .collect::<Vec<SelectorEntry>>();
+        if self.path != NotePath::root() {
+            filtered.push(SelectorEntry::up_dir(&self.path));
+        }
         filtered.par_sort_by(|a, b| a.get_sort_string().cmp(&b.get_sort_string()));
 
         debug!("filtered {} values", filtered.len());
@@ -85,6 +96,7 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
 pub struct SelectorEntry {
     pub path: NotePath,
     pub path_str: String,
+    pub search_str: String,
     pub entry_type: SelectorEntryType,
 }
 
@@ -98,23 +110,41 @@ pub enum SelectorEntryType {
 impl From<SearchResult> for SelectorEntry {
     fn from(value: SearchResult) -> Self {
         match value {
-            SearchResult::Note(note_details) => SelectorEntry {
-                path: note_details.path.clone(),
-                path_str: note_details.path.get_parent_path().1,
-                entry_type: SelectorEntryType::Note {
-                    title: note_details.get_title(),
-                },
-            },
-            SearchResult::Directory(directory_details) => SelectorEntry {
-                path: directory_details.path.clone(),
-                path_str: directory_details.path.get_parent_path().1,
-                entry_type: SelectorEntryType::Directory,
-            },
-            SearchResult::Attachment(path) => SelectorEntry {
-                path: path.clone(),
-                path_str: path.get_parent_path().1,
-                entry_type: SelectorEntryType::Attachment,
-            },
+            SearchResult::Note(note_details) => {
+                let title = note_details.get_title();
+                let path = note_details.path;
+                let file_name = path.get_parent_path().1;
+                let file_name_no_ext = file_name.strip_suffix(".md").unwrap_or(file_name.as_str());
+                let search_str = if title.contains(file_name_no_ext) {
+                    title.clone()
+                } else {
+                    format!("{} {}", title, file_name_no_ext)
+                };
+                SelectorEntry {
+                    path: path.clone(),
+                    path_str: path.get_parent_path().1,
+                    search_str,
+                    entry_type: SelectorEntryType::Note { title },
+                }
+            }
+            SearchResult::Directory(directory_details) => {
+                let name = directory_details.path.get_parent_path().1;
+                SelectorEntry {
+                    path: directory_details.path.clone(),
+                    path_str: name.clone(),
+                    search_str: name,
+                    entry_type: SelectorEntryType::Directory,
+                }
+            }
+            SearchResult::Attachment(path) => {
+                let name = path.get_parent_path().1;
+                SelectorEntry {
+                    path: path.clone(),
+                    path_str: name.clone(),
+                    search_str: name,
+                    entry_type: SelectorEntryType::Attachment,
+                }
+            }
         }
     }
 }
@@ -170,7 +200,17 @@ impl ListElement for SelectorEntry {
     }
 }
 impl SelectorEntry {
-    pub fn get_sort_string(&self) -> String {
+    fn up_dir(from_path: &NotePath) -> Self {
+        let parent = from_path.get_parent_path().0;
+        Self {
+            path: parent,
+            path_str: "..".to_string(),
+            search_str: ".. up".to_string(),
+            entry_type: SelectorEntryType::Directory,
+        }
+    }
+
+    fn get_sort_string(&self) -> String {
         match &self.entry_type {
             SelectorEntryType::Note { title: _ } => format!("2{}", self.path),
             SelectorEntryType::Directory => format!("1{}", self.path),
@@ -181,6 +221,6 @@ impl SelectorEntry {
 
 impl AsRef<str> for SelectorEntry {
     fn as_ref(&self) -> &str {
-        &self.path_str
+        &self.search_str
     }
 }

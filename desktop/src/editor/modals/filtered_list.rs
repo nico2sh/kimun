@@ -8,10 +8,10 @@ use log::{debug, error, info};
 
 use super::{EditorMessage, EditorModal};
 
-pub const ID_SEARCH: &str = "Search Popup";
+const ID_SEARCH: &str = "Search Popup";
 
 #[derive(Debug)]
-enum SelectorState<P, D>
+enum StateMessage<P, D>
 where
     D: ListElement + 'static,
     P: Send + Sync + Clone + 'static,
@@ -23,20 +23,20 @@ where
     Ready { filter: String },
 }
 
-impl<P, D> std::fmt::Display for SelectorState<P, D>
+impl<P, D> std::fmt::Display for StateMessage<P, D>
 where
     P: Send + Sync + Clone + 'static,
     D: ListElement + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SelectorState::Initializing => write!(f, "Initializing"),
-            SelectorState::Initialized { provider: _ } => write!(f, "Initialized"),
-            SelectorState::Filtering => write!(f, "Filtering"),
-            SelectorState::Filtered { filter, data: _ } => {
+            StateMessage::Initializing => write!(f, "Initializing"),
+            StateMessage::Initialized { provider: _ } => write!(f, "Initialized"),
+            StateMessage::Filtering => write!(f, "Filtering"),
+            StateMessage::Filtered { filter, data: _ } => {
                 write!(f, "Filtered with filter `{}`", filter)
             }
-            SelectorState::Ready { filter } => {
+            StateMessage::Ready { filter } => {
                 write!(f, "Ready with filter `{}`", filter)
             }
         }
@@ -46,7 +46,6 @@ where
 pub trait FilteredListFunctions<P, D>: Clone + Send {
     fn init(&self) -> P;
     fn filter<S: AsRef<str>>(&self, filter_text: S, provider: &P) -> Vec<D>;
-    // fn get_elements(&self, data: &D) -> Vec<impl ListElement>;
     fn on_entry(&mut self, element: &D) -> Option<FilteredListFunctionMessage>;
 }
 
@@ -63,7 +62,6 @@ where
 {
     state_manager: SelectorStateManager<F, P, D>,
     message_sender: mpsc::Sender<EditorMessage>,
-    requested_clear: bool,
     requested_focus: bool,
     requested_scroll: bool,
 }
@@ -80,7 +78,6 @@ where
         Self {
             state_manager,
             message_sender,
-            requested_clear: false,
             requested_focus: true,
             requested_scroll: false,
         }
@@ -100,7 +97,7 @@ where
                 }
                 FilteredListFunctionMessage::ResetState => {
                     self.request_focus();
-                    if let Err(e) = self.state_manager.tx.send(SelectorState::Initializing) {
+                    if let Err(e) = self.state_manager.tx.send(StateMessage::Initializing) {
                         error!("Can't reset the state, Err: {}", e)
                     }
                 }
@@ -116,11 +113,6 @@ where
     D: ListElement + 'static,
 {
     fn update(&mut self, ui: &mut egui::Ui) {
-        if self.requested_clear {
-            self.state_manager.clear();
-            self.requested_clear = false;
-        }
-
         self.state_manager.update();
 
         ui.with_layout(
@@ -189,7 +181,7 @@ where
             if let Some(selected) = selected {
                 self.select(&selected);
             } else {
-                // Select the first one
+                // TODO: Select the first one
             };
         }
     }
@@ -201,15 +193,15 @@ where
     P: Send + Sync + Clone + 'static,
     D: ListElement + 'static,
 {
-    state: SelectorState<P, D>,
+    state: StateMessage<P, D>,
     filter_text: String,
     provider: Option<Arc<P>>,
     state_data: Vec<D>,
     functions: F,
     selected: Option<usize>,
-    tx: mpsc::Sender<SelectorState<P, D>>,
-    rx: mpsc::Receiver<SelectorState<P, D>>,
-    deduped_message_bus: VecDeque<SelectorState<P, D>>,
+    tx: mpsc::Sender<StateMessage<P, D>>,
+    rx: mpsc::Receiver<StateMessage<P, D>>,
+    deduped_message_bus: VecDeque<StateMessage<P, D>>,
 }
 
 impl<F, P, D> SelectorStateManager<F, P, D>
@@ -218,10 +210,10 @@ where
     P: Send + Sync + Clone + 'static,
     D: ListElement + 'static,
 {
-    pub fn new(functions: F) -> Self {
+    fn new(functions: F) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
-            state: SelectorState::Initializing,
+            state: StateMessage::Initializing,
             filter_text: String::new(),
             provider: None,
             state_data: vec![],
@@ -233,15 +225,15 @@ where
         }
     }
 
-    pub fn initialize(&mut self) {
+    fn initialize(&mut self) {
         debug!("Initializing");
-        self.state = SelectorState::Initializing;
+        self.state = StateMessage::Initializing;
         self.state_data.clear();
         let tx = self.tx.clone();
         let functions = self.functions.clone();
         std::thread::spawn(move || {
             let provider = functions.init();
-            if let Err(e) = tx.send(SelectorState::Initialized { provider }) {
+            if let Err(e) = tx.send(StateMessage::Initialized { provider }) {
                 error!("Error sending initialized status: {}", e);
             }
         });
@@ -249,7 +241,7 @@ where
 
     fn trigger_filter(&mut self) {
         if let Some(provider_arc) = &self.provider {
-            self.state = SelectorState::Filtering;
+            self.state = StateMessage::Filtering;
             let tx = self.tx.clone();
             let functions = self.functions.clone();
             let filter_text = self.filter_text.clone();
@@ -257,7 +249,7 @@ where
             std::thread::spawn(move || {
                 info!("Applying filter");
                 let data = functions.filter(filter_text.clone(), &provider);
-                if let Err(e) = tx.send(SelectorState::Filtered {
+                if let Err(e) = tx.send(StateMessage::Filtered {
                     filter: filter_text,
                     data,
                 }) {
@@ -272,17 +264,11 @@ where
         }
     }
 
-    pub fn clear(&self) {
-        if let Err(e) = self.tx.send(SelectorState::Initializing) {
-            error!("Error sending a clear message {}", e);
-        }
-    }
-
-    pub fn get_elements(&self) -> &Vec<D> {
+    fn get_elements(&self) -> &Vec<D> {
         &self.state_data
     }
 
-    pub fn get_selection(&self) -> Option<D> {
+    fn get_selection(&self) -> Option<D> {
         if let Some(selected) = self.selected {
             let elements = self.get_elements();
             let sel = elements.get(selected);
@@ -292,11 +278,11 @@ where
         }
     }
 
-    pub fn get_selected(&self) -> Option<usize> {
+    fn get_selected(&self) -> Option<usize> {
         self.selected
     }
 
-    pub fn set_selected(&mut self, number: Option<usize>) {
+    fn set_selected(&mut self, number: Option<usize>) {
         let elements = self.get_elements();
         if !elements.is_empty() {
             self.selected = number.map(|n| std::cmp::min(elements.len() - 1, n));
@@ -305,7 +291,7 @@ where
         }
     }
 
-    pub fn select_next(&mut self) {
+    fn select_next(&mut self) {
         let elements = self.get_elements();
         if !elements.is_empty() {
             self.selected = Some(if let Some(mut selected) = self.selected {
@@ -323,7 +309,7 @@ where
         }
     }
 
-    pub fn select_prev(&mut self) {
+    fn select_prev(&mut self) {
         let elements = self.get_elements();
         if !elements.is_empty() {
             self.selected = Some(if let Some(mut selected) = self.selected {
@@ -366,27 +352,29 @@ where
             info!("New Status received: {}", state);
             self.state = state;
             match &self.state {
-                SelectorState::Initializing => {
+                StateMessage::Initializing => {
                     info!("Status is clear, we initialize");
                     self.initialize()
                 }
-                SelectorState::Initialized { provider } => {
+                StateMessage::Initialized { provider } => {
                     info!("Status initialized, we proceed to apply filter");
                     // Only place we need to clone the provider
                     self.provider = Some(Arc::new(provider.to_owned()));
                     self.trigger_filter();
                 }
-                SelectorState::Filtering => {}
-                SelectorState::Filtered { filter, data } => {
+                StateMessage::Filtering => {
+                    // We are filtering, waiting for results
+                }
+                StateMessage::Filtered { filter, data } => {
                     self.state_data = data.to_owned();
-                    self.state = SelectorState::Ready {
+                    self.state = StateMessage::Ready {
                         filter: filter.to_owned(),
                     };
                 }
-                SelectorState::Ready { filter: _ } => {}
+                StateMessage::Ready { filter: _ } => {}
             }
         }
-        if let SelectorState::Ready { filter } = &self.state {
+        if let StateMessage::Ready { filter } = &self.state {
             // We are ready to show elements
             if filter != &self.filter_text {
                 info!("Filter changed, we reapply the filter");
