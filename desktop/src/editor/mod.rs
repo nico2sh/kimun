@@ -71,7 +71,7 @@ impl View for Editor {
             .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::O))
         {
             self.modal_manager
-                .set_modal(Modals::VaultBrowser(NotePath::root()));
+                .set_modal(Modals::VaultBrowse(NotePath::root()));
         }
 
         self.modal_manager.view(ui)?;
