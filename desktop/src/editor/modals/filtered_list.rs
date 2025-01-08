@@ -43,15 +43,15 @@ where
     }
 }
 
-pub trait FilteredListFunctions<P, D>: Clone + Send {
+pub trait FilteredListFunctions<P, D>: Clone + Send + Sync {
     fn init(&self) -> P;
     fn filter<S: AsRef<str>>(&self, filter_text: S, provider: &P) -> Vec<D>;
-    fn on_entry(&mut self, element: &D) -> Option<FilteredListFunctionMessage>;
+    fn on_entry(&self, element: &D) -> Option<FilteredListFunctionMessage<Self>>;
 }
 
-pub enum FilteredListFunctionMessage {
+pub enum FilteredListFunctionMessage<F> {
     ToEditor(EditorMessage),
-    ResetState,
+    ResetState(F),
 }
 
 pub(super) struct FilteredList<F, P, D>
@@ -95,7 +95,8 @@ where
                         error!("Can't send the message to editor, Err: {}", e)
                     }
                 }
-                FilteredListFunctionMessage::ResetState => {
+                FilteredListFunctionMessage::ResetState(functions) => {
+                    self.state_manager.functions = Arc::new(functions);
                     self.request_focus();
                     if let Err(e) = self.state_manager.tx.send(StateMessage::Initializing) {
                         error!("Can't reset the state, Err: {}", e)
@@ -197,7 +198,7 @@ where
     filter_text: String,
     provider: Option<Arc<P>>,
     state_data: Vec<D>,
-    functions: F,
+    functions: Arc<F>,
     selected: Option<usize>,
     tx: mpsc::Sender<StateMessage<P, D>>,
     rx: mpsc::Receiver<StateMessage<P, D>>,
@@ -217,7 +218,7 @@ where
             filter_text: String::new(),
             provider: None,
             state_data: vec![],
-            functions,
+            functions: Arc::new(functions),
             selected: None,
             tx,
             rx,

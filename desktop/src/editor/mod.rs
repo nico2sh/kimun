@@ -73,6 +73,12 @@ impl View for Editor {
             self.modal_manager
                 .set_modal(Modals::VaultBrowse(NotePath::root()));
         }
+        if ui
+            .ctx()
+            .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
+        {
+            self.modal_manager.set_modal(Modals::VaultSearch);
+        }
 
         self.modal_manager.view(ui)?;
 

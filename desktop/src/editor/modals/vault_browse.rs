@@ -1,6 +1,6 @@
 use eframe::egui;
-use log::debug;
-use notes_core::{nfs::NotePath, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
+use log::{debug, error};
+use notes_core::{nfs::NotePath, NoteDetails, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
 use rayon::slice::ParallelSliceMut;
 
 use crate::icons;
@@ -76,7 +76,7 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
         filtered
     }
 
-    fn on_entry(&mut self, element: &SelectorEntry) -> Option<FilteredListFunctionMessage> {
+    fn on_entry(&self, element: &SelectorEntry) -> Option<FilteredListFunctionMessage<Self>> {
         match element.entry_type {
             SelectorEntryType::Note { title: _ } => Some(FilteredListFunctionMessage::ToEditor(
                 EditorMessage::OpenNote(element.path.clone()),
@@ -84,11 +84,58 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
             SelectorEntryType::Directory => {
                 let directory = element.path.clone();
                 debug!("new path: {}", directory);
-                self.path = directory;
-                Some(FilteredListFunctionMessage::ResetState)
+                let new_one = Self {
+                    path: directory,
+                    vault: self.vault.clone(),
+                };
+                // self.path = directory;
+                Some(FilteredListFunctionMessage::ResetState(new_one))
             }
             SelectorEntryType::Attachment => None,
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct VaultSearchFunctions {
+    vault: NoteVault,
+}
+
+impl VaultSearchFunctions {
+    pub fn new(vault: NoteVault) -> Self {
+        Self { vault }
+    }
+}
+
+impl FilteredListFunctions<(), NoteDetails> for VaultSearchFunctions {
+    fn init(&self) {}
+
+    fn filter<S: AsRef<str>>(&self, filter_text: S, _provider: &()) -> Vec<NoteDetails> {
+        if filter_text.as_ref().is_empty() {
+            return vec![];
+        }
+
+        match self.vault.search_notes(filter_text, true) {
+            Ok(result) => result,
+            Err(e) => {
+                error!("Error searching notes: {}", e);
+                vec![]
+            }
+        }
+    }
+
+    fn on_entry(&self, element: &NoteDetails) -> Option<FilteredListFunctionMessage<Self>> {
+        Some(FilteredListFunctionMessage::ToEditor(
+            EditorMessage::OpenNote(element.path.clone()),
+        ))
+    }
+}
+
+impl ListElement for NoteDetails {
+    fn draw_element(&self, ui: &mut egui::Ui) -> egui::Response {
+        let icon = icons::NOTE;
+        let path = self.path.to_owned();
+        ui.label(format!("{}  {}\n{}", icon, self.get_title(), path))
     }
 }
 
