@@ -7,7 +7,7 @@ use eframe::egui;
 use filtered_list::FilteredList;
 use log::debug;
 use notes_core::{nfs::NotePath, NoteVault};
-use vault_browse::VaultBrowseFunctions;
+use vault_browse::{VaultBrowseFunctions, VaultSearchFunctions};
 
 use crate::View;
 
@@ -21,6 +21,7 @@ pub struct ModalManager {
 
 pub enum Modals {
     VaultBrowse(NotePath),
+    VaultSearch,
 }
 
 impl View for ModalManager {
@@ -58,7 +59,15 @@ impl ModalManager {
                 );
                 self.current_modal = Some(Box::new(content));
             }
-        }
+            Modals::VaultSearch => {
+                debug!("show searcher");
+                let content = FilteredList::new(
+                    VaultSearchFunctions::new(self.vault.clone()),
+                    self.message_sender.clone(),
+                );
+                self.current_modal = Some(Box::new(content));
+            }
+        };
     }
 
     pub fn close_modal(&mut self) {
