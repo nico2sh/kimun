@@ -20,7 +20,7 @@ pub struct ModalManager {
 }
 
 pub enum Modals {
-    VaultBrowser(NotePath),
+    VaultBrowse(NotePath),
 }
 
 impl View for ModalManager {
@@ -50,7 +50,7 @@ impl ModalManager {
 
     pub fn set_modal(&mut self, modal: Modals) {
         match modal {
-            Modals::VaultBrowser(path) => {
+            Modals::VaultBrowse(path) => {
                 debug!("show browser");
                 let content = FilteredList::new(
                     VaultBrowseFunctions::new(path.clone(), self.vault.clone()),

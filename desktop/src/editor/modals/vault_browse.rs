@@ -199,6 +199,7 @@ impl ListElement for SelectorEntry {
         }
     }
 }
+
 impl SelectorEntry {
     fn up_dir(from_path: &NotePath) -> Self {
         let parent = from_path.get_parent_path().0;
