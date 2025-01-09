@@ -22,7 +22,7 @@ use utilities::path_to_string;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteVault {
-    workspace_path: PathBuf,
+    pub workspace_path: PathBuf,
     vault_db: VaultDB,
 }
 
@@ -48,6 +48,7 @@ impl NoteVault {
             vault_db,
         })
     }
+
     pub fn init(&self) -> Result<(), VaultError> {
         self.create_tables()?;
         self.create_index()?;
