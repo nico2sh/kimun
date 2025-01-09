@@ -1,0 +1,32 @@
+[package]
+name = "notes_core"
+ersion = "0.1.0"
+authors = ["Nico Hormazábal <mail@nico2sh.com>"]
+edition = "2021"
+
+[dependencies]
+##############
+# Core Notes #
+##############
+## Serialization
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+## Debug
+log = "0.4"
+env_logger = "0.11"
+## Error Handling
+thiserror = "2.0"
+## DB Stuff
+rusqlite = { version = "0.32", features = ["bundled"] }
+## Browse files
+ignore = "0.4"
+## Hash function
+gxhash = "3.4"
+## Regular Expressions
+regex = "1.11"
+# Markdown parsing
+pulldown-cmark = "0.12"
+## Async stuff
+# tokio = { version = "1.42", features = ["full"] }
+# crossbeam-channel = "0.5"
+# futures = "0.3"
