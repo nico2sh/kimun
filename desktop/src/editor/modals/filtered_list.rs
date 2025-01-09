@@ -43,10 +43,14 @@ where
     }
 }
 
-pub trait FilteredListFunctions<P, D>: Clone + Send + Sync {
+pub trait FilteredListFunctions<P, D>: Clone + Send + Sync
+where
+    D: ListElement,
+{
     fn init(&self) -> P;
     fn filter<S: AsRef<str>>(&self, filter_text: S, provider: &P) -> Vec<D>;
     fn on_entry(&self, element: &D) -> Option<FilteredListFunctionMessage<Self>>;
+    fn header_element(&self, state_data: &StateData<D>) -> Option<D>;
 }
 
 pub enum FilteredListFunctionMessage<F> {
@@ -107,7 +111,13 @@ where
     }
 
     pub fn get_selection(&self) -> Option<D> {
-        self.state_manager.get_selection()
+        self.state_manager.state_data.get_selection()
+    }
+
+    fn get_header(&self) -> Option<D> {
+        self.state_manager
+            .functions
+            .header_element(&self.state_manager.state_data)
     }
 }
 
@@ -121,6 +131,7 @@ where
         self.state_manager.update();
         let mut selected_element = None;
 
+        let header = self.get_header();
         ui.with_layout(
             egui::Layout {
                 main_dir: egui::Direction::TopDown,
@@ -132,20 +143,31 @@ where
             },
             |ui| {
                 let _filter_response = ui.add(
-                    egui::TextEdit::singleline(&mut self.state_manager.filter_text)
+                    egui::TextEdit::singleline(&mut self.state_manager.state_data.filter_text)
                         .desired_width(f32::INFINITY)
                         .id(ID_SEARCH.into()),
                 );
 
                 ui.separator();
 
-                let mut selected = self.state_manager.get_selected();
+                let mut selected = self.state_manager.state_data.get_selected();
                 let scroll_area = egui::scroll_area::ScrollArea::vertical()
                     .max_height(400.0)
                     .auto_shrink(false);
                 scroll_area.show(ui, |ui| {
                     ui.vertical(|ui| {
-                        let elements = self.state_manager.get_elements();
+                        if let Some(element) = &header {
+                            let header_response = element.draw_element(ui);
+                            if header_response.clicked() {
+                                selected_element = Some(element.clone());
+                            }
+                            if header_response.hovered() {
+                                selected = None;
+                                header_response.highlight();
+                            }
+                            ui.separator();
+                        }
+                        let elements = self.state_manager.state_data.get_elements();
                         for (pos, element) in elements.iter().enumerate() {
                             let response = element.draw_element(ui);
                             if response.clicked() {
@@ -164,7 +186,7 @@ where
                         }
                     });
                 });
-                self.state_manager.set_selected(selected);
+                self.state_manager.state_data.set_selected(selected);
             },
         );
 
@@ -175,21 +197,31 @@ where
         }
 
         if ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowUp)) {
-            self.state_manager.select_prev();
+            self.state_manager.state_data.select_prev();
             self.requested_scroll = true;
         }
         if ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowDown)) {
-            self.state_manager.select_next();
+            self.state_manager.state_data.select_next();
             self.requested_scroll = true;
         }
 
-        if ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
-            let selection = self.state_manager.get_selection();
+        if ui
+            .ctx()
+            .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter))
+        {
+            if let Some(header) = header {
+                selected_element = Some(header);
+            }
+        } else if ui.ctx().input(|input| input.key_pressed(egui::Key::Enter)) {
+            let selection = self.state_manager.state_data.get_selection();
             if let Some(selection) = selection {
-                selected_element = Some(selection.to_owned());
+                selected_element = Some(selection);
                 // select_message = self.state_manager.functions.on_entry(&selected);
             } else {
-                // TODO: Select the first one
+                let elements = self.state_manager.state_data.get_elements();
+                if !elements.is_empty() {
+                    selected_element = Some(elements.first().unwrap().to_owned());
+                }
             };
         }
         if let Some(se) = selected_element {
@@ -205,78 +237,29 @@ where
     D: ListElement + 'static,
 {
     state: StateMessage<P, D>,
-    filter_text: String,
     provider: Option<Arc<P>>,
-    state_data: Vec<D>,
+    state_data: StateData<D>,
     functions: Arc<F>,
-    selected: Option<usize>,
     tx: mpsc::Sender<StateMessage<P, D>>,
     rx: mpsc::Receiver<StateMessage<P, D>>,
     deduped_message_bus: VecDeque<StateMessage<P, D>>,
 }
 
-impl<F, P, D> SelectorStateManager<F, P, D>
+pub struct StateData<D>
 where
-    F: FilteredListFunctions<P, D> + 'static,
-    P: Send + Sync + Clone + 'static,
     D: ListElement + 'static,
 {
-    fn new(functions: F) -> Self {
-        let (tx, rx) = mpsc::channel();
-        Self {
-            state: StateMessage::Initializing,
-            filter_text: String::new(),
-            provider: None,
-            state_data: vec![],
-            functions: Arc::new(functions),
-            selected: None,
-            tx,
-            rx,
-            deduped_message_bus: VecDeque::new(),
-        }
-    }
+    pub filter_text: String,
+    pub elements: Vec<D>,
+    pub selected: Option<usize>,
+}
 
-    fn initialize(&mut self) {
-        debug!("Initializing");
-        self.state = StateMessage::Initializing;
-        self.state_data.clear();
-        let tx = self.tx.clone();
-        let functions = self.functions.clone();
-        std::thread::spawn(move || {
-            let provider = functions.init();
-            if let Err(e) = tx.send(StateMessage::Initialized { provider }) {
-                error!("Error sending initialized status: {}", e);
-            }
-        });
-    }
-
-    fn trigger_filter(&mut self) {
-        if let Some(provider_arc) = &self.provider {
-            self.state = StateMessage::Filtering;
-            let tx = self.tx.clone();
-            let functions = self.functions.clone();
-            let filter_text = self.filter_text.clone();
-            let provider = Arc::clone(provider_arc);
-            std::thread::spawn(move || {
-                info!("Applying filter");
-                let data = functions.filter(filter_text.clone(), &provider);
-                if let Err(e) = tx.send(StateMessage::Filtered {
-                    filter: filter_text,
-                    data,
-                }) {
-                    error!("Error sending ready status: {}", e);
-                }
-            });
-        } else {
-            panic!(
-                "Wrong state, no provider present, current state is: {}",
-                self.state
-            );
-        }
-    }
-
+impl<D> StateData<D>
+where
+    D: ListElement + 'static,
+{
     fn get_elements(&self) -> &Vec<D> {
-        &self.state_data
+        &self.elements
     }
 
     fn get_selection(&self) -> Option<D> {
@@ -337,6 +320,70 @@ where
             self.selected = None;
         }
     }
+}
+
+impl<F, P, D> SelectorStateManager<F, P, D>
+where
+    F: FilteredListFunctions<P, D> + 'static,
+    P: Send + Sync + Clone + 'static,
+    D: ListElement + 'static,
+{
+    fn new(functions: F) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let state_data = StateData {
+            filter_text: String::new(),
+            elements: vec![],
+            selected: None,
+        };
+        Self {
+            state: StateMessage::Initializing,
+            provider: None,
+            state_data,
+            functions: Arc::new(functions),
+            tx,
+            rx,
+            deduped_message_bus: VecDeque::new(),
+        }
+    }
+
+    fn initialize(&mut self) {
+        debug!("Initializing");
+        self.state = StateMessage::Initializing;
+        self.state_data.elements.clear();
+        let tx = self.tx.clone();
+        let functions = self.functions.clone();
+        std::thread::spawn(move || {
+            let provider = functions.init();
+            if let Err(e) = tx.send(StateMessage::Initialized { provider }) {
+                error!("Error sending initialized status: {}", e);
+            }
+        });
+    }
+
+    fn trigger_filter(&mut self) {
+        if let Some(provider_arc) = &self.provider {
+            self.state = StateMessage::Filtering;
+            let tx = self.tx.clone();
+            let functions = self.functions.clone();
+            let filter_text = self.state_data.filter_text.clone();
+            let provider = Arc::clone(provider_arc);
+            std::thread::spawn(move || {
+                info!("Applying filter");
+                let data = functions.filter(filter_text.clone(), &provider);
+                if let Err(e) = tx.send(StateMessage::Filtered {
+                    filter: filter_text,
+                    data,
+                }) {
+                    error!("Error sending ready status: {}", e);
+                }
+            });
+        } else {
+            panic!(
+                "Wrong state, no provider present, current state is: {}",
+                self.state
+            );
+        }
+    }
 
     fn update(&mut self) {
         // We make sure we don't trigger two equal state changes consecutively
@@ -377,7 +424,7 @@ where
                     // We are filtering, waiting for results
                 }
                 StateMessage::Filtered { filter, data } => {
-                    self.state_data = data.to_owned();
+                    self.state_data.elements = data.to_owned();
                     self.state = StateMessage::Ready {
                         filter: filter.to_owned(),
                     };
@@ -387,7 +434,7 @@ where
         }
         if let StateMessage::Ready { filter } = &self.state {
             // We are ready to show elements
-            if filter != &self.filter_text {
+            if filter != &self.state_data.filter_text {
                 info!("Filter changed, we reapply the filter");
                 self.trigger_filter();
             }

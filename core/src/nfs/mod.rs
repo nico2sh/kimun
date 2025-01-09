@@ -9,6 +9,8 @@ use std::{
 };
 
 use ignore::{WalkBuilder, WalkParallel};
+use log::info;
+use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
 
 use super::{error::FSError, DirectoryDetails, NoteDetails};
@@ -288,24 +290,57 @@ impl NotePath {
         Self { slices: path_list }
     }
 
-    pub fn file_from<S: AsRef<str>>(path: S) -> Result<Self, FSError> {
+    // Creates a note file path, if the path ends with a separator
+    // it removes it before adding the extension
+    pub fn file_from<S: AsRef<str>>(path: S) -> Self {
         let path = path.as_ref();
-        if !path.ends_with(PATH_SEPARATOR) {
-            let p = if !path.ends_with(NOTE_EXTENSION) {
-                [path, NOTE_EXTENSION].concat()
-            } else {
-                path.to_owned()
-            };
-            Ok(NotePath::new(p))
+        let path_clean = path.strip_suffix(PATH_SEPARATOR).unwrap_or(path);
+        let p = if !path_clean.ends_with(NOTE_EXTENSION) {
+            [path_clean, NOTE_EXTENSION].concat()
         } else {
-            Err(FSError::InvalidPath {
-                path: path.to_string(),
-            })
-        }
+            path_clean.to_owned()
+        };
+        NotePath::new(p)
     }
 
     pub fn root() -> Self {
         Self { slices: Vec::new() }
+    }
+
+    // returns a NotePath that increases a prefix when
+    // conflicting the name
+    pub fn get_name_on_conflict(&self) -> NotePath {
+        let mut slices = self.slices.clone();
+        match slices.pop() {
+            Some(slice) => {
+                let name = &slice.slice;
+                let new_name = if let Some(name) = name.strip_suffix(NOTE_EXTENSION) {
+                    format!("{}{}", Self::increment(name), NOTE_EXTENSION)
+                } else {
+                    Self::increment(name)
+                };
+                slices.push(NotePathSlice::new(new_name));
+                NotePath { slices }
+            }
+            None => NotePath::new("0"),
+        }
+    }
+
+    fn increment<S: AsRef<str>>(name: S) -> String {
+        let name = name.as_ref();
+        let re = Regex::new(r"_(?P<number>[0-9]+)$").unwrap();
+        let (n, suffix_num) = if let Some(caps) = re.captures(name) {
+            let suffix = &caps["number"];
+            info!("Suffix: {}", suffix);
+            let n = name
+                .strip_suffix(&format!("_{}", suffix))
+                .map_or_else(|| name.to_string(), |s| s.to_string());
+            (n, suffix.parse::<u64>().map_or_else(|_e| 0, |n| n + 1))
+        } else {
+            info!("Suffix not found, new one: {}", 0);
+            (name.to_string(), 0)
+        };
+        format!("{}_{}", n, suffix_num)
     }
 
     pub fn get_slices(&self) -> Vec<String> {
@@ -373,6 +408,13 @@ impl NotePath {
         let current = new_path.pop().map_or_else(|| "".to_string(), |s| s.slice);
 
         (Self { slices: new_path }, current)
+    }
+
+    pub fn append(&self, path: &NotePath) -> NotePath {
+        let mut slices = self.slices.clone();
+        let mut other_slices = path.slices.clone();
+        slices.append(&mut other_slices);
+        NotePath { slices }
     }
 }
 

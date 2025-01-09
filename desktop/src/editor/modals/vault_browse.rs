@@ -6,7 +6,7 @@ use rayon::slice::ParallelSliceMut;
 use crate::icons;
 
 use super::{
-    filtered_list::{FilteredListFunctionMessage, FilteredListFunctions, ListElement},
+    filtered_list::{FilteredListFunctionMessage, FilteredListFunctions, ListElement, StateData},
     EditorMessage,
 };
 
@@ -92,6 +92,17 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
                 Some(FilteredListFunctionMessage::ResetState(new_one))
             }
             SelectorEntryType::Attachment => None,
+            SelectorEntryType::NewNote => Some(FilteredListFunctionMessage::ToEditor(
+                EditorMessage::NewNote(element.path.clone()),
+            )),
+        }
+    }
+
+    fn header_element(&self, state_data: &StateData<SelectorEntry>) -> Option<SelectorEntry> {
+        if !state_data.filter_text.is_empty() {
+            Some(SelectorEntry::new_note(&self.path, &state_data.filter_text))
+        } else {
+            None
         }
     }
 }
@@ -129,6 +140,10 @@ impl FilteredListFunctions<(), NoteDetails> for VaultSearchFunctions {
             EditorMessage::OpenNote(element.path.clone()),
         ))
     }
+
+    fn header_element(&self, _state_data: &StateData<NoteDetails>) -> Option<NoteDetails> {
+        None
+    }
 }
 
 impl ListElement for NoteDetails {
@@ -152,6 +167,7 @@ pub enum SelectorEntryType {
     Note { title: String },
     Directory,
     Attachment,
+    NewNote,
 }
 
 impl From<SearchResult> for SelectorEntry {
@@ -243,6 +259,13 @@ impl ListElement for SelectorEntry {
                 // );
                 // ui.label(job)
             }
+            SelectorEntryType::NewNote => {
+                let icon = icons::NOTE;
+                let path = self.path_str.to_owned();
+                let response = ui.label(format!("{}  Create new note as `{}`", icon, path));
+                ui.style().interact(&response);
+                response
+            }
         }
     }
 }
@@ -258,11 +281,24 @@ impl SelectorEntry {
         }
     }
 
+    fn new_note(base_path: &NotePath, note_text: &str) -> Self {
+        let file_name = NotePath::file_from(note_text);
+        let path = base_path.append(&file_name);
+
+        Self {
+            path_str: path.to_string(),
+            path,
+            search_str: "New Note".to_string(),
+            entry_type: SelectorEntryType::NewNote,
+        }
+    }
+
     fn get_sort_string(&self) -> String {
         match &self.entry_type {
             SelectorEntryType::Note { title: _ } => format!("2{}", self.path),
             SelectorEntryType::Directory => format!("1{}", self.path),
             SelectorEntryType::Attachment => format!("3{}", self.path),
+            SelectorEntryType::NewNote => "0".to_string(),
         }
     }
 }
