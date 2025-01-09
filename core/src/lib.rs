@@ -15,9 +15,9 @@ use content_data::NoteContentData;
 use db::VaultDB;
 // use db::async_sqlite::AsyncConnection;
 // use db::async_db::AsyncConnection;
-use error::{DBError, VaultError};
+use error::{DBError, FSError, VaultError};
 use log::{debug, info};
-use nfs::{load_note, save_note, visitor::NoteListVisitorBuilder, NotePath};
+use nfs::{load_note, save_note, visitor::NoteListVisitorBuilder, NotePath, VaultEntry};
 use utilities::path_to_string;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +74,13 @@ impl NoteVault {
             time.as_millis()
         );
         Ok(())
+    }
+
+    pub fn exists(&self, path: &NotePath) -> Option<VaultEntry> {
+        match VaultEntry::new(&self.workspace_path, path.to_owned()) {
+            Ok(entry) => Some(entry),
+            Err(_e) => None,
+        }
     }
 
     pub fn load_note(&self, path: &NotePath) -> Result<String, VaultError> {

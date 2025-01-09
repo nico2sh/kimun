@@ -9,6 +9,7 @@ use anyhow::bail;
 use data::EditorData;
 use eframe::egui;
 use highlighter::MemoizedNoteHighlighter;
+use log::debug;
 use modals::{ModalManager, Modals};
 use notes_core::{nfs::NotePath, NoteVault};
 
@@ -89,12 +90,27 @@ impl View for Editor {
         while let Ok(message) = self.message_receiver.try_recv() {
             match message {
                 EditorMessage::OpenNote(note_path) => {
-                    let content = self.data.note.load_note(&note_path).unwrap();
+                    let content = self.data.vault.load_note(&note_path).unwrap();
                     self.data.text = content;
-                    self.data.note_path = Some(note_path.clone());
                     self.current_directory = note_path.get_parent_path().0;
+                    self.data.note_path = Some(note_path);
                     self.modal_manager.close_modal();
                     ui.ctx().request_repaint();
+                }
+                EditorMessage::NewNote(note_path) => {
+                    let mut np = note_path.clone();
+                    loop {
+                        if self.data.vault.exists(&np).is_none() {
+                            break;
+                        } else {
+                            np = np.get_name_on_conflict();
+                        }
+                    }
+                    debug!("New note at: {}", np);
+                    self.data.text = String::new();
+                    self.current_directory = np.get_parent_path().0;
+                    self.data.note_path = Some(np);
+                    self.modal_manager.close_modal();
                 }
             }
         }
@@ -105,4 +121,5 @@ impl View for Editor {
 
 pub(crate) enum EditorMessage {
     OpenNote(NotePath),
+    NewNote(NotePath),
 }
