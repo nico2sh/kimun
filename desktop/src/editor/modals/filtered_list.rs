@@ -105,6 +105,10 @@ where
             }
         }
     }
+
+    pub fn get_selection(&self) -> Option<D> {
+        self.state_manager.get_selection()
+    }
 }
 
 impl<F, P, D> EditorModal for FilteredList<F, P, D>
@@ -115,6 +119,7 @@ where
 {
     fn update(&mut self, ui: &mut egui::Ui) {
         self.state_manager.update();
+        let mut selected_element = None;
 
         ui.with_layout(
             egui::Layout {
@@ -138,12 +143,11 @@ where
                     .auto_shrink(false);
                 scroll_area.show(ui, |ui| {
                     ui.vertical(|ui| {
-                        // TODO: sadly we need to clone here, so we may have some innefficiencies
-                        let elements = self.state_manager.get_elements().to_owned();
+                        let elements = self.state_manager.get_elements();
                         for (pos, element) in elements.iter().enumerate() {
                             let response = element.draw_element(ui);
                             if response.clicked() {
-                                self.select(element);
+                                selected_element = Some(element.clone());
                             }
                             if response.hovered() {
                                 selected = Some(pos);
@@ -178,12 +182,16 @@ where
         }
 
         if ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
-            let selected = self.state_manager.get_selection();
-            if let Some(selected) = selected {
-                self.select(&selected);
+            let selection = self.state_manager.get_selection();
+            if let Some(selection) = selection {
+                selected_element = Some(selection.to_owned());
+                // select_message = self.state_manager.functions.on_entry(&selected);
             } else {
                 // TODO: Select the first one
             };
+        }
+        if let Some(se) = selected_element {
+            self.select(&se);
         }
     }
 }

@@ -250,7 +250,7 @@ pub struct DirectoryDetails {
     pub path: NotePath,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SearchResult {
     Note(NoteDetails),
     Directory(DirectoryDetails),
