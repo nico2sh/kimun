@@ -15,9 +15,9 @@ use content_data::NoteContentData;
 use db::VaultDB;
 // use db::async_sqlite::AsyncConnection;
 // use db::async_db::AsyncConnection;
-use error::{DBError, FSError, VaultError};
+use error::{DBError, VaultError};
 use log::{debug, info};
-use nfs::{load_note, save_note, visitor::NoteListVisitorBuilder, NotePath, VaultEntry};
+use nfs::{load_note, save_note, visitor::NoteListVisitorBuilder, VaultEntry, VaultPath};
 use utilities::path_to_string;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,7 +64,7 @@ impl NoteVault {
         let start = std::time::SystemTime::now();
         let workspace_path = self.workspace_path.clone();
         self.vault_db
-            .call(move |conn| create_index_for(&workspace_path, conn, &NotePath::root()))?;
+            .call(move |conn| create_index_for(&workspace_path, conn, &VaultPath::root()))?;
 
         let time = std::time::SystemTime::now()
             .duration_since(start)
@@ -76,14 +76,14 @@ impl NoteVault {
         Ok(())
     }
 
-    pub fn exists(&self, path: &NotePath) -> Option<VaultEntry> {
+    pub fn exists(&self, path: &VaultPath) -> Option<VaultEntry> {
         match VaultEntry::new(&self.workspace_path, path.to_owned()) {
             Ok(entry) => Some(entry),
             Err(_e) => None,
         }
     }
 
-    pub fn load_note(&self, path: &NotePath) -> Result<String, VaultError> {
+    pub fn load_note(&self, path: &VaultPath) -> Result<String, VaultError> {
         let text = load_note(&self.workspace_path, path)?;
         Ok(text)
     }
@@ -159,7 +159,7 @@ impl NoteVault {
 
     pub fn get_notes(
         &self,
-        path: &NotePath,
+        path: &VaultPath,
         recursive: bool,
     ) -> Result<Vec<NoteDetails>, VaultError> {
         let start = std::time::SystemTime::now();
@@ -182,7 +182,7 @@ impl NoteVault {
         Ok(result)
     }
 
-    pub fn save_note<S: AsRef<str>>(&self, path: &NotePath, text: S) -> Result<(), VaultError> {
+    pub fn save_note<S: AsRef<str>>(&self, path: &VaultPath, text: S) -> Result<(), VaultError> {
         // Save to disk
         let entry_data = save_note(&self.workspace_path, path, &text)?;
 
@@ -199,7 +199,7 @@ impl NoteVault {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoteDetails {
-    pub path: NotePath,
+    pub path: VaultPath,
     pub data: NoteContentData,
     // Content may be lazy fetched
     // if the details are taken from the DB, the content is
@@ -209,7 +209,7 @@ pub struct NoteDetails {
 }
 
 impl NoteDetails {
-    pub fn new(note_path: NotePath, hash: u32, title: String, text: Option<String>) -> Self {
+    pub fn new(note_path: VaultPath, hash: u32, title: String, text: Option<String>) -> Self {
         let data = NoteContentData {
             hash,
             title: Some(title),
@@ -222,7 +222,7 @@ impl NoteDetails {
         }
     }
 
-    fn from_content<S: AsRef<str>>(text: S, note_path: &NotePath) -> Self {
+    fn from_content<S: AsRef<str>>(text: S, note_path: &VaultPath) -> Self {
         let data = content_data::extract_data(&text);
         Self {
             path: note_path.to_owned(),
@@ -254,14 +254,14 @@ impl NoteDetails {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DirectoryDetails {
-    pub path: NotePath,
+    pub path: VaultPath,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchResult {
     Note(NoteDetails),
     Directory(DirectoryDetails),
-    Attachment(NotePath),
+    Attachment(VaultPath),
 }
 
 fn collect_from_cache(
@@ -287,13 +287,13 @@ fn collect_from_cache(
 }
 
 pub struct VaultBrowseOptionsBuilder {
-    path: NotePath,
+    path: VaultPath,
     validation: NotesValidation,
     recursive: bool,
 }
 
 impl VaultBrowseOptionsBuilder {
-    pub fn new(path: &NotePath) -> Self {
+    pub fn new(path: &VaultPath) -> Self {
         Self::default().path(path.clone())
     }
 
@@ -310,7 +310,7 @@ impl VaultBrowseOptionsBuilder {
         )
     }
 
-    pub fn path(mut self, path: NotePath) -> Self {
+    pub fn path(mut self, path: VaultPath) -> Self {
         self.path = path;
         self
     }
@@ -344,7 +344,7 @@ impl VaultBrowseOptionsBuilder {
 impl Default for VaultBrowseOptionsBuilder {
     fn default() -> Self {
         Self {
-            path: NotePath::root(),
+            path: VaultPath::root(),
             validation: NotesValidation::None,
             recursive: false,
         }
@@ -355,7 +355,7 @@ impl Default for VaultBrowseOptionsBuilder {
 /// Options to traverse the Notes
 /// You need a sync::mpsc::Sender to use a channel to receive the entries
 pub struct VaultBrowseOptions {
-    path: NotePath,
+    path: VaultPath,
     validation: NotesValidation,
     recursive: bool,
     sender: Sender<SearchResult>,
@@ -395,7 +395,7 @@ impl Display for NotesValidation {
 fn create_index_for<P: AsRef<Path>>(
     workspace_path: P,
     connection: &mut rusqlite::Connection,
-    path: &NotePath,
+    path: &VaultPath,
 ) -> Result<(), DBError> {
     debug!("Start fetching files at {}", path);
     let workspace_path = workspace_path.as_ref();

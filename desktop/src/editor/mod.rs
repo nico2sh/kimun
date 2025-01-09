@@ -11,7 +11,7 @@ use eframe::egui;
 use highlighter::MemoizedNoteHighlighter;
 use log::debug;
 use modals::{ModalManager, Modals};
-use notes_core::{nfs::NotePath, NoteVault};
+use notes_core::{nfs::VaultPath, NoteVault};
 
 use super::{settings::Settings, View};
 
@@ -19,7 +19,7 @@ pub struct Editor {
     data: EditorData,
     modal_manager: ModalManager,
     message_receiver: Receiver<EditorMessage>,
-    current_directory: NotePath,
+    current_directory: VaultPath,
     // selector: Option<FilteredList<SelectorEntry, SearchResult>>,
     highlighter: MemoizedNoteHighlighter,
 }
@@ -72,7 +72,7 @@ impl View for Editor {
             .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::O))
         {
             self.modal_manager
-                .set_modal(Modals::VaultBrowse(NotePath::root()));
+                .set_modal(Modals::VaultBrowse(VaultPath::root()));
         }
         if ui
             .ctx()
@@ -120,6 +120,6 @@ impl View for Editor {
 }
 
 pub(crate) enum EditorMessage {
-    OpenNote(NotePath),
-    NewNote(NotePath),
+    OpenNote(VaultPath),
+    NewNote(VaultPath),
 }

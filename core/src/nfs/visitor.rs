@@ -8,17 +8,17 @@ use ignore::{ParallelVisitor, ParallelVisitorBuilder};
 use log::error;
 
 use crate::{
-    nfs::{DirectoryDetails, EntryData, NoteDetails, NoteEntryData, NotePath, VaultEntry},
+    nfs::{DirectoryDetails, EntryData, NoteDetails, NoteEntryData, VaultEntry, VaultPath},
     NotesValidation, SearchResult,
 };
 
 struct NoteListVisitor {
     workspace_path: PathBuf,
     validation: NotesValidation,
-    notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteEntryData, NoteDetails)>>>,
+    notes_to_delete: Arc<Mutex<HashMap<VaultPath, (NoteEntryData, NoteDetails)>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
     notes_to_add: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
-    directories_found: Arc<Mutex<Vec<NotePath>>>,
+    directories_found: Arc<Mutex<Vec<VaultPath>>>,
     sender: Option<Sender<SearchResult>>,
 }
 
@@ -124,10 +124,10 @@ impl ParallelVisitor for NoteListVisitor {
 pub struct NoteListVisitorBuilder {
     workspace_path: PathBuf,
     validation: NotesValidation,
-    notes_to_delete: Arc<Mutex<HashMap<NotePath, (NoteEntryData, NoteDetails)>>>,
+    notes_to_delete: Arc<Mutex<HashMap<VaultPath, (NoteEntryData, NoteDetails)>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
     notes_to_add: Arc<Mutex<Vec<(NoteEntryData, NoteDetails)>>>,
-    directories_found: Arc<Mutex<Vec<NotePath>>>,
+    directories_found: Arc<Mutex<Vec<VaultPath>>>,
     sender: Option<Sender<SearchResult>>,
 }
 
@@ -154,7 +154,7 @@ impl NoteListVisitorBuilder {
         }
     }
 
-    pub fn get_notes_to_delete(&self) -> Vec<NotePath> {
+    pub fn get_notes_to_delete(&self) -> Vec<VaultPath> {
         self.notes_to_delete
             .lock()
             .unwrap()
@@ -181,7 +181,7 @@ impl NoteListVisitorBuilder {
             .collect()
     }
 
-    pub fn get_directories_found(&self) -> Vec<NotePath> {
+    pub fn get_directories_found(&self) -> Vec<VaultPath> {
         self.directories_found
             .lock()
             .unwrap()

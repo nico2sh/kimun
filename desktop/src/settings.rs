@@ -4,20 +4,20 @@ use std::path::PathBuf;
 use std::fs::File;
 
 use anyhow::bail;
-use notes_core::nfs::NotePath;
+use notes_core::nfs::VaultPath;
 
 const BASE_CONFIG_FILE: &str = ".note.toml";
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
-    pub last_path: NotePath,
+    pub last_path: VaultPath,
     pub workspace_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            last_path: NotePath::root(),
+            last_path: VaultPath::root(),
             workspace_dir: None,
         }
     }
