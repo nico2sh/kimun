@@ -9,18 +9,19 @@ use anyhow::bail;
 use data::EditorData;
 use eframe::egui;
 use highlighter::MemoizedNoteHighlighter;
-use log::debug;
+use log::{debug, error};
 use modals::{ModalManager, Modals};
 use notes_core::{nfs::VaultPath, NoteVault};
 
 use super::{settings::Settings, View};
+
+const AUTOSAVE_SECS: u64 = 5;
 
 pub struct Editor {
     data: EditorData,
     modal_manager: ModalManager,
     message_receiver: Receiver<EditorMessage>,
     current_directory: VaultPath,
-    // selector: Option<FilteredList<SelectorEntry, SearchResult>>,
     highlighter: MemoizedNoteHighlighter,
 }
 
@@ -28,8 +29,18 @@ impl Editor {
     pub fn new(settings: &Settings) -> anyhow::Result<Self> {
         if let Some(workspace_dir) = &settings.workspace_dir {
             let (sender, receiver) = std::sync::mpsc::channel();
+            let data = EditorData::new(workspace_dir)?;
+
+            let save_sender = sender.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(AUTOSAVE_SECS));
+                if let Err(e) = save_sender.send(EditorMessage::Save) {
+                    error!("Error sending a save message: {}", e);
+                }
+            });
+
             Ok(Self {
-                data: EditorData::new(workspace_dir)?,
+                data,
                 modal_manager: ModalManager::new(NoteVault::new(workspace_dir)?, sender),
                 message_receiver: receiver,
                 current_directory: settings.last_path.clone(),
@@ -48,10 +59,15 @@ impl Editor {
         };
 
         let output = egui::TextEdit::multiline(&mut self.data.text)
+            .code_editor()
             .desired_width(f32::INFINITY)
             .font(egui::TextStyle::Monospace) // for cursor height
             .layouter(&mut layouter);
         let response = ui.add_sized(ui.available_size(), output);
+
+        if response.changed() {
+            self.data.changed = true;
+        }
 
         if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
             if let Some(mut ccursor_range) = state.cursor.char_range() {
@@ -90,10 +106,10 @@ impl View for Editor {
         while let Ok(message) = self.message_receiver.try_recv() {
             match message {
                 EditorMessage::OpenNote(note_path) => {
-                    let content = self.data.vault.load_note(&note_path).unwrap();
-                    self.data.text = content;
+                    if let Ok(editor_data) = self.data.load_note(&note_path) {
+                        self.data = editor_data;
+                    }
                     self.current_directory = note_path.get_parent_path().0;
-                    self.data.note_path = Some(note_path);
                     self.modal_manager.close_modal();
                     ui.ctx().request_repaint();
                 }
@@ -112,6 +128,12 @@ impl View for Editor {
                     self.data.note_path = Some(np);
                     self.modal_manager.close_modal();
                 }
+                EditorMessage::Save => {
+                    debug!("Checking if to save note");
+                    if self.data.changed {
+                        self.data.save_note();
+                    }
+                }
             }
         }
 
@@ -122,4 +144,5 @@ impl View for Editor {
 pub(crate) enum EditorMessage {
     OpenNote(VaultPath),
     NewNote(VaultPath),
+    Save,
 }
