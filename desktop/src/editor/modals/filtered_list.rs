@@ -137,6 +137,8 @@ where
                         .id(ID_SEARCH.into()),
                 );
 
+                ui.separator();
+
                 let mut selected = self.state_manager.get_selected();
                 let scroll_area = egui::scroll_area::ScrollArea::vertical()
                     .max_height(400.0)

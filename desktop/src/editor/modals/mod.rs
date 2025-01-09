@@ -30,7 +30,7 @@ impl View for ModalManager {
     fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
         if let Some(current_modal) = self.current_modal.as_mut() {
             let modal = egui::Modal::new(egui::Id::new("")).show(ui.ctx(), |ui| {
-                ui.set_width(400.0);
+                ui.set_width(600.0);
                 // ui.heading("Heading");
                 current_modal.update(ui);
             });

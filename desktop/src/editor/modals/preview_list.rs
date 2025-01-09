@@ -119,8 +119,11 @@ where
             self.update_state();
             ui.columns(2, |columns| {
                 self.list.update(&mut columns[0]);
-                ScrollArea::vertical()
-                    .show(&mut columns[1], |ui| ui.label(self.preview_text.clone()));
+                ScrollArea::vertical().show(&mut columns[1], |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(self.preview_text.clone());
+                    });
+                })
             });
         } else {
             self.list.update(ui);
