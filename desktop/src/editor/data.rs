@@ -1,11 +1,11 @@
 use std::{path::Path, sync::Arc};
 
-use notes_core::{nfs::NotePath, NoteVault};
+use notes_core::{nfs::VaultPath, NoteVault};
 
 pub struct EditorData {
     pub vault: Arc<NoteVault>,
     pub text: String,
-    pub note_path: Option<NotePath>,
+    pub note_path: Option<VaultPath>,
 }
 
 impl EditorData {

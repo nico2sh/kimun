@@ -1,6 +1,5 @@
 // pub mod async_db;
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use log::{debug, error};
@@ -8,11 +7,8 @@ use rusqlite::{config::DbConfig, params, Connection, Transaction};
 
 use super::error::DBError;
 
-use super::{
-    nfs::{DirectoryEntryData, NoteEntryData},
-    NotePath,
-};
-use super::{DirectoryDetails, NoteDetails};
+use super::NoteDetails;
+use super::{nfs::NoteEntryData, VaultPath};
 
 const VERSION: &str = "0.1";
 const DB_FILE: &str = "notes.sqlite";
@@ -143,7 +139,7 @@ pub fn search_terms<S: AsRef<str>>(
             let size = row.get(2)?;
             let modified = row.get(3)?;
             let hash: i64 = row.get(4)?;
-            let note_path = NotePath::from(&path);
+            let note_path = VaultPath::from(&path);
             let data = NoteEntryData {
                 path: note_path.clone(),
                 size,
@@ -157,7 +153,7 @@ pub fn search_terms<S: AsRef<str>>(
     Ok(res)
 }
 
-fn note_exists(connection: &mut Connection, path: &NotePath) -> Result<bool, DBError> {
+fn note_exists(connection: &mut Connection, path: &VaultPath) -> Result<bool, DBError> {
     let sql = "SELECT count(*) FROM notes where path = ?1";
     let mut stmt = connection.prepare(sql)?;
     let res = stmt.query_row([path.to_string()], |row| row.get(0))?;
@@ -173,7 +169,7 @@ fn note_exists(connection: &mut Connection, path: &NotePath) -> Result<bool, DBE
 
 pub fn get_notes(
     connection: &mut Connection,
-    path: &NotePath,
+    path: &VaultPath,
     recursive: bool,
 ) -> Result<Vec<(NoteEntryData, NoteDetails)>, DBError> {
     let sql = if recursive {
@@ -189,7 +185,7 @@ pub fn get_notes(
             let size = row.get(2)?;
             let modified = row.get(3)?;
             let hash: i64 = row.get(4)?;
-            let note_path = NotePath::from(&path);
+            let note_path = VaultPath::from(&path);
             let data = NoteEntryData {
                 path: note_path.clone(),
                 size,
@@ -244,7 +240,7 @@ pub fn update_notes<P: AsRef<Path>>(
     Ok(())
 }
 
-pub fn delete_notes(tx: &Transaction, paths: &Vec<NotePath>) -> Result<(), DBError> {
+pub fn delete_notes(tx: &Transaction, paths: &Vec<VaultPath>) -> Result<(), DBError> {
     if !paths.is_empty() {
         for path in paths {
             delete_note(tx, path)?;
@@ -318,7 +314,7 @@ fn update_note<S: AsRef<str>>(
     Ok(())
 }
 
-fn delete_note(tx: &Transaction, path: &NotePath) -> Result<(), DBError> {
+fn delete_note(tx: &Transaction, path: &VaultPath) -> Result<(), DBError> {
     tx.execute(
         "DELETE FROM notes WHERE path = ?1",
         params![path.to_string()],
@@ -331,7 +327,7 @@ fn delete_note(tx: &Transaction, path: &NotePath) -> Result<(), DBError> {
     Ok(())
 }
 
-pub fn delete_directories(tx: &Transaction, directories: &Vec<NotePath>) -> Result<(), DBError> {
+pub fn delete_directories(tx: &Transaction, directories: &Vec<VaultPath>) -> Result<(), DBError> {
     if !directories.is_empty() {
         for directory in directories {
             delete_directory(tx, directory)?;
@@ -340,7 +336,7 @@ pub fn delete_directories(tx: &Transaction, directories: &Vec<NotePath>) -> Resu
     Ok(())
 }
 
-fn delete_directory(tx: &Transaction, directory_path: &NotePath) -> Result<(), DBError> {
+fn delete_directory(tx: &Transaction, directory_path: &VaultPath) -> Result<(), DBError> {
     let path_string = directory_path.to_string();
     let sql1 = "DELETE FROM notes WHERE path LIKE (?1 || '%')";
     let sql2 = "DELETE FROM notesContent WHERE path LIKE (?1 || '%')";

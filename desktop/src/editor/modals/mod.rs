@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 use eframe::egui;
 use filtered_list::FilteredList;
 use log::debug;
-use notes_core::{nfs::NotePath, NoteVault};
+use notes_core::{nfs::VaultPath, NoteVault};
 use preview_list::PreviewList;
 use vault_browse::{VaultBrowseFunctions, VaultSearchFunctions};
 
@@ -22,7 +22,7 @@ pub struct ModalManager {
 }
 
 pub enum Modals {
-    VaultBrowse(NotePath),
+    VaultBrowse(VaultPath),
     VaultSearch,
 }
 

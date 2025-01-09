@@ -1,6 +1,6 @@
 use eframe::egui;
 use log::{debug, error};
-use notes_core::{nfs::NotePath, NoteDetails, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
+use notes_core::{nfs::VaultPath, NoteDetails, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
 use rayon::slice::ParallelSliceMut;
 
 use crate::icons;
@@ -12,12 +12,12 @@ use super::{
 
 #[derive(Clone)]
 pub struct VaultBrowseFunctions {
-    path: NotePath, // add code here
+    path: VaultPath, // add code here
     vault: NoteVault,
 }
 
 impl VaultBrowseFunctions {
-    pub fn new(path: NotePath, vault: NoteVault) -> Self {
+    pub fn new(path: VaultPath, vault: NoteVault) -> Self {
         Self { path, vault }
     }
 }
@@ -67,7 +67,7 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
         .iter()
         .map(|e| e.0.to_owned())
         .collect::<Vec<SelectorEntry>>();
-        if self.path != NotePath::root() {
+        if self.path != VaultPath::root() {
             filtered.push(SelectorEntry::up_dir(&self.path));
         }
         filtered.par_sort_by(|a, b| a.get_sort_string().cmp(&b.get_sort_string()));
@@ -156,7 +156,7 @@ impl ListElement for NoteDetails {
 
 #[derive(Clone, Debug)]
 pub struct SelectorEntry {
-    pub path: NotePath,
+    pub path: VaultPath,
     pub path_str: String,
     pub search_str: String,
     pub entry_type: SelectorEntryType,
@@ -271,7 +271,7 @@ impl ListElement for SelectorEntry {
 }
 
 impl SelectorEntry {
-    fn up_dir(from_path: &NotePath) -> Self {
+    fn up_dir(from_path: &VaultPath) -> Self {
         let parent = from_path.get_parent_path().0;
         Self {
             path: parent,
@@ -281,8 +281,8 @@ impl SelectorEntry {
         }
     }
 
-    fn new_note(base_path: &NotePath, note_text: &str) -> Self {
-        let file_name = NotePath::file_from(note_text);
+    fn new_note(base_path: &VaultPath, note_text: &str) -> Self {
+        let file_name = VaultPath::file_from(note_text);
         let path = base_path.append(&file_name);
 
         Self {

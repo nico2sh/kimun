@@ -24,7 +24,7 @@ const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|]"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaultEntry {
-    pub path: NotePath,
+    pub path: VaultPath,
     pub path_string: String,
     pub data: EntryData,
 }
@@ -44,7 +44,7 @@ pub enum EntryData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NoteEntryData {
-    pub path: NotePath,
+    pub path: VaultPath,
     // File size, for fast check
     pub size: u64,
     pub modified_secs: u64,
@@ -54,7 +54,7 @@ impl NoteEntryData {
     pub fn load_details<P: AsRef<Path>>(
         &self,
         workspace_path: P,
-        path: &NotePath,
+        path: &VaultPath,
     ) -> Result<NoteDetails, FSError> {
         let content = load_note(workspace_path, path)?;
         Ok(NoteDetails::from_content(content, path))
@@ -62,7 +62,7 @@ impl NoteEntryData {
 
     fn from_path<P: AsRef<Path>>(
         workspace_path: P,
-        path: &NotePath,
+        path: &VaultPath,
     ) -> Result<NoteEntryData, FSError> {
         let file_path = path.to_pathbuf(&workspace_path);
 
@@ -82,7 +82,7 @@ impl NoteEntryData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DirectoryEntryData {
-    pub path: NotePath,
+    pub path: VaultPath,
 }
 impl DirectoryEntryData {
     pub fn get_details<P: AsRef<Path>>(&self) -> DirectoryDetails {
@@ -94,7 +94,7 @@ impl DirectoryEntryData {
 
 fn _get_dir_content_size<P: AsRef<Path>>(
     workspace_path: P,
-    path: &NotePath,
+    path: &VaultPath,
 ) -> Result<u64, FSError> {
     let os_path = path.to_pathbuf(&workspace_path);
     let walker = ignore::WalkBuilder::new(&os_path)
@@ -114,7 +114,7 @@ fn _get_dir_content_size<P: AsRef<Path>>(
 }
 
 impl VaultEntry {
-    pub fn new<P: AsRef<Path>>(workspace_path: P, path: NotePath) -> Result<Self, FSError> {
+    pub fn new<P: AsRef<Path>>(workspace_path: P, path: VaultPath) -> Result<Self, FSError> {
         let os_path = path.to_pathbuf(&workspace_path);
         if !os_path.exists() {
             return Err(FSError::NoFileOrDirectoryFound {
@@ -143,7 +143,7 @@ impl VaultEntry {
         workspace_path: P,
         full_path: F,
     ) -> Result<Self, FSError> {
-        let note_path = NotePath::from_path(&workspace_path, &full_path)?;
+        let note_path = VaultPath::from_path(&workspace_path, &full_path)?;
         Self::new(&workspace_path, note_path)
     }
 }
@@ -176,7 +176,7 @@ impl VaultEntryDetails {
     }
 }
 
-pub fn load_note<P: AsRef<Path>>(workspace_path: P, path: &NotePath) -> Result<String, FSError> {
+pub fn load_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<String, FSError> {
     let os_path = path.to_pathbuf(&workspace_path);
     let file = std::fs::read(&os_path)?;
     let text = String::from_utf8(file)?;
@@ -185,7 +185,7 @@ pub fn load_note<P: AsRef<Path>>(workspace_path: P, path: &NotePath) -> Result<S
 
 pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     workspace_path: P,
-    path: &NotePath,
+    path: &VaultPath,
     text: S,
 ) -> Result<NoteEntryData, FSError> {
     if !path.is_note() {
@@ -210,12 +210,12 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-pub struct NotePath {
-    slices: Vec<NotePathSlice>,
+pub struct VaultPath {
+    slices: Vec<VaultPathSlice>,
 }
 
-impl From<&NotePath> for NotePath {
-    fn from(value: &NotePath) -> Self {
+impl From<&VaultPath> for VaultPath {
+    fn from(value: &VaultPath) -> Self {
         value.to_owned()
     }
 }
@@ -228,7 +228,7 @@ impl From<&NotePath> for NotePath {
 //     }
 // }
 //
-impl Serialize for NotePath {
+impl Serialize for VaultPath {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -238,54 +238,54 @@ impl Serialize for NotePath {
     }
 }
 
-struct DeserializeNotePathVisitor;
-impl Visitor<'_> for DeserializeNotePathVisitor {
-    type Value = NotePath;
+struct DeserializeVaultPathVisitor;
+impl Visitor<'_> for DeserializeVaultPathVisitor {
+    type Value = VaultPath;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         formatter.write_str("A valid path with `/` separators, no need of starting `/`")
     }
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-        let path = NotePath::new(value);
+        let path = VaultPath::new(value);
         Ok(path)
     }
 }
 
-impl<'de> Deserialize<'de> for NotePath {
+impl<'de> Deserialize<'de> for VaultPath {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_str(DeserializeNotePathVisitor)
+        deserializer.deserialize_str(DeserializeVaultPathVisitor)
     }
 }
 
-impl From<&str> for NotePath {
+impl From<&str> for VaultPath {
     fn from(value: &str) -> Self {
-        NotePath::new(value)
+        VaultPath::new(value)
     }
 }
 
-impl From<String> for NotePath {
+impl From<String> for VaultPath {
     fn from(value: String) -> Self {
-        NotePath::new(value)
+        VaultPath::new(value)
     }
 }
 
-impl From<&String> for NotePath {
+impl From<&String> for VaultPath {
     fn from(value: &String) -> Self {
-        NotePath::new(value)
+        VaultPath::new(value)
     }
 }
 
-impl NotePath {
+impl VaultPath {
     fn new<S: AsRef<str>>(path: S) -> Self {
         let path_list = path
             .as_ref()
             .split(PATH_SEPARATOR)
             .filter(|p| !p.is_empty()) // We remove the empty ones,
             // so `//` are treated as `/`
-            .map(NotePathSlice::new)
+            .map(VaultPathSlice::new)
             .collect();
         Self { slices: path_list }
     }
@@ -300,7 +300,7 @@ impl NotePath {
         } else {
             path_clean.to_owned()
         };
-        NotePath::new(p)
+        VaultPath::new(p)
     }
 
     pub fn root() -> Self {
@@ -309,20 +309,20 @@ impl NotePath {
 
     // returns a NotePath that increases a prefix when
     // conflicting the name
-    pub fn get_name_on_conflict(&self) -> NotePath {
+    pub fn get_name_on_conflict(&self) -> VaultPath {
         let mut slices = self.slices.clone();
         match slices.pop() {
             Some(slice) => {
-                let name = &slice.slice;
+                let name = &slice.name;
                 let new_name = if let Some(name) = name.strip_suffix(NOTE_EXTENSION) {
                     format!("{}{}", Self::increment(name), NOTE_EXTENSION)
                 } else {
                     Self::increment(name)
                 };
-                slices.push(NotePathSlice::new(new_name));
-                NotePath { slices }
+                slices.push(VaultPathSlice::new(new_name));
+                VaultPath { slices }
             }
-            None => NotePath::new("0"),
+            None => VaultPath::new("0"),
         }
     }
 
@@ -346,14 +346,14 @@ impl NotePath {
     pub fn get_slices(&self) -> Vec<String> {
         self.slices
             .iter()
-            .map(|slice| slice.slice.to_owned())
+            .map(|slice| slice.name.to_owned())
             .collect()
     }
 
     fn to_pathbuf<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
         let mut path = workspace_path.as_ref().to_path_buf();
         for p in &self.slices {
-            let slice = p.slice.clone();
+            let slice = p.name.clone();
             path = path.join(&slice);
         }
         path
@@ -362,7 +362,7 @@ impl NotePath {
     pub fn get_name(&self) -> String {
         self.slices
             .last()
-            .map_or_else(String::new, |s| s.slice.clone())
+            .map_or_else(String::new, |s| s.name.clone())
     }
 
     pub fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
@@ -383,9 +383,9 @@ impl NotePath {
                     Some(comp) => comp.to_owned(),
                     None => os_str.to_string_lossy().to_string(),
                 };
-                NotePathSlice::new(s)
+                VaultPathSlice::new(s)
             })
-            .collect::<Vec<NotePathSlice>>();
+            .collect::<Vec<VaultPathSlice>>();
 
         Ok(Self { slices: path_list })
     }
@@ -393,7 +393,7 @@ impl NotePath {
     pub fn is_note(&self) -> bool {
         match self.slices.last() {
             Some(path_slice) => {
-                let last_slice: &Path = Path::new(&path_slice.slice);
+                let last_slice: &Path = Path::new(&path_slice.name);
                 last_slice
                     .extension()
                     .and_then(OsStr::to_str)
@@ -403,22 +403,22 @@ impl NotePath {
         }
     }
 
-    pub fn get_parent_path(&self) -> (NotePath, String) {
+    pub fn get_parent_path(&self) -> (VaultPath, String) {
         let mut new_path = self.slices.clone();
-        let current = new_path.pop().map_or_else(|| "".to_string(), |s| s.slice);
+        let current = new_path.pop().map_or_else(|| "".to_string(), |s| s.name);
 
         (Self { slices: new_path }, current)
     }
 
-    pub fn append(&self, path: &NotePath) -> NotePath {
+    pub fn append(&self, path: &VaultPath) -> VaultPath {
         let mut slices = self.slices.clone();
         let mut other_slices = path.slices.clone();
         slices.append(&mut other_slices);
-        NotePath { slices }
+        VaultPath { slices }
     }
 }
 
-impl Display for NotePath {
+impl Display for VaultPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -434,11 +434,11 @@ impl Display for NotePath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct NotePathSlice {
-    slice: String,
+struct VaultPathSlice {
+    name: String,
 }
 
-impl NotePathSlice {
+impl VaultPathSlice {
     fn new<S: Into<String>>(slice: S) -> Self {
         let re = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
 
@@ -446,14 +446,14 @@ impl NotePathSlice {
         let final_slice = re.replace_all(&into, "_");
 
         Self {
-            slice: final_slice.to_string(),
+            name: final_slice.to_string(),
         }
     }
 }
 
-impl Display for NotePathSlice {
+impl Display for VaultPathSlice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.slice)
+        write!(f, "{}", self.name)
     }
 }
 
@@ -463,7 +463,7 @@ fn filter_files(dir: &ignore::DirEntry) -> bool {
 
 pub fn get_file_walker<P: AsRef<Path>>(
     base_path: P,
-    path: &NotePath,
+    path: &VaultPath,
     recurse: bool,
 ) -> WalkParallel {
     let w = WalkBuilder::new(path.to_pathbuf(base_path))
@@ -481,45 +481,45 @@ mod tests {
 
     use crate::utilities::path_to_string;
 
-    use super::{NotePath, NotePathSlice};
+    use super::{VaultPath, VaultPathSlice};
 
     #[test]
     fn test_slice_char_replace() {
         let slice_str = "Some?unvalid:chars?";
-        let slice = NotePathSlice::new(slice_str);
+        let slice = VaultPathSlice::new(slice_str);
 
-        assert_eq!("Some_unvalid_chars_", slice.slice);
+        assert_eq!("Some_unvalid_chars_", slice.name);
     }
 
     #[test]
     fn test_path_create_from_string() {
         let path = "this/is/five/level/path";
-        let path = NotePath::from(path);
+        let path = VaultPath::from(path);
 
         assert_eq!(5, path.slices.len());
-        assert_eq!("this", path.slices[0].slice);
-        assert_eq!("is", path.slices[1].slice);
-        assert_eq!("five", path.slices[2].slice);
-        assert_eq!("level", path.slices[3].slice);
-        assert_eq!("path", path.slices[4].slice);
+        assert_eq!("this", path.slices[0].name);
+        assert_eq!("is", path.slices[1].name);
+        assert_eq!("five", path.slices[2].name);
+        assert_eq!("level", path.slices[3].name);
+        assert_eq!("path", path.slices[4].name);
     }
 
     #[test]
     fn test_path_with_unvalid_chars() {
         let path = "t*his/i+s/caca?/";
-        let path = NotePath::from(path);
+        let path = VaultPath::from(path);
 
         assert_eq!(3, path.slices.len());
-        assert_eq!("t_his", path.slices[0].slice);
-        assert_eq!("i+s", path.slices[1].slice);
-        assert_eq!("caca_", path.slices[2].slice);
+        assert_eq!("t_his", path.slices[0].name);
+        assert_eq!("i+s", path.slices[1].name);
+        assert_eq!("caca_", path.slices[2].name);
     }
 
     #[test]
     fn test_to_path_buf() {
         let workspace_path = PathBuf::from("/usr/john/notes");
         let path = "/some/subpath";
-        let path = NotePath::from(path);
+        let path = VaultPath::from(path);
         let path_buf = path.to_pathbuf(&workspace_path);
 
         let path_string = path_to_string(path_buf);
@@ -531,7 +531,7 @@ mod tests {
         let path = PathBuf::from("/some/valid/path/workspace/note.md");
         let workspace = PathBuf::from("/some/valid/path");
 
-        let entry = NotePath::from_path(&workspace, &path).unwrap();
+        let entry = VaultPath::from_path(&workspace, &path).unwrap();
 
         assert_eq!("/workspace/note.md", entry.to_string());
     }

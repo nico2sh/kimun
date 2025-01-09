@@ -2,7 +2,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use eframe::egui::ScrollArea;
 use log::error;
-use notes_core::{nfs::NotePath, NoteDetails, NoteVault};
+use notes_core::{nfs::VaultPath, NoteDetails, NoteVault};
 
 use super::{
     filtered_list::{FilteredList, FilteredListFunctions, ListElement},
@@ -13,11 +13,11 @@ use super::{
 enum PreviewState {
     Empty,
     LoadingPreview,
-    PreviewLoaded { path: NotePath, text: String },
+    PreviewLoaded { path: VaultPath, text: String },
 }
 
 pub trait SelectionPath: PartialEq {
-    fn get_path(&self) -> NotePath;
+    fn get_path(&self) -> VaultPath;
 }
 
 pub struct PreviewList<F, P, D>
@@ -91,7 +91,7 @@ where
         }
     }
 
-    fn load_preview(&mut self, path: NotePath) {
+    fn load_preview(&mut self, path: VaultPath) {
         self.state = PreviewState::LoadingPreview;
         if path.is_note() {
             let vault = self.vault.clone();
@@ -132,13 +132,13 @@ where
 }
 
 impl SelectionPath for NoteDetails {
-    fn get_path(&self) -> NotePath {
+    fn get_path(&self) -> VaultPath {
         self.path.clone()
     }
 }
 
 impl SelectionPath for SelectorEntry {
-    fn get_path(&self) -> NotePath {
+    fn get_path(&self) -> VaultPath {
         self.path.clone()
     }
 }
