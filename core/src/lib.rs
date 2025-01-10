@@ -15,7 +15,7 @@ use content_data::NoteContentData;
 use db::VaultDB;
 // use db::async_sqlite::AsyncConnection;
 // use db::async_db::AsyncConnection;
-use error::{DBError, VaultError};
+use error::{DBError, FSError, VaultError};
 use log::{debug, info};
 use nfs::{load_note, save_note, visitor::NoteListVisitorBuilder, VaultEntry, VaultPath};
 use utilities::path_to_string;
@@ -81,6 +81,20 @@ impl NoteVault {
         match VaultEntry::new(&self.workspace_path, path.to_owned()) {
             Ok(entry) => Some(entry),
             Err(_e) => None,
+        }
+    }
+
+    pub fn load_or_create_note(&self, path: &VaultPath) -> Result<String, VaultError> {
+        match load_note(&self.workspace_path, path) {
+            Ok(text) => Ok(text),
+            Err(e) => {
+                if let FSError::NotePathNotFound { path: _ } = e {
+                    self.create_note(path)?;
+                    Ok(String::new())
+                } else {
+                    Err(e)?
+                }
+            }
         }
     }
 
@@ -181,6 +195,14 @@ impl NoteVault {
             .expect("Something's wrong with the time");
         debug!("> Files fetched in {} milliseconds", time.as_millis());
         Ok(result)
+    }
+
+    pub fn create_note(&self, path: &VaultPath) -> Result<(), VaultError> {
+        if self.exists(path).is_none() {
+            self.save_note(path, "")
+        } else {
+            Err(VaultError::NoteExists { path: path.clone() })
+        }
     }
 
     pub fn save_note<S: AsRef<str>>(&self, path: &VaultPath, text: S) -> Result<(), VaultError> {
