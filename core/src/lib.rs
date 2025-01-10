@@ -11,6 +11,7 @@ use std::{
     sync::mpsc::{Receiver, Sender},
 };
 
+use chrono::Utc;
 use content_data::NoteContentData;
 use db::VaultDB;
 // use db::async_sqlite::AsyncConnection;
@@ -19,6 +20,8 @@ use error::{DBError, FSError, VaultError};
 use log::{debug, info};
 use nfs::{load_note, save_note, visitor::NoteListVisitorBuilder, VaultEntry, VaultPath};
 use utilities::path_to_string;
+
+const JOURNAL_PATH: &str = "journal";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteVault {
@@ -82,6 +85,20 @@ impl NoteVault {
             Ok(entry) => Some(entry),
             Err(_e) => None,
         }
+    }
+
+    pub fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
+        let note_path = self.get_todays_journal();
+        let content = self.load_or_create_note(&note_path)?;
+        let details = NoteDetails::from_content(&content, &note_path);
+        Ok((details, content))
+    }
+
+    fn get_todays_journal(&self) -> VaultPath {
+        let today = Utc::now();
+        let today_string = today.format("%Y-%m-%d").to_string();
+
+        VaultPath::from(JOURNAL_PATH).append(&VaultPath::file_from(today_string))
     }
 
     pub fn load_or_create_note(&self, path: &VaultPath) -> Result<String, VaultError> {
