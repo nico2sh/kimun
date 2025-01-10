@@ -178,9 +178,18 @@ impl VaultEntryDetails {
 
 pub fn load_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<String, FSError> {
     let os_path = path.to_pathbuf(&workspace_path);
-    let file = std::fs::read(&os_path)?;
-    let text = String::from_utf8(file)?;
-    Ok(text)
+    match std::fs::read(&os_path) {
+        Ok(file) => {
+            let text = String::from_utf8(file)?;
+            Ok(text)
+        }
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => Err(FSError::NotePathNotFound {
+                path: path.to_owned(),
+            }),
+            _ => Err(FSError::ReadFileError(e)),
+        },
+    }
 }
 
 pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
@@ -479,9 +488,23 @@ pub fn get_file_walker<P: AsRef<Path>>(
 mod tests {
     use std::path::PathBuf;
 
-    use crate::utilities::path_to_string;
+    use crate::{error::FSError, utilities::path_to_string};
 
-    use super::{VaultPath, VaultPathSlice};
+    use super::{load_note, VaultPath, VaultPathSlice};
+
+    #[test]
+    fn test_file_not_exists() {
+        let path = VaultPath::new("don't exist");
+        let res = load_note(std::env::current_dir().unwrap(), &path);
+
+        let result = if let Err(e) = res {
+            matches!(e, FSError::NotePathNotFound { path: _ })
+        } else {
+            false
+        };
+
+        assert!(result);
+    }
 
     #[test]
     fn test_slice_char_replace() {
