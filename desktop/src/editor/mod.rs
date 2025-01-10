@@ -15,6 +15,7 @@ use notes_core::{nfs::VaultPath, NoteVault};
 
 use super::{settings::Settings, View};
 
+const ID_EDITOR: &str = "Note Editor";
 const AUTOSAVE_SECS: u64 = 5;
 
 pub struct Editor {
@@ -23,6 +24,7 @@ pub struct Editor {
     message_receiver: Receiver<EditorMessage>,
     current_directory: VaultPath,
     highlighter: MemoizedNoteHighlighter,
+    request_focus: bool,
 }
 
 impl Editor {
@@ -45,6 +47,7 @@ impl Editor {
                 message_receiver: receiver,
                 current_directory: settings.last_path.clone(),
                 highlighter: MemoizedNoteHighlighter::default(),
+                request_focus: true,
             })
         } else {
             bail!("Path not provided")
@@ -62,7 +65,8 @@ impl Editor {
             .code_editor()
             .desired_width(f32::INFINITY)
             .font(egui::TextStyle::Monospace) // for cursor height
-            .layouter(&mut layouter);
+            .layouter(&mut layouter)
+            .id(ID_EDITOR.into());
         let response = ui.add_sized(ui.available_size(), output);
 
         if response.changed() {
@@ -78,6 +82,14 @@ impl Editor {
                 // }
             }
         };
+    }
+
+    fn load_note(&mut self, ui: &mut egui::Ui, note_path: &VaultPath) {
+        if let Ok(editor_data) = self.data.load_note(note_path) {
+            self.data = editor_data;
+        }
+        self.current_directory = note_path.get_parent_path().0;
+        self.modal_manager.close_modal();
     }
 }
 
@@ -96,23 +108,43 @@ impl View for Editor {
         {
             self.modal_manager.set_modal(Modals::VaultSearch);
         }
+        if ui
+            .ctx()
+            .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::J))
+        {
+            if let Err(e) = self
+                .modal_manager
+                .message_sender
+                .send(EditorMessage::NewJournal)
+            {
+                error!("Error opening journal: {}", e);
+            }
+        }
 
         self.modal_manager.view(ui)?;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             self.get_editor(ui);
         });
+        if self.request_focus {
+            ui.ctx()
+                .memory_mut(|mem| mem.request_focus(ID_EDITOR.into()));
+            self.request_focus = false;
+        }
 
         while let Ok(message) = self.message_receiver.try_recv() {
             match message {
                 EditorMessage::OpenNote(note_path) => {
-                    if let Ok(editor_data) = self.data.load_note(&note_path) {
-                        self.data = editor_data;
-                    }
-                    self.current_directory = note_path.get_parent_path().0;
-                    self.modal_manager.close_modal();
-                    ui.ctx().request_repaint();
+                    self.load_note(ui, &note_path);
+                    self.request_focus = true;
                 }
+                EditorMessage::NewJournal => match self.data.vault.journal_entry() {
+                    Ok((data, content)) => {
+                        self.load_note(ui, &data.path);
+                        self.request_focus = true;
+                    }
+                    Err(_) => todo!(),
+                },
                 EditorMessage::NewNote(note_path) => {
                     let mut np = note_path.clone();
                     loop {
@@ -127,6 +159,7 @@ impl View for Editor {
                     self.current_directory = np.get_parent_path().0;
                     self.data.note_path = Some(np);
                     self.modal_manager.close_modal();
+                    self.request_focus = true;
                 }
                 EditorMessage::Save => {
                     debug!("Checking if to save note");
@@ -144,5 +177,6 @@ impl View for Editor {
 pub(crate) enum EditorMessage {
     OpenNote(VaultPath),
     NewNote(VaultPath),
+    NewJournal,
     Save,
 }

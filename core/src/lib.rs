@@ -88,26 +88,37 @@ impl NoteVault {
     }
 
     pub fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
-        let note_path = self.get_todays_journal();
-        let content = self.load_or_create_note(&note_path)?;
+        let (title, note_path) = self.get_todays_journal();
+        let content = self.load_or_create_note(&note_path, Some(format!("# {}\n\n", title)))?;
         let details = NoteDetails::from_content(&content, &note_path);
         Ok((details, content))
     }
 
-    fn get_todays_journal(&self) -> VaultPath {
+    fn get_todays_journal(&self) -> (String, VaultPath) {
         let today = Utc::now();
         let today_string = today.format("%Y-%m-%d").to_string();
 
-        VaultPath::from(JOURNAL_PATH).append(&VaultPath::file_from(today_string))
+        (
+            today_string.clone(),
+            VaultPath::from(JOURNAL_PATH).append(&VaultPath::file_from(&today_string)),
+        )
     }
 
-    pub fn load_or_create_note(&self, path: &VaultPath) -> Result<String, VaultError> {
+    // Loads a note in the specified path, if the path doesn't exist
+    // create a new one, a text can be specified as the initial text for the
+    // note when created
+    pub fn load_or_create_note(
+        &self,
+        path: &VaultPath,
+        default_text: Option<String>,
+    ) -> Result<String, VaultError> {
         match load_note(&self.workspace_path, path) {
             Ok(text) => Ok(text),
             Err(e) => {
                 if let FSError::NotePathNotFound { path: _ } = e {
-                    self.create_note(path)?;
-                    Ok(String::new())
+                    let text = default_text.unwrap_or_default();
+                    self.create_note(path, &text)?;
+                    Ok(text)
                 } else {
                     Err(e)?
                 }
@@ -214,9 +225,9 @@ impl NoteVault {
         Ok(result)
     }
 
-    pub fn create_note(&self, path: &VaultPath) -> Result<(), VaultError> {
+    pub fn create_note<S: AsRef<str>>(&self, path: &VaultPath, text: S) -> Result<(), VaultError> {
         if self.exists(path).is_none() {
-            self.save_note(path, "")
+            self.save_note(path, text)
         } else {
             Err(VaultError::NoteExists { path: path.clone() })
         }
