@@ -14,6 +14,7 @@ mod rendered_view;
 pub const ID_VIEWER: &str = "Note Editor";
 
 pub enum ViewerType {
+    Nothing,
     Editor,
     Preview,
 }
@@ -30,8 +31,50 @@ pub trait NoteViewer: View {
 impl ViewerType {
     pub fn new_view(&self, message_sender: Sender<EditorMessage>) -> Box<dyn NoteViewer> {
         match self {
+            ViewerType::Nothing => Box::new(NoView::new(message_sender)),
             ViewerType::Editor => Box::new(EditorView::new(message_sender)),
             ViewerType::Preview => Box::new(RenderedView::new(message_sender)),
         }
+    }
+}
+
+struct NoView {
+    message_sender: Sender<EditorMessage>,
+}
+
+impl NoView {
+    fn new(message_sender: Sender<EditorMessage>) -> Self {
+        Self { message_sender }
+    }
+}
+
+impl View for NoView {
+    fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
+        ui.vertical_centered(|ui| {
+            ui.label("Open or create a note with cmd + O");
+        });
+        Ok(())
+    }
+}
+
+impl NoteViewer for NoView {
+    fn get_type(&self) -> ViewerType {
+        ViewerType::Nothing
+    }
+
+    fn load_content(&mut self, _text: String) {}
+
+    fn manage_keys(&mut self, _ctx: &egui::Context) {}
+
+    fn update(&mut self, _ctx: &egui::Context) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn should_save(&self) -> bool {
+        false
+    }
+
+    fn get_text(&self) -> String {
+        "".to_string()
     }
 }
