@@ -1,19 +1,23 @@
+use crossbeam_channel::Sender;
 use eframe::egui;
+use log::error;
 
 use crate::{editor::NoteViewer, View};
 
-use super::{highlighter::MemoizedNoteHighlighter, ViewerType, ID_VIEWER};
+use super::{highlighter::MemoizedNoteHighlighter, EditorMessage, ViewerType, ID_VIEWER};
 
 pub struct EditorView {
+    message_sender: Sender<EditorMessage>,
     text: String,
     changed: bool,
     highlighter: MemoizedNoteHighlighter,
 }
 
 impl EditorView {
-    pub fn new() -> Self {
+    pub(super) fn new(message_sender: Sender<EditorMessage>) -> Self {
         let highlighter = MemoizedNoteHighlighter::default();
         Self {
+            message_sender,
             text: String::new(),
             changed: false,
             highlighter,
@@ -26,8 +30,21 @@ impl NoteViewer for EditorView {
         ViewerType::Editor
     }
 
-    fn manage_keys(&mut self, _ctx: &egui::Context) {
-        // TODO: Editor specific hot keys
+    fn manage_keys(&mut self, ctx: &egui::Context) {
+        if ctx.input_mut(|input| {
+            input.consume_key(
+                egui::Modifiers {
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+                egui::Key::P,
+            )
+        }) {
+            if let Err(e) = self.message_sender.send(EditorMessage::ShowPreview) {
+                error!("Error sending change view message: {}", e);
+            };
+        }
     }
 
     fn update(&mut self, _ctx: &egui::Context) -> anyhow::Result<()> {
@@ -44,7 +61,7 @@ impl NoteViewer for EditorView {
         self.changed
     }
 
-    fn get_content(&self) -> String {
+    fn get_text(&self) -> String {
         self.text.clone()
     }
 }
