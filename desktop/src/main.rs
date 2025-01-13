@@ -10,7 +10,7 @@ use eframe::egui;
 // use filtered_list::row::{RowItem, RowMessage};
 use icons::set_icon_fonts;
 use log::error;
-use settings::Settings;
+use settings::{view::SettingsView, Settings};
 
 fn main() -> eframe::Result {
     env_logger::Builder::new()
@@ -45,14 +45,13 @@ pub struct DesktopApp {
 
 impl DesktopApp {
     pub fn new(cc: &eframe::CreationContext) -> anyhow::Result<Self> {
-        let mut settings = Settings::load()?;
+        let settings = Settings::load()?;
         set_icon_fonts(&cc.egui_ctx);
-        if settings.workspace_dir.is_none() {
-            let ws = pick_workspace()?;
-            settings.workspace_dir = Some(ws);
-            settings.save()?;
-        }
-        let current_view = Box::new(Editor::new(&settings)?);
+        let current_view: Box<dyn View> = if settings.workspace_dir.is_some() {
+            Box::new(Editor::new(&settings)?)
+        } else {
+            Box::new(SettingsView::new(&settings))
+        };
         let left_view = None;
         let right_view = None;
 
@@ -91,13 +90,4 @@ impl eframe::App for DesktopApp {
 
 pub trait View {
     fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()>;
-}
-
-fn pick_workspace() -> anyhow::Result<PathBuf> {
-    let handle = rfd::FileDialog::new()
-        .set_title("Choose a Workspace Directory")
-        .pick_folder()
-        .ok_or(anyhow!("Dialog Closed"))?;
-
-    Ok(handle.to_path_buf())
 }
