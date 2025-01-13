@@ -1,4 +1,4 @@
-mod view;
+pub mod view;
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use notes_core::nfs::VaultPath;
 
 const BASE_CONFIG_FILE: &str = ".note.toml";
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     pub last_paths: Vec<VaultPath>,
     pub workspace_dir: Option<PathBuf>,
