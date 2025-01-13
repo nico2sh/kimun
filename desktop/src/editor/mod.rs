@@ -14,7 +14,9 @@ use notes_core::{
 };
 use viewer::{NoteViewer, ViewerType};
 
-use super::{settings::Settings, View};
+use crate::settings::Settings;
+
+use super::View;
 
 const AUTOSAVE_SECS: u64 = 5;
 
@@ -42,21 +44,13 @@ impl Editor {
                 }
             });
 
-            let note_path = settings.last_path.clone().and_then(|path| {
+            let note_path = settings.last_paths.last().and_then(|path| {
                 if !path.is_note() {
                     None
                 } else {
-                    Some(path)
+                    Some(path.to_owned())
                 }
             });
-            let viewer = if let Some(path) = &note_path {
-                let content = load_note(workspace_dir, path)?;
-                let mut viewer = ViewerType::Editor.new_view(sender.clone());
-                viewer.load_content(content);
-                viewer
-            } else {
-                ViewerType::Editor.new_view(sender.clone())
-            };
             let mut editor = Self {
                 viewer: ViewerType::Nothing.new_view(sender.clone()),
                 vault: Arc::new(vault),
