@@ -1,4 +1,27 @@
 use eframe::egui;
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct Style {
+    /// # heading (large text)
+    pub heading: bool,
+    /// > quoted (slightly dimmer color or other font style)
+    pub quoted: bool,
+    /// `code` (monospace, some other color)
+    pub code: bool,
+    /// self.strong* (emphasized, e.g. bold)
+    pub strong: bool,
+    /// _underline_
+    pub underline: bool,
+    /// ~strikethrough~
+    pub strikethrough: bool,
+    /// /italics/
+    pub italics: bool,
+    /// $small$
+    pub small: bool,
+    /// ^raised^
+    pub raised: bool,
+}
+
 /// Highlight easymark, memoizing previous output to save CPU.
 /// In practice, the highlighter is fast enough not to need any caching.
 ///
@@ -24,7 +47,7 @@ impl MemoizedNoteHighlighter {
 
 pub fn highlight_note(egui_style: &egui::Style, mut text: &str) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
-    let mut style = super::parser::Style::default();
+    let mut style = Style::default();
     let mut start_of_line = true;
 
     while !text.is_empty() {
@@ -35,7 +58,7 @@ pub fn highlight_note(egui_style: &egui::Style, mut text: &str) -> egui::text::L
                 0.0,
                 format_from_style(
                     egui_style,
-                    &super::parser::Style {
+                    &Style {
                         code: true,
                         ..Default::default()
                     },
@@ -133,10 +156,7 @@ pub fn highlight_note(egui_style: &egui::Style, mut text: &str) -> egui::text::L
     job
 }
 
-fn format_from_style(
-    egui_style: &egui::Style,
-    emark_style: &super::parser::Style,
-) -> egui::text::TextFormat {
+fn format_from_style(egui_style: &egui::Style, emark_style: &Style) -> egui::text::TextFormat {
     use egui::{Align, Color32, Stroke, TextStyle};
 
     let color = if emark_style.strong || emark_style.heading {

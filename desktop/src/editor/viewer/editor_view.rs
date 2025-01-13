@@ -1,10 +1,8 @@
-use std::path::Path;
-
 use eframe::egui;
 
-use crate::View;
+use crate::{editor::NoteViewer, View};
 
-use super::{data::EditorData, highlighter::MemoizedNoteHighlighter, NoteViewer, ID_VIEWER};
+use super::{highlighter::MemoizedNoteHighlighter, ViewerType, ID_VIEWER};
 
 pub struct EditorView {
     text: String,
@@ -24,6 +22,10 @@ impl EditorView {
 }
 
 impl NoteViewer for EditorView {
+    fn get_type(&self) -> ViewerType {
+        ViewerType::Editor
+    }
+
     fn manage_keys(&mut self, _ctx: &egui::Context) {
         // TODO: Editor specific hot keys
     }
@@ -67,15 +69,15 @@ impl View for EditorView {
             self.changed = true;
         }
 
-        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
-            if let Some(mut ccursor_range) = state.cursor.char_range() {
-                // let any_change = shortcuts(ui, code, &mut ccursor_range);
-                // if any_change {
-                //     state.cursor.set_char_range(Some(ccursor_range));
-                //     state.store(ui.ctx(), response.id);
-                // }
-            }
-        };
+        // if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+        //     if let Some(mut ccursor_range) = state.cursor.char_range() {
+        //         let any_change = shortcuts(ui, code, &mut ccursor_range);
+        //         if any_change {
+        //             state.cursor.set_char_range(Some(ccursor_range));
+        //             state.store(ui.ctx(), response.id);
+        //         }
+        //     }
+        // };
         Ok(())
     }
 }

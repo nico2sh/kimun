@@ -176,6 +176,8 @@ impl VaultEntryDetails {
     }
 }
 
+/// Loads a note from disk, if the file doesn't exist, returns a FSError::NotePathNotFound
+/// Returns the note's text. If you want the details, use NoteDetails::from_content
 pub fn load_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<String, FSError> {
     let os_path = path.to_pathbuf(&workspace_path);
     match std::fs::read(&os_path) {
