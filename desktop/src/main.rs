@@ -9,6 +9,7 @@ use editor::Editor;
 use eframe::egui;
 // use filtered_list::row::{RowItem, RowMessage};
 use icons::set_icon_fonts;
+use log::error;
 use settings::Settings;
 
 fn main() -> eframe::Result {
@@ -68,16 +69,22 @@ impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(left_view) = self.left_view.as_mut() {
             egui::SidePanel::left("Left Panel").show(ctx, |ui| {
-                left_view.view(ui);
+                if let Err(e) = left_view.view(ui) {
+                    error!("Error displaying left view: {}", e);
+                }
             });
         }
         if let Some(right_view) = self.right_view.as_mut() {
             egui::SidePanel::right("Right Panel").show(ctx, |ui| {
-                right_view.view(ui);
+                if let Err(e) = right_view.view(ui) {
+                    error!("Error displaying right view: {}", e);
+                }
             });
         }
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.main_view.view(ui);
+            if let Err(e) = self.main_view.view(ui) {
+                error!("Error displaying main view: {}", e);
+            }
         });
     }
 }
