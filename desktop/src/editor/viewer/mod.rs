@@ -51,6 +51,7 @@ impl NoView {
 impl View for NoView {
     fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
         ui.vertical_centered(|ui| {
+            ui.add_space(64.0);
             ui.label("Open or create a note with cmd + O");
         });
         Ok(())
