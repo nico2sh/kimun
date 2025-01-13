@@ -1,8 +1,6 @@
-use std::{
-    collections::VecDeque,
-    sync::{mpsc, Arc},
-};
+use std::{collections::VecDeque, sync::Arc};
 
+use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use log::{debug, error, info};
 
@@ -65,7 +63,7 @@ where
     D: ListElement + 'static,
 {
     state_manager: SelectorStateManager<F, P, D>,
-    message_sender: mpsc::Sender<EditorMessage>,
+    message_sender: Sender<EditorMessage>,
     requested_focus: bool,
     requested_scroll: bool,
 }
@@ -76,7 +74,7 @@ where
     P: Send + Sync + Clone + 'static,
     D: ListElement + 'static,
 {
-    pub fn new(functions: F, message_sender: mpsc::Sender<EditorMessage>) -> Self {
+    pub fn new(functions: F, message_sender: Sender<EditorMessage>) -> Self {
         let mut state_manager = SelectorStateManager::new(functions);
         state_manager.initialize();
         Self {
@@ -240,8 +238,8 @@ where
     provider: Option<Arc<P>>,
     state_data: StateData<D>,
     functions: Arc<F>,
-    tx: mpsc::Sender<StateMessage<P, D>>,
-    rx: mpsc::Receiver<StateMessage<P, D>>,
+    tx: Sender<StateMessage<P, D>>,
+    rx: Receiver<StateMessage<P, D>>,
     deduped_message_bus: VecDeque<StateMessage<P, D>>,
 }
 
@@ -329,7 +327,7 @@ where
     D: ListElement + 'static,
 {
     fn new(functions: F) -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = crossbeam_channel::unbounded();
         let state_data = StateData {
             filter_text: String::new(),
             elements: vec![],
