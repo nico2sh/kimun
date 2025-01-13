@@ -8,10 +8,7 @@ use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use log::{debug, error};
 use modals::{ModalManager, Modals};
-use notes_core::{
-    nfs::{load_note, VaultPath},
-    NoteVault,
-};
+use notes_core::{nfs::VaultPath, NoteVault};
 use viewer::{NoteViewer, ViewerType};
 
 use crate::settings::Settings;
