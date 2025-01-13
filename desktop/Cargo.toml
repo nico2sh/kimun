@@ -13,6 +13,15 @@ eframe = { version = "0.30", default-features = false, features = [
   "wgpu",
 ] }
 egui_extras = { version = "0.30", features = ["all_loaders", "syntect"] }
+egui_commonmark = { version = "0.19", features = [
+  "better_syntax_highlighting",
+  "fetch",
+  "svg",
+] }
+# Specify what image formats you want to use
+image = { version = "0.25", default-features = false, features = [
+  "default-formats",
+] }
 
 rfd = "0.15"
 
