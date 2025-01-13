@@ -26,6 +26,7 @@ gxhash = "3.4"
 regex = "1.11"
 # Markdown parsing
 pulldown-cmark = "0.12"
+chrono = "0.4.39"
 ## Async stuff
 # tokio = { version = "1.42", features = ["full"] }
 # crossbeam-channel = "0.5"

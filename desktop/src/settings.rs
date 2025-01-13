@@ -10,14 +10,14 @@ const BASE_CONFIG_FILE: &str = ".note.toml";
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
-    pub last_path: VaultPath,
+    pub last_path: Option<VaultPath>,
     pub workspace_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            last_path: VaultPath::root(),
+            last_path: None,
             workspace_dir: None,
         }
     }
