@@ -1,39 +1,27 @@
-mod data;
-mod editor_view;
-mod highlighter;
 mod modals;
-mod parser;
-mod rendered_view;
+mod viewer;
 
-use std::sync::{mpsc::Receiver, Arc};
+use std::{any::Any, sync::Arc};
 
 use anyhow::bail;
-use editor_view::EditorView;
+use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use log::{debug, error};
 use modals::{ModalManager, Modals};
-use notes_core::{
-    nfs::{load_note, VaultPath},
-    NoteVault,
-};
+use notes_core::{nfs::VaultPath, NoteVault};
+use viewer::{NoteViewer, ViewerType};
 
-use super::{settings::Settings, View};
+use crate::settings::Settings;
 
-pub const ID_VIEWER: &str = "Note Editor";
+use super::View;
+
 const AUTOSAVE_SECS: u64 = 5;
-
-trait NoteViewer: View {
-    fn load_content(&mut self, text: String);
-    fn manage_keys(&mut self, ctx: &egui::Context);
-    fn update(&mut self, ctx: &egui::Context) -> anyhow::Result<()>;
-    fn should_save(&self) -> bool;
-    fn get_content(&self) -> String;
-}
 
 pub struct Editor {
     viewer: Box<dyn NoteViewer>,
     vault: Arc<NoteVault>,
     modal_manager: ModalManager,
+    message_sender: Sender<EditorMessage>,
     message_receiver: Receiver<EditorMessage>,
     note_path: Option<VaultPath>,
     request_focus: bool,
@@ -42,7 +30,7 @@ pub struct Editor {
 impl Editor {
     pub fn new(settings: &Settings) -> anyhow::Result<Self> {
         if let Some(workspace_dir) = &settings.workspace_dir {
-            let (sender, receiver) = std::sync::mpsc::channel();
+            let (sender, receiver) = crossbeam_channel::unbounded();
             let vault = NoteVault::new(workspace_dir)?;
 
             let save_sender = sender.clone();
@@ -53,41 +41,48 @@ impl Editor {
                 }
             });
 
-            let note_path = settings.last_path.clone().and_then(|path| {
+            let note_path = settings.last_paths.last().and_then(|path| {
                 if !path.is_note() {
                     None
                 } else {
-                    Some(path)
+                    Some(path.to_owned())
                 }
             });
-            let viewer = if let Some(path) = &note_path {
-                let content = load_note(workspace_dir, path)?;
-                let mut viewer = EditorView::new();
-                viewer.load_content(content);
-                viewer
-            } else {
-                EditorView::new()
-            };
-            Ok(Self {
-                viewer: Box::new(viewer),
+            let mut editor = Self {
+                viewer: ViewerType::Nothing.new_view(sender.clone()),
                 vault: Arc::new(vault),
-                modal_manager: ModalManager::new(NoteVault::new(workspace_dir)?, sender),
+                modal_manager: ModalManager::new(NoteVault::new(workspace_dir)?, sender.clone()),
+                message_sender: sender,
                 message_receiver: receiver,
-                note_path,
+                note_path: note_path.clone(),
                 request_focus: true,
-            })
+            };
+            editor.load_note_path(&note_path)?;
+            Ok(editor)
         } else {
             bail!("Path not provided")
         }
     }
 
-    fn load_note(&mut self, note_path: &VaultPath) {
-        if let Ok(editor_data) = self.vault.load_note(note_path) {
-            self.viewer.load_content(editor_data);
-        }
-        // TODO: Manage the view
-        self.note_path = Some(note_path.to_owned());
+    /// Loads a note from the path
+    /// if no path is specified, we put a placeholder view
+    /// if the path is a directory, we put a placeholder view
+    /// if the path is a note, then we load the note in the current view
+    fn load_note_path(&mut self, note_path: &Option<VaultPath>) -> anyhow::Result<()> {
+        if let Some(path) = &note_path {
+            let content = self.vault.load_note(path)?;
+            if !self.note_path.as_ref().is_some_and(|path| path.is_note()) {
+                let viewer = ViewerType::Editor.new_view(self.message_sender.clone());
+                self.viewer = viewer;
+            }
+            self.viewer.load_content(content);
+        } else {
+            self.viewer = ViewerType::Nothing.new_view(self.message_sender.clone());
+        };
+        self.note_path = note_path.to_owned();
         self.modal_manager.close_modal();
+
+        Ok(())
     }
 
     fn save_note(&self) -> anyhow::Result<()> {
@@ -95,7 +90,7 @@ impl Editor {
         if let Some(note_path) = &self.note_path {
             if self.viewer.should_save() {
                 debug!("Saving note");
-                let content = self.viewer.get_content();
+                let content = self.viewer.get_text();
                 self.vault.save_note(note_path, content)?;
             }
         }
@@ -103,8 +98,6 @@ impl Editor {
     }
 
     fn manage_keys(&mut self, ctx: &egui::Context) {
-        self.viewer.manage_keys(ctx);
-
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
             let browse_path = self
                 .note_path
@@ -132,22 +125,23 @@ impl Editor {
                 error!("Error opening journal: {}", e);
             }
         }
+        self.viewer.manage_keys(ctx);
     }
 
-    pub fn update(&mut self, ctx: &egui::Context) -> anyhow::Result<()> {
+    fn update(&mut self, ctx: &egui::Context) -> anyhow::Result<()> {
         while let Ok(message) = self.message_receiver.try_recv() {
             match message {
                 EditorMessage::OpenNote(note_path) => {
-                    self.load_note(&note_path);
+                    self.load_note_path(&Some(note_path))?;
                     self.request_focus = true;
                 }
-                EditorMessage::NewJournal => match self.vault.journal_entry() {
-                    Ok((data, content)) => {
-                        self.load_note(&data.path);
+                EditorMessage::NewJournal => {
+                    let (data, _content) = self.vault.journal_entry()?;
+                    {
+                        self.load_note_path(&Some(data.path))?;
                         self.request_focus = true;
                     }
-                    Err(_) => todo!(),
-                },
+                }
                 EditorMessage::NewNote(note_path) => {
                     let mut np = note_path.clone();
                     loop {
@@ -166,10 +160,32 @@ impl Editor {
                 EditorMessage::Save => {
                     self.save_note()?;
                 }
+                EditorMessage::ShowPreview => {
+                    self.change_viewer(ViewerType::Preview)?;
+                }
+                EditorMessage::ShowEditor => {
+                    self.change_viewer(ViewerType::Editor)?;
+                }
             }
         }
         self.viewer.update(ctx)?;
         Ok(())
+    }
+
+    fn change_viewer(&mut self, viewer: ViewerType) -> anyhow::Result<()> {
+        self.save_note()?;
+        let text = self.viewer.get_text();
+        self.viewer = viewer.new_view(self.message_sender.clone());
+        self.viewer.load_content(text);
+        Ok(())
+    }
+}
+
+impl Drop for Editor {
+    fn drop(&mut self) {
+        if let Err(e) = self.save_note() {
+            error!("Error saving note: {}", e);
+        }
     }
 }
 
@@ -186,7 +202,7 @@ impl View for Editor {
 
         if self.request_focus {
             ui.ctx()
-                .memory_mut(|mem| mem.request_focus(ID_VIEWER.into()));
+                .memory_mut(|mem| mem.request_focus(viewer::ID_VIEWER.into()));
             self.request_focus = false;
         }
 
@@ -199,6 +215,8 @@ impl View for Editor {
 pub(crate) enum EditorMessage {
     OpenNote(VaultPath),
     NewNote(VaultPath),
+    ShowPreview,
+    ShowEditor,
     NewJournal,
     Save,
 }

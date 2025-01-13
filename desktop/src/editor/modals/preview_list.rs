@@ -1,5 +1,4 @@
-use std::sync::mpsc::{Receiver, Sender};
-
+use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::ScrollArea;
 use log::error;
 use notes_core::{nfs::VaultPath, NoteDetails, NoteVault};
@@ -42,7 +41,7 @@ where
     D: ListElement + 'static + SelectionPath,
 {
     pub fn new(vault: NoteVault, list: FilteredList<F, P, D>) -> Self {
-        let (state_sender, state_receiver) = std::sync::mpsc::channel();
+        let (state_sender, state_receiver) = crossbeam_channel::unbounded();
         Self {
             vault,
             list,

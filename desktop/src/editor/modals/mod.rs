@@ -2,8 +2,7 @@ mod filtered_list;
 mod preview_list;
 mod vault_browse;
 
-use std::sync::mpsc::Sender;
-
+use crossbeam_channel::Sender;
 use eframe::egui;
 use filtered_list::FilteredList;
 use log::debug;

@@ -1,3 +1,5 @@
+mod view;
+
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -10,14 +12,14 @@ const BASE_CONFIG_FILE: &str = ".note.toml";
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
-    pub last_path: Option<VaultPath>,
+    pub last_paths: Vec<VaultPath>,
     pub workspace_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            last_path: None,
+            last_paths: vec![],
             workspace_dir: None,
         }
     }
