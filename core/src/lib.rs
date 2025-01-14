@@ -53,7 +53,9 @@ impl NoteVault {
     }
 
     pub fn init(&self) -> Result<(), VaultError> {
+        debug!("Initializing DB from Vault request");
         self.create_tables()?;
+        debug!("Tables created, creating index");
         self.create_index()?;
         Ok(())
     }
@@ -261,6 +263,18 @@ pub struct NoteDetails {
     // likely not going to be there, so the `get_content` function
     // will take it from disk, and store in the cache
     cached_text: Option<String>,
+}
+
+impl Display for NoteDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Path: {}, Data: {}, Has Text Cached: {}",
+            self.path,
+            self.data,
+            self.cached_text.is_some()
+        )
+    }
 }
 
 impl NoteDetails {
