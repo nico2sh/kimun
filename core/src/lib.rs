@@ -264,7 +264,7 @@ pub struct NoteDetails {
 }
 
 impl NoteDetails {
-    pub fn new(note_path: VaultPath, hash: u32, title: String, text: Option<String>) -> Self {
+    pub fn new(note_path: VaultPath, hash: u64, title: String, text: Option<String>) -> Self {
         let data = NoteContentData {
             hash,
             title: Some(title),
