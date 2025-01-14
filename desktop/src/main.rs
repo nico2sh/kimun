@@ -2,9 +2,6 @@ mod editor;
 pub mod icons;
 pub mod settings;
 
-use std::path::PathBuf;
-
-use anyhow::anyhow;
 use editor::Editor;
 use eframe::egui;
 // use filtered_list::row::{RowItem, RowMessage};
@@ -37,57 +34,58 @@ pub enum Message {
 }
 
 pub struct DesktopApp {
-    settings: Settings,
-    main_view: Box<dyn View>,
-    left_view: Option<Box<dyn View>>,
-    right_view: Option<Box<dyn View>>,
+    main_view: Box<dyn MainView>,
 }
 
 impl DesktopApp {
     pub fn new(cc: &eframe::CreationContext) -> anyhow::Result<Self> {
-        let settings = Settings::load()?;
+        let settings = Settings::load_from_disk()?;
         set_icon_fonts(&cc.egui_ctx);
-        let current_view: Box<dyn View> = if settings.workspace_dir.is_some() {
+        let current_view: Box<dyn MainView> = if settings.workspace_dir.is_some() {
             Box::new(Editor::new(&settings)?)
         } else {
             Box::new(SettingsView::new(&settings))
         };
-        let left_view = None;
-        let right_view = None;
 
         Ok(Self {
-            settings,
             main_view: current_view,
-            left_view,
-            right_view,
         })
     }
 }
 
 impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(left_view) = self.left_view.as_mut() {
-            egui::SidePanel::left("Left Panel").show(ctx, |ui| {
-                if let Err(e) = left_view.view(ui) {
-                    error!("Error displaying left view: {}", e);
-                }
-            });
-        }
-        if let Some(right_view) = self.right_view.as_mut() {
-            egui::SidePanel::right("Right Panel").show(ctx, |ui| {
-                if let Err(e) = right_view.view(ui) {
-                    error!("Error displaying right view: {}", e);
-                }
-            });
-        }
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if let Err(e) = self.main_view.view(ui) {
+        egui::CentralPanel::default().show(ctx, |ui| match self.main_view.update(ui) {
+            Ok(Some(switch)) => match Settings::load_from_disk() {
+                Ok(settings) => match switch {
+                    WindowSwitch::Editor => match Editor::new(&settings) {
+                        Ok(editor) => {
+                            self.main_view = Box::new(editor);
+                        }
+                        Err(e) => {
+                            error!("Can't load the Editor: {}", e);
+                        }
+                    },
+                    WindowSwitch::Settings => {
+                        self.main_view = Box::new(SettingsView::new(&settings));
+                    }
+                },
+                Err(e) => error!("Error loading settings from disk: {}", e),
+            },
+            Err(e) => {
                 error!("Error displaying main view: {}", e);
             }
+            _ => {}
         });
     }
 }
 
-pub trait View {
-    fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()>;
+pub trait MainView {
+    fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowSwitch>>;
+}
+
+#[derive(Clone, Copy)]
+pub enum WindowSwitch {
+    Editor,
+    Settings,
 }

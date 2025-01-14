@@ -4,7 +4,7 @@ use eframe::egui::{self, CollapsingHeader};
 use log::{error, info};
 use notes_core::utilities::path_to_string;
 
-use crate::View;
+use crate::{MainView, WindowSwitch};
 
 use super::Settings;
 
@@ -20,8 +20,8 @@ impl SettingsView {
     }
 }
 
-impl View for SettingsView {
-    fn view(&mut self, ui: &mut eframe::egui::Ui) -> anyhow::Result<()> {
+impl MainView for SettingsView {
+    fn update(&mut self, ui: &mut eframe::egui::Ui) -> anyhow::Result<Option<WindowSwitch>> {
         egui::TopBottomPanel::top("Settings")
             .resizable(false)
             .show_separator_line(false)
@@ -41,14 +41,15 @@ impl View for SettingsView {
                         let button = ui.button("Browse");
                         if button.clicked() {
                             if let Ok(path) = pick_workspace() {
-                                self.settings.set_workspace(path);
-                                if let Err(e) = self.settings.save() {
+                                self.settings.set_workspace(&path);
+                                if let Err(e) = self.settings.save_to_disk() {
                                     error!("Error setting the workspace: {}", e);
                                 }
                             }
                         }
                     })
             });
+        let mut should_close = false;
         egui::TopBottomPanel::bottom("Settings buttons")
             .resizable(false)
             .min_height(0.0)
@@ -62,9 +63,14 @@ impl View for SettingsView {
                 };
                 if close_response.clicked() {
                     info!("Closing");
+                    should_close = true;
                 }
             });
-        Ok(())
+        if should_close {
+            Ok(Some(WindowSwitch::Editor))
+        } else {
+            Ok(None)
+        }
     }
 }
 
