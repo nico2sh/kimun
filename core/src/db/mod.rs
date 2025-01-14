@@ -145,7 +145,7 @@ pub fn search_terms<S: AsRef<str>>(
                 size,
                 modified_secs: modified,
             };
-            let det = NoteDetails::new(note_path, u32::try_from(hash).unwrap(), title, None);
+            let det = NoteDetails::new(note_path, u64::try_from(hash).unwrap(), title, None);
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
@@ -191,7 +191,7 @@ pub fn get_notes(
                 size,
                 modified_secs: modified,
             };
-            let det = NoteDetails::new(note_path, u32::try_from(hash).unwrap(), title, None);
+            let det = NoteDetails::new(note_path, u64::try_from(hash).unwrap(), title, None);
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
@@ -298,13 +298,7 @@ fn update_note<S: AsRef<str>>(
     let path = details.path.clone();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
-        params![
-            path.to_string(),
-            title,
-            data.size,
-            data.modified_secs,
-            i64::from(hash)
-        ],
+        params![path.to_string(), title, data.size, data.modified_secs, hash],
     )?;
     tx.execute(
         "UPDATE notesContent SET text = ?2 WHERE path = ?1",

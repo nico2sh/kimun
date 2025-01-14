@@ -3,8 +3,9 @@ use std::cmp::min;
 use log::error;
 use pulldown_cmark::{Event, Parser, Tag};
 
+use crate::nfs;
+
 const MAX_TITLE_LENGTH: usize = 40;
-const HASH_SEED: i64 = 0;
 
 pub fn extract_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
     let (frontmatter, text) = remove_frontmatter(md_text.as_ref());
@@ -20,7 +21,7 @@ pub fn extract_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
 }
 
 fn parse_text(md_text: &str) -> NoteContentData {
-    let hash = gxhash::gxhash32(md_text.as_bytes(), HASH_SEED);
+    let hash = nfs::hash_text(md_text);
     let mut title = None;
     let mut content_chunks = vec![];
     let mut current_breadcrumb: Vec<(u8, String)> = vec![];
@@ -254,7 +255,7 @@ fn get_text_till_end(parser: &mut Parser) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteContentData {
     pub(super) title: Option<String>,
-    pub hash: u32,
+    pub hash: u64,
     pub content_chunks: Vec<ContentChunk>,
 }
 

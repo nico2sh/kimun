@@ -15,7 +15,7 @@ use crate::View;
 use super::EditorMessage;
 
 pub struct ModalManager {
-    pub message_sender: Sender<EditorMessage>,
+    message_sender: Sender<EditorMessage>,
     vault: NoteVault,
     current_modal: Option<Box<dyn EditorModal>>,
 }

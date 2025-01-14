@@ -41,7 +41,8 @@ impl View for SettingsView {
                         let button = ui.button("Browse");
                         if button.clicked() {
                             if let Ok(path) = pick_workspace() {
-                                if let Err(e) = self.settings.set_workspace(path) {
+                                self.settings.set_workspace(path);
+                                if let Err(e) = self.settings.save() {
                                     error!("Error setting the workspace: {}", e);
                                 }
                             }

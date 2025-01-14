@@ -9,6 +9,7 @@ use anyhow::bail;
 use notes_core::nfs::VaultPath;
 
 const BASE_CONFIG_FILE: &str = ".note.toml";
+const LAST_PATH_HISTORY_SIZE: usize = 5;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -60,8 +61,24 @@ impl Settings {
         }
     }
 
-    pub fn set_workspace(&mut self, workspace_path: PathBuf) -> anyhow::Result<()> {
+    pub fn set_workspace(&mut self, workspace_path: PathBuf) {
         self.workspace_dir = Some(workspace_path);
-        self.save()
+    }
+
+    pub fn add_last_path(&mut self, note_path: &VaultPath) {
+        if note_path.is_note() {
+            if self.last_paths.contains(note_path) {
+                self.last_paths = self
+                    .last_paths
+                    .clone()
+                    .into_iter()
+                    .filter(|path| !path.eq(note_path))
+                    .collect();
+            }
+            while self.last_paths.len() >= LAST_PATH_HISTORY_SIZE {
+                self.last_paths.remove(0);
+            }
+            self.last_paths.push(note_path.to_owned());
+        }
     }
 }

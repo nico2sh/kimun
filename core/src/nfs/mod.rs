@@ -3,11 +3,13 @@ pub mod visitor;
 use std::{
     ffi::OsStr,
     fmt::Display,
+    hash::Hash,
     io::Write,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
 
+use gxhash::gxhash64;
 use ignore::{WalkBuilder, WalkParallel};
 use log::info;
 use regex::Regex;
@@ -176,9 +178,16 @@ impl VaultEntryDetails {
     }
 }
 
+pub(crate) fn hash_text<S: AsRef<str>>(text: S) -> u64 {
+    gxhash64(text.as_ref().as_bytes(), 0)
+}
+
 /// Loads a note from disk, if the file doesn't exist, returns a FSError::NotePathNotFound
 /// Returns the note's text. If you want the details, use NoteDetails::from_content
-pub fn load_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<String, FSError> {
+pub(crate) fn load_note<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<String, FSError> {
     let os_path = path.to_pathbuf(&workspace_path);
     match std::fs::read(&os_path) {
         Ok(file) => {
