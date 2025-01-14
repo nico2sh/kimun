@@ -35,7 +35,7 @@ impl Settings {
         }
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
+    pub fn save_to_disk(&self) -> anyhow::Result<()> {
         let settings_file_path = Self::get_config_file_path()?;
         let mut file = File::create(settings_file_path)?;
         let toml = toml::to_string(&self)?;
@@ -43,12 +43,12 @@ impl Settings {
         Ok(())
     }
 
-    pub fn load() -> anyhow::Result<Self> {
+    pub fn load_from_disk() -> anyhow::Result<Self> {
         let settings_file_path = Self::get_config_file_path()?;
 
         if !settings_file_path.exists() {
             let default_settings = Self::default();
-            default_settings.save()?;
+            default_settings.save_to_disk()?;
             Ok(default_settings)
         } else {
             let mut settings_file = File::open(&settings_file_path)?;
@@ -61,20 +61,26 @@ impl Settings {
         }
     }
 
-    pub fn set_workspace(&mut self, workspace_path: PathBuf) {
-        self.workspace_dir = Some(workspace_path);
+    // We set a new workspace to work with, remember to save the data
+    // to persist it in disk
+    pub fn set_workspace(&mut self, workspace_path: &PathBuf) {
+        if let Some(current_workspace_dir) = &self.workspace_dir {
+            if workspace_path != current_workspace_dir {
+                // We clean up the data related with the workspace
+                self.last_paths = vec![];
+            }
+        }
+
+        self.workspace_dir = Some(workspace_path.to_owned());
     }
 
-    pub fn add_last_path(&mut self, note_path: &VaultPath) {
+    pub fn add_path_history(&mut self, note_path: &VaultPath) {
         if note_path.is_note() {
-            if self.last_paths.contains(note_path) {
-                self.last_paths = self
-                    .last_paths
-                    .clone()
-                    .into_iter()
-                    .filter(|path| !path.eq(note_path))
-                    .collect();
-            }
+            // If the path already is in the history, we remove it
+            self.last_paths.retain(|path| !path.eq(note_path));
+            // Maximum size of the path list
+            // removing an element at a position is not very efficient
+            // but since is a short list, shouldn't be a major problem
             while self.last_paths.len() >= LAST_PATH_HISTORY_SIZE {
                 self.last_paths.remove(0);
             }

@@ -10,8 +10,6 @@ use notes_core::{nfs::VaultPath, NoteVault};
 use preview_list::PreviewList;
 use vault_browse::{VaultBrowseFunctions, VaultSearchFunctions};
 
-use crate::View;
-
 use super::EditorMessage;
 
 pub struct ModalManager {
@@ -25,8 +23,16 @@ pub enum Modals {
     VaultSearch,
 }
 
-impl View for ModalManager {
-    fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
+impl ModalManager {
+    pub fn new(vault: NoteVault, message_bus: Sender<EditorMessage>) -> Self {
+        Self {
+            message_sender: message_bus,
+            vault,
+            current_modal: None,
+        }
+    }
+
+    pub fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
         if let Some(current_modal) = self.current_modal.as_mut() {
             let modal = egui::Modal::new(egui::Id::new("")).show(ui.ctx(), |ui| {
                 ui.set_width(600.0);
@@ -38,16 +44,6 @@ impl View for ModalManager {
             }
         }
         Ok(())
-    }
-}
-
-impl ModalManager {
-    pub fn new(vault: NoteVault, message_bus: Sender<EditorMessage>) -> Self {
-        Self {
-            message_sender: message_bus,
-            vault,
-            current_modal: None,
-        }
     }
 
     pub fn set_modal(&mut self, modal: Modals) {

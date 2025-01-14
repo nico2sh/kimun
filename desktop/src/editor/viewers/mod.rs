@@ -3,8 +3,6 @@ use editor_view::EditorView;
 use eframe::egui;
 use rendered_view::RenderedView;
 
-use crate::View;
-
 use super::EditorMessage;
 
 mod editor_view;
@@ -13,7 +11,7 @@ mod rendered_view;
 
 pub const ID_VIEWER: &str = "Note Editor";
 
-pub struct Viewer {
+pub struct NoteViewerManager {
     text: String,
     changed: bool,
     message_sender: Sender<EditorMessage>,
@@ -21,7 +19,7 @@ pub struct Viewer {
     viewer: Box<dyn NoteViewer>,
 }
 
-impl Viewer {
+impl NoteViewerManager {
     pub fn new(message_sender: Sender<EditorMessage>) -> Self {
         Self {
             text: String::new(),
@@ -77,16 +75,6 @@ struct NoView {}
 impl NoView {
     fn new() -> Self {
         Self {}
-    }
-}
-
-impl View for NoView {
-    fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
-        ui.vertical_centered(|ui| {
-            ui.add_space(64.0);
-            ui.label("Open or create a note with cmd + O");
-        });
-        Ok(())
     }
 }
 

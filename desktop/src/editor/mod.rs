@@ -1,7 +1,7 @@
 mod modals;
 mod viewers;
 
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc};
 
 use anyhow::bail;
 use crossbeam_channel::{Receiver, Sender};
@@ -9,23 +9,25 @@ use eframe::egui;
 use log::{debug, error};
 use modals::{ModalManager, Modals};
 use notes_core::{nfs::VaultPath, NoteVault};
-use viewers::{NoteViewer, Viewer, ViewerType};
+use viewers::{NoteViewer, NoteViewerManager, ViewerType};
 
-use crate::settings::Settings;
+use crate::{settings::Settings, WindowSwitch};
 
-use super::View;
+use super::MainView;
 
 const AUTOSAVE_SECS: u64 = 5;
 
 pub struct Editor {
     settings: Settings,
-    viewer: Viewer,
+    viewer: NoteViewerManager,
     vault: Arc<NoteVault>,
     modal_manager: ModalManager,
     message_sender: Sender<EditorMessage>,
     message_receiver: Receiver<EditorMessage>,
     note_path: Option<VaultPath>,
     request_focus: bool,
+    request_windows_switch: Option<WindowSwitch>,
+    save_loop: Arc<AtomicBool>,
 }
 
 impl Editor {
@@ -35,12 +37,6 @@ impl Editor {
             let vault = NoteVault::new(workspace_dir)?;
 
             let save_sender = sender.clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(AUTOSAVE_SECS));
-                if let Err(e) = save_sender.send(EditorMessage::Save) {
-                    error!("Error sending a save message: {}", e);
-                }
-            });
 
             let note_path = settings.last_paths.last().and_then(|path| {
                 if !path.is_note() {
@@ -49,15 +45,27 @@ impl Editor {
                     Some(path.to_owned())
                 }
             });
+            let save_loop = Arc::new(AtomicBool::from(true));
+            let should_save = save_loop.clone();
+            std::thread::spawn(move || {
+                while should_save.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_secs(AUTOSAVE_SECS));
+                    if let Err(e) = save_sender.send(EditorMessage::Save) {
+                        error!("Error sending a save message: {}", e);
+                    };
+                }
+            });
             let mut editor = Self {
                 settings: settings.clone(),
-                viewer: Viewer::new(sender.clone()),
+                viewer: NoteViewerManager::new(sender.clone()),
                 vault: Arc::new(vault),
                 modal_manager: ModalManager::new(NoteVault::new(workspace_dir)?, sender.clone()),
                 message_sender: sender,
                 message_receiver: receiver,
                 note_path: note_path.clone(),
                 request_focus: true,
+                request_windows_switch: None,
+                save_loop,
             };
             editor.load_note_path(&note_path)?;
             Ok(editor)
@@ -78,8 +86,8 @@ impl Editor {
                 if matches!(self.viewer.get_type(), ViewerType::Nothing) {
                     self.viewer.set_view(ViewerType::Editor);
                 }
-                self.settings.add_last_path(path);
-                self.settings.save()?;
+                self.settings.add_path_history(path);
+                self.settings.save_to_disk()?;
                 self.viewer.load_content(content);
             } else {
                 self.viewer.set_view(ViewerType::Nothing);
@@ -129,10 +137,15 @@ impl Editor {
                 error!("Error opening journal: {}", e);
             }
         }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
+            if let Err(e) = self.message_sender.send(EditorMessage::OpenSettings) {
+                error!("Error opening journal: {}", e);
+            }
+        }
         self.viewer.manage_keys(ctx);
     }
 
-    fn update(&mut self, _ctx: &egui::Context) -> anyhow::Result<()> {
+    fn update_messages(&mut self, _ctx: &egui::Context) -> anyhow::Result<()> {
         while let Ok(message) = self.message_receiver.try_recv() {
             match message {
                 EditorMessage::OpenNote(note_path) => {
@@ -167,6 +180,9 @@ impl Editor {
                 EditorMessage::SwitchNoteViewer(viewer_type) => {
                     self.change_viewer(viewer_type)?;
                 }
+                EditorMessage::OpenSettings => {
+                    self.request_windows_switch = Some(WindowSwitch::Settings)
+                }
             }
         }
         Ok(())
@@ -183,14 +199,16 @@ impl Editor {
 
 impl Drop for Editor {
     fn drop(&mut self) {
+        self.save_loop
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Err(e) = self.save_note() {
             error!("Error saving note: {}", e);
         }
     }
 }
 
-impl View for Editor {
-    fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
+impl MainView for Editor {
+    fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowSwitch>> {
         self.modal_manager.view(ui)?;
         egui::ScrollArea::vertical().show(ui, |ui| {
             if let Err(e) = self.viewer.view(ui) {
@@ -206,9 +224,9 @@ impl View for Editor {
             self.request_focus = false;
         }
 
-        self.update(ui.ctx())?;
+        self.update_messages(ui.ctx())?;
 
-        Ok(())
+        Ok(self.request_windows_switch)
     }
 }
 
@@ -218,4 +236,5 @@ pub(crate) enum EditorMessage {
     SwitchNoteViewer(ViewerType),
     NewJournal,
     Save,
+    OpenSettings,
 }
