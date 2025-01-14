@@ -40,7 +40,9 @@ impl VaultDB {
 }
 
 pub fn init_db(connection: &mut Connection) -> Result<(), DBError> {
+    debug!("Deleting DB");
     delete_db(connection)?;
+    debug!("Creating Tables");
     create_tables(connection)
 }
 
@@ -277,7 +279,7 @@ fn insert_note<S: AsRef<str>>(
         "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![details.path.to_string(), details.get_title(), data.size, data.modified_secs, details.data.hash, parent_path.to_string(), name],
     ){
-        error!("Error inserting note {}", e);
+        error!("Error inserting note: {}\nDetails: {}", e, details);
     }
     tx.execute(
         "INSERT INTO notesContent (path, text) VALUES (?1, ?2)",

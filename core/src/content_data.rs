@@ -1,4 +1,4 @@
-use std::cmp::min;
+use std::{cmp::min, fmt::Display};
 
 use log::error;
 use pulldown_cmark::{Event, Parser, Tag};
@@ -257,6 +257,22 @@ pub struct NoteContentData {
     pub(super) title: Option<String>,
     pub hash: u64,
     pub content_chunks: Vec<ContentChunk>,
+}
+
+impl Display for NoteContentData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Title: {}, Hash: {}, Chunks: [{}]",
+            self.title.clone().unwrap_or("<None>".to_string()),
+            self.hash,
+            self.content_chunks
+                .iter()
+                .map(|chunk| format!("'{}'", chunk.get_breadcrumb()))
+                .collect::<Vec<String>>()
+                .join(", ")
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
