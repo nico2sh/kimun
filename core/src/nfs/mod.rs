@@ -195,7 +195,7 @@ pub(crate) fn load_note<P: AsRef<Path>>(
             Ok(text)
         }
         Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => Err(FSError::NotePathNotFound {
+            std::io::ErrorKind::NotFound => Err(FSError::VaultPathNotFound {
                 path: path.to_owned(),
             }),
             _ => Err(FSError::ReadFileError(e)),
@@ -370,7 +370,7 @@ impl VaultPath {
             .collect()
     }
 
-    fn to_pathbuf<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
+    pub(super) fn to_pathbuf<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
         let mut path = workspace_path.as_ref().to_path_buf();
         for p in &self.slices {
             let slice = p.name.clone();
@@ -509,7 +509,7 @@ mod tests {
         let res = load_note(std::env::current_dir().unwrap(), &path);
 
         let result = if let Err(e) = res {
-            matches!(e, FSError::NotePathNotFound { path: _ })
+            matches!(e, FSError::VaultPathNotFound { path: _ })
         } else {
             false
         };

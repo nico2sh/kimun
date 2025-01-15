@@ -7,9 +7,9 @@ use crate::nfs::VaultPath;
 #[derive(Error, Debug)]
 pub enum VaultError {
     #[error("Path {path} doesn't exist")]
-    PathNotFound { path: String },
+    VaultPathNotFound { path: String },
     #[error("Path {path} is not a directory")]
-    PathIsNotDirectory { path: String },
+    PathIsNotDirectory { path: VaultPath },
     #[error("DB Error: {0}")]
     DBError(#[from] DBError),
     #[error("FS Error: {0}")]
@@ -29,7 +29,7 @@ pub enum FSError {
     #[error("Invalid path {path}")]
     InvalidPath { path: String },
     #[error("Path doesn't exists at: {path}")]
-    NotePathNotFound { path: VaultPath },
+    VaultPathNotFound { path: VaultPath },
 }
 
 #[derive(Error, Debug, PartialEq)]

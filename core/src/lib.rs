@@ -36,14 +36,14 @@ impl NoteVault {
 
         let path = workspace.clone();
         if !path.exists() {
-            return Err(VaultError::PathNotFound {
+            return Err(VaultError::VaultPathNotFound {
                 path: path_to_string(path),
             })?;
         }
         if !path.is_dir() {
-            return Err(VaultError::PathIsNotDirectory {
+            return Err(VaultError::FSError(FSError::InvalidPath {
                 path: path_to_string(path),
-            })?;
+            }))?;
         };
         let vault_db = VaultDB::new(workspace_path);
         Ok(Self {
@@ -117,7 +117,7 @@ impl NoteVault {
         match load_note(&self.workspace_path, path) {
             Ok(text) => Ok(text),
             Err(e) => {
-                if let FSError::NotePathNotFound { path: _ } = e {
+                if let FSError::VaultPathNotFound { path: _ } = e {
                     let text = default_text.unwrap_or_default();
                     self.create_note(path, &text)?;
                     Ok(text)
