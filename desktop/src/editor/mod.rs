@@ -58,8 +58,8 @@ impl Editor {
             let mut editor = Self {
                 settings: settings.clone(),
                 viewer: NoteViewerManager::new(sender.clone()),
+                modal_manager: ModalManager::new(vault.clone(), sender.clone()),
                 vault: Arc::new(vault),
-                modal_manager: ModalManager::new(NoteVault::new(workspace_dir)?, sender.clone()),
                 message_sender: sender,
                 message_receiver: receiver,
                 note_path: note_path.clone(),

@@ -31,25 +31,24 @@ pub struct NoteVault {
 
 impl NoteVault {
     pub fn new<P: AsRef<Path>>(workspace_path: P) -> Result<Self, VaultError> {
-        let workspace_path = workspace_path.as_ref();
-        let workspace = workspace_path.to_path_buf();
-
-        let path = workspace.clone();
-        if !path.exists() {
+        debug!("Creating new vault");
+        let workspace_path = workspace_path.as_ref().to_path_buf();
+        if !workspace_path.exists() {
             return Err(VaultError::VaultPathNotFound {
-                path: path_to_string(path),
+                path: path_to_string(workspace_path),
             })?;
         }
-        if !path.is_dir() {
+        if !workspace_path.is_dir() {
             return Err(VaultError::FSError(FSError::InvalidPath {
-                path: path_to_string(path),
+                path: path_to_string(workspace_path),
             }))?;
         };
-        let vault_db = VaultDB::new(workspace_path);
+
+        let vault_db = VaultDB::new(&workspace_path);
         let db_path = vault_db.get_db_path();
         let db_result = vault_db.check_db()?;
         let note_vault = Self {
-            workspace_path: workspace,
+            workspace_path,
             vault_db,
         };
         match db_result {
@@ -527,8 +526,6 @@ fn create_index_for<P: AsRef<Path>>(
     for directory in directories_to_insert.iter().filter(|p| !p.eq(&path)) {
         create_index_for(workspace_path, connection, directory, validation_mode)?;
     }
-
-    info!("Initialized");
 
     Ok(())
 }
