@@ -46,17 +46,45 @@ impl NoteVault {
             }))?;
         };
         let vault_db = VaultDB::new(workspace_path);
-        Ok(Self {
+        let db_path = vault_db.get_db_path();
+        let db_result = vault_db.check_db()?;
+        let note_vault = Self {
             workspace_path: workspace,
             vault_db,
-        })
+        };
+        match db_result {
+            db::DBStatus::Ready => {
+                // We only check if there are new notes
+                note_vault.index_notes(NotesValidation::None)?;
+            }
+            db::DBStatus::Outdated => {
+                note_vault.recreate_index()?;
+            }
+            db::DBStatus::NotValid => {
+                let md = std::fs::metadata(&db_path).map_err(FSError::ReadFileError)?;
+                if md.is_dir() {
+                    std::fs::remove_dir_all(db_path).map_err(FSError::ReadFileError)?;
+                } else {
+                    std::fs::remove_file(db_path).map_err(FSError::ReadFileError)?;
+                }
+                note_vault.recreate_index()?;
+            }
+            db::DBStatus::FileNotFound => {
+                // No need to validate, no data there
+                note_vault.create_tables()?;
+                note_vault.index_notes(NotesValidation::None)?;
+            }
+        }
+        Ok(note_vault)
     }
 
-    pub fn init(&self) -> Result<(), VaultError> {
+    /// Deletes all the cached data from the DB
+    /// and recreates the index
+    pub fn recreate_index(&self) -> Result<(), VaultError> {
         debug!("Initializing DB from Vault request");
         self.create_tables()?;
         debug!("Tables created, creating index");
-        self.create_index()?;
+        self.index_notes(NotesValidation::Full)?;
         Ok(())
     }
 
@@ -65,12 +93,22 @@ impl NoteVault {
         Ok(())
     }
 
-    fn create_index(&self) -> Result<(), VaultError> {
+    /// Traverses the whole vault directory and verifies the notes to
+    /// update the cached data in the DB. The validation is defined by
+    /// the validation mode:
+    ///
+    /// NotesValidation::Full Checks the content of the note by comparing a hash based on the text
+    /// conatined in the file.
+    /// NotesValidation::Fast Checks the size of the file to identify if the note has changed and
+    /// then update the DB entry.
+    /// NotesValidation::None Checks if the note exists or not.
+    pub fn index_notes(&self, validation_mode: NotesValidation) -> Result<(), VaultError> {
         info!("Start indexing files");
         let start = std::time::SystemTime::now();
         let workspace_path = self.workspace_path.clone();
-        self.vault_db
-            .call(move |conn| create_index_for(&workspace_path, conn, &VaultPath::root()))?;
+        self.vault_db.call(move |conn| {
+            create_index_for(&workspace_path, conn, &VaultPath::root(), validation_mode)
+        })?;
 
         let time = std::time::SystemTime::now()
             .duration_since(start)
@@ -440,7 +478,7 @@ impl Display for VaultBrowseOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum NotesValidation {
     Full,
     Fast,
@@ -465,6 +503,7 @@ fn create_index_for<P: AsRef<Path>>(
     workspace_path: P,
     connection: &mut rusqlite::Connection,
     path: &VaultPath,
+    validation_mode: NotesValidation,
 ) -> Result<(), DBError> {
     debug!("Start fetching files at {}", path);
     let workspace_path = workspace_path.as_ref();
@@ -472,7 +511,7 @@ fn create_index_for<P: AsRef<Path>>(
 
     let cached_notes = db::get_notes(connection, path, false)?;
     let mut builder =
-        NoteListVisitorBuilder::new(workspace_path, NotesValidation::Full, cached_notes, None);
+        NoteListVisitorBuilder::new(workspace_path, validation_mode, cached_notes, None);
     walker.visit(&mut builder);
     let notes_to_add = builder.get_notes_to_add();
     let notes_to_delete = builder.get_notes_to_delete();
@@ -486,7 +525,7 @@ fn create_index_for<P: AsRef<Path>>(
 
     let directories_to_insert = builder.get_directories_found();
     for directory in directories_to_insert.iter().filter(|p| !p.eq(&path)) {
-        create_index_for(workspace_path, connection, directory)?;
+        create_index_for(workspace_path, connection, directory, validation_mode)?;
     }
 
     info!("Initialized");

@@ -35,7 +35,6 @@ impl Editor {
         if let Some(workspace_dir) = &settings.workspace_dir {
             let (sender, receiver) = crossbeam_channel::unbounded();
             let vault = NoteVault::new(workspace_dir)?;
-            vault.init()?;
 
             let save_sender = sender.clone();
 
