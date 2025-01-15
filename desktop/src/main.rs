@@ -44,7 +44,7 @@ impl DesktopApp {
         let settings = Settings::load_from_disk()?;
         set_icon_fonts(&cc.egui_ctx);
         let current_view: Box<dyn MainView> = if settings.workspace_dir.is_some() {
-            Box::new(Editor::new(&settings)?)
+            Box::new(Editor::new(&settings, true)?)
         } else {
             Box::new(SettingsView::new(&settings))
         };
@@ -60,14 +60,16 @@ impl eframe::App for DesktopApp {
         egui::CentralPanel::default().show(ctx, |ui| match self.main_view.update(ui) {
             Ok(Some(switch)) => match Settings::load_from_disk() {
                 Ok(settings) => match switch {
-                    WindowSwitch::Editor => match Editor::new(&settings) {
-                        Ok(editor) => {
-                            self.main_view = Box::new(editor);
+                    WindowSwitch::Editor { recreate_index } => {
+                        match Editor::new(&settings, recreate_index) {
+                            Ok(editor) => {
+                                self.main_view = Box::new(editor);
+                            }
+                            Err(e) => {
+                                error!("Can't load the Editor: {}", e);
+                            }
                         }
-                        Err(e) => {
-                            error!("Can't load the Editor: {}", e);
-                        }
-                    },
+                    }
                     WindowSwitch::Settings => {
                         self.main_view = Box::new(SettingsView::new(&settings));
                     }
@@ -88,6 +90,6 @@ pub trait MainView {
 
 #[derive(Clone, Copy)]
 pub enum WindowSwitch {
-    Editor,
+    Editor { recreate_index: bool },
     Settings,
 }
