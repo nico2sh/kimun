@@ -22,33 +22,6 @@ impl SettingsView {
 
 impl MainView for SettingsView {
     fn update(&mut self, ui: &mut eframe::egui::Ui) -> anyhow::Result<Option<WindowSwitch>> {
-        egui::TopBottomPanel::top("Settings")
-            .resizable(false)
-            .show_separator_line(false)
-            .min_height(48.0)
-            .show_inside(ui, |ui| {
-                CollapsingHeader::new("Workspace")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        let workpspace_dir = &self.settings.workspace_dir;
-                        ui.label("Main Workspace Directory: ");
-                        ui.label(
-                            workpspace_dir
-                                .as_ref()
-                                .map_or_else(|| "<None>".to_string(), path_to_string)
-                                .to_string(),
-                        );
-                        let button = ui.button("Browse");
-                        if button.clicked() {
-                            if let Ok(path) = pick_workspace() {
-                                self.settings.set_workspace(&path);
-                                if let Err(e) = self.settings.save_to_disk() {
-                                    error!("Error setting the workspace: {}", e);
-                                }
-                            }
-                        }
-                    })
-            });
         let mut should_close = false;
         egui::TopBottomPanel::bottom("Settings buttons")
             .resizable(false)
@@ -66,6 +39,45 @@ impl MainView for SettingsView {
                     should_close = true;
                 }
             });
+
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.vertical(|ui| ui.heading("Settings"));
+                ui.separator();
+                ui.add_space(8.0);
+                CollapsingHeader::new("Workspace")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.group(|ui| {
+                            let workspace_label = &self
+                                .settings
+                                .workspace_dir
+                                .as_ref()
+                                .map_or_else(|| "<None>".to_string(), path_to_string)
+                                .to_string();
+                            ui.label(egui::RichText::new("Main Workspace Directory: ").strong());
+                            ui.horizontal(|ui| {
+                                egui::Frame::default()
+                                    .fill(ui.visuals().noninteractive().weak_bg_fill)
+                                    // .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                                    .rounding(ui.visuals().widgets.noninteractive.rounding)
+                                    .show(ui, |ui| {
+                                        ui.label(workspace_label);
+                                    });
+                                let button = ui.button("Browse");
+                                if button.clicked() {
+                                    if let Ok(path) = pick_workspace() {
+                                        self.settings.set_workspace(&path);
+                                        if let Err(e) = self.settings.save_to_disk() {
+                                            error!("Error setting the workspace: {}", e);
+                                        }
+                                    }
+                                }
+                            });
+                        });
+                    })
+            });
+        });
         if should_close {
             Ok(Some(WindowSwitch::Editor))
         } else {
