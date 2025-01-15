@@ -87,8 +87,8 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
 
     tx.execute(
         "CREATE TABLE appData (
-            name VARCHAR(255) PRIMARY KEY,
-            value VARCHAR(255)
+            name TEXT PRIMARY KEY,
+            value TEXT
         )",
         (), // empty list of parameters.
     )?;
@@ -97,15 +97,19 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
         ["version", VERSION],
     )?;
 
+    // Storing hash as a string, as SQlite doesn't like
+    // unsigned 64bit integers, alternatively we could
+    // have used signed numbers by substracting the half
+    // of the max value, but that looks like a worse conversion
     tx.execute(
         "CREATE TABLE notes (
-            path VARCHAR(255) PRIMARY KEY,
-            title VARCHAR(255),
+            path TEXT PRIMARY KEY,
+            title TEXT,
             size INTEGER,
             modified INTEGER,
-            hash INTEGER,
-            basePath VARCHAR(255),
-            noteName VARCHAR(255)
+            hash TEXT,
+            basePath TEXT,
+            noteName TEXT
         )",
         (), // empty list of parameters.
     )?;
@@ -140,14 +144,14 @@ pub fn search_terms<S: AsRef<str>>(
             let title = row.get(1)?;
             let size = row.get(2)?;
             let modified = row.get(3)?;
-            let hash: i64 = row.get(4)?;
+            let hash: String = row.get(4)?;
             let note_path = VaultPath::from(&path);
             let data = NoteEntryData {
                 path: note_path.clone(),
                 size,
                 modified_secs: modified,
             };
-            let det = NoteDetails::new(note_path, u64::try_from(hash).unwrap(), title, None);
+            let det = NoteDetails::new(note_path, hash.parse().unwrap(), title, None);
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
@@ -186,14 +190,14 @@ pub fn get_notes(
             let title = row.get(1)?;
             let size = row.get(2)?;
             let modified = row.get(3)?;
-            let hash: i64 = row.get(4)?;
+            let hash: String = row.get(4)?;
             let note_path = VaultPath::from(&path);
             let data = NoteEntryData {
                 path: note_path.clone(),
                 size,
                 modified_secs: modified,
             };
-            let det = NoteDetails::new(note_path, u64::try_from(hash).unwrap(), title, None);
+            let det = NoteDetails::new(note_path, hash.parse().unwrap(), title, None);
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
@@ -277,7 +281,7 @@ fn insert_note<S: AsRef<str>>(
     let (parent_path, name) = details.path.get_parent_path();
     if let Err(e) = tx.execute(
         "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![details.path.to_string(), details.get_title(), data.size, data.modified_secs, details.data.hash, parent_path.to_string(), name],
+        params![details.path.to_string(), details.get_title(), data.size, data.modified_secs, details.data.hash.to_string(), parent_path.to_string(), name],
     ){
         error!("Error inserting note: {}\nDetails: {}", e, details);
     }
@@ -296,7 +300,7 @@ fn update_note<S: AsRef<str>>(
     details: &NoteDetails,
 ) -> Result<(), DBError> {
     let title = details.get_title();
-    let hash = details.data.hash;
+    let hash = details.data.hash.to_string();
     let path = details.path.clone();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
