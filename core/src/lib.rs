@@ -30,8 +30,11 @@ pub struct NoteVault {
 }
 
 impl NoteVault {
+    /// Creates a new instance of the Note Vault.
+    /// Make sure you call `NoteVault::init_and_validate(&self)` to initialize the DB index if
+    /// needed
     pub fn new<P: AsRef<Path>>(workspace_path: P) -> Result<Self, VaultError> {
-        debug!("Creating new vault");
+        debug!("Creating new vault Instance");
         let workspace_path = workspace_path.as_ref().to_path_buf();
         if !workspace_path.exists() {
             return Err(VaultError::VaultPathNotFound {
@@ -45,19 +48,32 @@ impl NoteVault {
         };
 
         let vault_db = VaultDB::new(&workspace_path);
-        let db_path = vault_db.get_db_path();
-        let db_result = vault_db.check_db()?;
         let note_vault = Self {
             workspace_path,
             vault_db,
         };
+        Ok(note_vault)
+    }
+
+    /// On init and validate it verifies the DB index to make sure:
+    ///
+    /// 1. It exists
+    /// 2. It is valid.
+    /// 3. Its schema is updated
+    ///
+    /// Then does a quick scan of the workspace directory to update the index if there are new or
+    /// missing notes.
+    /// This can be slow on large vaults.
+    pub fn init_and_validate(&self) -> Result<(), VaultError> {
+        let db_path = self.vault_db.get_db_path();
+        let db_result = self.vault_db.check_db()?;
         match db_result {
             db::DBStatus::Ready => {
                 // We only check if there are new notes
-                note_vault.index_notes(NotesValidation::None)?;
+                self.index_notes(NotesValidation::None)?;
             }
             db::DBStatus::Outdated => {
-                note_vault.recreate_index()?;
+                self.recreate_index()?;
             }
             db::DBStatus::NotValid => {
                 let md = std::fs::metadata(&db_path).map_err(FSError::ReadFileError)?;
@@ -66,15 +82,15 @@ impl NoteVault {
                 } else {
                     std::fs::remove_file(db_path).map_err(FSError::ReadFileError)?;
                 }
-                note_vault.recreate_index()?;
+                self.recreate_index()?;
             }
             db::DBStatus::FileNotFound => {
                 // No need to validate, no data there
-                note_vault.create_tables()?;
-                note_vault.index_notes(NotesValidation::None)?;
+                self.create_tables()?;
+                self.index_notes(NotesValidation::None)?;
             }
         }
-        Ok(note_vault)
+        Ok(())
     }
 
     /// Deletes all the cached data from the DB

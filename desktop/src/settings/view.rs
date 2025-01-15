@@ -23,6 +23,7 @@ impl SettingsView {
 impl MainView for SettingsView {
     fn update(&mut self, ui: &mut eframe::egui::Ui) -> anyhow::Result<Option<WindowSwitch>> {
         let mut should_close = false;
+        let mut workspace_changed = false;
         egui::TopBottomPanel::bottom("Settings buttons")
             .resizable(false)
             .min_height(0.0)
@@ -67,6 +68,12 @@ impl MainView for SettingsView {
                                 let button = ui.button("Browse");
                                 if button.clicked() {
                                     if let Ok(path) = pick_workspace() {
+                                        if self.settings.workspace_dir.as_ref().map_or_else(
+                                            || true,
+                                            |workspace_dir| &path != workspace_dir,
+                                        ) {
+                                            workspace_changed = true;
+                                        }
                                         self.settings.set_workspace(&path);
                                         if let Err(e) = self.settings.save_to_disk() {
                                             error!("Error setting the workspace: {}", e);
@@ -79,7 +86,9 @@ impl MainView for SettingsView {
             });
         });
         if should_close {
-            Ok(Some(WindowSwitch::Editor))
+            Ok(Some(WindowSwitch::Editor {
+                recreate_index: workspace_changed,
+            }))
         } else {
             Ok(None)
         }

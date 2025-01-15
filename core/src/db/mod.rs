@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use log::{debug, error};
-use rusqlite::OpenFlags;
 use rusqlite::{config::DbConfig, params, Connection, Transaction};
+use rusqlite::{OpenFlags, OptionalExtension};
 
 use super::error::DBError;
 
@@ -58,10 +58,18 @@ impl VaultDB {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
         );
         match conn_res {
-            Ok(conn) => {
+            Ok(mut conn) => {
+                let ver = self.current_schema_version(&mut conn)?.unwrap_or_default();
+                debug!("DB Version: {}, current DB Version: {}", ver, VERSION);
+                let status = if ver == VERSION {
+                    debug!("DB up to date");
+                    DBStatus::Ready
+                } else {
+                    debug!("DB outdated");
+                    DBStatus::Outdated
+                };
                 conn.close().map_err(|(_conn, e)| e)?;
-                // TODO: Check the schema
-                Ok(DBStatus::Ready)
+                Ok(status)
             }
             Err(e) => {
                 if let Some(error_code) = e.sqlite_error_code() {
@@ -75,6 +83,18 @@ impl VaultDB {
                 }
             }
         }
+    }
+
+    fn current_schema_version(&self, conn: &mut Connection) -> Result<Option<String>, DBError> {
+        let mut stmt = conn.prepare("SELECT value FROM appData WHERE name = 'version'")?;
+        let ver = stmt
+            .query_row([], |row| {
+                let ver: String = row.get(0)?;
+                Ok(ver)
+            })
+            .optional()?;
+
+        Ok(ver)
     }
 }
 

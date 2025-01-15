@@ -31,10 +31,13 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new(settings: &Settings) -> anyhow::Result<Self> {
+    pub fn new(settings: &Settings, recreate_index: bool) -> anyhow::Result<Self> {
         if let Some(workspace_dir) = &settings.workspace_dir {
             let (sender, receiver) = crossbeam_channel::unbounded();
             let vault = NoteVault::new(workspace_dir)?;
+            if recreate_index {
+                vault.init_and_validate()?;
+            }
 
             let save_sender = sender.clone();
 
