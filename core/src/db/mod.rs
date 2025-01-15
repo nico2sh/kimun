@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use log::{debug, error};
+use rusqlite::OpenFlags;
 use rusqlite::{config::DbConfig, params, Connection, Transaction};
 
 use super::error::DBError;
@@ -18,6 +19,13 @@ pub(super) struct VaultDB {
     workspace_path: PathBuf,
 }
 
+pub enum DBStatus {
+    Ready,
+    Outdated,
+    NotValid,
+    FileNotFound,
+}
+
 impl VaultDB {
     pub(super) fn new<P: AsRef<Path>>(workspace_path: P) -> Self {
         Self {
@@ -31,14 +39,46 @@ impl VaultDB {
     where
         F: FnOnce(&mut rusqlite::Connection) -> Result<R, DBError> + 'static + Send,
     {
-        let mut conn = ConnectionBuilder::new(&self.workspace_path).build()?;
+        let mut conn = ConnectionBuilder::build(&self.workspace_path)?;
+
         let res = function(&mut conn);
         conn.close().map_err(|(_conn, e)| e)?;
 
         res
     }
+
+    pub fn get_db_path(&self) -> PathBuf {
+        self.workspace_path.join(DB_FILE)
+    }
+
+    pub fn check_db(&self) -> Result<DBStatus, DBError> {
+        let db_path = self.get_db_path();
+        let conn_res = Connection::open_with_flags(
+            db_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
+        );
+        match conn_res {
+            Ok(conn) => {
+                conn.close().map_err(|(_conn, e)| e)?;
+                // TODO: Check the schema
+                Ok(DBStatus::Ready)
+            }
+            Err(e) => {
+                if let Some(error_code) = e.sqlite_error_code() {
+                    match error_code {
+                        rusqlite::ErrorCode::CannotOpen => Ok(DBStatus::FileNotFound),
+                        rusqlite::ErrorCode::NotADatabase => Ok(DBStatus::NotValid),
+                        _ => Err(e)?,
+                    }
+                } else {
+                    Err(e)?
+                }
+            }
+        }
+    }
 }
 
+/// Deletes all tables and recreates them
 pub fn init_db(connection: &mut Connection) -> Result<(), DBError> {
     debug!("Deleting DB");
     delete_db(connection)?;
@@ -349,31 +389,12 @@ fn delete_directory(tx: &Transaction, directory_path: &VaultPath) -> Result<(), 
     Ok(())
 }
 
-// pub fn execute_in_transaction(
-//     connection: &mut Connection,
-//     fun: Box<dyn Fn(&Transaction) -> Result<(), DBErrors>>,
-// ) -> Result<(), DBErrors> {
-//     let tx = connection.transaction()?;
-//     fun(&tx)?;
-//     tx.commit()?;
-//     Ok(())
-// }
-
-// We use a builder to create connection in a thread
-pub struct ConnectionBuilder {
-    workspace_path: PathBuf,
-}
+pub struct ConnectionBuilder {}
 
 impl ConnectionBuilder {
-    pub fn new<P: AsRef<Path>>(workspace_path: P) -> Self {
-        Self {
-            workspace_path: workspace_path.as_ref().into(),
-        }
-    }
-
-    pub fn build(&self) -> Result<Connection, DBError> {
+    pub fn build<P: AsRef<Path>>(workspace_path: P) -> Result<Connection, DBError> {
         // debug!("Opening Database");
-        let db_path = self.workspace_path.join(DB_FILE);
+        let db_path = workspace_path.as_ref().join(DB_FILE);
         let connection = Connection::open(&db_path)?;
         let _c = connection.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FTS3_TOKENIZER, true)?;
         Ok(connection)
