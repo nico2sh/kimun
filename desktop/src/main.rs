@@ -1,13 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 mod editor;
-pub mod icons;
+pub mod fonts;
 pub mod settings;
 
 use editor::Editor;
 use eframe::egui;
 // use filtered_list::row::{RowItem, RowMessage};
-use icons::set_icon_fonts;
 use log::error;
 use settings::{view::SettingsView, Settings};
 
@@ -42,16 +41,24 @@ pub struct DesktopApp {
 impl DesktopApp {
     pub fn new(cc: &eframe::CreationContext) -> anyhow::Result<Self> {
         let settings = Settings::load_from_disk()?;
-        set_icon_fonts(&cc.egui_ctx);
         let current_view: Box<dyn MainView> = if settings.workspace_dir.is_some() {
             Box::new(Editor::new(&settings, true)?)
         } else {
             Box::new(SettingsView::new(&settings))
         };
 
-        Ok(Self {
+        let desktop_app = Self {
             main_view: current_view,
-        })
+        };
+        cc.egui_ctx.style_mut(|style| {
+            style.url_in_tooltip = true;
+        });
+        desktop_app.setup(cc);
+        Ok(desktop_app)
+    }
+
+    fn setup(&self, cc: &eframe::CreationContext) {
+        fonts::set_fonts(&cc.egui_ctx);
     }
 }
 
