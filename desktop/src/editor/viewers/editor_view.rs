@@ -29,6 +29,14 @@ impl NoteViewer for EditorView {
             ui.fonts(|f| f.layout_job(layout_job))
         };
 
+        // egui::TopBottomPanel::top("title")
+        //     .resizable(false)
+        //     .min_height(48.0)
+        //     .show_inside(ui, |ui| {
+        //         ui.vertical(|ui| {
+        //             ui.heading("");
+        //         })
+        //     });
         let output = egui::TextEdit::multiline(text)
             .code_editor()
             .desired_width(f32::INFINITY)
