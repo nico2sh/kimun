@@ -17,6 +17,11 @@ use super::MainView;
 
 const AUTOSAVE_SECS: u64 = 5;
 
+pub struct EditorDetails {
+    note_path: VaultPath,
+    title: String,
+}
+
 pub struct Editor {
     settings: Settings,
     viewer: NoteViewerManager,

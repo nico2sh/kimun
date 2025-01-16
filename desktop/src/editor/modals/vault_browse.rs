@@ -3,7 +3,7 @@ use log::{debug, error};
 use notes_core::{nfs::VaultPath, NoteDetails, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
 use rayon::slice::ParallelSliceMut;
 
-use crate::icons;
+use crate::fonts;
 
 use super::{
     filtered_list::{FilteredListFunctionMessage, FilteredListFunctions, ListElement, StateData},
@@ -148,7 +148,7 @@ impl FilteredListFunctions<(), NoteDetails> for VaultSearchFunctions {
 
 impl ListElement for NoteDetails {
     fn draw_element(&self, ui: &mut egui::Ui) -> egui::Response {
-        let icon = icons::NOTE;
+        let icon = fonts::NOTE;
         let path = self.path.to_owned();
         ui.label(format!("{}  {}\n{}", icon, self.get_title(), path))
     }
@@ -216,7 +216,7 @@ impl ListElement for SelectorEntry {
     fn draw_element(&self, ui: &mut egui::Ui) -> egui::Response {
         match &self.entry_type {
             SelectorEntryType::Note { title } => {
-                let icon = icons::NOTE;
+                let icon = fonts::NOTE;
                 let path = self.path_str.to_owned();
                 ui.label(format!("{}  {}\n{}", icon, title, path))
                 // let mut job = egui::text::LayoutJob::default();
@@ -236,7 +236,7 @@ impl ListElement for SelectorEntry {
                 // ui.label(job)
             }
             SelectorEntryType::Directory => {
-                let icon = icons::DIRECTORY;
+                let icon = fonts::DIRECTORY;
                 let path = self.path_str.to_owned();
                 ui.label(format!("{}  {}", icon, path))
                 // let mut job = egui::text::LayoutJob::default();
@@ -248,7 +248,7 @@ impl ListElement for SelectorEntry {
                 // ui.label(job)
             }
             SelectorEntryType::Attachment => {
-                let icon = icons::ATTACHMENT;
+                let icon = fonts::ATTACHMENT;
                 let path = self.path_str.to_owned();
                 ui.label(format!("{}  {}", icon, path))
                 // let mut job = egui::text::LayoutJob::default();
@@ -260,7 +260,7 @@ impl ListElement for SelectorEntry {
                 // ui.label(job)
             }
             SelectorEntryType::NewNote => {
-                let icon = icons::NOTE;
+                let icon = fonts::NOTE;
                 let path = self.path_str.to_owned();
                 let response = ui.label(format!("{}  Create new note as `{}`", icon, path));
                 ui.style().interact(&response);
