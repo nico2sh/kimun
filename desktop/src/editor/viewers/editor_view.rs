@@ -65,7 +65,7 @@ impl NoteViewer for EditorView {
                     shift: true,
                     ..Default::default()
                 },
-                egui::Key::P,
+                egui::Key::Space,
             )
         }) {
             if let Err(e) = self
