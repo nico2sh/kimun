@@ -22,7 +22,7 @@ impl EditorView {
 }
 
 impl NoteViewer for EditorView {
-    fn view(&mut self, text: &mut String, ui: &mut eframe::egui::Ui) -> anyhow::Result<()> {
+    fn view(&mut self, text: &mut String, ui: &mut eframe::egui::Ui) -> anyhow::Result<bool> {
         let mut layouter = |ui: &egui::Ui, easymark: &str, wrap_width: f32| {
             let mut layout_job = self.highlighter.highlight(ui.style(), easymark);
             layout_job.wrap.max_width = wrap_width;
@@ -38,9 +38,10 @@ impl NoteViewer for EditorView {
         //         })
         //     });
         let output = egui::TextEdit::multiline(text)
-            .code_editor()
-            .desired_width(f32::INFINITY)
             .font(egui::TextStyle::Monospace) // for cursor height
+            .code_editor()
+            .lock_focus(true)
+            .desired_width(f32::INFINITY)
             .layouter(&mut layouter)
             .id(ID_VIEWER.into());
         let response = ui.add_sized(ui.available_size(), output);
@@ -49,7 +50,7 @@ impl NoteViewer for EditorView {
         if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), text_edit_id) {
             if let Some(range) = state.cursor.char_range() {};
         };
-        Ok(())
+        Ok(response.changed())
     }
 
     fn manage_keys(&mut self, ctx: &egui::Context) {

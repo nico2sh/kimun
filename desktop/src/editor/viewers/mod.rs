@@ -1,6 +1,7 @@
 use crossbeam_channel::Sender;
 use editor_view::EditorView;
 use eframe::egui;
+use log::debug;
 use rendered_view::RenderedView;
 
 use super::EditorMessage;
@@ -30,7 +31,15 @@ impl NoteViewerManager {
         }
     }
     pub fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
-        self.viewer.view(&mut self.text, ui)
+        match self.viewer.view(&mut self.text, ui) {
+            Ok(changed) => {
+                if changed {
+                    self.changed = true;
+                }
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
     pub fn get_type(&self) -> ViewerType {
         self.vtype.clone()
@@ -44,6 +53,9 @@ impl NoteViewerManager {
     }
     pub fn should_save(&self) -> bool {
         self.changed
+    }
+    pub fn report_saved(&mut self) {
+        self.changed = false;
     }
     pub fn get_text(&self) -> String {
         self.text.clone()
@@ -66,7 +78,7 @@ pub enum ViewerType {
 }
 
 pub trait NoteViewer {
-    fn view(&mut self, text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<()>;
+    fn view(&mut self, text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<bool>;
     fn manage_keys(&mut self, ctx: &egui::Context);
 }
 
@@ -79,12 +91,12 @@ impl NoView {
 }
 
 impl NoteViewer for NoView {
-    fn view(&mut self, _text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<()> {
+    fn view(&mut self, _text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<bool> {
         ui.vertical_centered(|ui| {
             ui.add_space(64.0);
             ui.label("Open or create a note with cmd + O");
         });
-        Ok(())
+        Ok(false)
     }
     fn manage_keys(&mut self, _ctx: &egui::Context) {}
 }

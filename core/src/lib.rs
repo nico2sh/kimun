@@ -65,6 +65,7 @@ impl NoteVault {
     /// missing notes.
     /// This can be slow on large vaults.
     pub fn init_and_validate(&self) -> Result<(), VaultError> {
+        debug!("Initializing DB and validating it");
         let db_path = self.vault_db.get_db_path();
         let db_result = self.vault_db.check_db()?;
         match db_result {
