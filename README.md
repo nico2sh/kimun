@@ -16,6 +16,8 @@ $env:RUSTFLAGS="-C target-cpu=native"
 Here are the items I want to fix immediately to consider this usable. Then will focus on other cool features:
 
 * [ ] Search under titles/sections in Markdown
+* [ ] Command Palette
+* [ ] Display shortcuts
 * [ ] Properly resolve local paths for images
 * [ ] Navigate notes with links in render
 * [ ] Resolve relative paths
