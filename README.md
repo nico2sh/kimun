@@ -16,6 +16,8 @@ $env:RUSTFLAGS="-C target-cpu=native"
 Here are the items I want to fix immediately to consider this usable. Then will focus on other cool features:
 
 * [ ] Search under titles/sections in Markdown
+* [X] Add title to the note editor
+* [ ] Add path to the note preview
 * [ ] Command Palette
 * [ ] Display shortcuts
 * [ ] Properly resolve local paths for images

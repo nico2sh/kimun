@@ -49,4 +49,6 @@ impl NoteViewer for RenderedView {
             };
         }
     }
+
+    fn init(&mut self, _text: String) {}
 }
