@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, CollapsingHeader};
 use log::{error, info};
-use notes_core::utilities::path_to_string;
+use notes_core::{error::VaultError, utilities::path_to_string, NoteVault, NotesValidation};
 
 use crate::{MainView, WindowSwitch};
 
@@ -18,6 +18,18 @@ impl SettingsView {
             settings: settings.to_owned(),
         }
     }
+
+    fn add_worspace_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        button: egui::Button<'_>,
+    ) -> egui::Response {
+        if self.settings.workspace_dir.is_some() {
+            ui.add_enabled(true, button)
+        } else {
+            ui.add_enabled(false, button)
+        }
+    }
 }
 
 impl MainView for SettingsView {
@@ -29,13 +41,8 @@ impl MainView for SettingsView {
             .min_height(0.0)
             .show_inside(ui, |ui| {
                 ui.add_space(8.0);
-                let close_button = egui::Button::new("Close");
-                let close_response = if self.settings.workspace_dir.is_some() {
-                    ui.add_enabled(true, close_button)
-                } else {
-                    ui.add_enabled(false, close_button)
-                };
-                if close_response.clicked() {
+                let close_button = self.add_worspace_button(ui, egui::Button::new("Close"));
+                if close_button.clicked() {
                     info!("Closing");
                     should_close = true;
                 }
@@ -81,6 +88,43 @@ impl MainView for SettingsView {
                                     }
                                 }
                             });
+                            ui.label(egui::RichText::new("Vault DB:").strong());
+                            ui.horizontal(|ui| {
+                                if self
+                                    .add_worspace_button(ui, egui::Button::new("Re-Index"))
+                                    .clicked()
+                                {
+                                    if let Some(workspace_path) = &self.settings.workspace_dir {
+                                        let res: Result<_, VaultError> =
+                                            match NoteVault::new(workspace_path) {
+                                                // TODO: Show a modal while executing
+                                                Ok(vault) => {
+                                                    vault.index_notes(NotesValidation::Full)
+                                                }
+                                                Err(e) => Err(e),
+                                            };
+                                        if let Err(e) = res {
+                                            error!("Error reindexing the DB: {}", e);
+                                        }
+                                    };
+                                }
+                                if self
+                                    .add_worspace_button(ui, egui::Button::new("Rebuild DB"))
+                                    .clicked()
+                                {
+                                    if let Some(workspace_path) = &self.settings.workspace_dir {
+                                        let res: Result<_, VaultError> =
+                                            match NoteVault::new(workspace_path) {
+                                                // TODO: Show a modal while executing
+                                                Ok(vault) => vault.recreate_index(),
+                                                Err(e) => Err(e),
+                                            };
+                                        if let Err(e) = res {
+                                            error!("Error reindexing the DB: {}", e);
+                                        }
+                                    };
+                                }
+                            })
                         });
                     })
             });

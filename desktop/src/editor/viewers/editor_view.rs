@@ -1,6 +1,6 @@
 use crossbeam_channel::Sender;
 use eframe::egui;
-use log::error;
+use log::{debug, error};
 
 use crate::editor::NoteViewer;
 
@@ -43,17 +43,12 @@ impl NoteViewer for EditorView {
             .font(egui::TextStyle::Monospace) // for cursor height
             .layouter(&mut layouter)
             .id(ID_VIEWER.into());
-        ui.add_sized(ui.available_size(), output);
+        let response = ui.add_sized(ui.available_size(), output);
 
-        // if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
-        //     if let Some(mut ccursor_range) = state.cursor.char_range() {
-        //         let any_change = shortcuts(ui, code, &mut ccursor_range);
-        //         if any_change {
-        //             state.cursor.set_char_range(Some(ccursor_range));
-        //             state.store(ui.ctx(), response.id);
-        //         }
-        //     }
-        // };
+        let text_edit_id = response.id;
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), text_edit_id) {
+            if let Some(range) = state.cursor.char_range() {};
+        };
         Ok(())
     }
 
