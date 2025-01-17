@@ -41,6 +41,7 @@ impl NoteViewer for EditorView {
             .font(egui::TextStyle::Monospace) // for cursor height
             .code_editor()
             .lock_focus(true)
+            .cursor_at_end(true)
             .desired_width(f32::INFINITY)
             .layouter(&mut layouter)
             .id(ID_VIEWER.into());
