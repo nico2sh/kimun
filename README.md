@@ -10,3 +10,16 @@ On Windows (PowerShell):
 ```powershell
 $env:RUSTFLAGS="-C target-cpu=native"
 ```
+
+## Short-term roadmap
+
+Here are the items I want to fix immediately to consider this usable. Then will focus on other cool features:
+
+* [ ] Search under titles/sections in Markdown
+* [ ] Properly resolve local paths for images
+* [ ] Navigate notes with links in render
+* [ ] Resolve relative paths
+* [ ] Enable wikilinks in render
+* [ ] Modals with progress in the settings when reindexing
+* [ ] Backlink support
+* [ ] Inline Tags
