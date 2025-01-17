@@ -1,7 +1,6 @@
 use crossbeam_channel::Sender;
 use editor_view::EditorView;
 use eframe::egui;
-use log::debug;
 use rendered_view::RenderedView;
 
 use super::EditorMessage;
@@ -45,8 +44,9 @@ impl NoteViewerManager {
         self.vtype.clone()
     }
     pub fn load_content(&mut self, text: String) {
-        self.text = text;
+        self.text = text.clone();
         self.changed = false;
+        self.viewer.init(text);
     }
     pub fn manage_keys(&mut self, ctx: &egui::Context) {
         self.viewer.manage_keys(ctx);
@@ -67,6 +67,7 @@ impl NoteViewerManager {
             ViewerType::Editor => Box::new(EditorView::new(self.message_sender.clone())),
             ViewerType::Preview => Box::new(RenderedView::new(self.message_sender.clone())),
         };
+        self.viewer.init(self.text.clone());
     }
 }
 
@@ -79,6 +80,7 @@ pub enum ViewerType {
 
 pub trait NoteViewer {
     fn view(&mut self, text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<bool>;
+    fn init(&mut self, text: String);
     fn manage_keys(&mut self, ctx: &egui::Context);
 }
 
@@ -99,4 +101,6 @@ impl NoteViewer for NoView {
         Ok(false)
     }
     fn manage_keys(&mut self, _ctx: &egui::Context) {}
+
+    fn init(&mut self, _text: String) {}
 }

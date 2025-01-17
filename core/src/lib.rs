@@ -12,10 +12,8 @@ use std::{
 };
 
 use chrono::Utc;
-use content_data::NoteContentData;
+use content_data::{extract_data, NoteContentData};
 use db::VaultDB;
-// use db::async_sqlite::AsyncConnection;
-// use db::async_db::AsyncConnection;
 use error::{DBError, FSError, VaultError};
 use log::{debug, info};
 use nfs::{load_note, save_note, visitor::NoteListVisitorBuilder, VaultEntry, VaultPath};
@@ -189,6 +187,11 @@ impl NoteVault {
     pub fn load_note(&self, path: &VaultPath) -> Result<String, VaultError> {
         let text = load_note(&self.workspace_path, path)?;
         Ok(text)
+    }
+
+    pub fn get_title<S: AsRef<str>>(text: S) -> Option<String> {
+        let data = extract_data(text);
+        data.title
     }
 
     // Search notes using terms
