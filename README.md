@@ -27,3 +27,4 @@ Here are the items I want to fix immediately to consider this usable. Then will 
 * [ ] Shortcuts for inserting links
 * [ ] Paste images in note
 * [ ] Calendar to browse journal
+* [ ] Auto continue format lists while typing (hitting enter on a list element creates a new element)
