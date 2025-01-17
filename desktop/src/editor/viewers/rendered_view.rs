@@ -23,11 +23,11 @@ impl RenderedView {
 }
 
 impl NoteViewer for RenderedView {
-    fn view(&mut self, text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<()> {
+    fn view(&mut self, text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<bool> {
         let _common_mark_viewer = CommonMarkViewer::new()
             .show(ui, &mut self.cache, text)
             .response;
-        Ok(())
+        Ok(false)
     }
 
     fn manage_keys(&mut self, ctx: &egui::Context) {

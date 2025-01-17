@@ -109,13 +109,14 @@ impl Editor {
         Ok(())
     }
 
-    fn save_note(&self) -> anyhow::Result<()> {
+    fn save_note(&mut self) -> anyhow::Result<()> {
         debug!("Checking if to save note");
         if let Some(note_path) = &self.note_path {
             if self.viewer.should_save() {
                 debug!("Saving note");
                 let content = self.viewer.get_text();
                 self.vault.save_note(note_path, content)?;
+                self.viewer.report_saved();
             }
         }
         Ok(())
