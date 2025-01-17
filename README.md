@@ -26,3 +26,4 @@ Here are the items I want to fix immediately to consider this usable. Then will 
 * [ ] Shortcuts for text format (bold, italic)
 * [ ] Shortcuts for inserting links
 * [ ] Paste images in note
+* [ ] Calendar to browse journal
