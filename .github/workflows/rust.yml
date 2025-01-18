@@ -17,6 +17,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: cargo build --verbose --release
+      run: cargo build --verbose --release --manifest-path desktop/Cargo.toml
     - name: Run tests
       run: cargo test --verbose
