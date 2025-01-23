@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime},
+};
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
@@ -9,11 +12,15 @@ use crate::editor::NoteViewer;
 
 use super::{highlighter::MemoizedNoteHighlighter, EditorMessage, ID_VIEWER};
 
+const UPDATE_TITLE_EVERY_MS: u64 = 500;
+
 pub struct EditorView {
     message_sender: Sender<EditorMessage>,
     highlighter: MemoizedNoteHighlighter,
     title: Arc<Mutex<String>>,
     title_update: Sender<String>,
+    last_title_update: SystemTime,
+    pending_title_update: bool,
 }
 
 impl EditorView {
@@ -26,6 +33,8 @@ impl EditorView {
             highlighter,
             title,
             title_update,
+            last_title_update: SystemTime::UNIX_EPOCH,
+            pending_title_update: true,
         };
         editor_view.title_update_loop(receiver);
         editor_view
@@ -74,11 +83,26 @@ impl NoteViewer for EditorView {
         if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), text_edit_id) {
             if let Some(range) = state.cursor.char_range() {};
         };
-        let changed = response.changed();
-        if changed {
+        let changed = if response.changed() {
+            self.pending_title_update = true;
+            true
+        } else {
+            false
+        };
+        if self.pending_title_update
+            && SystemTime::now()
+                .duration_since(self.last_title_update)
+                .map_or_else(
+                    |_e| true,
+                    |d| d >= Duration::from_millis(UPDATE_TITLE_EVERY_MS),
+                )
+        {
             debug!("Sending a title update message");
             if let Err(e) = self.title_update.send(text.clone()) {
                 error!("Error sending an update to the title: {}", e);
+            } else {
+                self.last_title_update = SystemTime::now();
+                self.pending_title_update = false;
             }
         }
         Ok(changed)

@@ -1,6 +1,7 @@
 use crossbeam_channel::Sender;
 use editor_view::EditorView;
 use eframe::egui;
+use notes_core::nfs::VaultPath;
 use rendered_view::RenderedView;
 
 use super::EditorMessage;
