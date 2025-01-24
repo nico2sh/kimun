@@ -1,5 +1,4 @@
-# Notes App
-_Damn I need a better name_
+# Kimün
 
 A notes app. Focus on simplicity, but powerful on searchability.
 
