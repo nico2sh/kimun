@@ -262,7 +262,14 @@ impl ListElement for SelectorEntry {
             SelectorEntryType::NewNote => {
                 let icon = fonts::NOTE;
                 let path = self.path_str.to_owned();
-                let response = ui.label(format!("{}  Create new note as `{}`", icon, path));
+
+                let response = ui
+                    .horizontal(|ui| {
+                        ui.add(egui::Label::new("cmd+Enter"));
+                        ui.separator();
+                        ui.add(egui::Label::new(format!("Create new note at:\n`{}`", path)).wrap())
+                    })
+                    .inner;
                 ui.style().interact(&response);
                 response
             }
