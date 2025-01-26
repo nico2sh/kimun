@@ -140,11 +140,31 @@ where
                 cross_justify: false,
             },
             |ui| {
-                let _filter_response = ui.add(
-                    egui::TextEdit::singleline(&mut self.state_manager.state_data.filter_text)
-                        .desired_width(f32::INFINITY)
-                        .id(ID_SEARCH.into()),
-                );
+                ui.horizontal(|ui| {
+                    // Fantastic solution from here to have a right sided button
+                    // https://github.com/emilk/egui/discussions/3908#discussioncomment-8270353
+                    let id_filter_target_size = egui::Id::new("filter_target_size");
+                    let this_init_max_width = ui.max_rect().width();
+                    let last_others_width = ui.data(|data| {
+                        data.get_temp(id_filter_target_size)
+                            .unwrap_or(this_init_max_width)
+                    });
+                    let filter_target_width = this_init_max_width - last_others_width;
+
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.state_manager.state_data.filter_text)
+                            .desired_width(filter_target_width)
+                            .id(ID_SEARCH.into()),
+                    );
+                    let _sort_button = ui.button("S");
+
+                    ui.data_mut(|data| {
+                        data.insert_temp(
+                            id_filter_target_size,
+                            ui.min_rect().width() - filter_target_width,
+                        )
+                    });
+                });
 
                 ui.separator();
 
