@@ -33,7 +33,7 @@ Here are the items I want to fix immediately to consider this usable. Then will 
 
 ### Rendering
 
-* [ ] Display path to the note preview
+* [X] Display path to the note preview
 * [ ] Properly resolve local paths for images
 * [ ] Enable wikilinks in render
 * [ ] Navigate notes with links in render

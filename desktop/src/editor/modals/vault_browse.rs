@@ -1,9 +1,9 @@
 use eframe::egui;
 use log::{debug, error};
-use notes_core::{nfs::VaultPath, NoteDetails, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
+use kimun_core::{nfs::VaultPath, NoteDetails, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
 use rayon::slice::ParallelSliceMut;
 
-use crate::fonts;
+use crate::{fonts, helpers};
 
 use super::{
     filtered_list::{FilteredListFunctionMessage, FilteredListFunctions, ListElement, StateData},
@@ -260,13 +260,11 @@ impl ListElement for SelectorEntry {
                 // ui.label(job)
             }
             SelectorEntryType::NewNote => {
-                let icon = fonts::NOTE;
                 let path = self.path_str.to_owned();
 
                 let response = ui
                     .horizontal(|ui| {
-                        ui.add(egui::Label::new("cmd+Enter"));
-                        ui.separator();
+                        helpers::info_pill(ui, format!("{}+enter", helpers::cmd_ctrl()));
                         ui.add(egui::Label::new(format!("Create new note at:\n`{}`", path)).wrap())
                     })
                     .inner;

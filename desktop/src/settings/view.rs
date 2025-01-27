@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, CollapsingHeader};
 use log::{error, info};
-use notes_core::{error::VaultError, utilities::path_to_string, NoteVault, NotesValidation};
+use kimun_core::{error::VaultError, utilities::path_to_string, NoteVault, NotesValidation};
 
 use crate::{MainView, WindowSwitch};
 
