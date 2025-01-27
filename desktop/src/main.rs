@@ -2,6 +2,7 @@
 
 mod editor;
 pub mod fonts;
+pub mod helpers;
 pub mod settings;
 
 use editor::Editor;
@@ -12,7 +13,7 @@ use settings::{view::SettingsView, Settings};
 
 fn main() -> eframe::Result {
     env_logger::Builder::new()
-        .filter(Some("notes_"), log::LevelFilter::max())
+        .filter(Some("kimun_"), log::LevelFilter::max())
         .init();
 
     let native_options = eframe::NativeOptions {
@@ -21,7 +22,7 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "Note",
+        "Kimün",
         native_options,
         Box::new(|cc| Ok(Box::new(DesktopApp::new(cc)?))),
     )

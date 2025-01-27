@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::fs::File;
 
 use anyhow::bail;
-use notes_core::nfs::VaultPath;
+use kimun_core::nfs::VaultPath;
 
 const BASE_CONFIG_FILE: &str = ".note.toml";
 const LAST_PATH_HISTORY_SIZE: usize = 5;

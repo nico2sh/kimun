@@ -1,5 +1,5 @@
 [package]
-name = "notes_desktop"
+name = "kimun_desktop"
 authors = ["Nico Hormazabal"]
 description = "A note taking app focused on simplicity and searchability"
 readme = "../README.md"
@@ -8,7 +8,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-notes_core = { path = "../core" }
+kimun_core = { path = "../core" }
 eframe = { version = "0.30", default-features = false, features = [
   # accesskit struggles with threading
   "default_fonts",

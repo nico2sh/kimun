@@ -6,7 +6,7 @@ use crossbeam_channel::Sender;
 use eframe::egui;
 use filtered_list::FilteredList;
 use log::debug;
-use notes_core::{nfs::VaultPath, NoteVault};
+use kimun_core::{nfs::VaultPath, NoteVault};
 use preview_list::PreviewList;
 use vault_browse::{VaultBrowseFunctions, VaultSearchFunctions};
 

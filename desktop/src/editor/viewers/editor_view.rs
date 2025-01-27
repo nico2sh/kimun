@@ -5,8 +5,8 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
+use kimun_core::{nfs::VaultPath, NoteVault};
 use log::{debug, error};
-use notes_core::NoteVault;
 
 use crate::editor::NoteViewer;
 
@@ -18,13 +18,14 @@ pub struct EditorView {
     message_sender: Sender<EditorMessage>,
     highlighter: MemoizedNoteHighlighter,
     title: Arc<Mutex<String>>,
+    path: VaultPath,
     title_update: Sender<String>,
     last_title_update: SystemTime,
     pending_title_update: bool,
 }
 
 impl EditorView {
-    pub(super) fn new(message_sender: Sender<EditorMessage>) -> Self {
+    pub(super) fn new(message_sender: Sender<EditorMessage>, path: &VaultPath) -> Self {
         let highlighter = MemoizedNoteHighlighter::default();
         let title = Arc::new(Mutex::new(String::new()));
         let (title_update, receiver) = crossbeam_channel::unbounded::<String>();
@@ -32,6 +33,7 @@ impl EditorView {
             message_sender,
             highlighter,
             title,
+            path: path.to_owned(),
             title_update,
             last_title_update: SystemTime::UNIX_EPOCH,
             pending_title_update: true,
@@ -67,6 +69,7 @@ impl NoteViewer for EditorView {
             .show_inside(ui, |ui| {
                 ui.vertical(|ui| {
                     ui.heading(title);
+                    ui.label(self.path.to_string());
                 })
             });
         let output = egui::TextEdit::multiline(text)
@@ -119,10 +122,9 @@ impl NoteViewer for EditorView {
                 egui::Key::Space,
             )
         }) {
-            if let Err(e) = self
-                .message_sender
-                .send(EditorMessage::SwitchNoteViewer(super::ViewerType::Preview))
-            {
+            if let Err(e) = self.message_sender.send(EditorMessage::SwitchNoteViewer(
+                super::ViewerType::Preview(self.path.clone()),
+            )) {
                 error!("Error sending change view message: {}", e);
             };
         }

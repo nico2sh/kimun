@@ -1,7 +1,7 @@
 use crossbeam_channel::Sender;
 use editor_view::EditorView;
 use eframe::egui;
-use notes_core::nfs::VaultPath;
+use kimun_core::nfs::VaultPath;
 use rendered_view::RenderedView;
 
 use super::EditorMessage;
@@ -41,13 +41,15 @@ impl NoteViewerManager {
             Err(e) => Err(e),
         }
     }
-    pub fn get_type(&self) -> ViewerType {
-        self.vtype.clone()
-    }
-    pub fn load_content(&mut self, text: String) {
+    pub fn load_content(&mut self, path: &VaultPath, text: String) {
         self.text = text.clone();
         self.changed = false;
-        self.viewer.init(text);
+        let new_type = match &self.vtype {
+            ViewerType::Nothing => ViewerType::Editor(path.clone()),
+            ViewerType::Editor(_vault_path) => ViewerType::Editor(path.to_owned()),
+            ViewerType::Preview(_vault_path) => ViewerType::Preview(path.to_owned()),
+        };
+        self.set_view(new_type);
     }
     pub fn manage_keys(&mut self, ctx: &egui::Context) {
         self.viewer.manage_keys(ctx);
@@ -61,22 +63,26 @@ impl NoteViewerManager {
     pub fn get_text(&self) -> String {
         self.text.clone()
     }
-
     pub fn set_view(&mut self, vtype: ViewerType) {
-        self.viewer = match vtype {
+        self.viewer = match &vtype {
             ViewerType::Nothing => Box::new(NoView::new()),
-            ViewerType::Editor => Box::new(EditorView::new(self.message_sender.clone())),
-            ViewerType::Preview => Box::new(RenderedView::new(self.message_sender.clone())),
+            ViewerType::Editor(path) => {
+                Box::new(EditorView::new(self.message_sender.clone(), path))
+            }
+            ViewerType::Preview(path) => {
+                Box::new(RenderedView::new(self.message_sender.clone(), path))
+            }
         };
+        self.vtype = vtype;
         self.viewer.init(self.text.clone());
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum ViewerType {
     Nothing,
-    Editor,
-    Preview,
+    Editor(VaultPath),
+    Preview(VaultPath),
 }
 
 pub trait NoteViewer {

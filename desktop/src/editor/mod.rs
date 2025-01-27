@@ -6,9 +6,9 @@ use std::sync::{atomic::AtomicBool, Arc};
 use anyhow::bail;
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
-use log::{debug, error};
+use kimun_core::{nfs::VaultPath, NoteVault};
+use log::{debug, error, info};
 use modals::{ModalManager, Modals};
-use notes_core::{nfs::VaultPath, NoteVault};
 use viewers::{NoteViewer, NoteViewerManager, ViewerType};
 
 use crate::{settings::Settings, WindowSwitch};
@@ -90,13 +90,9 @@ impl Editor {
         if let Some(path) = &note_path {
             if path.is_note() && self.vault.exists(path).is_some() {
                 let content = self.vault.load_note(path)?;
-                // If the current NotePath used to be a non-note we assume the view wasn't the editor
-                if matches!(self.viewer.get_type(), ViewerType::Nothing) {
-                    self.viewer.set_view(ViewerType::Editor);
-                }
                 self.settings.add_path_history(path);
                 self.settings.save_to_disk()?;
-                self.viewer.load_content(content);
+                self.viewer.load_content(path, content);
             } else {
                 self.viewer.set_view(ViewerType::Nothing);
             }
@@ -178,7 +174,7 @@ impl Editor {
                         }
                     }
                     debug!("New note at: {}", np);
-                    self.viewer.load_content(String::new());
+                    self.viewer.load_content(&np, String::new());
                     self.note_path = Some(np);
                     self.modal_manager.close_modal();
                     self.request_focus = true;
@@ -199,9 +195,7 @@ impl Editor {
 
     fn change_viewer(&mut self, viewer: ViewerType) -> anyhow::Result<()> {
         self.save_note()?;
-        let text = self.viewer.get_text();
         self.viewer.set_view(viewer);
-        self.viewer.load_content(text);
         Ok(())
     }
 }

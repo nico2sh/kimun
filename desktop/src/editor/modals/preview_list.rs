@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::ScrollArea;
 use log::error;
-use notes_core::{nfs::VaultPath, NoteDetails, NoteVault};
+use kimun_core::{nfs::VaultPath, NoteDetails, NoteVault};
 
 use super::{
     filtered_list::{FilteredList, FilteredListFunctions, ListElement},
