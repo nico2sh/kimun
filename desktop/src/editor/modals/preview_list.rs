@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::ScrollArea;
-use log::error;
 use kimun_core::{nfs::VaultPath, NoteDetails, NoteVault};
+use log::error;
 
 use super::{
     filtered_list::{FilteredList, FilteredListFunctions, ListElement},
@@ -12,7 +12,8 @@ use super::{
 enum PreviewState {
     Empty,
     LoadingPreview,
-    PreviewLoaded { path: VaultPath, text: String },
+    PreviewNote { path: VaultPath, text: String },
+    PreviewDirectory { path: VaultPath },
 }
 
 pub trait SelectionPath: PartialEq {
@@ -28,8 +29,6 @@ where
     vault: NoteVault,
     list: FilteredList<F, P, D>,
     state: PreviewState,
-    preview_text: String,
-    show_preview: bool,
     state_sender: Sender<PreviewState>,
     state_receiver: Receiver<PreviewState>,
 }
@@ -46,8 +45,6 @@ where
             vault,
             list,
             state: PreviewState::Empty,
-            preview_text: String::new(),
-            show_preview: true,
             state_sender,
             state_receiver,
         }
@@ -55,11 +52,6 @@ where
 
     fn update_state(&mut self) {
         while let Ok(state) = self.state_receiver.try_recv() {
-            match &state {
-                PreviewState::Empty => self.preview_text = "".to_string(),
-                PreviewState::LoadingPreview => {}
-                PreviewState::PreviewLoaded { path: _, text } => self.preview_text = text.clone(),
-            }
             self.state = state;
         }
 
@@ -68,25 +60,30 @@ where
             if selection_path.is_note() {
                 Some(selection_path)
             } else {
-                self.preview_text = "".to_string();
                 None
             }
         });
 
-        match &self.state {
-            PreviewState::Empty => {
-                if let Some(selected_path) = selected_path {
+        // We changed the path
+        if let Some(selected_path) = selected_path {
+            match &self.state {
+                PreviewState::Empty => {
                     self.load_preview(selected_path);
                 }
-            }
-            PreviewState::LoadingPreview => {}
-            PreviewState::PreviewLoaded { path, text: _ } => {
-                if let Some(selected_path) = selected_path {
+                PreviewState::LoadingPreview => {}
+                PreviewState::PreviewNote { path, text: _ } => {
+                    if path != &selected_path {
+                        self.load_preview(selected_path);
+                    }
+                }
+                PreviewState::PreviewDirectory { path } => {
                     if path != &selected_path {
                         self.load_preview(selected_path);
                     }
                 }
             }
+        } else {
+            self.state = PreviewState::Empty;
         }
     }
 
@@ -97,12 +94,32 @@ where
             let tx = self.state_sender.clone();
             std::thread::spawn(move || {
                 let text = vault.load_note(&path).unwrap_or_default();
-                if let Err(e) = tx.send(PreviewState::PreviewLoaded { path, text }) {
+                if let Err(e) = tx.send(PreviewState::PreviewNote { path, text }) {
                     error!("Failed to send a preview load status: {}", e);
                 }
             });
-        } else if let Err(e) = self.state_sender.send(PreviewState::Empty) {
+        } else if let Err(e) = self
+            .state_sender
+            .send(PreviewState::PreviewDirectory { path })
+        {
             error!("Failed to send a preview load status: {}", e);
+        }
+    }
+
+    fn show_preview_area(&self, ui: &mut eframe::egui::Ui) {
+        match &self.state {
+            PreviewState::Empty => {
+                ui.label("");
+            }
+            PreviewState::LoadingPreview => {
+                ui.label("");
+            }
+            PreviewState::PreviewNote { path: _, text } => {
+                ui.label(text);
+            }
+            PreviewState::PreviewDirectory { path: _ } => {
+                ui.label("");
+            }
         }
     }
 }
@@ -114,19 +131,15 @@ where
     D: ListElement + 'static + SelectionPath,
 {
     fn update(&mut self, ui: &mut eframe::egui::Ui) {
-        if self.show_preview {
-            self.update_state();
-            ui.columns(2, |columns| {
-                self.list.update(&mut columns[0]);
-                ScrollArea::vertical().show(&mut columns[1], |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(self.preview_text.clone());
-                    });
-                })
-            });
-        } else {
-            self.list.update(ui);
-        }
+        self.update_state();
+        ui.columns(2, |columns| {
+            self.list.update(&mut columns[0]);
+            ScrollArea::vertical().show(&mut columns[1], |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    self.show_preview_area(ui);
+                });
+            })
+        });
     }
 }
 
