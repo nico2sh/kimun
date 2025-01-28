@@ -1,6 +1,6 @@
 use eframe::egui;
-use log::{debug, error};
 use kimun_core::{nfs::VaultPath, NoteDetails, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
+use log::{debug, error};
 use rayon::slice::ParallelSliceMut;
 
 use crate::{fonts, helpers};
@@ -147,10 +147,17 @@ impl FilteredListFunctions<(), NoteDetails> for VaultSearchFunctions {
 }
 
 impl ListElement for NoteDetails {
-    fn draw_element(&self, ui: &mut egui::Ui) -> egui::Response {
-        let icon = fonts::NOTE;
+    fn get_height_mult(&self) -> f32 {
+        2.0
+    }
+
+    fn get_icon(&self) -> impl Into<egui::WidgetText> {
+        fonts::NOTE.to_string()
+    }
+
+    fn get_label(&self) -> impl Into<egui::WidgetText> {
         let path = self.path.to_owned();
-        ui.label(format!("{}  {}\n{}", icon, self.get_title(), path))
+        format!("{}\n{}", self.get_title(), path)
     }
 }
 
@@ -213,63 +220,43 @@ impl From<SearchResult> for SelectorEntry {
 }
 
 impl ListElement for SelectorEntry {
-    fn draw_element(&self, ui: &mut egui::Ui) -> egui::Response {
+    fn get_height_mult(&self) -> f32 {
+        match &self.entry_type {
+            SelectorEntryType::Note { title: _ } => 2.0,
+            SelectorEntryType::Directory => 1.0,
+            SelectorEntryType::Attachment => 1.0,
+            SelectorEntryType::NewNote => 2.0,
+        }
+    }
+
+    fn get_icon(&self) -> impl Into<egui::WidgetText> {
+        match &self.entry_type {
+            SelectorEntryType::Note { title: _ } => fonts::NOTE.to_string(),
+            SelectorEntryType::Directory => fonts::DIRECTORY.to_string(),
+            SelectorEntryType::Attachment => fonts::ATTACHMENT.to_string(),
+            SelectorEntryType::NewNote => {
+                format!("{}+enter", helpers::cmd_ctrl())
+            }
+        }
+    }
+
+    fn get_label(&self) -> impl Into<egui::WidgetText> {
         match &self.entry_type {
             SelectorEntryType::Note { title } => {
-                let icon = fonts::NOTE;
                 let path = self.path_str.to_owned();
-                ui.label(format!("{}  {}\n{}", icon, title, path))
-                // let mut job = egui::text::LayoutJob::default();
-                // job.append(
-                //     format!("{}   {}\n", icon, title).as_str(),
-                //     0.0,
-                //     egui::TextFormat::default(),
-                // );
-                // job.append(
-                //     path.as_str(),
-                //     0.0,
-                //     egui::TextFormat {
-                //         italics: true,
-                //         ..Default::default()
-                //     },
-                // );
-                // ui.label(job)
+                format!("{}\n{}", title, path)
             }
             SelectorEntryType::Directory => {
-                let icon = fonts::DIRECTORY;
                 let path = self.path_str.to_owned();
-                ui.label(format!("{}  {}", icon, path))
-                // let mut job = egui::text::LayoutJob::default();
-                // job.append(
-                //     format!("{}   {}", icon, self.path_str).as_str(),
-                //     0.0,
-                //     egui::TextFormat::default(),
-                // );
-                // ui.label(job)
+                path.to_string()
             }
             SelectorEntryType::Attachment => {
-                let icon = fonts::ATTACHMENT;
                 let path = self.path_str.to_owned();
-                ui.label(format!("{}  {}", icon, path))
-                // let mut job = egui::text::LayoutJob::default();
-                // job.append(
-                //     format!("{}   {}", icon, self.path_str).as_str(),
-                //     0.0,
-                //     egui::TextFormat::default(),
-                // );
-                // ui.label(job)
+                path.to_string()
             }
             SelectorEntryType::NewNote => {
                 let path = self.path_str.to_owned();
-
-                let response = ui
-                    .horizontal(|ui| {
-                        helpers::info_pill(ui, format!("{}+enter", helpers::cmd_ctrl()));
-                        ui.add(egui::Label::new(format!("Create new note at:\n`{}`", path)).wrap())
-                    })
-                    .inner;
-                ui.style().interact(&response);
-                response
+                format!("Create new note at:\n`{}`", path)
             }
         }
     }

@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use crossbeam_channel::{Receiver, Sender};
-use eframe::egui;
+use eframe::egui::{self, Widget};
 use log::{debug, error, info};
 
 use super::{EditorMessage, EditorModal};
@@ -117,6 +117,71 @@ where
             .functions
             .header_element(&self.state_manager.state_data)
     }
+
+    fn get_table(&mut self, ui: &mut egui::Ui, selected_element: &mut Option<D>) {
+        let header = self.get_header();
+        let text_height = egui::TextStyle::Body
+            .resolve(ui.style())
+            .size
+            .max(ui.spacing().interact_size.y);
+        if let Some(element) = &header {
+            // let height = text_height * element.get_height_mult();
+            let header_resp = ui.add_sized(
+                [
+                    ui.available_width(),
+                    text_height * element.get_height_mult(),
+                ],
+                egui::Button::new(element.get_label()).shortcut_text(element.get_icon()),
+            );
+            if header_resp.clicked() {
+                *selected_element = Some(element.clone());
+            }
+            ui.separator();
+        }
+
+        let mut selected = self.state_manager.state_data.get_selected();
+        let available_height = ui.available_height();
+        let mut table = egui_extras::TableBuilder::new(ui)
+            .striped(true)
+            .resizable(false)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(egui_extras::Column::auto())
+            .column(egui_extras::Column::remainder())
+            .min_scrolled_height(400.0)
+            .max_scroll_height(available_height)
+            .sense(egui::Sense::click());
+
+        if let Some(selected) = selected {
+            table = table.scroll_to_row(selected, None);
+        }
+        table.body(|mut body| {
+            let elements = self.state_manager.state_data.get_elements();
+            for element in elements.iter() {
+                let height = text_height * element.get_height_mult();
+                body.row(height, |mut row| {
+                    row.set_hovered(selected.map_or_else(|| false, |s| s == row.index()));
+                    row.col(|ui| {
+                        egui::Label::new(element.get_icon())
+                            .selectable(false)
+                            .ui(ui);
+                    });
+
+                    row.col(|ui| {
+                        egui::Label::new(element.get_label())
+                            .selectable(false)
+                            .ui(ui);
+                    });
+                    if row.response().clicked() {
+                        *selected_element = Some(element.clone());
+                    }
+                    if row.response().hovered() {
+                        selected = Some(row.index());
+                    }
+                });
+            }
+        });
+        self.state_manager.state_data.set_selected(selected);
+    }
 }
 
 impl<F, P, D> EditorModal for FilteredList<F, P, D>
@@ -129,7 +194,6 @@ where
         self.state_manager.update();
         let mut selected_element = None;
 
-        let header = self.get_header();
         ui.with_layout(
             egui::Layout {
                 main_dir: egui::Direction::TopDown,
@@ -168,43 +232,17 @@ where
 
                 ui.separator();
 
-                let mut selected = self.state_manager.state_data.get_selected();
-                let scroll_area = egui::scroll_area::ScrollArea::vertical()
-                    .max_height(400.0)
-                    .auto_shrink(false);
-                scroll_area.show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        if let Some(element) = &header {
-                            let header_response = element.draw_element(ui);
-                            if header_response.clicked() {
-                                selected_element = Some(element.clone());
-                            }
-                            if header_response.hovered() {
-                                selected = None;
-                                header_response.highlight();
-                            }
-                            ui.separator();
-                        }
-                        let elements = self.state_manager.state_data.get_elements();
-                        for (pos, element) in elements.iter().enumerate() {
-                            let response = element.draw_element(ui);
-                            if response.clicked() {
-                                selected_element = Some(element.clone());
-                            }
-                            if response.hovered() {
-                                selected = Some(pos);
-                            }
-                            if Some(pos) == selected {
-                                if self.requested_scroll {
-                                    response.scroll_to_me(Some(egui::Align::Center));
-                                    self.requested_scroll = false;
-                                }
-                                response.highlight();
-                            }
-                        }
+                let body_text_size = egui::TextStyle::Body.resolve(ui.style()).size;
+                egui_extras::StripBuilder::new(ui)
+                    .size(egui_extras::Size::remainder().at_least(100.0))
+                    // .size(egui_extras::Size::exact(body_text_size))
+                    .vertical(|mut strip| {
+                        strip.cell(|ui| {
+                            egui::ScrollArea::horizontal().show(ui, |ui| {
+                                self.get_table(ui, &mut selected_element);
+                            });
+                        })
                     });
-                });
-                self.state_manager.state_data.set_selected(selected);
             },
         );
 
@@ -227,7 +265,7 @@ where
             .ctx()
             .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter))
         {
-            if let Some(header) = header {
+            if let Some(header) = self.get_header() {
                 selected_element = Some(header);
             }
         } else if ui.ctx().input(|input| input.key_pressed(egui::Key::Enter)) {
@@ -461,5 +499,7 @@ where
 }
 
 pub trait ListElement: Send + Sync + Clone {
-    fn draw_element(&self, ui: &mut egui::Ui) -> egui::Response;
+    fn get_height_mult(&self) -> f32;
+    fn get_icon(&self) -> impl Into<egui::WidgetText>;
+    fn get_label(&self) -> impl Into<egui::WidgetText>;
 }
