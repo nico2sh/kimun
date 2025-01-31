@@ -2,8 +2,6 @@ mod modals;
 mod save_manager;
 mod viewers;
 
-use std::sync::{atomic::AtomicBool, Arc};
-
 use anyhow::bail;
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
@@ -17,15 +15,13 @@ use crate::{settings::Settings, WindowSwitch};
 
 use super::MainView;
 
-const AUTOSAVE_SECS: u64 = 5;
-
 pub struct Editor {
     settings: Settings,
     viewer: Box<dyn NoteViewer>,
     text: String,
     save_manager: SaveManager,
     modal_manager: ModalManager,
-    vault: Arc<NoteVault>,
+    vault: NoteVault,
     message_sender: Sender<EditorMessage>,
     message_receiver: Receiver<EditorMessage>,
     request_focus: bool,
@@ -56,7 +52,7 @@ impl Editor {
                 text: String::new(),
                 modal_manager,
                 save_manager,
-                vault: Arc::new(vault),
+                vault,
                 message_sender: sender,
                 message_receiver: receiver,
                 request_focus: true,
