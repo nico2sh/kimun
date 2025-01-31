@@ -120,9 +120,9 @@ impl NoteViewer for EditorView {
                 egui::Key::Space,
             )
         }) {
-            Some(EditorMessage::SwitchNoteViewer(super::ViewerType::Preview(
-                self.path.clone(),
-            )))
+            Some(EditorMessage::SwitchNoteViewer(
+                super::ViewerType::Rendered(self.path.clone()),
+            ))
         } else {
             None
         }

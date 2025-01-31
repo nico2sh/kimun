@@ -9,7 +9,7 @@ use eframe::egui;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use log::{debug, error};
 use modals::{ModalManager, Modals};
-use viewers::{NoteViewer, NoteViewerManager, ViewerType};
+use viewers::{NoView, NoteViewer, ViewerType};
 
 use crate::{settings::Settings, WindowSwitch};
 
@@ -19,7 +19,9 @@ const AUTOSAVE_SECS: u64 = 5;
 
 pub struct Editor {
     settings: Settings,
-    viewer: NoteViewerManager,
+    text: String,
+    changed: bool,
+    viewer: Box<dyn NoteViewer>,
     vault: Arc<NoteVault>,
     modal_manager: ModalManager,
     message_sender: Sender<EditorMessage>,
@@ -60,7 +62,9 @@ impl Editor {
             });
             let mut editor = Self {
                 settings: settings.clone(),
-                viewer: NoteViewerManager::new(sender.clone()),
+                viewer: Box::new(NoView::new()),
+                text: String::new(),
+                changed: false,
                 modal_manager: ModalManager::new(vault.clone(), sender.clone()),
                 vault: Arc::new(vault),
                 message_sender: sender,
@@ -87,12 +91,12 @@ impl Editor {
                 let content = self.vault.load_note(path)?;
                 self.settings.add_path_history(path);
                 self.settings.save_to_disk()?;
-                self.viewer.load_content(path, content);
+                self.load_content(path, content);
             } else {
-                self.viewer.set_view(ViewerType::Nothing);
+                self.set_view(ViewerType::Nothing);
             }
         } else {
-            self.viewer.set_view(ViewerType::Nothing);
+            self.set_view(ViewerType::Nothing);
         };
         self.note_path = note_path.to_owned();
         self.modal_manager.close_modal();
@@ -100,14 +104,26 @@ impl Editor {
         Ok(())
     }
 
+    pub fn load_content(&mut self, path: &VaultPath, text: String) {
+        self.text = text.clone();
+        self.changed = false;
+
+        self.viewer = self.viewer.view_change_on_content(path);
+        self.viewer.init(text);
+    }
+    pub fn set_view(&mut self, vtype: ViewerType) {
+        self.viewer = vtype.get_view();
+        self.viewer.init(self.text.clone());
+    }
+
     fn save_note(&mut self) -> anyhow::Result<()> {
         debug!("Checking if to save note");
         if let Some(note_path) = &self.note_path {
-            if self.viewer.should_save() {
+            if self.changed {
                 debug!("Saving note");
-                let content = self.viewer.get_text();
+                let content = self.text.clone();
                 self.vault.save_note(note_path, content)?;
-                self.viewer.report_saved();
+                self.changed = false;
             }
         }
         Ok(())
@@ -142,7 +158,11 @@ impl Editor {
                 error!("Error opening journal: {}", e);
             }
         }
-        self.viewer.manage_keys(ctx);
+        if let Some(message) = self.viewer.manage_keys(ctx) {
+            if let Err(e) = self.message_sender.send(message) {
+                error!("Error sending view message: {}", e);
+            };
+        }
     }
 
     fn update_messages(&mut self, _ctx: &egui::Context) -> anyhow::Result<()> {
@@ -169,7 +189,7 @@ impl Editor {
                         }
                     }
                     debug!("New note at: {}", np);
-                    self.viewer.load_content(&np, String::new());
+                    self.load_content(&np, String::new());
                     self.note_path = Some(np);
                     self.modal_manager.close_modal();
                     self.request_focus = true;
@@ -190,7 +210,7 @@ impl Editor {
 
     fn change_viewer(&mut self, viewer: ViewerType) -> anyhow::Result<()> {
         self.save_note()?;
-        self.viewer.set_view(viewer);
+        self.set_view(viewer);
         Ok(())
     }
 }
@@ -208,11 +228,17 @@ impl Drop for Editor {
 impl MainView for Editor {
     fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowSwitch>> {
         self.modal_manager.view(ui)?;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            if let Err(e) = self.viewer.view(ui) {
-                error!("Error displaying viewer view: {}", e);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .show(ui, |ui| match self.viewer.view(&mut self.text, ui) {
+                Ok(changed) => {
+                    if changed {
+                        self.changed = true;
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            })
+            .inner?;
 
         self.manage_keys(ui.ctx());
 
