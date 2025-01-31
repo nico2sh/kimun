@@ -7,7 +7,7 @@ use anyhow::bail;
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use kimun_core::{nfs::VaultPath, NoteVault};
-use log::{debug, error, info};
+use log::{debug, error};
 use modals::{ModalManager, Modals};
 use viewers::{NoteViewer, NoteViewerManager, ViewerType};
 
@@ -16,11 +16,6 @@ use crate::{settings::Settings, WindowSwitch};
 use super::MainView;
 
 const AUTOSAVE_SECS: u64 = 5;
-
-pub struct EditorDetails {
-    note_path: VaultPath,
-    title: String,
-}
 
 pub struct Editor {
     settings: Settings,

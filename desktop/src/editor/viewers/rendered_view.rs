@@ -1,8 +1,6 @@
-use crossbeam_channel::Sender;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use kimun_core::nfs::VaultPath;
-use log::error;
 
 use crate::editor::NoteViewer;
 
@@ -10,16 +8,14 @@ use super::EditorMessage;
 
 pub struct RenderedView {
     path: VaultPath,
-    message_sender: Sender<EditorMessage>,
     cache: CommonMarkCache,
 }
 
 impl RenderedView {
-    pub(super) fn new(message_sender: Sender<EditorMessage>, path: &VaultPath) -> Self {
+    pub(super) fn new(path: &VaultPath) -> Self {
         let cache = CommonMarkCache::default();
         Self {
             path: path.to_owned(),
-            message_sender,
             cache,
         }
     }
@@ -41,7 +37,7 @@ impl NoteViewer for RenderedView {
         Ok(false)
     }
 
-    fn manage_keys(&mut self, ctx: &egui::Context) {
+    fn manage_keys(&mut self, ctx: &egui::Context) -> Option<EditorMessage> {
         if ctx.input_mut(|input| {
             input.consume_key(
                 egui::Modifiers {
@@ -52,13 +48,17 @@ impl NoteViewer for RenderedView {
                 egui::Key::Space,
             )
         }) {
-            if let Err(e) = self.message_sender.send(EditorMessage::SwitchNoteViewer(
-                super::ViewerType::Editor(self.path.clone()),
-            )) {
-                error!("Error sending change view message: {}", e);
-            };
+            Some(EditorMessage::SwitchNoteViewer(super::ViewerType::Editor(
+                self.path.clone(),
+            )))
+        } else {
+            None
         }
     }
 
     fn init(&mut self, _text: String) {}
+
+    fn view_change_on_content(&self, vault_path: &VaultPath) -> Box<dyn NoteViewer> {
+        Box::new(RenderedView::new(vault_path))
+    }
 }

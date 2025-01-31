@@ -232,7 +232,7 @@ where
 
                 ui.separator();
 
-                let body_text_size = egui::TextStyle::Body.resolve(ui.style()).size;
+                // let body_text_size = egui::TextStyle::Body.resolve(ui.style()).size;
                 egui_extras::StripBuilder::new(ui)
                     .size(egui_extras::Size::remainder().at_least(100.0))
                     // .size(egui_extras::Size::exact(body_text_size))

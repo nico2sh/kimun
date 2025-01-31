@@ -2,6 +2,7 @@ use crossbeam_channel::Sender;
 use editor_view::EditorView;
 use eframe::egui;
 use kimun_core::nfs::VaultPath;
+use log::error;
 use rendered_view::RenderedView;
 
 use super::EditorMessage;
@@ -16,7 +17,6 @@ pub struct NoteViewerManager {
     text: String,
     changed: bool,
     message_sender: Sender<EditorMessage>,
-    vtype: ViewerType,
     viewer: Box<dyn NoteViewer>,
 }
 
@@ -26,7 +26,6 @@ impl NoteViewerManager {
             text: String::new(),
             changed: false,
             message_sender: message_sender.clone(),
-            vtype: ViewerType::Nothing,
             viewer: Box::new(NoView::new()),
         }
     }
@@ -41,18 +40,12 @@ impl NoteViewerManager {
             Err(e) => Err(e),
         }
     }
-    pub fn load_content(&mut self, path: &VaultPath, text: String) {
-        self.text = text.clone();
-        self.changed = false;
-        let new_type = match &self.vtype {
-            ViewerType::Nothing => ViewerType::Editor(path.clone()),
-            ViewerType::Editor(_vault_path) => ViewerType::Editor(path.to_owned()),
-            ViewerType::Preview(_vault_path) => ViewerType::Preview(path.to_owned()),
-        };
-        self.set_view(new_type);
-    }
     pub fn manage_keys(&mut self, ctx: &egui::Context) {
-        self.viewer.manage_keys(ctx);
+        if let Some(message) = self.viewer.manage_keys(ctx) {
+            if let Err(e) = self.message_sender.send(message) {
+                error!("Error sending view message: {}", e);
+            };
+        }
     }
     pub fn should_save(&self) -> bool {
         self.changed
@@ -63,17 +56,15 @@ impl NoteViewerManager {
     pub fn get_text(&self) -> String {
         self.text.clone()
     }
+    pub fn load_content(&mut self, path: &VaultPath, text: String) {
+        self.text = text.clone();
+        self.changed = false;
+
+        self.viewer = self.viewer.view_change_on_content(path);
+        self.viewer.init(text);
+    }
     pub fn set_view(&mut self, vtype: ViewerType) {
-        self.viewer = match &vtype {
-            ViewerType::Nothing => Box::new(NoView::new()),
-            ViewerType::Editor(path) => {
-                Box::new(EditorView::new(self.message_sender.clone(), path))
-            }
-            ViewerType::Preview(path) => {
-                Box::new(RenderedView::new(self.message_sender.clone(), path))
-            }
-        };
-        self.vtype = vtype;
+        self.viewer = vtype.get_view();
         self.viewer.init(self.text.clone());
     }
 }
@@ -85,10 +76,21 @@ pub enum ViewerType {
     Preview(VaultPath),
 }
 
+impl ViewerType {
+    fn get_view(&self) -> Box<dyn NoteViewer> {
+        match self {
+            ViewerType::Nothing => Box::new(NoView::new()),
+            ViewerType::Editor(vault_path) => Box::new(EditorView::new(vault_path)),
+            ViewerType::Preview(vault_path) => Box::new(RenderedView::new(vault_path)),
+        }
+    }
+}
+
 pub trait NoteViewer {
     fn view(&mut self, text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<bool>;
     fn init(&mut self, text: String);
-    fn manage_keys(&mut self, ctx: &egui::Context);
+    fn manage_keys(&mut self, ctx: &egui::Context) -> Option<EditorMessage>;
+    fn view_change_on_content(&self, vault_path: &VaultPath) -> Box<dyn NoteViewer>;
 }
 
 struct NoView {}
@@ -107,7 +109,13 @@ impl NoteViewer for NoView {
         });
         Ok(false)
     }
-    fn manage_keys(&mut self, _ctx: &egui::Context) {}
+    fn manage_keys(&mut self, _ctx: &egui::Context) -> Option<EditorMessage> {
+        None
+    }
 
     fn init(&mut self, _text: String) {}
+
+    fn view_change_on_content(&self, vault_path: &VaultPath) -> Box<dyn NoteViewer> {
+        Box::new(EditorView::new(vault_path))
+    }
 }
