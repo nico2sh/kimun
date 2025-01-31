@@ -1,4 +1,5 @@
 mod modals;
+mod save_manager;
 mod viewers;
 
 use std::sync::{atomic::AtomicBool, Arc};
@@ -9,6 +10,7 @@ use eframe::egui;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use log::{debug, error};
 use modals::{ModalManager, Modals};
+use save_manager::SaveManager;
 use viewers::{NoView, NoteViewer, ViewerType};
 
 use crate::{settings::Settings, WindowSwitch};
@@ -19,17 +21,15 @@ const AUTOSAVE_SECS: u64 = 5;
 
 pub struct Editor {
     settings: Settings,
-    text: String,
-    changed: bool,
     viewer: Box<dyn NoteViewer>,
-    vault: Arc<NoteVault>,
+    text: String,
+    save_manager: SaveManager,
     modal_manager: ModalManager,
+    vault: Arc<NoteVault>,
     message_sender: Sender<EditorMessage>,
     message_receiver: Receiver<EditorMessage>,
-    note_path: Option<VaultPath>,
     request_focus: bool,
     request_windows_switch: Option<WindowSwitch>,
-    save_loop: Arc<AtomicBool>,
 }
 
 impl Editor {
@@ -41,8 +41,6 @@ impl Editor {
                 vault.init_and_validate()?;
             }
 
-            let save_sender = sender.clone();
-
             let note_path = settings.last_paths.last().and_then(|path| {
                 if !path.is_note() {
                     None
@@ -50,31 +48,23 @@ impl Editor {
                     Some(path.to_owned())
                 }
             });
-            let save_loop = Arc::new(AtomicBool::from(true));
-            let should_save = save_loop.clone();
-            std::thread::spawn(move || {
-                while should_save.load(std::sync::atomic::Ordering::Relaxed) {
-                    std::thread::sleep(std::time::Duration::from_secs(AUTOSAVE_SECS));
-                    if let Err(e) = save_sender.send(EditorMessage::Save) {
-                        error!("Error sending a save message: {}", e);
-                    };
-                }
-            });
+            let modal_manager = ModalManager::new(vault.clone(), sender.clone());
+            let save_manager = SaveManager::new(String::new(), &note_path, &vault);
             let mut editor = Self {
                 settings: settings.clone(),
                 viewer: Box::new(NoView::new()),
                 text: String::new(),
-                changed: false,
-                modal_manager: ModalManager::new(vault.clone(), sender.clone()),
+                modal_manager,
+                save_manager,
                 vault: Arc::new(vault),
                 message_sender: sender,
                 message_receiver: receiver,
-                note_path: note_path.clone(),
                 request_focus: true,
                 request_windows_switch: None,
-                save_loop,
             };
             editor.load_note_path(&note_path)?;
+            editor.save_manager.init_loop();
+
             Ok(editor)
         } else {
             bail!("Path not provided")
@@ -88,17 +78,16 @@ impl Editor {
     fn load_note_path(&mut self, note_path: &Option<VaultPath>) -> anyhow::Result<()> {
         if let Some(path) = &note_path {
             if path.is_note() && self.vault.exists(path).is_some() {
-                let content = self.vault.load_note(path)?;
+                let text = self.vault.load_note(path)?;
                 self.settings.add_path_history(path);
                 self.settings.save_to_disk()?;
-                self.load_content(path, content);
+                self.load_content(path, text);
             } else {
                 self.set_view(ViewerType::Nothing);
             }
         } else {
             self.set_view(ViewerType::Nothing);
         };
-        self.note_path = note_path.to_owned();
         self.modal_manager.close_modal();
 
         Ok(())
@@ -106,7 +95,7 @@ impl Editor {
 
     pub fn load_content(&mut self, path: &VaultPath, text: String) {
         self.text = text.clone();
-        self.changed = false;
+        self.save_manager.load(&text, path);
 
         self.viewer = self.viewer.view_change_on_content(path);
         self.viewer.init(text);
@@ -117,23 +106,14 @@ impl Editor {
     }
 
     fn save_note(&mut self) -> anyhow::Result<()> {
-        debug!("Checking if to save note");
-        if let Some(note_path) = &self.note_path {
-            if self.changed {
-                debug!("Saving note");
-                let content = self.text.clone();
-                self.vault.save_note(note_path, content)?;
-                self.changed = false;
-            }
-        }
-        Ok(())
+        self.save_manager.save()
     }
 
     fn manage_keys(&mut self, ctx: &egui::Context) {
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
             let browse_path = self
-                .note_path
-                .clone()
+                .save_manager
+                .get_path()
                 .map(|path| {
                     if path.is_note() {
                         path.get_parent_path().0
@@ -190,7 +170,6 @@ impl Editor {
                     }
                     debug!("New note at: {}", np);
                     self.load_content(&np, String::new());
-                    self.note_path = Some(np);
                     self.modal_manager.close_modal();
                     self.request_focus = true;
                 }
@@ -217,9 +196,7 @@ impl Editor {
 
 impl Drop for Editor {
     fn drop(&mut self) {
-        self.save_loop
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        if let Err(e) = self.save_note() {
+        if let Err(e) = self.save_manager.save() {
             error!("Error saving note: {}", e);
         }
     }
@@ -232,7 +209,7 @@ impl MainView for Editor {
             .show(ui, |ui| match self.viewer.view(&mut self.text, ui) {
                 Ok(changed) => {
                     if changed {
-                        self.changed = true;
+                        self.save_manager.update_text(&self.text);
                     }
                     Ok(())
                 }
