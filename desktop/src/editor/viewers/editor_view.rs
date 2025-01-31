@@ -15,7 +15,6 @@ use super::{highlighter::MemoizedNoteHighlighter, EditorMessage, ID_VIEWER};
 const UPDATE_TITLE_EVERY_MS: u64 = 500;
 
 pub struct EditorView {
-    message_sender: Sender<EditorMessage>,
     highlighter: MemoizedNoteHighlighter,
     title: Arc<Mutex<String>>,
     path: VaultPath,
@@ -25,12 +24,11 @@ pub struct EditorView {
 }
 
 impl EditorView {
-    pub(super) fn new(message_sender: Sender<EditorMessage>, path: &VaultPath) -> Self {
+    pub(super) fn new(path: &VaultPath) -> Self {
         let highlighter = MemoizedNoteHighlighter::default();
         let title = Arc::new(Mutex::new(String::new()));
         let (title_update, receiver) = crossbeam_channel::unbounded::<String>();
         let editor_view = Self {
-            message_sender,
             highlighter,
             title,
             path: path.to_owned(),
@@ -111,7 +109,7 @@ impl NoteViewer for EditorView {
         Ok(changed)
     }
 
-    fn manage_keys(&mut self, ctx: &egui::Context) {
+    fn manage_keys(&mut self, ctx: &egui::Context) -> Option<EditorMessage> {
         if ctx.input_mut(|input| {
             input.consume_key(
                 egui::Modifiers {
@@ -122,11 +120,11 @@ impl NoteViewer for EditorView {
                 egui::Key::Space,
             )
         }) {
-            if let Err(e) = self.message_sender.send(EditorMessage::SwitchNoteViewer(
-                super::ViewerType::Preview(self.path.clone()),
-            )) {
-                error!("Error sending change view message: {}", e);
-            };
+            Some(EditorMessage::SwitchNoteViewer(super::ViewerType::Preview(
+                self.path.clone(),
+            )))
+        } else {
+            None
         }
     }
 
@@ -134,5 +132,9 @@ impl NoteViewer for EditorView {
         if let Err(e) = self.title_update.send(text) {
             error!("Error sending an init message for setting the title: {}", e);
         }
+    }
+
+    fn view_change_on_content(&self, vault_path: &VaultPath) -> Box<dyn NoteViewer> {
+        Box::new(EditorView::new(vault_path))
     }
 }
