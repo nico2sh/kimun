@@ -7,7 +7,7 @@ const AUTOSAVE_SECS: u64 = 5;
 
 pub struct SaveManager {
     text: Arc<Mutex<String>>,
-    active: Arc<AtomicBool>,
+    active_loop: Arc<AtomicBool>,
     is_saved: Arc<AtomicBool>,
     path: Arc<Mutex<Option<VaultPath>>>,
     vault: NoteVault,
@@ -17,7 +17,7 @@ impl SaveManager {
     pub fn new<S: AsRef<str>>(text: S, path: &Option<VaultPath>, vault: &NoteVault) -> Self {
         Self {
             text: Arc::new(Mutex::new(text.as_ref().to_string())),
-            active: Arc::new(AtomicBool::new(true)),
+            active_loop: Arc::new(AtomicBool::new(true)),
             is_saved: Arc::new(AtomicBool::new(true)),
             path: Arc::new(Mutex::new(path.to_owned())),
             vault: vault.to_owned(),
@@ -29,9 +29,9 @@ impl SaveManager {
         let is_saved = self.is_saved.clone();
         let vault = self.vault.clone();
         let path = self.path.clone();
-        let active = self.active.clone();
+        let active_loop = self.active_loop.clone();
         std::thread::spawn(move || {
-            while active.load(std::sync::atomic::Ordering::Relaxed) {
+            while active_loop.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_secs(AUTOSAVE_SECS));
                 info!("Should I save...");
                 if !is_saved.load(std::sync::atomic::Ordering::Relaxed) {
@@ -80,7 +80,7 @@ impl SaveManager {
 
 impl Drop for SaveManager {
     fn drop(&mut self) {
-        self.active
+        self.active_loop
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
