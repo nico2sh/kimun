@@ -44,9 +44,9 @@ impl EditorView {
         let title_to_update = self.title.clone();
         std::thread::spawn(move || {
             while let Ok(text) = receiver.recv() {
-                let title = NoteVault::get_title(text);
-                *title_to_update.lock().unwrap() =
-                    title.unwrap_or_else(|| "<Untitled>".to_string());
+                let title = NoteVault::get_title(text).unwrap_or_else(|| "<Untitled>".to_string());
+                debug!("Updating title to `{}`", title);
+                *title_to_update.lock().unwrap() = title;
             }
         });
     }
