@@ -1,10 +1,12 @@
 // pub mod async_db;
+mod search_terms;
 
 use std::path::{Path, PathBuf};
 
 use log::{debug, error};
 use rusqlite::{config::DbConfig, params, Connection, Transaction};
-use rusqlite::{OpenFlags, OptionalExtension};
+use rusqlite::{params_from_iter, OpenFlags, OptionalExtension};
+use search_terms::SearchTerms;
 
 use super::error::DBError;
 
@@ -189,18 +191,46 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
 
 pub fn search_terms<S: AsRef<str>>(
     connection: &mut Connection,
-    terms: S,
-    include_path: bool,
+    query: S,
 ) -> Result<Vec<(NoteEntryData, NoteDetails)>, DBError> {
-    let sql = if include_path {
-        "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-    } else {
-        "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE text MATCH ?1"
-    };
+    let search_terms = SearchTerms::from_query_string(query);
+    let mut var_num = 1;
+    let base_sql = "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
+    let mut params = vec![];
+    let mut queries = vec![];
+    if !search_terms.terms.is_empty() {
+        let terms_sql = format!(" WHERE {} notesContent MATCH ?{}", base_sql, var_num);
+        queries.push(terms_sql);
+        params.push(search_terms.terms.join(" "));
+        var_num += 1;
+    }
+    if !search_terms.breadcrumb.is_empty() {
+        let terms_sql = format!(
+            " WHERE {} notesContent.breadcrumb MATCH ?{}",
+            base_sql, var_num
+        );
+        queries.push(terms_sql);
+        params.push(search_terms.breadcrumb.join(" "));
+        var_num += 1;
+    }
+    if !search_terms.path.is_empty() {
+        let terms_sql = format!(" WHERE {} notesContent.path MATCH ?{}", base_sql, var_num);
+        queries.push(terms_sql);
+        params.push(search_terms.path.join(" "));
+    }
 
-    let mut stmt = connection.prepare(sql)?;
+    if queries.is_empty() {
+        debug!("No query provided");
+        return Ok(vec![]);
+    }
+
+    let sql = queries.join(" INTERSECT ");
+    debug!("QUERY: {}", sql);
+
+    let params = params_from_iter(params);
+    let mut stmt = connection.prepare(&sql)?;
     let res = stmt
-        .query_map([terms.as_ref()], |row| {
+        .query_map(params, |row| {
             let path: String = row.get(0)?;
             let title = row.get(1)?;
             let size = row.get(2)?;

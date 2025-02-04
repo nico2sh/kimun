@@ -126,7 +126,7 @@ impl FilteredListFunctions<(), NoteDetails> for VaultSearchFunctions {
             return vec![];
         }
 
-        match self.vault.search_notes(filter_text, true) {
+        match self.vault.search_notes(filter_text) {
             Ok(result) => result,
             Err(e) => {
                 error!("Error searching notes: {}", e);

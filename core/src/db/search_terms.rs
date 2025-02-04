@@ -1,7 +1,4 @@
-use std::f64::INFINITY;
-
 use log::debug;
-use regex::Regex;
 
 const IN_CHAR: &str = ">";
 const IN_LETTER: &str = "in";
@@ -111,9 +108,9 @@ impl QueryTermExtractor {
 
 #[derive(Default, Debug)]
 pub struct SearchTerms {
-    breadcrumb: Vec<String>,
-    path: Vec<String>,
-    terms: Vec<String>,
+    pub terms: Vec<String>,
+    pub breadcrumb: Vec<String>,
+    pub path: Vec<String>,
 }
 
 impl SearchTerms {
@@ -155,7 +152,7 @@ impl SearchTerms {
         self
     }
 
-    fn get_query_cond(&self) -> (String, Vec<String>) {
+    pub fn get_query_cond(&self) -> (String, Vec<String>) {
         let mut cond = vec![];
         let mut var_num = 1;
         let mut values = vec![];
@@ -181,6 +178,19 @@ impl SearchTerms {
 #[cfg(test)]
 mod tests {
     use super::SearchTerms;
+
+    #[test]
+    fn get_conditions() {
+        let search_terms = SearchTerms {
+            terms: vec!["some".to_string(), "text".to_string()],
+            path: vec!["file".to_string()],
+            breadcrumb: vec!["title".to_string(), "more_title".to_string()],
+        };
+
+        let (cond, terms) = search_terms.get_query_cond();
+        println!("condition: {}", cond);
+        println!("terms: {:?}", terms);
+    }
 
     #[test]
     fn search_terms() {
