@@ -2,7 +2,6 @@ mod content_data;
 mod db;
 pub mod error;
 pub mod nfs;
-mod search_terms;
 pub mod utilities;
 
 use std::{
@@ -198,18 +197,14 @@ impl NoteVault {
     }
 
     // Search notes using terms
-    pub fn search_notes<S: AsRef<str>>(
-        &self,
-        terms: S,
-        wildcard: bool,
-    ) -> Result<Vec<NoteDetails>, VaultError> {
+    pub fn search_notes<S: AsRef<str>>(&self, terms: S) -> Result<Vec<NoteDetails>, VaultError> {
         // let mut connection = ConnectionBuilder::new(&self.workspace_path)
         //     .build()
         //     .unwrap();
         let terms = terms.as_ref().to_owned();
 
         let a = self.vault_db.call(move |conn| {
-            db::search_terms(conn, terms, wildcard).map(|vec| {
+            db::search_terms(conn, terms).map(|vec| {
                 vec.into_iter()
                     .map(|(_data, details)| details)
                     .collect::<Vec<NoteDetails>>()
