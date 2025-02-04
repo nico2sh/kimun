@@ -5,9 +5,11 @@ A notes app. Focus on simplicity, but powerful on searchability.
 100% human written.
 
 ## Building
+
 The app uses gxhash that uses some specific hardware acceleration features. If when compiling you get an error, make sure you add the flag `RUSTFLAGS="-C target-cpu=native"`
 
 On Windows (PowerShell):
+
 ```powershell
 $env:RUSTFLAGS="-C target-cpu=native"
 ```
@@ -20,7 +22,7 @@ Here are the items I want to fix immediately to consider this usable. Then will 
 * [ ] Different sort search results
 * [X] Add title to the note editor
 * [ ] Command Palette
-* [ ] Display shortcuts
+* [ ] Display key shortcuts
 * [ ] Resolve relative paths
 * [ ] Modals with progress in the settings when reindexing
 * [ ] Backlink support
