@@ -40,6 +40,9 @@ You can then combine file names and text search terms to narrow the results.
 ### Narrowing to sections
 
 Additionally you can use the Markdown's document structure to find notes within sections. Each section is defined by a markdown header, and the keyword/prefix to search within section is `>` or `in:`. Both produce the same effect.
+
+### Putting all together
+
 Let's pretend you have these notes:
 
 > tasks.md
