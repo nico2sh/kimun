@@ -1,17 +1,19 @@
 // pub mod async_db;
+mod search_terms;
 
 use std::path::{Path, PathBuf};
 
 use log::{debug, error};
 use rusqlite::{config::DbConfig, params, Connection, Transaction};
-use rusqlite::{OpenFlags, OptionalExtension};
+use rusqlite::{params_from_iter, OpenFlags, OptionalExtension};
+use search_terms::SearchTerms;
 
 use super::error::DBError;
 
 use super::NoteDetails;
 use super::{nfs::NoteEntryData, VaultPath};
 
-const VERSION: &str = "0.1";
+const VERSION: &str = "0.2";
 const DB_FILE: &str = "notes.sqlite";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +178,7 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
     tx.execute(
         "CREATE VIRTUAL TABLE notesContent USING fts4(
             path,
+            breadcrumb,
             text
         )",
         (), // empty list of parameters.
@@ -188,18 +191,46 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
 
 pub fn search_terms<S: AsRef<str>>(
     connection: &mut Connection,
-    terms: S,
-    include_path: bool,
+    query: S,
 ) -> Result<Vec<(NoteEntryData, NoteDetails)>, DBError> {
-    let sql = if include_path {
-        "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
-    } else {
-        "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE text MATCH ?1"
-    };
+    let search_terms = SearchTerms::from_query_string(query);
+    let mut var_num = 1;
+    let base_sql = "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
+    let mut params = vec![];
+    let mut queries = vec![];
+    if !search_terms.terms.is_empty() {
+        let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
+        queries.push(terms_sql);
+        params.push(search_terms.terms.join(" "));
+        var_num += 1;
+    }
+    if !search_terms.breadcrumb.is_empty() {
+        let terms_sql = format!(
+            "{} WHERE notesContent.breadcrumb MATCH ?{}",
+            base_sql, var_num
+        );
+        queries.push(terms_sql);
+        params.push(search_terms.breadcrumb.join(" "));
+        var_num += 1;
+    }
+    if !search_terms.path.is_empty() {
+        let terms_sql = format!("{} WHERE notesContent.path MATCH ?{}", base_sql, var_num);
+        queries.push(terms_sql);
+        params.push(search_terms.path.join(" "));
+    }
 
-    let mut stmt = connection.prepare(sql)?;
+    if queries.is_empty() {
+        debug!("No query provided");
+        return Ok(vec![]);
+    }
+
+    let sql = queries.join(" INTERSECT ");
+    debug!("QUERY: {}", sql);
+
+    let params = params_from_iter(params);
+    let mut stmt = connection.prepare(&sql)?;
     let res = stmt
-        .query_map([terms.as_ref()], |row| {
+        .query_map(params, |row| {
             let path: String = row.get(0)?;
             let title = row.get(1)?;
             let size = row.get(2)?;
@@ -265,42 +296,27 @@ pub fn get_notes(
     Ok(res)
 }
 
-pub fn insert_notes<P: AsRef<Path>>(
+pub fn insert_notes(
     tx: &Transaction,
-    base_path: P,
     notes: &Vec<(NoteEntryData, NoteDetails)>,
 ) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Inserting {} notes", notes.len());
         for (data, details) in notes {
-            let mut details = details.clone();
-            insert_note(
-                tx,
-                // TODO: Fix this, should not have to read from disk
-                details.get_text(&base_path).unwrap_or_default(),
-                data,
-                &details,
-            )?;
+            insert_note(tx, data, details)?;
         }
     }
     Ok(())
 }
 
-pub fn update_notes<P: AsRef<Path>>(
+pub fn update_notes(
     tx: &Transaction,
-    base_path: P,
     notes: &Vec<(NoteEntryData, NoteDetails)>,
 ) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Updating {} notes", notes.len());
         for (data, details) in notes {
-            let mut details = details.clone();
-            update_note(
-                tx,
-                details.get_text(&base_path).unwrap_or_default(),
-                data,
-                &details,
-            )?;
+            update_note(tx, data, details)?;
         }
     }
     Ok(())
@@ -315,26 +331,24 @@ pub fn delete_notes(tx: &Transaction, paths: &Vec<VaultPath>) -> Result<(), DBEr
     Ok(())
 }
 
-pub fn save_note<S: AsRef<str>>(
+pub fn save_note(
     connection: &mut Connection,
-    text: S,
     data: &NoteEntryData,
     details: &NoteDetails,
 ) -> Result<(), DBError> {
     let exists = note_exists(connection, &data.path)?;
     let tx = connection.transaction()?;
     if exists {
-        update_note(&tx, text, data, details)
+        update_note(&tx, data, details)
     } else {
-        insert_note(&tx, text, data, details)
+        insert_note(&tx, data, details)
     }?;
     tx.commit()?;
     Ok(())
 }
 
-fn insert_note<S: AsRef<str>>(
+fn insert_note(
     tx: &Transaction,
-    text: S,
     data: &NoteEntryData,
     details: &NoteDetails,
 ) -> Result<(), DBError> {
@@ -345,17 +359,21 @@ fn insert_note<S: AsRef<str>>(
     ){
         error!("Error inserting note: {}\nDetails: {}", e, details);
     }
-    tx.execute(
-        "INSERT INTO notesContent (path, text) VALUES (?1, ?2)",
-        params![details.path.to_string(), text.as_ref()],
-    )?;
+    let content_data = &details.data;
+    for chunk in &content_data.content_chunks {
+        let breadcrumb = chunk.get_breadcrumb();
+        let chunk_text = &chunk.text;
+        tx.execute(
+            "INSERT INTO notesContent (path, breadcrumb, text) VALUES (?1, ?2, ?3)",
+            params![details.path.to_string(), breadcrumb, chunk_text],
+        )?;
+    }
 
     Ok(())
 }
 
-fn update_note<S: AsRef<str>>(
+fn update_note(
     tx: &Transaction,
-    text: S,
     data: &NoteEntryData,
     details: &NoteDetails,
 ) -> Result<(), DBError> {
@@ -366,10 +384,19 @@ fn update_note<S: AsRef<str>>(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
         params![path.to_string(), title, data.size, data.modified_secs, hash],
     )?;
+    let content_data = &details.data;
     tx.execute(
-        "UPDATE notesContent SET text = ?2 WHERE path = ?1",
-        params![path.to_string(), text.as_ref()],
+        "DELETE FROM notesContent WHERE path = ?1",
+        params![path.to_string()],
     )?;
+    for chunk in &content_data.content_chunks {
+        let breadcrumb = chunk.get_breadcrumb();
+        let chunk_text = &chunk.text;
+        tx.execute(
+            "INSERT INTO notesContent (path, breadcrumb, text) VALUES (?1, ?2, ?3)",
+            params![details.path.to_string(), breadcrumb, chunk_text],
+        )?;
+    }
 
     Ok(())
 }
