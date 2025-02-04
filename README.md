@@ -37,6 +37,85 @@ As an example, if you have three notes called `note1.md`, `note2.md` and `note3.
 You can limit the search to specific files using the `@` prefix or `at:`. Both produce the same effect and ignores the file extension. In the example above, the search term `@note1` or `at:note1` will only return the note `note1.md`.
 You can then combine file names and text search terms to narrow the results.
 
+### Narrowing to sections
+
+Additionally you can use the Markdown's document structure to find notes within sections. Each section is defined by a markdown header, and the keyword/prefix to search within section is `>` or `in:`. Both produce the same effect.
+Let's pretend you have these notes:
+
+> tasks.md
+
+```markdown
+# Work
+
+## TODO
+
+* Talk with Bill
+* Finish the report
+
+# Personal
+
+* Make the search in Kimün awesome
+* Buy groceries
+* Take screenshots of the app
+```
+
+> projects.md
+
+```markdown
+# Projects
+
+Here is a list of projects I'm working on.
+
+## Personal
+
+Personal Projects
+
+### Kimün
+
+The simple but great note taking app!
+
+#### Features
+* Powerful search
+* You own the note files
+* Markdown!
+
+### Semtag
+
+A bash script to generate Semantic Version tags on git releases
+
+#### Features
+* Bash! Runs almost everywhere
+* Uses git tags
+* Includes the commits in the commit comment
+```
+
+> personal-thoughts.md
+
+```markdown
+# My thoughts
+* I prefer to keep the notes in one app and task management on a different one, so the above example doesn't reflect my own workflow with Kimün
+* I can use the journal note names with dates to limit the search to specific years by searching by filename and content
+```
+
+> general-thoughts.md
+
+```markdown
+# Random thoughts
+* I think this is definitively the year of Linux Desktop
+* I'm intentionally not putting the name of the app in this one for the example
+* I like wide screens
+```
+
+If I do a search, it will return:
+
+| Search term | Result | Notes |
+|-------------|--------|-------|
+|`kimun` | `projects.md` `tasks.md` `personal-thoughts.md`| All three notes contains Kimün, the dieresis is ignored|
+|`>personal kimun` |`projects.md` `tasks.md`| Only these two notes have the search term under "Personal"|
+|`@thoughts` |`personal-thougts.md` `general-thougts.md`| We look for a file whose name contains "thoughts"|
+|`@thoughts kimun` |`personal-thougts.md`| We look for a file called "thoughts" containing "Kimun"|
+|`screen*` |`tasks.md` `general-thougts.md`| "tasks.md" contains the word "screenshot", "general-thoughts.md" contains the word "screens"|
+
 ## Short-term roadmap
 
 Here are the items I want to fix immediately to consider this usable. Then will focus on other cool features:
