@@ -199,14 +199,14 @@ pub fn search_terms<S: AsRef<str>>(
     let mut params = vec![];
     let mut queries = vec![];
     if !search_terms.terms.is_empty() {
-        let terms_sql = format!(" WHERE {} notesContent MATCH ?{}", base_sql, var_num);
+        let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
         queries.push(terms_sql);
         params.push(search_terms.terms.join(" "));
         var_num += 1;
     }
     if !search_terms.breadcrumb.is_empty() {
         let terms_sql = format!(
-            " WHERE {} notesContent.breadcrumb MATCH ?{}",
+            "{} WHERE notesContent.breadcrumb MATCH ?{}",
             base_sql, var_num
         );
         queries.push(terms_sql);
@@ -214,7 +214,7 @@ pub fn search_terms<S: AsRef<str>>(
         var_num += 1;
     }
     if !search_terms.path.is_empty() {
-        let terms_sql = format!(" WHERE {} notesContent.path MATCH ?{}", base_sql, var_num);
+        let terms_sql = format!("{} WHERE notesContent.path MATCH ?{}", base_sql, var_num);
         queries.push(terms_sql);
         params.push(search_terms.path.join(" "));
     }
