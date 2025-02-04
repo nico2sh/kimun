@@ -11,7 +11,7 @@ use super::error::DBError;
 use super::NoteDetails;
 use super::{nfs::NoteEntryData, VaultPath};
 
-const VERSION: &str = "0.1";
+const VERSION: &str = "0.2";
 const DB_FILE: &str = "notes.sqlite";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +176,7 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
     tx.execute(
         "CREATE VIRTUAL TABLE notesContent USING fts4(
             path,
+            breadcrumb,
             text
         )",
         (), // empty list of parameters.
@@ -265,42 +266,27 @@ pub fn get_notes(
     Ok(res)
 }
 
-pub fn insert_notes<P: AsRef<Path>>(
+pub fn insert_notes(
     tx: &Transaction,
-    base_path: P,
     notes: &Vec<(NoteEntryData, NoteDetails)>,
 ) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Inserting {} notes", notes.len());
         for (data, details) in notes {
-            let mut details = details.clone();
-            insert_note(
-                tx,
-                // TODO: Fix this, should not have to read from disk
-                details.get_text(&base_path).unwrap_or_default(),
-                data,
-                &details,
-            )?;
+            insert_note(tx, data, details)?;
         }
     }
     Ok(())
 }
 
-pub fn update_notes<P: AsRef<Path>>(
+pub fn update_notes(
     tx: &Transaction,
-    base_path: P,
     notes: &Vec<(NoteEntryData, NoteDetails)>,
 ) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Updating {} notes", notes.len());
         for (data, details) in notes {
-            let mut details = details.clone();
-            update_note(
-                tx,
-                details.get_text(&base_path).unwrap_or_default(),
-                data,
-                &details,
-            )?;
+            update_note(tx, data, details)?;
         }
     }
     Ok(())
@@ -315,26 +301,24 @@ pub fn delete_notes(tx: &Transaction, paths: &Vec<VaultPath>) -> Result<(), DBEr
     Ok(())
 }
 
-pub fn save_note<S: AsRef<str>>(
+pub fn save_note(
     connection: &mut Connection,
-    text: S,
     data: &NoteEntryData,
     details: &NoteDetails,
 ) -> Result<(), DBError> {
     let exists = note_exists(connection, &data.path)?;
     let tx = connection.transaction()?;
     if exists {
-        update_note(&tx, text, data, details)
+        update_note(&tx, data, details)
     } else {
-        insert_note(&tx, text, data, details)
+        insert_note(&tx, data, details)
     }?;
     tx.commit()?;
     Ok(())
 }
 
-fn insert_note<S: AsRef<str>>(
+fn insert_note(
     tx: &Transaction,
-    text: S,
     data: &NoteEntryData,
     details: &NoteDetails,
 ) -> Result<(), DBError> {
@@ -345,17 +329,21 @@ fn insert_note<S: AsRef<str>>(
     ){
         error!("Error inserting note: {}\nDetails: {}", e, details);
     }
-    tx.execute(
-        "INSERT INTO notesContent (path, text) VALUES (?1, ?2)",
-        params![details.path.to_string(), text.as_ref()],
-    )?;
+    let content_data = &details.data;
+    for chunk in &content_data.content_chunks {
+        let breadcrumb = chunk.get_breadcrumb();
+        let chunk_text = &chunk.text;
+        tx.execute(
+            "INSERT INTO notesContent (path, breadcrumb, text) VALUES (?1, ?2, ?3)",
+            params![details.path.to_string(), breadcrumb, chunk_text],
+        )?;
+    }
 
     Ok(())
 }
 
-fn update_note<S: AsRef<str>>(
+fn update_note(
     tx: &Transaction,
-    text: S,
     data: &NoteEntryData,
     details: &NoteDetails,
 ) -> Result<(), DBError> {
@@ -366,10 +354,19 @@ fn update_note<S: AsRef<str>>(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
         params![path.to_string(), title, data.size, data.modified_secs, hash],
     )?;
+    let content_data = &details.data;
     tx.execute(
-        "UPDATE notesContent SET text = ?2 WHERE path = ?1",
-        params![path.to_string(), text.as_ref()],
+        "DELETE FROM notesContent WHERE path = ?1",
+        params![path.to_string()],
     )?;
+    for chunk in &content_data.content_chunks {
+        let breadcrumb = chunk.get_breadcrumb();
+        let chunk_text = &chunk.text;
+        tx.execute(
+            "INSERT INTO notesContent (path, breadcrumb, text) VALUES (?1, ?2, ?3)",
+            params![details.path.to_string(), breadcrumb, chunk_text],
+        )?;
+    }
 
     Ok(())
 }

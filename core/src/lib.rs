@@ -2,6 +2,7 @@ mod content_data;
 mod db;
 pub mod error;
 pub mod nfs;
+mod search_terms;
 pub mod utilities;
 
 use std::{
@@ -16,7 +17,9 @@ use content_data::{extract_data, NoteContentData};
 use db::VaultDB;
 use error::{DBError, FSError, VaultError};
 use log::{debug, info};
-use nfs::{load_note, save_note, visitor::NoteListVisitorBuilder, VaultEntry, VaultPath};
+use nfs::{
+    load_note, save_note, visitor::NoteListVisitorBuilder, NoteEntryData, VaultEntry, VaultPath,
+};
 use utilities::path_to_string;
 
 const JOURNAL_PATH: &str = "journal";
@@ -245,12 +248,11 @@ impl NoteVault {
         let notes_to_delete = builder.get_notes_to_delete();
         let notes_to_modify = builder.get_notes_to_modify();
 
-        let workspace_path = self.workspace_path.clone();
         self.vault_db.call(move |conn| {
             let tx = conn.transaction()?;
-            db::insert_notes(&tx, &workspace_path, &notes_to_add)?;
+            db::insert_notes(&tx, &notes_to_add)?;
             db::delete_notes(&tx, &notes_to_delete)?;
-            db::update_notes(&tx, &workspace_path, &notes_to_modify)?;
+            db::update_notes(&tx, &notes_to_modify)?;
             tx.commit()?;
             Ok(())
         })?;
@@ -288,7 +290,11 @@ impl NoteVault {
         Ok(result)
     }
 
-    pub fn create_note<S: AsRef<str>>(&self, path: &VaultPath, text: S) -> Result<(), VaultError> {
+    pub fn create_note<S: AsRef<str>>(
+        &self,
+        path: &VaultPath,
+        text: S,
+    ) -> Result<(NoteEntryData, NoteDetails), VaultError> {
         if self.exists(path).is_none() {
             self.save_note(path, text)
         } else {
@@ -296,18 +302,21 @@ impl NoteVault {
         }
     }
 
-    pub fn save_note<S: AsRef<str>>(&self, path: &VaultPath, text: S) -> Result<(), VaultError> {
+    pub fn save_note<S: AsRef<str>>(
+        &self,
+        path: &VaultPath,
+        text: S,
+    ) -> Result<(NoteEntryData, NoteDetails), VaultError> {
         // Save to disk
         let entry_data = save_note(&self.workspace_path, path, &text)?;
-
         let details = entry_data.load_details(&self.workspace_path, path)?;
+        let result = (entry_data.clone(), details.clone());
 
         // Save to DB
-        let text = text.as_ref().to_owned();
         self.vault_db
-            .call(move |conn| db::save_note(conn, text, &entry_data, &details))?;
+            .call(move |conn| db::save_note(conn, &entry_data, &details))?;
 
-        Ok(())
+        Ok(result)
     }
 }
 
@@ -538,8 +547,8 @@ fn create_index_for<P: AsRef<Path>>(
 
     let tx = connection.transaction()?;
     db::delete_notes(&tx, &notes_to_delete)?;
-    db::insert_notes(&tx, workspace_path, &notes_to_add)?;
-    db::update_notes(&tx, workspace_path, &notes_to_modify)?;
+    db::insert_notes(&tx, &notes_to_add)?;
+    db::update_notes(&tx, &notes_to_modify)?;
     tx.commit()?;
 
     let directories_to_insert = builder.get_directories_found();

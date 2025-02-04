@@ -278,7 +278,7 @@ impl Display for NoteContentData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentChunk {
     breadcrumb: Vec<String>,
-    text: String,
+    pub text: String,
 }
 
 impl ContentChunk {
