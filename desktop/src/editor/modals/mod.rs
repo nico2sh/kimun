@@ -6,7 +6,7 @@ use crossbeam_channel::Sender;
 use eframe::egui;
 use filtered_list::FilteredList;
 use kimun_core::{nfs::VaultPath, NoteVault};
-use log::debug;
+use log::{debug, error};
 use preview_list::PreviewList;
 use vault_browse::{VaultBrowseFunctions, VaultSearchFunctions};
 
@@ -37,7 +37,11 @@ impl ModalManager {
             let modal = egui::Modal::new(egui::Id::new("")).show(ui.ctx(), |ui| {
                 ui.set_width(600.0);
                 // ui.heading("Heading");
-                current_modal.update(ui);
+                if let Some(message) = current_modal.update(ui) {
+                    if let Err(e) = self.message_sender.send(message) {
+                        error!("Error sending an update message from modal {}", e);
+                    }
+                }
             });
             if modal.should_close() {
                 self.current_modal = None;
@@ -52,10 +56,7 @@ impl ModalManager {
                 debug!("show browser");
                 let content = PreviewList::new(
                     self.vault.clone(),
-                    FilteredList::new(
-                        VaultBrowseFunctions::new(path.clone(), self.vault.clone()),
-                        self.message_sender.clone(),
-                    ),
+                    FilteredList::new(VaultBrowseFunctions::new(path.clone(), self.vault.clone())),
                 );
                 self.current_modal = Some(Box::new(content));
             }
@@ -63,10 +64,7 @@ impl ModalManager {
                 debug!("show searcher");
                 let content = PreviewList::new(
                     self.vault.clone(),
-                    FilteredList::new(
-                        VaultSearchFunctions::new(self.vault.clone()),
-                        self.message_sender.clone(),
-                    ),
+                    FilteredList::new(VaultSearchFunctions::new(self.vault.clone())),
                 );
                 self.current_modal = Some(Box::new(content));
             }
@@ -79,5 +77,5 @@ impl ModalManager {
 }
 
 pub trait EditorModal {
-    fn update(&mut self, ui: &mut egui::Ui);
+    fn update(&mut self, ui: &mut egui::Ui) -> Option<EditorMessage>;
 }
