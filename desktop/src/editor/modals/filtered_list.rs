@@ -56,7 +56,7 @@ pub enum FilteredListFunctionMessage<F> {
     ResetState(F),
 }
 
-pub(super) struct FilteredList<F, P, D>
+pub struct FilteredList<F, P, D>
 where
     F: FilteredListFunctions<P, D> + 'static,
     P: Send + Sync + Clone + 'static,

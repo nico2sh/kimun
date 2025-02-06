@@ -9,12 +9,12 @@ pub struct SaveManager {
     text: Arc<Mutex<String>>,
     active_loop: Arc<AtomicBool>,
     is_saved: Arc<AtomicBool>,
-    path: Arc<Mutex<Option<VaultPath>>>,
+    path: Arc<Mutex<VaultPath>>,
     vault: NoteVault,
 }
 
 impl SaveManager {
-    pub fn new<S: AsRef<str>>(text: S, path: &Option<VaultPath>, vault: &NoteVault) -> Self {
+    pub fn new<S: AsRef<str>>(text: S, path: &VaultPath, vault: &NoteVault) -> Self {
         Self {
             text: Arc::new(Mutex::new(text.as_ref().to_string())),
             active_loop: Arc::new(AtomicBool::new(true)),
@@ -37,12 +37,10 @@ impl SaveManager {
                 if !is_saved.load(std::sync::atomic::Ordering::Relaxed) {
                     info!("Saving...");
                     let path_guard = path.lock().unwrap();
-                    if let Some(path) = &*path_guard {
-                        if let Err(e) = vault.save_note(path, &*text.lock().unwrap()) {
-                            error!("Error saving Note at {}: {}", path, e);
-                        } else {
-                            is_saved.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
+                    if let Err(e) = vault.save_note(&path_guard, &*text.lock().unwrap()) {
+                        error!("Error saving Note at {}: {}", path_guard, e);
+                    } else {
+                        is_saved.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -61,19 +59,18 @@ impl SaveManager {
 
     pub fn load<S: AsRef<str>>(&self, text: S, path: &VaultPath) {
         *self.text.lock().unwrap() = text.as_ref().to_string();
-        *self.path.lock().unwrap() = Some(path.to_owned());
+        *self.path.lock().unwrap() = path.to_owned();
         self.is_saved
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
-        if let Some(path) = &*self.path.lock().unwrap() {
-            self.vault.save_note(path, &*self.text.lock().unwrap())?;
-        }
+        let path = &*self.path.lock().unwrap();
+        self.vault.save_note(path, &*self.text.lock().unwrap())?;
         Ok(())
     }
 
-    pub fn get_path(&self) -> Option<VaultPath> {
+    pub fn get_path(&self) -> VaultPath {
         self.path.lock().unwrap().to_owned()
     }
 }

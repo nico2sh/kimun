@@ -1,4 +1,4 @@
-mod modals;
+pub mod modals;
 mod save_manager;
 mod viewers;
 
@@ -9,7 +9,7 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 use log::{debug, error};
 use modals::{ModalManager, Modals};
 use save_manager::SaveManager;
-use viewers::{NoView, NoteViewer, ViewerType};
+use viewers::{editor_view::EditorView, NoteViewer, ViewerType};
 
 use crate::{settings::Settings, WindowSwitch};
 
@@ -29,60 +29,51 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new(settings: &Settings, recreate_index: bool) -> anyhow::Result<Self> {
-        if let Some(workspace_dir) = &settings.workspace_dir {
-            let (sender, receiver) = crossbeam_channel::unbounded();
-            let vault = NoteVault::new(workspace_dir)?;
-            if recreate_index {
-                vault.init_and_validate()?;
-            }
-
-            let note_path = settings.last_paths.last().and_then(|path| {
-                if !path.is_note() {
-                    None
-                } else {
-                    Some(path.to_owned())
-                }
-            });
-            let modal_manager = ModalManager::new(vault.clone(), sender.clone());
-            let save_manager = SaveManager::new(String::new(), &note_path, &vault);
-            let mut editor = Self {
-                settings: settings.clone(),
-                viewer: Box::new(NoView::new()),
-                text: String::new(),
-                modal_manager,
-                save_manager,
-                vault,
-                message_sender: sender,
-                message_receiver: receiver,
-                request_focus: true,
-                request_windows_switch: None,
-            };
-            editor.load_note_path(&note_path)?;
-            editor.save_manager.init_loop();
-
-            Ok(editor)
-        } else {
-            bail!("Path not provided")
+    pub fn new(
+        vault: &NoteVault,
+        note_path: &VaultPath,
+        recreate_index: bool,
+    ) -> anyhow::Result<Self> {
+        let settings = Settings::load_from_disk()?;
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        let vault = vault.to_owned();
+        if recreate_index {
+            vault.init_and_validate()?;
         }
+
+        let note_path = note_path.to_owned();
+        let modal_manager = ModalManager::new(vault.clone(), sender.clone());
+        let save_manager = SaveManager::new(String::new(), &note_path, &vault);
+        let mut editor = Self {
+            settings: settings.clone(),
+            viewer: Box::new(EditorView::new(&note_path)),
+            text: String::new(),
+            modal_manager,
+            save_manager,
+            vault,
+            message_sender: sender,
+            message_receiver: receiver,
+            request_focus: true,
+            request_windows_switch: None,
+        };
+        editor.load_note_path(&note_path)?;
+        editor.save_manager.init_loop();
+
+        Ok(editor)
     }
 
     /// Loads a note from the path
     /// if no path is specified, we put a placeholder view
     /// if the path is a directory, we put a placeholder view
     /// if the path is a note, then we load the note in the current view
-    fn load_note_path(&mut self, note_path: &Option<VaultPath>) -> anyhow::Result<()> {
-        if let Some(path) = &note_path {
-            if path.is_note() && self.vault.exists(path).is_some() {
-                let text = self.vault.load_note(path)?;
-                self.settings.add_path_history(path);
-                self.settings.save_to_disk()?;
-                self.load_content(path, text);
-            } else {
-                self.set_view(ViewerType::Nothing);
-            }
+    fn load_note_path(&mut self, note_path: &VaultPath) -> anyhow::Result<()> {
+        if note_path.is_note() && self.vault.exists(note_path).is_some() {
+            let text = self.vault.get_note_text(note_path)?;
+            self.settings.add_path_history(note_path);
+            self.settings.save_to_disk()?;
+            self.load_content(note_path, text);
         } else {
-            self.set_view(ViewerType::Nothing);
+            bail!("Note path is not a note or vault path doesn't exist")
         };
         self.modal_manager.close_modal();
 
@@ -107,17 +98,12 @@ impl Editor {
 
     fn manage_keys(&mut self, ctx: &egui::Context) {
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
-            let browse_path = self
-                .save_manager
-                .get_path()
-                .map(|path| {
-                    if path.is_note() {
-                        path.get_parent_path().0
-                    } else {
-                        path
-                    }
-                })
-                .unwrap_or_default();
+            let path = self.save_manager.get_path();
+            let browse_path = if path.is_note() {
+                path.get_parent_path().0
+            } else {
+                path
+            };
             self.modal_manager
                 .set_modal(Modals::VaultBrowse(browse_path));
         }
@@ -145,13 +131,13 @@ impl Editor {
         while let Ok(message) = self.message_receiver.try_recv() {
             match message {
                 EditorMessage::OpenNote(note_path) => {
-                    self.load_note_path(&Some(note_path))?;
+                    self.load_note_path(&note_path)?;
                     self.request_focus = true;
                 }
                 EditorMessage::NewJournal => {
                     let (data, _content) = self.vault.journal_entry()?;
                     {
-                        self.load_note_path(&Some(data.path))?;
+                        self.load_note_path(&data.path)?;
                         self.request_focus = true;
                     }
                 }
@@ -223,7 +209,7 @@ impl MainView for Editor {
 
         self.update_messages(ui.ctx())?;
 
-        Ok(self.request_windows_switch)
+        Ok(self.request_windows_switch.clone())
     }
 }
 
