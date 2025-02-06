@@ -57,8 +57,4 @@ impl NoteViewer for RenderedView {
     }
 
     fn init(&mut self, _text: String) {}
-
-    fn view_change_on_content(&self, vault_path: &VaultPath) -> Box<dyn NoteViewer> {
-        Box::new(RenderedView::new(vault_path))
-    }
 }

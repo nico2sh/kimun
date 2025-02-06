@@ -30,5 +30,4 @@ pub trait NoteViewer {
     fn view(&mut self, text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<bool>;
     fn init(&mut self, text: String);
     fn manage_keys(&mut self, ctx: &egui::Context) -> Option<EditorMessage>;
-    fn view_change_on_content(&self, vault_path: &VaultPath) -> Box<dyn NoteViewer>;
 }

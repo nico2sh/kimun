@@ -84,7 +84,6 @@ impl Editor {
         self.text = text.clone();
         self.save_manager.load(&text, path);
 
-        self.viewer = self.viewer.view_change_on_content(path);
         self.viewer.init(text);
     }
     pub fn set_view(&mut self, vtype: ViewerType) {
