@@ -427,11 +427,9 @@ fn delete_directory(tx: &Transaction, directory_path: &VaultPath) -> Result<(), 
     let path_string = directory_path.to_string();
     let sql1 = "DELETE FROM notes WHERE path LIKE (?1 || '%')";
     let sql2 = "DELETE FROM notesContent WHERE path LIKE (?1 || '%')";
-    // let sql3 = "DELETE FROM directories WHERE path LIKE (?1 || '%')";
 
     tx.execute(sql1, params![path_string])?;
     tx.execute(sql2, params![path_string])?;
-    // tx.execute(sql3, params![path_string])?;
 
     Ok(())
 }
