@@ -12,12 +12,6 @@ enum ElementType {
     At,
 }
 
-enum ElementCloseChar {
-    Quote,
-    SingleQuote,
-    Space,
-}
-
 struct QueryTermExtractor {
     el_type: ElementType,
     term: String,
@@ -136,61 +130,11 @@ impl SearchTerms {
             terms,
         }
     }
-
-    pub fn under<S: AsRef<str>>(mut self, term: S) -> Self {
-        self.breadcrumb.push(term.as_ref().to_string());
-        self
-    }
-
-    pub fn inside<S: AsRef<str>>(mut self, term: S) -> Self {
-        self.path.push(term.as_ref().to_string());
-        self
-    }
-
-    pub fn with_text<S: AsRef<str>>(mut self, term: S) -> Self {
-        self.terms.push(term.as_ref().to_string());
-        self
-    }
-
-    pub fn get_query_cond(&self) -> (String, Vec<String>) {
-        let mut cond = vec![];
-        let mut var_num = 1;
-        let mut values = vec![];
-        if !self.terms.is_empty() {
-            cond.push(format!("notesContent.text MATCH ?{}", var_num));
-            values.push(self.terms.join(" "));
-            var_num += 1;
-        }
-        if !self.path.is_empty() {
-            cond.push(format!("notesContent.path MATCH ?{}", var_num));
-            values.push(self.path.join(" "));
-            var_num += 1;
-        }
-        if !self.breadcrumb.is_empty() {
-            cond.push(format!("notesContent.breadcrumb MATCH ?{}", var_num));
-            values.push(self.breadcrumb.join(" "));
-        }
-
-        (cond.join(" AND "), values)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::SearchTerms;
-
-    #[test]
-    fn get_conditions() {
-        let search_terms = SearchTerms {
-            terms: vec!["some".to_string(), "text".to_string()],
-            path: vec!["file".to_string()],
-            breadcrumb: vec!["title".to_string(), "more_title".to_string()],
-        };
-
-        let (cond, terms) = search_terms.get_query_cond();
-        println!("condition: {}", cond);
-        println!("terms: {:?}", terms);
-    }
 
     #[test]
     fn search_terms() {

@@ -186,7 +186,7 @@ impl NoteVault {
     // If the file doesn't exist you will get a VaultError::FSError with a
     // FSError::NotePathNotFound as the source, you can use that to
     // lazy create a note, or use the load_or_create_note function instead
-    pub fn load_note(&self, path: &VaultPath) -> Result<String, VaultError> {
+    pub fn get_note_text(&self, path: &VaultPath) -> Result<String, VaultError> {
         let text = load_note(&self.workspace_path, path)?;
         Ok(text)
     }
