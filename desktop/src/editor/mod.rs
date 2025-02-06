@@ -9,7 +9,7 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 use log::{debug, error};
 use modals::{ModalManager, Modals};
 use save_manager::SaveManager;
-use viewers::{editor_view::EditorView, NoteViewer, ViewerType};
+use viewers::{editor_view::EditorView, rendered_view::RenderedView, NoteViewer, ViewerType};
 
 use crate::{settings::Settings, WindowSwitch};
 
@@ -18,10 +18,11 @@ use super::MainView;
 pub struct Editor {
     settings: Settings,
     viewer: Box<dyn NoteViewer>,
-    text: String,
+    raw_text: String,
     save_manager: SaveManager,
     modal_manager: ModalManager,
     vault: NoteVault,
+    note_path: VaultPath,
     message_sender: Sender<EditorMessage>,
     message_receiver: Receiver<EditorMessage>,
     request_focus: bool,
@@ -47,10 +48,11 @@ impl Editor {
         let mut editor = Self {
             settings: settings.clone(),
             viewer: Box::new(EditorView::new(&note_path)),
-            text: String::new(),
+            raw_text: String::new(),
             modal_manager,
             save_manager,
             vault,
+            note_path: note_path.clone(),
             message_sender: sender,
             message_receiver: receiver,
             request_focus: true,
@@ -63,15 +65,14 @@ impl Editor {
     }
 
     /// Loads a note from the path
-    /// if no path is specified, we put a placeholder view
-    /// if the path is a directory, we put a placeholder view
     /// if the path is a note, then we load the note in the current view
+    /// if not, we return an error
     fn load_note_path(&mut self, note_path: &VaultPath) -> anyhow::Result<()> {
         if note_path.is_note() && self.vault.exists(note_path).is_some() {
             let text = self.vault.get_note_text(note_path)?;
             self.settings.add_path_history(note_path);
             self.settings.save_to_disk()?;
-            self.load_content(note_path, text);
+            self.set_content(note_path, text);
         } else {
             bail!("Note path is not a note or vault path doesn't exist")
         };
@@ -80,15 +81,11 @@ impl Editor {
         Ok(())
     }
 
-    pub fn load_content(&mut self, path: &VaultPath, text: String) {
-        self.text = text.clone();
+    fn set_content(&mut self, path: &VaultPath, text: String) {
+        self.raw_text = text.clone();
         self.save_manager.load(&text, path);
 
         self.viewer.init(text);
-    }
-    pub fn set_view(&mut self, vtype: ViewerType) {
-        self.viewer = vtype.get_view();
-        self.viewer.init(self.text.clone());
     }
 
     fn save_note(&mut self) -> anyhow::Result<()> {
@@ -150,7 +147,7 @@ impl Editor {
                         }
                     }
                     debug!("New note at: {}", np);
-                    self.load_content(&np, String::new());
+                    self.set_content(&np, String::new());
                     self.modal_manager.close_modal();
                     self.request_focus = true;
                 }
@@ -170,7 +167,11 @@ impl Editor {
 
     fn change_viewer(&mut self, viewer: ViewerType) -> anyhow::Result<()> {
         self.save_note()?;
-        self.set_view(viewer);
+        self.viewer = match viewer {
+            ViewerType::Editor => Box::new(EditorView::new(&self.note_path)),
+            ViewerType::Rendered => Box::new(RenderedView::new(&self.note_path)),
+        };
+        self.viewer.init(self.raw_text.clone());
         Ok(())
     }
 }
@@ -187,10 +188,10 @@ impl MainView for Editor {
     fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowSwitch>> {
         self.modal_manager.view(ui)?;
         egui::ScrollArea::vertical()
-            .show(ui, |ui| match self.viewer.view(&mut self.text, ui) {
+            .show(ui, |ui| match self.viewer.view(&mut self.raw_text, ui) {
                 Ok(changed) => {
                     if changed {
-                        self.save_manager.update_text(&self.text);
+                        self.save_manager.update_text(&self.raw_text);
                     }
                     Ok(())
                 }
