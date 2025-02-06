@@ -1,12 +1,12 @@
-mod filtered_list;
+pub mod filtered_list;
 mod preview_list;
-mod vault_browse;
+pub mod vault_browse;
 
 use crossbeam_channel::Sender;
 use eframe::egui;
 use filtered_list::FilteredList;
-use log::debug;
 use kimun_core::{nfs::VaultPath, NoteVault};
+use log::debug;
 use preview_list::PreviewList;
 use vault_browse::{VaultBrowseFunctions, VaultSearchFunctions};
 

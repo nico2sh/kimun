@@ -93,7 +93,7 @@ where
             let vault = self.vault.clone();
             let tx = self.state_sender.clone();
             std::thread::spawn(move || {
-                let text = vault.load_note(&path).unwrap_or_default();
+                let text = vault.get_note_text(&path).unwrap_or_default();
                 if let Err(e) = tx.send(PreviewState::PreviewNote { path, text }) {
                     error!("Failed to send a preview load status: {}", e);
                 }

@@ -12,7 +12,7 @@ use super::{
 
 #[derive(Clone)]
 pub struct VaultBrowseFunctions {
-    path: VaultPath, // add code here
+    path: VaultPath,
     vault: NoteVault,
 }
 

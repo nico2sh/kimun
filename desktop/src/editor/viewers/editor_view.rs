@@ -24,7 +24,7 @@ pub struct EditorView {
 }
 
 impl EditorView {
-    pub(super) fn new(path: &VaultPath) -> Self {
+    pub fn new(path: &VaultPath) -> Self {
         let highlighter = MemoizedNoteHighlighter::default();
         let title = Arc::new(Mutex::new(String::new()));
         let (title_update, receiver) = crossbeam_channel::unbounded::<String>();
