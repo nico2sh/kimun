@@ -133,8 +133,4 @@ impl NoteViewer for EditorView {
             error!("Error sending an init message for setting the title: {}", e);
         }
     }
-
-    fn view_change_on_content(&self, vault_path: &VaultPath) -> Box<dyn NoteViewer> {
-        Box::new(EditorView::new(vault_path))
-    }
 }

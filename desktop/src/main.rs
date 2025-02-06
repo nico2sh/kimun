@@ -3,7 +3,7 @@
 mod editor;
 pub mod fonts;
 pub mod helpers;
-mod no_note;
+mod no_note_view;
 pub mod settings;
 
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use eframe::egui;
 use kimun_core::{nfs::VaultPath, NoteVault};
 // use filtered_list::row::{RowItem, RowMessage};
 use log::error;
-use no_note::NoView;
+use no_note_view::NoView;
 use settings::{view::SettingsView, Settings};
 
 fn main() -> eframe::Result {
