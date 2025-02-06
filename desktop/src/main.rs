@@ -78,7 +78,6 @@ impl DesktopApp {
             }
         });
 
-        let last_note = None;
         let vault = NoteVault::new(workspace_dir)?;
         let view: Box<dyn MainView> = match last_note {
             Some(path) => Box::new(Editor::new(&vault, &path, true)?),
