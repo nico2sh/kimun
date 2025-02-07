@@ -1,4 +1,5 @@
-pub mod modals;
+pub mod components;
+mod modals;
 mod save_manager;
 mod viewers;
 
