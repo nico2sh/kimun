@@ -1,12 +1,13 @@
 use eframe::egui;
+use egui_extras::{Size, StripBuilder};
 use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
     editor::{
-        modals::{
+        components::{
             filtered_list::FilteredList,
             vault_browse::{SelectorEntry, VaultBrowseFunctions},
-            EditorModal,
+            EditorComponent,
         },
         EditorMessage,
     },
@@ -35,6 +36,7 @@ impl MainView for NoView {
             .vertical_centered(|ui| {
                 ui.add_space(64.0);
                 ui.label("Open or create a new note");
+                ui.separator();
                 self.filtered_list.update(ui)
             })
             .inner;

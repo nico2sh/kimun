@@ -1,21 +1,20 @@
-pub mod filtered_list;
-mod preview_list;
-pub mod vault_browse;
-
 use crossbeam_channel::Sender;
 use eframe::egui;
-use filtered_list::FilteredList;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use log::{debug, error};
-use preview_list::PreviewList;
-use vault_browse::{VaultBrowseFunctions, VaultSearchFunctions};
 
-use super::EditorMessage;
+use crate::editor::components::{
+    filtered_list::FilteredList,
+    preview_list::PreviewList,
+    vault_browse::{VaultBrowseFunctions, VaultSearchFunctions},
+};
+
+use super::{components::EditorComponent, EditorMessage};
 
 pub struct ModalManager {
     message_sender: Sender<EditorMessage>,
     vault: NoteVault,
-    current_modal: Option<Box<dyn EditorModal>>,
+    current_modal: Option<Box<dyn EditorComponent>>,
 }
 
 pub enum Modals {
@@ -74,8 +73,4 @@ impl ModalManager {
     pub fn close_modal(&mut self) {
         self.current_modal = None;
     }
-}
-
-pub trait EditorModal {
-    fn update(&mut self, ui: &mut egui::Ui) -> Option<EditorMessage>;
 }

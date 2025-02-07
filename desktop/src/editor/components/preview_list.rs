@@ -8,7 +8,7 @@ use crate::editor::EditorMessage;
 use super::{
     filtered_list::{FilteredList, FilteredListFunctions, ListElement},
     vault_browse::SelectorEntry,
-    EditorModal,
+    EditorComponent,
 };
 
 enum PreviewState {
@@ -126,7 +126,7 @@ where
     }
 }
 
-impl<F, P, D> EditorModal for PreviewList<F, P, D>
+impl<F, P, D> EditorComponent for PreviewList<F, P, D>
 where
     F: FilteredListFunctions<P, D> + 'static,
     P: Send + Sync + Clone + 'static,

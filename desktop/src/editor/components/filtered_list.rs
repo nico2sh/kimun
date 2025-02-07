@@ -4,7 +4,8 @@ use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Widget};
 use log::{debug, error, info};
 
-use super::{EditorMessage, EditorModal};
+use super::EditorComponent;
+use crate::editor::EditorMessage;
 
 const ID_SEARCH: &str = "Search Popup";
 
@@ -181,7 +182,7 @@ where
     }
 }
 
-impl<F, P, D> EditorModal for FilteredList<F, P, D>
+impl<F, P, D> EditorComponent for FilteredList<F, P, D>
 where
     F: FilteredListFunctions<P, D>,
     P: Send + Sync + Clone + 'static,
