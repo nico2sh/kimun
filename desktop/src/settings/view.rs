@@ -69,7 +69,9 @@ impl MainView for SettingsView {
                                 egui::Frame::default()
                                     .fill(ui.visuals().noninteractive().weak_bg_fill)
                                     // .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                                    .rounding(ui.visuals().widgets.noninteractive.rounding)
+                                    .corner_radius(
+                                        ui.visuals().widgets.noninteractive.corner_radius,
+                                    )
                                     .show(ui, |ui| {
                                         ui.label(workspace_label);
                                     });
