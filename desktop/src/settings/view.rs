@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use eframe::egui::{self, CollapsingHeader};
-use log::{error, info};
 use kimun_core::{error::VaultError, utilities::path_to_string, NoteVault, NotesValidation};
+use log::{error, info};
 
 use crate::{MainView, WindowSwitch};
 
@@ -13,13 +13,14 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
-    pub fn new(settings: &Settings) -> Self {
-        Self {
+    pub fn new() -> anyhow::Result<Self> {
+        let settings = Settings::load_from_disk()?;
+        Ok(Self {
             settings: settings.to_owned(),
-        }
+        })
     }
 
-    fn add_worspace_button(
+    fn add_workspace_button(
         &mut self,
         ui: &mut egui::Ui,
         button: egui::Button<'_>,
@@ -41,7 +42,7 @@ impl MainView for SettingsView {
             .min_height(0.0)
             .show_inside(ui, |ui| {
                 ui.add_space(8.0);
-                let close_button = self.add_worspace_button(ui, egui::Button::new("Close"));
+                let close_button = self.add_workspace_button(ui, egui::Button::new("Close"));
                 if close_button.clicked() {
                     info!("Closing");
                     should_close = true;
@@ -68,7 +69,9 @@ impl MainView for SettingsView {
                                 egui::Frame::default()
                                     .fill(ui.visuals().noninteractive().weak_bg_fill)
                                     // .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                                    .rounding(ui.visuals().widgets.noninteractive.rounding)
+                                    .corner_radius(
+                                        ui.visuals().widgets.noninteractive.corner_radius,
+                                    )
                                     .show(ui, |ui| {
                                         ui.label(workspace_label);
                                     });
@@ -91,7 +94,7 @@ impl MainView for SettingsView {
                             ui.label(egui::RichText::new("Vault DB:").strong());
                             ui.horizontal(|ui| {
                                 if self
-                                    .add_worspace_button(ui, egui::Button::new("Re-Index"))
+                                    .add_workspace_button(ui, egui::Button::new("Re-Index"))
                                     .clicked()
                                 {
                                     if let Some(workspace_path) = &self.settings.workspace_dir {
@@ -109,7 +112,7 @@ impl MainView for SettingsView {
                                     };
                                 }
                                 if self
-                                    .add_worspace_button(ui, egui::Button::new("Rebuild DB"))
+                                    .add_workspace_button(ui, egui::Button::new("Rebuild DB"))
                                     .clicked()
                                 {
                                     if let Some(workspace_path) = &self.settings.workspace_dir {
@@ -130,9 +133,19 @@ impl MainView for SettingsView {
             });
         });
         if should_close {
-            Ok(Some(WindowSwitch::Editor {
-                recreate_index: workspace_changed,
-            }))
+            if let Some(workspace_dir) = &self.settings.workspace_dir {
+                let vault = NoteVault::new(workspace_dir)?;
+                if let Some(note_path) = self.settings.last_paths.last() {
+                    Ok(Some(WindowSwitch::Editor {
+                        vault,
+                        note_path: note_path.to_owned(),
+                    }))
+                } else {
+                    Ok(Some(WindowSwitch::NoNote { vault }))
+                }
+            } else {
+                Ok(None)
+            }
         } else {
             Ok(None)
         }

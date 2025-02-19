@@ -3,10 +3,12 @@ use eframe::egui::ScrollArea;
 use kimun_core::{nfs::VaultPath, NoteDetails, NoteVault};
 use log::error;
 
+use crate::editor::EditorMessage;
+
 use super::{
     filtered_list::{FilteredList, FilteredListFunctions, ListElement},
     vault_browse::SelectorEntry,
-    EditorModal,
+    EditorComponent,
 };
 
 enum PreviewState {
@@ -93,7 +95,7 @@ where
             let vault = self.vault.clone();
             let tx = self.state_sender.clone();
             std::thread::spawn(move || {
-                let text = vault.load_note(&path).unwrap_or_default();
+                let text = vault.get_note_text(&path).unwrap_or_default();
                 if let Err(e) = tx.send(PreviewState::PreviewNote { path, text }) {
                     error!("Failed to send a preview load status: {}", e);
                 }
@@ -124,22 +126,23 @@ where
     }
 }
 
-impl<F, P, D> EditorModal for PreviewList<F, P, D>
+impl<F, P, D> EditorComponent for PreviewList<F, P, D>
 where
     F: FilteredListFunctions<P, D> + 'static,
     P: Send + Sync + Clone + 'static,
     D: ListElement + 'static + SelectionPath,
 {
-    fn update(&mut self, ui: &mut eframe::egui::Ui) {
+    fn update(&mut self, ui: &mut eframe::egui::Ui) -> Option<EditorMessage> {
         self.update_state();
         ui.columns(2, |columns| {
-            self.list.update(&mut columns[0]);
+            let message = self.list.update(&mut columns[0]);
             ScrollArea::vertical().show(&mut columns[1], |ui| {
                 ui.horizontal_wrapped(|ui| {
                     self.show_preview_area(ui);
                 });
-            })
-        });
+            });
+            message
+        })
     }
 }
 

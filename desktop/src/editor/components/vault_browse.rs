@@ -3,16 +3,15 @@ use kimun_core::{nfs::VaultPath, NoteDetails, NoteVault, SearchResult, VaultBrow
 use log::{debug, error};
 use rayon::slice::ParallelSliceMut;
 
-use crate::{fonts, helpers};
+use crate::{editor::EditorMessage, fonts, helpers};
 
-use super::{
-    filtered_list::{FilteredListFunctionMessage, FilteredListFunctions, ListElement, StateData},
-    EditorMessage,
+use super::filtered_list::{
+    FilteredListFunctionMessage, FilteredListFunctions, ListElement, StateData,
 };
 
 #[derive(Clone)]
 pub struct VaultBrowseFunctions {
-    path: VaultPath, // add code here
+    path: VaultPath,
     vault: NoteVault,
 }
 

@@ -4,7 +4,8 @@ use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Widget};
 use log::{debug, error, info};
 
-use super::{EditorMessage, EditorModal};
+use super::EditorComponent;
+use crate::editor::EditorMessage;
 
 const ID_SEARCH: &str = "Search Popup";
 
@@ -56,14 +57,13 @@ pub enum FilteredListFunctionMessage<F> {
     ResetState(F),
 }
 
-pub(super) struct FilteredList<F, P, D>
+pub struct FilteredList<F, P, D>
 where
     F: FilteredListFunctions<P, D> + 'static,
     P: Send + Sync + Clone + 'static,
     D: ListElement + 'static,
 {
     state_manager: SelectorStateManager<F, P, D>,
-    message_sender: Sender<EditorMessage>,
     requested_focus: bool,
     requested_scroll: bool,
 }
@@ -74,12 +74,11 @@ where
     P: Send + Sync + Clone + 'static,
     D: ListElement + 'static,
 {
-    pub fn new(functions: F, message_sender: Sender<EditorMessage>) -> Self {
+    pub fn new(functions: F) -> Self {
         let mut state_manager = SelectorStateManager::new(functions);
         state_manager.initialize();
         Self {
             state_manager,
-            message_sender,
             requested_focus: true,
             requested_scroll: false,
         }
@@ -89,22 +88,21 @@ where
         self.requested_focus = true;
     }
 
-    fn select(&mut self, selected: &D) {
+    fn select(&mut self, selected: &D) -> Option<EditorMessage> {
         if let Some(message) = self.state_manager.functions.on_entry(selected) {
             match message {
-                FilteredListFunctionMessage::ToEditor(editor_message) => {
-                    if let Err(e) = self.message_sender.send(editor_message) {
-                        error!("Can't send the message to editor, Err: {}", e)
-                    }
-                }
+                FilteredListFunctionMessage::ToEditor(editor_message) => Some(editor_message),
                 FilteredListFunctionMessage::ResetState(functions) => {
                     self.state_manager.functions = Arc::new(functions);
                     self.request_focus();
                     if let Err(e) = self.state_manager.tx.send(StateMessage::Initializing) {
                         error!("Can't reset the state, Err: {}", e)
                     }
+                    None
                 }
             }
+        } else {
+            None
         }
     }
 
@@ -184,13 +182,13 @@ where
     }
 }
 
-impl<F, P, D> EditorModal for FilteredList<F, P, D>
+impl<F, P, D> EditorComponent for FilteredList<F, P, D>
 where
     F: FilteredListFunctions<P, D>,
     P: Send + Sync + Clone + 'static,
     D: ListElement + 'static,
 {
-    fn update(&mut self, ui: &mut egui::Ui) {
+    fn update(&mut self, ui: &mut egui::Ui) -> Option<EditorMessage> {
         self.state_manager.update();
         let mut selected_element = None;
 
@@ -281,7 +279,9 @@ where
             };
         }
         if let Some(se) = selected_element {
-            self.select(&se);
+            self.select(&se)
+        } else {
+            None
         }
     }
 }

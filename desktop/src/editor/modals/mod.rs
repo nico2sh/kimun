@@ -1,21 +1,20 @@
-mod filtered_list;
-mod preview_list;
-mod vault_browse;
-
 use crossbeam_channel::Sender;
 use eframe::egui;
-use filtered_list::FilteredList;
-use log::debug;
 use kimun_core::{nfs::VaultPath, NoteVault};
-use preview_list::PreviewList;
-use vault_browse::{VaultBrowseFunctions, VaultSearchFunctions};
+use log::{debug, error};
 
-use super::EditorMessage;
+use crate::editor::components::{
+    filtered_list::FilteredList,
+    preview_list::PreviewList,
+    vault_browse::{VaultBrowseFunctions, VaultSearchFunctions},
+};
+
+use super::{components::EditorComponent, EditorMessage};
 
 pub struct ModalManager {
     message_sender: Sender<EditorMessage>,
     vault: NoteVault,
-    current_modal: Option<Box<dyn EditorModal>>,
+    current_modal: Option<Box<dyn EditorComponent>>,
 }
 
 pub enum Modals {
@@ -37,7 +36,11 @@ impl ModalManager {
             let modal = egui::Modal::new(egui::Id::new("")).show(ui.ctx(), |ui| {
                 ui.set_width(600.0);
                 // ui.heading("Heading");
-                current_modal.update(ui);
+                if let Some(message) = current_modal.update(ui) {
+                    if let Err(e) = self.message_sender.send(message) {
+                        error!("Error sending an update message from modal {}", e);
+                    }
+                }
             });
             if modal.should_close() {
                 self.current_modal = None;
@@ -52,10 +55,7 @@ impl ModalManager {
                 debug!("show browser");
                 let content = PreviewList::new(
                     self.vault.clone(),
-                    FilteredList::new(
-                        VaultBrowseFunctions::new(path.clone(), self.vault.clone()),
-                        self.message_sender.clone(),
-                    ),
+                    FilteredList::new(VaultBrowseFunctions::new(path.clone(), self.vault.clone())),
                 );
                 self.current_modal = Some(Box::new(content));
             }
@@ -63,10 +63,7 @@ impl ModalManager {
                 debug!("show searcher");
                 let content = PreviewList::new(
                     self.vault.clone(),
-                    FilteredList::new(
-                        VaultSearchFunctions::new(self.vault.clone()),
-                        self.message_sender.clone(),
-                    ),
+                    FilteredList::new(VaultSearchFunctions::new(self.vault.clone())),
                 );
                 self.current_modal = Some(Box::new(content));
             }
@@ -76,8 +73,4 @@ impl ModalManager {
     pub fn close_modal(&mut self) {
         self.current_modal = None;
     }
-}
-
-pub trait EditorModal {
-    fn update(&mut self, ui: &mut egui::Ui);
 }
