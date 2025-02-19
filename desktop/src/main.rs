@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use editor::Editor;
 use eframe::egui;
 use kimun_core::{nfs::VaultPath, NoteVault};
-// use filtered_list::row::{RowItem, RowMessage};
 use log::error;
 use no_note_view::NoView;
 use settings::{view::SettingsView, Settings};
