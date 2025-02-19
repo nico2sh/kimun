@@ -24,7 +24,7 @@ pub struct EditorView {
 }
 
 impl EditorView {
-    pub(super) fn new(path: &VaultPath) -> Self {
+    pub fn new(path: &VaultPath) -> Self {
         let highlighter = MemoizedNoteHighlighter::default();
         let title = Arc::new(Mutex::new(String::new()));
         let (title_update, receiver) = crossbeam_channel::unbounded::<String>();
@@ -120,9 +120,7 @@ impl NoteViewer for EditorView {
                 egui::Key::Space,
             )
         }) {
-            Some(EditorMessage::SwitchNoteViewer(
-                super::ViewerType::Rendered(self.path.clone()),
-            ))
+            Some(EditorMessage::SwitchNoteViewer(super::ViewerType::Rendered))
         } else {
             None
         }
@@ -132,9 +130,5 @@ impl NoteViewer for EditorView {
         if let Err(e) = self.title_update.send(text) {
             error!("Error sending an init message for setting the title: {}", e);
         }
-    }
-
-    fn view_change_on_content(&self, vault_path: &VaultPath) -> Box<dyn NoteViewer> {
-        Box::new(EditorView::new(vault_path))
     }
 }
