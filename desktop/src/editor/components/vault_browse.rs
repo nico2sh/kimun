@@ -1,5 +1,9 @@
 use eframe::egui;
-use kimun_core::{nfs::VaultPath, NoteDetails, NoteVault, SearchResult, VaultBrowseOptionsBuilder};
+use kimun_core::{
+    nfs::VaultPath,
+    note::{NoteContentData, NoteDetails},
+    NoteVault, ResultType, SearchResult, VaultBrowseOptionsBuilder,
+};
 use log::{debug, error};
 use rayon::slice::ParallelSliceMut;
 
@@ -37,14 +41,14 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
 
         let mut results = vec![];
         while let Ok(entry) = receiver.recv() {
-            match &entry {
-                SearchResult::Note(_note_details) => results.push(entry.into()),
-                SearchResult::Directory(directory_details) => {
-                    if directory_details.path != self.path {
+            match &entry.rtype {
+                ResultType::Note(content_data) => results.push(entry.into()),
+                ResultType::Directory => {
+                    if entry.path != self.path {
                         results.push(entry.into());
                     }
                 }
-                SearchResult::Attachment(_note_path) => {}
+                ResultType::Attachment => {}
             }
         }
         debug!("Retrieved {} elements", results.len());
@@ -117,16 +121,19 @@ impl VaultSearchFunctions {
     }
 }
 
-impl FilteredListFunctions<(), NoteDetails> for VaultSearchFunctions {
+impl FilteredListFunctions<(), SearchResult> for VaultSearchFunctions {
     fn init(&self) {}
 
-    fn filter<S: AsRef<str>>(&self, filter_text: S, _provider: &()) -> Vec<NoteDetails> {
+    fn filter<S: AsRef<str>>(&self, filter_text: S, _provider: &()) -> Vec<SearchResult> {
         if filter_text.as_ref().is_empty() {
             return vec![];
         }
 
         match self.vault.search_notes(filter_text) {
-            Ok(result) => result,
+            Ok(result) => result
+                .iter()
+                .map(|(entry, content)| SearchResult::note(&entry.path, &content))
+                .collect(),
             Err(e) => {
                 error!("Error searching notes: {}", e);
                 vec![]
@@ -134,18 +141,18 @@ impl FilteredListFunctions<(), NoteDetails> for VaultSearchFunctions {
         }
     }
 
-    fn on_entry(&self, element: &NoteDetails) -> Option<FilteredListFunctionMessage<Self>> {
+    fn on_entry(&self, element: &SearchResult) -> Option<FilteredListFunctionMessage<Self>> {
         Some(FilteredListFunctionMessage::ToEditor(
             EditorMessage::OpenNote(element.path.clone()),
         ))
     }
 
-    fn header_element(&self, _state_data: &StateData<NoteDetails>) -> Option<NoteDetails> {
+    fn header_element(&self, _state_data: &StateData<SearchResult>) -> Option<SearchResult> {
         None
     }
 }
 
-impl ListElement for NoteDetails {
+impl ListElement for SearchResult {
     fn get_height_mult(&self) -> f32 {
         2.0
     }
@@ -156,7 +163,11 @@ impl ListElement for NoteDetails {
 
     fn get_label(&self) -> impl Into<egui::WidgetText> {
         let path = self.path.to_owned();
-        format!("{}\n{}", self.get_title(), path)
+        let title = match &self.rtype {
+            ResultType::Note(note_content_data) => note_content_data.title.to_owned(),
+            _ => self.path.get_parent_path().1,
+        };
+        format!("{}\n{}", title, path)
     }
 }
 
@@ -178,10 +189,10 @@ pub enum SelectorEntryType {
 
 impl From<SearchResult> for SelectorEntry {
     fn from(value: SearchResult) -> Self {
-        match value {
-            SearchResult::Note(note_details) => {
-                let title = note_details.get_title();
-                let path = note_details.path;
+        match value.rtype {
+            ResultType::Note(content_data) => {
+                let title = content_data.title;
+                let path = value.path;
                 let file_name = path.get_parent_path().1;
                 let file_name_no_ext = file_name.strip_suffix(".md").unwrap_or(file_name.as_str());
                 let search_str = if title.contains(file_name_no_ext) {
@@ -196,19 +207,19 @@ impl From<SearchResult> for SelectorEntry {
                     entry_type: SelectorEntryType::Note { title },
                 }
             }
-            SearchResult::Directory(directory_details) => {
-                let name = directory_details.path.get_parent_path().1;
+            ResultType::Directory => {
+                let name = value.path.get_parent_path().1;
                 SelectorEntry {
-                    path: directory_details.path.clone(),
+                    path: value.path.clone(),
                     path_str: name.clone(),
                     search_str: name,
                     entry_type: SelectorEntryType::Directory,
                 }
             }
-            SearchResult::Attachment(path) => {
-                let name = path.get_parent_path().1;
+            ResultType::Attachment => {
+                let name = value.path.get_parent_path().1;
                 SelectorEntry {
-                    path: path.clone(),
+                    path: value.path.clone(),
                     path_str: name.clone(),
                     search_str: name,
                     entry_type: SelectorEntryType::Attachment,
