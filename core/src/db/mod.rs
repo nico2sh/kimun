@@ -8,7 +8,7 @@ use rusqlite::{config::DbConfig, params, Connection, Transaction};
 use rusqlite::{params_from_iter, OpenFlags, OptionalExtension};
 use search_terms::SearchTerms;
 
-use crate::note::NoteContentData;
+use crate::note::{NoteContentData, NoteDetails};
 
 use super::error::DBError;
 
@@ -243,7 +243,7 @@ pub fn search_terms<S: AsRef<str>>(
                 size,
                 modified_secs: modified,
             };
-            let det = NoteContentData::new(title, hash.parse().unwrap(), vec![]);
+            let det = NoteContentData::new(title, hash.parse().unwrap());
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
@@ -289,7 +289,7 @@ pub fn get_notes(
                 size,
                 modified_secs: modified,
             };
-            let det = NoteContentData::new(title, hash.parse().unwrap(), vec![]);
+            let det = NoteContentData::new(title, hash.parse().unwrap());
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
@@ -297,10 +297,7 @@ pub fn get_notes(
     Ok(res)
 }
 
-pub fn insert_notes(
-    tx: &Transaction,
-    notes: &Vec<(NoteEntryData, NoteContentData)>,
-) -> Result<(), DBError> {
+pub fn insert_notes(tx: &Transaction, notes: &Vec<(NoteEntryData, String)>) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Inserting {} notes", notes.len());
         for (entry_data, content_data) in notes {
@@ -310,10 +307,7 @@ pub fn insert_notes(
     Ok(())
 }
 
-pub fn update_notes(
-    tx: &Transaction,
-    notes: &Vec<(NoteEntryData, NoteContentData)>,
-) -> Result<(), DBError> {
+pub fn update_notes(tx: &Transaction, notes: &Vec<(NoteEntryData, String)>) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Updating {} notes", notes.len());
         for (entry_data, content_data) in notes {
@@ -332,35 +326,36 @@ pub fn delete_notes(tx: &Transaction, paths: &Vec<VaultPath>) -> Result<(), DBEr
     Ok(())
 }
 
-pub fn save_note(
+pub fn save_note<S: AsRef<str>>(
     connection: &mut Connection,
     entry_data: &NoteEntryData,
-    content_data: &NoteContentData,
+    text: S,
 ) -> Result<(), DBError> {
     let exists = note_exists(connection, &entry_data.path)?;
     let tx = connection.transaction()?;
     if exists {
-        update_note(&tx, entry_data, content_data)
+        update_note(&tx, entry_data, text)
     } else {
-        insert_note(&tx, entry_data, content_data)
+        insert_note(&tx, entry_data, text)
     }?;
     tx.commit()?;
     Ok(())
 }
 
-fn insert_note(
+fn insert_note<S: AsRef<str>>(
     tx: &Transaction,
     entry_data: &NoteEntryData,
-    content_data: &NoteContentData,
+    text: S,
 ) -> Result<(), DBError> {
     let (parent_path, name) = entry_data.path.get_parent_path();
+    let note_details = NoteDetails::new(&entry_data.path, text);
     if let Err(e) = tx.execute(
         "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![entry_data.path.to_string(), content_data.title, entry_data.size, entry_data.modified_secs, content_data.hash.to_string(), parent_path.to_string(), name],
+        params![entry_data.path.to_string(), note_details.data.title, entry_data.size, entry_data.modified_secs, note_details.data.hash.to_string(), parent_path.to_string(), name],
     ){
-        error!("Error inserting note: {}\nContent: {}", e, content_data);
+        error!("Error inserting note: {}\nDetails: {}", e, note_details);
     }
-    for chunk in &content_data.content_chunks {
+    for chunk in &note_details.content_chunks {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
         tx.execute(
@@ -372,13 +367,14 @@ fn insert_note(
     Ok(())
 }
 
-fn update_note(
+fn update_note<S: AsRef<str>>(
     tx: &Transaction,
     entry_data: &NoteEntryData,
-    content_data: &NoteContentData,
+    text: S,
 ) -> Result<(), DBError> {
-    let title = content_data.title.clone();
-    let hash = content_data.hash.to_string();
+    let note_details = NoteDetails::new(&entry_data.path, text);
+    let title = note_details.data.title.clone();
+    let hash = note_details.data.hash.to_string();
     let path = entry_data.path.clone();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
@@ -394,7 +390,7 @@ fn update_note(
         "DELETE FROM notesContent WHERE path = ?1",
         params![path.to_string()],
     )?;
-    for chunk in &content_data.content_chunks {
+    for chunk in &note_details.content_chunks {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
         tx.execute(

@@ -1,6 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::ScrollArea;
-use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault, SearchResult};
+use kimun_core::{nfs::VaultPath, NoteVault, SearchResult};
 use log::error;
 
 use crate::editor::EditorMessage;

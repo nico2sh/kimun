@@ -1,9 +1,5 @@
 use eframe::egui;
-use kimun_core::{
-    nfs::VaultPath,
-    note::{NoteContentData, NoteDetails},
-    NoteVault, ResultType, SearchResult, VaultBrowseOptionsBuilder,
-};
+use kimun_core::{nfs::VaultPath, NoteVault, ResultType, SearchResult, VaultBrowseOptionsBuilder};
 use log::{debug, error};
 use rayon::slice::ParallelSliceMut;
 
@@ -42,7 +38,7 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
         let mut results = vec![];
         while let Ok(entry) = receiver.recv() {
             match &entry.rtype {
-                ResultType::Note(content_data) => results.push(entry.into()),
+                ResultType::Note(_content_data) => results.push(entry.into()),
                 ResultType::Directory => {
                     if entry.path != self.path {
                         results.push(entry.into());
@@ -132,7 +128,7 @@ impl FilteredListFunctions<(), SearchResult> for VaultSearchFunctions {
         match self.vault.search_notes(filter_text) {
             Ok(result) => result
                 .iter()
-                .map(|(entry, content)| SearchResult::note(&entry.path, &content))
+                .map(|(entry, content)| SearchResult::note(&entry.path, content))
                 .collect(),
             Err(e) => {
                 error!("Error searching notes: {}", e);

@@ -1,4 +1,3 @@
-mod content_data;
 mod db;
 pub mod error;
 pub mod nfs;
@@ -6,14 +5,12 @@ pub mod note;
 pub mod utilities;
 
 use std::{
-    collections::HashSet,
     fmt::Display,
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender},
 };
 
 use chrono::Utc;
-use content_data::extract_data;
 use db::VaultDB;
 use error::{DBError, FSError, VaultError};
 use log::{debug, info};
@@ -148,7 +145,7 @@ impl NoteVault {
     pub fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
         let (title, note_path) = self.get_todays_journal();
         let content = self.load_or_create_note(&note_path, Some(format!("# {}\n\n", title)))?;
-        let details = NoteDetails::from_content(&content, &note_path);
+        let details = NoteDetails::new(&note_path, &content);
         Ok((details, content))
     }
 
@@ -193,10 +190,10 @@ impl NoteVault {
         Ok(text)
     }
 
-    pub fn get_title<S: AsRef<str>>(text: S) -> String {
-        let data = extract_data(text);
-        data.title
-    }
+    // pub fn get_title<S: AsRef<str>>(text: S) -> String {
+    //     let data = extract_data(text);
+    //     data.title
+    // }
 
     // Search notes using terms
     pub fn search_notes<S: AsRef<str>>(
@@ -305,12 +302,14 @@ impl NoteVault {
     ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
         // Save to disk
         let entry_data = save_note(&self.workspace_path, path, &text)?;
+        // TODO: Check if we actually need to create details twice
         let details = entry_data.load_details(&self.workspace_path, path)?;
         let result = (entry_data.clone(), details.data.clone());
+        let text = text.as_ref().to_owned();
 
         // Save to DB
         self.vault_db
-            .call(move |conn| db::save_note(conn, &entry_data, &details.data))?;
+            .call(move |conn| db::save_note(conn, &entry_data, text))?;
 
         Ok(result)
     }

@@ -59,7 +59,7 @@ impl NoteEntryData {
         path: &VaultPath,
     ) -> Result<NoteDetails, FSError> {
         let content = load_note(workspace_path, path)?;
-        Ok(NoteDetails::from_content(content, path))
+        Ok(NoteDetails::new(path, content))
     }
 
     fn from_path<P: AsRef<Path>>(
