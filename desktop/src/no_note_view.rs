@@ -1,5 +1,4 @@
 use eframe::egui;
-use egui_extras::{Size, StripBuilder};
 use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{

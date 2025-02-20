@@ -291,6 +291,19 @@ impl ContentChunk {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkType {
+    Local,
+    External,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    ltype: LinkType,
+    url: String,
+    text: String,
+}
+
 #[cfg(test)]
 mod test {
     use crate::content_data::extract_data;
