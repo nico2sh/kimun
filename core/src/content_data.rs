@@ -1,9 +1,12 @@
-use std::{cmp::min, fmt::Display};
+use std::cmp::min;
 
 use log::error;
 use pulldown_cmark::{Event, Parser, Tag};
 
-use crate::nfs;
+use crate::{
+    nfs,
+    note::{ContentChunk, NoteContentData},
+};
 
 const MAX_TITLE_LENGTH: usize = 40;
 
@@ -22,7 +25,7 @@ pub fn extract_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
 
 fn parse_text(md_text: &str) -> NoteContentData {
     let hash = nfs::hash_text(md_text);
-    let mut title = None;
+    let mut title = String::new();
     let mut content_chunks = vec![];
     let mut current_breadcrumb: Vec<(u8, String)> = vec![];
     let mut current_content = vec![];
@@ -47,16 +50,20 @@ fn parse_text(md_text: &str) -> NoteContentData {
             Event::TaskListMarker(result) => TextType::Text(result.to_string()),
         };
 
-        if title.is_none() {
+        if title.is_empty() {
             let title_cand = match &tt {
                 TextType::Header(_, text) => text.to_owned(),
                 TextType::Text(text) => text.to_owned(),
                 TextType::None => String::new(),
             };
-            title = title_cand.lines().next().map(|t| {
-                let title_length = min(MAX_TITLE_LENGTH, t.len());
-                t.chars().take(title_length).collect()
-            });
+            title = title_cand
+                .lines()
+                .next()
+                .map(|t| {
+                    let title_length = min(MAX_TITLE_LENGTH, t.len());
+                    t.chars().take(title_length).collect()
+                })
+                .unwrap_or_default();
         }
 
         match tt {
@@ -247,63 +254,6 @@ fn get_text_till_end(parser: &mut Parser) -> String {
     text_vec.join("\n")
 }
 
-/// NoteContentData contains tha extracted data from the note
-/// for comparison and search in the DB, it is expensive to get
-/// so it is not a good idea to calculate it every time the content
-/// has changed, but better lazy get it when needed and cache it somewhere
-/// (like the DB) for search and access.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoteContentData {
-    pub(super) title: Option<String>,
-    pub hash: u64,
-    pub content_chunks: Vec<ContentChunk>,
-}
-
-impl Display for NoteContentData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Title: {}, Hash: {}, Chunks: [{}]",
-            self.title.clone().unwrap_or("<None>".to_string()),
-            self.hash,
-            self.content_chunks
-                .iter()
-                .map(|chunk| format!("'{}'", chunk.get_breadcrumb()))
-                .collect::<Vec<String>>()
-                .join(", ")
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContentChunk {
-    breadcrumb: Vec<String>,
-    pub text: String,
-}
-
-impl ContentChunk {
-    pub fn get_breadcrumb(&self) -> String {
-        self.breadcrumb.join(">")
-    }
-
-    fn get_text(&self) -> &str {
-        &self.text
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LinkType {
-    Local,
-    External,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Link {
-    ltype: LinkType,
-    url: String,
-    text: String,
-}
-
 #[cfg(test)]
 mod test {
     use crate::content_data::extract_data;
@@ -319,7 +269,7 @@ title"#;
         let ch = extract_data(markdown);
 
         assert_eq!(2, ch.content_chunks.len());
-        assert_eq!(Some("title".to_string()), ch.title);
+        assert_eq!("title".to_string(), ch.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("title", ch.content_chunks[0].get_text());
         assert_eq!("FrontMatter", ch.content_chunks[1].get_breadcrumb());
@@ -340,7 +290,7 @@ title"#;
         let ch = extract_data(markdown);
 
         assert_eq!(2, ch.content_chunks.len());
-        assert_eq!(Some("title".to_string()), ch.title);
+        assert_eq!("title".to_string(), ch.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("title", ch.content_chunks[0].get_text());
         assert_eq!("FrontMatter", ch.content_chunks[1].get_breadcrumb());
@@ -359,7 +309,7 @@ Some text"#;
         let ch = extract_data(markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("First Item".to_string()), ch.title);
+        assert_eq!("First Item".to_string(), ch.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!(
             "First Item\nSecond Item\nSome text",
@@ -375,7 +325,7 @@ Some text"#;
         let ch = extract_data(markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("No header".to_string()), ch.title);
+        assert_eq!("No header".to_string(), ch.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("No header\nSome text", ch.content_chunks[0].get_text());
     }
@@ -387,7 +337,7 @@ Some text"#;
         let ch = extract_data(markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
     }
@@ -402,7 +352,7 @@ More text"#;
         let ch = extract_data(markdown);
 
         assert_eq!(2, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -422,7 +372,7 @@ Even more text"#;
         let ch = extract_data(markdown);
 
         assert_eq!(3, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -450,7 +400,7 @@ There is text here"#;
         let ch = extract_data(markdown);
 
         assert_eq!(4, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -487,7 +437,7 @@ Another main content
         let ch = extract_data(markdown);
 
         assert_eq!(6, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -531,7 +481,7 @@ Another main content
         let ch = extract_data(markdown);
 
         assert_eq!(6, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -559,7 +509,7 @@ Some text"#;
         let ch = extract_data(markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("Title link".to_string()), ch.title);
+        assert_eq!("Title link".to_string(), ch.title);
         assert_eq!("Title link", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
     }
@@ -571,7 +521,7 @@ Some text"#;
         let ch = extract_data(markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("Title bold italic".to_string()), ch.title);
+        assert_eq!("Title bold italic".to_string(), ch.title);
         assert_eq!("Title bold italic", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
     }
@@ -586,7 +536,7 @@ Some text"#;
         let ch = extract_data(markdown);
 
         assert_eq!(2, ch.content_chunks.len());
-        assert_eq!(Some("Intro text".to_string()), ch.title);
+        assert_eq!("Intro text".to_string(), ch.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Intro text", ch.content_chunks[0].get_text());
         assert_eq!("Title", ch.content_chunks[1].get_breadcrumb());

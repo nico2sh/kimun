@@ -1,6 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::ScrollArea;
-use kimun_core::{nfs::VaultPath, NoteDetails, NoteVault};
+use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault, SearchResult};
 use log::error;
 
 use crate::editor::EditorMessage;
@@ -146,7 +146,7 @@ where
     }
 }
 
-impl SelectionPath for NoteDetails {
+impl SelectionPath for SearchResult {
     fn get_path(&self) -> VaultPath {
         self.path.clone()
     }

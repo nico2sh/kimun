@@ -2,6 +2,7 @@ mod content_data;
 mod db;
 pub mod error;
 pub mod nfs;
+pub mod note;
 pub mod utilities;
 
 use std::{
@@ -12,13 +13,14 @@ use std::{
 };
 
 use chrono::Utc;
-use content_data::{extract_data, NoteContentData};
+use content_data::extract_data;
 use db::VaultDB;
 use error::{DBError, FSError, VaultError};
 use log::{debug, info};
 use nfs::{
     load_note, save_note, visitor::NoteListVisitorBuilder, NoteEntryData, VaultEntry, VaultPath,
 };
+use note::{NoteContentData, NoteDetails};
 use utilities::path_to_string;
 
 const JOURNAL_PATH: &str = "journal";
@@ -191,25 +193,24 @@ impl NoteVault {
         Ok(text)
     }
 
-    pub fn get_title<S: AsRef<str>>(text: S) -> Option<String> {
+    pub fn get_title<S: AsRef<str>>(text: S) -> String {
         let data = extract_data(text);
         data.title
     }
 
     // Search notes using terms
-    pub fn search_notes<S: AsRef<str>>(&self, terms: S) -> Result<Vec<NoteDetails>, VaultError> {
+    pub fn search_notes<S: AsRef<str>>(
+        &self,
+        terms: S,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         // let mut connection = ConnectionBuilder::new(&self.workspace_path)
         //     .build()
         //     .unwrap();
         let terms = terms.as_ref().to_owned();
 
-        let a = self.vault_db.call(move |conn| {
-            db::search_terms(conn, terms).map(|vec| {
-                vec.into_iter()
-                    .map(|(_data, details)| details)
-                    .collect::<Vec<NoteDetails>>()
-            })
-        })?;
+        let a = self
+            .vault_db
+            .call(move |conn| db::search_terms(conn, terms))?;
 
         Ok(a)
     }
@@ -264,7 +265,7 @@ impl NoteVault {
         &self,
         path: &VaultPath,
         recursive: bool,
-    ) -> Result<Vec<NoteDetails>, VaultError> {
+    ) -> Result<Vec<NoteContentData>, VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files from cache");
         let note_path = path.into();
@@ -277,7 +278,7 @@ impl NoteVault {
         let result = cached_notes
             .iter()
             .map(|(_data, details)| details.to_owned())
-            .collect::<Vec<NoteDetails>>();
+            .collect::<Vec<NoteContentData>>();
         let time = std::time::SystemTime::now()
             .duration_since(start)
             .expect("Something's wrong with the time");
@@ -289,7 +290,7 @@ impl NoteVault {
         &self,
         path: &VaultPath,
         text: S,
-    ) -> Result<(NoteEntryData, NoteDetails), VaultError> {
+    ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
         if self.exists(path).is_none() {
             self.save_note(path, text)
         } else {
@@ -301,88 +302,17 @@ impl NoteVault {
         &self,
         path: &VaultPath,
         text: S,
-    ) -> Result<(NoteEntryData, NoteDetails), VaultError> {
+    ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
         // Save to disk
         let entry_data = save_note(&self.workspace_path, path, &text)?;
         let details = entry_data.load_details(&self.workspace_path, path)?;
-        let result = (entry_data.clone(), details.clone());
+        let result = (entry_data.clone(), details.data.clone());
 
         // Save to DB
         self.vault_db
-            .call(move |conn| db::save_note(conn, &entry_data, &details))?;
+            .call(move |conn| db::save_note(conn, &entry_data, &details.data))?;
 
         Ok(result)
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct NoteDetails {
-    pub path: VaultPath,
-    pub data: NoteContentData,
-    // Content may be lazy fetched
-    // if the details are taken from the DB, the content is
-    // likely not going to be there, so the `get_content` function
-    // will take it from disk, and store in the cache
-    cached_text: Option<String>,
-}
-
-impl Display for NoteDetails {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Path: {}, Data: {}, Has Text Cached: {}",
-            self.path,
-            self.data,
-            self.cached_text.is_some()
-        )
-    }
-}
-
-impl NoteDetails {
-    pub fn new(note_path: VaultPath, hash: u64, title: String, text: Option<String>) -> Self {
-        let data = NoteContentData {
-            hash,
-            title: Some(title),
-            content_chunks: vec![],
-        };
-        Self {
-            path: note_path,
-            data,
-            cached_text: text,
-        }
-    }
-
-    fn from_content<S: AsRef<str>>(text: S, note_path: &VaultPath) -> Self {
-        let data = content_data::extract_data(&text);
-        Self {
-            path: note_path.to_owned(),
-            data,
-            cached_text: Some(text.as_ref().to_owned()),
-        }
-    }
-
-    pub fn get_text<P: AsRef<Path>>(&mut self, base_path: P) -> Result<String, VaultError> {
-        let content = self.cached_text.as_ref();
-        // Content may be lazy loaded from disk since it's
-        // the only data that is not stored in the DB
-        if let Some(content) = content {
-            Ok(content.clone())
-        } else {
-            let content = load_note(base_path, &self.path)?;
-            self.cached_text = Some(content.clone());
-            Ok(content)
-        }
-    }
-
-    // pub fn get_markdown<P: AsRef<Path>>(&mut self, base_path: P) -> Result<String, VaultError> {
-    //     let text = self.get_text(base_path)?;
-    // }
-
-    pub fn get_title(&self) -> String {
-        self.data
-            .title
-            .clone()
-            .unwrap_or_else(|| self.path.get_parent_path().1)
     }
 }
 
@@ -392,32 +322,37 @@ pub struct DirectoryDetails {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SearchResult {
-    Note(NoteDetails),
-    Directory(DirectoryDetails),
-    Attachment(VaultPath),
+pub struct SearchResult {
+    pub path: VaultPath,
+    pub rtype: ResultType,
 }
 
-fn collect_from_cache(
-    cached_notes: &[(nfs::NoteEntryData, NoteDetails)],
-) -> Result<Vec<SearchResult>, VaultError> {
-    let mut directories = HashSet::new();
-    let mut notes = vec![];
-
-    for (_note_data, note_details) in cached_notes {
-        directories.insert(note_details.path.get_parent_path().0);
-        notes.push(SearchResult::Note(note_details.clone()));
+impl SearchResult {
+    pub fn note(path: &VaultPath, content_data: &NoteContentData) -> Self {
+        Self {
+            path: path.to_owned(),
+            rtype: ResultType::Note(content_data.to_owned()),
+        }
     }
+    pub fn directory(path: &VaultPath) -> Self {
+        Self {
+            path: path.to_owned(),
+            rtype: ResultType::Directory,
+        }
+    }
+    pub fn attachment(path: &VaultPath) -> Self {
+        Self {
+            path: path.to_owned(),
+            rtype: ResultType::Attachment,
+        }
+    }
+}
 
-    let result = directories
-        .iter()
-        .map(|directory_path| {
-            SearchResult::Directory(DirectoryDetails {
-                path: directory_path.clone(),
-            })
-        })
-        .chain(notes);
-    Ok(result.collect())
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResultType {
+    Note(NoteContentData),
+    Directory,
+    Attachment,
 }
 
 pub struct VaultBrowseOptionsBuilder {

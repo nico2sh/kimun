@@ -8,9 +8,10 @@ use rusqlite::{config::DbConfig, params, Connection, Transaction};
 use rusqlite::{params_from_iter, OpenFlags, OptionalExtension};
 use search_terms::SearchTerms;
 
+use crate::note::NoteContentData;
+
 use super::error::DBError;
 
-use super::NoteDetails;
 use super::{nfs::NoteEntryData, VaultPath};
 
 const VERSION: &str = "0.2";
@@ -167,9 +168,9 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
         "CREATE TABLE notes (
             path TEXT PRIMARY KEY,
             title TEXT,
+            hash TEXT,
             size INTEGER,
             modified INTEGER,
-            hash TEXT,
             basePath TEXT,
             noteName TEXT
         )",
@@ -192,7 +193,7 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
 pub fn search_terms<S: AsRef<str>>(
     connection: &mut Connection,
     query: S,
-) -> Result<Vec<(NoteEntryData, NoteDetails)>, DBError> {
+) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let search_terms = SearchTerms::from_query_string(query);
     let mut var_num = 1;
     let base_sql = "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
@@ -242,11 +243,11 @@ pub fn search_terms<S: AsRef<str>>(
                 size,
                 modified_secs: modified,
             };
-            let det = NoteDetails::new(note_path, hash.parse().unwrap(), title, None);
+            let det = NoteContentData::new(title, hash.parse().unwrap(), vec![]);
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(NoteEntryData, NoteDetails)>, DBError>>()?;
+        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
     Ok(res)
 }
 
@@ -268,7 +269,7 @@ pub fn get_notes(
     connection: &mut Connection,
     path: &VaultPath,
     recursive: bool,
-) -> Result<Vec<(NoteEntryData, NoteDetails)>, DBError> {
+) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let sql = if recursive {
         "SELECT path, title, size, modified, hash, noteName FROM notes where basePath LIKE (?1 || '%')"
     } else {
@@ -288,22 +289,22 @@ pub fn get_notes(
                 size,
                 modified_secs: modified,
             };
-            let det = NoteDetails::new(note_path, hash.parse().unwrap(), title, None);
+            let det = NoteContentData::new(title, hash.parse().unwrap(), vec![]);
             Ok((data, det))
         })?
         .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(NoteEntryData, NoteDetails)>, DBError>>()?;
+        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
     Ok(res)
 }
 
 pub fn insert_notes(
     tx: &Transaction,
-    notes: &Vec<(NoteEntryData, NoteDetails)>,
+    notes: &Vec<(NoteEntryData, NoteContentData)>,
 ) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Inserting {} notes", notes.len());
-        for (data, details) in notes {
-            insert_note(tx, data, details)?;
+        for (entry_data, content_data) in notes {
+            insert_note(tx, entry_data, content_data)?;
         }
     }
     Ok(())
@@ -311,12 +312,12 @@ pub fn insert_notes(
 
 pub fn update_notes(
     tx: &Transaction,
-    notes: &Vec<(NoteEntryData, NoteDetails)>,
+    notes: &Vec<(NoteEntryData, NoteContentData)>,
 ) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Updating {} notes", notes.len());
-        for (data, details) in notes {
-            update_note(tx, data, details)?;
+        for (entry_data, content_data) in notes {
+            update_note(tx, entry_data, content_data)?;
         }
     }
     Ok(())
@@ -333,15 +334,15 @@ pub fn delete_notes(tx: &Transaction, paths: &Vec<VaultPath>) -> Result<(), DBEr
 
 pub fn save_note(
     connection: &mut Connection,
-    data: &NoteEntryData,
-    details: &NoteDetails,
+    entry_data: &NoteEntryData,
+    content_data: &NoteContentData,
 ) -> Result<(), DBError> {
-    let exists = note_exists(connection, &data.path)?;
+    let exists = note_exists(connection, &entry_data.path)?;
     let tx = connection.transaction()?;
     if exists {
-        update_note(&tx, data, details)
+        update_note(&tx, entry_data, content_data)
     } else {
-        insert_note(&tx, data, details)
+        insert_note(&tx, entry_data, content_data)
     }?;
     tx.commit()?;
     Ok(())
@@ -349,23 +350,22 @@ pub fn save_note(
 
 fn insert_note(
     tx: &Transaction,
-    data: &NoteEntryData,
-    details: &NoteDetails,
+    entry_data: &NoteEntryData,
+    content_data: &NoteContentData,
 ) -> Result<(), DBError> {
-    let (parent_path, name) = details.path.get_parent_path();
+    let (parent_path, name) = entry_data.path.get_parent_path();
     if let Err(e) = tx.execute(
         "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![details.path.to_string(), details.get_title(), data.size, data.modified_secs, details.data.hash.to_string(), parent_path.to_string(), name],
+        params![entry_data.path.to_string(), content_data.title, entry_data.size, entry_data.modified_secs, content_data.hash.to_string(), parent_path.to_string(), name],
     ){
-        error!("Error inserting note: {}\nDetails: {}", e, details);
+        error!("Error inserting note: {}\nContent: {}", e, content_data);
     }
-    let content_data = &details.data;
     for chunk in &content_data.content_chunks {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
         tx.execute(
             "INSERT INTO notesContent (path, breadcrumb, text) VALUES (?1, ?2, ?3)",
-            params![details.path.to_string(), breadcrumb, chunk_text],
+            params![entry_data.path.to_string(), breadcrumb, chunk_text],
         )?;
     }
 
@@ -374,17 +374,22 @@ fn insert_note(
 
 fn update_note(
     tx: &Transaction,
-    data: &NoteEntryData,
-    details: &NoteDetails,
+    entry_data: &NoteEntryData,
+    content_data: &NoteContentData,
 ) -> Result<(), DBError> {
-    let title = details.get_title();
-    let hash = details.data.hash.to_string();
-    let path = details.path.clone();
+    let title = content_data.title.clone();
+    let hash = content_data.hash.to_string();
+    let path = entry_data.path.clone();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
-        params![path.to_string(), title, data.size, data.modified_secs, hash],
+        params![
+            path.to_string(),
+            title,
+            entry_data.size,
+            entry_data.modified_secs,
+            hash
+        ],
     )?;
-    let content_data = &details.data;
     tx.execute(
         "DELETE FROM notesContent WHERE path = ?1",
         params![path.to_string()],
@@ -394,7 +399,7 @@ fn update_note(
         let chunk_text = &chunk.text;
         tx.execute(
             "INSERT INTO notesContent (path, breadcrumb, text) VALUES (?1, ?2, ?3)",
-            params![details.path.to_string(), breadcrumb, chunk_text],
+            params![entry_data.path.to_string(), breadcrumb, chunk_text],
         )?;
     }
 
