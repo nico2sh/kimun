@@ -2,11 +2,14 @@ use std::cmp::min;
 
 use log::error;
 use pulldown_cmark::{Event, Parser, Tag};
+use regex::{Captures, Regex};
 
 use crate::{
     nfs::{self, VaultPath},
     note::{ContentChunk, NoteContentData, NoteDetails},
 };
+
+use super::{Link, LinkType};
 
 const MAX_TITLE_LENGTH: usize = 40;
 
@@ -29,7 +32,46 @@ pub fn extract_data<S: AsRef<str>>(path: &VaultPath, md_text: S) -> NoteDetails 
     }
 }
 
-pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
+fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> String {
+    let wiki_link_regex = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#; // Remember to check the pipe `|`
+    let rx = Regex::new(wiki_link_regex).unwrap();
+    rx.replace_all(md_text.as_ref(), |caps: &Captures| {
+        let items = &caps["link_text"];
+        let link_text = items.split("|").collect::<Vec<&str>>();
+        let (link, text) = match link_text.len() {
+            1 => (link_text[0], link_text[0]),
+            2 => (link_text[0], link_text[1]),
+            _ => ("", ""),
+        };
+        if !link.is_empty() {
+            format!("[{}]({})", text, link)
+        } else {
+            items.to_string()
+        }
+    })
+    .into_owned()
+}
+
+fn extract_links<S: AsRef<str>>(md_text: S) -> Vec<Link> {
+    let md_text = convert_wikilinks(md_text);
+    let mut links = vec![];
+    let md_link_regex = r#"(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#;
+    let rx = Regex::new(md_link_regex).unwrap();
+    rx.captures_iter(&md_text).for_each(|caps| {
+        let text = &caps["text"];
+        let link = &caps["link"];
+        if VaultPath::is_valid(link) && VaultPath::from(link).is_note() {
+            links.push(Link {
+                ltype: LinkType::Note,
+                url: link.to_string(),
+                text: text.to_string(),
+            });
+        }
+    });
+    links
+}
+
+pub(super) fn extract_title<S: AsRef<str>>(md_text: S) -> String {
     let mut title = String::new();
     let mut parser = pulldown_cmark::Parser::new(md_text.as_ref());
     while let Some(event) = parser.next() {
@@ -302,7 +344,64 @@ fn get_text_till_end(parser: &mut Parser) -> String {
 
 #[cfg(test)]
 mod test {
-    use crate::{nfs::VaultPath, note::content_data::extract_data};
+    use crate::{nfs::VaultPath, note::content_extractor::extract_data};
+
+    use super::{convert_wikilinks, extract_links};
+
+    #[test]
+    fn convert_wiki_link() {
+        let markdown = r#"Here is a [[Wikilink|text with link]]"#;
+
+        let md = convert_wikilinks(markdown);
+
+        assert_eq!(md, "Here is a [text with link](Wikilink)");
+    }
+
+    #[test]
+    fn convert_many_wiki_links() {
+        let markdown = r#"Here is a [[Wikilink|text with link]], and another [[Link]] this time without text.
+
+    And a [[https://example.com|url link]]"#;
+
+        let md = convert_wikilinks(markdown);
+
+        assert_eq!(
+            md,
+            r#"Here is a [text with link](Wikilink), and another [Link](Link) this time without text.
+
+    And a [url link](https://example.com)"#
+        );
+    }
+
+    #[test]
+    fn extract_link_from_text() {
+        let markdown =
+            r#"This is a [link](notes/main.md) to a note, this is a [non](caca) valid link"#;
+
+        let links = extract_links(markdown);
+
+        assert_eq!(1, links.len());
+        let link = links.first().unwrap();
+        assert_eq!("link", link.text);
+        assert_eq!("notes/main.md", link.url);
+    }
+
+    #[test]
+    fn extract_many_links_from_text() {
+        let markdown = r#"This is a [link](notes/main.md) to a note, this is a [[note.md]]] valid link
+
+    Here's a [url](www.example.com)"#;
+
+        let links = extract_links(markdown);
+
+        assert_eq!(2, links.len());
+        assert!(links
+            .iter()
+            .any(|link| { link.text.eq("link") && link.url.eq("notes/main.md") }));
+        assert!(links
+            .iter()
+            .any(|link| { link.text.eq("note.md") && link.url.eq("note.md") }));
+    }
 
     #[test]
     fn check_title_yaml_frontmatter() {

@@ -25,7 +25,7 @@ gxhash = "3.4"
 ## Regular Expressions
 regex = "1.11"
 # Markdown parsing
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13"
 chrono = "0.4.39"
 ## Async stuff
 # tokio = { version = "1.42", features = ["full"] }

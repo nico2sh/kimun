@@ -239,15 +239,25 @@ impl From<&VaultPath> for VaultPath {
         value.to_owned()
     }
 }
-// impl PartialOrd for NoteEntry {
-//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-//         match self.path_string.partial_cmp(&other.path_string) {
-//             Some(core::cmp::Ordering::Equal) => None,
-//             ord => return ord,
-//         }
-//     }
-// }
-//
+
+impl From<&str> for VaultPath {
+    fn from(value: &str) -> Self {
+        VaultPath::new(value)
+    }
+}
+
+impl From<String> for VaultPath {
+    fn from(value: String) -> Self {
+        VaultPath::new(value)
+    }
+}
+
+impl From<&String> for VaultPath {
+    fn from(value: &String) -> Self {
+        VaultPath::new(value)
+    }
+}
+
 impl Serialize for VaultPath {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -280,24 +290,6 @@ impl<'de> Deserialize<'de> for VaultPath {
     }
 }
 
-impl From<&str> for VaultPath {
-    fn from(value: &str) -> Self {
-        VaultPath::new(value)
-    }
-}
-
-impl From<String> for VaultPath {
-    fn from(value: String) -> Self {
-        VaultPath::new(value)
-    }
-}
-
-impl From<&String> for VaultPath {
-    fn from(value: &String) -> Self {
-        VaultPath::new(value)
-    }
-}
-
 impl VaultPath {
     fn new<S: AsRef<str>>(path: S) -> Self {
         let path_list = path
@@ -308,6 +300,12 @@ impl VaultPath {
             .map(VaultPathSlice::new)
             .collect();
         Self { slices: path_list }
+    }
+
+    pub fn is_valid<S: AsRef<str>>(path: S) -> bool {
+        path.as_ref()
+            .split(PATH_SEPARATOR)
+            .any(VaultPathSlice::is_valid)
     }
 
     // Creates a note file path, if the path ends with a separator
@@ -459,15 +457,18 @@ struct VaultPathSlice {
 }
 
 impl VaultPathSlice {
-    fn new<S: Into<String>>(slice: S) -> Self {
+    fn new<S: AsRef<str>>(slice: S) -> Self {
         let re = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
-
-        let into = slice.into();
-        let final_slice = re.replace_all(&into, "_");
+        let final_slice = re.replace_all(slice.as_ref(), "_");
 
         Self {
             name: final_slice.to_string(),
         }
+    }
+
+    fn is_valid<S: AsRef<str>>(slice: S) -> bool {
+        let re = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
+        !re.is_match(slice.as_ref())
     }
 }
 
