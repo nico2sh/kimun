@@ -362,17 +362,21 @@ impl NoteDetails {
     }
 
     pub fn get_text<P: AsRef<Path>>(&mut self, base_path: P) -> Result<String, VaultError> {
-        let content = self.cached_text.clone();
+        let content = self.cached_text.as_ref();
         // Content may be lazy loaded from disk since it's
         // the only data that is not stored in the DB
         if let Some(content) = content {
-            Ok(content)
+            Ok(content.clone())
         } else {
             let content = load_note(base_path, &self.path)?;
             self.cached_text = Some(content.clone());
             Ok(content)
         }
     }
+
+    // pub fn get_markdown<P: AsRef<Path>>(&mut self, base_path: P) -> Result<String, VaultError> {
+    //     let text = self.get_text(base_path)?;
+    // }
 
     pub fn get_title(&self) -> String {
         self.data
