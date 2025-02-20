@@ -17,8 +17,8 @@ struct NoteListVisitor {
     workspace_path: PathBuf,
     validation: NotesValidation,
     notes_to_delete: Arc<Mutex<HashMap<VaultPath, (NoteEntryData, NoteContentData)>>>,
-    notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, NoteContentData)>>>,
-    notes_to_add: Arc<Mutex<Vec<(NoteEntryData, NoteContentData)>>>,
+    notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
+    notes_to_add: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
     directories_found: Arc<Mutex<Vec<VaultPath>>>,
     sender: Option<Sender<SearchResult>>,
 }
@@ -80,10 +80,11 @@ impl NoteListVisitor {
                 let details = data
                     .load_details(&self.workspace_path, &data.path)
                     .expect("Can't get details for note");
+                let text = details.text;
                 self.notes_to_modify
                     .lock()
                     .unwrap()
-                    .push((data.to_owned(), details.data.to_owned()));
+                    .push((data.to_owned(), text));
                 details.data
             } else {
                 cached_details
@@ -92,10 +93,11 @@ impl NoteListVisitor {
             let details = data
                 .load_details(&self.workspace_path, &data.path)
                 .expect("Can't get Details for note");
+            let text = details.text;
             self.notes_to_add
                 .lock()
                 .unwrap()
-                .push((data.to_owned(), details.data.to_owned()));
+                .push((data.to_owned(), text));
             details.data
         };
         content_data
@@ -130,8 +132,8 @@ pub struct NoteListVisitorBuilder {
     workspace_path: PathBuf,
     validation: NotesValidation,
     notes_to_delete: Arc<Mutex<HashMap<VaultPath, (NoteEntryData, NoteContentData)>>>,
-    notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, NoteContentData)>>>,
-    notes_to_add: Arc<Mutex<Vec<(NoteEntryData, NoteContentData)>>>,
+    notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
+    notes_to_add: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
     directories_found: Arc<Mutex<Vec<VaultPath>>>,
     sender: Option<Sender<SearchResult>>,
 }
@@ -168,7 +170,7 @@ impl NoteListVisitorBuilder {
             .collect()
     }
 
-    pub fn get_notes_to_add(&self) -> Vec<(NoteEntryData, NoteContentData)> {
+    pub fn get_notes_to_add(&self) -> Vec<(NoteEntryData, String)> {
         self.notes_to_add
             .lock()
             .unwrap()
@@ -177,7 +179,7 @@ impl NoteListVisitorBuilder {
             .collect()
     }
 
-    pub fn get_notes_to_modify(&self) -> Vec<(NoteEntryData, NoteContentData)> {
+    pub fn get_notes_to_modify(&self) -> Vec<(NoteEntryData, String)> {
         self.notes_to_modify
             .lock()
             .unwrap()
@@ -200,7 +202,7 @@ impl<'s> ParallelVisitorBuilder<'s> for NoteListVisitorBuilder {
     fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {
         let dbv = NoteListVisitor {
             workspace_path: self.workspace_path.clone(),
-            validation: self.validation.clone(),
+            validation: self.validation,
             notes_to_delete: self.notes_to_delete.clone(),
             notes_to_modify: self.notes_to_modify.clone(),
             notes_to_add: self.notes_to_add.clone(),
