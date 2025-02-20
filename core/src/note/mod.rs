@@ -1,8 +1,8 @@
-mod content_data;
+mod content_extractor;
 
 use std::fmt::Display;
 
-use content_data::{extract_data, extract_title};
+use content_extractor::{extract_data, extract_title};
 
 use crate::nfs::VaultPath;
 
@@ -101,7 +101,7 @@ impl ContentChunk {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkType {
-    Local,
+    Note,
     External,
 }
 
