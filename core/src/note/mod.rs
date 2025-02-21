@@ -2,7 +2,7 @@ mod content_extractor;
 
 use std::fmt::Display;
 
-use content_extractor::{extract_data, extract_title};
+use content_extractor::{extract_data, extract_title, get_markdown_and_links};
 
 use crate::nfs::VaultPath;
 
@@ -37,27 +37,25 @@ impl NoteDetails {
     pub fn get_title_from_text<S: AsRef<str>>(text: S) -> String {
         extract_title(text)
     }
-    // pub fn new(note_path: VaultPath, hash: u64, title: String, text: Option<String>) -> Self {
-    //     let data = NoteContentData {
-    //         hash,
-    //         title,
-    //         content_chunks: vec![],
-    //     };
-    //     Self {
-    //         path: note_path,
-    //         data,
-    //         text,
-    //     }
-    // }
 
-    // pub fn get_markdown<P: AsRef<Path>>(&mut self, base_path: P) -> Result<String, VaultError> {
-    //     let text = self.get_text(base_path)?;
-    // }
+    // Returns the text and the links contained
+    // The wikilinks are converted to markdown links, although only note links are allowed
+    // External URLs needs to be created as markdown links. Always including the http(s)
+    // Note links can be either Markdown or Wikilinks
+    pub fn get_markdown_and_links(&self) -> MarkdownNote {
+        let (text, links) = get_markdown_and_links(&self.text);
+        MarkdownNote { text, links }
+    }
 
     pub fn get_title(&self) -> String {
         self.data.title.clone()
         // .unwrap_or_else(|| self.path.get_parent_path().1)
     }
+}
+
+pub struct MarkdownNote {
+    pub text: String,
+    pub links: Vec<Link>,
 }
 
 /// NoteContentData contains the basic extracted data from the note
@@ -101,13 +99,27 @@ impl ContentChunk {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkType {
-    Note,
-    External,
+    Note(VaultPath),
+    Url(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     ltype: LinkType,
-    url: String,
     text: String,
+}
+
+impl Link {
+    pub fn note<S: AsRef<str>>(path: VaultPath, text: S) -> Self {
+        Self {
+            ltype: LinkType::Note(path),
+            text: text.as_ref().to_string(),
+        }
+    }
+    pub fn url<S: AsRef<str>, T: AsRef<str>>(url: S, text: T) -> Self {
+        Self {
+            ltype: LinkType::Url(url.as_ref().to_string()),
+            text: text.as_ref().to_string(),
+        }
+    }
 }
