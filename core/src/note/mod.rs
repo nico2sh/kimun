@@ -10,7 +10,7 @@ use crate::nfs::VaultPath;
 pub struct NoteDetails {
     pub path: VaultPath,
     pub data: NoteContentData,
-    pub text: String,
+    pub raw_text: String,
     pub content_chunks: Vec<ContentChunk>,
 }
 
@@ -43,7 +43,7 @@ impl NoteDetails {
     // External URLs needs to be created as markdown links. Always including the http(s)
     // Note links can be either Markdown or Wikilinks
     pub fn get_markdown_and_links(&self) -> MarkdownNote {
-        let (text, links) = get_markdown_and_links(&self.text);
+        let (text, links) = get_markdown_and_links(&self.raw_text);
         MarkdownNote { text, links }
     }
 
