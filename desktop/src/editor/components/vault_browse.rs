@@ -280,7 +280,7 @@ impl SelectorEntry {
     }
 
     fn new_note(base_path: &VaultPath, note_text: &str) -> Self {
-        let file_name = VaultPath::file_from(note_text);
+        let file_name = VaultPath::note_path_from(note_text);
         let path = base_path.append(&file_name);
 
         Self {

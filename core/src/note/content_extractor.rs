@@ -27,7 +27,7 @@ pub fn extract_data<S: AsRef<str>>(path: &VaultPath, md_text: S) -> NoteDetails 
     NoteDetails {
         path: path.to_owned(),
         data: content_data,
-        text,
+        raw_text: text,
         content_chunks,
     }
 }

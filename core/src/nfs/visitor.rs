@@ -80,7 +80,7 @@ impl NoteListVisitor {
                 let details = data
                     .load_details(&self.workspace_path, &data.path)
                     .expect("Can't get details for note");
-                let text = details.text;
+                let text = details.raw_text;
                 self.notes_to_modify
                     .lock()
                     .unwrap()
@@ -93,7 +93,7 @@ impl NoteListVisitor {
             let details = data
                 .load_details(&self.workspace_path, &data.path)
                 .expect("Can't get Details for note");
-            let text = details.text;
+            let text = details.raw_text;
             self.notes_to_add
                 .lock()
                 .unwrap()
