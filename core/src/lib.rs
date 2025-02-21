@@ -155,7 +155,7 @@ impl NoteVault {
 
         (
             today_string.clone(),
-            VaultPath::from(JOURNAL_PATH).append(&VaultPath::file_from(&today_string)),
+            VaultPath::new(JOURNAL_PATH).append(&VaultPath::note_path_from(&today_string)),
         )
     }
 

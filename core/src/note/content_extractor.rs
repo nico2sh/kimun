@@ -32,43 +32,51 @@ pub fn extract_data<S: AsRef<str>>(path: &VaultPath, md_text: S) -> NoteDetails 
     }
 }
 
-fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> String {
+fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
     let wiki_link_regex = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#; // Remember to check the pipe `|`
     let rx = Regex::new(wiki_link_regex).unwrap();
-    rx.replace_all(md_text.as_ref(), |caps: &Captures| {
-        let items = &caps["link_text"];
-        let link_text = items.split("|").collect::<Vec<&str>>();
-        let (link, text) = match link_text.len() {
-            1 => (link_text[0], link_text[0]),
-            2 => (link_text[0], link_text[1]),
-            _ => ("", ""),
-        };
-        if !link.is_empty() {
-            format!("[{}]({})", text, link)
-        } else {
-            items.to_string()
-        }
-    })
-    .into_owned()
+    let mut note_links = vec![];
+    let text = rx
+        .replace_all(md_text.as_ref(), |caps: &Captures| {
+            let items = &caps["link_text"];
+            let link_text = items.split("|").collect::<Vec<&str>>();
+            let (link, text) = match link_text.len() {
+                1 => (link_text[0], link_text[0]),
+                2 => (link_text[0], link_text[1]),
+                _ => ("", ""),
+            };
+            if !link.is_empty() && VaultPath::is_valid(link) {
+                note_links.push(Link::note(VaultPath::new(link), text));
+                format!("[{}]({})", text, link)
+            } else {
+                format!("[[{}]]", items)
+            }
+        })
+        .into_owned();
+    (text, note_links)
 }
 
-fn extract_links<S: AsRef<str>>(md_text: S) -> Vec<Link> {
-    let md_text = convert_wikilinks(md_text);
+pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
     let mut links = vec![];
     let md_link_regex = r#"(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#;
+    let url_regex = r#"^https?:\/\/[\w\d]+\.[\w\d]+(?:(?:\.[\w\d]+)|(?:[\w\d\/?=#]+))+$"#;
     let rx = Regex::new(md_link_regex).unwrap();
-    rx.captures_iter(&md_text).for_each(|caps| {
+    println!("Looking for captures");
+    rx.captures_iter(md_text.as_ref()).for_each(|caps| {
         let text = &caps["text"];
         let link = &caps["link"];
-        if VaultPath::is_valid(link) && VaultPath::from(link).is_note() {
-            links.push(Link {
-                ltype: LinkType::Note,
-                url: link.to_string(),
-                text: text.to_string(),
-            });
+        if let Ok(path) = VaultPath::try_from(link.to_string()) {
+            links.push(Link::note(path, text));
+        } else {
+            let rxurl = Regex::new(url_regex).unwrap();
+            if rxurl.is_match(link) {
+                links.push(Link::url(link, text));
+            }
         }
     });
-    links
+    let (md_text, mut note_links) = convert_wikilinks(md_text);
+    links.append(&mut note_links);
+    (md_text, links)
 }
 
 pub(super) fn extract_title<S: AsRef<str>>(md_text: S) -> String {
@@ -344,17 +352,24 @@ fn get_text_till_end(parser: &mut Parser) -> String {
 
 #[cfg(test)]
 mod test {
-    use crate::{nfs::VaultPath, note::content_extractor::extract_data};
+    use crate::{
+        nfs::VaultPath,
+        note::{content_extractor::extract_data, Link, LinkType},
+    };
 
-    use super::{convert_wikilinks, extract_links};
+    use super::{convert_wikilinks, get_markdown_and_links};
 
     #[test]
     fn convert_wiki_link() {
         let markdown = r#"Here is a [[Wikilink|text with link]]"#;
 
-        let md = convert_wikilinks(markdown);
+        let (md, links) = convert_wikilinks(markdown);
 
         assert_eq!(md, "Here is a [text with link](Wikilink)");
+        assert_eq!(1, links.len());
+        assert!(links
+            .iter()
+            .any(|link| { link.eq(&Link::note(VaultPath::new("Wikilink"), "text with link")) }));
     }
 
     #[test]
@@ -363,44 +378,58 @@ mod test {
 
     And a [[https://example.com|url link]]"#;
 
-        let md = convert_wikilinks(markdown);
+        let (md, links) = convert_wikilinks(markdown);
 
         assert_eq!(
             md,
             r#"Here is a [text with link](Wikilink), and another [Link](Link) this time without text.
 
-    And a [url link](https://example.com)"#
+    And a [[https://example.com|url link]]"#
         );
+        assert_eq!(2, links.len());
+        assert!(links
+            .iter()
+            .any(|link| { link.eq(&Link::note(VaultPath::new("Wikilink"), "text with link")) }));
+        assert!(links
+            .iter()
+            .any(|link| { link.eq(&Link::note(VaultPath::new("Link"), "Link")) }))
     }
 
     #[test]
     fn extract_link_from_text() {
         let markdown =
-            r#"This is a [link](notes/main.md) to a note, this is a [non](caca) valid link"#;
+            r#"This is a [link](notes/main.md) to a note, this is a [non](:caca) valid link"#;
 
-        let links = extract_links(markdown);
+        let (_md, links) = get_markdown_and_links(markdown);
 
         assert_eq!(1, links.len());
         let link = links.first().unwrap();
         assert_eq!("link", link.text);
-        assert_eq!("notes/main.md", link.url);
+        assert_eq!(LinkType::Note(VaultPath::new("notes/main.md")), link.ltype);
     }
 
     #[test]
     fn extract_many_links_from_text() {
         let markdown = r#"This is a [link](notes/main.md) to a note, this is a [[note.md]]] valid link
 
-    Here's a [url](www.example.com)"#;
+    Here's a [url](https://www.example.com)"#;
 
-        let links = extract_links(markdown);
+        let (_md, links) = get_markdown_and_links(markdown);
 
-        assert_eq!(2, links.len());
-        assert!(links
-            .iter()
-            .any(|link| { link.text.eq("link") && link.url.eq("notes/main.md") }));
-        assert!(links
-            .iter()
-            .any(|link| { link.text.eq("note.md") && link.url.eq("note.md") }));
+        assert_eq!(3, links.len());
+        assert!(links.iter().any(|link| {
+            let path = VaultPath::new("notes/main.md");
+            link.text.eq("link") && link.ltype.eq(&LinkType::Note(path))
+        }));
+        assert!(links.iter().any(|link| {
+            let path = VaultPath::new("note.md");
+            link.text.eq("note.md") && link.ltype.eq(&LinkType::Note(path))
+        }));
+        assert!(links.iter().any(|link| {
+            println!("{:?}", link);
+            let url = "https://www.example.com".to_string();
+            link.text.eq("url") && link.ltype.eq(&LinkType::Url(url))
+        }));
     }
 
     #[test]

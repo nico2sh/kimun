@@ -237,7 +237,7 @@ pub fn search_terms<S: AsRef<str>>(
             let size = row.get(2)?;
             let modified = row.get(3)?;
             let hash: String = row.get(4)?;
-            let note_path = VaultPath::from(&path);
+            let note_path = VaultPath::new(&path);
             let data = NoteEntryData {
                 path: note_path.clone(),
                 size,
@@ -283,7 +283,7 @@ pub fn get_notes(
             let size = row.get(2)?;
             let modified = row.get(3)?;
             let hash: String = row.get(4)?;
-            let note_path = VaultPath::from(&path);
+            let note_path = VaultPath::new(&path);
             let data = NoteEntryData {
                 path: note_path.clone(),
                 size,
