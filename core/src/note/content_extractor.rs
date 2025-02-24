@@ -9,11 +9,11 @@ use crate::{
     note::{ContentChunk, NoteContentData, NoteDetails},
 };
 
-use super::{Link, LinkType};
+use super::Link;
 
 const MAX_TITLE_LENGTH: usize = 40;
 
-pub fn extract_data<S: AsRef<str>>(path: &VaultPath, md_text: S) -> NoteDetails {
+pub fn extract_details<S: AsRef<str>>(path: &VaultPath, md_text: S) -> NoteDetails {
     let (frontmatter, text) = remove_frontmatter(md_text.as_ref());
 
     let (content_data, mut content_chunks) = parse_text(&text);
@@ -354,7 +354,7 @@ fn get_text_till_end(parser: &mut Parser) -> String {
 mod test {
     use crate::{
         nfs::VaultPath,
-        note::{content_extractor::extract_data, Link, LinkType},
+        note::{content_extractor::extract_details, Link, LinkType},
     };
 
     use super::{convert_wikilinks, get_markdown_and_links};
@@ -440,7 +440,7 @@ other: else
 ---
 
 title"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("title", ch.content_chunks[0].get_text());
@@ -459,7 +459,7 @@ other: else
 +++
 
 title"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(2, ch.content_chunks.len());
         assert_eq!("title".to_string(), ch.data.title);
@@ -478,7 +478,7 @@ title"#;
 - Second Item
 
 Some text"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
         assert_eq!("First Item".to_string(), ch.data.title);
@@ -494,7 +494,7 @@ Some text"#;
         let markdown = r#"[No header](https://example.com)
 
 Some text"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
         assert_eq!("No header".to_string(), ch.data.title);
@@ -506,7 +506,7 @@ Some text"#;
     fn check_hierarchy_one() {
         let markdown = r#"# Title
 Some text"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
         assert_eq!("Title".to_string(), ch.data.title);
@@ -521,7 +521,7 @@ Some text
 
 ## Subtitle
 More text"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(2, ch.content_chunks.len());
         assert_eq!("Title".to_string(), ch.data.title);
@@ -541,7 +541,7 @@ More text
 
 ### Subsubtitle
 Even more text"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(3, ch.content_chunks.len());
         assert_eq!("Title".to_string(), ch.data.title);
@@ -569,7 +569,7 @@ Even more text
 
 ## Level 2 Title
 There is text here"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(4, ch.content_chunks.len());
         assert_eq!("Title".to_string(), ch.data.title);
@@ -606,7 +606,7 @@ Before last text
 # Main Title
 Another main content
 "#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(6, ch.content_chunks.len());
         assert_eq!("Title".to_string(), ch.data.title);
@@ -650,7 +650,7 @@ Before last text
 # Main Title
 Another main content
 "#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(6, ch.content_chunks.len());
         assert_eq!("Title".to_string(), ch.data.title);
@@ -678,7 +678,7 @@ Another main content
     fn check_title_with_link() {
         let markdown = r#"# [Title link](https://nico.red)
 Some text"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
         assert_eq!("Title link".to_string(), ch.data.title);
@@ -690,7 +690,7 @@ Some text"#;
     fn check_title_with_style() {
         let markdown = r#"# Title **bold** *italic*
 Some text"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
         assert_eq!("Title bold italic".to_string(), ch.data.title);
@@ -705,7 +705,7 @@ Some text"#;
 # Title
 
 Some text"#;
-        let ch = extract_data(&VaultPath::root(), markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(2, ch.content_chunks.len());
         assert_eq!("Intro text".to_string(), ch.data.title);
