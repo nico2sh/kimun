@@ -2,7 +2,7 @@ mod content_extractor;
 
 use std::fmt::Display;
 
-use content_extractor::{extract_data, extract_title, get_markdown_and_links};
+use content_extractor::{extract_details, extract_title, get_markdown_and_links};
 
 use crate::nfs::VaultPath;
 
@@ -31,7 +31,7 @@ impl Display for NoteDetails {
 
 impl NoteDetails {
     pub fn new<S: AsRef<str>>(note_path: &VaultPath, text: S) -> Self {
-        extract_data(note_path, text)
+        extract_details(note_path, text)
     }
 
     pub fn get_title_from_text<S: AsRef<str>>(text: S) -> String {
