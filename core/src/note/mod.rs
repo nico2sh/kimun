@@ -49,7 +49,6 @@ impl NoteDetails {
 
     pub fn get_title(&self) -> String {
         self.data.title.clone()
-        // .unwrap_or_else(|| self.path.get_parent_path().1)
     }
 }
 
@@ -105,8 +104,8 @@ pub enum LinkType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
-    ltype: LinkType,
-    text: String,
+    pub ltype: LinkType,
+    pub text: String,
 }
 
 impl Link {
