@@ -58,19 +58,23 @@ fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
 
 pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
     let mut links = vec![];
-    let md_link_regex = r#"(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#;
+    let md_link_regex = r#"(?P<bang>!?)(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#;
     let url_regex = r#"^https?:\/\/[\w\d]+\.[\w\d]+(?:(?:\.[\w\d]+)|(?:[\w\d\/?=#]+))+$"#;
     let rx = Regex::new(md_link_regex).unwrap();
     println!("Looking for captures");
     rx.captures_iter(md_text.as_ref()).for_each(|caps| {
+        let bang = &caps["bang"];
         let text = &caps["text"];
         let link = &caps["link"];
-        if let Ok(path) = VaultPath::try_from(link.to_string()) {
-            links.push(Link::note(path, text));
-        } else {
-            let rxurl = Regex::new(url_regex).unwrap();
-            if rxurl.is_match(link) {
-                links.push(Link::url(link, text));
+        // We ignore links that start with a `!`, since these are images
+        if bang.is_empty() {
+            if let Ok(path) = VaultPath::try_from(link.to_string()) {
+                links.push(Link::note(path, text));
+            } else {
+                let rxurl = Regex::new(url_regex).unwrap();
+                if rxurl.is_match(link) {
+                    links.push(Link::url(link, text));
+                }
             }
         }
     });
@@ -393,6 +397,15 @@ mod test {
         assert!(links
             .iter()
             .any(|link| { link.eq(&Link::note(VaultPath::new("Link"), "Link")) }))
+    }
+
+    #[test]
+    fn ignore_image_links() {
+        let markdown = r#"This is an ![image](image.png)"#;
+
+        let (md, links) = get_markdown_and_links(markdown);
+
+        assert!(links.is_empty());
     }
 
     #[test]
