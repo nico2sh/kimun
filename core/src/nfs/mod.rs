@@ -22,7 +22,8 @@ use super::utilities::path_to_string;
 const PATH_SEPARATOR: char = '/';
 const NOTE_EXTENSION: &str = ".md";
 // non valid chars
-const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|]"#;
+// Not allowed: \ | : * ? " < > | [ ] ^ #
+const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|\[\]\^\#]"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaultEntry {
@@ -59,7 +60,7 @@ impl NoteEntryData {
         path: &VaultPath,
     ) -> Result<NoteDetails, FSError> {
         let content = load_note(workspace_path, path)?;
-        Ok(NoteDetails::from_content(content, path))
+        Ok(NoteDetails::new(path, content))
     }
 
     fn from_path<P: AsRef<Path>>(
@@ -234,20 +235,35 @@ pub struct VaultPath {
     slices: Vec<VaultPathSlice>,
 }
 
+impl TryFrom<String> for VaultPath {
+    type Error = FSError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::from_string(value)
+    }
+}
+
 impl From<&VaultPath> for VaultPath {
     fn from(value: &VaultPath) -> Self {
         value.to_owned()
     }
 }
-// impl PartialOrd for NoteEntry {
-//     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-//         match self.path_string.partial_cmp(&other.path_string) {
-//             Some(core::cmp::Ordering::Equal) => None,
-//             ord => return ord,
-//         }
-//     }
-// }
-//
+
+impl TryFrom<&str> for VaultPath {
+    type Error = FSError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        VaultPath::from_string(value)
+    }
+}
+
+impl TryFrom<&String> for VaultPath {
+    type Error = FSError;
+
+    fn try_from(value: &String) -> Result<Self, Self::Error> {
+        VaultPath::from_string(value)
+    }
+}
+
 impl Serialize for VaultPath {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -280,26 +296,12 @@ impl<'de> Deserialize<'de> for VaultPath {
     }
 }
 
-impl From<&str> for VaultPath {
-    fn from(value: &str) -> Self {
-        VaultPath::new(value)
-    }
-}
-
-impl From<String> for VaultPath {
-    fn from(value: String) -> Self {
-        VaultPath::new(value)
-    }
-}
-
-impl From<&String> for VaultPath {
-    fn from(value: &String) -> Self {
-        VaultPath::new(value)
-    }
-}
-
 impl VaultPath {
-    fn new<S: AsRef<str>>(path: S) -> Self {
+    /// Creates a new vault path, for every invalid character
+    /// it gets replaced to an underscore `_`. If you want to validate
+    /// the path first, either use the `VaultPath::From` trait or use
+    /// `VaultPath::is_valid()`
+    pub fn new<S: AsRef<str>>(path: S) -> Self {
         let path_list = path
             .as_ref()
             .split(PATH_SEPARATOR)
@@ -310,9 +312,27 @@ impl VaultPath {
         Self { slices: path_list }
     }
 
+    fn from_string<S: AsRef<str>>(value: S) -> Result<Self, FSError> {
+        let path = value.as_ref();
+        if Self::is_valid(path) {
+            Ok(Self::new(path))
+        } else {
+            Err(FSError::InvalidPath {
+                path: path.to_string(),
+            })
+        }
+    }
+
+    pub fn is_valid<S: AsRef<str>>(path: S) -> bool {
+        !path
+            .as_ref()
+            .split(PATH_SEPARATOR)
+            .any(|s| !VaultPathSlice::is_valid(s))
+    }
+
     // Creates a note file path, if the path ends with a separator
     // it removes it before adding the extension
-    pub fn file_from<S: AsRef<str>>(path: S) -> Self {
+    pub fn note_path_from<S: AsRef<str>>(path: S) -> Self {
         let path = path.as_ref();
         let path_clean = path.strip_suffix(PATH_SEPARATOR).unwrap_or(path);
         let p = if !path_clean.ends_with(NOTE_EXTENSION) {
@@ -399,15 +419,15 @@ impl VaultPath {
             .components()
             .map(|component| {
                 let os_str = component.as_os_str();
-                let s = match os_str.to_str() {
+                match os_str.to_str() {
                     Some(comp) => comp.to_owned(),
                     None => os_str.to_string_lossy().to_string(),
-                };
-                VaultPathSlice::new(s)
+                }
             })
-            .collect::<Vec<VaultPathSlice>>();
+            .collect::<Vec<String>>()
+            .join(PATH_SEPARATOR.to_string().as_str());
 
-        Ok(Self { slices: path_list })
+        Ok(VaultPath::new(path_list))
     }
 
     pub fn is_note(&self) -> bool {
@@ -459,15 +479,18 @@ struct VaultPathSlice {
 }
 
 impl VaultPathSlice {
-    fn new<S: Into<String>>(slice: S) -> Self {
+    fn new<S: AsRef<str>>(slice: S) -> Self {
         let re = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
-
-        let into = slice.into();
-        let final_slice = re.replace_all(&into, "_");
+        let final_slice = re.replace_all(slice.as_ref(), "_");
 
         Self {
             name: final_slice.to_string(),
         }
+    }
+
+    fn is_valid<S: AsRef<str>>(slice: S) -> bool {
+        let re = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
+        !re.is_match(slice.as_ref())
     }
 }
 
@@ -504,6 +527,13 @@ mod tests {
     use super::{load_note, VaultPath, VaultPathSlice};
 
     #[test]
+    fn test_file_should_not_look_like_url() {
+        let valid = VaultPath::is_valid("http://example.com");
+
+        assert!(!valid);
+    }
+
+    #[test]
     fn test_file_not_exists() {
         let path = VaultPath::new("don't exist");
         let res = load_note(std::env::current_dir().unwrap(), &path);
@@ -528,7 +558,7 @@ mod tests {
     #[test]
     fn test_path_create_from_string() {
         let path = "this/is/five/level/path";
-        let path = VaultPath::from(path);
+        let path = VaultPath::new(path);
 
         assert_eq!(5, path.slices.len());
         assert_eq!("this", path.slices[0].name);
@@ -541,7 +571,7 @@ mod tests {
     #[test]
     fn test_path_with_unvalid_chars() {
         let path = "t*his/i+s/caca?/";
-        let path = VaultPath::from(path);
+        let path = VaultPath::new(path);
 
         assert_eq!(3, path.slices.len());
         assert_eq!("t_his", path.slices[0].name);
@@ -553,7 +583,7 @@ mod tests {
     fn test_to_path_buf() {
         let workspace_path = PathBuf::from("/usr/john/notes");
         let path = "/some/subpath";
-        let path = VaultPath::from(path);
+        let path = VaultPath::new(path);
         let path_buf = path.to_pathbuf(&workspace_path);
 
         let path_string = path_to_string(path_buf);

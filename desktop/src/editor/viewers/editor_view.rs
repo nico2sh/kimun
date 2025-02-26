@@ -5,7 +5,7 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
-use kimun_core::{nfs::VaultPath, NoteVault};
+use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 use log::{debug, error};
 
 use crate::editor::NoteViewer;
@@ -44,7 +44,7 @@ impl EditorView {
         let title_to_update = self.title.clone();
         std::thread::spawn(move || {
             while let Ok(text) = receiver.recv() {
-                let title = NoteVault::get_title(text).unwrap_or_else(|| "<Untitled>".to_string());
+                let title = NoteDetails::get_title_from_text(text);
                 debug!("Updating title to `{}`", title);
                 *title_to_update.lock().unwrap() = title;
             }
