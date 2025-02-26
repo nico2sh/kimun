@@ -3,6 +3,7 @@
 mod editor;
 pub mod fonts;
 pub mod helpers;
+pub mod modals;
 mod no_note_view;
 pub mod settings;
 
@@ -46,9 +47,10 @@ pub struct DesktopApp {
 impl DesktopApp {
     pub fn new(cc: &eframe::CreationContext) -> anyhow::Result<Self> {
         let settings = Settings::load_from_disk()?;
+        let ctx = cc.egui_ctx.clone();
         let current_view = match &settings.workspace_dir {
-            Some(workspace_dir) => Self::get_first_view(workspace_dir, &settings)?,
-            None => Box::new(SettingsView::new()?),
+            Some(workspace_dir) => Self::get_first_view(workspace_dir, &settings, ctx)?,
+            None => Box::new(SettingsView::new(ctx)?),
         };
 
         let desktop_app = Self {
@@ -68,6 +70,7 @@ impl DesktopApp {
     fn get_first_view(
         workspace_dir: &PathBuf,
         settings: &Settings,
+        ctx: egui::Context,
     ) -> anyhow::Result<Box<dyn MainView>> {
         let last_note = settings.last_paths.last().and_then(|path| {
             if !path.is_note() {
@@ -76,11 +79,10 @@ impl DesktopApp {
                 Some(path.to_owned())
             }
         });
-        // let last_note = None;
 
         let vault = NoteVault::new(workspace_dir)?;
         let view: Box<dyn MainView> = match last_note {
-            Some(path) => Box::new(Editor::new(&vault, &path, true)?),
+            Some(path) => Box::new(Editor::new(&vault, &path, ctx)?),
             None => Box::new(NoView::new(&vault)),
         };
         Ok(view)
@@ -89,10 +91,20 @@ impl DesktopApp {
 
 impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| match self.main_view.update(ui) {
-            Ok(Some(window_switch)) => match window_switch {
-                WindowSwitch::Editor { vault, note_path } => {
-                    match Editor::new(&vault, &note_path, false) {
+        let has_window_action = egui::CentralPanel::default()
+            .show(ctx, |ui| match self.main_view.update(ui) {
+                Ok(ws) => ws,
+                Err(e) => {
+                    error!("Error displaying main view: {}", e);
+                    None
+                }
+            })
+            .inner;
+
+        if let Some(window_switch) = has_window_action {
+            match window_switch {
+                WindowAction::Editor { vault, note_path } => {
+                    match Editor::new(&vault, &note_path, ctx.clone()) {
                         Ok(editor) => {
                             self.main_view = Box::new(editor);
                         }
@@ -101,7 +113,7 @@ impl eframe::App for DesktopApp {
                         }
                     }
                 }
-                WindowSwitch::Settings => match SettingsView::new() {
+                WindowAction::Settings => match SettingsView::new(ctx.clone()) {
                     Ok(settings_view) => {
                         self.main_view = Box::new(settings_view);
                     }
@@ -109,22 +121,18 @@ impl eframe::App for DesktopApp {
                         error!("Can't load the Settings: {}", e);
                     }
                 },
-                WindowSwitch::NoNote { vault } => self.main_view = Box::new(NoView::new(&vault)),
-            },
-            Err(e) => {
-                error!("Error displaying main view: {}", e);
+                WindowAction::NoNote { vault } => self.main_view = Box::new(NoView::new(&vault)),
             }
-            _ => {}
-        });
+        }
     }
 }
 
 pub trait MainView {
-    fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowSwitch>>;
+    fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowAction>>;
 }
 
 #[derive(Clone)]
-pub enum WindowSwitch {
+pub enum WindowAction {
     Editor {
         vault: NoteVault,
         note_path: VaultPath,

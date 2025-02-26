@@ -15,7 +15,7 @@ use super::error::DBError;
 use super::{nfs::NoteEntryData, VaultPath};
 
 const VERSION: &str = "0.3";
-const DB_FILE: &str = "notes.sqlite";
+const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct VaultDB {
@@ -179,7 +179,7 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
     tx.execute(
         "CREATE TABLE links (
                 source TEXT,
-                destination TEXT,
+                destination TEXT
             )",
         (), // empty list of parameters.
     )?;

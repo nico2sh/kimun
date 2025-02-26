@@ -76,13 +76,7 @@ impl NoteVault {
                 self.recreate_index()?;
             }
             db::DBStatus::NotValid => {
-                let md = std::fs::metadata(&db_path).map_err(FSError::ReadFileError)?;
-                if md.is_dir() {
-                    std::fs::remove_dir_all(db_path).map_err(FSError::ReadFileError)?;
-                } else {
-                    std::fs::remove_file(db_path).map_err(FSError::ReadFileError)?;
-                }
-                self.recreate_index()?;
+                self.force_rebuild()?;
             }
             db::DBStatus::FileNotFound => {
                 // No need to validate, no data there
@@ -91,6 +85,18 @@ impl NoteVault {
             }
         }
         Ok(())
+    }
+
+    pub fn force_rebuild(&self) -> Result<(), VaultError> {
+        let db_path = self.vault_db.get_db_path();
+        let md = std::fs::metadata(&db_path).map_err(FSError::ReadFileError)?;
+        // We delete the db file
+        if md.is_dir() {
+            std::fs::remove_dir_all(db_path).map_err(FSError::ReadFileError)?;
+        } else {
+            std::fs::remove_file(db_path).map_err(FSError::ReadFileError)?;
+        }
+        self.recreate_index()
     }
 
     /// Deletes all the cached data from the DB
