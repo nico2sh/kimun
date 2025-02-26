@@ -4,18 +4,23 @@ use eframe::egui::{self, CollapsingHeader};
 use kimun_core::{error::VaultError, utilities::path_to_string, NoteVault, NotesValidation};
 use log::{error, info};
 
-use crate::{MainView, WindowSwitch};
+use crate::{
+    modals::{vault_indexer::IndexType, ModalManager},
+    MainView, WindowAction,
+};
 
 use super::Settings;
 
 pub struct SettingsView {
+    modal_manager: ModalManager,
     settings: Settings,
 }
 
 impl SettingsView {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(ctx: egui::Context) -> anyhow::Result<Self> {
         let settings = Settings::load_from_disk()?;
         Ok(Self {
+            modal_manager: ModalManager::new(ctx),
             settings: settings.to_owned(),
         })
     }
@@ -34,7 +39,7 @@ impl SettingsView {
 }
 
 impl MainView for SettingsView {
-    fn update(&mut self, ui: &mut eframe::egui::Ui) -> anyhow::Result<Option<WindowSwitch>> {
+    fn update(&mut self, ui: &mut eframe::egui::Ui) -> anyhow::Result<Option<WindowAction>> {
         let mut should_close = false;
         let mut workspace_changed = false;
         egui::TopBottomPanel::bottom("Settings buttons")
@@ -98,17 +103,25 @@ impl MainView for SettingsView {
                                     .clicked()
                                 {
                                     if let Some(workspace_path) = &self.settings.workspace_dir {
-                                        let res: Result<_, VaultError> =
-                                            match NoteVault::new(workspace_path) {
-                                                // TODO: Show a modal while executing
-                                                Ok(vault) => {
-                                                    vault.index_notes(NotesValidation::Full)
-                                                }
-                                                Err(e) => Err(e),
-                                            };
-                                        if let Err(e) = res {
+                                        if let Err(e) = self.modal_manager.set_modal(
+                                            crate::modals::Modals::VaultIndex(
+                                                workspace_path.to_owned(),
+                                                IndexType::Fast,
+                                            ),
+                                        ) {
                                             error!("Error reindexing the DB: {}", e);
                                         }
+                                        // let res: Result<_, VaultError> =
+                                        //     match NoteVault::new(workspace_path) {
+                                        //         // TODO: Show a modal while executing
+                                        //         Ok(vault) => {
+                                        //             vault.index_notes(NotesValidation::Full)
+                                        //         }
+                                        //         Err(e) => Err(e),
+                                        //     };
+                                        // if let Err(e) = res {
+                                        //     error!("Error reindexing the DB: {}", e);
+                                        // }
                                     };
                                 }
                                 if self
@@ -116,15 +129,23 @@ impl MainView for SettingsView {
                                     .clicked()
                                 {
                                     if let Some(workspace_path) = &self.settings.workspace_dir {
-                                        let res: Result<_, VaultError> =
-                                            match NoteVault::new(workspace_path) {
-                                                // TODO: Show a modal while executing
-                                                Ok(vault) => vault.recreate_index(),
-                                                Err(e) => Err(e),
-                                            };
-                                        if let Err(e) = res {
+                                        if let Err(e) = self.modal_manager.set_modal(
+                                            crate::modals::Modals::VaultIndex(
+                                                workspace_path.to_owned(),
+                                                IndexType::Full,
+                                            ),
+                                        ) {
                                             error!("Error reindexing the DB: {}", e);
                                         }
+                                        // let res: Result<_, VaultError> =
+                                        //     match NoteVault::new(workspace_path) {
+                                        //         // TODO: Show a modal while executing
+                                        //         Ok(vault) => vault.recreate_index(),
+                                        //         Err(e) => Err(e),
+                                        //     };
+                                        // if let Err(e) = res {
+                                        //     error!("Error reindexing the DB: {}", e);
+                                        // }
                                     };
                                 }
                             })
@@ -132,16 +153,17 @@ impl MainView for SettingsView {
                     })
             });
         });
+        self.modal_manager.view(ui)?;
         if should_close {
             if let Some(workspace_dir) = &self.settings.workspace_dir {
                 let vault = NoteVault::new(workspace_dir)?;
                 if let Some(note_path) = self.settings.last_paths.last() {
-                    Ok(Some(WindowSwitch::Editor {
+                    Ok(Some(WindowAction::Editor {
                         vault,
                         note_path: note_path.to_owned(),
                     }))
                 } else {
-                    Ok(Some(WindowSwitch::NoNote { vault }))
+                    Ok(Some(WindowAction::NoNote { vault }))
                 }
             } else {
                 Ok(None)

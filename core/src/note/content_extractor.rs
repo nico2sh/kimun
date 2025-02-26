@@ -61,7 +61,6 @@ pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) 
     let md_link_regex = r#"(?P<bang>!?)(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#;
     let url_regex = r#"^https?:\/\/[\w\d]+\.[\w\d]+(?:(?:\.[\w\d]+)|(?:[\w\d\/?=#]+))+$"#;
     let rx = Regex::new(md_link_regex).unwrap();
-    println!("Looking for captures");
     rx.captures_iter(md_text.as_ref()).for_each(|caps| {
         let bang = &caps["bang"];
         let text = &caps["text"];
