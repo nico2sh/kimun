@@ -1,5 +1,4 @@
 use eframe::egui;
-use egui_extras::{Size, StripBuilder};
 use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
@@ -11,7 +10,7 @@ use crate::{
         },
         EditorMessage,
     },
-    MainView, WindowSwitch,
+    MainView, WindowAction,
 };
 
 pub struct NoView {
@@ -31,7 +30,7 @@ impl NoView {
 }
 
 impl MainView for NoView {
-    fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowSwitch>> {
+    fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowAction>> {
         let message = ui
             .vertical_centered(|ui| {
                 ui.add_space(64.0);
@@ -42,25 +41,25 @@ impl MainView for NoView {
             .inner;
         if let Some(message) = message {
             let switch = match message {
-                EditorMessage::OpenNote(vault_path) => Some(WindowSwitch::Editor {
+                EditorMessage::OpenNote(vault_path) => Some(WindowAction::Editor {
                     vault: self.vault.clone(),
                     note_path: vault_path,
                 }),
                 EditorMessage::NewNote(vault_path) => {
                     self.vault.create_note(&vault_path, String::new())?;
-                    Some(WindowSwitch::Editor {
+                    Some(WindowAction::Editor {
                         vault: self.vault.clone(),
                         note_path: vault_path,
                     })
                 }
                 EditorMessage::NewJournal => {
                     let (note_details, _text) = self.vault.journal_entry()?;
-                    Some(WindowSwitch::Editor {
+                    Some(WindowAction::Editor {
                         vault: self.vault.clone(),
                         note_path: note_details.path,
                     })
                 }
-                EditorMessage::OpenSettings => Some(WindowSwitch::Settings),
+                EditorMessage::OpenSettings => Some(WindowAction::Settings),
                 _ => None,
             };
             Ok(switch)

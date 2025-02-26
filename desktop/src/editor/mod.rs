@@ -1,5 +1,4 @@
 pub mod components;
-mod modals;
 mod save_manager;
 mod viewers;
 
@@ -8,11 +7,14 @@ use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use log::{debug, error};
-use modals::{ModalManager, Modals};
 use save_manager::SaveManager;
 use viewers::{editor_view::EditorView, rendered_view::RenderedView, NoteViewer, ViewerType};
 
-use crate::{settings::Settings, WindowSwitch};
+use crate::{
+    modals::{vault_indexer::IndexType, ModalManager, Modals},
+    settings::Settings,
+    WindowAction,
+};
 
 use super::MainView;
 
@@ -27,24 +29,25 @@ pub struct Editor {
     message_sender: Sender<EditorMessage>,
     message_receiver: Receiver<EditorMessage>,
     request_focus: bool,
-    request_windows_switch: Option<WindowSwitch>,
+    request_windows_switch: Option<WindowAction>,
 }
 
 impl Editor {
     pub fn new(
         vault: &NoteVault,
         note_path: &VaultPath,
-        recreate_index: bool,
+        ctx: egui::Context,
     ) -> anyhow::Result<Self> {
         let settings = Settings::load_from_disk()?;
         let (sender, receiver) = crossbeam_channel::unbounded();
         let vault = vault.to_owned();
-        if recreate_index {
-            vault.init_and_validate()?;
-        }
 
         let note_path = note_path.to_owned();
-        let modal_manager = ModalManager::new(vault.clone(), sender.clone());
+        let mut modal_manager = ModalManager::new(ctx);
+        modal_manager.set_modal(Modals::VaultIndex(
+            vault.workspace_path.clone(),
+            IndexType::Validate,
+        ))?;
         let save_manager = SaveManager::new(String::new(), &note_path, &vault);
         let mut editor = Self {
             settings: settings.clone(),
@@ -77,7 +80,6 @@ impl Editor {
         } else {
             bail!("Note path is not a note or vault path doesn't exist")
         };
-        self.modal_manager.close_modal();
 
         Ok(())
     }
@@ -101,11 +103,17 @@ impl Editor {
             } else {
                 path
             };
-            self.modal_manager
-                .set_modal(Modals::VaultBrowse(browse_path));
+            let _e = self.modal_manager.set_modal(Modals::VaultBrowse(
+                self.vault.clone(),
+                browse_path,
+                self.message_sender.clone(),
+            ));
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-            self.modal_manager.set_modal(Modals::VaultSearch);
+            let _e = self.modal_manager.set_modal(Modals::VaultSearch(
+                self.vault.clone(),
+                self.message_sender.clone(),
+            ));
         }
         if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::J)) {
             if let Err(e) = self.message_sender.send(EditorMessage::NewJournal) {
@@ -129,12 +137,14 @@ impl Editor {
             match message {
                 EditorMessage::OpenNote(note_path) => {
                     self.load_note_path(&note_path)?;
+                    self.modal_manager.close_modal();
                     self.request_focus = true;
                 }
                 EditorMessage::NewJournal => {
                     let (data, _content) = self.vault.journal_entry()?;
                     {
                         self.load_note_path(&data.path)?;
+                        self.modal_manager.close_modal();
                         self.request_focus = true;
                     }
                 }
@@ -159,7 +169,7 @@ impl Editor {
                     self.change_viewer(viewer_type)?;
                 }
                 EditorMessage::OpenSettings => {
-                    self.request_windows_switch = Some(WindowSwitch::Settings)
+                    self.request_windows_switch = Some(WindowAction::Settings)
                 }
             }
         }
@@ -186,7 +196,7 @@ impl Drop for Editor {
 }
 
 impl MainView for Editor {
-    fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowSwitch>> {
+    fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowAction>> {
         self.modal_manager.view(ui)?;
         egui::ScrollArea::vertical()
             .show(ui, |ui| match self.viewer.view(&mut self.raw_text, ui) {
@@ -214,7 +224,8 @@ impl MainView for Editor {
     }
 }
 
-pub(crate) enum EditorMessage {
+#[derive(Clone)]
+pub enum EditorMessage {
     OpenNote(VaultPath),
     NewNote(VaultPath),
     SwitchNoteViewer(ViewerType),

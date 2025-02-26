@@ -1,28 +1,134 @@
-use std::{cmp::min, fmt::Display};
+use std::cmp::min;
 
 use log::error;
 use pulldown_cmark::{Event, Parser, Tag};
+use regex::{Captures, Regex};
 
-use crate::nfs;
+use crate::{
+    nfs::{self, VaultPath},
+    note::{ContentChunk, NoteContentData, NoteDetails},
+};
+
+use super::Link;
 
 const MAX_TITLE_LENGTH: usize = 40;
 
-pub fn extract_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
+pub fn extract_details<S: AsRef<str>>(path: &VaultPath, md_text: S) -> NoteDetails {
     let (frontmatter, text) = remove_frontmatter(md_text.as_ref());
 
-    let mut note_content = parse_text(&text);
+    let (content_data, mut content_chunks) = parse_text(&text);
     if !frontmatter.is_empty() {
-        note_content.content_chunks.push(ContentChunk {
+        content_chunks.push(ContentChunk {
             breadcrumb: vec!["FrontMatter".to_string()],
             text: frontmatter,
         })
     };
-    note_content
+
+    NoteDetails {
+        path: path.to_owned(),
+        data: content_data,
+        raw_text: text,
+        content_chunks,
+    }
 }
 
-fn parse_text(md_text: &str) -> NoteContentData {
+fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
+    let wiki_link_regex = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#; // Remember to check the pipe `|`
+    let rx = Regex::new(wiki_link_regex).unwrap();
+    let mut note_links = vec![];
+    let text = rx
+        .replace_all(md_text.as_ref(), |caps: &Captures| {
+            let items = &caps["link_text"];
+            let link_text = items.split("|").collect::<Vec<&str>>();
+            let (link, text) = match link_text.len() {
+                1 => (link_text[0], link_text[0]),
+                2 => (link_text[0], link_text[1]),
+                _ => ("", ""),
+            };
+            if !link.is_empty() && VaultPath::is_valid(link) {
+                note_links.push(Link::note(VaultPath::new(link), text));
+                format!("[{}]({})", text, link)
+            } else {
+                format!("[[{}]]", items)
+            }
+        })
+        .into_owned();
+    (text, note_links)
+}
+
+pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
+    let mut links = vec![];
+    let md_link_regex = r#"(?P<bang>!?)(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#;
+    let url_regex = r#"^https?:\/\/[\w\d]+\.[\w\d]+(?:(?:\.[\w\d]+)|(?:[\w\d\/?=#]+))+$"#;
+    let rx = Regex::new(md_link_regex).unwrap();
+    rx.captures_iter(md_text.as_ref()).for_each(|caps| {
+        let bang = &caps["bang"];
+        let text = &caps["text"];
+        let link = &caps["link"];
+        // We ignore links that start with a `!`, since these are images
+        if bang.is_empty() {
+            if let Ok(path) = VaultPath::try_from(link.to_string()) {
+                links.push(Link::note(path, text));
+            } else {
+                let rxurl = Regex::new(url_regex).unwrap();
+                if rxurl.is_match(link) {
+                    links.push(Link::url(link, text));
+                }
+            }
+        }
+    });
+    let (md_text, mut note_links) = convert_wikilinks(md_text);
+    links.append(&mut note_links);
+    (md_text, links)
+}
+
+pub(super) fn extract_title<S: AsRef<str>>(md_text: S) -> String {
+    let mut title = String::new();
+    let mut parser = pulldown_cmark::Parser::new(md_text.as_ref());
+    while let Some(event) = parser.next() {
+        let tt = match event {
+            Event::Start(tag) => parse_start_tag(tag, &mut parser),
+            Event::End(_tag_end) => {
+                panic!("Non Matching Tags")
+            }
+            Event::Text(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::Code(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::InlineMath(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::DisplayMath(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::Html(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::InlineHtml(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::FootnoteReference(cow_str) => TextType::Text(cow_str.to_string()),
+            Event::SoftBreak => TextType::None,
+            Event::HardBreak => TextType::None,
+            Event::Rule => TextType::None,
+            Event::TaskListMarker(result) => TextType::Text(result.to_string()),
+        };
+
+        if title.is_empty() {
+            let title_cand = match &tt {
+                TextType::Header(_, text) => text.to_owned(),
+                TextType::Text(text) => text.to_owned(),
+                TextType::None => String::new(),
+            };
+            title = title_cand
+                .lines()
+                .next()
+                .map(|t| {
+                    let title_length = min(MAX_TITLE_LENGTH, t.len());
+                    t.chars().take(title_length).collect()
+                })
+                .unwrap_or_default();
+            return title;
+        }
+    }
+
+    "<None>".to_string()
+}
+
+fn parse_text(md_text: &str) -> (NoteContentData, Vec<ContentChunk>) {
     let hash = nfs::hash_text(md_text);
-    let mut title = None;
+    let mut title = extract_title(md_text);
+
     let mut content_chunks = vec![];
     let mut current_breadcrumb: Vec<(u8, String)> = vec![];
     let mut current_content = vec![];
@@ -47,16 +153,20 @@ fn parse_text(md_text: &str) -> NoteContentData {
             Event::TaskListMarker(result) => TextType::Text(result.to_string()),
         };
 
-        if title.is_none() {
+        if title.is_empty() {
             let title_cand = match &tt {
                 TextType::Header(_, text) => text.to_owned(),
                 TextType::Text(text) => text.to_owned(),
                 TextType::None => String::new(),
             };
-            title = title_cand.lines().next().map(|t| {
-                let title_length = min(MAX_TITLE_LENGTH, t.len());
-                t.chars().take(title_length).collect()
-            });
+            title = title_cand
+                .lines()
+                .next()
+                .map(|t| {
+                    let title_length = min(MAX_TITLE_LENGTH, t.len());
+                    t.chars().take(title_length).collect()
+                })
+                .unwrap_or_default();
         }
 
         match tt {
@@ -64,7 +174,7 @@ fn parse_text(md_text: &str) -> NoteContentData {
                 if !current_breadcrumb.is_empty() || !current_content.is_empty() {
                     let breadcrumb = current_breadcrumb.clone();
                     let content =
-                        super::utilities::remove_diacritics(&current_content.clone().join("\n"));
+                        crate::utilities::remove_diacritics(&current_content.clone().join("\n"));
                     content_chunks.push(ContentChunk {
                         breadcrumb: breadcrumb.into_iter().map(|c| c.1).collect(),
                         text: content,
@@ -88,7 +198,7 @@ fn parse_text(md_text: &str) -> NoteContentData {
     }
 
     if !current_breadcrumb.is_empty() || !current_content.is_empty() {
-        let content = super::utilities::remove_diacritics(&current_content.clone().join("\n"));
+        let content = crate::utilities::remove_diacritics(&current_content.clone().join("\n"));
         content_chunks.push(ContentChunk {
             breadcrumb: current_breadcrumb
                 .into_iter()
@@ -97,11 +207,7 @@ fn parse_text(md_text: &str) -> NoteContentData {
             text: content,
         });
     }
-    NoteContentData {
-        title,
-        hash,
-        content_chunks,
-    }
+    (NoteContentData { title, hash }, content_chunks)
 }
 
 fn remove_frontmatter(text: &str) -> (String, String) {
@@ -247,53 +353,96 @@ fn get_text_till_end(parser: &mut Parser) -> String {
     text_vec.join("\n")
 }
 
-/// NoteContentData contains tha extracted data from the note
-/// for comparison and search in the DB, it is expensive to get
-/// so it is not a good idea to calculate it every time the content
-/// has changed, but better lazy get it when needed and cache it somewhere
-/// (like the DB) for search and access.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoteContentData {
-    pub(super) title: Option<String>,
-    pub hash: u64,
-    pub content_chunks: Vec<ContentChunk>,
-}
-
-impl Display for NoteContentData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Title: {}, Hash: {}, Chunks: [{}]",
-            self.title.clone().unwrap_or("<None>".to_string()),
-            self.hash,
-            self.content_chunks
-                .iter()
-                .map(|chunk| format!("'{}'", chunk.get_breadcrumb()))
-                .collect::<Vec<String>>()
-                .join(", ")
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContentChunk {
-    breadcrumb: Vec<String>,
-    pub text: String,
-}
-
-impl ContentChunk {
-    pub fn get_breadcrumb(&self) -> String {
-        self.breadcrumb.join(">")
-    }
-
-    fn get_text(&self) -> &str {
-        &self.text
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use crate::content_data::extract_data;
+    use crate::{
+        nfs::VaultPath,
+        note::{content_extractor::extract_details, Link, LinkType},
+    };
+
+    use super::{convert_wikilinks, get_markdown_and_links};
+
+    #[test]
+    fn convert_wiki_link() {
+        let markdown = r#"Here is a [[Wikilink|text with link]]"#;
+
+        let (md, links) = convert_wikilinks(markdown);
+
+        assert_eq!(md, "Here is a [text with link](Wikilink)");
+        assert_eq!(1, links.len());
+        assert!(links
+            .iter()
+            .any(|link| { link.eq(&Link::note(VaultPath::new("Wikilink"), "text with link")) }));
+    }
+
+    #[test]
+    fn convert_many_wiki_links() {
+        let markdown = r#"Here is a [[Wikilink|text with link]], and another [[Link]] this time without text.
+
+    And a [[https://example.com|url link]]"#;
+
+        let (md, links) = convert_wikilinks(markdown);
+
+        assert_eq!(
+            md,
+            r#"Here is a [text with link](Wikilink), and another [Link](Link) this time without text.
+
+    And a [[https://example.com|url link]]"#
+        );
+        assert_eq!(2, links.len());
+        assert!(links
+            .iter()
+            .any(|link| { link.eq(&Link::note(VaultPath::new("Wikilink"), "text with link")) }));
+        assert!(links
+            .iter()
+            .any(|link| { link.eq(&Link::note(VaultPath::new("Link"), "Link")) }))
+    }
+
+    #[test]
+    fn ignore_image_links() {
+        let markdown = r#"This is an ![image](image.png)"#;
+
+        let (md, links) = get_markdown_and_links(markdown);
+
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_link_from_text() {
+        let markdown =
+            r#"This is a [link](notes/main.md) to a note, this is a [non](:caca) valid link"#;
+
+        let (_md, links) = get_markdown_and_links(markdown);
+
+        assert_eq!(1, links.len());
+        let link = links.first().unwrap();
+        assert_eq!("link", link.text);
+        assert_eq!(LinkType::Note(VaultPath::new("notes/main.md")), link.ltype);
+    }
+
+    #[test]
+    fn extract_many_links_from_text() {
+        let markdown = r#"This is a [link](notes/main.md) to a note, this is a [[note.md]]] valid link
+
+    Here's a [url](https://www.example.com)"#;
+
+        let (_md, links) = get_markdown_and_links(markdown);
+
+        assert_eq!(3, links.len());
+        assert!(links.iter().any(|link| {
+            let path = VaultPath::new("notes/main.md");
+            link.text.eq("link") && link.ltype.eq(&LinkType::Note(path))
+        }));
+        assert!(links.iter().any(|link| {
+            let path = VaultPath::new("note.md");
+            link.text.eq("note.md") && link.ltype.eq(&LinkType::Note(path))
+        }));
+        assert!(links.iter().any(|link| {
+            println!("{:?}", link);
+            let url = "https://www.example.com".to_string();
+            link.text.eq("url") && link.ltype.eq(&LinkType::Url(url))
+        }));
+    }
 
     #[test]
     fn check_title_yaml_frontmatter() {
@@ -303,10 +452,8 @@ other: else
 ---
 
 title"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
-        assert_eq!(2, ch.content_chunks.len());
-        assert_eq!(Some("title".to_string()), ch.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("title", ch.content_chunks[0].get_text());
         assert_eq!("FrontMatter", ch.content_chunks[1].get_breadcrumb());
@@ -324,10 +471,10 @@ other: else
 +++
 
 title"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(2, ch.content_chunks.len());
-        assert_eq!(Some("title".to_string()), ch.title);
+        assert_eq!("title".to_string(), ch.data.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("title", ch.content_chunks[0].get_text());
         assert_eq!("FrontMatter", ch.content_chunks[1].get_breadcrumb());
@@ -343,10 +490,10 @@ title"#;
 - Second Item
 
 Some text"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("First Item".to_string()), ch.title);
+        assert_eq!("First Item".to_string(), ch.data.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!(
             "First Item\nSecond Item\nSome text",
@@ -359,10 +506,10 @@ Some text"#;
         let markdown = r#"[No header](https://example.com)
 
 Some text"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("No header".to_string()), ch.title);
+        assert_eq!("No header".to_string(), ch.data.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("No header\nSome text", ch.content_chunks[0].get_text());
     }
@@ -371,10 +518,10 @@ Some text"#;
     fn check_hierarchy_one() {
         let markdown = r#"# Title
 Some text"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.data.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
     }
@@ -386,10 +533,10 @@ Some text
 
 ## Subtitle
 More text"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(2, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.data.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -406,10 +553,10 @@ More text
 
 ### Subsubtitle
 Even more text"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(3, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.data.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -434,10 +581,10 @@ Even more text
 
 ## Level 2 Title
 There is text here"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(4, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.data.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -471,10 +618,10 @@ Before last text
 # Main Title
 Another main content
 "#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(6, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.data.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -515,10 +662,10 @@ Before last text
 # Main Title
 Another main content
 "#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(6, ch.content_chunks.len());
-        assert_eq!(Some("Title".to_string()), ch.title);
+        assert_eq!("Title".to_string(), ch.data.title);
         assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
         assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
@@ -543,10 +690,10 @@ Another main content
     fn check_title_with_link() {
         let markdown = r#"# [Title link](https://nico.red)
 Some text"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("Title link".to_string()), ch.title);
+        assert_eq!("Title link".to_string(), ch.data.title);
         assert_eq!("Title link", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
     }
@@ -555,10 +702,10 @@ Some text"#;
     fn check_title_with_style() {
         let markdown = r#"# Title **bold** *italic*
 Some text"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(1, ch.content_chunks.len());
-        assert_eq!(Some("Title bold italic".to_string()), ch.title);
+        assert_eq!("Title bold italic".to_string(), ch.data.title);
         assert_eq!("Title bold italic", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", ch.content_chunks[0].get_text());
     }
@@ -570,10 +717,10 @@ Some text"#;
 # Title
 
 Some text"#;
-        let ch = extract_data(markdown);
+        let ch = extract_details(&VaultPath::root(), markdown);
 
         assert_eq!(2, ch.content_chunks.len());
-        assert_eq!(Some("Intro text".to_string()), ch.title);
+        assert_eq!("Intro text".to_string(), ch.data.title);
         assert_eq!("", ch.content_chunks[0].get_breadcrumb());
         assert_eq!("Intro text", ch.content_chunks[0].get_text());
         assert_eq!("Title", ch.content_chunks[1].get_breadcrumb());
