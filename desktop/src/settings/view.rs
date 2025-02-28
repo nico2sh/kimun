@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use eframe::egui::{self, CollapsingHeader};
-use kimun_core::{error::VaultError, utilities::path_to_string, NoteVault, NotesValidation};
+use kimun_core::{utilities::path_to_string, NoteVault};
 use log::{error, info};
 
 use crate::{

@@ -19,7 +19,7 @@ use super::{error::FSError, DirectoryDetails, NoteDetails};
 
 use super::utilities::path_to_string;
 
-const PATH_SEPARATOR: char = '/';
+pub const PATH_SEPARATOR: char = '/';
 const NOTE_EXTENSION: &str = ".md";
 // non valid chars
 // Not allowed: \ | : * ? " < > | [ ] ^ #
@@ -230,7 +230,7 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     Ok(entry)
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaultPath {
     slices: Vec<VaultPathSlice>,
 }
@@ -462,8 +462,7 @@ impl Display for VaultPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}{}",
-            PATH_SEPARATOR,
+            "{}",
             self.slices
                 .iter()
                 .map(|s| { s.to_string() })
@@ -597,6 +596,6 @@ mod tests {
 
         let entry = VaultPath::from_path(&workspace, &path).unwrap();
 
-        assert_eq!("/workspace/note.md", entry.to_string());
+        assert_eq!("workspace/note.md", entry.to_string());
     }
 }

@@ -4,11 +4,13 @@ use std::{
 };
 
 use crossbeam_channel::Sender;
-use eframe::egui;
+use eframe::egui::{self, Widget};
 use kimun_core::{NoteVault, NotesValidation};
 use log::{debug, error};
 
 use super::KimunModal;
+
+const MODAL_WIDTH: f32 = 400.0;
 
 pub struct VaultIndexer {
     sender: Sender<IndexStatus>,
@@ -22,9 +24,13 @@ impl KimunModal for VaultIndexer {
             IndexStatus::Closed => true,
             IndexStatus::Error(error) => {
                 egui::Modal::new(egui::Id::new("")).show(ui.ctx(), |ui| {
-                    ui.set_width(600.0);
+                    ui.set_width(MODAL_WIDTH);
                     ui.heading("Indexing Vault");
-                    ui.label(format!("Error Indexing: {}", error));
+                    ui.horizontal_centered(|ui| {
+                        ui.label(format!("Error Indexing: {}", error));
+                    });
+                    ui.add_space(4.0);
+                    ui.separator();
                     if ui.button("Close").clicked() {
                         if let Err(e) = self.sender.send(IndexStatus::Closed) {
                             error!("Error Closing the Indexer Modal: {}", e);
@@ -35,24 +41,31 @@ impl KimunModal for VaultIndexer {
             }
             IndexStatus::Indexing(index_type) => {
                 egui::Modal::new(egui::Id::new("")).show(ui.ctx(), |ui| {
-                    ui.set_width(600.0);
+                    ui.set_width(MODAL_WIDTH);
                     ui.heading("Indexing Vault");
-                    let message = match index_type {
-                        IndexType::Validate => "Validating Vault, please wait.",
-                        IndexType::Fast => "Fast checking, please wait.",
-                        IndexType::Full => "Fully reindexing, this may take a bit on large Vaults",
-                    };
-                    ui.label(message);
+                    ui.horizontal_centered(|ui| {
+                        egui::Spinner::new().ui(ui);
+                        ui.add_space(4.0);
+                        let message = match index_type {
+                            IndexType::Validate => "Validating Vault, please wait.",
+                            IndexType::Fast => "Fast checking, please wait.",
+                            IndexType::Full => {
+                                "Fully reindexing, this may take a bit on large Vaults"
+                            }
+                        };
+                        ui.label(message);
+                    });
                 });
                 false
             }
             IndexStatus::Done => {
                 egui::Modal::new(egui::Id::new("")).show(ui.ctx(), |ui| {
-                    ui.set_width(600.0);
+                    ui.set_width(MODAL_WIDTH);
                     ui.heading("Indexing Vault");
                     ui.label("Finished Indexing.");
-                    let close_button = ui.button("Close");
-                    if close_button.clicked() {
+                    ui.add_space(4.0);
+                    ui.separator();
+                    if ui.button("Close").clicked() {
                         if let Err(e) = self.sender.send(IndexStatus::Closed) {
                             error!("Error Closing the Indexer Modal: {}", e);
                         }

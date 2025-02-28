@@ -21,7 +21,6 @@ use note::{NoteContentData, NoteDetails};
 use utilities::path_to_string;
 
 const JOURNAL_PATH: &str = "journal";
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteVault {
     pub workspace_path: PathBuf,
@@ -65,7 +64,6 @@ impl NoteVault {
     /// This can be slow on large vaults.
     pub fn init_and_validate(&self) -> Result<(), VaultError> {
         debug!("Initializing DB and validating it");
-        let db_path = self.vault_db.get_db_path();
         let db_result = self.vault_db.check_db()?;
         match db_result {
             db::DBStatus::Ready => {
@@ -80,13 +78,13 @@ impl NoteVault {
             }
             db::DBStatus::FileNotFound => {
                 // No need to validate, no data there
-                self.create_tables()?;
-                self.index_notes(NotesValidation::None)?;
+                self.recreate_index()?;
             }
         }
         Ok(())
     }
 
+    /// Deletes the db file and recreates the index
     pub fn force_rebuild(&self) -> Result<(), VaultError> {
         let db_path = self.vault_db.get_db_path();
         let md = std::fs::metadata(&db_path).map_err(FSError::ReadFileError)?;
@@ -99,18 +97,15 @@ impl NoteVault {
         self.recreate_index()
     }
 
-    /// Deletes all the cached data from the DB
+    /// Deletes all the cached data from the DB by destroying the tables
     /// and recreates the index
+    /// This is similar to a force rebuild but instead of deleting the db file
+    /// it only deletes the tables.
     pub fn recreate_index(&self) -> Result<(), VaultError> {
         debug!("Initializing DB from Vault request");
-        self.create_tables()?;
+        self.vault_db.call(db::init_db)?;
         debug!("Tables created, creating index");
         self.index_notes(NotesValidation::Full)?;
-        Ok(())
-    }
-
-    fn create_tables(&self) -> Result<(), VaultError> {
-        self.vault_db.call(db::init_db)?;
         Ok(())
     }
 
@@ -318,6 +313,28 @@ impl NoteVault {
             .call(move |conn| db::save_note(conn, &entry_data, text))?;
 
         Ok(result)
+    }
+
+    /// If the string is a path, it looks for a specific note, if it's just a note name
+    /// it looks for that note in any path in the vault, so it may return many results
+    pub fn open_or_search<S: AsRef<str>>(
+        &self,
+        path_or_note: S,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+        // If it starts with the root trailing slash, we assume is looking for a path
+        let is_path = path_or_note.as_ref().starts_with(nfs::PATH_SEPARATOR);
+
+        // We make sure the path is a note path, so we append the extension if doesn't exist
+        let path = VaultPath::note_path_from(path_or_note);
+        let (parent, name) = path.get_parent_path();
+        if !is_path && parent.eq(&VaultPath::root()) {
+            // It's a note name, we look for the note name, not the path
+            self.vault_db
+                .call(|conn| db::search_note_by_name(conn, name))
+        } else {
+            self.vault_db
+                .call(move |conn| db::search_note_by_path(conn, &path))
+        }
     }
 }
 
