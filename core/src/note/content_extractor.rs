@@ -402,7 +402,7 @@ mod test {
     fn ignore_image_links() {
         let markdown = r#"This is an ![image](image.png)"#;
 
-        let (md, links) = get_markdown_and_links(markdown);
+        let (_md, links) = get_markdown_and_links(markdown);
 
         assert!(links.is_empty());
     }

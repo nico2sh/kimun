@@ -278,6 +278,61 @@ fn note_exists(connection: &mut Connection, path: &VaultPath) -> Result<bool, DB
     }
 }
 
+pub fn search_note_by_name<S: AsRef<str>>(
+    connection: &mut Connection,
+    name: S,
+) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where noteName = ?1";
+    let mut stmt = connection.prepare(sql)?;
+    let res = stmt
+        .query_map([name.as_ref()], |row| {
+            let path: String = row.get(0)?;
+            let title = row.get(1)?;
+            let size = row.get(2)?;
+            let modified = row.get(3)?;
+            let hash: String = row.get(4)?;
+            let note_path = VaultPath::new(&path);
+            let data = NoteEntryData {
+                path: note_path.clone(),
+                size,
+                modified_secs: modified,
+            };
+            let det = NoteContentData::new(title, hash.parse().unwrap());
+            Ok((data, det))
+        })?
+        .map(|el| el.map_err(DBError::DBError))
+        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
+    Ok(res)
+}
+
+pub fn search_note_by_path(
+    connection: &mut Connection,
+    path: &VaultPath,
+) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where path = ?1";
+    let mut stmt = connection.prepare(sql)?;
+    let res = stmt
+        .query_map([path.to_string()], |row| {
+            let path: String = row.get(0)?;
+            let title = row.get(1)?;
+            let size = row.get(2)?;
+            let modified = row.get(3)?;
+            let hash: String = row.get(4)?;
+            let note_path = VaultPath::new(&path);
+            let data = NoteEntryData {
+                path: note_path.clone(),
+                size,
+                modified_secs: modified,
+            };
+            let det = NoteContentData::new(title, hash.parse().unwrap());
+            Ok((data, det))
+        })?
+        .map(|el| el.map_err(DBError::DBError))
+        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
+    // Should always return one or zero
+    Ok(res)
+}
+
 pub fn get_notes(
     connection: &mut Connection,
     path: &VaultPath,
