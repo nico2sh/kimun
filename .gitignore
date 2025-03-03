@@ -3,7 +3,6 @@
 **/target/
 **/dist/
 **/static/
-**/.dioxus/
 
 # this file will generate by tailwind:
 **/assets/tailwind.css
