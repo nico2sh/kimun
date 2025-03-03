@@ -5,7 +5,7 @@ use rayon::slice::ParallelSliceMut;
 use crate::editor::EditorMessage;
 
 use super::{
-    filtered_list::{FilteredListFunctionMessage, FilteredListFunctions},
+    filtered_list::{FilteredListFunctionMessage, FilteredListFunctions, StateData},
     vault_browse::{SelectorEntry, SelectorEntryType},
 };
 
@@ -58,19 +58,13 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for NoteSelectorFu
         filtered
     }
 
-    fn on_entry(
-        &self,
-        element: &SelectorEntry,
-    ) -> Option<super::filtered_list::FilteredListFunctionMessage<Self>> {
+    fn on_entry(&self, element: &SelectorEntry) -> Option<FilteredListFunctionMessage<Self>> {
         Some(FilteredListFunctionMessage::ToEditor(
             EditorMessage::OpenNote(element.path.clone()),
         ))
     }
 
-    fn header_element(
-        &self,
-        state_data: &super::filtered_list::StateData<SelectorEntry>,
-    ) -> Option<SelectorEntry> {
+    fn header_element(&self, _state_data: &StateData<SelectorEntry>) -> Option<SelectorEntry> {
         None
     }
 }
