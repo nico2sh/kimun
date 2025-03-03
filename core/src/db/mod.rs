@@ -8,13 +8,14 @@ use rusqlite::{config::DbConfig, params, Connection, Transaction};
 use rusqlite::{params_from_iter, OpenFlags, OptionalExtension};
 use search_terms::SearchTerms;
 
+use crate::nfs::PATH_SEPARATOR;
 use crate::note::{LinkType, NoteContentData, NoteDetails};
 
 use super::error::DBError;
 
 use super::{nfs::NoteEntryData, VaultPath};
 
-const VERSION: &str = "0.3";
+const VERSION: &str = "0.4";
 const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -282,10 +283,11 @@ pub fn search_note_by_name<S: AsRef<str>>(
     connection: &mut Connection,
     name: S,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    let name = name.as_ref().to_lowercase();
     let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where noteName = ?1";
     let mut stmt = connection.prepare(sql)?;
     let res = stmt
-        .query_map([name.as_ref()], |row| {
+        .query_map([name], |row| {
             let path: String = row.get(0)?;
             let title = row.get(1)?;
             let size = row.get(2)?;
@@ -311,8 +313,13 @@ pub fn search_note_by_path(
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where path = ?1";
     let mut stmt = connection.prepare(sql)?;
+    let path_string = path
+        .to_string()
+        .strip_prefix(PATH_SEPARATOR)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.to_string());
     let res = stmt
-        .query_map([path.to_string()], |row| {
+        .query_map([path_string], |row| {
             let path: String = row.get(0)?;
             let title = row.get(1)?;
             let size = row.get(2)?;

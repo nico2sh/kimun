@@ -1,6 +1,6 @@
 use std::cmp::min;
 
-use log::error;
+use log::{debug, error};
 use pulldown_cmark::{Event, Parser, Tag};
 use regex::{Captures, Regex};
 
@@ -47,7 +47,7 @@ fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
                 _ => ("", ""),
             };
             if !link.is_empty() && VaultPath::is_valid(link) {
-                note_links.push(Link::note(VaultPath::new(link), text));
+                note_links.push(Link::note(link, text));
                 format!("[{}]({})", text, link)
             } else {
                 format!("[[{}]]", items)
@@ -68,12 +68,15 @@ pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) 
         let link = &caps["link"];
         // We ignore links that start with a `!`, since these are images
         if bang.is_empty() {
-            if let Ok(path) = VaultPath::try_from(link.to_string()) {
-                links.push(Link::note(path, text));
+            debug!("checking link {}", link);
+            if VaultPath::is_valid(link) {
+                links.push(Link::note(link, text));
             } else {
                 let rxurl = Regex::new(url_regex).unwrap();
                 if rxurl.is_match(link) {
                     links.push(Link::url(link, text));
+                } else {
+                    debug!("link not counting {}", link);
                 }
             }
         }
@@ -375,7 +378,7 @@ mod test {
         assert_eq!(1, links.len());
         assert!(links
             .iter()
-            .any(|link| { link.eq(&Link::note(VaultPath::new("Wikilink"), "text with link")) }));
+            .any(|link| { link.eq(&Link::note("Wikilink", "text with link")) }));
     }
 
     #[test]
@@ -395,10 +398,10 @@ mod test {
         assert_eq!(2, links.len());
         assert!(links
             .iter()
-            .any(|link| { link.eq(&Link::note(VaultPath::new("Wikilink"), "text with link")) }));
+            .any(|link| { link.eq(&Link::note("Wikilink", "text with link")) }));
         assert!(links
             .iter()
-            .any(|link| { link.eq(&Link::note(VaultPath::new("Link"), "Link")) }))
+            .any(|link| { link.eq(&Link::note("Link", "Link")) }))
     }
 
     #[test]
@@ -443,7 +446,7 @@ mod test {
         assert!(links.iter().any(|link| {
             println!("{:?}", link);
             let url = "https://www.example.com".to_string();
-            link.text.eq("url") && link.ltype.eq(&LinkType::Url(url))
+            link.text.eq("url") && link.ltype.eq(&LinkType::Url)
         }));
     }
 

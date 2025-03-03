@@ -302,6 +302,7 @@ impl VaultPath {
     /// the path first, either use the `VaultPath::From` trait or use
     /// `VaultPath::is_valid()`
     pub fn new<S: AsRef<str>>(path: S) -> Self {
+        let leading_sep = path.as_ref().starts_with(PATH_SEPARATOR);
         let path_list = path
             .as_ref()
             .split(PATH_SEPARATOR)
@@ -324,6 +325,13 @@ impl VaultPath {
     }
 
     pub fn is_valid<S: AsRef<str>>(path: S) -> bool {
+        // path can only start with one slash `/`
+        if path
+            .as_ref()
+            .starts_with(format!("{}{}", PATH_SEPARATOR, PATH_SEPARATOR).as_str())
+        {
+            return false;
+        }
         !path
             .as_ref()
             .split(PATH_SEPARATOR)
@@ -480,11 +488,9 @@ struct VaultPathSlice {
 impl VaultPathSlice {
     fn new<S: AsRef<str>>(slice: S) -> Self {
         let re = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
-        let final_slice = re.replace_all(slice.as_ref(), "_");
+        let final_slice = re.replace_all(slice.as_ref(), "_").to_lowercase();
 
-        Self {
-            name: final_slice.to_string(),
-        }
+        Self { name: final_slice }
     }
 
     fn is_valid<S: AsRef<str>>(slice: S) -> bool {

@@ -153,6 +153,7 @@ impl Editor {
                 }
                 EditorMessage::OpenCreateOrSearchNote(path) => {
                     let result = self.vault.open_or_search(&path)?;
+                    debug!("Got {} results", result.len());
                     match result.len() {
                         0 => {
                             let path = VaultPath::new(path);
