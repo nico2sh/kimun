@@ -210,7 +210,7 @@ pub fn search_terms<S: AsRef<str>>(
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let search_terms = SearchTerms::from_query_string(query);
     let mut var_num = 1;
-    let base_sql = "SELECT notesContent.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
+    let base_sql = "SELECT DISTINCT notes.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
     let mut params = vec![];
     let mut queries = vec![];
     if !search_terms.terms.is_empty() {
