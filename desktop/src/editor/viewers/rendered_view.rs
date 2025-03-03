@@ -31,7 +31,7 @@ fn get_link_hooks(links: Vec<Link>) -> Vec<String> {
     let mut hooks = vec![];
     for link in &links {
         if let LinkType::Note(name) = &link.ltype {
-            let path_string = name.to_string();
+            let path_string = link.link.clone();
             // cache.add_link_hook(&path_string);
             hooks.push(path_string);
         }
@@ -41,12 +41,12 @@ fn get_link_hooks(links: Vec<Link>) -> Vec<String> {
 
 impl NoteViewer for RenderedView {
     fn view(&mut self, note_details: &mut NoteDetails, ui: &mut egui::Ui) -> anyhow::Result<bool> {
-        for link in &self.link_hooks {
-            if Some(true) == self.cache.get_link_hook(link) {
-                debug!("Clicked on {}", link);
+        for path_label in &self.link_hooks {
+            if Some(true) == self.cache.get_link_hook(path_label) {
+                debug!("Clicked on {}", path_label);
                 if let Err(e) = self
                     .message_sender
-                    .send(EditorMessage::OpenCreateOrSearchNote(link.to_owned()))
+                    .send(EditorMessage::OpenCreateOrSearchNote(path_label.to_owned()))
                 {
                     error!("Error sending a message to open a note: {}", e);
                 }
@@ -88,10 +88,15 @@ impl NoteViewer for RenderedView {
         self.cache.link_hooks_clear();
         let ml = note_details.get_markdown_and_links();
         self.markdown_text = ml.text;
-        let link_hooks = get_link_hooks(ml.links);
-        for hook in &link_hooks {
-            self.cache.add_link_hook(hook);
+        // let link_hooks = get_link_hooks(ml.links);
+
+        for link in ml.links {
+            if let LinkType::Note(_path) = link.ltype {
+                let path_string = link.link.clone();
+                // cache.add_link_hook(&path_string);
+                self.link_hooks.push(path_string.clone());
+                self.cache.add_link_hook(path_string);
+            }
         }
-        self.link_hooks = link_hooks;
     }
 }

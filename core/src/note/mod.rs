@@ -103,26 +103,32 @@ impl ContentChunk {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkType {
     Note(VaultPath),
-    Url(String),
+    Url,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     pub ltype: LinkType,
     pub text: String,
+    // This is the link as it comes from the note, without any cleanup
+    // so it may contain invalid characters and uppercases
+    // in the case of note links, which are cleanup when converting to path
+    pub raw_link: String,
 }
 
 impl Link {
-    pub fn note<S: AsRef<str>>(path: VaultPath, text: S) -> Self {
+    pub fn note<P: AsRef<str>, S: AsRef<str>>(path: P, text: S) -> Self {
         Self {
-            ltype: LinkType::Note(path),
+            ltype: LinkType::Note(VaultPath::new(&path)),
             text: text.as_ref().to_string(),
+            raw_link: path.as_ref().to_string(),
         }
     }
     pub fn url<S: AsRef<str>, T: AsRef<str>>(url: S, text: T) -> Self {
         Self {
-            ltype: LinkType::Url(url.as_ref().to_string()),
+            ltype: LinkType::Url,
             text: text.as_ref().to_string(),
+            raw_link: url.as_ref().to_string(),
         }
     }
 }
