@@ -19,7 +19,7 @@ use super::{error::FSError, DirectoryDetails, NoteDetails};
 
 use super::utilities::path_to_string;
 
-const PATH_SEPARATOR: char = '/';
+pub const PATH_SEPARATOR: char = '/';
 const NOTE_EXTENSION: &str = ".md";
 // non valid chars
 // Not allowed: \ | : * ? " < > | [ ] ^ #
@@ -230,7 +230,7 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     Ok(entry)
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaultPath {
     slices: Vec<VaultPathSlice>,
 }
@@ -324,6 +324,13 @@ impl VaultPath {
     }
 
     pub fn is_valid<S: AsRef<str>>(path: S) -> bool {
+        // path can only start with one slash `/`
+        if path
+            .as_ref()
+            .starts_with(format!("{}{}", PATH_SEPARATOR, PATH_SEPARATOR).as_str())
+        {
+            return false;
+        }
         !path
             .as_ref()
             .split(PATH_SEPARATOR)
@@ -462,8 +469,7 @@ impl Display for VaultPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}{}",
-            PATH_SEPARATOR,
+            "{}",
             self.slices
                 .iter()
                 .map(|s| { s.to_string() })
@@ -481,11 +487,9 @@ struct VaultPathSlice {
 impl VaultPathSlice {
     fn new<S: AsRef<str>>(slice: S) -> Self {
         let re = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
-        let final_slice = re.replace_all(slice.as_ref(), "_");
+        let final_slice = re.replace_all(slice.as_ref(), "_").to_lowercase();
 
-        Self {
-            name: final_slice.to_string(),
-        }
+        Self { name: final_slice }
     }
 
     fn is_valid<S: AsRef<str>>(slice: S) -> bool {
@@ -549,10 +553,10 @@ mod tests {
 
     #[test]
     fn test_slice_char_replace() {
-        let slice_str = "Some?unvalid:chars?";
+        let slice_str = "Some?unvalid:Chars?";
         let slice = VaultPathSlice::new(slice_str);
 
-        assert_eq!("Some_unvalid_chars_", slice.name);
+        assert_eq!("some_unvalid_chars_", slice.name);
     }
 
     #[test]
@@ -597,6 +601,6 @@ mod tests {
 
         let entry = VaultPath::from_path(&workspace, &path).unwrap();
 
-        assert_eq!("/workspace/note.md", entry.to_string());
+        assert_eq!("workspace/note.md", entry.to_string());
     }
 }

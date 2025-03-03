@@ -99,7 +99,10 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
 
     fn header_element(&self, state_data: &StateData<SelectorEntry>) -> Option<SelectorEntry> {
         if !state_data.filter_text.is_empty() {
-            Some(SelectorEntry::new_note(&self.path, &state_data.filter_text))
+            Some(SelectorEntry::create_new_note(
+                &self.path,
+                &state_data.filter_text,
+            ))
         } else {
             None
         }
@@ -279,7 +282,7 @@ impl SelectorEntry {
         }
     }
 
-    fn new_note(base_path: &VaultPath, note_text: &str) -> Self {
+    fn create_new_note(base_path: &VaultPath, note_text: &str) -> Self {
         let file_name = VaultPath::note_path_from(note_text);
         let path = base_path.append(&file_name);
 
@@ -291,7 +294,7 @@ impl SelectorEntry {
         }
     }
 
-    fn get_sort_string(&self) -> String {
+    pub fn get_sort_string(&self) -> String {
         match &self.entry_type {
             SelectorEntryType::Note { title: _ } => format!("2{}", self.path),
             SelectorEntryType::Directory => format!("1{}", self.path),

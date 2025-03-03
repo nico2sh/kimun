@@ -8,13 +8,14 @@ use rusqlite::{config::DbConfig, params, Connection, Transaction};
 use rusqlite::{params_from_iter, OpenFlags, OptionalExtension};
 use search_terms::SearchTerms;
 
+use crate::nfs::PATH_SEPARATOR;
 use crate::note::{LinkType, NoteContentData, NoteDetails};
 
 use super::error::DBError;
 
 use super::{nfs::NoteEntryData, VaultPath};
 
-const VERSION: &str = "0.3";
+const VERSION: &str = "0.4";
 const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -278,6 +279,67 @@ fn note_exists(connection: &mut Connection, path: &VaultPath) -> Result<bool, DB
     }
 }
 
+pub fn search_note_by_name<S: AsRef<str>>(
+    connection: &mut Connection,
+    name: S,
+) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    let name = name.as_ref().to_lowercase();
+    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where noteName = ?1";
+    let mut stmt = connection.prepare(sql)?;
+    let res = stmt
+        .query_map([name], |row| {
+            let path: String = row.get(0)?;
+            let title = row.get(1)?;
+            let size = row.get(2)?;
+            let modified = row.get(3)?;
+            let hash: String = row.get(4)?;
+            let note_path = VaultPath::new(&path);
+            let data = NoteEntryData {
+                path: note_path.clone(),
+                size,
+                modified_secs: modified,
+            };
+            let det = NoteContentData::new(title, hash.parse().unwrap());
+            Ok((data, det))
+        })?
+        .map(|el| el.map_err(DBError::DBError))
+        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
+    Ok(res)
+}
+
+pub fn search_note_by_path(
+    connection: &mut Connection,
+    path: &VaultPath,
+) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where path = ?1";
+    let mut stmt = connection.prepare(sql)?;
+    let path_string = path
+        .to_string()
+        .strip_prefix(PATH_SEPARATOR)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.to_string());
+    let res = stmt
+        .query_map([path_string], |row| {
+            let path: String = row.get(0)?;
+            let title = row.get(1)?;
+            let size = row.get(2)?;
+            let modified = row.get(3)?;
+            let hash: String = row.get(4)?;
+            let note_path = VaultPath::new(&path);
+            let data = NoteEntryData {
+                path: note_path.clone(),
+                size,
+                modified_secs: modified,
+            };
+            let det = NoteContentData::new(title, hash.parse().unwrap());
+            Ok((data, det))
+        })?
+        .map(|el| el.map_err(DBError::DBError))
+        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
+    // Should always return one or zero
+    Ok(res)
+}
+
 pub fn get_notes(
     connection: &mut Connection,
     path: &VaultPath,
@@ -363,13 +425,14 @@ fn insert_note<S: AsRef<str>>(
     let (parent_path, name) = entry_data.path.get_parent_path();
     let note_details = NoteDetails::new(&entry_data.path, text);
     let path_string = entry_data.path.to_string();
+    let data = note_details.get_content_data();
     if let Err(e) = tx.execute(
         "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![path_string, note_details.data.title, entry_data.size, entry_data.modified_secs, note_details.data.hash.to_string(), parent_path.to_string(), name],
+        params![path_string, data.title, entry_data.size, entry_data.modified_secs, data.hash.to_string(), parent_path.to_string(), name],
     ){
         error!("Error inserting note: {}\nDetails: {}", e, note_details);
     }
-    for chunk in &note_details.content_chunks {
+    for chunk in &note_details.get_content_chunks() {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
         tx.execute(
@@ -396,8 +459,9 @@ fn update_note<S: AsRef<str>>(
     text: S,
 ) -> Result<(), DBError> {
     let note_details = NoteDetails::new(&entry_data.path, text);
-    let title = note_details.data.title.clone();
-    let hash = note_details.data.hash.to_string();
+    let data = note_details.get_content_data();
+    let title = data.title.clone();
+    let hash = data.hash.to_string();
     let path_string = entry_data.path.to_string();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
@@ -413,7 +477,7 @@ fn update_note<S: AsRef<str>>(
         "DELETE FROM notesContent WHERE path = ?1",
         params![path_string],
     )?;
-    for chunk in &note_details.content_chunks {
+    for chunk in &note_details.get_content_chunks() {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
         tx.execute(
