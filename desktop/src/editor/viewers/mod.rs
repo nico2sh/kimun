@@ -1,4 +1,5 @@
 use eframe::egui;
+use kimun_core::note::NoteDetails;
 
 use super::EditorMessage;
 
@@ -15,7 +16,7 @@ pub enum ViewerType {
 }
 
 pub trait NoteViewer {
-    fn view(&mut self, text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<bool>;
-    fn init(&mut self, text: String);
+    fn view(&mut self, note: &mut NoteDetails, ui: &mut egui::Ui) -> anyhow::Result<bool>;
+    fn init(&mut self, details: &NoteDetails);
     fn manage_keys(&mut self, ctx: &egui::Context) -> Option<EditorMessage>;
 }

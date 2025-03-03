@@ -2,10 +2,12 @@ pub mod components;
 mod save_manager;
 mod viewers;
 
+use std::sync::{Arc, Mutex};
+
 use anyhow::bail;
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
-use kimun_core::{nfs::VaultPath, NoteVault};
+use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 use log::{debug, error};
 use save_manager::SaveManager;
 use viewers::{editor_view::EditorView, rendered_view::RenderedView, NoteViewer, ViewerType};
@@ -21,13 +23,12 @@ use super::MainView;
 pub struct Editor {
     settings: Settings,
     viewer: Box<dyn NoteViewer>,
-    raw_text: String,
+    note_details: NoteDetails,
+    vault: NoteVault,
     save_manager: SaveManager,
     modal_manager: ModalManager,
-    vault: NoteVault,
-    note_path: VaultPath,
     message_sender: Sender<EditorMessage>,
-    message_receiver: Receiver<EditorMessage>,
+    next_action: Arc<Mutex<Option<EditorMessage>>>,
     request_focus: bool,
     request_windows_switch: Option<WindowAction>,
 }
@@ -40,25 +41,27 @@ impl Editor {
     ) -> anyhow::Result<Self> {
         let settings = Settings::load_from_disk()?;
         let (sender, receiver) = crossbeam_channel::unbounded();
-        let vault = vault.to_owned();
+        let next_action = Arc::new(Mutex::new(None));
+        start_event_loop(receiver, next_action.clone(), ctx.clone());
 
+        let vault = vault.to_owned();
         let note_path = note_path.to_owned();
         let mut modal_manager = ModalManager::new(ctx);
         modal_manager.set_modal(Modals::VaultIndex(
             vault.workspace_path.clone(),
             IndexType::Validate,
         ))?;
+        let note_details = NoteDetails::new(&note_path, String::new());
         let save_manager = SaveManager::new(String::new(), &note_path, &vault);
         let mut editor = Self {
             settings: settings.clone(),
-            viewer: Box::new(EditorView::new(&note_path)),
-            raw_text: String::new(),
+            viewer: Box::new(EditorView::new()),
+            note_details,
             modal_manager,
             save_manager,
             vault,
-            note_path: note_path.clone(),
             message_sender: sender,
-            message_receiver: receiver,
+            next_action,
             request_focus: true,
             request_windows_switch: None,
         };
@@ -73,10 +76,10 @@ impl Editor {
     /// if not, we return an error
     fn load_note_path(&mut self, note_path: &VaultPath) -> anyhow::Result<()> {
         if note_path.is_note() && self.vault.exists(note_path).is_some() {
-            let text = self.vault.get_note_text(note_path)?;
+            let note_details = self.vault.load_note(note_path)?;
             self.settings.add_path_history(note_path);
             self.settings.save_to_disk()?;
-            self.set_content(note_path, text);
+            self.set_content(&note_details);
         } else {
             bail!("Note path is not a note or vault path doesn't exist")
         };
@@ -84,11 +87,11 @@ impl Editor {
         Ok(())
     }
 
-    fn set_content(&mut self, path: &VaultPath, text: String) {
-        self.raw_text = text.clone();
-        self.save_manager.load(&text, path);
+    fn set_content(&mut self, details: &NoteDetails) {
+        self.note_details = details.to_owned();
+        self.save_manager.load(&details.raw_text, &details.path);
 
-        self.viewer.init(text);
+        self.viewer.init(details);
     }
 
     fn save_note(&mut self) -> anyhow::Result<()> {
@@ -133,12 +136,46 @@ impl Editor {
     }
 
     fn update_messages(&mut self, _ctx: &egui::Context) -> anyhow::Result<()> {
-        while let Ok(message) = self.message_receiver.try_recv() {
+        let next_action = {
+            let mut lock = self.next_action.lock().unwrap();
+            let next_action = lock.clone();
+            *lock = None;
+            next_action
+        };
+
+        if let Some(message) = next_action {
+            debug!("Action: {:?}", message);
             match message {
                 EditorMessage::OpenNote(note_path) => {
                     self.load_note_path(&note_path)?;
                     self.modal_manager.close_modal();
                     self.request_focus = true;
+                }
+                EditorMessage::OpenCreateOrSearchNote(path) => {
+                    let result = self.vault.open_or_search(&path)?;
+                    debug!("Got {} results", result.len());
+                    match result.len() {
+                        0 => {
+                            let path = VaultPath::new(path);
+                            if let Err(e) = self.message_sender.send(EditorMessage::NewNote(path)) {
+                                error!("Error sending an editor message: {}", e);
+                            }
+                        }
+                        1 => {
+                            let path = result.first().unwrap().0.path.clone();
+                            if let Err(e) = self.message_sender.send(EditorMessage::OpenNote(path))
+                            {
+                                error!("Error sending an editor message: {}", e);
+                            }
+                        }
+                        _ => {
+                            let _e = self.modal_manager.set_modal(Modals::NoteSelect(
+                                self.vault.clone(),
+                                result,
+                                self.message_sender.clone(),
+                            ));
+                        }
+                    }
                 }
                 EditorMessage::NewJournal => {
                     let (data, _content) = self.vault.journal_entry()?;
@@ -158,7 +195,8 @@ impl Editor {
                         }
                     }
                     debug!("New note at: {}", np);
-                    self.set_content(&np, String::new());
+                    let details = NoteDetails::new(&np, String::new());
+                    self.set_content(&details);
                     self.modal_manager.close_modal();
                     self.request_focus = true;
                 }
@@ -179,10 +217,10 @@ impl Editor {
     fn change_viewer(&mut self, viewer: ViewerType) -> anyhow::Result<()> {
         self.save_note()?;
         self.viewer = match viewer {
-            ViewerType::Editor => Box::new(EditorView::new(&self.note_path)),
-            ViewerType::Rendered => Box::new(RenderedView::new(&self.note_path)),
+            ViewerType::Editor => Box::new(EditorView::new()),
+            ViewerType::Rendered => Box::new(RenderedView::new(self.message_sender.clone())),
         };
-        self.viewer.init(self.raw_text.clone());
+        self.viewer.init(&self.note_details);
         Ok(())
     }
 }
@@ -199,14 +237,16 @@ impl MainView for Editor {
     fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowAction>> {
         self.modal_manager.view(ui)?;
         egui::ScrollArea::vertical()
-            .show(ui, |ui| match self.viewer.view(&mut self.raw_text, ui) {
-                Ok(changed) => {
-                    if changed {
-                        self.save_manager.update_text(&self.raw_text);
+            .show(ui, |ui| {
+                match self.viewer.view(&mut self.note_details, ui) {
+                    Ok(changed) => {
+                        if changed {
+                            self.save_manager.update_text(&self.note_details.raw_text);
+                        }
+                        Ok(())
                     }
-                    Ok(())
+                    Err(e) => Err(e),
                 }
-                Err(e) => Err(e),
             })
             .inner?;
 
@@ -224,9 +264,23 @@ impl MainView for Editor {
     }
 }
 
-#[derive(Clone)]
+fn start_event_loop(
+    receiver: Receiver<EditorMessage>,
+    message_container: Arc<Mutex<Option<EditorMessage>>>,
+    ctx: egui::Context,
+) {
+    std::thread::spawn(move || {
+        while let Ok(message) = receiver.recv() {
+            *message_container.lock().unwrap() = Some(message);
+            ctx.request_repaint();
+        }
+    });
+}
+
+#[derive(Clone, Debug)]
 pub enum EditorMessage {
     OpenNote(VaultPath),
+    OpenCreateOrSearchNote(String),
     NewNote(VaultPath),
     SwitchNoteViewer(ViewerType),
     NewJournal,
