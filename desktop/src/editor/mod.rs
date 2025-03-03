@@ -23,7 +23,7 @@ use super::MainView;
 pub struct Editor {
     settings: Settings,
     viewer: Box<dyn NoteViewer>,
-    note: NoteDetails,
+    note_details: NoteDetails,
     vault: NoteVault,
     save_manager: SaveManager,
     modal_manager: ModalManager,
@@ -55,8 +55,8 @@ impl Editor {
         let save_manager = SaveManager::new(String::new(), &note_path, &vault);
         let mut editor = Self {
             settings: settings.clone(),
-            viewer: Box::new(EditorView::new(&note_details)),
-            note: note_details,
+            viewer: Box::new(EditorView::new()),
+            note_details,
             modal_manager,
             save_manager,
             vault,
@@ -88,10 +88,10 @@ impl Editor {
     }
 
     fn set_content(&mut self, details: &NoteDetails) {
-        self.note.raw_text = details.raw_text.clone();
+        self.note_details = details.to_owned();
         self.save_manager.load(&details.raw_text, &details.path);
 
-        self.viewer.reload(details);
+        self.viewer.init(details);
     }
 
     fn save_note(&mut self) -> anyhow::Result<()> {
@@ -168,7 +168,11 @@ impl Editor {
                             }
                         }
                         _ => {
-                            // TODO: Many results, we show a selector
+                            let _e = self.modal_manager.set_modal(Modals::NoteSelect(
+                                self.vault.clone(),
+                                result,
+                                self.message_sender.clone(),
+                            ));
                         }
                     }
                 }
@@ -212,12 +216,10 @@ impl Editor {
     fn change_viewer(&mut self, viewer: ViewerType) -> anyhow::Result<()> {
         self.save_note()?;
         self.viewer = match viewer {
-            ViewerType::Editor => Box::new(EditorView::new(&self.note)),
-            ViewerType::Rendered => {
-                Box::new(RenderedView::new(&self.note, self.message_sender.clone()))
-            }
+            ViewerType::Editor => Box::new(EditorView::new()),
+            ViewerType::Rendered => Box::new(RenderedView::new(self.message_sender.clone())),
         };
-        self.viewer.reload(&self.note);
+        self.viewer.init(&self.note_details);
         Ok(())
     }
 }
@@ -234,14 +236,16 @@ impl MainView for Editor {
     fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowAction>> {
         self.modal_manager.view(ui)?;
         egui::ScrollArea::vertical()
-            .show(ui, |ui| match self.viewer.view(&mut self.note, ui) {
-                Ok(changed) => {
-                    if changed {
-                        self.save_manager.update_text(&self.note.raw_text);
+            .show(ui, |ui| {
+                match self.viewer.view(&mut self.note_details, ui) {
+                    Ok(changed) => {
+                        if changed {
+                            self.save_manager.update_text(&self.note_details.raw_text);
+                        }
+                        Ok(())
                     }
-                    Ok(())
+                    Err(e) => Err(e),
                 }
-                Err(e) => Err(e),
             })
             .inner?;
 

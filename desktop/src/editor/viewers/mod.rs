@@ -17,6 +17,6 @@ pub enum ViewerType {
 
 pub trait NoteViewer {
     fn view(&mut self, note: &mut NoteDetails, ui: &mut egui::Ui) -> anyhow::Result<bool>;
-    fn reload(&mut self, details: &NoteDetails);
+    fn init(&mut self, details: &NoteDetails);
     fn manage_keys(&mut self, ctx: &egui::Context) -> Option<EditorMessage>;
 }

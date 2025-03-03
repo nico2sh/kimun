@@ -4,12 +4,16 @@ use std::path::PathBuf;
 
 use crossbeam_channel::Sender;
 use eframe::egui;
-use kimun_core::{nfs::VaultPath, NoteVault};
+use kimun_core::{
+    nfs::{NoteEntryData, VaultPath},
+    note::NoteContentData,
+    NoteVault,
+};
 use log::{debug, error};
 use vault_indexer::{IndexType, VaultIndexer};
 
 use crate::editor::components::{
-    filtered_list::FilteredList,
+    note_selector::NoteSelectorFunctions,
     preview_list::PreviewList,
     vault_browse::{VaultBrowseFunctions, VaultSearchFunctions},
 };
@@ -68,6 +72,11 @@ pub struct ModalManager {
 pub enum Modals {
     VaultBrowse(NoteVault, VaultPath, Sender<EditorMessage>),
     VaultSearch(NoteVault, Sender<EditorMessage>),
+    NoteSelect(
+        NoteVault,
+        Vec<(NoteEntryData, NoteContentData)>,
+        Sender<EditorMessage>,
+    ),
     VaultIndex(PathBuf, IndexType),
 }
 
@@ -95,16 +104,19 @@ impl ModalManager {
                 debug!("show browser");
                 let content = PreviewList::new(
                     vault.clone(),
-                    FilteredList::new(VaultBrowseFunctions::new(path.clone(), vault.clone())),
+                    VaultBrowseFunctions::new(path.clone(), vault.clone()),
                 );
                 Box::new(ComponentModal::new(content, sender))
             }
             Modals::VaultSearch(vault, sender) => {
                 debug!("show searcher");
-                let content = PreviewList::new(
-                    vault.clone(),
-                    FilteredList::new(VaultSearchFunctions::new(vault.clone())),
-                );
+                let content =
+                    PreviewList::new(vault.clone(), VaultSearchFunctions::new(vault.clone()));
+                Box::new(ComponentModal::new(content, sender))
+            }
+            Modals::NoteSelect(vault, data, sender) => {
+                debug!("show note select");
+                let content = PreviewList::new(vault.clone(), NoteSelectorFunctions::new(data));
                 Box::new(ComponentModal::new(content, sender))
             }
             Modals::VaultIndex(vault_path, index_type) => {

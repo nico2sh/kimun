@@ -41,8 +41,9 @@ where
     P: Send + Sync + Clone + 'static,
     D: ListElement + 'static + SelectionPath,
 {
-    pub fn new(vault: NoteVault, list: FilteredList<F, P, D>) -> Self {
+    pub fn new(vault: NoteVault, functions: F) -> Self {
         let (state_sender, state_receiver) = crossbeam_channel::unbounded();
+        let list = FilteredList::new(functions);
         Self {
             vault,
             list,

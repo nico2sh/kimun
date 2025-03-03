@@ -5,7 +5,7 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
-use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
+use kimun_core::note::NoteDetails;
 use log::{debug, error};
 
 use crate::editor::NoteViewer;
@@ -17,21 +17,19 @@ const UPDATE_TITLE_EVERY_MS: u64 = 500;
 pub struct EditorView {
     highlighter: MemoizedNoteHighlighter,
     title: Arc<Mutex<String>>,
-    path: VaultPath,
     title_update: Sender<NoteDetails>,
     last_title_update: SystemTime,
     pending_title_update: bool,
 }
 
 impl EditorView {
-    pub fn new(note_details: &NoteDetails) -> Self {
+    pub fn new() -> Self {
         let highlighter = MemoizedNoteHighlighter::default();
-        let title = Arc::new(Mutex::new(note_details.get_title()));
+        let title = Arc::new(Mutex::new(String::new()));
         let (title_update, receiver) = crossbeam_channel::unbounded::<NoteDetails>();
         let editor_view = Self {
             highlighter,
             title,
-            path: note_details.path.to_owned(),
             title_update,
             last_title_update: SystemTime::UNIX_EPOCH,
             pending_title_update: true,
@@ -71,7 +69,7 @@ impl NoteViewer for EditorView {
             .show_inside(ui, |ui| {
                 ui.vertical(|ui| {
                     ui.heading(title);
-                    ui.label(self.path.to_string());
+                    ui.label(note_details.path.to_string());
                 })
             });
         let output = egui::TextEdit::multiline(&mut note_details.raw_text)
@@ -130,7 +128,7 @@ impl NoteViewer for EditorView {
         }
     }
 
-    fn reload(&mut self, note_details: &NoteDetails) {
+    fn init(&mut self, note_details: &NoteDetails) {
         if let Err(e) = self.title_update.send(note_details.clone()) {
             error!("Error sending an init message for setting the title: {}", e);
         }
