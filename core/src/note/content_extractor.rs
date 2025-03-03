@@ -446,7 +446,7 @@ mod test {
         assert!(links.iter().any(|link| {
             println!("{:?}", link);
             let url = "https://www.example.com".to_string();
-            link.text.eq("url") && link.ltype.eq(&LinkType::Url)
+            link.text.eq("url") && link.ltype.eq(&LinkType::Url) && link.raw_link.eq(&url)
         }));
     }
 
