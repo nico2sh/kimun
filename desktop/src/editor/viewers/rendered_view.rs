@@ -1,7 +1,7 @@
 use crossbeam_channel::Sender;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use kimun_core::note::{Link, LinkType, NoteDetails};
+use kimun_core::note::{LinkType, NoteDetails};
 use log::{debug, error};
 
 use crate::editor::NoteViewer;
@@ -25,18 +25,6 @@ impl RenderedView {
             markdown_text: String::new(),
         }
     }
-}
-
-fn get_link_hooks(links: Vec<Link>) -> Vec<String> {
-    let mut hooks = vec![];
-    for link in &links {
-        if let LinkType::Note(name) = &link.ltype {
-            let path_string = link.link.clone();
-            // cache.add_link_hook(&path_string);
-            hooks.push(path_string);
-        }
-    }
-    hooks
 }
 
 impl NoteViewer for RenderedView {
@@ -92,7 +80,7 @@ impl NoteViewer for RenderedView {
 
         for link in ml.links {
             if let LinkType::Note(_path) = link.ltype {
-                let path_string = link.link.clone();
+                let path_string = link.raw_link.clone();
                 // cache.add_link_hook(&path_string);
                 self.link_hooks.push(path_string.clone());
                 self.cache.add_link_hook(path_string);
