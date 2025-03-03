@@ -302,7 +302,6 @@ impl VaultPath {
     /// the path first, either use the `VaultPath::From` trait or use
     /// `VaultPath::is_valid()`
     pub fn new<S: AsRef<str>>(path: S) -> Self {
-        let leading_sep = path.as_ref().starts_with(PATH_SEPARATOR);
         let path_list = path
             .as_ref()
             .split(PATH_SEPARATOR)
@@ -554,10 +553,10 @@ mod tests {
 
     #[test]
     fn test_slice_char_replace() {
-        let slice_str = "Some?unvalid:chars?";
+        let slice_str = "Some?unvalid:Chars?";
         let slice = VaultPathSlice::new(slice_str);
 
-        assert_eq!("Some_unvalid_chars_", slice.name);
+        assert_eq!("some_unvalid_chars_", slice.name);
     }
 
     #[test]
