@@ -18,20 +18,20 @@ pub struct EditorView {
     highlighter: MemoizedNoteHighlighter,
     title: Arc<Mutex<String>>,
     path: VaultPath,
-    title_update: Sender<String>,
+    title_update: Sender<NoteDetails>,
     last_title_update: SystemTime,
     pending_title_update: bool,
 }
 
 impl EditorView {
-    pub fn new(path: &VaultPath) -> Self {
+    pub fn new(note_details: &NoteDetails) -> Self {
         let highlighter = MemoizedNoteHighlighter::default();
-        let title = Arc::new(Mutex::new(String::new()));
-        let (title_update, receiver) = crossbeam_channel::unbounded::<String>();
+        let title = Arc::new(Mutex::new(note_details.get_title()));
+        let (title_update, receiver) = crossbeam_channel::unbounded::<NoteDetails>();
         let editor_view = Self {
             highlighter,
             title,
-            path: path.to_owned(),
+            path: note_details.path.to_owned(),
             title_update,
             last_title_update: SystemTime::UNIX_EPOCH,
             pending_title_update: true,
@@ -40,11 +40,11 @@ impl EditorView {
         editor_view
     }
 
-    fn title_update_loop(&self, receiver: Receiver<String>) {
+    fn title_update_loop(&self, receiver: Receiver<NoteDetails>) {
         let title_to_update = self.title.clone();
         std::thread::spawn(move || {
-            while let Ok(text) = receiver.recv() {
-                let title = NoteDetails::get_title_from_text(text);
+            while let Ok(details) = receiver.recv() {
+                let title = details.get_title();
                 debug!("Updating title to `{}`", title);
                 *title_to_update.lock().unwrap() = title;
             }
@@ -53,7 +53,11 @@ impl EditorView {
 }
 
 impl NoteViewer for EditorView {
-    fn view(&mut self, text: &mut String, ui: &mut eframe::egui::Ui) -> anyhow::Result<bool> {
+    fn view(
+        &mut self,
+        note_details: &mut NoteDetails,
+        ui: &mut eframe::egui::Ui,
+    ) -> anyhow::Result<bool> {
         let mut layouter = |ui: &egui::Ui, easymark: &str, wrap_width: f32| {
             let mut layout_job = self.highlighter.highlight(ui.style(), easymark);
             layout_job.wrap.max_width = wrap_width;
@@ -70,7 +74,7 @@ impl NoteViewer for EditorView {
                     ui.label(self.path.to_string());
                 })
             });
-        let output = egui::TextEdit::multiline(text)
+        let output = egui::TextEdit::multiline(&mut note_details.raw_text)
             .font(egui::TextStyle::Monospace) // for cursor height
             .code_editor()
             .lock_focus(true)
@@ -99,7 +103,7 @@ impl NoteViewer for EditorView {
                 )
         {
             debug!("Sending a title update message");
-            if let Err(e) = self.title_update.send(text.clone()) {
+            if let Err(e) = self.title_update.send(note_details.clone()) {
                 error!("Error sending an update to the title: {}", e);
             } else {
                 self.last_title_update = SystemTime::now();
@@ -126,8 +130,8 @@ impl NoteViewer for EditorView {
         }
     }
 
-    fn init(&mut self, text: String) {
-        if let Err(e) = self.title_update.send(text) {
+    fn reload(&mut self, note_details: &NoteDetails) {
+        if let Err(e) = self.title_update.send(note_details.clone()) {
             error!("Error sending an init message for setting the title: {}", e);
         }
     }
