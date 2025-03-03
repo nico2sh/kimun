@@ -1,10 +1,7 @@
 use crossbeam_channel::Sender;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use kimun_core::{
-    nfs::VaultPath,
-    note::{Link, LinkType, NoteDetails},
-};
+use kimun_core::note::{Link, LinkType, NoteDetails};
 use log::{debug, error};
 
 use crate::editor::NoteViewer;
@@ -12,7 +9,6 @@ use crate::editor::NoteViewer;
 use super::EditorMessage;
 
 pub struct RenderedView {
-    path: VaultPath,
     markdown_text: String,
     message_sender: Sender<EditorMessage>,
     cache: CommonMarkCache,
@@ -20,20 +16,13 @@ pub struct RenderedView {
 }
 
 impl RenderedView {
-    pub fn new(note_details: &NoteDetails, message_sender: Sender<EditorMessage>) -> Self {
-        let mut cache = CommonMarkCache::default();
-        let ml = note_details.get_markdown_and_links();
-        let markdown_text = ml.text;
-        let link_hooks = get_link_hooks(ml.links);
-        for hook in &link_hooks {
-            cache.add_link_hook(hook);
-        }
+    pub fn new(message_sender: Sender<EditorMessage>) -> Self {
+        let cache = CommonMarkCache::default();
         Self {
-            path: note_details.path.to_owned(),
             message_sender,
             cache,
-            link_hooks,
-            markdown_text,
+            link_hooks: vec![],
+            markdown_text: String::new(),
         }
     }
 }
@@ -51,7 +40,7 @@ fn get_link_hooks(links: Vec<Link>) -> Vec<String> {
 }
 
 impl NoteViewer for RenderedView {
-    fn view(&mut self, _text: &mut NoteDetails, ui: &mut egui::Ui) -> anyhow::Result<bool> {
+    fn view(&mut self, note_details: &mut NoteDetails, ui: &mut egui::Ui) -> anyhow::Result<bool> {
         for link in &self.link_hooks {
             if Some(true) == self.cache.get_link_hook(link) {
                 debug!("Clicked on {}", link);
@@ -68,7 +57,7 @@ impl NoteViewer for RenderedView {
             .min_height(32.0)
             .show_inside(ui, |ui| {
                 ui.vertical(|ui| {
-                    ui.heading(self.path.to_string());
+                    ui.heading(note_details.path.to_string());
                 })
             });
         let _common_mark_viewer = CommonMarkViewer::new()
@@ -94,8 +83,15 @@ impl NoteViewer for RenderedView {
         }
     }
 
-    fn reload(&mut self, note_details: &NoteDetails) {
+    fn init(&mut self, note_details: &NoteDetails) {
+        self.link_hooks.clear();
+        self.cache.link_hooks_clear();
         let ml = note_details.get_markdown_and_links();
         self.markdown_text = ml.text;
+        let link_hooks = get_link_hooks(ml.links);
+        for hook in &link_hooks {
+            self.cache.add_link_hook(hook);
+        }
+        self.link_hooks = link_hooks;
     }
 }
