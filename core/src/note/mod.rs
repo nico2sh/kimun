@@ -2,36 +2,32 @@ mod content_extractor;
 
 use std::fmt::Display;
 
-use content_extractor::{extract_details, extract_title, get_markdown_and_links};
+use content_extractor::{
+    extract_title, get_content_chunks, get_content_data, get_markdown_and_links,
+};
 
 use crate::nfs::VaultPath;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoteDetails {
     pub path: VaultPath,
-    pub data: NoteContentData,
+    // pub data: NoteContentData,
     pub raw_text: String,
-    pub content_chunks: Vec<ContentChunk>,
+    // pub content_chunks: Vec<ContentChunk>,
 }
 
 impl Display for NoteDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Path: {}, Data: {}", self.path, self.data,)?;
-        write!(
-            f,
-            "Chunks: [{}]",
-            self.content_chunks
-                .iter()
-                .map(|chunk| format!("'{}'", chunk.get_breadcrumb()))
-                .collect::<Vec<String>>()
-                .join(", ")
-        )
+        writeln!(f, "Path: {}, Content: {}", self.path, self.raw_text)
     }
 }
 
 impl NoteDetails {
     pub fn new<S: AsRef<str>>(note_path: &VaultPath, text: S) -> Self {
-        extract_details(note_path, text)
+        Self {
+            path: note_path.to_owned(),
+            raw_text: text.as_ref().to_owned(),
+        }
     }
 
     pub fn get_title_from_text<S: AsRef<str>>(text: S) -> String {
@@ -48,7 +44,15 @@ impl NoteDetails {
     }
 
     pub fn get_title(&self) -> String {
-        self.data.title.clone()
+        Self::get_title_from_text(&self.raw_text)
+    }
+
+    pub fn get_content_data(&self) -> NoteContentData {
+        get_content_data(&self.raw_text)
+    }
+
+    pub fn get_content_chunks(&self) -> Vec<ContentChunk> {
+        get_content_chunks(&self.raw_text)
     }
 }
 

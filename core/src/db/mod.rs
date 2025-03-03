@@ -418,13 +418,14 @@ fn insert_note<S: AsRef<str>>(
     let (parent_path, name) = entry_data.path.get_parent_path();
     let note_details = NoteDetails::new(&entry_data.path, text);
     let path_string = entry_data.path.to_string();
+    let data = note_details.get_content_data();
     if let Err(e) = tx.execute(
         "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![path_string, note_details.data.title, entry_data.size, entry_data.modified_secs, note_details.data.hash.to_string(), parent_path.to_string(), name],
+        params![path_string, data.title, entry_data.size, entry_data.modified_secs, data.hash.to_string(), parent_path.to_string(), name],
     ){
         error!("Error inserting note: {}\nDetails: {}", e, note_details);
     }
-    for chunk in &note_details.content_chunks {
+    for chunk in &note_details.get_content_chunks() {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
         tx.execute(
@@ -451,8 +452,9 @@ fn update_note<S: AsRef<str>>(
     text: S,
 ) -> Result<(), DBError> {
     let note_details = NoteDetails::new(&entry_data.path, text);
-    let title = note_details.data.title.clone();
-    let hash = note_details.data.hash.to_string();
+    let data = note_details.get_content_data();
+    let title = data.title.clone();
+    let hash = data.hash.to_string();
     let path_string = entry_data.path.to_string();
     tx.execute(
         "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
@@ -468,7 +470,7 @@ fn update_note<S: AsRef<str>>(
         "DELETE FROM notesContent WHERE path = ?1",
         params![path_string],
     )?;
-    for chunk in &note_details.content_chunks {
+    for chunk in &note_details.get_content_chunks() {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
         tx.execute(
