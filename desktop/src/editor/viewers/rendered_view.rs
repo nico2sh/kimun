@@ -13,37 +13,45 @@ use super::EditorMessage;
 
 pub struct RenderedView {
     path: VaultPath,
+    markdown_text: String,
     message_sender: Sender<EditorMessage>,
     cache: CommonMarkCache,
     link_hooks: Vec<String>,
-    markdown_text: String,
 }
 
 impl RenderedView {
-    pub fn new(path: &VaultPath, message_sender: Sender<EditorMessage>) -> Self {
-        let cache = CommonMarkCache::default();
+    pub fn new(note_details: &NoteDetails, message_sender: Sender<EditorMessage>) -> Self {
+        let mut cache = CommonMarkCache::default();
+        let ml = note_details.get_markdown_and_links();
+        let markdown_text = ml.text;
+        let link_hooks = get_link_hooks(ml.links);
+        for hook in &link_hooks {
+            cache.add_link_hook(hook);
+        }
         Self {
-            path: path.to_owned(),
+            path: note_details.path.to_owned(),
             message_sender,
             cache,
-            link_hooks: vec![],
-            markdown_text: String::new(),
-        }
-    }
-
-    fn add_link_hooks(&mut self, links: Vec<Link>) {
-        for link in &links {
-            if let LinkType::Note(name) = &link.ltype {
-                let path_string = name.to_string();
-                self.cache.add_link_hook(&path_string);
-                self.link_hooks.push(path_string);
-            }
+            link_hooks,
+            markdown_text,
         }
     }
 }
 
+fn get_link_hooks(links: Vec<Link>) -> Vec<String> {
+    let mut hooks = vec![];
+    for link in &links {
+        if let LinkType::Note(name) = &link.ltype {
+            let path_string = name.to_string();
+            // cache.add_link_hook(&path_string);
+            hooks.push(path_string);
+        }
+    }
+    hooks
+}
+
 impl NoteViewer for RenderedView {
-    fn view(&mut self, _text: &mut String, ui: &mut egui::Ui) -> anyhow::Result<bool> {
+    fn view(&mut self, _text: &mut NoteDetails, ui: &mut egui::Ui) -> anyhow::Result<bool> {
         for link in &self.link_hooks {
             if Some(true) == self.cache.get_link_hook(link) {
                 debug!("Clicked on {}", link);
@@ -86,10 +94,8 @@ impl NoteViewer for RenderedView {
         }
     }
 
-    fn init(&mut self, text: String) {
-        let details = NoteDetails::new(&self.path, text);
-        let ml = details.get_markdown_and_links();
+    fn reload(&mut self, note_details: &NoteDetails) {
+        let ml = note_details.get_markdown_and_links();
         self.markdown_text = ml.text;
-        self.add_link_hooks(ml.links);
     }
 }
