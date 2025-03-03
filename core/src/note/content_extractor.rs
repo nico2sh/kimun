@@ -6,30 +6,31 @@ use regex::{Captures, Regex};
 
 use crate::{
     nfs::{self, VaultPath},
-    note::{ContentChunk, NoteContentData, NoteDetails},
+    note::{ContentChunk, NoteContentData},
 };
 
 use super::Link;
 
 const MAX_TITLE_LENGTH: usize = 40;
 
-pub fn extract_details<S: AsRef<str>>(path: &VaultPath, md_text: S) -> NoteDetails {
+pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
+    let hash = nfs::hash_text(md_text.as_ref());
+    let title = extract_title(md_text);
+
+    NoteContentData { title, hash }
+}
+
+pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
     let (frontmatter, text) = remove_frontmatter(md_text.as_ref());
 
-    let (content_data, mut content_chunks) = parse_text(&text);
+    let mut content_chunks = parse_text(&text);
     if !frontmatter.is_empty() {
         content_chunks.push(ContentChunk {
             breadcrumb: vec!["FrontMatter".to_string()],
             text: frontmatter,
         })
     };
-
-    NoteDetails {
-        path: path.to_owned(),
-        data: content_data,
-        raw_text: text,
-        content_chunks,
-    }
+    content_chunks
 }
 
 fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
@@ -82,7 +83,8 @@ pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) 
     (md_text, links)
 }
 
-pub(super) fn extract_title<S: AsRef<str>>(md_text: S) -> String {
+pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
+    let (_frontmatter, md_text) = remove_frontmatter(md_text);
     let mut title = String::new();
     let mut parser = pulldown_cmark::Parser::new(md_text.as_ref());
     while let Some(event) = parser.next() {
@@ -125,10 +127,7 @@ pub(super) fn extract_title<S: AsRef<str>>(md_text: S) -> String {
     "<None>".to_string()
 }
 
-fn parse_text(md_text: &str) -> (NoteContentData, Vec<ContentChunk>) {
-    let hash = nfs::hash_text(md_text);
-    let mut title = extract_title(md_text);
-
+fn parse_text(md_text: &str) -> Vec<ContentChunk> {
     let mut content_chunks = vec![];
     let mut current_breadcrumb: Vec<(u8, String)> = vec![];
     let mut current_content = vec![];
@@ -153,21 +152,21 @@ fn parse_text(md_text: &str) -> (NoteContentData, Vec<ContentChunk>) {
             Event::TaskListMarker(result) => TextType::Text(result.to_string()),
         };
 
-        if title.is_empty() {
-            let title_cand = match &tt {
-                TextType::Header(_, text) => text.to_owned(),
-                TextType::Text(text) => text.to_owned(),
-                TextType::None => String::new(),
-            };
-            title = title_cand
-                .lines()
-                .next()
-                .map(|t| {
-                    let title_length = min(MAX_TITLE_LENGTH, t.len());
-                    t.chars().take(title_length).collect()
-                })
-                .unwrap_or_default();
-        }
+        // if title.is_empty() {
+        //     let title_cand = match &tt {
+        //         TextType::Header(_, text) => text.to_owned(),
+        //         TextType::Text(text) => text.to_owned(),
+        //         TextType::None => String::new(),
+        //     };
+        //     title = title_cand
+        //         .lines()
+        //         .next()
+        //         .map(|t| {
+        //             let title_length = min(MAX_TITLE_LENGTH, t.len());
+        //             t.chars().take(title_length).collect()
+        //         })
+        //         .unwrap_or_default();
+        // }
 
         match tt {
             TextType::Header(level, text) => {
@@ -207,11 +206,12 @@ fn parse_text(md_text: &str) -> (NoteContentData, Vec<ContentChunk>) {
             text: content,
         });
     }
-    (NoteContentData { title, hash }, content_chunks)
+
+    content_chunks
 }
 
-fn remove_frontmatter(text: &str) -> (String, String) {
-    let mut lines = text.lines();
+fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
+    let mut lines = text.as_ref().lines();
     let first_line = lines.next();
     if let Some(line) = first_line {
         if line == "---" || line == "+++" {
@@ -234,7 +234,7 @@ fn remove_frontmatter(text: &str) -> (String, String) {
                 ("".to_string(), frontmatter.join("\n"))
             }
         } else {
-            ("".to_string(), text.to_string())
+            ("".to_string(), text.as_ref().to_string())
         }
     } else {
         ("".to_string(), "".to_string())
@@ -357,7 +357,10 @@ fn get_text_till_end(parser: &mut Parser) -> String {
 mod test {
     use crate::{
         nfs::VaultPath,
-        note::{content_extractor::extract_details, Link, LinkType},
+        note::{
+            content_extractor::{get_content_chunks, get_content_data},
+            Link, LinkType,
+        },
     };
 
     use super::{convert_wikilinks, get_markdown_and_links};
@@ -452,15 +455,12 @@ other: else
 ---
 
 title"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
 
-        assert_eq!("", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("title", ch.content_chunks[0].get_text());
-        assert_eq!("FrontMatter", ch.content_chunks[1].get_breadcrumb());
-        assert_eq!(
-            "something: nice\nother: else",
-            ch.content_chunks[1].get_text()
-        );
+        assert_eq!("", content_chunks[0].get_breadcrumb());
+        assert_eq!("title", content_chunks[0].get_text());
+        assert_eq!("FrontMatter", content_chunks[1].get_breadcrumb());
+        assert_eq!("something: nice\nother: else", content_chunks[1].get_text());
     }
 
     #[test]
@@ -471,17 +471,15 @@ other: else
 +++
 
 title"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(2, ch.content_chunks.len());
-        assert_eq!("title".to_string(), ch.data.title);
-        assert_eq!("", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("title", ch.content_chunks[0].get_text());
-        assert_eq!("FrontMatter", ch.content_chunks[1].get_breadcrumb());
-        assert_eq!(
-            "something: nice\nother: else",
-            ch.content_chunks[1].get_text()
-        );
+        assert_eq!(2, content_chunks.len());
+        assert_eq!("title".to_string(), data.title);
+        assert_eq!("", content_chunks[0].get_breadcrumb());
+        assert_eq!("title", content_chunks[0].get_text());
+        assert_eq!("FrontMatter", content_chunks[1].get_breadcrumb());
+        assert_eq!("something: nice\nother: else", content_chunks[1].get_text());
     }
 
     #[test]
@@ -490,14 +488,15 @@ title"#;
 - Second Item
 
 Some text"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(1, ch.content_chunks.len());
-        assert_eq!("First Item".to_string(), ch.data.title);
-        assert_eq!("", ch.content_chunks[0].get_breadcrumb());
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("First Item".to_string(), data.title);
+        assert_eq!("", content_chunks[0].get_breadcrumb());
         assert_eq!(
             "First Item\nSecond Item\nSome text",
-            ch.content_chunks[0].get_text()
+            content_chunks[0].get_text()
         );
     }
 
@@ -506,24 +505,26 @@ Some text"#;
         let markdown = r#"[No header](https://example.com)
 
 Some text"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(1, ch.content_chunks.len());
-        assert_eq!("No header".to_string(), ch.data.title);
-        assert_eq!("", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("No header\nSome text", ch.content_chunks[0].get_text());
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("No header".to_string(), data.title);
+        assert_eq!("", content_chunks[0].get_breadcrumb());
+        assert_eq!("No header\nSome text", content_chunks[0].get_text());
     }
 
     #[test]
     fn check_hierarchy_one() {
         let markdown = r#"# Title
 Some text"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(1, ch.content_chunks.len());
-        assert_eq!("Title".to_string(), ch.data.title);
-        assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("Some text", ch.content_chunks[0].get_text());
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text", content_chunks[0].get_text());
     }
 
     #[test]
@@ -533,14 +534,15 @@ Some text
 
 ## Subtitle
 More text"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(2, ch.content_chunks.len());
-        assert_eq!("Title".to_string(), ch.data.title);
-        assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("Some text", ch.content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
-        assert_eq!("More text", ch.content_chunks[1].get_text());
+        assert_eq!(2, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text", content_chunks[0].get_text());
+        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!("More text", content_chunks[1].get_text());
     }
 
     #[test]
@@ -553,19 +555,20 @@ More text
 
 ### Subsubtitle
 Even more text"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(3, ch.content_chunks.len());
-        assert_eq!("Title".to_string(), ch.data.title);
-        assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("Some text", ch.content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
-        assert_eq!("More text", ch.content_chunks[1].get_text());
+        assert_eq!(3, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text", content_chunks[0].get_text());
+        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!(
             "Title>Subtitle>Subsubtitle",
-            ch.content_chunks[2].get_breadcrumb()
+            content_chunks[2].get_breadcrumb()
         );
-        assert_eq!("Even more text", ch.content_chunks[2].get_text());
+        assert_eq!("Even more text", content_chunks[2].get_text());
     }
 
     #[test]
@@ -581,21 +584,22 @@ Even more text
 
 ## Level 2 Title
 There is text here"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(4, ch.content_chunks.len());
-        assert_eq!("Title".to_string(), ch.data.title);
-        assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("Some text", ch.content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
-        assert_eq!("More text", ch.content_chunks[1].get_text());
+        assert_eq!(4, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text", content_chunks[0].get_text());
+        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!(
             "Title>Subtitle>Subsubtitle",
-            ch.content_chunks[2].get_breadcrumb()
+            content_chunks[2].get_breadcrumb()
         );
-        assert_eq!("Even more text", ch.content_chunks[2].get_text());
-        assert_eq!("Title>Level 2 Title", ch.content_chunks[3].get_breadcrumb());
-        assert_eq!("There is text here", ch.content_chunks[3].get_text());
+        assert_eq!("Even more text", content_chunks[2].get_text());
+        assert_eq!("Title>Level 2 Title", content_chunks[3].get_breadcrumb());
+        assert_eq!("There is text here", content_chunks[3].get_text());
     }
 
     #[test]
@@ -618,28 +622,29 @@ Before last text
 # Main Title
 Another main content
 "#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(6, ch.content_chunks.len());
-        assert_eq!("Title".to_string(), ch.data.title);
-        assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("Some text", ch.content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
-        assert_eq!("More text", ch.content_chunks[1].get_text());
+        assert_eq!(6, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text", content_chunks[0].get_text());
+        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!(
             "Title>Subtitle>Subsubtitle",
-            ch.content_chunks[2].get_breadcrumb()
+            content_chunks[2].get_breadcrumb()
         );
-        assert_eq!("Even more text", ch.content_chunks[2].get_text());
-        assert_eq!("Title>Level 2 Title", ch.content_chunks[3].get_breadcrumb());
-        assert_eq!("There is text here", ch.content_chunks[3].get_text());
+        assert_eq!("Even more text", content_chunks[2].get_text());
+        assert_eq!("Title>Level 2 Title", content_chunks[3].get_breadcrumb());
+        assert_eq!("There is text here", content_chunks[3].get_text());
         assert_eq!(
             "Title>Level 2 Title>Fourth Subsubtitle",
-            ch.content_chunks[4].get_breadcrumb()
+            content_chunks[4].get_breadcrumb()
         );
-        assert_eq!("Before last text", ch.content_chunks[4].get_text());
-        assert_eq!("Main Title", ch.content_chunks[5].get_breadcrumb());
-        assert_eq!("Another main content", ch.content_chunks[5].get_text());
+        assert_eq!("Before last text", content_chunks[4].get_text());
+        assert_eq!("Main Title", content_chunks[5].get_breadcrumb());
+        assert_eq!("Another main content", content_chunks[5].get_text());
     }
 
     #[test]
@@ -662,52 +667,55 @@ Before last text
 # Main Title
 Another main content
 "#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(6, ch.content_chunks.len());
-        assert_eq!("Title".to_string(), ch.data.title);
-        assert_eq!("Title", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("Some text", ch.content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", ch.content_chunks[1].get_breadcrumb());
-        assert_eq!("More text", ch.content_chunks[1].get_text());
-        assert_eq!("Subsubtitle", ch.content_chunks[2].get_breadcrumb());
-        assert_eq!("Even more text", ch.content_chunks[2].get_text());
+        assert_eq!(6, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text", content_chunks[0].get_text());
+        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!("More text", content_chunks[1].get_text());
+        assert_eq!("Subsubtitle", content_chunks[2].get_breadcrumb());
+        assert_eq!("Even more text", content_chunks[2].get_text());
         assert_eq!(
             "Subsubtitle>Level 2 Title",
-            ch.content_chunks[3].get_breadcrumb()
+            content_chunks[3].get_breadcrumb()
         );
-        assert_eq!("There is text here", ch.content_chunks[3].get_text());
+        assert_eq!("There is text here", content_chunks[3].get_text());
         assert_eq!(
             "Subsubtitle>Fourth Subsubtitle",
-            ch.content_chunks[4].get_breadcrumb()
+            content_chunks[4].get_breadcrumb()
         );
-        assert_eq!("Before last text", ch.content_chunks[4].get_text());
-        assert_eq!("Main Title", ch.content_chunks[5].get_breadcrumb());
-        assert_eq!("Another main content", ch.content_chunks[5].get_text());
+        assert_eq!("Before last text", content_chunks[4].get_text());
+        assert_eq!("Main Title", content_chunks[5].get_breadcrumb());
+        assert_eq!("Another main content", content_chunks[5].get_text());
     }
 
     #[test]
     fn check_title_with_link() {
         let markdown = r#"# [Title link](https://nico.red)
 Some text"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(1, ch.content_chunks.len());
-        assert_eq!("Title link".to_string(), ch.data.title);
-        assert_eq!("Title link", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("Some text", ch.content_chunks[0].get_text());
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title link".to_string(), data.title);
+        assert_eq!("Title link", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text", content_chunks[0].get_text());
     }
 
     #[test]
     fn check_title_with_style() {
         let markdown = r#"# Title **bold** *italic*
 Some text"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(1, ch.content_chunks.len());
-        assert_eq!("Title bold italic".to_string(), ch.data.title);
-        assert_eq!("Title bold italic", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("Some text", ch.content_chunks[0].get_text());
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title bold italic".to_string(), data.title);
+        assert_eq!("Title bold italic", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text", content_chunks[0].get_text());
     }
 
     #[test]
@@ -717,13 +725,14 @@ Some text"#;
 # Title
 
 Some text"#;
-        let ch = extract_details(&VaultPath::root(), markdown);
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
 
-        assert_eq!(2, ch.content_chunks.len());
-        assert_eq!("Intro text".to_string(), ch.data.title);
-        assert_eq!("", ch.content_chunks[0].get_breadcrumb());
-        assert_eq!("Intro text", ch.content_chunks[0].get_text());
-        assert_eq!("Title", ch.content_chunks[1].get_breadcrumb());
-        assert_eq!("Some text", ch.content_chunks[1].get_text());
+        assert_eq!(2, content_chunks.len());
+        assert_eq!("Intro text".to_string(), data.title);
+        assert_eq!("", content_chunks[0].get_breadcrumb());
+        assert_eq!("Intro text", content_chunks[0].get_text());
+        assert_eq!("Title", content_chunks[1].get_breadcrumb());
+        assert_eq!("Some text", content_chunks[1].get_text());
     }
 }

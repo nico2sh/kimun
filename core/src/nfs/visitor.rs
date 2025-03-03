@@ -60,7 +60,7 @@ impl NoteListVisitor {
     // We check the content hash
     fn has_changed_deep_check(&self, cached: &mut NoteContentData, disk: &NoteEntryData) -> bool {
         let details = disk.load_details(&self.workspace_path, &disk.path).unwrap();
-        let details_hash = details.data.hash;
+        let details_hash = details.get_content_data().hash;
         let cached_hash = cached.hash;
         !details_hash.eq(&cached_hash)
     }
@@ -80,12 +80,12 @@ impl NoteListVisitor {
                 let details = data
                     .load_details(&self.workspace_path, &data.path)
                     .expect("Can't get details for note");
-                let text = details.raw_text;
+                let text = details.raw_text.clone();
                 self.notes_to_modify
                     .lock()
                     .unwrap()
                     .push((data.to_owned(), text));
-                details.data
+                details.get_content_data()
             } else {
                 cached_details
             }
@@ -93,12 +93,12 @@ impl NoteListVisitor {
             let details = data
                 .load_details(&self.workspace_path, &data.path)
                 .expect("Can't get Details for note");
-            let text = details.raw_text;
+            let text = details.raw_text.clone();
             self.notes_to_add
                 .lock()
                 .unwrap()
                 .push((data.to_owned(), text));
-            details.data
+            details.get_content_data()
         };
         content_data
     }

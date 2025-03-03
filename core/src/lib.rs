@@ -314,7 +314,7 @@ impl NoteVault {
         let entry_data = save_note(&self.workspace_path, path, &text)?;
         // TODO: Check if we actually need to create details twice
         let details = entry_data.load_details(&self.workspace_path, path)?;
-        let result = (entry_data.clone(), details.data.clone());
+        let result = (entry_data.clone(), details.get_content_data());
         let text = text.as_ref().to_owned();
 
         // Save to DB
