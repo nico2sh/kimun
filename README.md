@@ -124,14 +124,14 @@ If I do a search, it will return:
 Here are the items I want to fix immediately to consider this usable. Then will focus on other cool features:
 
 * [X] Search under titles/sections in Markdown
-* [ ] Different sort search results
+* [ ] Change sort search results
 * [X] Add title to the note editor
 * [ ] Command Palette
-* [ ] Display key shortcuts
-* [ ] Resolve relative paths
-* [ ] Modals with progress in the settings when reindexing
-* [ ] Backlink support
-* [ ] Inline note Tags (like `#important`)
+* [ ] Display key shortcuts on Command Palette and help modal
+* [ ] Resolve relative paths on links
+* [X] Modals showing progress in the settings when reindexing
+* [ ] Backlinks display
+* [ ] Inline tags and search by tag (like `#important`)
 * [ ] Shortcuts for text format (bold, italic)
 * [ ] Shortcuts for inserting links
 * [ ] Paste images in note
