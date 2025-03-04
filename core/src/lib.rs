@@ -326,26 +326,27 @@ impl NoteVault {
 
     /// If the string is a path, it looks for a specific note, if it's just a note name
     /// it looks for that note in any path in the vault, so it may return many results
-    pub fn open_or_search<S: AsRef<str>>(
+    pub fn open_or_search(
         &self,
-        path_or_note: S,
+        path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
         // We make sure the path is a note path, so we append the extension if doesn't exist
-        let path = VaultPath::note_path_from(&path_or_note);
+        // let path = VaultPath::note_path_from(&path_or_note);
         debug!("PATH: {}", path);
         let (parent, name) = path.get_parent_path();
 
         // If it starts with the root trailing slash, we assume is looking for a path
-        let is_note_name = !path_or_note.as_ref().starts_with(nfs::PATH_SEPARATOR)
-            && parent.eq(&VaultPath::root());
+        // let is_note_name = !path_or_note.as_ref().starts_with(nfs::PATH_SEPARATOR)
+        //     && parent.eq(&VaultPath::root());
 
-        if is_note_name {
+        if path.is_note_file() {
             debug!("We search by name {}", name);
             // It's a note name, we look for the note name, not the path
             self.vault_db
                 .call(|conn| db::search_note_by_name(conn, name))
         } else {
             debug!("We search by path {}", path);
+            let path = path.clone();
             self.vault_db
                 .call(move |conn| db::search_note_by_path(conn, &path))
         }

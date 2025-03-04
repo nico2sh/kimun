@@ -11,7 +11,7 @@ use std::{
 
 use gxhash::gxhash64;
 use ignore::{WalkBuilder, WalkParallel};
-use log::info;
+use log::{info, warn};
 use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
 
@@ -24,6 +24,8 @@ const NOTE_EXTENSION: &str = ".md";
 // non valid chars
 // Not allowed: \ | : * ? " < > | [ ] ^ #
 const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|\[\]\^\#]"#;
+// Not allowed files starting with two dots
+const NON_VALID_PATH_NAME: &str = r#"^\.{2,}.+$"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaultEntry {
@@ -232,6 +234,7 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaultPath {
+    absolute: bool,
     slices: Vec<VaultPathSlice>,
 }
 
@@ -302,14 +305,16 @@ impl VaultPath {
     /// the path first, either use the `VaultPath::From` trait or use
     /// `VaultPath::is_valid()`
     pub fn new<S: AsRef<str>>(path: S) -> Self {
-        let path_list = path
-            .as_ref()
+        let mut slices = vec![];
+        let absolute = path.as_ref().starts_with(PATH_SEPARATOR);
+        path.as_ref()
             .split(PATH_SEPARATOR)
             .filter(|p| !p.is_empty()) // We remove the empty ones,
             // so `//` are treated as `/`
-            .map(VaultPathSlice::new)
-            .collect();
-        Self { slices: path_list }
+            .for_each(|slice| {
+                slices.push(VaultPathSlice::new(slice));
+            });
+        Self { absolute, slices }
     }
 
     fn from_string<S: AsRef<str>>(value: S) -> Result<Self, FSError> {
@@ -335,6 +340,20 @@ impl VaultPath {
             .as_ref()
             .split(PATH_SEPARATOR)
             .any(|s| !VaultPathSlice::is_valid(s))
+        // let mut slices = path.as_ref().split(PATH_SEPARATOR).peekable();
+        // let mut valid = true;
+        // while let Some(slice) = slices.next() {
+        //     valid = if slices.peek().is_none() {
+        //         // Last element
+        //         matches!(VaultPathSlice::new(slice), VaultPathSlice::PathSlice(_name))
+        //     } else {
+        //         VaultPathSlice::is_valid(slice)
+        //     };
+        //     if !valid {
+        //         break;
+        //     }
+        // }
+        // valid
     }
 
     // Creates a note file path, if the path ends with a separator
@@ -351,7 +370,10 @@ impl VaultPath {
     }
 
     pub fn root() -> Self {
-        Self { slices: Vec::new() }
+        Self {
+            absolute: true,
+            slices: vec![],
+        }
     }
 
     // returns a NotePath that increases a prefix when
@@ -360,14 +382,20 @@ impl VaultPath {
         let mut slices = self.slices.clone();
         match slices.pop() {
             Some(slice) => {
-                let name = &slice.name;
-                let new_name = if let Some(name) = name.strip_suffix(NOTE_EXTENSION) {
-                    format!("{}{}", Self::increment(name), NOTE_EXTENSION)
+                if let VaultPathSlice::PathSlice(name) = slice {
+                    let new_name = if let Some(name) = name.strip_suffix(NOTE_EXTENSION) {
+                        format!("{}{}", Self::increment(name), NOTE_EXTENSION)
+                    } else {
+                        Self::increment(name)
+                    };
+                    slices.push(VaultPathSlice::new(new_name));
+                    VaultPath {
+                        absolute: self.absolute,
+                        slices,
+                    }
                 } else {
-                    Self::increment(name)
-                };
-                slices.push(VaultPathSlice::new(new_name));
-                VaultPath { slices }
+                    VaultPath::new("0")
+                }
             }
             None => VaultPath::new("0"),
         }
@@ -391,25 +419,49 @@ impl VaultPath {
     }
 
     pub fn get_slices(&self) -> Vec<String> {
-        self.slices
+        self.flatten()
+            .slices
             .iter()
-            .map(|slice| slice.name.to_owned())
+            .map(|slice| slice.to_string())
             .collect()
     }
 
     pub(super) fn to_pathbuf<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
         let mut path = workspace_path.as_ref().to_path_buf();
-        for p in &self.slices {
-            let slice = p.name.clone();
+        for p in &self.flatten().slices {
+            let slice = p.to_string();
             path = path.join(&slice);
         }
         path
     }
 
+    pub fn flatten(&self) -> VaultPath {
+        let mut slices = vec![];
+        for slice in &self.slices {
+            match slice {
+                VaultPathSlice::PathSlice(_name) => slices.push(slice.clone()),
+                VaultPathSlice::Up => {
+                    if slices.pop().is_none() {
+                        warn!("Trying to move a directory up from root")
+                    }
+                }
+                VaultPathSlice::Current => {}
+            }
+        }
+        VaultPath {
+            absolute: self.absolute,
+            slices,
+        }
+    }
+
     pub fn get_name(&self) -> String {
-        self.slices
-            .last()
-            .map_or_else(String::new, |s| s.name.clone())
+        self.flatten().slices.last().map_or_else(String::new, |s| {
+            if let VaultPathSlice::PathSlice(name) = s {
+                name.to_owned()
+            } else {
+                String::new()
+            }
+        })
     }
 
     pub fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
@@ -437,31 +489,48 @@ impl VaultPath {
         Ok(VaultPath::new(path_list))
     }
 
-    pub fn is_note(&self) -> bool {
+    // returns true if it's just a note file, no path relative to the vault
+    pub fn is_note_file(&self) -> bool {
         match self.slices.last() {
-            Some(path_slice) => {
-                let last_slice: &Path = Path::new(&path_slice.name);
-                last_slice
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .map_or_else(|| false, |s| s == "md")
-            }
+            Some(path_slice) => path_slice.is_note() && self.slices.len() == 1 && !self.absolute,
             None => false,
         }
     }
 
+    pub fn is_note(&self) -> bool {
+        match self.slices.last() {
+            Some(path_slice) => path_slice.is_note(),
+            None => false,
+        }
+    }
+
+    pub fn is_relative(&self) -> bool {
+        !self.absolute
+    }
+
     pub fn get_parent_path(&self) -> (VaultPath, String) {
         let mut new_path = self.slices.clone();
-        let current = new_path.pop().map_or_else(|| "".to_string(), |s| s.name);
+        let current = new_path
+            .pop()
+            .map_or_else(|| "".to_string(), |s| s.to_string());
 
-        (Self { slices: new_path }, current)
+        (
+            Self {
+                absolute: self.absolute,
+                slices: new_path,
+            },
+            current,
+        )
     }
 
     pub fn append(&self, path: &VaultPath) -> VaultPath {
         let mut slices = self.slices.clone();
         let mut other_slices = path.slices.clone();
         slices.append(&mut other_slices);
-        VaultPath { slices }
+        VaultPath {
+            absolute: self.absolute,
+            slices,
+        }
     }
 }
 
@@ -469,7 +538,8 @@ impl Display for VaultPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}",
+            "{}{}",
+            if self.absolute { "/" } else { "" },
             self.slices
                 .iter()
                 .map(|s| { s.to_string() })
@@ -480,27 +550,62 @@ impl Display for VaultPath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct VaultPathSlice {
-    name: String,
+enum SliceKind {
+    Note,
+    // This can be either an attachment or a dir path
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum VaultPathSlice {
+    PathSlice(String),
+    Up,
+    Current,
 }
 
 impl VaultPathSlice {
     fn new<S: AsRef<str>>(slice: S) -> Self {
-        let re = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
-        let final_slice = re.replace_all(slice.as_ref(), "_").to_lowercase();
+        // We don't want filenames or directories starting with two dots or more
+        let rx_dot = regex::Regex::new(NON_VALID_PATH_NAME).unwrap();
+        let slice = if rx_dot.is_match(slice.as_ref()) {
+            slice.as_ref().to_string().replace(".", "_")
+        } else {
+            slice.as_ref().to_string()
+        };
+        if slice.eq("..") {
+            VaultPathSlice::Up
+        } else if slice.eq(".") {
+            VaultPathSlice::Current
+        } else {
+            let rx_chars = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
+            let final_slice = rx_chars.replace_all(slice.as_ref(), "_").to_lowercase();
 
-        Self { name: final_slice }
+            VaultPathSlice::PathSlice(final_slice)
+        }
     }
 
     fn is_valid<S: AsRef<str>>(slice: S) -> bool {
-        let re = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
-        !re.is_match(slice.as_ref())
+        let rx_chars = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
+        let rx_dot = regex::Regex::new(NON_VALID_PATH_NAME).unwrap();
+        let slice = slice.as_ref();
+        !rx_chars.is_match(slice) && !rx_dot.is_match(slice)
+    }
+
+    fn is_note(&self) -> bool {
+        match self {
+            VaultPathSlice::PathSlice(name) => name.ends_with(NOTE_EXTENSION),
+            _ => false,
+        }
     }
 }
 
 impl Display for VaultPathSlice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
+        match self {
+            VaultPathSlice::PathSlice(name) => write!(f, "{}", name),
+            VaultPathSlice::Up => write!(f, ".."),
+            VaultPathSlice::Current => write!(f, "."),
+        }
     }
 }
 
@@ -531,6 +636,88 @@ mod tests {
     use super::{load_note, VaultPath, VaultPathSlice};
 
     #[test]
+    fn should_print_correctly() {
+        let path_with_root = "/some/path";
+        let path_without_root = "another/one";
+
+        let path1 = VaultPath::new(path_with_root);
+        let path2 = VaultPath::new(path_without_root);
+
+        assert_eq!("/some/path".to_string(), path1.to_string());
+        assert_eq!("another/one".to_string(), path2.to_string());
+    }
+
+    #[test]
+    fn test_valid_path() {
+        let path = "/some/path.md";
+        assert!(VaultPath::is_valid(path));
+    }
+
+    #[test]
+    fn join_two_paths() {
+        let path1 = VaultPath::new("main/path");
+        let path2 = VaultPath::new("sub/path");
+        let joined = path1.append(&path2);
+        assert_eq!("main/path/sub/path".to_string(), joined.to_string());
+    }
+
+    #[test]
+    fn join_two_paths_with_relative() {
+        let path1 = VaultPath::new("/main/path");
+        let path2 = VaultPath::new("../sub/path");
+        let joined = path1.append(&path2).flatten();
+        assert_eq!("/main/sub/path".to_string(), joined.to_string());
+    }
+
+    #[test]
+    fn path_with_up_dir_end() {
+        let path = VaultPath::new("/main/path/..");
+        assert_eq!("/main".to_string(), path.flatten().to_string());
+    }
+
+    #[test]
+    fn from_current_path() {
+        let path = VaultPath::new("./path/subpath");
+        assert!(!path.flatten().absolute);
+        assert_eq!("path/subpath", path.flatten().to_string());
+    }
+
+    #[test]
+    fn only_dots_three_or_more_not_allowed_in_path() {
+        let path = "/some/.../path";
+        assert!(!VaultPath::is_valid(path));
+
+        let vault_path = VaultPath::new(path);
+        assert_eq!("/some/___/path", vault_path.to_string());
+    }
+
+    #[test]
+    fn get_root() {
+        let vault_path = VaultPath::root();
+        assert_eq!("/".to_string(), vault_path.to_string());
+
+        let root_path = VaultPath::new("/");
+        assert_eq!(root_path, vault_path);
+    }
+
+    #[test]
+    fn should_tell_if_its_note() {
+        let path = "/some/../path.md";
+        assert!(VaultPath::new(path).is_note());
+    }
+
+    #[test]
+    fn paths_should_flatten_correctly() {
+        let path = "some/path/../hola";
+        assert!(VaultPath::is_valid(path));
+
+        let vault_path = VaultPath::from_string(path).unwrap();
+        let vault_path = vault_path.flatten();
+
+        assert_eq!("some/hola".to_string(), vault_path.to_string());
+    }
+
+    #[test]
     fn test_file_should_not_look_like_url() {
         let valid = VaultPath::is_valid("http://example.com");
 
@@ -556,7 +743,10 @@ mod tests {
         let slice_str = "Some?unvalid:Chars?";
         let slice = VaultPathSlice::new(slice_str);
 
-        assert_eq!("some_unvalid_chars_", slice.name);
+        assert_eq!("some_unvalid_chars_", slice.to_string());
+        if let VaultPathSlice::PathSlice(name) = slice {
+            assert_eq!("some_unvalid_chars_", name);
+        }
     }
 
     #[test]
@@ -565,11 +755,11 @@ mod tests {
         let path = VaultPath::new(path);
 
         assert_eq!(5, path.slices.len());
-        assert_eq!("this", path.slices[0].name);
-        assert_eq!("is", path.slices[1].name);
-        assert_eq!("five", path.slices[2].name);
-        assert_eq!("level", path.slices[3].name);
-        assert_eq!("path", path.slices[4].name);
+        assert_eq!("this", path.slices[0].to_string());
+        assert_eq!("is", path.slices[1].to_string());
+        assert_eq!("five", path.slices[2].to_string());
+        assert_eq!("level", path.slices[3].to_string());
+        assert_eq!("path", path.slices[4].to_string());
     }
 
     #[test]
@@ -578,9 +768,9 @@ mod tests {
         let path = VaultPath::new(path);
 
         assert_eq!(3, path.slices.len());
-        assert_eq!("t_his", path.slices[0].name);
-        assert_eq!("i+s", path.slices[1].name);
-        assert_eq!("caca_", path.slices[2].name);
+        assert_eq!("t_his", path.slices[0].to_string());
+        assert_eq!("i+s", path.slices[1].to_string());
+        assert_eq!("caca_", path.slices[2].to_string());
     }
 
     #[test]

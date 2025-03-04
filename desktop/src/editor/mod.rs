@@ -152,11 +152,12 @@ impl Editor {
                     self.request_focus = true;
                 }
                 EditorMessage::OpenCreateOrSearchNote(path) => {
+                    let path = VaultPath::note_path_from(path);
+                    // let path = VaultPath::new(path);
                     let result = self.vault.open_or_search(&path)?;
                     debug!("Got {} results", result.len());
                     match result.len() {
                         0 => {
-                            let path = VaultPath::new(path);
                             if let Err(e) = self.message_sender.send(EditorMessage::NewNote(path)) {
                                 error!("Error sending an editor message: {}", e);
                             }
