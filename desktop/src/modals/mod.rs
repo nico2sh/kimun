@@ -66,7 +66,9 @@ where
 
 pub struct ModalManager {
     ctx: egui::Context,
+    parent_ui_id: egui::Id,
     current_modal: Option<Box<dyn KimunModal>>,
+    set_to_close: bool,
 }
 
 pub enum Modals {
@@ -81,18 +83,26 @@ pub enum Modals {
 }
 
 impl ModalManager {
-    pub fn new(ctx: egui::Context) -> Self {
+    pub fn new(ctx: egui::Context, parent_view_id: &str) -> Self {
+        let parent_ui_id = egui::Id::from(parent_view_id.to_owned());
         Self {
             ctx,
+            parent_ui_id,
             current_modal: None,
+            set_to_close: false,
         }
     }
 
     pub fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
-        if let Some(current_modal) = self.current_modal.as_mut() {
+        if self.set_to_close {
+            self.current_modal = None;
+            self.set_to_close = false;
+            self.ctx
+                .memory_mut(|mem| mem.request_focus(self.parent_ui_id));
+        } else if let Some(current_modal) = self.current_modal.as_mut() {
             let should_close = current_modal.update(ui);
             if should_close {
-                self.current_modal = None;
+                self.close_modal();
             }
         }
         Ok(())
@@ -130,6 +140,7 @@ impl ModalManager {
     }
 
     pub fn close_modal(&mut self) {
+        self.set_to_close = true;
         self.current_modal = None;
     }
 }

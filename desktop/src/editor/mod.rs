@@ -46,7 +46,7 @@ impl Editor {
 
         let vault = vault.to_owned();
         let note_path = note_path.to_owned();
-        let mut modal_manager = ModalManager::new(ctx);
+        let mut modal_manager = ModalManager::new(ctx, viewers::ID_VIEWER);
         modal_manager.set_modal(Modals::VaultIndex(
             vault.workspace_path.clone(),
             IndexType::Validate,
@@ -177,6 +177,7 @@ impl Editor {
                             ));
                         }
                     }
+                    self.request_focus = true;
                 }
                 EditorMessage::NewJournal => {
                     let (data, _content) = self.vault.journal_entry()?;
@@ -206,6 +207,7 @@ impl Editor {
                 }
                 EditorMessage::SwitchNoteViewer(viewer_type) => {
                     self.change_viewer(viewer_type)?;
+                    self.request_focus = true;
                 }
                 EditorMessage::OpenSettings => {
                     self.request_windows_switch = Some(WindowAction::Settings)
