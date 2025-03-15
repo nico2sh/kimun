@@ -20,7 +20,7 @@ impl SettingsView {
     pub fn new(ctx: egui::Context) -> anyhow::Result<Self> {
         let settings = Settings::load_from_disk()?;
         Ok(Self {
-            modal_manager: ModalManager::new(ctx),
+            modal_manager: ModalManager::new(ctx, "settings"),
             settings: settings.to_owned(),
         })
     }

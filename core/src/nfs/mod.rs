@@ -464,6 +464,33 @@ impl VaultPath {
         })
     }
 
+    pub fn get_relative_to(&self, reference_path: &VaultPath) -> VaultPath {
+        let mut slices = vec![];
+        let ref_slices = reference_path.slices.clone();
+        let mut position = 0;
+        for (pos, slice) in self.slices.iter().enumerate() {
+            position = pos;
+            if let Some(reference) = ref_slices.get(pos) {
+                if !slice.eq(reference) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        ref_slices.iter().skip(position).for_each(|_| {
+            slices.push(VaultPathSlice::Up);
+        });
+        self.slices.iter().skip(position).for_each(|slice| {
+            slices.push(slice.to_owned());
+        });
+
+        VaultPath {
+            absolute: false,
+            slices,
+        }
+    }
+
     pub fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
         workspace_path: P,
         full_path: F,
@@ -689,6 +716,33 @@ mod tests {
 
         let vault_path = VaultPath::new(path);
         assert_eq!("/some/___/path", vault_path.to_string());
+    }
+
+    #[test]
+    fn get_relative_to() {
+        let path1 = VaultPath::new("/main/path/first");
+        let path2 = VaultPath::new("/main/second");
+        let rel = path2.get_relative_to(&path1);
+
+        assert_eq!("../../second".to_string(), rel.to_string());
+    }
+
+    #[test]
+    fn get_relative_to_less_deep() {
+        let path1 = VaultPath::new("/main/second");
+        let path2 = VaultPath::new("/main/path/first");
+        let rel = path2.get_relative_to(&path1);
+
+        assert_eq!("../path/first".to_string(), rel.to_string());
+    }
+
+    #[test]
+    fn get_relative_to_same() {
+        let path1 = VaultPath::new("/main/second");
+        let path2 = VaultPath::new("/main/second/sub/deep");
+        let rel = path2.get_relative_to(&path1);
+
+        assert_eq!("sub/deep".to_string(), rel.to_string());
     }
 
     #[test]

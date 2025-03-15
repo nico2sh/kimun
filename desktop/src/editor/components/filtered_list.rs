@@ -50,6 +50,7 @@ where
     fn filter<S: AsRef<str>>(&self, filter_text: S, provider: &P) -> Vec<D>;
     fn on_entry(&self, element: &D) -> Option<FilteredListFunctionMessage<Self>>;
     fn header_element(&self, state_data: &StateData<D>) -> Option<D>;
+    fn button_icon(&self) -> Option<String>;
 }
 
 pub enum FilteredListFunctionMessage<F> {
@@ -203,29 +204,41 @@ where
             },
             |ui| {
                 ui.horizontal(|ui| {
-                    // Fantastic solution from here to have a right sided button
-                    // https://github.com/emilk/egui/discussions/3908#discussioncomment-8270353
-                    let id_filter_target_size = egui::Id::new("filter_target_size");
-                    let this_init_max_width = ui.max_rect().width();
-                    let last_others_width = ui.data(|data| {
-                        data.get_temp(id_filter_target_size)
-                            .unwrap_or(this_init_max_width)
-                    });
-                    let filter_target_width = this_init_max_width - last_others_width;
-
+                    if let Some(button_icon) = self.state_manager.functions.button_icon() {
+                        let _sort_button = ui.button(button_icon);
+                    }
                     ui.add(
                         egui::TextEdit::singleline(&mut self.state_manager.state_data.filter_text)
-                            .desired_width(filter_target_width)
+                            .desired_width(ui.available_width())
+                            // .desired_width(ui.max_a)
                             .id(ID_SEARCH.into()),
                     );
-                    let _sort_button = ui.button("S");
 
-                    ui.data_mut(|data| {
-                        data.insert_temp(
-                            id_filter_target_size,
-                            ui.min_rect().width() - filter_target_width,
-                        )
-                    });
+                    // Fantastic solution from here to have a right sided button
+                    // https://github.com/emilk/egui/discussions/3908#discussioncomment-8270353
+                    // let id_filter_target_size = egui::Id::new("filter_target_size");
+                    // let this_init_max_width = ui.max_rect().width();
+                    // let last_others_width = ui.data(|data| {
+                    //     data.get_temp(id_filter_target_size)
+                    //         .unwrap_or(this_init_max_width)
+                    // });
+                    // let filter_target_width = this_init_max_width - last_others_width;
+                    //
+                    // ui.add(
+                    //     egui::TextEdit::singleline(&mut self.state_manager.state_data.filter_text)
+                    //         .desired_width(filter_target_width)
+                    //         .id(ID_SEARCH.into()),
+                    // );
+                    // if let Some(button_icon) = self.state_manager.functions.button_icon() {
+                    //     let _sort_button = ui.button(button_icon);
+                    // }
+                    //
+                    // ui.data_mut(|data| {
+                    //     data.insert_temp(
+                    //         id_filter_target_size,
+                    //         ui.min_rect().width() - filter_target_width,
+                    //     )
+                    // });
                 });
 
                 ui.separator();
@@ -444,8 +457,9 @@ where
     fn update(&mut self) {
         // We make sure we don't trigger two equal state changes consecutively
         // this is especially relevant for the filters, so if a filter function
-        // takes a little, we don't want to stack filter changes if the text
+        // takes a while, we don't want to stack filter changes if the text
         // of the filter changes faster than the actual results
+        // TODO: Change this to its own state management loop
         while let Ok(state) = self.rx.try_recv() {
             if let Some(queued_state) = self.deduped_message_bus.back() {
                 if core::mem::discriminant(queued_state) != core::mem::discriminant(&state) {
@@ -466,12 +480,8 @@ where
             info!("New Status received: {}", state);
             self.state = state;
             match &self.state {
-                StateMessage::Initializing => {
-                    info!("Status is clear, we initialize");
-                    self.initialize()
-                }
+                StateMessage::Initializing => self.initialize(),
                 StateMessage::Initialized { provider } => {
-                    info!("Status initialized, we proceed to apply filter");
                     // Only place we need to clone the provider
                     self.provider = Some(Arc::new(provider.to_owned()));
                     self.trigger_filter();
@@ -491,7 +501,6 @@ where
         if let StateMessage::Ready { filter } = &self.state {
             // We are ready to show elements
             if filter != &self.state_data.filter_text {
-                info!("Filter changed, we reapply the filter");
                 self.trigger_filter();
             }
         }
