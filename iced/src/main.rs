@@ -1,5 +1,6 @@
 mod components;
 mod editor;
+mod fonts;
 mod icons;
 mod modals;
 mod settings;
@@ -8,6 +9,7 @@ use std::path::PathBuf;
 
 use components::filtered_list::VaultListMessage;
 use editor::{Editor, EditorMessage};
+use fonts::{FONT_CODE_BYTES, FONT_UI_BYTES};
 use iced::{
     Color, Element, Subscription, Task,
     futures::{SinkExt, Stream, channel::mpsc::Sender, stream},
@@ -17,7 +19,7 @@ use iced::{
 use icons::ICON_BYTES;
 use kimun_core::NoteVault;
 use log::{debug, error};
-use modals::{ModalManager, Modals};
+use modals::{ModalManager, ModalMessage, Modals};
 use settings::{Settings, page::SettingsPage};
 
 fn main() -> iced::Result {
@@ -29,8 +31,8 @@ fn main() -> iced::Result {
         .subscription(DesktopApp::subscription)
         .window_size((800.0, 600.0))
         .theme(DesktopApp::theme)
-        .font(include_bytes!("../res/fonts/InterVariable.ttf").as_slice())
-        .font(include_bytes!("../res/fonts/FiraCode-Regular.ttf").as_slice())
+        .font(FONT_UI_BYTES)
+        .font(FONT_CODE_BYTES)
         .font(ICON_BYTES)
         .run_with(DesktopApp::new)
 }
@@ -117,10 +119,7 @@ impl DesktopApp {
             _ => {
                 // update modal or view
                 if let Some(modal) = self.modal_manager.current_modal.as_mut() {
-                    modal.update(message).unwrap_or_else(|e| {
-                        error!("Error updating the modal {}", e);
-                        Task::none()
-                    })
+                    modal.update(message)
                 } else {
                     self.current_page.update(message).unwrap_or_else(|e| {
                         error!("Error updating the page {}", e);
@@ -134,8 +133,8 @@ impl DesktopApp {
     fn view(&self) -> Element<KimunMessage> {
         if let Some(modal_view) = &self.modal_manager.current_modal {
             let mv = container(modal_view.view())
-                .width(600)
-                .height(800)
+                .width(modal_view.get_width())
+                .height(modal_view.get_height())
                 .padding(2)
                 .style(container::rounded_box);
             stack![

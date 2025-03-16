@@ -1,20 +1,10 @@
-use iced::{
-    Background, Border, Color, Element, Length, Padding, Shadow, Task, Theme,
-    advanced::graphics::text,
-    border::{self, Radius},
-    theme::palette,
-    widget::{
-        button::{Status, Style},
-        mouse_area, row,
-        toggler::Catalog,
-    },
-};
+use iced::{Element, Task};
 use kimun_core::{ResultType, SearchResult, nfs::VaultPath};
 
 use crate::{
     KimunMessage,
-    icons::{ICON, Icon},
-    settings::UI_FONT,
+    fonts::{FONT_UI, FONT_UI_ITALIC},
+    icons::{ICON, KimunIcon},
 };
 
 pub mod filtered_list;
@@ -22,8 +12,13 @@ pub mod filtered_list;
 pub trait KimunComponent {
     type Message: TryFrom<KimunMessage>;
 
-    fn update(&mut self, message: Self::Message) -> anyhow::Result<Task<KimunMessage>>;
+    fn update(&mut self, message: Self::Message) -> Task<KimunMessage>;
     fn view(&self) -> Element<KimunMessage>;
+    fn key_press(
+        &self,
+        key: &iced::keyboard::Key,
+        modifiers: &iced::keyboard::Modifiers,
+    ) -> Task<KimunMessage>;
 }
 
 #[derive(Clone, Debug)]
@@ -187,10 +182,10 @@ impl VaultRow {
             VaultRowType::Note { title } => {
                 // two rows
                 iced::widget::row![
-                    iced::widget::text(Icon::Note.get_char()).font(ICON),
+                    iced::widget::text(KimunIcon::Note.get_char()).font(ICON),
                     iced::widget::column![
-                        iced::widget::text(title.to_owned()),
-                        iced::widget::text(path)
+                        iced::widget::text(title.to_owned()).font(FONT_UI),
+                        iced::widget::text(path).font(FONT_UI_ITALIC)
                     ]
                 ]
                 .spacing(8)
@@ -198,9 +193,9 @@ impl VaultRow {
             }
             VaultRowType::Directory => {
                 // one row
-                row![
-                    iced::widget::text(Icon::Directory.get_char()).font(ICON),
-                    iced::widget::text(path)
+                iced::widget::row![
+                    iced::widget::text(KimunIcon::Directory.get_char()).font(ICON),
+                    iced::widget::text(path).font(FONT_UI)
                 ]
                 .spacing(8)
                 .into()

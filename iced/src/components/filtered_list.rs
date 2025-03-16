@@ -2,9 +2,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use iced::{
     Background, Element, Length, Padding, Task, Theme, border,
+    keyboard::{Key, key::Named},
     mouse::Interaction,
     theme::palette,
-    widget::{Column, container, mouse_area, scrollable, text_input},
+    widget::{container, mouse_area, scrollable, text_input},
 };
 use log::debug;
 use state_data::StateData;
@@ -22,6 +23,8 @@ pub enum VaultListMessage {
     UpdateFilterText { filter: String },
     Ready { filter: String, data: Vec<VaultRow> },
     Select(RowSelection),
+    Selected(Option<VaultRow>),
+    PreviewUpdated(String),
     Enter,
 }
 
@@ -68,7 +71,9 @@ impl std::fmt::Display for VaultListMessage {
             VaultListMessage::Ready { filter, data: _ } => {
                 write!(f, "Filtered with filter `{}`", filter)
             }
-            VaultListMessage::Select(row_selection) => write!(f, "Selected: {:?}", row_selection),
+            VaultListMessage::Select(row_selection) => write!(f, "Selecting: {:?}", row_selection),
+            VaultListMessage::Selected(path) => write!(f, "Selected: {:?}", path),
+            VaultListMessage::PreviewUpdated(_) => write!(f, "Updated Preview"),
             VaultListMessage::Enter => write!(f, "Entered"),
         }
     }
@@ -103,6 +108,10 @@ where
         )
     }
 
+    pub fn get_selection(&self) -> Option<VaultRow> {
+        self.state_data.get_selection()
+    }
+
     fn get_row_view<'a>(&'a self, index: usize, row: &'a VaultRow) -> Element<'a, KimunMessage> {
         let selected = self
             .state_data
@@ -132,7 +141,7 @@ fn row_style(theme: &Theme, selected: bool) -> iced::widget::container::Style {
     if selected {
         styled(palette.background.strong)
     } else {
-        styled(palette.background.weak)
+        styled(palette.background.base)
     }
 }
 
@@ -151,24 +160,23 @@ where
 {
     type Message = VaultListMessage;
 
-    fn update(&mut self, message: Self::Message) -> anyhow::Result<iced::Task<KimunMessage>> {
+    fn update(&mut self, message: Self::Message) -> iced::Task<KimunMessage> {
         match message {
             VaultListMessage::Initializing => {
                 debug!("Initializing...");
                 self.ready = false;
+                self.state_data.set_selected(None);
                 let functions = self.functions.clone();
-                Ok(Task::perform(
-                    async move { functions.lock().unwrap().init() },
-                    |_| VaultListMessage::Filter.into(),
-                ))
+                Task::perform(async move { functions.lock().unwrap().init() }, |_| {
+                    VaultListMessage::Filter.into()
+                })
             }
             VaultListMessage::Filter => {
                 debug!("Filter...");
                 self.ready = false;
                 let functions = self.functions.clone();
                 let filter_text = self.state_data.filter_text.clone();
-                // let filter = self.state_data.filter_text.clone();
-                Ok(Task::perform(
+                Task::perform(
                     async move { (functions.lock().unwrap().filter(&filter_text), filter_text) },
                     move |(result, filter)| {
                         VaultListMessage::Ready {
@@ -177,19 +185,19 @@ where
                         }
                         .into()
                     },
-                ))
+                )
             }
             VaultListMessage::UpdateFilterText { filter } => {
                 debug!("Updating the filter text");
                 self.state_data.filter_text = filter;
                 if self.ready {
                     // If it is ready, we retrigger the filter
-                    Ok(Task::done(VaultListMessage::Filter.into()))
+                    Task::done(VaultListMessage::Filter.into())
                 } else {
                     // If it is not ready, we don't do anything
                     // as we wait to be ready, this way we don't
                     // batch filter requests
-                    Ok(Task::none())
+                    Task::none()
                 }
             }
             VaultListMessage::Ready { filter, data } => {
@@ -197,72 +205,80 @@ where
                 self.state_data.set_elements(data);
                 if filter != self.state_data.filter_text {
                     self.ready = false;
-                    Ok(Task::done(VaultListMessage::Filter.into()))
+                    Task::done(VaultListMessage::Filter.into())
                 } else {
                     self.ready = true;
-                    Ok(Task::none())
+                    Task::none()
                 }
             }
-            VaultListMessage::Select(row_selection) => {
-                let task = match row_selection {
-                    RowSelection::Next => {
-                        self.state_data.select_next();
-                        if let Some(index) = self.state_data.get_position(4) {
-                            scrollable::scroll_to(
-                                SCROLLABLE_ID.clone(),
-                                scrollable::AbsoluteOffset { x: 0.0, y: index },
-                            )
-                        } else {
-                            Task::none()
-                        }
+            VaultListMessage::Select(row_selection) => match row_selection {
+                RowSelection::Next => {
+                    self.state_data.select_next();
+                    let task = Task::done(KimunMessage::ListViewMessage(
+                        VaultListMessage::Selected(self.state_data.get_selection()),
+                    ));
+                    if let Some(index) = self.state_data.get_position(4) {
+                        task.chain(scrollable::scroll_to(
+                            SCROLLABLE_ID.clone(),
+                            scrollable::AbsoluteOffset { x: 0.0, y: index },
+                        ))
+                    } else {
+                        task
                     }
-                    RowSelection::Previous => {
-                        self.state_data.select_prev();
-                        if let Some(index) = self.state_data.get_position(4) {
-                            scrollable::scroll_to(
-                                SCROLLABLE_ID.clone(),
-                                scrollable::AbsoluteOffset { x: 0.0, y: index },
-                            )
-                        } else {
-                            Task::none()
-                        }
+                }
+                RowSelection::Previous => {
+                    self.state_data.select_prev();
+                    let task = Task::done(KimunMessage::ListViewMessage(
+                        VaultListMessage::Selected(self.state_data.get_selection()),
+                    ));
+                    if let Some(index) = self.state_data.get_position(4) {
+                        task.chain(scrollable::scroll_to(
+                            SCROLLABLE_ID.clone(),
+                            scrollable::AbsoluteOffset { x: 0.0, y: index },
+                        ))
+                    } else {
+                        task
                     }
-                    RowSelection::Index(index) => {
-                        self.state_data.set_selected(Some(index));
-                        Task::none()
-                    }
-                    RowSelection::None => {
-                        self.state_data.set_selected(None);
-                        Task::none()
-                    }
-                };
-                Ok(task)
+                }
+                RowSelection::Index(index) => {
+                    self.state_data.set_selected(Some(index));
+                    Task::done(VaultListMessage::Selected(self.state_data.get_selection()).into())
+                }
+                RowSelection::None => {
+                    self.state_data.set_selected(None);
+                    Task::done(VaultListMessage::Selected(None).into())
+                }
+            },
+            VaultListMessage::Selected(path) => {
+                // We don't do anything, this is just to notify we selected something
+                debug!("Highlighting an element at {:?}", path);
+                Task::none()
+            }
+            VaultListMessage::PreviewUpdated(_string) => {
+                // We don't do anything, this is just to notify we selected something
+                debug!("Updated Preview");
+                Task::none()
             }
             VaultListMessage::Enter => {
                 debug!("Selected an element");
                 if let Some(row) = &self.state_data.get_selection() {
                     debug!("And there's a selection {:?}", row);
-                    Ok(self
-                        .functions
-                        .lock()
-                        .unwrap()
-                        .on_entry(row)
-                        .map_or_else(Task::none, Task::done))
+                    self.functions.lock().unwrap().on_entry(row)
                 } else {
-                    Ok(Task::none())
+                    Task::none()
                 }
             }
         }
     }
 
     fn view(&self) -> iced::Element<KimunMessage> {
-        let text_filter =
-            text_input("Type something", &self.state_data.filter_text).on_input(|filter| {
+        let text_filter = text_input("Search...", &self.state_data.filter_text)
+            .on_input(|filter| {
                 KimunMessage::ListViewMessage(VaultListMessage::UpdateFilterText { filter })
-            });
+            })
+            .on_submit(VaultListMessage::Enter.into());
 
         let elements = self.state_data.get_elements();
-
         let rows = elements.iter().enumerate().map(|(i, e)| {
             let row_element = self.get_row_view(i, e);
             row_element
@@ -273,9 +289,27 @@ where
             iced::widget::column![text_filter, scrollable(list).id(SCROLLABLE_ID.clone())]
                 .spacing(10),
         )
-        .width(Length::Fill)
+        .width(300)
         .padding(10)
         .into()
+    }
+
+    fn key_press(
+        &self,
+        key: &iced::keyboard::Key,
+        modifiers: &iced::keyboard::Modifiers,
+    ) -> Task<KimunMessage> {
+        match (key, modifiers) {
+            (Key::Named(Named::Escape), _) => Task::done(KimunMessage::CloseModal),
+            (Key::Named(Named::ArrowDown), _) => {
+                Task::done(VaultListMessage::Select(RowSelection::Next).into())
+            }
+            (Key::Named(Named::ArrowUp), _) => {
+                Task::done(VaultListMessage::Select(RowSelection::Previous).into())
+            }
+            (Key::Named(Named::Enter), _) => Task::done(VaultListMessage::Enter.into()),
+            _ => Task::none(),
+        }
     }
 }
 
@@ -286,7 +320,7 @@ where
 pub trait FilteredListFunctions: Clone + Send + Sync {
     fn init(&mut self);
     fn filter<S: AsRef<str>>(&self, filter_text: S) -> Vec<VaultRow>;
-    fn on_entry(&mut self, element: &VaultRow) -> Option<KimunMessage>;
+    fn on_entry(&mut self, element: &VaultRow) -> Task<KimunMessage>;
     fn header_element(&self, state_data: &StateData) -> Option<VaultRow>;
     fn button_icon(&self) -> Option<String>;
 }
