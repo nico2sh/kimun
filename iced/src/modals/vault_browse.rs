@@ -12,8 +12,7 @@ use crate::{
     components::{
         KimunComponent, VaultRow, VaultRowType,
         filtered_list::{
-            FilteredList, FilteredListFunctions, RowSelection, SortMode, VaultListMessage,
-            state_data::StateData,
+            FilteredList, FilteredListFunctions, SortMode, VaultListMessage, state_data::StateData,
         },
     },
     editor::EditorMessage,
@@ -21,18 +20,21 @@ use crate::{
 
 use super::KimunModal;
 
-pub enum VaultBrowseMessage {}
-
-pub struct VaultBrowse {
-    filtered_list: FilteredList<VaultBrowseFunctions>,
+pub struct VaultNavigator<F>
+where
+    F: FilteredListFunctions + 'static,
+{
+    filtered_list: FilteredList<F>,
     vault: NoteVault,
     preview_text: String,
 }
 
-impl VaultBrowse {
-    pub fn new(path: VaultPath, vault: NoteVault) -> (Self, iced::Task<KimunMessage>) {
-        let (filtered_list, task) =
-            FilteredList::new(VaultBrowseFunctions::new(path, vault.clone()));
+impl<F> VaultNavigator<F>
+where
+    F: FilteredListFunctions + 'static,
+{
+    pub fn new(vault: NoteVault, functions: F) -> (Self, iced::Task<KimunMessage>) {
+        let (filtered_list, task) = FilteredList::new(functions);
         (
             Self {
                 filtered_list,
@@ -44,15 +46,19 @@ impl VaultBrowse {
     }
 }
 
-impl KimunModal for VaultBrowse {
+impl<F> KimunModal for VaultNavigator<F>
+where
+    F: FilteredListFunctions + 'static,
+{
     fn view(&self) -> iced::Element<KimunMessage> {
         iced::widget::row![
             self.filtered_list.view(),
             iced::widget::scrollable(
-                iced::widget::text(&self.preview_text).align_x(Horizontal::Left) // .height(iced::Length::Fill)
+                iced::widget::text(&self.preview_text).align_x(Horizontal::Left)
             )
             .height(iced::Length::Fill)
         ]
+        .padding(8)
         .spacing(4)
         .into()
     }
@@ -113,7 +119,7 @@ impl KimunModal for VaultBrowse {
 }
 
 #[derive(Debug, Clone)]
-struct VaultBrowseFunctions {
+pub struct VaultBrowseFunctions {
     path: VaultPath,
     vault: NoteVault,
     initial_rows: Vec<VaultRow>,
@@ -121,7 +127,7 @@ struct VaultBrowseFunctions {
 }
 
 impl VaultBrowseFunctions {
-    fn new(path: VaultPath, vault: NoteVault) -> Self {
+    pub fn new(path: VaultPath, vault: NoteVault) -> Self {
         Self {
             path,
             vault,
@@ -202,9 +208,12 @@ impl FilteredListFunctions for VaultBrowseFunctions {
         match element.entry_type {
             VaultRowType::Note { title: _ } => {
                 // We close first the modal, then we open the note
-                Task::done(KimunMessage::CloseModal).chain(Task::done(KimunMessage::EditorMessage(
-                    EditorMessage::OpenNote(element.path.clone()),
-                )))
+                Task::batch([
+                    Task::done(KimunMessage::CloseModal),
+                    Task::done(KimunMessage::EditorMessage(EditorMessage::OpenNote(
+                        element.path.clone(),
+                    ))),
+                ])
             }
             VaultRowType::Directory => {
                 let directory = element.path.clone();
@@ -221,9 +230,12 @@ impl FilteredListFunctions for VaultBrowseFunctions {
             VaultRowType::Attachment => Task::none(),
             VaultRowType::NewNote => {
                 // We close first the modal, then we open the note
-                Task::done(KimunMessage::CloseModal).chain(Task::done(KimunMessage::EditorMessage(
-                    EditorMessage::NewNote(element.path.clone()),
-                )))
+                Task::batch([
+                    Task::done(KimunMessage::CloseModal),
+                    Task::done(KimunMessage::EditorMessage(EditorMessage::NewNote(
+                        element.path.clone(),
+                    ))),
+                ])
             }
         }
     }

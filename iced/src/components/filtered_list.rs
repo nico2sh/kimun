@@ -12,7 +12,7 @@ use state_data::StateData;
 
 use crate::KimunMessage;
 
-use super::{KimunComponent, VaultRow};
+use super::{KimunComponent, ListElement, VaultRow};
 
 static SCROLLABLE_ID: LazyLock<scrollable::Id> = LazyLock::new(scrollable::Id::unique);
 
@@ -106,10 +106,6 @@ where
                 VaultListMessage::Filter.into()
             }),
         )
-    }
-
-    pub fn get_selection(&self) -> Option<VaultRow> {
-        self.state_data.get_selection()
     }
 
     fn get_row_view<'a>(&'a self, index: usize, row: &'a VaultRow) -> Element<'a, KimunMessage> {
@@ -326,7 +322,7 @@ pub trait FilteredListFunctions: Clone + Send + Sync {
 }
 
 pub mod state_data {
-    use crate::components::VaultRow;
+    use crate::components::{ListElement, VaultRow};
 
     #[derive(Default)]
     pub struct StateData {

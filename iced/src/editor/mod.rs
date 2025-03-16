@@ -2,14 +2,16 @@ use anyhow::bail;
 use iced::{
     Font,
     Length::Fill,
-    Task, highlighter,
+    Task,
+    futures::channel::mpsc::Sender,
+    highlighter,
     keyboard::{Key, Modifiers, key::Named},
     widget::{row, text_editor},
 };
 use kimun_core::{NoteVault, nfs::VaultPath, note::NoteDetails};
 use log::debug;
 
-use crate::{KimunMessage, KimunPage, settings::Settings};
+use crate::{AsyncMessage, KimunMessage, KimunPage, settings::Settings};
 
 #[derive(Clone, Debug)]
 pub enum EditorMessage {
@@ -155,6 +157,7 @@ impl KimunPage for Editor {
                     Task::none()
                 }
                 EditorMessage::Save => {
+                    debug!("Received Save Signal");
                     // self.save_note()?;
                     Task::none()
                 }

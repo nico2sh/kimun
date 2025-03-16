@@ -9,7 +9,7 @@ use kimun_core::{
     nfs::{NoteEntryData, VaultPath},
     note::NoteContentData,
 };
-use vault_browse::VaultBrowse;
+use vault_browse::{VaultBrowseFunctions, VaultNavigator};
 use vault_indexer::IndexType;
 
 use crate::KimunMessage;
@@ -29,7 +29,10 @@ impl ModalManager {
         let (modal, task) = match modal {
             Modals::VaultBrowse(note_vault, vault_path) => {
                 // Filtered list
-                VaultBrowse::new(vault_path, note_vault)
+                VaultNavigator::new(
+                    note_vault.clone(),
+                    VaultBrowseFunctions::new(vault_path, note_vault.clone()),
+                )
             }
             Modals::VaultSearch(note_vault) => todo!(),
             Modals::NoteSelect(note_vault, items) => todo!(),
@@ -64,6 +67,3 @@ pub enum Modals {
     NoteSelect(NoteVault, Vec<(NoteEntryData, NoteContentData)>),
     VaultIndex(PathBuf, IndexType),
 }
-
-#[derive(Debug, Clone)]
-pub enum ModalMessage {}
