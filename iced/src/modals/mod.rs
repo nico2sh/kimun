@@ -47,7 +47,9 @@ impl ModalManager {
 
 pub trait KimunModal {
     fn view(&self) -> iced::Element<KimunMessage>;
-    fn update(&mut self, message: KimunMessage) -> anyhow::Result<Task<KimunMessage>>;
+    fn get_width(&self) -> iced::Length;
+    fn get_height(&self) -> iced::Length;
+    fn update(&mut self, message: KimunMessage) -> Task<KimunMessage>;
     fn key_press(
         &self,
         key: &iced::keyboard::Key,
@@ -62,3 +64,6 @@ pub enum Modals {
     NoteSelect(NoteVault, Vec<(NoteEntryData, NoteContentData)>),
     VaultIndex(PathBuf, IndexType),
 }
+
+#[derive(Debug, Clone)]
+pub enum ModalMessage {}

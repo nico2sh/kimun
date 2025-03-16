@@ -1,5 +1,6 @@
 use iced::{
     Task,
+    alignment::Horizontal,
     keyboard::{Key, key::Named},
 };
 use kimun_core::{NoteVault, ResultType, VaultBrowseOptionsBuilder, nfs::VaultPath};
@@ -20,27 +21,85 @@ use crate::{
 
 use super::KimunModal;
 
+pub enum VaultBrowseMessage {}
+
 pub struct VaultBrowse {
     filtered_list: FilteredList<VaultBrowseFunctions>,
+    vault: NoteVault,
+    preview_text: String,
 }
 
 impl VaultBrowse {
     pub fn new(path: VaultPath, vault: NoteVault) -> (Self, iced::Task<KimunMessage>) {
-        let (filtered_list, task) = FilteredList::new(VaultBrowseFunctions::new(path, vault));
-        (Self { filtered_list }, task)
+        let (filtered_list, task) =
+            FilteredList::new(VaultBrowseFunctions::new(path, vault.clone()));
+        (
+            Self {
+                filtered_list,
+                vault,
+                preview_text: String::new(),
+            },
+            task,
+        )
     }
 }
 
 impl KimunModal for VaultBrowse {
     fn view(&self) -> iced::Element<KimunMessage> {
-        self.filtered_list.view()
+        iced::widget::row![
+            self.filtered_list.view(),
+            iced::widget::scrollable(
+                iced::widget::text(&self.preview_text).align_x(Horizontal::Left) // .height(iced::Length::Fill)
+            )
+            .height(iced::Length::Fill)
+        ]
+        .spacing(4)
+        .into()
     }
 
-    fn update(&mut self, message: KimunMessage) -> anyhow::Result<iced::Task<KimunMessage>> {
+    fn get_width(&self) -> iced::Length {
+        800.into()
+    }
+
+    fn get_height(&self) -> iced::Length {
+        600.into()
+    }
+
+    fn update(&mut self, message: KimunMessage) -> iced::Task<KimunMessage> {
         if let Ok(msg) = message.try_into() {
-            self.filtered_list.update(msg)
+            match &msg {
+                VaultListMessage::Selected(vault_row) => {
+                    // We trigger the preview
+                    let vault = self.vault.clone();
+                    let mp = vault_row.to_owned();
+                    Task::perform(
+                        async move {
+                            match mp {
+                                Some(row) => {
+                                    let path = row.path;
+                                    if path.is_note() {
+                                        match vault.get_note_text(&path) {
+                                            Ok(text) => text.replace('\t', "    "),
+                                            Err(_e) => "Error Loading Preview".to_string(),
+                                        }
+                                    } else {
+                                        String::new()
+                                    }
+                                }
+                                None => String::new(),
+                            }
+                        },
+                        |t| VaultListMessage::PreviewUpdated(t).into(),
+                    )
+                }
+                VaultListMessage::PreviewUpdated(preview) => {
+                    self.preview_text = preview.to_owned();
+                    Task::none()
+                }
+                _ => self.filtered_list.update(msg),
+            }
         } else {
-            Ok(Task::none())
+            Task::none()
         }
     }
 
@@ -49,17 +108,7 @@ impl KimunModal for VaultBrowse {
         key: &iced::keyboard::Key,
         modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage> {
-        match (key, modifiers) {
-            (Key::Named(Named::Escape), _) => Task::done(KimunMessage::CloseModal),
-            (Key::Named(Named::ArrowDown), _) => {
-                Task::done(VaultListMessage::Select(RowSelection::Next).into())
-            }
-            (Key::Named(Named::ArrowUp), _) => {
-                Task::done(VaultListMessage::Select(RowSelection::Previous).into())
-            }
-            (Key::Named(Named::Enter), _) => Task::done(VaultListMessage::Enter.into()),
-            _ => Task::none(),
-        }
+        self.filtered_list.key_press(key, modifiers)
     }
 }
 
@@ -124,9 +173,6 @@ impl FilteredListFunctions for VaultBrowseFunctions {
         .iter()
         .map(|e| e.0.to_owned())
         .collect::<Vec<VaultRow>>();
-        if self.path != VaultPath::root() {
-            filtered.push(VaultRow::up_dir(&self.path));
-        }
         filtered.par_sort_by(|a, b| {
             // We compare first the order of the type priority
             if a.entry_type.get_order() == b.entry_type.get_order() {
@@ -140,6 +186,11 @@ impl FilteredListFunctions for VaultBrowseFunctions {
                 a.entry_type.get_order().cmp(&b.entry_type.get_order())
             }
         });
+        if !self.path.get_slices().is_empty() {
+            let mut up = vec![VaultRow::up_dir(&self.path)];
+            up.append(&mut filtered);
+            filtered = up;
+        }
 
         // filtered.par_sort_by(|a, b| a.get_sort_string().cmp(&b.get_sort_string()));
 
@@ -147,11 +198,14 @@ impl FilteredListFunctions for VaultBrowseFunctions {
         filtered
     }
 
-    fn on_entry(&mut self, element: &VaultRow) -> Option<KimunMessage> {
+    fn on_entry(&mut self, element: &VaultRow) -> Task<KimunMessage> {
         match element.entry_type {
-            VaultRowType::Note { title: _ } => Some(KimunMessage::EditorMessage(
-                EditorMessage::OpenNote(element.path.clone()),
-            )),
+            VaultRowType::Note { title: _ } => {
+                // We close first the modal, then we open the note
+                Task::done(KimunMessage::CloseModal).chain(Task::done(KimunMessage::EditorMessage(
+                    EditorMessage::OpenNote(element.path.clone()),
+                )))
+            }
             VaultRowType::Directory => {
                 let directory = element.path.clone();
                 debug!("new path: {}", directory);
@@ -160,14 +214,17 @@ impl FilteredListFunctions for VaultBrowseFunctions {
                 self.path = directory;
 
                 // self.path = directory;
-                Some(KimunMessage::ListViewMessage(
+                Task::done(KimunMessage::ListViewMessage(
                     VaultListMessage::Initializing,
                 ))
             }
-            VaultRowType::Attachment => None,
-            VaultRowType::NewNote => Some(KimunMessage::EditorMessage(EditorMessage::NewNote(
-                element.path.clone(),
-            ))),
+            VaultRowType::Attachment => Task::none(),
+            VaultRowType::NewNote => {
+                // We close first the modal, then we open the note
+                Task::done(KimunMessage::CloseModal).chain(Task::done(KimunMessage::EditorMessage(
+                    EditorMessage::NewNote(element.path.clone()),
+                )))
+            }
         }
     }
 

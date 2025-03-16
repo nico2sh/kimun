@@ -63,6 +63,7 @@ impl Editor {
             self.settings.add_path_history(note_path);
             self.settings.save_to_disk()?;
             self.set_content(&note_details);
+            self.path = note_path.to_owned();
         } else {
             bail!("Note path is not a note or vault path doesn't exist")
         };
@@ -89,9 +90,8 @@ impl KimunPage for Editor {
                     Task::none()
                 }
                 EditorMessage::OpenNote(note_path) => {
+                    debug!("Loading note at path {}", note_path);
                     self.load_note_path(&note_path)?;
-                    // self.modal_manager.close_modal();
-                    // self.request_focus = true;
 
                     Task::none()
                 }
@@ -196,7 +196,6 @@ impl KimunPage for Editor {
                         spaces
                     }
                     (Key::Character("o"), Modifiers::COMMAND) => {
-                        debug!("Pressed the O key");
                         let current_path = &self.path.get_parent_path().0;
                         Some(text_editor::Binding::Custom(KimunMessage::ShowModal(
                             crate::modals::Modals::VaultBrowse(
