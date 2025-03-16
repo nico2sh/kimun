@@ -13,11 +13,11 @@ impl SettingsPage {
 }
 
 impl KimunPage for SettingsPage {
-    fn update(&mut self, message: crate::KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
+    fn update(&mut self, message: KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
         Ok(Task::none())
     }
 
-    fn view(&self) -> iced::Element<crate::KimunMessage> {
+    fn view(&self) -> iced::Element<KimunMessage> {
         column![].into()
     }
 

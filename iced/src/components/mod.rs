@@ -101,6 +101,51 @@ impl From<SearchResult> for VaultRow {
     }
 }
 
+pub trait ListElement: std::fmt::Debug + Clone {
+    fn get_view(&self) -> Element<KimunMessage>;
+    fn get_height(&self) -> f32;
+}
+
+impl ListElement for VaultRow {
+    fn get_view(&self) -> Element<KimunMessage> {
+        let path = self.path_str.to_string();
+        match &self.entry_type {
+            VaultRowType::Note { title } => {
+                // two rows
+                iced::widget::row![
+                    iced::widget::text(KimunIcon::Note.get_char()).font(ICON),
+                    iced::widget::column![
+                        iced::widget::text(title.to_owned()).font(FONT_UI),
+                        iced::widget::text(path).font(FONT_UI_ITALIC)
+                    ]
+                ]
+                .spacing(8)
+                .into()
+            }
+            VaultRowType::Directory => {
+                // one row
+                iced::widget::row![
+                    iced::widget::text(KimunIcon::Directory.get_char()).font(ICON),
+                    iced::widget::text(path).font(FONT_UI)
+                ]
+                .spacing(8)
+                .into()
+            }
+            VaultRowType::Attachment => todo!(),
+            VaultRowType::NewNote => todo!(),
+        }
+    }
+
+    fn get_height(&self) -> f32 {
+        match &self.entry_type {
+            VaultRowType::Note { title: _ } => 44.0,
+            VaultRowType::Directory => 24.0,
+            VaultRowType::Attachment => 22.0,
+            VaultRowType::NewNote => 24.0,
+        }
+    }
+}
+
 // impl ListElement for VaultRow {
 //     fn get_height_mult(&self) -> f32 {
 //         match &self.entry_type {
@@ -173,44 +218,6 @@ impl VaultRow {
             VaultRowType::Directory => format!("1{}", self.path),
             VaultRowType::Attachment => format!("3{}", self.path),
             VaultRowType::NewNote => "0".to_string(),
-        }
-    }
-
-    fn get_view(&self) -> Element<KimunMessage> {
-        let path = self.path_str.to_string();
-        match &self.entry_type {
-            VaultRowType::Note { title } => {
-                // two rows
-                iced::widget::row![
-                    iced::widget::text(KimunIcon::Note.get_char()).font(ICON),
-                    iced::widget::column![
-                        iced::widget::text(title.to_owned()).font(FONT_UI),
-                        iced::widget::text(path).font(FONT_UI_ITALIC)
-                    ]
-                ]
-                .spacing(8)
-                .into()
-            }
-            VaultRowType::Directory => {
-                // one row
-                iced::widget::row![
-                    iced::widget::text(KimunIcon::Directory.get_char()).font(ICON),
-                    iced::widget::text(path).font(FONT_UI)
-                ]
-                .spacing(8)
-                .into()
-            }
-            VaultRowType::Attachment => todo!(),
-            VaultRowType::NewNote => todo!(),
-        }
-    }
-
-    fn get_height(&self) -> f32 {
-        match &self.entry_type {
-            VaultRowType::Note { title: _ } => 44.0,
-            VaultRowType::Directory => 24.0,
-            VaultRowType::Attachment => 22.0,
-            VaultRowType::NewNote => 24.0,
         }
     }
 }
