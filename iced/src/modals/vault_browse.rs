@@ -127,12 +127,20 @@ impl FilteredListFunctions for VaultBrowseFunctions {
         if self.path != VaultPath::root() {
             filtered.push(VaultRow::up_dir(&self.path));
         }
-        filtered.par_sort_by(|a, b| match self.sort_mode {
-            SortMode::FileUp => a.path_str.cmp(&b.path_str),
-            SortMode::FileDown => b.path_str.cmp(&a.path_str),
-            SortMode::TitleUp => a.search_str.cmp(&b.search_str),
-            SortMode::TitleDown => b.search_str.cmp(&a.search_str),
+        filtered.par_sort_by(|a, b| {
+            // We compare first the order of the type priority
+            if a.entry_type.get_order() == b.entry_type.get_order() {
+                match self.sort_mode {
+                    SortMode::FileUp => a.path_str.cmp(&b.path_str),
+                    SortMode::FileDown => b.path_str.cmp(&a.path_str),
+                    SortMode::TitleUp => a.search_str.cmp(&b.search_str),
+                    SortMode::TitleDown => b.search_str.cmp(&a.search_str),
+                }
+            } else {
+                a.entry_type.get_order().cmp(&b.entry_type.get_order())
+            }
         });
+
         // filtered.par_sort_by(|a, b| a.get_sort_string().cmp(&b.get_sort_string()));
 
         debug!("filtered {} values", filtered.len());

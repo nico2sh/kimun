@@ -1,5 +1,6 @@
 mod components;
 mod editor;
+mod icons;
 mod modals;
 mod settings;
 
@@ -8,11 +9,12 @@ use std::path::PathBuf;
 use components::filtered_list::VaultListMessage;
 use editor::{Editor, EditorMessage};
 use iced::{
-    Color, Element, Font, Subscription, Task,
+    Color, Element, Subscription, Task,
     futures::{SinkExt, Stream, channel::mpsc::Sender, stream},
     keyboard::{Key, Modifiers, key},
     widget::{center, column, container, mouse_area, opaque, stack, text_editor},
 };
+use icons::ICON_BYTES;
 use kimun_core::NoteVault;
 use log::{debug, error};
 use modals::{ModalManager, Modals};
@@ -27,6 +29,9 @@ fn main() -> iced::Result {
         .subscription(DesktopApp::subscription)
         .window_size((800.0, 600.0))
         .theme(DesktopApp::theme)
+        .font(include_bytes!("../res/fonts/InterVariable.ttf").as_slice())
+        .font(include_bytes!("../res/fonts/FiraCode-Regular.ttf").as_slice())
+        .font(ICON_BYTES)
         .run_with(DesktopApp::new)
 }
 

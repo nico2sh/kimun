@@ -11,7 +11,11 @@ use iced::{
 };
 use kimun_core::{ResultType, SearchResult, nfs::VaultPath};
 
-use crate::KimunMessage;
+use crate::{
+    KimunMessage,
+    icons::{ICON, Icon},
+    settings::UI_FONT,
+};
 
 pub mod filtered_list;
 
@@ -30,12 +34,34 @@ pub struct VaultRow {
     pub entry_type: VaultRowType,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum VaultRowType {
     Note { title: String },
     Directory,
     Attachment,
     NewNote,
+}
+
+impl VaultRowType {
+    pub fn get_order(&self) -> usize {
+        match self {
+            VaultRowType::Note { title: _ } => 2,
+            VaultRowType::Directory => 1,
+            VaultRowType::Attachment => 3,
+            VaultRowType::NewNote => 0,
+        }
+    }
+}
+
+impl PartialOrd for VaultRowType {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (VaultRowType::Note { title: title1 }, VaultRowType::Note { title: title2 }) => {
+                title1.partial_cmp(title2)
+            }
+            _ => self.get_order().partial_cmp(&other.get_order()),
+        }
+    }
 }
 
 impl From<SearchResult> for VaultRow {
@@ -156,19 +182,28 @@ impl VaultRow {
     }
 
     fn get_view(&self) -> Element<KimunMessage> {
-        let path = self.path.to_string();
+        let path = self.path_str.to_string();
         match &self.entry_type {
             VaultRowType::Note { title } => {
                 // two rows
-                iced::widget::column![
-                    iced::widget::text(title.to_owned()),
-                    iced::widget::text(path)
+                iced::widget::row![
+                    iced::widget::text(Icon::Note.get_char()).font(ICON),
+                    iced::widget::column![
+                        iced::widget::text(title.to_owned()),
+                        iced::widget::text(path)
+                    ]
                 ]
+                .spacing(8)
                 .into()
             }
             VaultRowType::Directory => {
                 // one row
-                row![iced::widget::text(path)].into()
+                row![
+                    iced::widget::text(Icon::Directory.get_char()).font(ICON),
+                    iced::widget::text(path)
+                ]
+                .spacing(8)
+                .into()
             }
             VaultRowType::Attachment => todo!(),
             VaultRowType::NewNote => todo!(),
