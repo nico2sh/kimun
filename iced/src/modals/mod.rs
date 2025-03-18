@@ -9,7 +9,7 @@ use kimun_core::{
     nfs::{NoteEntryData, VaultPath},
     note::NoteContentData,
 };
-use vault_browse::{VaultBrowseFunctions, VaultNavigator};
+use vault_browse::{VaultBrowseFunctions, VaultNavigator, VaultSearchFunctions};
 use vault_indexer::IndexType;
 
 use crate::KimunMessage;
@@ -26,20 +26,28 @@ impl ModalManager {
     }
 
     pub fn set_modal(&mut self, modal: Modals) -> Task<KimunMessage> {
-        let (modal, task) = match modal {
+        match modal {
             Modals::VaultBrowse(note_vault, vault_path) => {
                 // Filtered list
-                VaultNavigator::new(
+                let (modal, task) = VaultNavigator::new(
                     note_vault.clone(),
                     VaultBrowseFunctions::new(vault_path, note_vault.clone()),
-                )
+                );
+                self.current_modal = Some(Box::new(modal));
+                task
             }
-            Modals::VaultSearch(note_vault) => todo!(),
+            Modals::VaultSearch(note_vault) => {
+                // Filtered list
+                let (modal, task) = VaultNavigator::new(
+                    note_vault.clone(),
+                    VaultSearchFunctions::new(note_vault.clone()),
+                );
+                self.current_modal = Some(Box::new(modal));
+                task
+            }
             Modals::NoteSelect(note_vault, items) => todo!(),
             Modals::VaultIndex(path_buf, index_type) => todo!(),
-        };
-        self.current_modal = Some(Box::new(modal));
-        task
+        }
     }
 
     pub fn close_modal(&mut self) -> Task<KimunMessage> {

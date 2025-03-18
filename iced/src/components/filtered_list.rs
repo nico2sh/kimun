@@ -15,6 +15,7 @@ use crate::KimunMessage;
 use super::{KimunComponent, ListElement, VaultRow};
 
 static SCROLLABLE_ID: LazyLock<scrollable::Id> = LazyLock::new(scrollable::Id::unique);
+static TEXT_INPUT_ID: LazyLock<text_input::Id> = LazyLock::new(text_input::Id::unique);
 
 #[derive(Debug, Clone)]
 pub enum VaultListMessage {
@@ -94,7 +95,6 @@ where
 {
     pub fn new(functions: F) -> (Self, iced::Task<KimunMessage>) {
         let functions = Arc::new(Mutex::new(functions));
-        let func = functions.clone();
         let state_data = StateData::new();
         (
             Self {
@@ -102,9 +102,10 @@ where
                 ready: false,
                 state_data,
             },
-            iced::Task::perform(async move { func.lock().unwrap().init() }, |_| {
-                VaultListMessage::Filter.into()
-            }),
+            iced::Task::batch([
+                text_input::focus(TEXT_INPUT_ID.clone()),
+                Task::done(VaultListMessage::Initializing.into()),
+            ]),
         )
     }
 
@@ -251,7 +252,7 @@ where
                 Task::none()
             }
             VaultListMessage::PreviewUpdated(_string) => {
-                // We don't do anything, this is just to notify we selected something
+                // We don't do anything, this is just to notify we loaded the preview
                 debug!("Updated Preview");
                 Task::none()
             }
@@ -272,6 +273,7 @@ where
             .on_input(|filter| {
                 KimunMessage::ListViewMessage(VaultListMessage::UpdateFilterText { filter })
             })
+            .id(TEXT_INPUT_ID.clone())
             .on_submit(VaultListMessage::Enter.into());
 
         let elements = self.state_data.get_elements();

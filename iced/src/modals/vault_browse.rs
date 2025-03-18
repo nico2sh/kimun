@@ -1,10 +1,6 @@
-use iced::{
-    Task,
-    alignment::Horizontal,
-    keyboard::{Key, key::Named},
-};
+use iced::{Task, alignment::Horizontal};
 use kimun_core::{NoteVault, ResultType, VaultBrowseOptionsBuilder, nfs::VaultPath};
-use log::debug;
+use log::{debug, error};
 use rayon::slice::ParallelSliceMut;
 
 use crate::{
@@ -56,6 +52,7 @@ where
             iced::widget::scrollable(
                 iced::widget::text(&self.preview_text).align_x(Horizontal::Left)
             )
+            .spacing(4)
             .height(iced::Length::Fill)
         ]
         .padding(8)
@@ -115,6 +112,69 @@ where
         modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage> {
         self.filtered_list.key_press(key, modifiers)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VaultSearchFunctions {
+    vault: NoteVault,
+}
+
+impl VaultSearchFunctions {
+    pub fn new(vault: NoteVault) -> Self {
+        Self { vault }
+    }
+}
+
+impl FilteredListFunctions for VaultSearchFunctions {
+    fn init(&mut self) {}
+
+    fn filter<S: AsRef<str>>(&self, filter_text: S) -> Vec<VaultRow> {
+        match self.vault.search_notes(filter_text) {
+            Ok(results) => results
+                .iter()
+                .map(|(data, details)| {
+                    let title = details.title.clone();
+                    let path = data.path.clone();
+                    let file_name = path.get_parent_path().1;
+                    let file_name_no_ext =
+                        file_name.strip_suffix(".md").unwrap_or(file_name.as_str());
+                    let search_str = if title.contains(file_name_no_ext) {
+                        title.clone()
+                    } else {
+                        format!("{} {}", title, file_name_no_ext)
+                    };
+                    VaultRow {
+                        path: path.clone(),
+                        path_str: path.get_parent_path().1,
+                        search_str,
+                        entry_type: VaultRowType::Note { title },
+                    }
+                })
+                .collect(),
+            Err(e) => {
+                error!("Error retrieving results: {}", e);
+                vec![]
+            }
+        }
+    }
+
+    fn on_entry(&mut self, element: &VaultRow) -> Task<KimunMessage> {
+        // It's always a note
+        Task::batch([
+            Task::done(KimunMessage::CloseModal),
+            Task::done(KimunMessage::EditorMessage(EditorMessage::OpenNote(
+                element.path.clone(),
+            ))),
+        ])
+    }
+
+    fn header_element(&self, state_data: &StateData) -> Option<VaultRow> {
+        None
+    }
+
+    fn button_icon(&self) -> Option<String> {
+        None
     }
 }
 

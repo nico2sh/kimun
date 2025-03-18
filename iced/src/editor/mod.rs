@@ -2,16 +2,14 @@ use anyhow::bail;
 use iced::{
     Font,
     Length::Fill,
-    Task,
-    futures::channel::mpsc::Sender,
-    highlighter,
+    Task, highlighter,
     keyboard::{Key, Modifiers, key::Named},
     widget::{row, text_editor},
 };
 use kimun_core::{NoteVault, nfs::VaultPath, note::NoteDetails};
 use log::debug;
 
-use crate::{AsyncMessage, KimunMessage, KimunPage, settings::Settings};
+use crate::{KimunMessage, KimunPage, settings::Settings};
 
 #[derive(Clone, Debug)]
 pub enum EditorMessage {
@@ -77,6 +75,37 @@ impl Editor {
         self.content = text_editor::Content::with_text(&details.raw_text);
         self.note_details = details.to_owned();
     }
+
+    fn manage_editor_keys(
+        &self,
+        kp: &text_editor::KeyPress,
+    ) -> Option<text_editor::Binding<KimunMessage>> {
+        match (kp.key.as_ref(), kp.modifiers, kp.status) {
+            (Key::Named(Named::Tab), _, text_editor::Status::Focused) => {
+                // We insert spaces instead of tabs
+                // TODO: Manage indenting
+                let _tab: Option<text_editor::Binding<KimunMessage>> =
+                    Some(text_editor::Binding::Insert('\t'));
+                let spaces: Option<text_editor::Binding<KimunMessage>> = Some(
+                    text_editor::Binding::Sequence(vec![text_editor::Binding::Insert(' '); 4]),
+                );
+                spaces
+            }
+            (Key::Character("k"), Modifiers::COMMAND, _) => Some(text_editor::Binding::Custom(
+                KimunMessage::ShowModal(crate::modals::Modals::VaultSearch(self.vault.clone())),
+            )),
+            (Key::Character("o"), Modifiers::COMMAND, _) => {
+                let current_path = &self.path.get_parent_path().0;
+                Some(text_editor::Binding::Custom(KimunMessage::ShowModal(
+                    crate::modals::Modals::VaultBrowse(self.vault.clone(), current_path.to_owned()),
+                )))
+            }
+            (Key::Character("j"), Modifiers::COMMAND, _) => Some(text_editor::Binding::Custom(
+                EditorMessage::NewJournal.into(),
+            )),
+            _ => None,
+        }
+    }
 }
 
 impl KimunPage for Editor {
@@ -135,8 +164,6 @@ impl KimunPage for Editor {
                     let (data, _content) = self.vault.journal_entry()?;
                     {
                         self.load_note_path(&data.path)?;
-                        // self.modal_manager.close_modal();
-                        // self.request_focus = true;
                         Task::none()
                     }
                 }
@@ -185,30 +212,8 @@ impl KimunPage for Editor {
             .padding(10)
             .font(Font::MONOSPACE)
             .key_binding(move |kp| {
-                // We intercept key presses, to allow adding tabs
-                match (kp.key.as_ref(), kp.modifiers) {
-                    (Key::Named(Named::Tab), _) => {
-                        // We insert spaces instead of tabs
-                        // TODO: Manage indenting
-                        let _tab: Option<text_editor::Binding<KimunMessage>> =
-                            Some(text_editor::Binding::Insert('\t'));
-                        let spaces: Option<text_editor::Binding<KimunMessage>> =
-                            Some(text_editor::Binding::Sequence(
-                                vec![text_editor::Binding::Insert(' '); 4],
-                            ));
-                        spaces
-                    }
-                    (Key::Character("o"), Modifiers::COMMAND) => {
-                        let current_path = &self.path.get_parent_path().0;
-                        Some(text_editor::Binding::Custom(KimunMessage::ShowModal(
-                            crate::modals::Modals::VaultBrowse(
-                                self.vault.clone(),
-                                current_path.to_owned(),
-                            ),
-                        )))
-                    }
-                    _ => text_editor::Binding::from_key_press(kp),
-                }
+                self.manage_editor_keys(&kp)
+                    .or_else(|| text_editor::Binding::from_key_press(kp))
             })
             .highlight("markdown", highlighter::Theme::Base16Ocean);
         row![editor,].spacing(5).padding(10).into()
