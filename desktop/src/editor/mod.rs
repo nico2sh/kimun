@@ -1,13 +1,16 @@
+mod preview;
+
 use anyhow::bail;
 use iced::{
     Font,
     Length::Fill,
     Task, highlighter,
-    keyboard::{Key, Modifiers, key::Named},
+    keyboard::{self, Key, Modifiers, key::Named},
     widget::{row, text_editor},
 };
 use kimun_core::{NoteVault, nfs::VaultPath, note::NoteDetails};
 use log::{debug, error};
+use preview::{PreviewMessage, PreviewPage};
 
 use crate::{KimunMessage, KimunPage, settings::Settings};
 
@@ -18,11 +21,11 @@ pub enum EditorMessage {
     OpenNote(VaultPath),
     NewNote(VaultPath),
     NewJournal,
-    ShowPreview(bool),
     SaveTick,
     Save(NoteVault, VaultPath, String),
     Saved(VaultPath),
     OpenSettings,
+    PreviewMessage(PreviewMessage),
 }
 
 #[derive(PartialEq, Eq)]
@@ -41,6 +44,7 @@ impl From<EditorMessage> for KimunMessage {
 pub struct Editor {
     note_details: NoteDetails,
     content: text_editor::Content,
+    preview_page: Option<PreviewPage>,
     saved: SavingStatus,
     vault: NoteVault,
     path: VaultPath,
@@ -66,6 +70,7 @@ impl Editor {
         Ok(Self {
             note_details,
             content,
+            preview_page: None,
             saved: SavingStatus::Saved,
             vault: vault.to_owned(),
             path: path.to_owned(),
@@ -88,6 +93,9 @@ impl Editor {
             self.set_content(&note_details);
             self.path = note_path.to_owned();
             self.saved = SavingStatus::Saved;
+            if let Some(preview) = self.preview_page.as_mut() {
+                preview.load_note(note_details);
+            }
         } else {
             bail!(
                 "Note path is not a note or vault path doesn't exist: {}",
@@ -129,35 +137,33 @@ impl Editor {
         self.note_details = details.to_owned();
     }
 
-    fn manage_editor_keys(
-        &self,
-        kp: &text_editor::KeyPress,
-    ) -> Option<text_editor::Binding<KimunMessage>> {
-        match (kp.key.as_ref(), kp.modifiers, kp.status) {
-            (Key::Named(Named::Tab), _, text_editor::Status::Focused) => {
-                // We insert spaces instead of tabs
-                // TODO: Manage indenting
-                let _tab: Option<text_editor::Binding<KimunMessage>> =
-                    Some(text_editor::Binding::Insert('\t'));
-                let spaces: Option<text_editor::Binding<KimunMessage>> = Some(
-                    text_editor::Binding::Sequence(vec![text_editor::Binding::Insert(' '); 4]),
-                );
-                spaces
-            }
-            (Key::Character("k"), Modifiers::COMMAND, _) => Some(text_editor::Binding::Custom(
-                KimunMessage::ShowModal(crate::modals::Modals::VaultSearch(self.vault.clone())),
-            )),
-            (Key::Character("o"), Modifiers::COMMAND, _) => {
-                let current_path = &self.path.get_parent_path().0;
-                Some(text_editor::Binding::Custom(KimunMessage::ShowModal(
-                    crate::modals::Modals::VaultBrowse(self.vault.clone(), current_path.to_owned()),
-                )))
-            }
-            (Key::Character("j"), Modifiers::COMMAND, _) => Some(text_editor::Binding::Custom(
-                EditorMessage::NewJournal.into(),
-            )),
-            _ => None,
+    // fn chain_preview_message(&mut self, message: KimunMessage) -> Task<KimunMessage> {
+    //
+    // }
+}
+
+pub fn manage_editor_hotkeys(
+    key: &keyboard::Key,
+    modifiers: &keyboard::Modifiers,
+    vault: &NoteVault,
+    path: &VaultPath,
+) -> Option<KimunMessage> {
+    match (key.as_ref(), modifiers) {
+        (Key::Character("k"), &Modifiers::COMMAND) => Some(KimunMessage::ShowModal(
+            crate::modals::Modals::VaultSearch(vault.to_owned()),
+        )),
+        (Key::Character("o"), &Modifiers::COMMAND) => {
+            let current_path = path.get_parent_path().0;
+            Some(KimunMessage::ShowModal(crate::modals::Modals::VaultBrowse(
+                vault.to_owned(),
+                current_path.to_owned(),
+            )))
         }
+        (Key::Character("j"), &Modifiers::COMMAND) => Some(EditorMessage::NewJournal.into()),
+        (Key::Character("p"), &Modifiers::COMMAND) => {
+            Some(EditorMessage::PreviewMessage(PreviewMessage::Toggle).into())
+        }
+        _ => None,
     }
 }
 
@@ -180,30 +186,13 @@ impl KimunPage for Editor {
                     let result = self.vault.open_or_search(&path)?;
                     debug!("Got {} results", result.len());
                     match result.len() {
-                        0 => {
-                            Task::done(EditorMessage::NewNote(path).into())
-                            // if let Err(e) = self
-                            //     .message_sender
-                            //     .send(EditorMessage::NewNote(path).into())
-                            // {
-                            //     error!("Error sending an editor message: {}", e);
-                            // }
-                        }
+                        0 => Task::done(EditorMessage::NewNote(path).into()),
                         1 => {
                             let path = result.first().unwrap().0.path.clone();
                             Task::done(EditorMessage::OpenNote(path).into())
-                            // if let Err(e) = self.message_sender.send(EditorMessage::OpenNote(path))
-                            // {
-                            //     error!("Error sending an editor message: {}", e);
-                            // }
                         }
                         _ => {
                             // Task::from(EditorMessage::NoteSelect(path).into())
-                            // let _e = self.modal_manager.set_modal(Modals::NoteSelect(
-                            //     self.vault.clone(),
-                            //     result,
-                            //     self.message_sender.clone(),
-                            // ));
                             Task::none()
                         }
                     }
@@ -213,11 +202,13 @@ impl KimunPage for Editor {
                     self.load_note_path(&note_path)?
                 }
                 EditorMessage::NewJournal => {
+                    debug!("New journal entry");
                     let (data, _content) = self.vault.journal_entry()?;
                     self.load_note_path(&data.path)?
                 }
                 EditorMessage::NewNote(note_path) => {
                     debug!("New note at: {}", note_path);
+                    self.preview_page = None;
                     self.new_note_at_path(&note_path)?
                 }
                 EditorMessage::SaveTick => {
@@ -249,9 +240,20 @@ impl KimunPage for Editor {
                     }
                     Task::none()
                 }
-                EditorMessage::ShowPreview(visible) => {
+                EditorMessage::PreviewMessage(pmessage) => {
                     // self.change_viewer(viewer_type)?;
                     // self.request_focus = true;
+                    if PreviewMessage::Toggle == pmessage {
+                        if self.preview_page.is_none() {
+                            self.preview_page = Some(PreviewPage::new(
+                                self.content.text(),
+                                self.vault.clone(),
+                                self.path.clone(),
+                            ));
+                        } else {
+                            self.preview_page = None;
+                        }
+                    }
                     Task::none()
                 }
                 EditorMessage::OpenSettings => {
@@ -262,29 +264,52 @@ impl KimunPage for Editor {
         } else {
             Task::none()
         };
+
         Ok(task)
     }
 
     fn view(&self) -> iced::Element<KimunMessage> {
-        let editor = text_editor(&self.content)
-            .placeholder("Type your Markdown here...")
-            .on_action(|a| EditorMessage::Edit(a).into())
-            .height(Fill)
-            .padding(10)
-            .font(Font::MONOSPACE)
-            .key_binding(move |kp| {
-                self.manage_editor_keys(&kp)
-                    .or_else(|| text_editor::Binding::from_key_press(kp))
-            })
-            .highlight("markdown", highlighter::Theme::Base16Ocean);
-        row![editor,].spacing(5).padding(10).into()
+        if let Some(preview_page) = &self.preview_page {
+            preview_page.view()
+        } else {
+            let editor = text_editor(&self.content)
+                .placeholder("Type your Markdown here...")
+                .on_action(|a| EditorMessage::Edit(a).into())
+                .height(Fill)
+                .padding(10)
+                .font(Font::MONOSPACE)
+                .key_binding(move |kp| {
+                    match (kp.key.as_ref(), kp.modifiers, kp.status) {
+                        (Key::Named(Named::Tab), _, text_editor::Status::Focused) => {
+                            // TODO: Manage indenting
+                            // We insert spaces instead of tabs
+                            let _tab: Option<text_editor::Binding<KimunMessage>> =
+                                Some(text_editor::Binding::Insert('\t'));
+                            let spaces: Option<text_editor::Binding<KimunMessage>> =
+                                Some(text_editor::Binding::Sequence(
+                                    vec![text_editor::Binding::Insert(' '); 4],
+                                ));
+                            spaces
+                        }
+                        _ => manage_editor_hotkeys(&kp.key, &kp.modifiers, &self.vault, &self.path)
+                            .map(text_editor::Binding::Custom)
+                            .or_else(|| text_editor::Binding::from_key_press(kp)),
+                    }
+                })
+                .highlight("markdown", highlighter::Theme::Base16Ocean);
+            row![editor,].spacing(5).padding(10).into()
+        }
     }
 
     fn key_press(
         &self,
-        _key: &iced::keyboard::Key,
-        _modifiers: &iced::keyboard::Modifiers,
+        key: &iced::keyboard::Key,
+        modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage> {
-        Task::none()
+        if let Some(preview_page) = &self.preview_page {
+            preview_page.key_press(key, modifiers)
+        } else {
+            Task::none()
+        }
     }
 }
