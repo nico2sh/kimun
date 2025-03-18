@@ -1,155 +1,178 @@
-pub mod components;
-mod save_manager;
-mod viewers;
-
-use std::sync::{Arc, Mutex};
-
 use anyhow::bail;
-use crossbeam_channel::{Receiver, Sender};
-use eframe::egui;
-use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
-use log::{debug, error};
-use save_manager::SaveManager;
-use viewers::{editor_view::EditorView, rendered_view::RenderedView, NoteViewer, ViewerType};
-
-use crate::{
-    modals::{vault_indexer::IndexType, ModalManager, Modals},
-    settings::Settings,
-    WindowAction,
+use iced::{
+    Font,
+    Length::Fill,
+    Task, highlighter,
+    keyboard::{Key, Modifiers, key::Named},
+    widget::{row, text_editor},
 };
+use kimun_core::{NoteVault, nfs::VaultPath, note::NoteDetails};
+use log::{debug, error};
 
-use super::MainView;
+use crate::{KimunMessage, KimunPage, settings::Settings};
+
+#[derive(Clone, Debug)]
+pub enum EditorMessage {
+    Edit(text_editor::Action),
+    OpenCreateOrSearchNote(String),
+    OpenNote(VaultPath),
+    NewNote(VaultPath),
+    NewJournal,
+    ShowPreview(bool),
+    SaveTick,
+    Save(NoteVault, VaultPath, String),
+    Saved(VaultPath),
+    OpenSettings,
+}
+
+#[derive(PartialEq, Eq)]
+enum SavingStatus {
+    Saved,
+    Saving,
+    NotSaved,
+}
+
+impl From<EditorMessage> for KimunMessage {
+    fn from(value: EditorMessage) -> Self {
+        KimunMessage::EditorMessage(value)
+    }
+}
 
 pub struct Editor {
-    settings: Settings,
-    viewer: Box<dyn NoteViewer>,
     note_details: NoteDetails,
+    content: text_editor::Content,
+    saved: SavingStatus,
     vault: NoteVault,
-    save_manager: SaveManager,
-    modal_manager: ModalManager,
-    message_sender: Sender<EditorMessage>,
-    next_action: Arc<Mutex<Option<EditorMessage>>>,
-    request_focus: bool,
-    request_windows_switch: Option<WindowAction>,
+    path: VaultPath,
+    settings: Settings,
+}
+
+impl Drop for Editor {
+    fn drop(&mut self) {
+        if let Err(e) = self.vault.save_note(&self.path, self.content.text()) {
+            error!("Error saving note: {}", e);
+        }
+    }
 }
 
 impl Editor {
-    pub fn new(
-        vault: &NoteVault,
-        note_path: &VaultPath,
-        ctx: egui::Context,
+    pub(crate) fn new(
+        vault: &kimun_core::NoteVault,
+        path: &kimun_core::nfs::VaultPath,
+        settings: &Settings,
     ) -> anyhow::Result<Self> {
-        let settings = Settings::load_from_disk()?;
-        let (sender, receiver) = crossbeam_channel::unbounded();
-        let next_action = Arc::new(Mutex::new(None));
-        start_event_loop(receiver, next_action.clone(), ctx.clone());
-
-        let vault = vault.to_owned();
-        let note_path = note_path.to_owned();
-        let mut modal_manager = ModalManager::new(ctx, viewers::ID_VIEWER);
-        modal_manager.set_modal(Modals::VaultIndex(
-            vault.workspace_path.clone(),
-            IndexType::Validate,
-        ))?;
-        let note_details = NoteDetails::new(&note_path, String::new());
-        let save_manager = SaveManager::new(String::new(), &note_path, &vault);
-        let mut editor = Self {
-            settings: settings.clone(),
-            viewer: Box::new(EditorView::new()),
+        let note_details = vault.load_note(path)?;
+        let content = text_editor::Content::with_text(&note_details.raw_text);
+        Ok(Self {
             note_details,
-            modal_manager,
-            save_manager,
-            vault,
-            message_sender: sender,
-            next_action,
-            request_focus: true,
-            request_windows_switch: None,
-        };
-        editor.load_note_path(&note_path)?;
-        editor.save_manager.init_loop();
-
-        Ok(editor)
+            content,
+            saved: SavingStatus::Saved,
+            vault: vault.to_owned(),
+            path: path.to_owned(),
+            settings: settings.to_owned(),
+        })
     }
 
     /// Loads a note from the path
     /// if the path is a note, then we load the note in the current view
     /// if not, we return an error
-    fn load_note_path(&mut self, note_path: &VaultPath) -> anyhow::Result<()> {
+    fn load_note_path(&mut self, note_path: &VaultPath) -> anyhow::Result<Task<KimunMessage>> {
+        // We will save the current note
+        let task = Task::done(
+            EditorMessage::Save(self.vault.clone(), self.path.clone(), self.content.text()).into(),
+        );
         if note_path.is_note() && self.vault.exists(note_path).is_some() {
             let note_details = self.vault.load_note(note_path)?;
             self.settings.add_path_history(note_path);
             self.settings.save_to_disk()?;
             self.set_content(&note_details);
+            self.path = note_path.to_owned();
+            self.saved = SavingStatus::Saved;
         } else {
-            bail!("Note path is not a note or vault path doesn't exist")
+            bail!(
+                "Note path is not a note or vault path doesn't exist: {}",
+                note_path
+            )
         };
 
-        Ok(())
+        Ok(task)
+    }
+
+    /// Creates a note from the path
+    fn new_note_at_path(&mut self, note_path: &VaultPath) -> anyhow::Result<Task<KimunMessage>> {
+        // We will save the current note
+        let task = Task::done(
+            EditorMessage::Save(self.vault.clone(), self.path.clone(), self.content.text()).into(),
+        );
+
+        let mut np = note_path.clone();
+        loop {
+            if self.vault.exists(&np).is_none() {
+                break;
+            } else {
+                np = np.get_name_on_conflict();
+            }
+        }
+        if np.is_note() {
+            let details = NoteDetails::new(&np, String::new());
+            self.saved = SavingStatus::Saved;
+            self.set_content(&details);
+        } else {
+            bail!("Note path is not a note: {}", np)
+        };
+
+        Ok(task)
     }
 
     fn set_content(&mut self, details: &NoteDetails) {
+        self.content = text_editor::Content::with_text(&details.raw_text);
         self.note_details = details.to_owned();
-        self.save_manager.load(&details.raw_text, &details.path);
-
-        self.viewer.init(details);
     }
 
-    fn save_note(&mut self) -> anyhow::Result<()> {
-        self.save_manager.save()
-    }
-
-    fn manage_keys(&mut self, ctx: &egui::Context) {
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
-            let path = self.save_manager.get_path();
-            let browse_path = if path.is_note() {
-                path.get_parent_path().0
-            } else {
-                path
-            };
-            let _e = self.modal_manager.set_modal(Modals::VaultBrowse(
-                self.vault.clone(),
-                browse_path,
-                self.message_sender.clone(),
-            ));
-        }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-            let _e = self.modal_manager.set_modal(Modals::VaultSearch(
-                self.vault.clone(),
-                self.message_sender.clone(),
-            ));
-        }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::J)) {
-            if let Err(e) = self.message_sender.send(EditorMessage::NewJournal) {
-                error!("Error opening journal: {}", e);
+    fn manage_editor_keys(
+        &self,
+        kp: &text_editor::KeyPress,
+    ) -> Option<text_editor::Binding<KimunMessage>> {
+        match (kp.key.as_ref(), kp.modifiers, kp.status) {
+            (Key::Named(Named::Tab), _, text_editor::Status::Focused) => {
+                // We insert spaces instead of tabs
+                // TODO: Manage indenting
+                let _tab: Option<text_editor::Binding<KimunMessage>> =
+                    Some(text_editor::Binding::Insert('\t'));
+                let spaces: Option<text_editor::Binding<KimunMessage>> = Some(
+                    text_editor::Binding::Sequence(vec![text_editor::Binding::Insert(' '); 4]),
+                );
+                spaces
             }
-        }
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
-            if let Err(e) = self.message_sender.send(EditorMessage::OpenSettings) {
-                error!("Error opening journal: {}", e);
+            (Key::Character("k"), Modifiers::COMMAND, _) => Some(text_editor::Binding::Custom(
+                KimunMessage::ShowModal(crate::modals::Modals::VaultSearch(self.vault.clone())),
+            )),
+            (Key::Character("o"), Modifiers::COMMAND, _) => {
+                let current_path = &self.path.get_parent_path().0;
+                Some(text_editor::Binding::Custom(KimunMessage::ShowModal(
+                    crate::modals::Modals::VaultBrowse(self.vault.clone(), current_path.to_owned()),
+                )))
             }
-        }
-        if let Some(message) = self.viewer.manage_keys(ctx) {
-            if let Err(e) = self.message_sender.send(message) {
-                error!("Error sending view message: {}", e);
-            };
+            (Key::Character("j"), Modifiers::COMMAND, _) => Some(text_editor::Binding::Custom(
+                EditorMessage::NewJournal.into(),
+            )),
+            _ => None,
         }
     }
+}
 
-    fn update_messages(&mut self, _ctx: &egui::Context) -> anyhow::Result<()> {
-        let next_action = {
-            let mut lock = self.next_action.lock().unwrap();
-            let next_action = lock.clone();
-            *lock = None;
-            next_action
-        };
-
-        if let Some(message) = next_action {
-            debug!("Action: {:?}", message);
+impl KimunPage for Editor {
+    fn update(&mut self, message: crate::KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
+        let task = if let KimunMessage::EditorMessage(message) = message {
             match message {
-                EditorMessage::OpenNote(note_path) => {
-                    self.load_note_path(&note_path)?;
-                    self.modal_manager.close_modal();
-                    self.request_focus = true;
+                EditorMessage::Edit(action) => {
+                    if self.saved != SavingStatus::NotSaved && action.is_edit() {
+                        self.saved = SavingStatus::NotSaved;
+                    }
+
+                    self.content.perform(action);
+
+                    Task::none()
                 }
                 EditorMessage::OpenCreateOrSearchNote(path) => {
                     let path = VaultPath::note_path_from(path);
@@ -158,135 +181,110 @@ impl Editor {
                     debug!("Got {} results", result.len());
                     match result.len() {
                         0 => {
-                            if let Err(e) = self.message_sender.send(EditorMessage::NewNote(path)) {
-                                error!("Error sending an editor message: {}", e);
-                            }
+                            Task::done(EditorMessage::NewNote(path).into())
+                            // if let Err(e) = self
+                            //     .message_sender
+                            //     .send(EditorMessage::NewNote(path).into())
+                            // {
+                            //     error!("Error sending an editor message: {}", e);
+                            // }
                         }
                         1 => {
                             let path = result.first().unwrap().0.path.clone();
-                            if let Err(e) = self.message_sender.send(EditorMessage::OpenNote(path))
-                            {
-                                error!("Error sending an editor message: {}", e);
-                            }
+                            Task::done(EditorMessage::OpenNote(path).into())
+                            // if let Err(e) = self.message_sender.send(EditorMessage::OpenNote(path))
+                            // {
+                            //     error!("Error sending an editor message: {}", e);
+                            // }
                         }
                         _ => {
-                            let _e = self.modal_manager.set_modal(Modals::NoteSelect(
-                                self.vault.clone(),
-                                result,
-                                self.message_sender.clone(),
-                            ));
+                            // Task::from(EditorMessage::NoteSelect(path).into())
+                            // let _e = self.modal_manager.set_modal(Modals::NoteSelect(
+                            //     self.vault.clone(),
+                            //     result,
+                            //     self.message_sender.clone(),
+                            // ));
+                            Task::none()
                         }
                     }
-                    self.request_focus = true;
+                }
+                EditorMessage::OpenNote(note_path) => {
+                    debug!("Loading note at path {}", note_path);
+                    self.load_note_path(&note_path)?
                 }
                 EditorMessage::NewJournal => {
                     let (data, _content) = self.vault.journal_entry()?;
-                    {
-                        self.load_note_path(&data.path)?;
-                        self.modal_manager.close_modal();
-                        self.request_focus = true;
-                    }
+                    self.load_note_path(&data.path)?
                 }
                 EditorMessage::NewNote(note_path) => {
-                    let mut np = note_path.clone();
-                    loop {
-                        if self.vault.exists(&np).is_none() {
-                            break;
-                        } else {
-                            np = np.get_name_on_conflict();
-                        }
+                    debug!("New note at: {}", note_path);
+                    self.new_note_at_path(&note_path)?
+                }
+                EditorMessage::SaveTick => {
+                    debug!("Received Save Signal");
+                    if self.saved == SavingStatus::NotSaved {
+                        let vault = self.vault.clone();
+                        let path = self.path.clone();
+                        let content = self.content.text();
+                        Task::done(EditorMessage::Save(vault, path, content).into())
+                    } else {
+                        Task::none()
                     }
-                    debug!("New note at: {}", np);
-                    let details = NoteDetails::new(&np, String::new());
-                    self.set_content(&details);
-                    self.modal_manager.close_modal();
-                    self.request_focus = true;
                 }
-                EditorMessage::Save => {
-                    self.save_note()?;
+                EditorMessage::Save(vault, path, content) => {
+                    self.saved = SavingStatus::Saving;
+                    Task::perform(
+                        async move { vault.save_note(&path, content) },
+                        |res| match res {
+                            Ok((entry, _content)) => EditorMessage::Saved(entry.path).into(),
+                            Err(e) => KimunMessage::Error(format!("Error saving note: {}", e)),
+                        },
+                    )
                 }
-                EditorMessage::SwitchNoteViewer(viewer_type) => {
-                    self.change_viewer(viewer_type)?;
-                    self.request_focus = true;
+                EditorMessage::Saved(path) => {
+                    // Since saving happens asynchronously, we may have saved a note before opening
+                    // another one in a new path, so we check we are marking as saved the current
+                    if self.path.eq(&path) && self.saved == SavingStatus::Saving {
+                        self.saved = SavingStatus::Saved;
+                    }
+                    Task::none()
+                }
+                EditorMessage::ShowPreview(visible) => {
+                    // self.change_viewer(viewer_type)?;
+                    // self.request_focus = true;
+                    Task::none()
                 }
                 EditorMessage::OpenSettings => {
-                    self.request_windows_switch = Some(WindowAction::Settings)
+                    // self.request_windows_switch = Some(WindowAction::Settings)
+                    Task::none()
                 }
             }
-        }
-        Ok(())
-    }
-
-    fn change_viewer(&mut self, viewer: ViewerType) -> anyhow::Result<()> {
-        self.save_note()?;
-        self.viewer = match viewer {
-            ViewerType::Editor => Box::new(EditorView::new()),
-            ViewerType::Rendered => Box::new(RenderedView::new(self.message_sender.clone())),
+        } else {
+            Task::none()
         };
-        self.viewer.init(&self.note_details);
-        Ok(())
+        Ok(task)
     }
-}
 
-impl Drop for Editor {
-    fn drop(&mut self) {
-        if let Err(e) = self.save_manager.save() {
-            error!("Error saving note: {}", e);
-        }
-    }
-}
-
-impl MainView for Editor {
-    fn update(&mut self, ui: &mut egui::Ui) -> anyhow::Result<Option<WindowAction>> {
-        self.modal_manager.view(ui)?;
-        egui::ScrollArea::vertical()
-            .show(ui, |ui| {
-                match self.viewer.view(&mut self.note_details, ui) {
-                    Ok(changed) => {
-                        if changed {
-                            self.save_manager.update_text(&self.note_details.raw_text);
-                        }
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
+    fn view(&self) -> iced::Element<KimunMessage> {
+        let editor = text_editor(&self.content)
+            .placeholder("Type your Markdown here...")
+            .on_action(|a| EditorMessage::Edit(a).into())
+            .height(Fill)
+            .padding(10)
+            .font(Font::MONOSPACE)
+            .key_binding(move |kp| {
+                self.manage_editor_keys(&kp)
+                    .or_else(|| text_editor::Binding::from_key_press(kp))
             })
-            .inner?;
-
-        self.manage_keys(ui.ctx());
-
-        if self.request_focus {
-            ui.ctx()
-                .memory_mut(|mem| mem.request_focus(viewers::ID_VIEWER.into()));
-            self.request_focus = false;
-        }
-
-        self.update_messages(ui.ctx())?;
-
-        Ok(self.request_windows_switch.clone())
+            .highlight("markdown", highlighter::Theme::Base16Ocean);
+        row![editor,].spacing(5).padding(10).into()
     }
-}
 
-fn start_event_loop(
-    receiver: Receiver<EditorMessage>,
-    message_container: Arc<Mutex<Option<EditorMessage>>>,
-    ctx: egui::Context,
-) {
-    std::thread::spawn(move || {
-        while let Ok(message) = receiver.recv() {
-            *message_container.lock().unwrap() = Some(message);
-            ctx.request_repaint();
-        }
-    });
-}
-
-#[derive(Clone, Debug)]
-pub enum EditorMessage {
-    OpenNote(VaultPath),
-    OpenCreateOrSearchNote(String),
-    NewNote(VaultPath),
-    SwitchNoteViewer(ViewerType),
-    NewJournal,
-    Save,
-    OpenSettings,
+    fn key_press(
+        &self,
+        _key: &iced::keyboard::Key,
+        _modifiers: &iced::keyboard::Modifiers,
+    ) -> Task<KimunMessage> {
+        Task::none()
+    }
 }

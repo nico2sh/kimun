@@ -1,4 +1,4 @@
-pub mod page;
+pub mod view;
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -10,9 +10,6 @@ use kimun_core::nfs::VaultPath;
 
 const BASE_CONFIG_FILE: &str = ".note.toml";
 const LAST_PATH_HISTORY_SIZE: usize = 5;
-
-pub const UI_FONT: &str = "Inter";
-pub const MONO_FONT: &str = "FiraCode-Regular";
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
