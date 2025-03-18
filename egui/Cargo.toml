@@ -1,0 +1,46 @@
+[package]
+name = "kimun_desktop"
+authors = ["Nico Hormazabal"]
+description = "A note taking app focused on simplicity and searchability"
+readme = "../README.md"
+repository = "https://github.com/nico2sh/notes"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kimun_core = { path = "../core" }
+eframe = { version = "0.31", default-features = false, features = [
+  # accesskit struggles with threading
+  "default_fonts",
+  "wayland",
+  "x11",
+  "wgpu",
+] }
+egui_extras = { version = "0.31", features = ["all_loaders", "syntect"] }
+egui_commonmark = { version = "0.20", features = [
+  "better_syntax_highlighting",
+  "fetch",
+  "svg",
+] }
+# Specify what image formats you want to use
+image = { version = "0.25", default-features = false, features = [
+  "default-formats",
+] }
+
+rfd = "0.15"
+
+dirs = "6.0"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+nucleo = "0.5"
+
+log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = [
+  "auto-color",
+  "humantime",
+] }
+rayon = "1.10"
+anyhow = "1.0"
+# tokio = { version = "1.42", features = ["full"] }
+crossbeam-channel = "0.5.14"
