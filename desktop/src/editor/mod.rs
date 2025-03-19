@@ -26,6 +26,8 @@ pub enum EditorMessage {
     Saved(VaultPath),
     OpenSettings,
     PreviewMessage(PreviewMessage),
+    Undo,
+    Redo,
 }
 
 #[derive(PartialEq, Eq)]
@@ -167,17 +169,56 @@ pub fn manage_editor_hotkeys(
     }
 }
 
+pub fn manage_editor_keystrokes(
+    key: &keyboard::Key,
+    modifiers: &keyboard::Modifiers,
+) -> Option<text_editor::Binding<KimunMessage>> {
+    if modifiers.command() {
+        // Command/Control pressed
+        if key.as_ref().eq(&Key::Character("z")) {
+            if modifiers.shift() {
+                Some(text_editor::Binding::Custom(EditorMessage::Redo.into()))
+            } else {
+                Some(text_editor::Binding::Custom(EditorMessage::Undo.into()))
+            }
+        } else {
+            None
+        }
+    } else if key.as_ref().eq(&Key::Named(Named::Tab)) {
+        // NO Command/Control pressed
+        // TODO: Manage indenting
+        // We insert spaces instead of tabs
+        let _tab: Option<text_editor::Binding<KimunMessage>> =
+            Some(text_editor::Binding::Insert('\t'));
+        let spaces: Option<text_editor::Binding<KimunMessage>> = Some(
+            text_editor::Binding::Sequence(vec![text_editor::Binding::Insert(' '); 4]),
+        );
+        spaces
+    } else {
+        None
+    }
+}
+
 impl KimunPage for Editor {
     fn update(&mut self, message: crate::KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
         let task = if let KimunMessage::EditorMessage(message) = message {
             match message {
                 EditorMessage::Edit(action) => {
+                    // debug!("Action: {:?}", action);
                     if self.saved != SavingStatus::NotSaved && action.is_edit() {
                         self.saved = SavingStatus::NotSaved;
                     }
 
                     self.content.perform(action);
 
+                    Task::none()
+                }
+                EditorMessage::Undo => {
+                    // Implement Undo
+                    Task::none()
+                }
+                EditorMessage::Redo => {
+                    // Implement Redo
                     Task::none()
                 }
                 EditorMessage::OpenCreateOrSearchNote(path) => {
@@ -253,8 +294,12 @@ impl KimunPage for Editor {
                         } else {
                             self.preview_page = None;
                         }
+                        Task::none()
+                    } else if let Some(preview) = &self.preview_page {
+                        preview.update(pmessage)
+                    } else {
+                        Task::none()
                     }
-                    Task::none()
                 }
                 EditorMessage::OpenSettings => {
                     // self.request_windows_switch = Some(WindowAction::Settings)
@@ -279,22 +324,19 @@ impl KimunPage for Editor {
                 .padding(10)
                 .font(Font::MONOSPACE)
                 .key_binding(move |kp| {
-                    match (kp.key.as_ref(), kp.modifiers, kp.status) {
-                        (Key::Named(Named::Tab), _, text_editor::Status::Focused) => {
-                            // TODO: Manage indenting
-                            // We insert spaces instead of tabs
-                            let _tab: Option<text_editor::Binding<KimunMessage>> =
-                                Some(text_editor::Binding::Insert('\t'));
-                            let spaces: Option<text_editor::Binding<KimunMessage>> =
-                                Some(text_editor::Binding::Sequence(
-                                    vec![text_editor::Binding::Insert(' '); 4],
-                                ));
-                            spaces
-                        }
-                        _ => manage_editor_hotkeys(&kp.key, &kp.modifiers, &self.vault, &self.path)
-                            .map(text_editor::Binding::Custom)
-                            .or_else(|| text_editor::Binding::from_key_press(kp)),
+                    if matches![kp.status, text_editor::Status::Focused { is_hovered: _ }] {
+                        manage_editor_keystrokes(&kp.key, &kp.modifiers)
+                    } else {
+                        None
                     }
+                    .or(manage_editor_hotkeys(
+                        &kp.key,
+                        &kp.modifiers,
+                        &self.vault,
+                        &self.path,
+                    )
+                    .map(text_editor::Binding::Custom)
+                    .or_else(|| text_editor::Binding::from_key_press(kp)))
                 })
                 .highlight("markdown", highlighter::Theme::Base16Ocean);
             row![editor,].spacing(5).padding(10).into()
