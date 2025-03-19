@@ -12,7 +12,7 @@ use editor::{Editor, EditorMessage};
 use fonts::{FONT_CODE_BYTES, FONT_UI_BYTES};
 use iced::{
     Color, Element, Subscription, Task,
-    futures::{SinkExt, Stream, StreamExt, channel::mpsc::Sender},
+    futures::{SinkExt, Stream, channel::mpsc::Sender},
     keyboard::{Key, Modifiers},
     time,
     widget::container,
@@ -183,7 +183,7 @@ impl DesktopApp {
     }
 
     fn worker() -> impl Stream<Item = KimunMessage> {
-        iced::stream::channel(100, |mut output| async move {
+        iced::stream::channel(100, |mut output: Sender<KimunMessage>| async move {
             debug!("Worker Started");
             // We execute whatever we need to initialize
             if let Err(e) = output.send(KimunMessage::Ready).await {

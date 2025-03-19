@@ -9,8 +9,7 @@ edition = "2024"
 
 [dependencies]
 kimun_core = { path = "../core" }
-
-iced = { version = "0.13", features = [
+iced = { path = "../iced", features = [
   "advanced",
   "debug",
   "highlighter",
@@ -18,6 +17,16 @@ iced = { version = "0.13", features = [
   "image",
   "smol",
 ] }
+
+# iced = { version = "0.13", features = [
+#   "advanced",
+#   "debug",
+#   "highlighter",
+#   "markdown",
+#   "image",
+#   "smol",
+# ] }
+
 rfd = "0.15"
 
 anyhow = "1.0"
@@ -30,3 +39,6 @@ log = "0.4"
 open = "5.3"
 env_logger = "0.11"
 rayon = "1.10.0"
+
+pulldown-cmark = "0.13"
+url = "2.5"

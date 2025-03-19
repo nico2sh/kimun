@@ -1,11 +1,12 @@
 use iced::{
     Length::Fill,
     Task,
-    widget::{container, hover, markdown, scrollable},
+    widget::{container, markdown, scrollable},
 };
 use kimun_core::{NoteVault, nfs::VaultPath, note::NoteDetails};
+use log::debug;
 
-use crate::{KimunMessage, KimunPage};
+use crate::KimunMessage;
 
 use super::EditorMessage;
 
@@ -26,21 +27,19 @@ pub struct PreviewPage {
     path: VaultPath,
     content: Vec<markdown::Item>,
     md_settings: markdown::Settings,
-    md_style: markdown::Style,
 }
 
 impl PreviewPage {
-    pub fn new(content: String, vault: NoteVault, path: VaultPath) -> Self {
-        let md = NoteDetails::new(&path, &content).get_markdown_and_links();
+    pub fn new(text: String, vault: NoteVault, path: VaultPath) -> Self {
+        let md = NoteDetails::new(&path, &text).get_markdown_and_links();
         let content = markdown::parse(&md.text).collect();
-        let md_settings = markdown::Settings::default();
         let md_style = markdown::Style::from_palette(iced::Theme::TokyoNightStorm.palette());
+        let md_settings = markdown::Settings::with_style(md_style);
         Self {
             vault,
             path,
             content,
             md_settings,
-            md_style,
         }
     }
 
@@ -51,13 +50,11 @@ impl PreviewPage {
 
     pub fn view(&self) -> iced::Element<crate::KimunMessage> {
         container(
-            scrollable(
-                markdown::view(&self.content, self.md_settings, self.md_style).map(|url| {
-                    KimunMessage::EditorMessage(EditorMessage::PreviewMessage(
-                        PreviewMessage::LinkClicked(url),
-                    ))
-                }),
-            )
+            scrollable(markdown::view(&self.content, self.md_settings).map(|url| {
+                KimunMessage::EditorMessage(EditorMessage::PreviewMessage(
+                    PreviewMessage::LinkClicked(url),
+                ))
+            }))
             .spacing(16)
             .width(Fill)
             .height(Fill),
@@ -77,5 +74,12 @@ impl PreviewPage {
         } else {
             Task::none()
         }
+    }
+
+    pub(crate) fn update(&self, pmessage: PreviewMessage) -> iced::Task<KimunMessage> {
+        if let PreviewMessage::LinkClicked(link) = pmessage {
+            debug!("Link: {}", link);
+        };
+        Task::none()
     }
 }
