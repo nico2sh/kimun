@@ -42,3 +42,5 @@ rayon = "1.10.0"
 
 pulldown-cmark = "0.13"
 url = "2.5"
+reqwest = "0.12"
+tokio = { version = "1.44", features = ["full"] }

@@ -1,4 +1,8 @@
-use iced::{Task, alignment::Horizontal};
+use iced::{
+    Task,
+    alignment::Horizontal,
+    keyboard::{Key, key::Named},
+};
 use kimun_core::{NoteVault, ResultType, VaultBrowseOptionsBuilder, nfs::VaultPath};
 use log::{debug, error};
 use rayon::slice::ParallelSliceMut;
@@ -7,9 +11,7 @@ use crate::{
     KimunMessage,
     components::{
         KimunComponent, VaultRow, VaultRowType,
-        filtered_list::{
-            FilteredList, FilteredListFunctions, SortMode, VaultListMessage, state_data::StateData,
-        },
+        filtered_list::{FilteredList, FilteredListFunctions, SortMode, VaultListMessage},
     },
     editor::EditorMessage,
 };
@@ -111,7 +113,10 @@ where
         key: &iced::keyboard::Key,
         modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage> {
-        self.filtered_list.key_press(key, modifiers)
+        match (key, modifiers) {
+            (Key::Named(Named::Escape), _) => Task::done(KimunMessage::CloseModal),
+            _ => self.filtered_list.key_press(key, modifiers),
+        }
     }
 }
 
@@ -169,7 +174,7 @@ impl FilteredListFunctions for VaultSearchFunctions {
         ])
     }
 
-    fn header_element(&self, state_data: &StateData) -> Option<VaultRow> {
+    fn header_element(&self, filter_text: &str) -> Option<VaultRow> {
         None
     }
 
@@ -300,12 +305,9 @@ impl FilteredListFunctions for VaultBrowseFunctions {
         }
     }
 
-    fn header_element(&self, state_data: &StateData) -> Option<VaultRow> {
-        if !state_data.filter_text.is_empty() {
-            Some(VaultRow::create_new_note(
-                &self.path,
-                &state_data.filter_text,
-            ))
+    fn header_element(&self, filter_text: &str) -> Option<VaultRow> {
+        if !filter_text.is_empty() {
+            Some(VaultRow::create_new_note(&self.path, filter_text))
         } else {
             None
         }
