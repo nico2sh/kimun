@@ -8,6 +8,7 @@ use crate::{
 };
 
 pub mod filtered_list;
+mod list;
 
 pub trait KimunComponent {
     type Message: TryFrom<KimunMessage>;

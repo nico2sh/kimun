@@ -210,7 +210,7 @@ impl DesktopApp {
     fn subscription(&self) -> Subscription<KimunMessage> {
         let init = Subscription::run(Self::worker);
         let save_tick = time::every(std::time::Duration::from_secs(5))
-            .map(|time| KimunMessage::EditorMessage(EditorMessage::SaveTick));
+            .map(|_time| KimunMessage::EditorMessage(EditorMessage::SaveTick));
         let key_capture = iced::keyboard::on_key_press(|key, modifier| {
             Some(KimunMessage::KeyPresses(key, modifier))
             // None
