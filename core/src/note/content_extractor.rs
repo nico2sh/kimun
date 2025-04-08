@@ -33,6 +33,7 @@ pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
     content_chunks
 }
 
+// Convert any wikilink into a link to a note
 fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
     let wiki_link_regex = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#; // Remember to check the pipe `|`
     let rx = Regex::new(wiki_link_regex).unwrap();
@@ -70,7 +71,7 @@ pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) 
         if bang.is_empty() {
             debug!("checking link {}", link);
             if VaultPath::is_valid(link) {
-                links.push(Link::note(link, text));
+                links.push(Link::vault_path(link, text));
             } else {
                 let rxurl = Regex::new(url_regex).unwrap();
                 if rxurl.is_match(link) {
