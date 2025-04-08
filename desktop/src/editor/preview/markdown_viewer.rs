@@ -1,15 +1,10 @@
 use iced::advanced::graphics::image::image_rs::ImageError;
 use iced::advanced::graphics::image::image_rs::ImageReader;
-use iced::animation;
-use iced::clipboard;
-use iced::highlighter;
-use iced::time::{self, Instant, milliseconds};
+use iced::time::{Instant, milliseconds};
 use iced::widget::{
-    self, button, center_x, container, horizontal_space, hover, image, markdown, pop, right, row,
-    scrollable, text_editor, toggler,
+    button, center_x, container, horizontal_space, hover, image, markdown, pop, right,
 };
-use iced::window;
-use iced::{Animation, Element, Fill, Font, Function, Subscription, Task, Theme};
+use iced::{Animation, Element};
 use reqwest::Url;
 
 use std::collections::HashMap;
@@ -18,19 +13,19 @@ use std::sync::Arc;
 
 use super::PreviewMessage;
 
-enum Image {
+pub enum Image {
     Loading,
     Ready {
         handle: image::Handle,
         fade_in: Animation<bool>,
     },
     #[allow(dead_code)]
-    Errored(Error),
+    Errored(MDError),
 }
 
-struct CustomViewer<'a> {
-    images: &'a HashMap<markdown::Url, Image>,
-    now: Instant,
+pub struct CustomViewer<'a> {
+    pub images: &'a HashMap<markdown::Url, Image>,
+    pub now: Instant,
 }
 
 impl<'a> markdown::Viewer<'a, PreviewMessage> for CustomViewer<'a> {
@@ -83,7 +78,7 @@ impl<'a> markdown::Viewer<'a, PreviewMessage> for CustomViewer<'a> {
     }
 }
 
-async fn download_image(url: markdown::Url) -> Result<image::Handle, Error> {
+async fn download_image(url: markdown::Url) -> Result<image::Handle, MDError> {
     use std::io;
     use tokio::task;
 
@@ -107,7 +102,7 @@ async fn download_image(url: markdown::Url) -> Result<image::Handle, Error> {
     };
 
     let image = task::spawn_blocking(move || {
-        Ok::<_, Error>(
+        Ok::<_, MDError>(
             ImageReader::new(io::Cursor::new(bytes))
                 .with_guessed_format()?
                 .decode()?
@@ -124,32 +119,32 @@ async fn download_image(url: markdown::Url) -> Result<image::Handle, Error> {
 }
 
 #[derive(Debug, Clone)]
-pub enum Error {
+pub enum MDError {
     Request(Arc<reqwest::Error>),
     IO(Arc<io::Error>),
     Join(Arc<tokio::task::JoinError>),
     ImageDecoding(Arc<ImageError>),
 }
 
-impl From<reqwest::Error> for Error {
+impl From<reqwest::Error> for MDError {
     fn from(error: reqwest::Error) -> Self {
         Self::Request(Arc::new(error))
     }
 }
 
-impl From<io::Error> for Error {
+impl From<io::Error> for MDError {
     fn from(error: io::Error) -> Self {
         Self::IO(Arc::new(error))
     }
 }
 
-impl From<tokio::task::JoinError> for Error {
+impl From<tokio::task::JoinError> for MDError {
     fn from(error: tokio::task::JoinError) -> Self {
         Self::Join(Arc::new(error))
     }
 }
 
-impl From<ImageError> for Error {
+impl From<ImageError> for MDError {
     fn from(error: ImageError) -> Self {
         Self::ImageDecoding(Arc::new(error))
     }
