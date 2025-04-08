@@ -333,7 +333,7 @@ impl NoteVault {
         // We make sure the path is a note path, so we append the extension if doesn't exist
         // let path = VaultPath::note_path_from(&path_or_note);
         debug!("PATH: {}", path);
-        let (parent, name) = path.get_parent_path();
+        let (_parent, name) = path.get_parent_path();
 
         // If it starts with the root trailing slash, we assume is looking for a path
         // let is_note_name = !path_or_note.as_ref().starts_with(nfs::PATH_SEPARATOR)
