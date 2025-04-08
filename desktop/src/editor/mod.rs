@@ -8,7 +8,11 @@ use iced::{
     keyboard::{self, Key, Modifiers, key::Named},
     widget::{row, text_editor},
 };
-use kimun_core::{NoteVault, nfs::VaultPath, note::NoteDetails};
+use kimun_core::{
+    NoteVault,
+    nfs::{NoteEntryData, VaultPath},
+    note::{NoteContentData, NoteDetails},
+};
 use log::{debug, error};
 use preview::{PreviewMessage, PreviewPage};
 
@@ -18,6 +22,7 @@ use crate::{KimunMessage, KimunPage, settings::Settings};
 pub enum EditorMessage {
     Edit(text_editor::Action),
     OpenCreateOrSearchNote(String),
+    SelectNote(Vec<(NoteEntryData, NoteContentData)>),
     OpenNote(VaultPath),
     NewNote(VaultPath),
     NewJournal,
@@ -26,6 +31,7 @@ pub enum EditorMessage {
     Saved(VaultPath),
     OpenSettings,
     PreviewMessage(PreviewMessage),
+    ToggleView,
     Undo,
     Redo,
 }
@@ -162,9 +168,7 @@ pub fn manage_editor_hotkeys(
             )))
         }
         (Key::Character("j"), &Modifiers::COMMAND) => Some(EditorMessage::NewJournal.into()),
-        (Key::Character("p"), &Modifiers::COMMAND) => {
-            Some(EditorMessage::PreviewMessage(PreviewMessage::Toggle).into())
-        }
+        (Key::Character("p"), &Modifiers::COMMAND) => Some(EditorMessage::ToggleView.into()),
         _ => None,
     }
 }
@@ -238,6 +242,10 @@ impl KimunPage for Editor {
                         }
                     }
                 }
+                EditorMessage::SelectNote(notes) => {
+                    // We select notes
+                    Task::none()
+                }
                 EditorMessage::OpenNote(note_path) => {
                     debug!("Loading note at path {}", note_path);
                     self.load_note_path(&note_path)?
@@ -281,21 +289,22 @@ impl KimunPage for Editor {
                     }
                     Task::none()
                 }
+                EditorMessage::ToggleView => {
+                    if self.preview_page.is_none() {
+                        self.preview_page = Some(PreviewPage::new(
+                            self.content.text(),
+                            self.vault.clone(),
+                            self.path.clone(),
+                        ));
+                    } else {
+                        self.preview_page = None;
+                    }
+                    Task::none()
+                }
                 EditorMessage::PreviewMessage(pmessage) => {
                     // self.change_viewer(viewer_type)?;
                     // self.request_focus = true;
-                    if PreviewMessage::Toggle == pmessage {
-                        if self.preview_page.is_none() {
-                            self.preview_page = Some(PreviewPage::new(
-                                self.content.text(),
-                                self.vault.clone(),
-                                self.path.clone(),
-                            ));
-                        } else {
-                            self.preview_page = None;
-                        }
-                        Task::none()
-                    } else if let Some(preview) = &self.preview_page {
+                    if let Some(preview) = self.preview_page.as_mut() {
                         preview.update(pmessage)
                     } else {
                         Task::none()
