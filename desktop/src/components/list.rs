@@ -7,28 +7,42 @@ use iced::{
     theme::palette,
     widget::{container, mouse_area, scrollable},
 };
+use log::debug;
 use state_data::StateData;
 
 use crate::KimunMessage;
 
-use super::{KimunComponent, KimunListElement, filtered_list::ListViewMessage};
+use super::{KimunComponent, KimunListElement};
 
 pub static SCROLLABLE_ID: LazyLock<scrollable::Id> = LazyLock::new(scrollable::Id::unique);
 
-pub struct KimunList<E>
+pub trait ListSelector<E>
 where
     E: KimunListElement,
 {
-    state_data: StateData<E>,
+    fn on_enter(&mut self, element: E) -> Task<KimunMessage>;
 }
 
-impl<E> KimunList<E>
+pub struct KimunList<E, S>
 where
     E: KimunListElement,
+    S: ListSelector<E>,
 {
-    pub fn new() -> Self {
+    state_data: StateData<E>,
+    selector: S,
+}
+
+impl<E, S> KimunList<E, S>
+where
+    E: KimunListElement,
+    S: ListSelector<E>,
+{
+    pub fn new(selector: S) -> Self {
         let state_data = StateData::new();
-        Self { state_data }
+        Self {
+            state_data,
+            selector,
+        }
     }
 
     pub fn select_none(&mut self) {
@@ -51,9 +65,9 @@ where
             .width(Length::Fill)
             .style(move |t| row_style(t, selected));
         let ma = mouse_area(cont)
-            .on_press(ListViewMessage::Enter.into())
+            .on_press(KimunMessage::Select(RowSelection::Enter))
             .interaction(Interaction::Pointer)
-            .on_enter(ListViewMessage::Select(RowSelection::Index(index)).into());
+            .on_enter(KimunMessage::Select(RowSelection::Index(index)));
 
         ma.into()
     }
@@ -66,24 +80,15 @@ where
         self.state_data.get_selection()
     }
 
-    pub fn get_at(&self, pos: usize) -> Option<&E> {
-        self.state_data.get_at(pos)
-    }
-}
-
-impl<E> KimunComponent for KimunList<E>
-where
-    E: KimunListElement,
-{
-    type Message = RowSelection;
-
-    fn update(&mut self, message: Self::Message) -> iced::Task<KimunMessage> {
+    fn internal_update(&mut self, message: RowSelection) -> Task<KimunMessage> {
         match message {
             RowSelection::Next => {
                 self.state_data.select_next();
-                let task =
-                    Task::done(ListViewMessage::Highlighted(self.state_data.get_selected()).into());
+                let task = Task::done(KimunMessage::Select(RowSelection::Highlighted(
+                    self.state_data.get_selected(),
+                )));
                 if let Some(index) = self.state_data.get_position(4) {
+                    debug!("SCROLL");
                     task.chain(scrollable::scroll_to(
                         SCROLLABLE_ID.clone(),
                         scrollable::AbsoluteOffset { x: 0.0, y: index },
@@ -94,9 +99,11 @@ where
             }
             RowSelection::Previous => {
                 self.state_data.select_prev();
-                let task =
-                    Task::done(ListViewMessage::Highlighted(self.state_data.get_selected()).into());
+                let task = Task::done(KimunMessage::Select(RowSelection::Highlighted(
+                    self.state_data.get_selected(),
+                )));
                 if let Some(index) = self.state_data.get_position(4) {
+                    debug!("SCROLL");
                     task.chain(scrollable::scroll_to(
                         SCROLLABLE_ID.clone(),
                         scrollable::AbsoluteOffset { x: 0.0, y: index },
@@ -107,12 +114,37 @@ where
             }
             RowSelection::Index(index) => {
                 self.state_data.set_selected(Some(index));
-                Task::done(ListViewMessage::Highlighted(self.state_data.get_selected()).into())
+                Task::done(KimunMessage::Select(RowSelection::Highlighted(
+                    self.state_data.get_selected(),
+                )))
             }
-            RowSelection::None => {
-                self.state_data.set_selected(None);
-                Task::done(ListViewMessage::Highlighted(None).into())
+            RowSelection::Highlighted(path) => {
+                // We don't do anything, this is just to notify we selected something
+                debug!("Highlighting an element at {:?}", path);
+                Task::none()
             }
+            RowSelection::Enter => {
+                if let Some(row) = &self.get_selection() {
+                    debug!("And there's a selection {:?}", row);
+                    self.selector.on_enter(row.to_owned())
+                } else {
+                    Task::none()
+                }
+            }
+        }
+    }
+}
+
+impl<E, S> KimunComponent for KimunList<E, S>
+where
+    E: KimunListElement,
+    S: ListSelector<E>,
+{
+    fn update(&mut self, message: KimunMessage) -> iced::Task<KimunMessage> {
+        if let KimunMessage::Select(message) = message {
+            self.internal_update(message)
+        } else {
+            Task::none()
         }
     }
 
@@ -124,7 +156,10 @@ where
         });
         let list = iced::widget::Column::with_children(rows).padding(5);
 
-        scrollable(list).spacing(10).into()
+        iced::widget::container(scrollable(list).id(SCROLLABLE_ID.clone()))
+            .padding(Padding::from([2, 5]))
+            .style(|t| row_style(t, false))
+            .into()
     }
 
     fn key_press(
@@ -134,12 +169,12 @@ where
     ) -> iced::Task<KimunMessage> {
         match (key, modifiers) {
             (Key::Named(Named::ArrowDown), _) => {
-                Task::done(ListViewMessage::Select(RowSelection::Next).into())
+                Task::done(KimunMessage::Select(RowSelection::Next))
             }
             (Key::Named(Named::ArrowUp), _) => {
-                Task::done(ListViewMessage::Select(RowSelection::Previous).into())
+                Task::done(KimunMessage::Select(RowSelection::Previous))
             }
-            (Key::Named(Named::Enter), _) => Task::done(ListViewMessage::Enter.into()),
+            (Key::Named(Named::Enter), _) => Task::done(KimunMessage::Select(RowSelection::Enter)),
             _ => Task::none(),
         }
     }
@@ -168,20 +203,18 @@ pub enum RowSelection {
     Next,
     Previous,
     Index(usize),
-    None,
+    Highlighted(Option<usize>),
+    Enter,
 }
 
-impl TryFrom<KimunMessage> for RowSelection {
-    type Error = ();
-
-    fn try_from(value: KimunMessage) -> Result<Self, Self::Error> {
-        if let KimunMessage::ListViewMessage(ListViewMessage::Select(selection)) = value {
-            Ok(selection)
-        } else {
-            Err(())
-        }
-    }
-}
+// pub enum ListViewMessage {
+//     Initializing,
+//     Filter,
+//     UpdateFilterText { filter: String },
+//     Ready { filter: String, data: Vec<VaultRow> },
+//     Select(RowSelection),
+//     PreviewUpdated(String),
+// }
 
 pub mod state_data {
     use crate::components::KimunListElement;
@@ -244,11 +277,6 @@ pub mod state_data {
                 let i = index.saturating_sub(offset);
                 self.positions.get(i).map(|u| u.to_owned())
             })
-        }
-
-        // Get the element at the position
-        pub fn get_at(&self, pos: usize) -> Option<&E> {
-            self.elements.get(pos)
         }
 
         pub fn set_selected(&mut self, number: Option<usize>) {

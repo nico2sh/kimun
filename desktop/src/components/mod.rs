@@ -6,9 +6,7 @@ pub mod filtered_list;
 pub mod list;
 
 pub trait KimunComponent {
-    type Message: TryFrom<KimunMessage>;
-
-    fn update(&mut self, message: Self::Message) -> Task<KimunMessage>;
+    fn update(&mut self, message: KimunMessage) -> Task<KimunMessage>;
     fn view(&self) -> Element<KimunMessage>;
     fn key_press(
         &self,

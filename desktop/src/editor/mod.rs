@@ -21,7 +21,6 @@ use crate::{KimunMessage, KimunPage, modals::Modals, settings::Settings};
 #[derive(Clone, Debug)]
 pub enum EditorMessage {
     Edit(text_editor::Action),
-    OpenCreateOrSearchNote(String),
     SelectNote(Vec<(NoteEntryData, NoteContentData)>),
     OpenNote(VaultPath),
     NewNote(VaultPath),
@@ -224,30 +223,6 @@ impl KimunPage for Editor {
                 EditorMessage::Redo => {
                     // Implement Redo
                     Task::none()
-                }
-                EditorMessage::OpenCreateOrSearchNote(path) => {
-                    let path = VaultPath::note_path_from(path);
-                    // let path = VaultPath::new(path);
-                    let result = self.vault.open_or_search(&path)?;
-                    debug!("Got {} results", result.len());
-                    match result.len() {
-                        0 => {
-                            let new_path = if path.is_relative() {
-                                path.append(&path).flatten()
-                            } else {
-                                path
-                            };
-                            Task::done(EditorMessage::NewNote(new_path).into())
-                        }
-                        1 => {
-                            let path = result.first().unwrap().0.path.clone();
-                            Task::done(EditorMessage::OpenNote(path).into())
-                        }
-                        _ => {
-                            // Task::from(EditorMessage::NoteSelect(path).into())
-                            Task::none()
-                        }
-                    }
                 }
                 EditorMessage::SelectNote(notes) => {
                     // We select notes

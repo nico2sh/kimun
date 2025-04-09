@@ -17,21 +17,18 @@ use crate::{
 
 use super::{
     KimunComponent, KimunListElement,
-    list::{KimunList, RowSelection},
+    list::{KimunList, ListSelector, RowSelection},
 };
 
 static TEXT_INPUT_ID: LazyLock<text_input::Id> = LazyLock::new(text_input::Id::unique);
 
 #[derive(Debug, Clone)]
 pub enum ListViewMessage {
-    Initializing,
+    Initializing(Option<VaultRow>),
     Filter,
     UpdateFilterText { filter: String },
     Ready { filter: String, data: Vec<VaultRow> },
-    Select(RowSelection),
-    Highlighted(Option<usize>),
     PreviewUpdated(String),
-    Enter,
 }
 
 #[derive(Debug, Clone)]
@@ -48,53 +45,40 @@ impl From<ListViewMessage> for KimunMessage {
     }
 }
 
-impl TryFrom<KimunMessage> for ListViewMessage {
-    type Error = ();
-
-    fn try_from(value: KimunMessage) -> Result<Self, Self::Error> {
-        if let KimunMessage::ListViewMessage(state) = value {
-            Ok(state)
-        } else {
-            Err(())
-        }
-    }
-}
-
 impl std::fmt::Display for ListViewMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ListViewMessage::Initializing => write!(f, "Initializing"),
+            ListViewMessage::Initializing(_) => write!(f, "Initializing"),
             ListViewMessage::Filter => write!(f, "Initialized"),
             ListViewMessage::UpdateFilterText { filter } => write!(f, "Filtering with {}", filter),
             ListViewMessage::Ready { filter, data: _ } => {
                 write!(f, "Filtered with filter `{}`", filter)
             }
-            ListViewMessage::Select(row_selection) => write!(f, "Selecting: {:?}", row_selection),
-            ListViewMessage::Highlighted(path) => write!(f, "Selected: {:?}", path),
             ListViewMessage::PreviewUpdated(_) => write!(f, "Updated Preview"),
-            ListViewMessage::Enter => write!(f, "Entered"),
         }
     }
 }
 
-pub struct FilteredList<F>
+pub struct FilteredList<F, S>
 where
     F: FilteredListFunctions + 'static,
+    S: ListSelector<VaultRow>,
 {
     functions: Arc<Mutex<F>>,
     ready: bool,
     filter_text: String,
-    list: KimunList<VaultRow>,
+    list: KimunList<VaultRow, S>,
 }
 
-impl<F> FilteredList<F>
+impl<F, S> FilteredList<F, S>
 where
     F: FilteredListFunctions + 'static,
+    S: ListSelector<VaultRow>,
 {
-    pub fn new(functions: F) -> (Self, iced::Task<KimunMessage>) {
-        let functions = Arc::new(Mutex::new(functions));
+    pub fn new(fun: F, sel: S) -> (Self, iced::Task<KimunMessage>) {
+        let functions = Arc::new(Mutex::new(fun));
         let filter_text = String::new();
-        let list = KimunList::new();
+        let list = KimunList::new(sel);
         (
             Self {
                 functions,
@@ -104,7 +88,7 @@ where
             },
             iced::Task::batch([
                 text_input::focus(TEXT_INPUT_ID.clone()),
-                Task::done(ListViewMessage::Initializing.into()),
+                Task::done(ListViewMessage::Initializing(None).into()),
             ]),
         )
     }
@@ -127,54 +111,25 @@ where
             .width(Length::Fill)
             .style(move |t| row_style(t, selected));
         let ma = mouse_area(cont)
-            .on_press(ListViewMessage::Enter.into())
+            .on_press(KimunMessage::Select(RowSelection::Enter))
             .interaction(Interaction::Pointer)
-            .on_enter(ListViewMessage::Select(RowSelection::Index(0)).into());
+            .on_enter(KimunMessage::Select(RowSelection::Index(0)));
 
         ma.into()
-    }
-
-    pub fn get_row_at(&self, pos: usize) -> Option<VaultRow> {
-        self.list.get_at(pos).map(|r| r.to_owned())
     }
 
     pub fn get_selection(&self) -> Option<VaultRow> {
         self.list.get_selection()
     }
-}
 
-fn row_style(theme: &Theme, selected: bool) -> iced::widget::container::Style {
-    let palette = theme.extended_palette();
-    if selected {
-        styled(palette.background.strong)
-    } else {
-        styled(palette.background.base)
-    }
-}
-
-fn styled(pair: palette::Pair) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(pair.color)),
-        text_color: Some(pair.text),
-        border: border::rounded(2),
-        ..container::Style::default()
-    }
-}
-
-impl<F> KimunComponent for FilteredList<F>
-where
-    F: FilteredListFunctions,
-{
-    type Message = ListViewMessage;
-
-    fn update(&mut self, message: Self::Message) -> iced::Task<KimunMessage> {
+    fn internal_update(&mut self, message: ListViewMessage) -> Task<KimunMessage> {
         match message {
-            ListViewMessage::Initializing => {
+            ListViewMessage::Initializing(row) => {
                 debug!("Initializing...");
                 self.ready = false;
                 self.list.select_none();
                 let functions = self.functions.clone();
-                Task::perform(async move { functions.lock().unwrap().init() }, |_| {
+                Task::perform(async move { functions.lock().unwrap().init(row) }, |_| {
                     ListViewMessage::Filter.into()
                 })
             }
@@ -218,26 +173,44 @@ where
                     Task::none()
                 }
             }
-            ListViewMessage::Select(row_selection) => self.list.update(row_selection),
-            ListViewMessage::Highlighted(path) => {
-                // We don't do anything, this is just to notify we selected something
-                debug!("Highlighting an element at {:?}", path);
-                Task::none()
-            }
+            // ListViewMessage::Select(row_selection) => self.list.update(row_selection),
             ListViewMessage::PreviewUpdated(_string) => {
                 // We don't do anything, this is just to notify we loaded the preview
                 debug!("Updated Preview");
                 Task::none()
             }
-            ListViewMessage::Enter => {
-                debug!("Selected an element");
-                if let Some(row) = &self.list.get_selection() {
-                    debug!("And there's a selection {:?}", row);
-                    self.functions.lock().unwrap().on_entry(row)
-                } else {
-                    Task::none()
-                }
-            }
+        }
+    }
+}
+
+fn row_style(theme: &Theme, selected: bool) -> iced::widget::container::Style {
+    let palette = theme.extended_palette();
+    if selected {
+        styled(palette.background.strong)
+    } else {
+        styled(palette.background.base)
+    }
+}
+
+fn styled(pair: palette::Pair) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(pair.color)),
+        text_color: Some(pair.text),
+        border: border::rounded(2),
+        ..container::Style::default()
+    }
+}
+
+impl<F, S> KimunComponent for FilteredList<F, S>
+where
+    F: FilteredListFunctions,
+    S: ListSelector<VaultRow>,
+{
+    fn update(&mut self, message: KimunMessage) -> iced::Task<KimunMessage> {
+        if let KimunMessage::ListViewMessage(message) = message {
+            self.internal_update(message)
+        } else {
+            self.list.update(message)
         }
     }
 
@@ -247,7 +220,7 @@ where
                 KimunMessage::ListViewMessage(ListViewMessage::UpdateFilterText { filter })
             })
             .id(TEXT_INPUT_ID.clone())
-            .on_submit(ListViewMessage::Enter.into());
+            .on_submit(KimunMessage::Select(RowSelection::Enter));
 
         // Insert header here
         let header = self
@@ -283,9 +256,8 @@ where
 /// when clicked or selected. Also provides an optional first entry/header
 /// under the list
 pub trait FilteredListFunctions: Clone + Send + Sync {
-    fn init(&mut self);
+    fn init(&mut self, row: Option<VaultRow>);
     fn filter<S: AsRef<str>>(&self, filter_text: S) -> Vec<VaultRow>;
-    fn on_entry(&mut self, element: &VaultRow) -> Task<KimunMessage>;
     fn header_element(&self, filter_text: &str) -> Option<VaultRow>;
     fn button_icon(&self) -> Option<String>;
 }
