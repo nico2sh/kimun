@@ -1,3 +1,4 @@
+mod note_select;
 mod vault_browse;
 mod vault_indexer;
 
@@ -9,6 +10,7 @@ use kimun_core::{
     nfs::{NoteEntryData, VaultPath},
     note::NoteContentData,
 };
+use note_select::NoteSelect;
 use vault_browse::{VaultBrowseFunctions, VaultNavigator, VaultSearchFunctions};
 use vault_indexer::IndexType;
 
@@ -45,7 +47,12 @@ impl ModalManager {
                 self.current_modal = Some(Box::new(modal));
                 task
             }
-            Modals::NoteSelect(note_vault, items) => todo!(),
+            Modals::NoteSelect(items) => {
+                let mut modal = NoteSelect::new();
+                modal.set_elements(items.into_iter().map(|i| i.into()).collect());
+                self.current_modal = Some(Box::new(modal));
+                Task::none()
+            }
             Modals::VaultIndex(path_buf, index_type) => todo!(),
         }
     }
@@ -72,6 +79,6 @@ pub trait KimunModal {
 pub enum Modals {
     VaultBrowse(NoteVault, VaultPath),
     VaultSearch(NoteVault),
-    NoteSelect(NoteVault, Vec<(NoteEntryData, NoteContentData)>),
+    NoteSelect(Vec<(NoteEntryData, NoteContentData)>),
     VaultIndex(PathBuf, IndexType),
 }

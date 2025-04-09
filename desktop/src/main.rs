@@ -7,7 +7,7 @@ mod settings;
 
 use std::path::PathBuf;
 
-use components::filtered_list::VaultListMessage;
+use components::filtered_list::ListViewMessage;
 use editor::{Editor, EditorMessage};
 use fonts::{FONT_CODE_BYTES, FONT_UI_BYTES};
 use iced::{
@@ -49,7 +49,7 @@ enum KimunMessage {
     Error(String),
     KeyPresses(Key, Modifiers),
     EditorMessage(EditorMessage),
-    ListViewMessage(VaultListMessage),
+    ListViewMessage(ListViewMessage),
     CloseModal,
     ShowModal(Modals),
 }

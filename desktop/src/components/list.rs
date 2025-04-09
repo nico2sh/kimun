@@ -9,21 +9,23 @@ use iced::{
 };
 use state_data::StateData;
 
-use crate::{
-    KimunMessage,
-    fonts::{FONT_UI, FONT_UI_ITALIC},
-    icons::{ICON, KimunIcon},
-};
+use crate::KimunMessage;
 
-use super::{KimunComponent, ListElement, VaultRow, filtered_list::VaultListMessage};
+use super::{KimunComponent, KimunListElement, filtered_list::ListViewMessage};
 
 pub static SCROLLABLE_ID: LazyLock<scrollable::Id> = LazyLock::new(scrollable::Id::unique);
 
-pub struct List {
-    state_data: StateData,
+pub struct KimunList<E>
+where
+    E: KimunListElement,
+{
+    state_data: StateData<E>,
 }
 
-impl List {
+impl<E> KimunList<E>
+where
+    E: KimunListElement,
+{
     pub fn new() -> Self {
         let state_data = StateData::new();
         Self { state_data }
@@ -33,7 +35,7 @@ impl List {
         self.state_data.set_selected(None);
     }
 
-    fn get_row_view<'a>(&'a self, index: usize, row: &'a VaultRow) -> Element<'a, KimunMessage> {
+    fn get_row_view<'a>(&'a self, index: usize, row: &'a E) -> Element<'a, KimunMessage> {
         let selected = self
             .state_data
             .get_selected()
@@ -49,32 +51,38 @@ impl List {
             .width(Length::Fill)
             .style(move |t| row_style(t, selected));
         let ma = mouse_area(cont)
-            .on_press(VaultListMessage::Enter.into())
+            .on_press(ListViewMessage::Enter.into())
             .interaction(Interaction::Pointer)
-            .on_enter(VaultListMessage::Select(RowSelection::Index(index)).into());
+            .on_enter(ListViewMessage::Select(RowSelection::Index(index)).into());
 
         ma.into()
     }
 
-    pub fn set_elements(&mut self, data: Vec<VaultRow>) {
+    pub fn set_elements(&mut self, data: Vec<E>) {
         self.state_data.set_elements(data);
     }
 
-    pub(crate) fn get_selection(&self) -> Option<VaultRow> {
+    pub fn get_selection(&self) -> Option<E> {
         self.state_data.get_selection()
+    }
+
+    pub fn get_at(&self, pos: usize) -> Option<&E> {
+        self.state_data.get_at(pos)
     }
 }
 
-impl KimunComponent for List {
+impl<E> KimunComponent for KimunList<E>
+where
+    E: KimunListElement,
+{
     type Message = RowSelection;
 
     fn update(&mut self, message: Self::Message) -> iced::Task<KimunMessage> {
         match message {
             RowSelection::Next => {
                 self.state_data.select_next();
-                let task = Task::done(KimunMessage::ListViewMessage(VaultListMessage::Selected(
-                    self.state_data.get_selection(),
-                )));
+                let task =
+                    Task::done(ListViewMessage::Highlighted(self.state_data.get_selected()).into());
                 if let Some(index) = self.state_data.get_position(4) {
                     task.chain(scrollable::scroll_to(
                         SCROLLABLE_ID.clone(),
@@ -86,9 +94,8 @@ impl KimunComponent for List {
             }
             RowSelection::Previous => {
                 self.state_data.select_prev();
-                let task = Task::done(KimunMessage::ListViewMessage(VaultListMessage::Selected(
-                    self.state_data.get_selection(),
-                )));
+                let task =
+                    Task::done(ListViewMessage::Highlighted(self.state_data.get_selected()).into());
                 if let Some(index) = self.state_data.get_position(4) {
                     task.chain(scrollable::scroll_to(
                         SCROLLABLE_ID.clone(),
@@ -100,11 +107,11 @@ impl KimunComponent for List {
             }
             RowSelection::Index(index) => {
                 self.state_data.set_selected(Some(index));
-                Task::done(VaultListMessage::Selected(self.state_data.get_selection()).into())
+                Task::done(ListViewMessage::Highlighted(self.state_data.get_selected()).into())
             }
             RowSelection::None => {
                 self.state_data.set_selected(None);
-                Task::done(VaultListMessage::Selected(None).into())
+                Task::done(ListViewMessage::Highlighted(None).into())
             }
         }
     }
@@ -127,12 +134,12 @@ impl KimunComponent for List {
     ) -> iced::Task<KimunMessage> {
         match (key, modifiers) {
             (Key::Named(Named::ArrowDown), _) => {
-                Task::done(VaultListMessage::Select(RowSelection::Next).into())
+                Task::done(ListViewMessage::Select(RowSelection::Next).into())
             }
             (Key::Named(Named::ArrowUp), _) => {
-                Task::done(VaultListMessage::Select(RowSelection::Previous).into())
+                Task::done(ListViewMessage::Select(RowSelection::Previous).into())
             }
-            (Key::Named(Named::Enter), _) => Task::done(VaultListMessage::Enter.into()),
+            (Key::Named(Named::Enter), _) => Task::done(ListViewMessage::Enter.into()),
             _ => Task::none(),
         }
     }
@@ -168,7 +175,7 @@ impl TryFrom<KimunMessage> for RowSelection {
     type Error = ();
 
     fn try_from(value: KimunMessage) -> Result<Self, Self::Error> {
-        if let KimunMessage::ListViewMessage(VaultListMessage::Select(selection)) = value {
+        if let KimunMessage::ListViewMessage(ListViewMessage::Select(selection)) = value {
             Ok(selection)
         } else {
             Err(())
@@ -177,26 +184,35 @@ impl TryFrom<KimunMessage> for RowSelection {
 }
 
 pub mod state_data {
-    use crate::components::{ListElement, VaultRow};
+    use crate::components::KimunListElement;
 
     #[derive(Default)]
-    pub struct StateData {
-        pub filter_text: String,
-        elements: Vec<VaultRow>,
+    pub struct StateData<E>
+    where
+        E: KimunListElement,
+    {
+        elements: Vec<E>,
         pub positions: Vec<f32>,
         pub selected: Option<usize>,
     }
 
-    impl StateData {
+    impl<E> StateData<E>
+    where
+        E: KimunListElement,
+    {
         pub fn new() -> Self {
-            Self::default()
+            Self {
+                elements: Vec::new(),
+                positions: Vec::new(),
+                selected: None,
+            }
         }
 
-        pub fn get_elements(&self) -> &Vec<VaultRow> {
+        pub fn get_elements(&self) -> &Vec<E> {
             &self.elements
         }
 
-        pub fn set_elements(&mut self, data: Vec<VaultRow>) {
+        pub fn set_elements(&mut self, data: Vec<E>) {
             let mut pos = 0.0;
             self.elements.clear();
             self.positions.clear();
@@ -207,7 +223,7 @@ pub mod state_data {
             }
         }
 
-        pub fn get_selection(&self) -> Option<VaultRow> {
+        pub fn get_selection(&self) -> Option<E> {
             if let Some(selected) = self.selected {
                 let elements = self.get_elements();
                 let sel = elements.get(selected);
@@ -221,11 +237,18 @@ pub mod state_data {
             self.selected
         }
 
+        // Gives the Y position using the height of each element
+        // Adding an offset
         pub fn get_position(&self, offset: usize) -> Option<f32> {
             self.selected.and_then(|index| {
                 let i = index.saturating_sub(offset);
                 self.positions.get(i).map(|u| u.to_owned())
             })
+        }
+
+        // Get the element at the position
+        pub fn get_at(&self, pos: usize) -> Option<&E> {
+            self.elements.get(pos)
         }
 
         pub fn set_selected(&mut self, number: Option<usize>) {
