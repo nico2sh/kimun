@@ -12,19 +12,56 @@ use crate::{
     components::{
         KimunComponent,
         filtered_list::{
-            FilteredList, FilteredListFunctions, SortMode, ListViewMessage, VaultRow, VaultRowType,
+            FilteredList, FilteredListFunctions, ListViewMessage, SortMode, VaultRow, VaultRowType,
         },
+        list::{ListSelector, RowSelection},
     },
     editor::EditorMessage,
 };
 
 use super::KimunModal;
 
+struct VaultSelector {}
+
+impl ListSelector<VaultRow> for VaultSelector {
+    fn on_enter(&mut self, element: VaultRow) -> Task<KimunMessage> {
+        match element.entry_type {
+            VaultRowType::Note { title: _ } => {
+                // We close first the modal, then we open the note
+                Task::batch([
+                    Task::done(KimunMessage::CloseModal),
+                    Task::done(KimunMessage::EditorMessage(EditorMessage::OpenNote(
+                        element.path.clone(),
+                    ))),
+                ])
+            }
+            VaultRowType::Directory => {
+                let directory = element.clone();
+                // let new_one = Self::new(self.path.clone(), self.vault.clone());
+
+                Task::done(KimunMessage::ListViewMessage(
+                    ListViewMessage::Initializing(Some(directory)),
+                ))
+            }
+            VaultRowType::Attachment => Task::none(),
+            VaultRowType::NewNote => {
+                // We close first the modal, then we open the note
+                Task::batch([
+                    Task::done(KimunMessage::CloseModal),
+                    Task::done(KimunMessage::EditorMessage(EditorMessage::NewNote(
+                        element.path.clone(),
+                    ))),
+                ])
+            }
+        }
+    }
+}
+
 pub struct VaultNavigator<F>
 where
     F: FilteredListFunctions + 'static,
 {
-    filtered_list: FilteredList<F>,
+    filtered_list: FilteredList<F, VaultSelector>,
     vault: NoteVault,
     preview_text: String,
 }
@@ -34,7 +71,8 @@ where
     F: FilteredListFunctions + 'static,
 {
     pub fn new(vault: NoteVault, functions: F) -> (Self, iced::Task<KimunMessage>) {
-        let (filtered_list, task) = FilteredList::new(functions);
+        let selector = VaultSelector {};
+        let (filtered_list, task) = FilteredList::new(functions, selector);
         (
             Self {
                 filtered_list,
@@ -73,41 +111,37 @@ where
     }
 
     fn update(&mut self, message: KimunMessage) -> iced::Task<KimunMessage> {
-        if let Ok(msg) = message.try_into() {
-            match &msg {
-                ListViewMessage::Highlighted(_pos) => {
-                    let vault_row = self.filtered_list.get_selection();
-                    // We trigger the preview
-                    let vault = self.vault.clone();
-                    let mp = vault_row.to_owned();
-                    Task::perform(
-                        async move {
-                            match mp {
-                                Some(row) => {
-                                    let path = row.path;
-                                    if path.is_note() {
-                                        match vault.get_note_text(&path) {
-                                            Ok(text) => text.replace('\t', "    "),
-                                            Err(_e) => "Error Loading Preview".to_string(),
-                                        }
-                                    } else {
-                                        String::new()
+        match message {
+            KimunMessage::Select(RowSelection::Highlighted(_)) => {
+                let vault_row = self.filtered_list.get_selection();
+                // We trigger the preview
+                let vault = self.vault.clone();
+                let mp = vault_row.to_owned();
+                Task::perform(
+                    async move {
+                        match mp {
+                            Some(row) => {
+                                let path = row.path;
+                                if path.is_note() {
+                                    match vault.get_note_text(&path) {
+                                        Ok(text) => text.replace('\t', "    "),
+                                        Err(_e) => "Error Loading Preview".to_string(),
                                     }
+                                } else {
+                                    String::new()
                                 }
-                                None => String::new(),
                             }
-                        },
-                        |t| ListViewMessage::PreviewUpdated(t).into(),
-                    )
-                }
-                ListViewMessage::PreviewUpdated(preview) => {
-                    self.preview_text = preview.to_owned();
-                    Task::none()
-                }
-                _ => self.filtered_list.update(msg),
+                            None => String::new(),
+                        }
+                    },
+                    |t| ListViewMessage::PreviewUpdated(t).into(),
+                )
             }
-        } else {
-            Task::none()
+            KimunMessage::ListViewMessage(ListViewMessage::PreviewUpdated(preview)) => {
+                self.preview_text = preview.to_owned();
+                Task::none()
+            }
+            _ => self.filtered_list.update(message),
         }
     }
 
@@ -135,7 +169,7 @@ impl VaultSearchFunctions {
 }
 
 impl FilteredListFunctions for VaultSearchFunctions {
-    fn init(&mut self) {}
+    fn init(&mut self, _row: Option<VaultRow>) {}
 
     fn filter<S: AsRef<str>>(&self, filter_text: S) -> Vec<VaultRow> {
         match self.vault.search_notes(filter_text) {
@@ -167,17 +201,7 @@ impl FilteredListFunctions for VaultSearchFunctions {
         }
     }
 
-    fn on_entry(&mut self, element: &VaultRow) -> Task<KimunMessage> {
-        // It's always a note
-        Task::batch([
-            Task::done(KimunMessage::CloseModal),
-            Task::done(KimunMessage::EditorMessage(EditorMessage::OpenNote(
-                element.path.clone(),
-            ))),
-        ])
-    }
-
-    fn header_element(&self, filter_text: &str) -> Option<VaultRow> {
+    fn header_element(&self, _filter_text: &str) -> Option<VaultRow> {
         None
     }
 
@@ -206,7 +230,11 @@ impl VaultBrowseFunctions {
 }
 
 impl FilteredListFunctions for VaultBrowseFunctions {
-    fn init(&mut self) {
+    fn init(&mut self, row: Option<VaultRow>) {
+        if let Some(r) = row {
+            self.path = r.path;
+            self.initial_rows = vec![];
+        }
         let search_path = if self.path.is_note() {
             self.path.get_parent_path().0
         } else {
@@ -270,42 +298,6 @@ impl FilteredListFunctions for VaultBrowseFunctions {
 
         debug!("filtered {} values", filtered.len());
         filtered
-    }
-
-    fn on_entry(&mut self, element: &VaultRow) -> Task<KimunMessage> {
-        match element.entry_type {
-            VaultRowType::Note { title: _ } => {
-                // We close first the modal, then we open the note
-                Task::batch([
-                    Task::done(KimunMessage::CloseModal),
-                    Task::done(KimunMessage::EditorMessage(EditorMessage::OpenNote(
-                        element.path.clone(),
-                    ))),
-                ])
-            }
-            VaultRowType::Directory => {
-                let directory = element.path.clone();
-                debug!("new path: {}", directory);
-                // let new_one = Self::new(self.path.clone(), self.vault.clone());
-                self.initial_rows = vec![];
-                self.path = directory;
-
-                // self.path = directory;
-                Task::done(KimunMessage::ListViewMessage(
-                    ListViewMessage::Initializing,
-                ))
-            }
-            VaultRowType::Attachment => Task::none(),
-            VaultRowType::NewNote => {
-                // We close first the modal, then we open the note
-                Task::batch([
-                    Task::done(KimunMessage::CloseModal),
-                    Task::done(KimunMessage::EditorMessage(EditorMessage::NewNote(
-                        element.path.clone(),
-                    ))),
-                ])
-            }
-        }
     }
 
     fn header_element(&self, filter_text: &str) -> Option<VaultRow> {

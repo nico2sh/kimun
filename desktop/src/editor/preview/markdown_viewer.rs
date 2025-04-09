@@ -78,46 +78,6 @@ impl<'a> markdown::Viewer<'a, PreviewMessage> for CustomViewer<'a> {
     }
 }
 
-async fn download_image(url: markdown::Url) -> Result<image::Handle, MDError> {
-    use std::io;
-    use tokio::task;
-
-    println!("Trying to download image: {url}");
-
-    let client = reqwest::Client::new();
-
-    let bytes = match Url::parse(&url) {
-        Ok(url) => client
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?
-            .to_vec(),
-        Err(_e) => {
-            // We try to get from a local path
-            std::fs::read(url)?
-        }
-    };
-
-    let image = task::spawn_blocking(move || {
-        Ok::<_, MDError>(
-            ImageReader::new(io::Cursor::new(bytes))
-                .with_guessed_format()?
-                .decode()?
-                .to_rgba8(),
-        )
-    })
-    .await??;
-
-    Ok(image::Handle::from_rgba(
-        image.width(),
-        image.height(),
-        image.into_raw(),
-    ))
-}
-
 #[derive(Debug, Clone)]
 pub enum MDError {
     Request(Arc<reqwest::Error>),

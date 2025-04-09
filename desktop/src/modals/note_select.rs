@@ -10,7 +10,8 @@ use kimun_core::{
 use crate::{
     KimunMessage,
     components::{
-        KimunComponent, KimunListElement, filtered_list::ListViewMessage, list::KimunList,
+        KimunComponent, KimunListElement,
+        list::{KimunList, ListSelector},
     },
     editor::EditorMessage,
     fonts::{FONT_UI, FONT_UI_ITALIC},
@@ -18,6 +19,19 @@ use crate::{
 };
 
 use super::KimunModal;
+
+struct NoteSelector {}
+
+impl ListSelector<NoteRow> for NoteSelector {
+    fn on_enter(&mut self, element: NoteRow) -> Task<KimunMessage> {
+        Task::batch([
+            Task::done(KimunMessage::CloseModal),
+            Task::done(KimunMessage::EditorMessage(EditorMessage::OpenNote(
+                element.path.clone(),
+            ))),
+        ])
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct NoteRow {
@@ -53,12 +67,13 @@ impl From<(NoteEntryData, NoteContentData)> for NoteRow {
 }
 
 pub struct NoteSelect {
-    list: KimunList<NoteRow>,
+    list: KimunList<NoteRow, NoteSelector>,
 }
 
 impl NoteSelect {
     pub fn new() -> Self {
-        let list = KimunList::new();
+        let selector = NoteSelector {};
+        let list = KimunList::new(selector);
         Self { list }
     }
 
@@ -86,28 +101,7 @@ impl KimunModal for NoteSelect {
     }
 
     fn update(&mut self, message: KimunMessage) -> iced::Task<KimunMessage> {
-        match message {
-            KimunMessage::ListViewMessage(ListViewMessage::Enter) => {
-                // We load the note
-                if let Some(element) = self.list.get_selection() {
-                    Task::batch([
-                        Task::done(KimunMessage::CloseModal),
-                        Task::done(KimunMessage::EditorMessage(EditorMessage::OpenNote(
-                            element.path.clone(),
-                        ))),
-                    ])
-                } else {
-                    Task::none()
-                }
-            }
-            _ => {
-                if let Ok(list_msg) = message.try_into() {
-                    self.list.update(list_msg)
-                } else {
-                    Task::none()
-                }
-            }
-        }
+        self.list.update(message)
     }
 
     fn key_press(
@@ -120,9 +114,4 @@ impl KimunModal for NoteSelect {
             _ => self.list.key_press(key, modifiers),
         }
     }
-}
-
-struct NoteEntry {
-    path: VaultPath,
-    title: String,
 }
