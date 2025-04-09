@@ -10,8 +10,10 @@ use rayon::slice::ParallelSliceMut;
 use crate::{
     KimunMessage,
     components::{
-        KimunComponent, VaultRow, VaultRowType,
-        filtered_list::{FilteredList, FilteredListFunctions, SortMode, VaultListMessage},
+        KimunComponent,
+        filtered_list::{
+            FilteredList, FilteredListFunctions, SortMode, ListViewMessage, VaultRow, VaultRowType,
+        },
     },
     editor::EditorMessage,
 };
@@ -73,7 +75,8 @@ where
     fn update(&mut self, message: KimunMessage) -> iced::Task<KimunMessage> {
         if let Ok(msg) = message.try_into() {
             match &msg {
-                VaultListMessage::Selected(vault_row) => {
+                ListViewMessage::Highlighted(_pos) => {
+                    let vault_row = self.filtered_list.get_selection();
                     // We trigger the preview
                     let vault = self.vault.clone();
                     let mp = vault_row.to_owned();
@@ -94,10 +97,10 @@ where
                                 None => String::new(),
                             }
                         },
-                        |t| VaultListMessage::PreviewUpdated(t).into(),
+                        |t| ListViewMessage::PreviewUpdated(t).into(),
                     )
                 }
-                VaultListMessage::PreviewUpdated(preview) => {
+                ListViewMessage::PreviewUpdated(preview) => {
                     self.preview_text = preview.to_owned();
                     Task::none()
                 }
@@ -289,7 +292,7 @@ impl FilteredListFunctions for VaultBrowseFunctions {
 
                 // self.path = directory;
                 Task::done(KimunMessage::ListViewMessage(
-                    VaultListMessage::Initializing,
+                    ListViewMessage::Initializing,
                 ))
             }
             VaultRowType::Attachment => Task::none(),

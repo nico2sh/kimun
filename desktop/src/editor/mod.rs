@@ -16,7 +16,7 @@ use kimun_core::{
 use log::{debug, error};
 use preview::{PreviewMessage, PreviewPage};
 
-use crate::{KimunMessage, KimunPage, settings::Settings};
+use crate::{KimunMessage, KimunPage, modals::Modals, settings::Settings};
 
 #[derive(Clone, Debug)]
 pub enum EditorMessage {
@@ -158,11 +158,11 @@ pub fn manage_editor_hotkeys(
 ) -> Option<KimunMessage> {
     match (key.as_ref(), modifiers) {
         (Key::Character("k"), &Modifiers::COMMAND) => Some(KimunMessage::ShowModal(
-            crate::modals::Modals::VaultSearch(vault.to_owned()),
+            Modals::VaultSearch(vault.to_owned()),
         )),
         (Key::Character("o"), &Modifiers::COMMAND) => {
             let current_path = path.get_parent_path().0;
-            Some(KimunMessage::ShowModal(crate::modals::Modals::VaultBrowse(
+            Some(KimunMessage::ShowModal(Modals::VaultBrowse(
                 vault.to_owned(),
                 current_path.to_owned(),
             )))
@@ -231,7 +231,14 @@ impl KimunPage for Editor {
                     let result = self.vault.open_or_search(&path)?;
                     debug!("Got {} results", result.len());
                     match result.len() {
-                        0 => Task::done(EditorMessage::NewNote(path).into()),
+                        0 => {
+                            let new_path = if path.is_relative() {
+                                path.append(&path).flatten()
+                            } else {
+                                path
+                            };
+                            Task::done(EditorMessage::NewNote(new_path).into())
+                        }
                         1 => {
                             let path = result.first().unwrap().0.path.clone();
                             Task::done(EditorMessage::OpenNote(path).into())
@@ -244,7 +251,7 @@ impl KimunPage for Editor {
                 }
                 EditorMessage::SelectNote(notes) => {
                     // We select notes
-                    Task::none()
+                    Task::done(KimunMessage::ShowModal(Modals::NoteSelect(notes)))
                 }
                 EditorMessage::OpenNote(note_path) => {
                     debug!("Loading note at path {}", note_path);
