@@ -157,6 +157,7 @@ where
         let list = iced::widget::Column::with_children(rows).padding(5);
 
         iced::widget::container(scrollable(list).id(SCROLLABLE_ID.clone()))
+            .width(Length::Fill)
             .padding(Padding::from([2, 5]))
             .style(|t| row_style(t, false))
             .into()
