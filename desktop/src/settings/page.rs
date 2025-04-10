@@ -2,7 +2,7 @@ use iced::Task;
 
 use iced::widget::column;
 
-use crate::{KimunMessage, KimunPage};
+use crate::{KimunMessage, KimunPageView};
 
 pub struct SettingsPage {}
 
@@ -12,7 +12,7 @@ impl SettingsPage {
     }
 }
 
-impl KimunPage for SettingsPage {
+impl KimunPageView for SettingsPage {
     fn update(&mut self, message: KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
         Ok(Task::none())
     }

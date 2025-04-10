@@ -16,7 +16,7 @@ use kimun_core::{
 use log::{debug, error};
 use preview::{PreviewMessage, PreviewPage};
 
-use crate::{KimunMessage, KimunPage, modals::Modals, settings::Settings};
+use crate::{KimunMessage, KimunPageView, modals::Modals, settings::Settings};
 
 #[derive(Clone, Debug)]
 pub enum EditorMessage {
@@ -89,11 +89,14 @@ impl Editor {
     /// if the path is a note, then we load the note in the current view
     /// if not, we return an error
     fn load_note_path(&mut self, note_path: &VaultPath) -> anyhow::Result<Task<KimunMessage>> {
+        let mut message_batch = vec![];
         // We will save the current note
         let task = Task::done(
             EditorMessage::Save(self.vault.clone(), self.path.clone(), self.content.text()).into(),
         );
+        message_batch.push(task);
         if note_path.is_note() && self.vault.exists(note_path).is_some() {
+            // TODO: send the save message no matter if loading fails
             let note_details = self.vault.load_note(note_path)?;
             self.settings.add_path_history(note_path);
             self.settings.save_to_disk()?;
@@ -103,6 +106,7 @@ impl Editor {
             if let Some(preview) = self.preview_page.as_mut() {
                 preview.load_note(note_details);
             }
+            message_batch.push(Task::done(KimunMessage::InfoText(note_path.to_string())));
         } else {
             bail!(
                 "Note path is not a note or vault path doesn't exist: {}",
@@ -110,7 +114,7 @@ impl Editor {
             )
         };
 
-        Ok(task)
+        Ok(Task::batch(message_batch))
     }
 
     /// Creates a note from the path
@@ -202,7 +206,7 @@ pub fn manage_editor_keystrokes(
     }
 }
 
-impl KimunPage for Editor {
+impl KimunPageView for Editor {
     fn update(&mut self, message: crate::KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
         let task = if let KimunMessage::EditorMessage(message) = message {
             match message {
