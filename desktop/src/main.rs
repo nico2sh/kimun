@@ -24,7 +24,10 @@ use icons::ICON_BYTES;
 use kimun_core::{NoteVault, nfs::VaultPath};
 use log::{debug, error};
 use modals::{ModalManager, Modals};
-use settings::{Settings, page::SettingsPage};
+use settings::{
+    Settings,
+    page::{SettingsMessage, SettingsPage},
+};
 
 fn main() -> iced::Result {
     env_logger::Builder::new()
@@ -64,6 +67,8 @@ enum KimunMessage {
     CloseModal,
     ShowModal(Modals),
     OpenPage(KimunPage),
+    SettingsChange(SettingsMessage),
+    SettingsUpdated(Settings),
 }
 
 #[derive(Debug, Clone)]
@@ -183,7 +188,20 @@ impl DesktopApp {
     fn update(&mut self, message: KimunMessage) -> Task<KimunMessage> {
         match &message {
             KimunMessage::Ready => self.initialize(),
+            KimunMessage::SettingsUpdated(settings) => {
+                self.settings = settings.clone();
+                Task::none()
+            }
             KimunMessage::KeyPresses(key, modifiers) => {
+                if matches!(
+                    (key.as_ref(), modifiers),
+                    (Key::Character(","), &Modifiers::COMMAND)
+                ) {
+                    Task::batch([
+                        self.modal_manager.close_modal(),
+                        Task::done(KimunMessage::OpenPage(KimunPage::Settings)),
+                    ])
+                } else
                 // We send key presses to the active view
                 if let Some(modal) = &self.modal_manager.current_modal {
                     modal.key_press(key, modifiers)
@@ -350,7 +368,7 @@ impl DesktopApp {
     }
 
     fn theme(&self) -> iced::Theme {
-        iced::Theme::GruvboxDark
+        self.settings.theme.to_owned()
     }
 }
 

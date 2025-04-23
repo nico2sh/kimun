@@ -7,24 +7,57 @@ use std::fs::File;
 
 use anyhow::bail;
 use kimun_core::nfs::VaultPath;
+use serde::Deserialize;
 
 const BASE_CONFIG_FILE: &str = ".note.toml";
-const LAST_PATH_HISTORY_SIZE: usize = 5;
-
-pub const UI_FONT: &str = "Inter";
-pub const MONO_FONT: &str = "FiraCode-Regular";
+const LAST_PATH_HISTORY_SIZE: usize = 10;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
+    #[serde(default)]
     pub last_paths: Vec<VaultPath>,
     pub workspace_dir: Option<PathBuf>,
+    #[serde(
+        default = "def_theme",
+        serialize_with = "ser_theme",
+        deserialize_with = "deser_theme"
+    )]
+    pub theme: iced::Theme,
+}
+
+pub fn def_theme() -> iced::Theme {
+    iced::Theme::ALL[0].to_owned()
+}
+
+pub fn ser_theme<S>(value: &iced::Theme, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str(&value.to_string())
+}
+
+fn deser_theme<'de, D>(data: D) -> Result<iced::Theme, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let theme_str = String::deserialize(data)?;
+    let t = iced::Theme::ALL
+        .iter()
+        .find(|theme| theme.to_string() == theme_str);
+    if let Some(theme) = t {
+        Ok(theme.to_owned())
+    } else {
+        Ok(iced::Theme::ALL[0].clone())
+    }
 }
 
 impl Default for Settings {
     fn default() -> Self {
+        let default_theme = iced::Theme::ALL[0].clone();
         Self {
             last_paths: vec![],
             workspace_dir: None,
+            theme: default_theme,
         }
     }
 }
