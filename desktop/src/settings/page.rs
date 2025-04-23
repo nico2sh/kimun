@@ -13,8 +13,8 @@ impl SettingsPage {
 }
 
 impl KimunPageView for SettingsPage {
-    fn update(&mut self, message: KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
-        Ok(Task::none())
+    fn update(&mut self, message: KimunMessage) -> Task<KimunMessage> {
+        Task::none()
     }
 
     fn view(&self) -> iced::Element<KimunMessage> {
