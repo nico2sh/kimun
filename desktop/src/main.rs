@@ -5,13 +5,16 @@ mod icons;
 mod modals;
 mod settings;
 
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use components::{filtered_list::ListViewMessage, list::RowSelection};
 use editor::{Editor, EditorMessage};
 use fonts::{FONT_CODE_BYTES, FONT_UI_BYTES};
 use iced::{
-    Color, Element, Padding, Subscription, Task,
+    Color, Element, Subscription, Task,
     futures::{SinkExt, Stream, channel::mpsc::Sender},
     keyboard::{Key, Modifiers},
     time,
@@ -28,14 +31,16 @@ fn main() -> iced::Result {
         .filter(Some("kimun_"), log::LevelFilter::max())
         .init();
 
-    iced::application("Kimun Editor", DesktopApp::update, DesktopApp::view)
+    iced::application(DesktopApp::new, DesktopApp::update, DesktopApp::view)
         .subscription(DesktopApp::subscription)
-        .window_size((800.0, 600.0))
+        .title(DesktopApp::title)
         .theme(DesktopApp::theme)
+        .window_size((800.0, 600.0))
         .font(FONT_UI_BYTES)
         .font(FONT_CODE_BYTES)
         .font(ICON_BYTES)
-        .run_with(DesktopApp::new)
+        .run()
+    // .run_with(DesktopApp::new)
 }
 
 #[derive(Debug, Clone)]
@@ -44,17 +49,33 @@ enum AsyncMessage {
 }
 
 #[derive(Debug, Clone)]
+enum KimunState {
+    Default,
+}
+
+#[derive(Debug, Clone)]
 enum KimunMessage {
     Ready,
-    Error(String),
+    Error(ErrorMessage),
     KeyPresses(Key, Modifiers),
     EditorMessage(EditorMessage),
     Select(RowSelection),
     ListViewMessage(ListViewMessage),
     CloseModal,
     ShowModal(Modals),
-    InfoText(String),
     OpenPage(KimunPage),
+}
+
+#[derive(Debug, Clone)]
+enum ErrorMessage {
+    Add(String),
+    Remove(u32),
+}
+
+impl KimunMessage {
+    pub fn add_error<S: AsRef<str>>(message: S) -> Self {
+        KimunMessage::Error(ErrorMessage::Add(message.as_ref().to_string()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -65,11 +86,45 @@ enum KimunPage {
     Error(String),
 }
 
+#[derive(Default)]
+struct ErrorMessages {
+    last_id: u32,
+    messages: Vec<(u32, String)>,
+}
+
+impl ErrorMessages {
+    fn add_message<S: AsRef<str>>(&mut self, message: S) -> Task<KimunMessage> {
+        self.last_id += 1;
+        self.messages
+            .push((self.last_id, message.as_ref().to_string()));
+        let id = self.last_id;
+        Task::perform(
+            async move {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                id
+            },
+            |id| KimunMessage::Error(ErrorMessage::Remove(id)),
+        )
+    }
+
+    fn remove_message(&mut self, id: &u32) {
+        if let Some(position) = self.messages.iter_mut().position(|(m_id, _)| m_id == id) {
+            self.messages.remove(position);
+        }
+    }
+
+    fn get_messages(&self) -> impl Iterator<Item = String> {
+        self.messages
+            .iter()
+            .map(|(_id, message)| message.to_string())
+    }
+}
+
 struct DesktopApp {
     current_page: Box<dyn KimunPageView>,
     modal_manager: ModalManager,
     settings: Settings,
-    info_text: String,
+    error_messages: ErrorMessages,
 }
 
 impl DesktopApp {
@@ -82,10 +137,14 @@ impl DesktopApp {
                 current_page,
                 modal_manager,
                 settings,
-                info_text: String::new(),
+                error_messages: ErrorMessages::default(),
             },
             Task::none(),
         )
+    }
+
+    fn title(&self) -> String {
+        "Kimun".to_string()
     }
 
     fn get_first_view(workspace_dir: &PathBuf, settings: &Settings) -> KimunPage {
@@ -98,7 +157,8 @@ impl DesktopApp {
         });
 
         let vault_res = NoteVault::new(workspace_dir);
-        let result = match vault_res {
+
+        match vault_res {
             Ok(vault) => {
                 match last_note {
                     Some(path) => {
@@ -109,8 +169,7 @@ impl DesktopApp {
                 }
             }
             Err(e) => KimunPage::Error(e.to_string()),
-        };
-        result
+        }
     }
 
     fn initialize(&mut self) -> Task<KimunMessage> {
@@ -134,10 +193,6 @@ impl DesktopApp {
             }
             KimunMessage::ShowModal(modal) => self.modal_manager.set_modal(modal.to_owned()),
             KimunMessage::CloseModal => self.modal_manager.close_modal(),
-            KimunMessage::InfoText(text) => {
-                self.info_text = text.to_owned();
-                Task::none()
-            }
             KimunMessage::OpenPage(page) => {
                 // We open a page
                 match page {
@@ -146,8 +201,7 @@ impl DesktopApp {
                         match editor_res {
                             Ok(editor) => {
                                 self.current_page = Box::new(editor);
-
-                                Task::done(KimunMessage::InfoText(vault_path.to_string()))
+                                Task::none()
                             }
                             Err(e) => {
                                 let error_page = ErrorPage::new(e.to_string());
@@ -177,6 +231,16 @@ impl DesktopApp {
                     }
                 }
             }
+            KimunMessage::Error(error_message) => {
+                match error_message {
+                    ErrorMessage::Add(message) => self.error_messages.add_message(message),
+                    ErrorMessage::Remove(id) => {
+                        self.error_messages.remove_message(id);
+                        Task::none()
+                    }
+                }
+                // We show the error
+            }
             _ => {
                 if let Some(modal) = self.modal_manager.current_modal.as_mut() {
                     let task1 = modal.update(message.clone());
@@ -190,22 +254,24 @@ impl DesktopApp {
     }
 
     fn update_page(&mut self, message: KimunMessage) -> Task<KimunMessage> {
-        self.current_page.update(message).unwrap_or_else(|e| {
-            error!("Error updating the page {}", e);
-            Task::none()
-        })
+        self.current_page.update(message)
     }
 
     fn view(&self) -> Element<KimunMessage> {
-        let main_view = iced::widget::column![
-            self.current_page.view(),
-            iced::widget::container(iced::widget::text(&self.info_text)).padding(Padding {
-                top: 0.0,
-                right: 0.0,
-                bottom: 10.0,
-                left: 10.0
-            })
-        ];
+        let main_view = if self.error_messages.messages.is_empty() {
+            self.current_page.view()
+        } else {
+            iced::widget::column![
+                self.current_page.view(),
+                iced::widget::container(iced::widget::text(
+                    self.error_messages
+                        .get_messages()
+                        .collect::<Vec<String>>()
+                        .join("\n")
+                ))
+            ]
+            .into()
+        };
 
         if let Some(modal_view) = &self.modal_manager.current_modal {
             let mv = container(modal_view.view())
@@ -289,7 +355,7 @@ impl DesktopApp {
 }
 
 trait KimunPageView {
-    fn update(&mut self, message: KimunMessage) -> anyhow::Result<Task<KimunMessage>>;
+    fn update(&mut self, message: KimunMessage) -> Task<KimunMessage>;
     fn view(&self) -> Element<KimunMessage>;
     fn key_press(
         &self,
@@ -307,8 +373,8 @@ impl NoNotePage {
 }
 
 impl KimunPageView for NoNotePage {
-    fn update(&mut self, message: KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
-        Ok(Task::none())
+    fn update(&mut self, _message: KimunMessage) -> Task<KimunMessage> {
+        Task::none()
     }
 
     fn view(&self) -> Element<KimunMessage> {
@@ -336,8 +402,8 @@ impl ErrorPage {
 }
 
 impl KimunPageView for ErrorPage {
-    fn update(&mut self, _message: KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
-        Ok(Task::none())
+    fn update(&mut self, _message: KimunMessage) -> Task<KimunMessage> {
+        Task::none()
     }
 
     fn view(&self) -> Element<KimunMessage> {
@@ -363,8 +429,8 @@ impl KimunPageView for ErrorPage {
 struct EmptyPage {}
 
 impl KimunPageView for EmptyPage {
-    fn update(&mut self, message: KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
-        Ok(Task::none())
+    fn update(&mut self, message: KimunMessage) -> Task<KimunMessage> {
+        Task::none()
     }
 
     fn view(&self) -> Element<KimunMessage> {

@@ -4,7 +4,7 @@ use anyhow::bail;
 use iced::{
     Font,
     Length::Fill,
-    Task, highlighter,
+    Padding, Task, highlighter,
     keyboard::{self, Key, Modifiers, key::Named},
     widget::{row, text_editor},
 };
@@ -16,7 +16,7 @@ use kimun_core::{
 use log::{debug, error};
 use preview::{PreviewMessage, PreviewPage};
 
-use crate::{KimunMessage, KimunPageView, modals::Modals, settings::Settings};
+use crate::{ErrorMessage, KimunMessage, KimunPageView, modals::Modals, settings::Settings};
 
 #[derive(Clone, Debug)]
 pub enum EditorMessage {
@@ -26,9 +26,8 @@ pub enum EditorMessage {
     NewNote(VaultPath),
     NewJournal,
     SaveTick,
-    Save(NoteVault, VaultPath, String),
+    Save,
     Saved(VaultPath),
-    OpenSettings,
     PreviewMessage(PreviewMessage),
     ToggleView,
     Undo,
@@ -36,7 +35,7 @@ pub enum EditorMessage {
 }
 
 #[derive(PartialEq, Eq)]
-enum SavingStatus {
+enum SaveStatus {
     Saved,
     Saving,
     NotSaved,
@@ -52,7 +51,7 @@ pub struct Editor {
     note_details: NoteDetails,
     content: text_editor::Content,
     preview_page: Option<PreviewPage>,
-    saved: SavingStatus,
+    save_status: SaveStatus,
     vault: NoteVault,
     path: VaultPath,
     settings: Settings,
@@ -78,7 +77,7 @@ impl Editor {
             note_details,
             content,
             preview_page: None,
-            saved: SavingStatus::Saved,
+            save_status: SaveStatus::Saved,
             vault: vault.to_owned(),
             path: path.to_owned(),
             settings: settings.to_owned(),
@@ -88,13 +87,8 @@ impl Editor {
     /// Loads a note from the path
     /// if the path is a note, then we load the note in the current view
     /// if not, we return an error
-    fn load_note_path(&mut self, note_path: &VaultPath) -> anyhow::Result<Task<KimunMessage>> {
-        let mut message_batch = vec![];
+    fn load_note_path(&mut self, note_path: &VaultPath) -> anyhow::Result<()> {
         // We will save the current note
-        let task = Task::done(
-            EditorMessage::Save(self.vault.clone(), self.path.clone(), self.content.text()).into(),
-        );
-        message_batch.push(task);
         if note_path.is_note() && self.vault.exists(note_path).is_some() {
             // TODO: send the save message no matter if loading fails
             let note_details = self.vault.load_note(note_path)?;
@@ -102,28 +96,36 @@ impl Editor {
             self.settings.save_to_disk()?;
             self.set_content(&note_details);
             self.path = note_path.to_owned();
-            self.saved = SavingStatus::Saved;
+            self.save_status = SaveStatus::Saved;
             if let Some(preview) = self.preview_page.as_mut() {
                 preview.load_note(note_details);
             }
-            message_batch.push(Task::done(KimunMessage::InfoText(note_path.to_string())));
         } else {
             bail!(
                 "Note path is not a note or vault path doesn't exist: {}",
                 note_path
             )
         };
+        Ok(())
+    }
 
-        Ok(Task::batch(message_batch))
+    fn save_task(&mut self) -> Task<KimunMessage> {
+        self.save_status = SaveStatus::Saving;
+        let vault = self.vault.clone();
+        let path = self.path.clone();
+        let content = self.content.text();
+        Task::perform(
+            async move { vault.save_note(&path, content) },
+            |res| match res {
+                Ok((entry, _content)) => EditorMessage::Saved(entry.path).into(),
+                Err(e) => KimunMessage::add_error(format!("Error saving note: {}", e)),
+            },
+        )
     }
 
     /// Creates a note from the path
-    fn new_note_at_path(&mut self, note_path: &VaultPath) -> anyhow::Result<Task<KimunMessage>> {
+    fn new_note_at_path(&mut self, note_path: &VaultPath) -> anyhow::Result<()> {
         // We will save the current note
-        let task = Task::done(
-            EditorMessage::Save(self.vault.clone(), self.path.clone(), self.content.text()).into(),
-        );
-
         let mut np = note_path.clone();
         loop {
             if self.vault.exists(&np).is_none() {
@@ -134,13 +136,13 @@ impl Editor {
         }
         if np.is_note() {
             let details = NoteDetails::new(&np, String::new());
-            self.saved = SavingStatus::Saved;
+            self.save_status = SaveStatus::Saved;
             self.set_content(&details);
         } else {
             bail!("Note path is not a note: {}", np)
         };
 
-        Ok(task)
+        Ok(())
     }
 
     fn set_content(&mut self, details: &NoteDetails) {
@@ -207,13 +209,13 @@ pub fn manage_editor_keystrokes(
 }
 
 impl KimunPageView for Editor {
-    fn update(&mut self, message: crate::KimunMessage) -> anyhow::Result<Task<KimunMessage>> {
+    fn update(&mut self, message: crate::KimunMessage) -> Task<KimunMessage> {
         let task = if let KimunMessage::EditorMessage(message) = message {
             match message {
                 EditorMessage::Edit(action) => {
                     // debug!("Action: {:?}", action);
-                    if self.saved != SavingStatus::NotSaved && action.is_edit() {
-                        self.saved = SavingStatus::NotSaved;
+                    if self.save_status != SaveStatus::NotSaved && action.is_edit() {
+                        self.save_status = SaveStatus::NotSaved;
                     }
 
                     self.content.perform(action);
@@ -234,44 +236,59 @@ impl KimunPageView for Editor {
                 }
                 EditorMessage::OpenNote(note_path) => {
                     debug!("Loading note at path {}", note_path);
-                    self.load_note_path(&note_path)?
+                    let save_task = self.save_task();
+
+                    match self.load_note_path(&note_path) {
+                        Ok(_) => save_task,
+                        Err(e) => Task::batch([
+                            save_task,
+                            Task::done(KimunMessage::add_error(e.to_string())),
+                        ]),
+                    }
                 }
                 EditorMessage::NewJournal => {
                     debug!("New journal entry");
-                    let (data, _content) = self.vault.journal_entry()?;
-                    self.load_note_path(&data.path)?
+                    let save_task = self.save_task();
+
+                    match self
+                        .vault
+                        .journal_entry()
+                        .map(|(details, _)| self.load_note_path(&details.path))
+                    {
+                        Ok(_) => save_task,
+                        Err(e) => Task::batch([
+                            save_task,
+                            Task::done(KimunMessage::add_error(e.to_string())),
+                        ]),
+                    }
                 }
                 EditorMessage::NewNote(note_path) => {
                     debug!("New note at: {}", note_path);
+                    let save_task = self.save_task();
                     self.preview_page = None;
-                    self.new_note_at_path(&note_path)?
+
+                    match self.new_note_at_path(&note_path) {
+                        Ok(_) => save_task,
+                        Err(e) => Task::batch([
+                            save_task,
+                            Task::done(KimunMessage::add_error(e.to_string())),
+                        ]),
+                    }
                 }
                 EditorMessage::SaveTick => {
-                    debug!("Received Save Signal");
-                    if self.saved == SavingStatus::NotSaved {
-                        let vault = self.vault.clone();
-                        let path = self.path.clone();
-                        let content = self.content.text();
-                        Task::done(EditorMessage::Save(vault, path, content).into())
+                    if self.save_status == SaveStatus::NotSaved {
+                        Task::done(EditorMessage::Save.into())
                     } else {
                         Task::none()
                     }
                 }
-                EditorMessage::Save(vault, path, content) => {
-                    self.saved = SavingStatus::Saving;
-                    Task::perform(
-                        async move { vault.save_note(&path, content) },
-                        |res| match res {
-                            Ok((entry, _content)) => EditorMessage::Saved(entry.path).into(),
-                            Err(e) => KimunMessage::Error(format!("Error saving note: {}", e)),
-                        },
-                    )
-                }
+                EditorMessage::Save => self.save_task(),
                 EditorMessage::Saved(path) => {
                     // Since saving happens asynchronously, we may have saved a note before opening
                     // another one in a new path, so we check we are marking as saved the current
-                    if self.path.eq(&path) && self.saved == SavingStatus::Saving {
-                        self.saved = SavingStatus::Saved;
+                    debug!("Just saved: {}", path);
+                    if self.path.eq(&path) && self.save_status == SaveStatus::Saving {
+                        self.save_status = SaveStatus::Saved;
                     }
                     Task::none()
                 }
@@ -296,22 +313,30 @@ impl KimunPageView for Editor {
                         Task::none()
                     }
                 }
-                EditorMessage::OpenSettings => {
-                    // self.request_windows_switch = Some(WindowAction::Settings)
-                    Task::none()
-                }
             }
         } else {
             Task::none()
         };
 
-        Ok(task)
+        task
     }
 
     fn view(&self) -> iced::Element<KimunMessage> {
         if let Some(preview_page) = &self.preview_page {
             preview_page.view()
         } else {
+            let path = iced::widget::text(self.path.to_string());
+            let path_label = match self.save_status {
+                SaveStatus::Saved => row![path],
+                SaveStatus::Saving => row![path, iced::widget::text("+")],
+                SaveStatus::NotSaved => row![path, iced::widget::text("*")],
+            }
+            .padding(Padding {
+                top: 0.0,
+                right: 0.0,
+                bottom: 10.0,
+                left: 10.0,
+            });
             let editor = text_editor(&self.content)
                 .placeholder("Type your Markdown here...")
                 .on_action(|a| EditorMessage::Edit(a).into())
@@ -334,7 +359,10 @@ impl KimunPageView for Editor {
                     .or_else(|| text_editor::Binding::from_key_press(kp)))
                 })
                 .highlight("markdown", highlighter::Theme::Base16Ocean);
-            row![editor,].spacing(5).padding(10).into()
+            iced::widget::column![editor, path_label]
+                .spacing(5.0)
+                .padding(10)
+                .into()
         }
     }
 
