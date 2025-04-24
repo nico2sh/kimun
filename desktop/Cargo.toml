@@ -11,6 +11,7 @@ edition = "2024"
 kimun_core = { path = "../core" }
 iced = { path = "../iced", features = [
   "advanced",
+  "canvas",
   "debug",
   "highlighter",
   "markdown",
@@ -44,3 +45,5 @@ pulldown-cmark = "0.13"
 url = "2.5"
 reqwest = "0.12"
 tokio = { version = "1.44", features = ["full"] }
+
+lyon_algorithms = "1.0"

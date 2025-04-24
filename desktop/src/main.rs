@@ -4,14 +4,12 @@ mod fonts;
 mod icons;
 mod modals;
 mod settings;
+mod style_units;
 
-use std::{
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::PathBuf;
 
-use components::{filtered_list::ListViewMessage, list::RowSelection};
-use editor::{Editor, EditorMessage};
+use components::{filtered_list::ListViewMsg, list::RowSelection};
+use editor::{Editor, EditorMsg};
 use fonts::{FONT_CODE_BYTES, FONT_UI_BYTES};
 use iced::{
     Color, Element, Subscription, Task,
@@ -23,11 +21,15 @@ use iced::{
 use icons::ICON_BYTES;
 use kimun_core::{NoteVault, nfs::VaultPath};
 use log::{debug, error};
-use modals::{ModalManager, Modals};
+use modals::{
+    ModalManager, Modals,
+    vault_indexer::{IndexStatusUpdateMsg, IndexType::Validate},
+};
 use settings::{
     Settings,
-    page::{SettingsMessage, SettingsPage},
+    page::{SettingsMsg, SettingsPage},
 };
+use style_units::CONTAINER_PADDING;
 
 fn main() -> iced::Result {
     env_logger::Builder::new()
@@ -47,39 +49,30 @@ fn main() -> iced::Result {
 }
 
 #[derive(Debug, Clone)]
-enum AsyncMessage {
-    Save,
-}
-
-#[derive(Debug, Clone)]
-enum KimunState {
-    Default,
-}
-
-#[derive(Debug, Clone)]
 enum KimunMessage {
     Ready,
-    Error(ErrorMessage),
+    Error(ErrorMsg),
     KeyPresses(Key, Modifiers),
-    EditorMessage(EditorMessage),
+    EditorMessage(EditorMsg),
     Select(RowSelection),
-    ListViewMessage(ListViewMessage),
+    ListViewMessage(ListViewMsg),
     CloseModal,
     ShowModal(Modals),
     OpenPage(KimunPage),
-    SettingsChange(SettingsMessage),
+    SettingsChange(SettingsMsg),
     SettingsUpdated(Settings),
+    IndexStatus(IndexStatusUpdateMsg),
 }
 
 #[derive(Debug, Clone)]
-enum ErrorMessage {
+enum ErrorMsg {
     Add(String),
     Remove(u32),
 }
 
 impl KimunMessage {
     pub fn add_error<S: AsRef<str>>(message: S) -> Self {
-        KimunMessage::Error(ErrorMessage::Add(message.as_ref().to_string()))
+        KimunMessage::Error(ErrorMsg::Add(message.as_ref().to_string()))
     }
 }
 
@@ -108,7 +101,7 @@ impl ErrorMessages {
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 id
             },
-            |id| KimunMessage::Error(ErrorMessage::Remove(id)),
+            |id| KimunMessage::Error(ErrorMsg::Remove(id)),
         )
     }
 
@@ -149,7 +142,7 @@ impl DesktopApp {
     }
 
     fn title(&self) -> String {
-        "Kimun".to_string()
+        "Kimün".to_string()
     }
 
     fn get_first_view(workspace_dir: &PathBuf, settings: &Settings) -> KimunPage {
@@ -178,11 +171,19 @@ impl DesktopApp {
     }
 
     fn initialize(&mut self) -> Task<KimunMessage> {
-        let current_page = match &self.settings.workspace_dir {
-            Some(workspace_dir) => Self::get_first_view(workspace_dir, &self.settings),
-            None => KimunPage::Settings,
-        };
-        Task::done(KimunMessage::OpenPage(current_page))
+        match &self.settings.workspace_dir {
+            Some(workspace_dir) => {
+                let first_view = Self::get_first_view(workspace_dir, &self.settings);
+                Task::batch([
+                    Task::done(KimunMessage::OpenPage(first_view)),
+                    Task::done(KimunMessage::ShowModal(Modals::VaultIndex(
+                        workspace_dir.to_owned(),
+                        Validate,
+                    ))),
+                ])
+            }
+            None => Task::done(KimunMessage::OpenPage(KimunPage::Settings)),
+        }
     }
 
     fn update(&mut self, message: KimunMessage) -> Task<KimunMessage> {
@@ -236,7 +237,7 @@ impl DesktopApp {
                         Task::none()
                     }
                     KimunPage::Settings => {
-                        let settings_page = SettingsPage::new();
+                        let settings_page = SettingsPage::new(self.settings.clone());
                         self.current_page = Box::new(settings_page);
 
                         Task::none()
@@ -251,8 +252,8 @@ impl DesktopApp {
             }
             KimunMessage::Error(error_message) => {
                 match error_message {
-                    ErrorMessage::Add(message) => self.error_messages.add_message(message),
-                    ErrorMessage::Remove(id) => {
+                    ErrorMsg::Add(message) => self.error_messages.add_message(message),
+                    ErrorMsg::Remove(id) => {
                         self.error_messages.remove_message(id);
                         Task::none()
                     }
@@ -276,7 +277,7 @@ impl DesktopApp {
     }
 
     fn view(&self) -> Element<KimunMessage> {
-        let main_view = if self.error_messages.messages.is_empty() {
+        let main_view = iced::widget::container(if self.error_messages.messages.is_empty() {
             self.current_page.view()
         } else {
             iced::widget::column![
@@ -289,7 +290,10 @@ impl DesktopApp {
                 ))
             ]
             .into()
-        };
+        })
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .padding(CONTAINER_PADDING);
 
         if let Some(modal_view) = &self.modal_manager.current_modal {
             let mv = container(modal_view.view())
@@ -297,27 +301,24 @@ impl DesktopApp {
                 .height(modal_view.get_height())
                 .padding(2)
                 .style(container::rounded_box);
-            iced::widget::stack![
-                main_view,
-                iced::widget::opaque(
-                    iced::widget::mouse_area(iced::widget::center(iced::widget::opaque(mv)).style(
-                        |_theme| {
-                            container::Style {
-                                background: Some(
-                                    Color {
-                                        a: 0.8,
-                                        ..Color::BLACK
-                                    }
-                                    .into(),
-                                ),
-                                ..container::Style::default()
-                            }
+            let mut background = iced::widget::mouse_area(
+                iced::widget::center(iced::widget::opaque(mv)).style(|_theme| container::Style {
+                    background: Some(
+                        Color {
+                            a: 0.6,
+                            ..Color::BLACK
                         }
-                    ))
-                    .on_press(KimunMessage::CloseModal)
-                )
-            ]
-            .into()
+                        .into(),
+                    ),
+                    ..container::Style::default()
+                }),
+            );
+
+            if modal_view.should_close_on_click() {
+                background = background.on_press(KimunMessage::CloseModal);
+            }
+
+            iced::widget::stack![main_view, iced::widget::opaque(background)].into()
         } else {
             main_view.into()
         }
@@ -330,28 +331,13 @@ impl DesktopApp {
             if let Err(e) = output.send(KimunMessage::Ready).await {
                 error!("Error Initializing the app {}", e);
             }
-
-            // loop {
-            //     // Read next input sent from `Application`
-            //     let input = receiver.select_next_some().await;
-            //
-            //     match input {
-            //         AsyncMessage::Save => {
-            //             // Do some async work...
-            //
-            //             // Finally, we can optionally produce a message to tell the
-            //             // `Application` the work is done
-            //             // output.send(Event::WorkFinished).await;
-            //         }
-            //     }
-            // }
         })
     }
 
     fn subscription(&self) -> Subscription<KimunMessage> {
         let init = Subscription::run(Self::worker);
         let save_tick = time::every(std::time::Duration::from_secs(5))
-            .map(|_time| KimunMessage::EditorMessage(EditorMessage::SaveTick));
+            .map(|_time| KimunMessage::EditorMessage(EditorMsg::SaveTick));
         let key_capture = iced::keyboard::on_key_press(|key, modifier| {
             Some(KimunMessage::KeyPresses(key, modifier))
             // None
@@ -401,8 +387,8 @@ impl KimunPageView for NoNotePage {
 
     fn key_press(
         &self,
-        key: &iced::keyboard::Key,
-        modifiers: &iced::keyboard::Modifiers,
+        _key: &iced::keyboard::Key,
+        _modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage> {
         Task::none()
     }
@@ -437,8 +423,8 @@ impl KimunPageView for ErrorPage {
 
     fn key_press(
         &self,
-        key: &iced::keyboard::Key,
-        modifiers: &iced::keyboard::Modifiers,
+        _key: &iced::keyboard::Key,
+        _modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage> {
         Task::none()
     }
@@ -447,7 +433,7 @@ impl KimunPageView for ErrorPage {
 struct EmptyPage {}
 
 impl KimunPageView for EmptyPage {
-    fn update(&mut self, message: KimunMessage) -> Task<KimunMessage> {
+    fn update(&mut self, _message: KimunMessage) -> Task<KimunMessage> {
         Task::none()
     }
 
@@ -457,8 +443,8 @@ impl KimunPageView for EmptyPage {
 
     fn key_press(
         &self,
-        key: &iced::keyboard::Key,
-        modifiers: &iced::keyboard::Modifiers,
+        _key: &iced::keyboard::Key,
+        _modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage> {
         todo!()
     }

@@ -16,10 +16,15 @@ use kimun_core::{
 use log::{debug, error};
 use preview::{PreviewMessage, PreviewPage};
 
-use crate::{ErrorMessage, KimunMessage, KimunPageView, modals::Modals, settings::Settings};
+use crate::{
+    KimunMessage, KimunPageView,
+    modals::Modals,
+    settings::Settings,
+    style_units::{SMALL_PADDING, SMALL_SPACING},
+};
 
 #[derive(Clone, Debug)]
-pub enum EditorMessage {
+pub enum EditorMsg {
     Edit(text_editor::Action),
     SelectNote(Vec<(NoteEntryData, NoteContentData)>),
     OpenNote(VaultPath),
@@ -41,8 +46,8 @@ enum SaveStatus {
     NotSaved,
 }
 
-impl From<EditorMessage> for KimunMessage {
-    fn from(value: EditorMessage) -> Self {
+impl From<EditorMsg> for KimunMessage {
+    fn from(value: EditorMsg) -> Self {
         KimunMessage::EditorMessage(value)
     }
 }
@@ -117,7 +122,7 @@ impl Editor {
         Task::perform(
             async move { vault.save_note(&path, content) },
             |res| match res {
-                Ok((entry, _content)) => EditorMessage::Saved(entry.path).into(),
+                Ok((entry, _content)) => EditorMsg::Saved(entry.path).into(),
                 Err(e) => KimunMessage::add_error(format!("Error saving note: {}", e)),
             },
         )
@@ -172,8 +177,8 @@ pub fn manage_editor_hotkeys(
                 current_path.to_owned(),
             )))
         }
-        (Key::Character("j"), &Modifiers::COMMAND) => Some(EditorMessage::NewJournal.into()),
-        (Key::Character("p"), &Modifiers::COMMAND) => Some(EditorMessage::ToggleView.into()),
+        (Key::Character("j"), &Modifiers::COMMAND) => Some(EditorMsg::NewJournal.into()),
+        (Key::Character("p"), &Modifiers::COMMAND) => Some(EditorMsg::ToggleView.into()),
         _ => None,
     }
 }
@@ -186,9 +191,9 @@ pub fn manage_editor_keystrokes(
         // Command/Control pressed
         if key.as_ref().eq(&Key::Character("z")) {
             if modifiers.shift() {
-                Some(text_editor::Binding::Custom(EditorMessage::Redo.into()))
+                Some(text_editor::Binding::Custom(EditorMsg::Redo.into()))
             } else {
-                Some(text_editor::Binding::Custom(EditorMessage::Undo.into()))
+                Some(text_editor::Binding::Custom(EditorMsg::Undo.into()))
             }
         } else {
             None
@@ -212,7 +217,7 @@ impl KimunPageView for Editor {
     fn update(&mut self, message: crate::KimunMessage) -> Task<KimunMessage> {
         let task = if let KimunMessage::EditorMessage(message) = message {
             match message {
-                EditorMessage::Edit(action) => {
+                EditorMsg::Edit(action) => {
                     // debug!("Action: {:?}", action);
                     if self.save_status != SaveStatus::NotSaved && action.is_edit() {
                         self.save_status = SaveStatus::NotSaved;
@@ -222,19 +227,19 @@ impl KimunPageView for Editor {
 
                     Task::none()
                 }
-                EditorMessage::Undo => {
+                EditorMsg::Undo => {
                     // Implement Undo
                     Task::none()
                 }
-                EditorMessage::Redo => {
+                EditorMsg::Redo => {
                     // Implement Redo
                     Task::none()
                 }
-                EditorMessage::SelectNote(notes) => {
+                EditorMsg::SelectNote(notes) => {
                     // We select notes
                     Task::done(KimunMessage::ShowModal(Modals::NoteSelect(notes)))
                 }
-                EditorMessage::OpenNote(note_path) => {
+                EditorMsg::OpenNote(note_path) => {
                     debug!("Loading note at path {}", note_path);
                     let save_task = self.save_task();
 
@@ -246,7 +251,7 @@ impl KimunPageView for Editor {
                         ]),
                     }
                 }
-                EditorMessage::NewJournal => {
+                EditorMsg::NewJournal => {
                     debug!("New journal entry");
                     let save_task = self.save_task();
 
@@ -262,7 +267,7 @@ impl KimunPageView for Editor {
                         ]),
                     }
                 }
-                EditorMessage::NewNote(note_path) => {
+                EditorMsg::NewNote(note_path) => {
                     debug!("New note at: {}", note_path);
                     let save_task = self.save_task();
                     self.preview_page = None;
@@ -275,15 +280,15 @@ impl KimunPageView for Editor {
                         ]),
                     }
                 }
-                EditorMessage::SaveTick => {
+                EditorMsg::SaveTick => {
                     if self.save_status == SaveStatus::NotSaved {
-                        Task::done(EditorMessage::Save.into())
+                        Task::done(EditorMsg::Save.into())
                     } else {
                         Task::none()
                     }
                 }
-                EditorMessage::Save => self.save_task(),
-                EditorMessage::Saved(path) => {
+                EditorMsg::Save => self.save_task(),
+                EditorMsg::Saved(path) => {
                     // Since saving happens asynchronously, we may have saved a note before opening
                     // another one in a new path, so we check we are marking as saved the current
                     debug!("Just saved: {}", path);
@@ -292,7 +297,7 @@ impl KimunPageView for Editor {
                     }
                     Task::none()
                 }
-                EditorMessage::ToggleView => {
+                EditorMsg::ToggleView => {
                     if self.preview_page.is_none() {
                         self.preview_page = Some(PreviewPage::new(
                             self.content.text(),
@@ -304,7 +309,7 @@ impl KimunPageView for Editor {
                     }
                     Task::none()
                 }
-                EditorMessage::PreviewMessage(pmessage) => {
+                EditorMsg::PreviewMessage(pmessage) => {
                     // self.change_viewer(viewer_type)?;
                     // self.request_focus = true;
                     if let Some(preview) = self.preview_page.as_mut() {
@@ -334,14 +339,13 @@ impl KimunPageView for Editor {
             .padding(Padding {
                 top: 0.0,
                 right: 0.0,
-                bottom: 10.0,
-                left: 10.0,
+                bottom: 0.0,
+                left: SMALL_PADDING as f32,
             });
             let editor = text_editor(&self.content)
                 .placeholder("Type your Markdown here...")
-                .on_action(|a| EditorMessage::Edit(a).into())
+                .on_action(|a| EditorMsg::Edit(a).into())
                 .height(Fill)
-                .padding(10)
                 .font(Font::MONOSPACE)
                 .key_binding(move |kp| {
                     if matches![kp.status, text_editor::Status::Focused { is_hovered: _ }] {
@@ -360,8 +364,7 @@ impl KimunPageView for Editor {
                 })
                 .highlight("markdown", highlighter::Theme::Base16Ocean);
             iced::widget::column![editor, path_label]
-                .spacing(5.0)
-                .padding(10)
+                .spacing(SMALL_SPACING)
                 .into()
         }
     }

@@ -2,7 +2,9 @@ use iced::{Element, Task};
 
 use crate::KimunMessage;
 
+pub mod easing;
 pub mod filtered_list;
+pub mod linear_progress;
 pub mod list;
 
 pub trait KimunComponent {
