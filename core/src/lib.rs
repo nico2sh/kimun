@@ -8,7 +8,7 @@ use std::{
     fmt::Display,
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 
 use chrono::Utc;
