@@ -12,11 +12,11 @@ use crate::{
     components::{
         KimunComponent,
         filtered_list::{
-            FilteredList, FilteredListFunctions, ListViewMessage, SortMode, VaultRow, VaultRowType,
+            FilteredList, FilteredListFunctions, ListViewMsg, SortMode, VaultRow, VaultRowType,
         },
         list::{ListSelector, RowSelection},
     },
-    editor::EditorMessage,
+    editor::EditorMsg,
 };
 
 use super::KimunModal;
@@ -30,7 +30,7 @@ impl ListSelector<VaultRow> for VaultSelector {
                 // We close first the modal, then we open the note
                 Task::batch([
                     Task::done(KimunMessage::CloseModal),
-                    Task::done(KimunMessage::EditorMessage(EditorMessage::OpenNote(
+                    Task::done(KimunMessage::EditorMessage(EditorMsg::OpenNote(
                         element.path.clone(),
                     ))),
                 ])
@@ -39,16 +39,16 @@ impl ListSelector<VaultRow> for VaultSelector {
                 let directory = element.clone();
                 // let new_one = Self::new(self.path.clone(), self.vault.clone());
 
-                Task::done(KimunMessage::ListViewMessage(
-                    ListViewMessage::Initializing(Some(directory)),
-                ))
+                Task::done(KimunMessage::ListViewMessage(ListViewMsg::Initializing(
+                    Some(directory),
+                )))
             }
             VaultRowType::Attachment => Task::none(),
             VaultRowType::NewNote => {
                 // We close first the modal, then we open the note
                 Task::batch([
                     Task::done(KimunMessage::CloseModal),
-                    Task::done(KimunMessage::EditorMessage(EditorMessage::NewNote(
+                    Task::done(KimunMessage::EditorMessage(EditorMsg::NewNote(
                         element.path.clone(),
                     ))),
                 ])
@@ -134,10 +134,10 @@ where
                             None => String::new(),
                         }
                     },
-                    |t| ListViewMessage::PreviewUpdated(t).into(),
+                    |t| ListViewMsg::PreviewUpdated(t).into(),
                 )
             }
-            KimunMessage::ListViewMessage(ListViewMessage::PreviewUpdated(preview)) => {
+            KimunMessage::ListViewMessage(ListViewMsg::PreviewUpdated(preview)) => {
                 self.preview_text = preview.to_owned();
                 Task::none()
             }
@@ -154,6 +154,10 @@ where
             (Key::Named(Named::Escape), _) => Task::done(KimunMessage::CloseModal),
             _ => self.filtered_list.key_press(key, modifiers),
         }
+    }
+
+    fn should_close_on_click(&self) -> bool {
+        true
     }
 }
 

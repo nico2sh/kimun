@@ -13,7 +13,7 @@ use crate::{
         KimunComponent, KimunListElement,
         list::{KimunList, ListSelector},
     },
-    editor::EditorMessage,
+    editor::EditorMsg,
     fonts::{FONT_UI, FONT_UI_ITALIC},
     icons::{ICON, KimunIcon},
 };
@@ -26,7 +26,7 @@ impl ListSelector<NoteRow> for NoteSelector {
     fn on_enter(&mut self, element: NoteRow) -> Task<KimunMessage> {
         Task::batch([
             Task::done(KimunMessage::CloseModal),
-            Task::done(KimunMessage::EditorMessage(EditorMessage::OpenNote(
+            Task::done(KimunMessage::EditorMessage(EditorMsg::OpenNote(
                 element.path.clone(),
             ))),
         ])
@@ -113,5 +113,9 @@ impl KimunModal for NoteSelect {
             (Key::Named(Named::Escape), _) => Task::done(KimunMessage::CloseModal),
             _ => self.list.key_press(key, modifiers),
         }
+    }
+
+    fn should_close_on_click(&self) -> bool {
+        true
     }
 }

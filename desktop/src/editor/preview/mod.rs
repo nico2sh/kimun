@@ -20,7 +20,7 @@ use markdown_viewer::{CustomViewer, Image, MDError};
 
 use crate::KimunMessage;
 
-use super::EditorMessage;
+use super::EditorMsg;
 
 #[derive(Debug, Clone)]
 pub enum PreviewMessage {
@@ -32,7 +32,7 @@ pub enum PreviewMessage {
 
 impl From<PreviewMessage> for KimunMessage {
     fn from(value: PreviewMessage) -> Self {
-        KimunMessage::EditorMessage(EditorMessage::PreviewMessage(value))
+        KimunMessage::EditorMessage(EditorMsg::PreviewMessage(value))
     }
 }
 
@@ -82,13 +82,12 @@ impl PreviewPage {
                         now: self.now,
                     },
                 )
-                .map(|url| KimunMessage::EditorMessage(EditorMessage::PreviewMessage(url))),
+                .map(|url| KimunMessage::EditorMessage(EditorMsg::PreviewMessage(url))),
             )
             .spacing(10)
             .width(Fill)
             .height(Fill),
         )
-        .padding(10)
         .into()
     }
 
@@ -116,12 +115,12 @@ impl PreviewPage {
                             Ok(result) => {
                                 debug!("Got {} results", result.len());
                                 let message = match result.len() {
-                                    0 => EditorMessage::NewNote(path.to_owned()),
+                                    0 => EditorMsg::NewNote(path.to_owned()),
                                     1 => {
                                         let path = result.first().unwrap().0.path.clone();
-                                        EditorMessage::OpenNote(path)
+                                        EditorMsg::OpenNote(path)
                                     }
-                                    _ => EditorMessage::SelectNote(result),
+                                    _ => EditorMsg::SelectNote(result),
                                 };
                                 Task::done(message.into())
                             }
@@ -146,7 +145,7 @@ impl PreviewPage {
                 let _ = self.images.insert(url.clone(), Image::Loading);
 
                 Task::perform(download_image(url.clone()), |r| {
-                    KimunMessage::EditorMessage(EditorMessage::PreviewMessage(
+                    KimunMessage::EditorMessage(EditorMsg::PreviewMessage(
                         PreviewMessage::ImageDownloaded(url, r),
                     ))
                 })

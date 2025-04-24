@@ -23,7 +23,7 @@ use super::{
 static TEXT_INPUT_ID: LazyLock<text_input::Id> = LazyLock::new(text_input::Id::unique);
 
 #[derive(Debug, Clone)]
-pub enum ListViewMessage {
+pub enum ListViewMsg {
     Initializing(Option<VaultRow>),
     Filter,
     UpdateFilterText { filter: String },
@@ -39,22 +39,22 @@ pub enum SortMode {
     TitleDown,
 }
 
-impl From<ListViewMessage> for KimunMessage {
-    fn from(value: ListViewMessage) -> Self {
+impl From<ListViewMsg> for KimunMessage {
+    fn from(value: ListViewMsg) -> Self {
         KimunMessage::ListViewMessage(value)
     }
 }
 
-impl std::fmt::Display for ListViewMessage {
+impl std::fmt::Display for ListViewMsg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ListViewMessage::Initializing(_) => write!(f, "Initializing"),
-            ListViewMessage::Filter => write!(f, "Initialized"),
-            ListViewMessage::UpdateFilterText { filter } => write!(f, "Filtering with {}", filter),
-            ListViewMessage::Ready { filter, data: _ } => {
+            ListViewMsg::Initializing(_) => write!(f, "Initializing"),
+            ListViewMsg::Filter => write!(f, "Initialized"),
+            ListViewMsg::UpdateFilterText { filter } => write!(f, "Filtering with {}", filter),
+            ListViewMsg::Ready { filter, data: _ } => {
                 write!(f, "Filtered with filter `{}`", filter)
             }
-            ListViewMessage::PreviewUpdated(_) => write!(f, "Updated Preview"),
+            ListViewMsg::PreviewUpdated(_) => write!(f, "Updated Preview"),
         }
     }
 }
@@ -88,7 +88,7 @@ where
             },
             iced::Task::batch([
                 text_input::focus(TEXT_INPUT_ID.clone()),
-                Task::done(ListViewMessage::Initializing(None).into()),
+                Task::done(ListViewMsg::Initializing(None).into()),
             ]),
         )
     }
@@ -122,18 +122,18 @@ where
         self.list.get_selection()
     }
 
-    fn internal_update(&mut self, message: ListViewMessage) -> Task<KimunMessage> {
+    fn internal_update(&mut self, message: ListViewMsg) -> Task<KimunMessage> {
         match message {
-            ListViewMessage::Initializing(row) => {
+            ListViewMsg::Initializing(row) => {
                 debug!("Initializing...");
                 self.ready = false;
                 self.list.select_none();
                 let functions = self.functions.clone();
                 Task::perform(async move { functions.lock().unwrap().init(row) }, |_| {
-                    ListViewMessage::Filter.into()
+                    ListViewMsg::Filter.into()
                 })
             }
-            ListViewMessage::Filter => {
+            ListViewMsg::Filter => {
                 debug!("Filter...");
                 self.ready = false;
                 let functions = self.functions.clone();
@@ -141,7 +141,7 @@ where
                 Task::perform(
                     async move { (functions.lock().unwrap().filter(&filter_text), filter_text) },
                     move |(result, filter)| {
-                        ListViewMessage::Ready {
+                        ListViewMsg::Ready {
                             filter,
                             data: result,
                         }
@@ -149,12 +149,12 @@ where
                     },
                 )
             }
-            ListViewMessage::UpdateFilterText { filter } => {
+            ListViewMsg::UpdateFilterText { filter } => {
                 debug!("Updating the filter text");
                 self.filter_text = filter;
                 if self.ready {
                     // If it is ready, we retrigger the filter
-                    Task::done(ListViewMessage::Filter.into())
+                    Task::done(ListViewMsg::Filter.into())
                 } else {
                     // If it is not ready, we don't do anything
                     // as we wait to be ready, this way we don't
@@ -162,19 +162,19 @@ where
                     Task::none()
                 }
             }
-            ListViewMessage::Ready { filter, data } => {
+            ListViewMsg::Ready { filter, data } => {
                 debug!("Filtered!");
                 self.list.set_elements(data);
                 if filter != self.filter_text {
                     self.ready = false;
-                    Task::done(ListViewMessage::Filter.into())
+                    Task::done(ListViewMsg::Filter.into())
                 } else {
                     self.ready = true;
                     Task::none()
                 }
             }
             // ListViewMessage::Select(row_selection) => self.list.update(row_selection),
-            ListViewMessage::PreviewUpdated(_string) => {
+            ListViewMsg::PreviewUpdated(_string) => {
                 // We don't do anything, this is just to notify we loaded the preview
                 debug!("Updated Preview");
                 Task::none()
@@ -217,7 +217,7 @@ where
     fn view(&self) -> iced::Element<KimunMessage> {
         let text_filter = text_input("Search...", &self.filter_text)
             .on_input(|filter| {
-                KimunMessage::ListViewMessage(ListViewMessage::UpdateFilterText { filter })
+                KimunMessage::ListViewMessage(ListViewMsg::UpdateFilterText { filter })
             })
             .id(TEXT_INPUT_ID.clone())
             .on_submit(KimunMessage::Select(RowSelection::Enter));

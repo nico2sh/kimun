@@ -1,6 +1,6 @@
 mod note_select;
 mod vault_browse;
-mod vault_indexer;
+pub mod vault_indexer;
 
 use std::path::PathBuf;
 
@@ -12,9 +12,9 @@ use kimun_core::{
 };
 use note_select::NoteSelect;
 use vault_browse::{VaultBrowseFunctions, VaultNavigator, VaultSearchFunctions};
-use vault_indexer::IndexType;
+use vault_indexer::{IndexType, VaultIndexer};
 
-use crate::KimunMessage;
+use crate::{ErrorMsg, KimunMessage};
 
 pub struct ModalManager {
     pub current_modal: Option<Box<dyn KimunModal>>,
@@ -53,7 +53,14 @@ impl ModalManager {
                 self.current_modal = Some(Box::new(modal));
                 Task::none()
             }
-            Modals::VaultIndex(path_buf, index_type) => todo!(),
+            Modals::VaultIndex(path_buf, index_type) => match NoteVault::new(path_buf) {
+                Ok(vault) => {
+                    let (modal, task) = VaultIndexer::new(vault, index_type);
+                    self.current_modal = Some(Box::new(modal));
+                    task
+                }
+                Err(e) => Task::done(KimunMessage::Error(ErrorMsg::Add(e.to_string()))),
+            },
         }
     }
 
@@ -73,6 +80,7 @@ pub trait KimunModal {
         key: &iced::keyboard::Key,
         modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage>;
+    fn should_close_on_click(&self) -> bool;
 }
 
 #[derive(Debug, Clone)]
