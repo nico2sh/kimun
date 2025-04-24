@@ -6,15 +6,15 @@ use crate::fonts::FONT_UI_BOLD;
 use crate::modals::Modals;
 use crate::modals::vault_indexer::IndexType;
 use crate::style_units::{SMALL_PADDING, SMALL_SPACING};
-use crate::{KimunMessage, KimunPageView};
+use crate::{ErrorMsg, InitializeOptions, KimunMessage, KimunPageView};
 
 use super::Settings;
 
 #[derive(Debug, Clone)]
 pub enum SettingsMsg {
     ThemeSelected(Theme),
+    SaveAndClose,
     Browse,
-    IndexVault,
 }
 
 impl From<SettingsMsg> for KimunMessage {
@@ -27,6 +27,7 @@ pub struct SettingsPage {
     settings: Settings,
     themes: iced::widget::combo_box::State<Theme>,
     selected_theme: Option<Theme>,
+    saved: bool,
 }
 
 impl SettingsPage {
@@ -37,6 +38,7 @@ impl SettingsPage {
             settings,
             themes,
             selected_theme: Some(selected_theme),
+            saved: true,
         }
     }
 
@@ -123,10 +125,24 @@ impl KimunPageView for SettingsPage {
                     // We update the theme
                     self.settings.theme = theme.clone();
                     self.selected_theme = Some(theme.clone());
+                    self.saved = false;
                     Task::done(KimunMessage::SettingsUpdated(self.settings.clone()))
                 }
+                SettingsMsg::SaveAndClose => {
+                    if !self.saved {
+                        match self.settings.save_to_disk() {
+                            Ok(_) => Task::done(KimunMessage::Initialize(
+                                InitializeOptions::new().with_settings(self.settings.clone()),
+                            )),
+                            Err(e) => Task::done(KimunMessage::Error(ErrorMsg::Add(e.to_string()))),
+                        }
+                    } else {
+                        Task::done(KimunMessage::Initialize(
+                            InitializeOptions::new().with_settings(self.settings.clone()),
+                        ))
+                    }
+                }
                 SettingsMsg::Browse => Task::none(),
-                SettingsMsg::IndexVault => Task::none(),
             }
         } else {
             Task::none()
@@ -134,12 +150,16 @@ impl KimunPageView for SettingsPage {
     }
 
     fn view(&self) -> iced::Element<KimunMessage> {
+        let mut close_button = iced::widget::button("Save and Close");
+        if self.settings.workspace_dir.is_some() {
+            close_button = close_button.on_press(SettingsMsg::SaveAndClose.into());
+        }
         iced::widget::container(
             iced::widget::column![
                 self.section_appearance(),
                 self.section_workspace(),
                 iced::widget::vertical_space(),
-                iced::widget::button("Close"),
+                close_button,
             ]
             .spacing(8),
         )
@@ -150,8 +170,8 @@ impl KimunPageView for SettingsPage {
 
     fn key_press(
         &self,
-        key: &iced::keyboard::Key,
-        modifiers: &iced::keyboard::Modifiers,
+        _key: &iced::keyboard::Key,
+        _modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage> {
         Task::none()
     }

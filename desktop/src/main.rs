@@ -13,14 +13,12 @@ use editor::{Editor, EditorMsg};
 use fonts::{FONT_CODE_BYTES, FONT_UI_BYTES};
 use iced::{
     Color, Element, Subscription, Task,
-    futures::{SinkExt, Stream, channel::mpsc::Sender},
     keyboard::{Key, Modifiers},
     time,
     widget::container,
 };
 use icons::ICON_BYTES;
 use kimun_core::{NoteVault, nfs::VaultPath};
-use log::{debug, error};
 use modals::{
     ModalManager, Modals,
     vault_indexer::{IndexStatusUpdateMsg, IndexType::Validate},
@@ -48,9 +46,31 @@ fn main() -> iced::Result {
     // .run_with(DesktopApp::new)
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct InitializeOptions {
+    should_index: bool,
+    with_settings: Option<Settings>,
+}
+
+impl InitializeOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn should_index(mut self) -> Self {
+        self.should_index = true;
+        self
+    }
+
+    pub fn with_settings(mut self, settings: Settings) -> Self {
+        self.with_settings = Some(settings);
+        self
+    }
+}
+
 #[derive(Debug, Clone)]
 enum KimunMessage {
-    Ready,
+    Initialize(InitializeOptions),
     Error(ErrorMsg),
     KeyPresses(Key, Modifiers),
     EditorMessage(EditorMsg),
@@ -137,7 +157,9 @@ impl DesktopApp {
                 settings,
                 error_messages: ErrorMessages::default(),
             },
-            Task::none(),
+            Task::done(KimunMessage::Initialize(
+                InitializeOptions::new().should_index(),
+            )),
         )
     }
 
@@ -170,17 +192,25 @@ impl DesktopApp {
         }
     }
 
-    fn initialize(&mut self) -> Task<KimunMessage> {
+    fn initialize(&mut self, options: &InitializeOptions) -> Task<KimunMessage> {
+        if let Some(settings) = &options.with_settings {
+            self.settings = settings.to_owned();
+        }
+
         match &self.settings.workspace_dir {
             Some(workspace_dir) => {
                 let first_view = Self::get_first_view(workspace_dir, &self.settings);
-                Task::batch([
-                    Task::done(KimunMessage::OpenPage(first_view)),
-                    Task::done(KimunMessage::ShowModal(Modals::VaultIndex(
-                        workspace_dir.to_owned(),
-                        Validate,
-                    ))),
-                ])
+                if options.should_index {
+                    Task::batch([
+                        Task::done(KimunMessage::OpenPage(first_view)),
+                        Task::done(KimunMessage::ShowModal(Modals::VaultIndex(
+                            workspace_dir.to_owned(),
+                            Validate,
+                        ))),
+                    ])
+                } else {
+                    Task::done(KimunMessage::OpenPage(first_view))
+                }
             }
             None => Task::done(KimunMessage::OpenPage(KimunPage::Settings)),
         }
@@ -188,7 +218,7 @@ impl DesktopApp {
 
     fn update(&mut self, message: KimunMessage) -> Task<KimunMessage> {
         match &message {
-            KimunMessage::Ready => self.initialize(),
+            KimunMessage::Initialize(options) => self.initialize(options),
             KimunMessage::SettingsUpdated(settings) => {
                 self.settings = settings.clone();
                 Task::none()
@@ -324,18 +354,18 @@ impl DesktopApp {
         }
     }
 
-    fn worker() -> impl Stream<Item = KimunMessage> {
-        iced::stream::channel(100, |mut output: Sender<KimunMessage>| async move {
-            debug!("Worker Started");
-            // We execute whatever we need to initialize
-            if let Err(e) = output.send(KimunMessage::Ready).await {
-                error!("Error Initializing the app {}", e);
-            }
-        })
-    }
+    // fn worker() -> impl Stream<Item = KimunMessage> {
+    //     iced::stream::channel(100, |mut output: Sender<KimunMessage>| async move {
+    //         debug!("Worker Started");
+    //         // We execute whatever we need to initialize
+    //         if let Err(e) = output.send(KimunMessage::Initialize).await {
+    //             error!("Error Initializing the app {}", e);
+    //         }
+    //     })
+    // }
 
     fn subscription(&self) -> Subscription<KimunMessage> {
-        let init = Subscription::run(Self::worker);
+        // let init = Subscription::run(Self::worker);
         let save_tick = time::every(std::time::Duration::from_secs(5))
             .map(|_time| KimunMessage::EditorMessage(EditorMsg::SaveTick));
         let key_capture = iced::keyboard::on_key_press(|key, modifier| {
@@ -350,7 +380,7 @@ impl DesktopApp {
             //     _ => None,
             // }
         });
-        Subscription::batch(vec![init, save_tick, key_capture])
+        Subscription::batch(vec![save_tick, key_capture])
     }
 
     fn theme(&self) -> iced::Theme {
