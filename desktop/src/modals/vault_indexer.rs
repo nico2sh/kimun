@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use iced::Task;
 use kimun_core::{NoteVault, NotesValidation};
@@ -40,14 +40,12 @@ impl From<IndexStatusUpdateMsg> for KimunMessage {
 }
 
 pub struct VaultIndexer {
-    start_time: SystemTime,
     index_type: IndexType,
     status: IndexStatus,
 }
 
 impl VaultIndexer {
     pub fn new(vault: NoteVault, index_type: IndexType) -> (Self, Task<KimunMessage>) {
-        let start_time = SystemTime::now();
         let task = match index_type {
             IndexType::Validate => {
                 // We just validate the data
@@ -88,7 +86,6 @@ impl VaultIndexer {
         };
         (
             Self {
-                start_time,
                 index_type,
                 status: IndexStatus::Indexing,
             },
@@ -131,16 +128,20 @@ impl VaultIndexer {
     }
 
     fn view_done(&self, duration: &Duration) -> iced::Element<KimunMessage> {
-        iced::widget::container(iced::widget::column![
-            iced::widget::text(format!(
-                "Finished indexing in {} seconds",
-                duration.as_secs()
-            )),
-            iced::widget::vertical_space().height(SMALL_SPACING),
-            iced::widget::button("Close").on_press(KimunMessage::CloseModal)
-        ])
-        .padding(SMALL_PADDING)
-        .into()
+        if matches!(self.index_type, IndexType::Validate) {
+            iced::widget::column![].into()
+        } else {
+            iced::widget::container(iced::widget::column![
+                iced::widget::text(format!(
+                    "Finished indexing in {} seconds",
+                    duration.as_secs()
+                )),
+                iced::widget::vertical_space().height(SMALL_SPACING),
+                iced::widget::button("Close").on_press(KimunMessage::CloseModal)
+            ])
+            .padding(SMALL_PADDING)
+            .into()
+        }
     }
 }
 
@@ -166,7 +167,12 @@ impl KimunModal for VaultIndexer {
             match status_update {
                 IndexStatusUpdateMsg::Finished(status) => {
                     self.status = status;
-                    Task::none()
+                    if matches!(self.index_type, IndexType::Validate) {
+                        // if it is validation, we just close it
+                        Task::done(KimunMessage::CloseModal)
+                    } else {
+                        Task::none()
+                    }
                 }
             }
         } else {

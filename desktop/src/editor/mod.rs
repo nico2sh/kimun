@@ -12,6 +12,7 @@ use iced::{
 };
 use kimun_core::{
     NoteVault,
+    error::{FSError, VaultError},
     nfs::{NoteEntryData, VaultPath},
     note::{NoteContentData, NoteDetails},
 };
@@ -55,7 +56,6 @@ impl From<EditorMsg> for KimunMessage {
 }
 
 pub struct Editor {
-    note_details: NoteDetails,
     content: text_editor::Content,
     preview_page: Option<PreviewPage>,
     save_status: SaveStatus,
@@ -73,19 +73,30 @@ impl Drop for Editor {
 }
 
 impl Editor {
-    pub(crate) fn new(
+    pub fn new(
         vault: &kimun_core::NoteVault,
         path: &kimun_core::nfs::VaultPath,
         settings: Rc<RefCell<Settings>>,
     ) -> anyhow::Result<Self> {
-        let note_details = vault.load_note(path)?;
-        let content = text_editor::Content::with_text(&note_details.raw_text);
-        settings.borrow_mut().add_path_history(path);
-        if let Err(e) = settings.borrow().save_to_disk() {
-            error!("Failed updating the last paths in settings: {}", e);
-        }
+        // Open or create note
+        let content_text = match vault.load_note(path) {
+            Ok(details) => {
+                debug!("We open a note at: {}", path);
+                settings.borrow_mut().add_path_history(path);
+                if let Err(e) = settings.borrow().save_to_disk() {
+                    error!("Failed updating the last paths in settings: {}", e);
+                }
+                details.raw_text
+            }
+            Err(VaultError::FSError(FSError::VaultPathNotFound { path: _ })) => {
+                debug!("We create a new note at: {}", path);
+                vault.create_note(path, "")?;
+                "".to_string()
+            }
+            Err(e) => bail!(e),
+        };
+        let content = text_editor::Content::with_text(&content_text);
         Ok(Self {
-            note_details,
             content,
             preview_page: None,
             save_status: SaveStatus::Saved,
@@ -161,7 +172,6 @@ impl Editor {
 
     fn set_content(&mut self, details: &NoteDetails) {
         self.content = text_editor::Content::with_text(&details.raw_text);
-        self.note_details = details.to_owned();
     }
 
     // fn chain_preview_message(&mut self, message: KimunMessage) -> Task<KimunMessage> {
