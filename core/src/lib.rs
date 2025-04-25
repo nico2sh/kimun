@@ -86,17 +86,25 @@ impl NoteVault {
     /// This can be slow on large vaults.
     pub fn init_and_validate(&self) -> Result<IndexReport, VaultError> {
         debug!("Initializing DB and validating it");
-        let db_result = self.vault_db.check_db()?;
+        let db_result = self.vault_db.check_db();
         match db_result {
-            db::DBStatus::Ready => {
-                // We only check if there are new notes
-                self.index_notes(NotesValidation::None)
+            Ok(check_res) => {
+                match check_res {
+                    db::DBStatus::Ready => {
+                        // We only check if there are new notes
+                        self.index_notes(NotesValidation::None)
+                    }
+                    db::DBStatus::Outdated => self.recreate_index(),
+                    db::DBStatus::NotValid => self.force_rebuild(),
+                    db::DBStatus::FileNotFound => {
+                        // No need to validate, no data there
+                        self.recreate_index()
+                    }
+                }
             }
-            db::DBStatus::Outdated => self.recreate_index(),
-            db::DBStatus::NotValid => self.force_rebuild(),
-            db::DBStatus::FileNotFound => {
-                // No need to validate, no data there
-                self.recreate_index()
+            Err(e) => {
+                debug!("Error validating the DB, rebuilding it: {}", e);
+                self.force_rebuild()
             }
         }
     }

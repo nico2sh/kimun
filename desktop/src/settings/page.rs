@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use iced::{Task, Theme};
 
 use iced::widget::column;
@@ -27,18 +29,19 @@ pub struct SettingsPage {
     settings: Settings,
     themes: iced::widget::combo_box::State<Theme>,
     selected_theme: Option<Theme>,
-    saved: bool,
+    updated_settings: Settings,
 }
 
 impl SettingsPage {
     pub fn new(settings: Settings) -> Self {
         let themes = iced::widget::combo_box::State::new(Theme::ALL.to_vec());
         let selected_theme = settings.theme.clone();
+        let updated_settings = settings.clone();
         Self {
             settings,
             themes,
             selected_theme: Some(selected_theme),
-            saved: true,
+            updated_settings,
         }
     }
 
@@ -62,7 +65,7 @@ impl SettingsPage {
     fn section_workspace(&self) -> iced::Element<KimunMessage> {
         let mut button_fast_index = iced::widget::button("Fast Index");
         let mut button_full_index = iced::widget::button("Full Index");
-        if let Some(path) = &self.settings.workspace_dir {
+        if let Some(path) = &self.updated_settings.workspace_dir {
             button_fast_index = button_fast_index.on_press(KimunMessage::ShowModal(
                 Modals::VaultIndex(path.to_owned(), IndexType::Fast),
             ));
@@ -78,7 +81,7 @@ impl SettingsPage {
                 iced::widget::row![
                     iced::widget::container(
                         iced::widget::text(
-                            self.settings
+                            self.updated_settings
                                 .workspace_dir
                                 .as_ref()
                                 .map(|path| path.to_string_lossy())
@@ -115,6 +118,17 @@ impl SettingsPage {
             .into(),
         )
     }
+
+    fn settings_changed(&self) -> bool {
+        !self.updated_settings.eq(&self.settings)
+    }
+
+    fn workspace_changed(&self) -> bool {
+        !self
+            .updated_settings
+            .workspace_dir
+            .eq(&self.settings.workspace_dir)
+    }
 }
 
 impl KimunPageView for SettingsPage {
@@ -123,26 +137,50 @@ impl KimunPageView for SettingsPage {
             match set {
                 SettingsMsg::ThemeSelected(theme) => {
                     // We update the theme
-                    self.settings.theme = theme.clone();
+                    self.updated_settings.theme = theme.clone();
                     self.selected_theme = Some(theme.clone());
-                    self.saved = false;
-                    Task::done(KimunMessage::SettingsUpdated(self.settings.clone()))
+                    Task::done(KimunMessage::SettingsUpdated(self.updated_settings.clone()))
                 }
                 SettingsMsg::SaveAndClose => {
-                    if !self.saved {
-                        match self.settings.save_to_disk() {
-                            Ok(_) => Task::done(KimunMessage::Initialize(
-                                InitializeOptions::new().with_settings(self.settings.clone()),
-                            )),
+                    if self.settings_changed() {
+                        // We chech if the workspace changed
+                        match self.updated_settings.save_to_disk() {
+                            Ok(_) => {
+                                let task_close = Task::done(KimunMessage::Initialize(
+                                    InitializeOptions::new()
+                                        .with_settings(self.updated_settings.clone()),
+                                ));
+                                if self.workspace_changed() {
+                                    // Workdpace has changed, we will trigger a full reindex
+                                    let workspace_path = self
+                                        .updated_settings
+                                        .workspace_dir
+                                        .as_ref()
+                                        .unwrap()
+                                        .clone();
+                                    Task::batch([
+                                        task_close,
+                                        Task::done(KimunMessage::ShowModal(Modals::VaultIndex(
+                                            workspace_path,
+                                            IndexType::Full,
+                                        ))),
+                                    ])
+                                } else {
+                                    task_close
+                                }
+                            }
                             Err(e) => Task::done(KimunMessage::Error(ErrorMsg::Add(e.to_string()))),
                         }
                     } else {
-                        Task::done(KimunMessage::Initialize(
-                            InitializeOptions::new().with_settings(self.settings.clone()),
-                        ))
+                        Task::done(KimunMessage::Initialize(InitializeOptions::new()))
                     }
                 }
-                SettingsMsg::Browse => Task::none(),
+                SettingsMsg::Browse => {
+                    if let Ok(path) = pick_workspace() {
+                        self.updated_settings.set_workspace(&path);
+                    }
+                    Task::none()
+                }
             }
         } else {
             Task::none()
@@ -151,7 +189,7 @@ impl KimunPageView for SettingsPage {
 
     fn view(&self) -> iced::Element<KimunMessage> {
         let mut close_button = iced::widget::button("Save and Close");
-        if self.settings.workspace_dir.is_some() {
+        if self.updated_settings.workspace_dir.is_some() {
             close_button = close_button.on_press(SettingsMsg::SaveAndClose.into());
         }
         iced::widget::container(
@@ -206,4 +244,13 @@ fn styled(pair: iced::theme::palette::Pair) -> iced::widget::container::Style {
         border: iced::border::rounded(4).color(pair.text).width(0),
         ..iced::widget::container::Style::default()
     }
+}
+
+fn pick_workspace() -> anyhow::Result<PathBuf> {
+    let handle = rfd::FileDialog::new()
+        .set_title("Choose a Workspace Directory")
+        .pick_folder()
+        .ok_or(anyhow::anyhow!("Dialog Closed"))?;
+
+    Ok(handle.to_path_buf())
 }

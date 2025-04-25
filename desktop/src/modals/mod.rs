@@ -1,5 +1,5 @@
 mod note_select;
-mod vault_browse;
+pub mod vault_browse;
 pub mod vault_indexer;
 
 use std::path::PathBuf;

@@ -56,6 +56,7 @@ impl VaultDB {
     }
 
     pub fn check_db(&self) -> Result<DBStatus, DBError> {
+        debug!("Checking the DB");
         let db_path = self.get_db_path();
         let conn_res = Connection::open_with_flags(
             db_path,
@@ -63,6 +64,7 @@ impl VaultDB {
         );
         match conn_res {
             Ok(mut conn) => {
+                debug!("Connected to the DB, checking schema");
                 let ver = self.current_schema_version(&mut conn)?.unwrap_or_default();
                 debug!("DB Version: {}, current DB Version: {}", ver, VERSION);
                 let status = if ver == VERSION {

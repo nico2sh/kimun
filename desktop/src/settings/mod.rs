@@ -7,12 +7,13 @@ use std::fs::File;
 
 use anyhow::bail;
 use kimun_core::nfs::VaultPath;
+use log::debug;
 use serde::Deserialize;
 
-const BASE_CONFIG_FILE: &str = ".note.toml";
+const BASE_CONFIG_FILE: &str = ".kimun.toml";
 const LAST_PATH_HISTORY_SIZE: usize = 10;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default)]
     pub last_paths: Vec<VaultPath>,
@@ -72,6 +73,7 @@ impl Settings {
     }
 
     pub fn save_to_disk(&self) -> anyhow::Result<()> {
+        debug!("Saving settings to disk");
         let settings_file_path = Self::get_config_file_path()?;
         let mut file = File::create(settings_file_path)?;
         let toml = toml::to_string(&self)?;

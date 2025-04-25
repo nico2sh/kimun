@@ -98,7 +98,10 @@ impl Editor {
             // TODO: send the save message no matter if loading fails
             let note_details = self.vault.load_note(note_path)?;
             self.settings.add_path_history(note_path);
-            self.settings.save_to_disk()?;
+            // We save but we don't throw the error, just log it
+            if let Err(e) = self.settings.save_to_disk() {
+                error!("Error saving settings to disk: {}", e);
+            }
             self.set_content(&note_details);
             self.path = note_path.to_owned();
             self.save_status = SaveStatus::Saved;
