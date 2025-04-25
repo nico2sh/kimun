@@ -6,7 +6,7 @@ mod modals;
 mod settings;
 mod style_units;
 
-use std::path::PathBuf;
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use components::{
     KimunComponent,
@@ -23,16 +23,17 @@ use iced::{
 };
 use icons::ICON_BYTES;
 use kimun_core::{NoteVault, nfs::VaultPath};
+use log::debug;
 use modals::{
     ModalManager, Modals,
-    vault_browse::{VaultBrowseFunctions, VaultSelector},
+    vault_browse::VaultBrowseFunctions,
     vault_indexer::{IndexStatusUpdateMsg, IndexType::Validate},
 };
 use settings::{
     Settings,
     page::{SettingsMsg, SettingsPage},
 };
-use style_units::CONTAINER_PADDING;
+use style_units::{CONTAINER_PADDING, LARGE_SPACING};
 
 fn main() -> iced::Result {
     env_logger::Builder::new()
@@ -54,7 +55,6 @@ fn main() -> iced::Result {
 #[derive(Debug, Clone, Default)]
 pub struct InitializeOptions {
     should_index: bool,
-    with_settings: Option<Settings>,
 }
 
 impl InitializeOptions {
@@ -64,11 +64,6 @@ impl InitializeOptions {
 
     pub fn should_index(mut self) -> Self {
         self.should_index = true;
-        self
-    }
-
-    pub fn with_settings(mut self, settings: Settings) -> Self {
-        self.with_settings = Some(settings);
         self
     }
 }
@@ -85,7 +80,6 @@ enum KimunMessage {
     ShowModal(Modals),
     OpenPage(KimunPage),
     SettingsChange(SettingsMsg),
-    SettingsUpdated(Settings),
     IndexStatus(IndexStatusUpdateMsg),
 }
 
@@ -103,7 +97,7 @@ impl KimunMessage {
 
 #[derive(Debug, Clone)]
 enum KimunPage {
-    Editor(NoteVault, VaultPath, Settings),
+    Editor(NoteVault, VaultPath),
     NoNote(NoteVault),
     Settings,
     Error(String),
@@ -146,7 +140,7 @@ impl ErrorMessages {
 struct DesktopApp {
     current_page: Box<dyn KimunPageView>,
     modal_manager: ModalManager,
-    settings: Settings,
+    settings: Rc<RefCell<Settings>>,
     error_messages: ErrorMessages,
 }
 
@@ -159,7 +153,7 @@ impl DesktopApp {
             Self {
                 current_page,
                 modal_manager,
-                settings,
+                settings: Rc::new(RefCell::new(settings)),
                 error_messages: ErrorMessages::default(),
             },
             Task::done(KimunMessage::Initialize(
@@ -173,7 +167,7 @@ impl DesktopApp {
     }
 
     fn get_first_view(&self, workspace_dir: &PathBuf) -> KimunPage {
-        let last_note = self.settings.last_paths.last().and_then(|path| {
+        let last_note = self.settings.borrow().last_paths.last().and_then(|path| {
             if !path.is_note() {
                 None
             } else {
@@ -187,7 +181,7 @@ impl DesktopApp {
                 match last_note {
                     Some(path) => {
                         // An Editor view
-                        KimunPage::Editor(vault, path, self.settings.to_owned())
+                        KimunPage::Editor(vault, path)
                     }
                     None => KimunPage::NoNote(vault),
                 }
@@ -197,11 +191,7 @@ impl DesktopApp {
     }
 
     fn initialize(&mut self, options: &InitializeOptions) -> Task<KimunMessage> {
-        if let Some(settings) = &options.with_settings {
-            self.settings = settings.to_owned();
-        }
-
-        match &self.settings.workspace_dir {
+        match &self.settings.borrow().workspace_dir {
             Some(workspace_dir) => {
                 let first_view = self.get_first_view(workspace_dir);
                 if options.should_index {
@@ -223,10 +213,6 @@ impl DesktopApp {
     fn update(&mut self, message: KimunMessage) -> Task<KimunMessage> {
         match &message {
             KimunMessage::Initialize(options) => self.initialize(options),
-            KimunMessage::SettingsUpdated(settings) => {
-                self.settings = settings.clone();
-                Task::none()
-            }
             KimunMessage::KeyPresses(key, modifiers) => {
                 if matches!(
                     (key.as_ref(), modifiers),
@@ -249,8 +235,8 @@ impl DesktopApp {
             KimunMessage::OpenPage(page) => {
                 // We open a page
                 match page {
-                    KimunPage::Editor(vault, vault_path, settings) => {
-                        let editor_res = Editor::new(vault, vault_path, settings);
+                    KimunPage::Editor(vault, vault_path) => {
+                        let editor_res = Editor::new(vault, vault_path, Rc::clone(&self.settings));
                         match editor_res {
                             Ok(editor) => {
                                 self.current_page = Box::new(editor);
@@ -265,7 +251,7 @@ impl DesktopApp {
                         }
                     }
                     KimunPage::NoNote(vault) => {
-                        let (page, task) = NoNotePage::new(vault, &self.settings);
+                        let (page, task) = NoNotePage::new(vault);
                         self.current_page = Box::new(page);
 
                         task
@@ -388,7 +374,7 @@ impl DesktopApp {
     }
 
     fn theme(&self) -> iced::Theme {
-        self.settings.theme.to_owned()
+        self.settings.borrow().theme.to_owned()
     }
 }
 
@@ -404,19 +390,16 @@ trait KimunPageView {
 
 struct NoNotePage {
     vault: NoteVault,
-    settings: Settings,
-    filtered_list: FilteredList<VaultBrowseFunctions, VaultSelector>,
+    filtered_list: FilteredList<VaultBrowseFunctions>,
 }
 
 impl NoNotePage {
-    fn new(vault: &NoteVault, settings: &Settings) -> (Self, Task<KimunMessage>) {
+    fn new(vault: &NoteVault) -> (Self, Task<KimunMessage>) {
         let functions = VaultBrowseFunctions::new(VaultPath::root(), vault.clone());
-        let selector = VaultSelector {};
-        let (filtered_list, task) = FilteredList::new(functions, selector);
+        let (filtered_list, task) = FilteredList::new(functions);
         (
             Self {
                 vault: vault.to_owned(),
-                settings: settings.to_owned(),
                 filtered_list,
             },
             task,
@@ -426,19 +409,29 @@ impl NoNotePage {
 
 impl KimunPageView for NoNotePage {
     fn update(&mut self, message: KimunMessage) -> Task<KimunMessage> {
-        if let KimunMessage::EditorMessage(EditorMsg::OpenNote(path)) = message {
-            Task::done(KimunMessage::OpenPage(KimunPage::Editor(
-                self.vault.clone(),
-                path,
-                self.settings.clone(),
-            )))
-        } else {
-            self.filtered_list.update(message)
+        match message {
+            KimunMessage::EditorMessage(EditorMsg::OpenNote(path)) => Task::done(
+                KimunMessage::OpenPage(KimunPage::Editor(self.vault.clone(), path)),
+            ),
+            KimunMessage::EditorMessage(EditorMsg::NewNote(path)) => {
+                debug!("new note");
+                Task::done(KimunMessage::OpenPage(KimunPage::Editor(
+                    self.vault.clone(),
+                    path,
+                )))
+            }
+            _ => self.filtered_list.update(message),
         }
     }
 
     fn view(&self) -> Element<KimunMessage> {
-        self.filtered_list.view()
+        iced::widget::container(iced::widget::column![
+            iced::widget::vertical_space().height(LARGE_SPACING),
+            self.filtered_list.view()
+        ])
+        .align_x(iced::alignment::Horizontal::Center)
+        .width(iced::Length::Fill)
+        .into()
     }
 
     fn key_press(

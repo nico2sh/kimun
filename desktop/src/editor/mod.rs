@@ -1,5 +1,7 @@
 mod preview;
 
+use std::{cell::RefCell, rc::Rc};
+
 use anyhow::bail;
 use iced::{
     Font,
@@ -59,7 +61,7 @@ pub struct Editor {
     save_status: SaveStatus,
     vault: NoteVault,
     path: VaultPath,
-    settings: Settings,
+    settings: Rc<RefCell<Settings>>,
 }
 
 impl Drop for Editor {
@@ -74,10 +76,14 @@ impl Editor {
     pub(crate) fn new(
         vault: &kimun_core::NoteVault,
         path: &kimun_core::nfs::VaultPath,
-        settings: &Settings,
+        settings: Rc<RefCell<Settings>>,
     ) -> anyhow::Result<Self> {
         let note_details = vault.load_note(path)?;
         let content = text_editor::Content::with_text(&note_details.raw_text);
+        settings.borrow_mut().add_path_history(path);
+        if let Err(e) = settings.borrow().save_to_disk() {
+            error!("Failed updating the last paths in settings: {}", e);
+        }
         Ok(Self {
             note_details,
             content,
@@ -97,9 +103,9 @@ impl Editor {
         if note_path.is_note() && self.vault.exists(note_path).is_some() {
             // TODO: send the save message no matter if loading fails
             let note_details = self.vault.load_note(note_path)?;
-            self.settings.add_path_history(note_path);
+            self.settings.borrow_mut().add_path_history(note_path);
             // We save but we don't throw the error, just log it
-            if let Err(e) = self.settings.save_to_disk() {
+            if let Err(e) = self.settings.borrow().save_to_disk() {
                 error!("Error saving settings to disk: {}", e);
             }
             self.set_content(&note_details);

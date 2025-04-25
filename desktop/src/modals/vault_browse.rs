@@ -14,54 +14,18 @@ use crate::{
         filtered_list::{
             FilteredList, FilteredListFunctions, ListViewMsg, SortMode, VaultRow, VaultRowType,
         },
-        list::{ListSelector, RowSelection},
+        list::RowSelection,
     },
     editor::EditorMsg,
 };
 
 use super::KimunModal;
 
-pub struct VaultSelector {}
-
-impl ListSelector<VaultRow> for VaultSelector {
-    fn on_enter(&mut self, element: VaultRow) -> Task<KimunMessage> {
-        match element.entry_type {
-            VaultRowType::Note { title: _ } => {
-                // We close first the modal, then we open the note
-                Task::batch([
-                    Task::done(KimunMessage::CloseModal),
-                    Task::done(KimunMessage::EditorMessage(EditorMsg::OpenNote(
-                        element.path.clone(),
-                    ))),
-                ])
-            }
-            VaultRowType::Directory => {
-                let directory = element.clone();
-                // let new_one = Self::new(self.path.clone(), self.vault.clone());
-
-                Task::done(KimunMessage::ListViewMessage(ListViewMsg::Initializing(
-                    Some(directory),
-                )))
-            }
-            VaultRowType::Attachment => Task::none(),
-            VaultRowType::NewNote => {
-                // We close first the modal, then we open the note
-                Task::batch([
-                    Task::done(KimunMessage::CloseModal),
-                    Task::done(KimunMessage::EditorMessage(EditorMsg::NewNote(
-                        element.path.clone(),
-                    ))),
-                ])
-            }
-        }
-    }
-}
-
 pub struct VaultNavigator<F>
 where
     F: FilteredListFunctions + 'static,
 {
-    filtered_list: FilteredList<F, VaultSelector>,
+    filtered_list: FilteredList<F>,
     vault: NoteVault,
     preview_text: String,
 }
@@ -71,8 +35,7 @@ where
     F: FilteredListFunctions + 'static,
 {
     pub fn new(vault: NoteVault, functions: F) -> (Self, iced::Task<KimunMessage>) {
-        let selector = VaultSelector {};
-        let (filtered_list, task) = FilteredList::new(functions, selector);
+        let (filtered_list, task) = FilteredList::new(functions);
         (
             Self {
                 filtered_list,
@@ -257,7 +220,10 @@ impl FilteredListFunctions for VaultBrowseFunctions {
             match &entry.rtype {
                 ResultType::Note(_content_data) => results.push(entry.into()),
                 ResultType::Directory => {
-                    if entry.path != self.path {
+                    if entry.path != self.path
+                        && !entry.path.eq(&VaultPath::root())
+                        && !entry.path.eq(&VaultPath::empty())
+                    {
                         results.push(entry.into());
                     }
                 }

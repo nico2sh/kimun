@@ -20,4 +20,5 @@ pub trait KimunComponent {
 pub trait KimunListElement: std::fmt::Debug + Clone {
     fn get_view(&self) -> Element<KimunMessage>;
     fn get_height(&self) -> f32;
+    fn on_select(&self) -> Task<KimunMessage>;
 }

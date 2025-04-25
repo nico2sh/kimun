@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use iced::{Task, Theme};
 
@@ -26,22 +28,22 @@ impl From<SettingsMsg> for KimunMessage {
 }
 
 pub struct SettingsPage {
-    settings: Settings,
+    settings: Rc<RefCell<Settings>>,
     themes: iced::widget::combo_box::State<Theme>,
     selected_theme: Option<Theme>,
-    updated_settings: Settings,
+    new_workspace: Option<PathBuf>,
 }
 
 impl SettingsPage {
-    pub fn new(settings: Settings) -> Self {
+    pub fn new(settings: Rc<RefCell<Settings>>) -> Self {
         let themes = iced::widget::combo_box::State::new(Theme::ALL.to_vec());
-        let selected_theme = settings.theme.clone();
-        let updated_settings = settings.clone();
+        let selected_theme = settings.borrow().theme.clone();
+        let new_workspace = settings.borrow().workspace_dir.clone();
         Self {
             settings,
             themes,
             selected_theme: Some(selected_theme),
-            updated_settings,
+            new_workspace,
         }
     }
 
@@ -65,7 +67,7 @@ impl SettingsPage {
     fn section_workspace(&self) -> iced::Element<KimunMessage> {
         let mut button_fast_index = iced::widget::button("Fast Index");
         let mut button_full_index = iced::widget::button("Full Index");
-        if let Some(path) = &self.updated_settings.workspace_dir {
+        if let Some(path) = &self.new_workspace {
             button_fast_index = button_fast_index.on_press(KimunMessage::ShowModal(
                 Modals::VaultIndex(path.to_owned(), IndexType::Fast),
             ));
@@ -81,8 +83,7 @@ impl SettingsPage {
                 iced::widget::row![
                     iced::widget::container(
                         iced::widget::text(
-                            self.updated_settings
-                                .workspace_dir
+                            self.new_workspace
                                 .as_ref()
                                 .map(|path| path.to_string_lossy())
                                 .unwrap_or_default()
@@ -119,15 +120,8 @@ impl SettingsPage {
         )
     }
 
-    fn settings_changed(&self) -> bool {
-        !self.updated_settings.eq(&self.settings)
-    }
-
     fn workspace_changed(&self) -> bool {
-        !self
-            .updated_settings
-            .workspace_dir
-            .eq(&self.settings.workspace_dir)
+        !self.new_workspace.eq(&self.settings.borrow().workspace_dir)
     }
 }
 
@@ -137,47 +131,45 @@ impl KimunPageView for SettingsPage {
             match set {
                 SettingsMsg::ThemeSelected(theme) => {
                     // We update the theme
-                    self.updated_settings.theme = theme.clone();
                     self.selected_theme = Some(theme.clone());
-                    Task::done(KimunMessage::SettingsUpdated(self.updated_settings.clone()))
+                    self.settings.borrow_mut().theme = theme.clone();
+                    Task::none()
                 }
                 SettingsMsg::SaveAndClose => {
-                    if self.settings_changed() {
-                        // We chech if the workspace changed
-                        match self.updated_settings.save_to_disk() {
-                            Ok(_) => {
-                                let task_close = Task::done(KimunMessage::Initialize(
-                                    InitializeOptions::new()
-                                        .with_settings(self.updated_settings.clone()),
-                                ));
-                                if self.workspace_changed() {
-                                    // Workdpace has changed, we will trigger a full reindex
-                                    let workspace_path = self
-                                        .updated_settings
-                                        .workspace_dir
-                                        .as_ref()
-                                        .unwrap()
-                                        .clone();
-                                    Task::batch([
-                                        task_close,
-                                        Task::done(KimunMessage::ShowModal(Modals::VaultIndex(
-                                            workspace_path,
-                                            IndexType::Full,
-                                        ))),
-                                    ])
-                                } else {
-                                    task_close
-                                }
-                            }
-                            Err(e) => Task::done(KimunMessage::Error(ErrorMsg::Add(e.to_string()))),
+                    // We chech if the workspace changed
+                    let has_to_index = if self.workspace_changed() {
+                        if let Some(path) = &self.new_workspace {
+                            self.settings.borrow_mut().set_workspace(path);
+                            Some(path.to_owned())
+                        } else {
+                            None
                         }
                     } else {
-                        Task::done(KimunMessage::Initialize(InitializeOptions::new()))
+                        None
+                    };
+
+                    match self.settings.borrow().save_to_disk() {
+                        Ok(_) => {
+                            let task_close =
+                                Task::done(KimunMessage::Initialize(InitializeOptions::new()));
+                            if let Some(workspace_path) = has_to_index {
+                                Task::batch([
+                                    task_close,
+                                    Task::done(KimunMessage::ShowModal(Modals::VaultIndex(
+                                        workspace_path,
+                                        IndexType::Full,
+                                    ))),
+                                ])
+                            } else {
+                                task_close
+                            }
+                        }
+                        Err(e) => Task::done(KimunMessage::Error(ErrorMsg::Add(e.to_string()))),
                     }
                 }
                 SettingsMsg::Browse => {
                     if let Ok(path) = pick_workspace() {
-                        self.updated_settings.set_workspace(&path);
+                        self.new_workspace = Some(path);
                     }
                     Task::none()
                 }
@@ -189,7 +181,7 @@ impl KimunPageView for SettingsPage {
 
     fn view(&self) -> iced::Element<KimunMessage> {
         let mut close_button = iced::widget::button("Save and Close");
-        if self.updated_settings.workspace_dir.is_some() {
+        if self.new_workspace.is_some() {
             close_button = close_button.on_press(SettingsMsg::SaveAndClose.into());
         }
         iced::widget::container(
