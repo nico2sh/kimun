@@ -1,4 +1,4 @@
-use iced::{Font, font::Family};
+use iced::Font;
 
 pub const FONT_UI_BYTES: &[u8] = include_bytes!("../res/fonts/InterVariable.ttf");
 pub const FONT_CODE_BYTES: &[u8] = include_bytes!("../res/fonts/FiraCode-Regular.ttf");

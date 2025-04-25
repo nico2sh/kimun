@@ -8,7 +8,11 @@ mod style_units;
 
 use std::path::PathBuf;
 
-use components::{filtered_list::ListViewMsg, list::RowSelection};
+use components::{
+    KimunComponent,
+    filtered_list::{FilteredList, ListViewMsg},
+    list::RowSelection,
+};
 use editor::{Editor, EditorMsg};
 use fonts::{FONT_CODE_BYTES, FONT_UI_BYTES};
 use iced::{
@@ -21,6 +25,7 @@ use icons::ICON_BYTES;
 use kimun_core::{NoteVault, nfs::VaultPath};
 use modals::{
     ModalManager, Modals,
+    vault_browse::{VaultBrowseFunctions, VaultSelector},
     vault_indexer::{IndexStatusUpdateMsg, IndexType::Validate},
 };
 use settings::{
@@ -167,8 +172,8 @@ impl DesktopApp {
         "Kimün".to_string()
     }
 
-    fn get_first_view(workspace_dir: &PathBuf, settings: &Settings) -> KimunPage {
-        let last_note = settings.last_paths.last().and_then(|path| {
+    fn get_first_view(&self, workspace_dir: &PathBuf) -> KimunPage {
+        let last_note = self.settings.last_paths.last().and_then(|path| {
             if !path.is_note() {
                 None
             } else {
@@ -177,13 +182,12 @@ impl DesktopApp {
         });
 
         let vault_res = NoteVault::new(workspace_dir);
-
         match vault_res {
             Ok(vault) => {
                 match last_note {
                     Some(path) => {
                         // An Editor view
-                        KimunPage::Editor(vault, path, settings.to_owned())
+                        KimunPage::Editor(vault, path, self.settings.to_owned())
                     }
                     None => KimunPage::NoNote(vault),
                 }
@@ -199,7 +203,7 @@ impl DesktopApp {
 
         match &self.settings.workspace_dir {
             Some(workspace_dir) => {
-                let first_view = Self::get_first_view(workspace_dir, &self.settings);
+                let first_view = self.get_first_view(workspace_dir);
                 if options.should_index {
                     Task::batch([
                         Task::done(KimunMessage::OpenPage(first_view)),
@@ -261,10 +265,10 @@ impl DesktopApp {
                         }
                     }
                     KimunPage::NoNote(vault) => {
-                        let page = NoNotePage::new(vault);
+                        let (page, task) = NoNotePage::new(vault, &self.settings);
                         self.current_page = Box::new(page);
 
-                        Task::none()
+                        task
                     }
                     KimunPage::Settings => {
                         let settings_page = SettingsPage::new(self.settings.clone());
@@ -398,29 +402,51 @@ trait KimunPageView {
     ) -> Task<KimunMessage>;
 }
 
-struct NoNotePage {}
+struct NoNotePage {
+    vault: NoteVault,
+    settings: Settings,
+    filtered_list: FilteredList<VaultBrowseFunctions, VaultSelector>,
+}
 
 impl NoNotePage {
-    fn new(vault: &NoteVault) -> Self {
-        todo!()
+    fn new(vault: &NoteVault, settings: &Settings) -> (Self, Task<KimunMessage>) {
+        let functions = VaultBrowseFunctions::new(VaultPath::root(), vault.clone());
+        let selector = VaultSelector {};
+        let (filtered_list, task) = FilteredList::new(functions, selector);
+        (
+            Self {
+                vault: vault.to_owned(),
+                settings: settings.to_owned(),
+                filtered_list,
+            },
+            task,
+        )
     }
 }
 
 impl KimunPageView for NoNotePage {
-    fn update(&mut self, _message: KimunMessage) -> Task<KimunMessage> {
-        Task::none()
+    fn update(&mut self, message: KimunMessage) -> Task<KimunMessage> {
+        if let KimunMessage::EditorMessage(EditorMsg::OpenNote(path)) = message {
+            Task::done(KimunMessage::OpenPage(KimunPage::Editor(
+                self.vault.clone(),
+                path,
+                self.settings.clone(),
+            )))
+        } else {
+            self.filtered_list.update(message)
+        }
     }
 
     fn view(&self) -> Element<KimunMessage> {
-        iced::widget::column![].into()
+        self.filtered_list.view()
     }
 
     fn key_press(
         &self,
-        _key: &iced::keyboard::Key,
-        _modifiers: &iced::keyboard::Modifiers,
+        key: &iced::keyboard::Key,
+        modifiers: &iced::keyboard::Modifiers,
     ) -> Task<KimunMessage> {
-        Task::none()
+        self.filtered_list.key_press(key, modifiers)
     }
 }
 

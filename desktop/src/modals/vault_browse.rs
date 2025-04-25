@@ -21,7 +21,7 @@ use crate::{
 
 use super::KimunModal;
 
-struct VaultSelector {}
+pub struct VaultSelector {}
 
 impl ListSelector<VaultRow> for VaultSelector {
     fn on_enter(&mut self, element: VaultRow) -> Task<KimunMessage> {
