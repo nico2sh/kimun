@@ -376,6 +376,13 @@ impl VaultPath {
         }
     }
 
+    pub fn empty() -> Self {
+        Self {
+            absolute: false,
+            slices: vec![],
+        }
+    }
+
     // returns a NotePath that increases a prefix when
     // conflicting the name
     pub fn get_name_on_conflict(&self) -> VaultPath {
@@ -681,6 +688,13 @@ mod tests {
     }
 
     #[test]
+    fn test_rel_path() {
+        let path = VaultPath::new("../some/path.md");
+        assert_eq!("../some/path.md", path.to_string());
+        assert!(path.is_relative());
+    }
+
+    #[test]
     fn join_two_paths() {
         let path1 = VaultPath::new("main/path");
         let path2 = VaultPath::new("sub/path");
@@ -751,6 +765,15 @@ mod tests {
         assert_eq!("/".to_string(), vault_path.to_string());
 
         let root_path = VaultPath::new("/");
+        assert_eq!(root_path, vault_path);
+    }
+
+    #[test]
+    fn get_empty() {
+        let vault_path = VaultPath::empty();
+        assert_eq!("".to_string(), vault_path.to_string());
+
+        let root_path = VaultPath::new("");
         assert_eq!(root_path, vault_path);
     }
 
