@@ -1,135 +1,92 @@
+mod note_select;
+pub mod vault_browse;
 pub mod vault_indexer;
 
 use std::path::PathBuf;
 
-use crossbeam_channel::Sender;
-use eframe::egui;
+use iced::Task;
 use kimun_core::{
+    NoteVault,
     nfs::{NoteEntryData, VaultPath},
     note::NoteContentData,
-    NoteVault,
 };
-use log::{debug, error};
+use note_select::NoteSelect;
+use vault_browse::{VaultBrowseFunctions, VaultNavigator, VaultSearchFunctions};
 use vault_indexer::{IndexType, VaultIndexer};
 
-use crate::editor::components::{
-    note_selector::NoteSelectorFunctions,
-    preview_list::PreviewList,
-    vault_browse::{VaultBrowseFunctions, VaultSearchFunctions},
-};
-
-use super::{editor::components::EditorComponent, editor::EditorMessage};
-
-pub trait KimunModal {
-    // Returns true if the modal should close after the update
-    fn update(&mut self, ui: &mut egui::Ui) -> bool;
-}
-
-struct ComponentModal<C>
-where
-    C: EditorComponent,
-{
-    component: C,
-    message_sender: Sender<EditorMessage>,
-}
-
-impl<C> ComponentModal<C>
-where
-    C: EditorComponent,
-{
-    fn new(component: C, sender: Sender<EditorMessage>) -> Self {
-        Self {
-            component,
-            message_sender: sender,
-        }
-    }
-}
-
-impl<C> KimunModal for ComponentModal<C>
-where
-    C: EditorComponent,
-{
-    fn update(&mut self, ui: &mut egui::Ui) -> bool {
-        let modal = egui::Modal::new(egui::Id::new("Modal")).show(ui.ctx(), |ui| {
-            ui.set_width(600.0);
-            self.component.update(ui)
-        });
-        let should_close = modal.should_close();
-        if let Some(message) = modal.inner {
-            if let Err(e) = self.message_sender.send(message) {
-                error!("Error sending an update message from modal {}", e);
-            }
-        }
-        should_close
-    }
-}
+use crate::{ErrorMsg, KimunMessage};
 
 pub struct ModalManager {
-    ctx: egui::Context,
-    current_modal: Option<Box<dyn KimunModal>>,
-}
-
-pub enum Modals {
-    VaultBrowse(NoteVault, VaultPath, Sender<EditorMessage>),
-    VaultSearch(NoteVault, Sender<EditorMessage>),
-    NoteSelect(
-        NoteVault,
-        Vec<(NoteEntryData, NoteContentData)>,
-        Sender<EditorMessage>,
-    ),
-    VaultIndex(PathBuf, IndexType),
+    pub current_modal: Option<Box<dyn KimunModal>>,
 }
 
 impl ModalManager {
-    pub fn new(ctx: egui::Context) -> Self {
+    pub fn new() -> Self {
         Self {
-            ctx,
             current_modal: None,
         }
     }
 
-    pub fn view(&mut self, ui: &mut egui::Ui) -> anyhow::Result<()> {
-        if let Some(current_modal) = self.current_modal.as_mut() {
-            let should_close = current_modal.update(ui);
-            if should_close {
-                self.current_modal = None;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn set_modal(&mut self, modal: Modals) -> anyhow::Result<()> {
-        let modal: Box<dyn KimunModal> = match modal {
-            Modals::VaultBrowse(vault, path, sender) => {
-                debug!("show browser");
-                let content = PreviewList::new(
-                    vault.clone(),
-                    VaultBrowseFunctions::new(path.clone(), vault.clone()),
+    pub fn set_modal(&mut self, modal: Modals) -> Task<KimunMessage> {
+        match modal {
+            Modals::VaultBrowse(note_vault, vault_path) => {
+                // Filtered list
+                let (modal, task) = VaultNavigator::new(
+                    note_vault.clone(),
+                    VaultBrowseFunctions::new(vault_path, note_vault.clone()),
                 );
-                Box::new(ComponentModal::new(content, sender))
+                self.current_modal = Some(Box::new(modal));
+                task
             }
-            Modals::VaultSearch(vault, sender) => {
-                debug!("show searcher");
-                let content =
-                    PreviewList::new(vault.clone(), VaultSearchFunctions::new(vault.clone()));
-                Box::new(ComponentModal::new(content, sender))
+            Modals::VaultSearch(note_vault) => {
+                // Filtered list
+                let (modal, task) = VaultNavigator::new(
+                    note_vault.clone(),
+                    VaultSearchFunctions::new(note_vault.clone()),
+                );
+                self.current_modal = Some(Box::new(modal));
+                task
             }
-            Modals::NoteSelect(vault, data, sender) => {
-                debug!("show note select");
-                let content = PreviewList::new(vault.clone(), NoteSelectorFunctions::new(data));
-                Box::new(ComponentModal::new(content, sender))
+            Modals::NoteSelect(items) => {
+                let mut modal = NoteSelect::new();
+                modal.set_elements(items.into_iter().map(|i| i.into()).collect());
+                self.current_modal = Some(Box::new(modal));
+                Task::none()
             }
-            Modals::VaultIndex(vault_path, index_type) => {
-                debug!("show indexer");
-                let modal = VaultIndexer::start(vault_path, index_type, self.ctx.clone())?;
-                Box::new(modal)
-            }
-        };
-        self.current_modal = Some(modal);
-        Ok(())
+            Modals::VaultIndex(path_buf, index_type) => match NoteVault::new(path_buf) {
+                Ok(vault) => {
+                    let (modal, task) = VaultIndexer::new(vault, index_type);
+                    self.current_modal = Some(Box::new(modal));
+                    task
+                }
+                Err(e) => Task::done(KimunMessage::Error(ErrorMsg::Add(e.to_string()))),
+            },
+        }
     }
 
-    pub fn close_modal(&mut self) {
+    pub fn close_modal(&mut self) -> Task<KimunMessage> {
         self.current_modal = None;
+        Task::none()
     }
+}
+
+pub trait KimunModal {
+    fn view(&self) -> iced::Element<KimunMessage>;
+    fn get_width(&self) -> iced::Length;
+    fn get_height(&self) -> iced::Length;
+    fn update(&mut self, message: KimunMessage) -> Task<KimunMessage>;
+    fn key_press(
+        &self,
+        key: &iced::keyboard::Key,
+        modifiers: &iced::keyboard::Modifiers,
+    ) -> Task<KimunMessage>;
+    fn should_close_on_click(&self) -> bool;
+}
+
+#[derive(Debug, Clone)]
+pub enum Modals {
+    VaultBrowse(NoteVault, VaultPath),
+    VaultSearch(NoteVault),
+    NoteSelect(Vec<(NoteEntryData, NoteContentData)>),
+    VaultIndex(PathBuf, IndexType),
 }

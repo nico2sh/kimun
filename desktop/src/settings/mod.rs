@@ -1,4 +1,4 @@
-pub mod view;
+pub mod page;
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -7,21 +7,58 @@ use std::fs::File;
 
 use anyhow::bail;
 use kimun_core::nfs::VaultPath;
+use log::debug;
+use serde::Deserialize;
 
-const BASE_CONFIG_FILE: &str = ".note.toml";
-const LAST_PATH_HISTORY_SIZE: usize = 5;
+const BASE_CONFIG_FILE: &str = ".kimun.toml";
+const LAST_PATH_HISTORY_SIZE: usize = 10;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct Settings {
+    #[serde(default)]
     pub last_paths: Vec<VaultPath>,
     pub workspace_dir: Option<PathBuf>,
+    #[serde(
+        default = "def_theme",
+        serialize_with = "ser_theme",
+        deserialize_with = "deser_theme"
+    )]
+    pub theme: iced::Theme,
+}
+
+pub fn def_theme() -> iced::Theme {
+    iced::Theme::ALL[0].to_owned()
+}
+
+pub fn ser_theme<S>(value: &iced::Theme, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str(&value.to_string())
+}
+
+fn deser_theme<'de, D>(data: D) -> Result<iced::Theme, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let theme_str = String::deserialize(data)?;
+    let t = iced::Theme::ALL
+        .iter()
+        .find(|theme| theme.to_string() == theme_str);
+    if let Some(theme) = t {
+        Ok(theme.to_owned())
+    } else {
+        Ok(iced::Theme::ALL[0].clone())
+    }
 }
 
 impl Default for Settings {
     fn default() -> Self {
+        let default_theme = iced::Theme::ALL[0].clone();
         Self {
             last_paths: vec![],
             workspace_dir: None,
+            theme: default_theme,
         }
     }
 }
@@ -36,6 +73,7 @@ impl Settings {
     }
 
     pub fn save_to_disk(&self) -> anyhow::Result<()> {
+        debug!("Saving settings to disk");
         let settings_file_path = Self::get_config_file_path()?;
         let mut file = File::create(settings_file_path)?;
         let toml = toml::to_string(&self)?;

@@ -103,6 +103,7 @@ impl ContentChunk {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkType {
     Note(VaultPath),
+    Attachment(VaultPath),
     Url,
 }
 
@@ -117,9 +118,22 @@ pub struct Link {
 }
 
 impl Link {
+    pub fn vault_path<P: AsRef<str>, S: AsRef<str>>(path: P, text: S) -> Self {
+        let link = VaultPath::new(&path);
+        let ltype = if link.is_note() {
+            LinkType::Note(link)
+        } else {
+            LinkType::Attachment(link)
+        };
+        Self {
+            ltype,
+            text: text.as_ref().to_string(),
+            raw_link: path.as_ref().to_string(),
+        }
+    }
     pub fn note<P: AsRef<str>, S: AsRef<str>>(path: P, text: S) -> Self {
         Self {
-            ltype: LinkType::Note(VaultPath::new(&path)),
+            ltype: LinkType::Note(VaultPath::note_path_from(&path)),
             text: text.as_ref().to_string(),
             raw_link: path.as_ref().to_string(),
         }
