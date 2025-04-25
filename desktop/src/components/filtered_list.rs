@@ -14,7 +14,7 @@ use crate::{
     editor::EditorMsg,
     fonts::{FONT_UI, FONT_UI_ITALIC},
     icons::{ICON, KimunIcon},
-    style_units::SMALL_SPACING,
+    style_units::{LARGE_PADDING, SMALL_SPACING},
 };
 
 use super::{
@@ -31,6 +31,7 @@ pub enum ListViewMsg {
     UpdateFilterText { filter: String },
     Ready { filter: String, data: Vec<VaultRow> },
     PreviewUpdated(String),
+    SelectHeader,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +58,7 @@ impl std::fmt::Display for ListViewMsg {
                 write!(f, "Filtered with filter `{}`", filter)
             }
             ListViewMsg::PreviewUpdated(_) => write!(f, "Updated Preview"),
+            ListViewMsg::SelectHeader => write!(f, "Selected Header"),
         }
     }
 }
@@ -69,6 +71,7 @@ where
     ready: bool,
     filter_text: String,
     list: KimunList<VaultRow>,
+    header: Option<VaultRow>,
 }
 
 impl<F> FilteredList<F>
@@ -85,6 +88,7 @@ where
                 ready: false,
                 filter_text,
                 list,
+                header: None,
             },
             iced::Task::batch([
                 text_input::focus(TEXT_INPUT_ID.clone()),
@@ -93,7 +97,7 @@ where
         )
     }
 
-    fn get_header_view(&self, header: VaultRow) -> Element<'_, KimunMessage> {
+    fn get_header_view(&self, header: &VaultRow) -> Element<'_, KimunMessage> {
         let selected = false;
         let v = iced::widget::row![
             iced::widget::text(KimunIcon::Note.get_char()).font(ICON),
@@ -102,16 +106,11 @@ where
         ]
         .spacing(SMALL_SPACING);
         let cont = iced::widget::container(v)
-            .padding(Padding {
-                top: 8.0,
-                right: 10.0,
-                bottom: 0.0,
-                left: 10.0,
-            })
+            .padding(LARGE_PADDING)
             .width(Length::Fill)
             .style(move |t| row_style(t, selected));
         let ma = mouse_area(cont)
-            .on_press(KimunMessage::Select(RowSelection::Enter))
+            .on_press(ListViewMsg::SelectHeader.into())
             .interaction(Interaction::Pointer)
             .on_enter(KimunMessage::Select(RowSelection::Index(0)));
 
@@ -136,6 +135,12 @@ where
             ListViewMsg::Filter => {
                 debug!("Filter...");
                 self.ready = false;
+                self.header = self
+                    .functions
+                    .lock()
+                    .unwrap()
+                    .header_element(&self.filter_text);
+
                 let functions = self.functions.clone();
                 let filter_text = self.filter_text.clone();
                 Task::perform(
@@ -178,6 +183,13 @@ where
                 // We don't do anything, this is just to notify we loaded the preview
                 debug!("Updated Preview");
                 Task::none()
+            }
+            ListViewMsg::SelectHeader => {
+                if let Some(h) = &self.header {
+                    h.on_select()
+                } else {
+                    Task::none()
+                }
             }
         }
     }
@@ -222,12 +234,7 @@ where
             .on_submit(KimunMessage::Select(RowSelection::Enter));
 
         // Insert header here
-        let header = self
-            .functions
-            .lock()
-            .unwrap()
-            .header_element(&self.filter_text);
-        if let Some(head_row) = header {
+        if let Some(head_row) = &self.header {
             let h = self.get_header_view(head_row);
             container(iced::widget::column![text_filter, h, self.list.view()])
                 .width(300)
@@ -250,7 +257,7 @@ where
     }
 }
 
-/// The functions that customize the behavior of the filtered list
+/// The function that customize the behavior of the filtered list
 /// Provides a function on how to filter, and how to behave on each entry
 /// when clicked or selected. Also provides an optional first entry/header
 /// under the list
@@ -258,7 +265,6 @@ pub trait FilteredListFunctions: Clone + Send + Sync {
     fn init(&mut self, row: Option<VaultRow>);
     fn filter<S: AsRef<str>>(&self, filter_text: S) -> Vec<VaultRow>;
     fn header_element(&self, filter_text: &str) -> Option<VaultRow>;
-    fn button_icon(&self) -> Option<String>;
 }
 
 #[derive(Clone, Debug)]

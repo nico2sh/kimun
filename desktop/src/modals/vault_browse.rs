@@ -16,7 +16,6 @@ use crate::{
         },
         list::RowSelection,
     },
-    editor::EditorMsg,
 };
 
 use super::KimunModal;
@@ -171,10 +170,6 @@ impl FilteredListFunctions for VaultSearchFunctions {
     fn header_element(&self, _filter_text: &str) -> Option<VaultRow> {
         None
     }
-
-    fn button_icon(&self) -> Option<String> {
-        None
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -276,9 +271,5 @@ impl FilteredListFunctions for VaultBrowseFunctions {
         } else {
             None
         }
-    }
-
-    fn button_icon(&self) -> Option<String> {
-        None
     }
 }

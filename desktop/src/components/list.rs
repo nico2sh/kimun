@@ -194,15 +194,6 @@ pub enum RowSelection {
     Enter,
 }
 
-// pub enum ListViewMessage {
-//     Initializing,
-//     Filter,
-//     UpdateFilterText { filter: String },
-//     Ready { filter: String, data: Vec<VaultRow> },
-//     Select(RowSelection),
-//     PreviewUpdated(String),
-// }
-
 pub mod state_data {
     use crate::components::KimunListElement;
 
