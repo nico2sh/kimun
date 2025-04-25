@@ -3,21 +3,49 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, SearchResult, VaultBrows
 use log::{debug, error};
 use rayon::slice::ParallelSliceMut;
 
-use crate::{editor::EditorMessage, fonts, helpers};
+use crate::{
+    editor::EditorMessage,
+    fonts::{self, SORT_DOWN, SORT_TITLE_DOWN, SORT_TITLE_UP, SORT_UP},
+    helpers,
+};
 
 use super::filtered_list::{
     FilteredListFunctionMessage, FilteredListFunctions, ListElement, StateData,
 };
 
 #[derive(Clone)]
+pub enum SortMode {
+    FileUp,
+    FileDown,
+    TitleUp,
+    TitleDown,
+}
+
+impl SortMode {
+    pub fn get_icon(&self) -> String {
+        match self {
+            SortMode::FileUp => SORT_UP.to_string(),
+            SortMode::FileDown => SORT_DOWN.to_string(),
+            SortMode::TitleUp => SORT_TITLE_UP.to_string(),
+            SortMode::TitleDown => SORT_TITLE_DOWN.to_string(),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct VaultBrowseFunctions {
     path: VaultPath,
     vault: NoteVault,
+    sort_mode: SortMode,
 }
 
 impl VaultBrowseFunctions {
     pub fn new(path: VaultPath, vault: NoteVault) -> Self {
-        Self { path, vault }
+        Self {
+            path,
+            vault,
+            sort_mode: SortMode::FileDown,
+        }
     }
 }
 
@@ -69,7 +97,13 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
         if self.path != VaultPath::root() {
             filtered.push(SelectorEntry::up_dir(&self.path));
         }
-        filtered.par_sort_by(|a, b| a.get_sort_string().cmp(&b.get_sort_string()));
+        filtered.par_sort_by(|a, b| match self.sort_mode {
+            SortMode::FileUp => a.path_str.cmp(&b.path_str),
+            SortMode::FileDown => b.path_str.cmp(&a.path_str),
+            SortMode::TitleUp => a.search_str.cmp(&b.search_str),
+            SortMode::TitleDown => b.search_str.cmp(&a.search_str),
+        });
+        // filtered.par_sort_by(|a, b| a.get_sort_string().cmp(&b.get_sort_string()));
 
         debug!("filtered {} values", filtered.len());
         filtered
@@ -86,6 +120,7 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
                 let new_one = Self {
                     path: directory,
                     vault: self.vault.clone(),
+                    sort_mode: self.sort_mode.clone(),
                 };
                 // self.path = directory;
                 Some(FilteredListFunctionMessage::ResetState(new_one))
@@ -106,6 +141,10 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for VaultBrowseFun
         } else {
             None
         }
+    }
+
+    fn button_icon(&self) -> Option<String> {
+        Some(self.sort_mode.get_icon())
     }
 }
 
@@ -147,6 +186,10 @@ impl FilteredListFunctions<(), SearchResult> for VaultSearchFunctions {
     }
 
     fn header_element(&self, _state_data: &StateData<SearchResult>) -> Option<SearchResult> {
+        None
+    }
+
+    fn button_icon(&self) -> Option<String> {
         None
     }
 }

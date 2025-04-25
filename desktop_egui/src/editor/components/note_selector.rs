@@ -6,12 +6,13 @@ use crate::editor::EditorMessage;
 
 use super::{
     filtered_list::{FilteredListFunctionMessage, FilteredListFunctions, StateData},
-    vault_browse::{SelectorEntry, SelectorEntryType},
+    vault_browse::{SelectorEntry, SelectorEntryType, SortMode},
 };
 
 #[derive(Clone)]
 pub struct NoteSelectorFunctions {
     selections: Vec<SelectorEntry>,
+    sort_mode: SortMode,
 }
 
 impl NoteSelectorFunctions {
@@ -28,7 +29,10 @@ impl NoteSelectorFunctions {
                 }
             })
             .collect();
-        Self { selections }
+        Self {
+            selections,
+            sort_mode: SortMode::FileDown,
+        }
     }
 }
 
@@ -52,7 +56,12 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for NoteSelectorFu
         .iter()
         .map(|e| e.0.to_owned())
         .collect::<Vec<SelectorEntry>>();
-        filtered.par_sort_by(|a, b| a.get_sort_string().cmp(&b.get_sort_string()));
+        filtered.par_sort_by(|a, b| match self.sort_mode {
+            SortMode::FileUp => a.path_str.cmp(&b.path_str),
+            SortMode::FileDown => b.path_str.cmp(&a.path_str),
+            SortMode::TitleUp => a.search_str.cmp(&b.search_str),
+            SortMode::TitleDown => b.search_str.cmp(&a.search_str),
+        });
 
         debug!("filtered {} values", filtered.len());
         filtered
@@ -66,5 +75,9 @@ impl FilteredListFunctions<Vec<SelectorEntry>, SelectorEntry> for NoteSelectorFu
 
     fn header_element(&self, _state_data: &StateData<SelectorEntry>) -> Option<SelectorEntry> {
         None
+    }
+
+    fn button_icon(&self) -> Option<String> {
+        Some(self.sort_mode.get_icon())
     }
 }

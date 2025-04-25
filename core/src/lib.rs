@@ -8,17 +8,39 @@ use std::{
     fmt::Display,
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender},
+    time::{Duration, SystemTime},
 };
 
 use chrono::Utc;
 use db::VaultDB;
 use error::{DBError, FSError, VaultError};
-use log::{debug, info};
+use log::debug;
 use nfs::{
     load_note, save_note, visitor::NoteListVisitorBuilder, NoteEntryData, VaultEntry, VaultPath,
 };
 use note::{NoteContentData, NoteDetails};
 use utilities::path_to_string;
+
+pub struct IndexReport {
+    pub start: SystemTime,
+    pub duration: Duration,
+}
+
+impl IndexReport {
+    fn new() -> Self {
+        let start = SystemTime::now();
+        Self {
+            start,
+            duration: Duration::default(),
+        }
+    }
+
+    fn finish(&mut self) {
+        let time = SystemTime::now();
+        let duration = time.duration_since(self.start).unwrap_or_default();
+        self.duration = duration;
+    }
+}
 
 const JOURNAL_PATH: &str = "journal";
 #[derive(Debug, Clone, PartialEq)]
@@ -62,30 +84,33 @@ impl NoteVault {
     /// Then does a quick scan of the workspace directory to update the index if there are new or
     /// missing notes.
     /// This can be slow on large vaults.
-    pub fn init_and_validate(&self) -> Result<(), VaultError> {
+    pub fn init_and_validate(&self) -> Result<IndexReport, VaultError> {
         debug!("Initializing DB and validating it");
-        let db_result = self.vault_db.check_db()?;
+        let db_result = self.vault_db.check_db();
         match db_result {
-            db::DBStatus::Ready => {
-                // We only check if there are new notes
-                self.index_notes(NotesValidation::None)?;
+            Ok(check_res) => {
+                match check_res {
+                    db::DBStatus::Ready => {
+                        // We only check if there are new notes
+                        self.index_notes(NotesValidation::None)
+                    }
+                    db::DBStatus::Outdated => self.recreate_index(),
+                    db::DBStatus::NotValid => self.force_rebuild(),
+                    db::DBStatus::FileNotFound => {
+                        // No need to validate, no data there
+                        self.recreate_index()
+                    }
+                }
             }
-            db::DBStatus::Outdated => {
-                self.recreate_index()?;
-            }
-            db::DBStatus::NotValid => {
-                self.force_rebuild()?;
-            }
-            db::DBStatus::FileNotFound => {
-                // No need to validate, no data there
-                self.recreate_index()?;
+            Err(e) => {
+                debug!("Error validating the DB, rebuilding it: {}", e);
+                self.force_rebuild()
             }
         }
-        Ok(())
     }
 
     /// Deletes the db file and recreates the index
-    pub fn force_rebuild(&self) -> Result<(), VaultError> {
+    pub fn force_rebuild(&self) -> Result<IndexReport, VaultError> {
         let db_path = self.vault_db.get_db_path();
         let md = std::fs::metadata(&db_path).map_err(FSError::ReadFileError)?;
         // We delete the db file
@@ -101,12 +126,12 @@ impl NoteVault {
     /// and recreates the index
     /// This is similar to a force rebuild but instead of deleting the db file
     /// it only deletes the tables.
-    pub fn recreate_index(&self) -> Result<(), VaultError> {
+    pub fn recreate_index(&self) -> Result<IndexReport, VaultError> {
+        let index_report = IndexReport::new();
         debug!("Initializing DB from Vault request");
         self.vault_db.call(db::init_db)?;
         debug!("Tables created, creating index");
-        self.index_notes(NotesValidation::Full)?;
-        Ok(())
+        self.int_index_notes(index_report, NotesValidation::Full)
     }
 
     /// Traverses the whole vault directory and verifies the notes to
@@ -118,22 +143,23 @@ impl NoteVault {
     /// NotesValidation::Fast Checks the size of the file to identify if the note has changed and
     /// then update the DB entry.
     /// NotesValidation::None Checks if the note exists or not.
-    pub fn index_notes(&self, validation_mode: NotesValidation) -> Result<(), VaultError> {
-        info!("Start indexing files");
-        let start = std::time::SystemTime::now();
+    pub fn index_notes(&self, validation_mode: NotesValidation) -> Result<IndexReport, VaultError> {
+        let index_report = IndexReport::new();
+        self.int_index_notes(index_report, validation_mode)
+    }
+
+    fn int_index_notes(
+        &self,
+        mut index_report: IndexReport,
+        validation_mode: NotesValidation,
+    ) -> Result<IndexReport, VaultError> {
         let workspace_path = self.workspace_path.clone();
         self.vault_db.call(move |conn| {
             create_index_for(&workspace_path, conn, &VaultPath::root(), validation_mode)
         })?;
-
-        let time = std::time::SystemTime::now()
-            .duration_since(start)
-            .expect("Something's wrong with the time");
-        info!(
-            "Files indexed in the DB in {} milliseconds",
-            time.as_millis()
-        );
-        Ok(())
+        index_report.finish();
+        debug!("TIME: {}", index_report.duration.as_secs());
+        Ok(index_report)
     }
 
     pub fn exists(&self, path: &VaultPath) -> Option<VaultEntry> {
@@ -333,7 +359,7 @@ impl NoteVault {
         // We make sure the path is a note path, so we append the extension if doesn't exist
         // let path = VaultPath::note_path_from(&path_or_note);
         debug!("PATH: {}", path);
-        let (parent, name) = path.get_parent_path();
+        let (_parent, name) = path.get_parent_path();
 
         // If it starts with the root trailing slash, we assume is looking for a path
         // let is_note_name = !path_or_note.as_ref().starts_with(nfs::PATH_SEPARATOR)

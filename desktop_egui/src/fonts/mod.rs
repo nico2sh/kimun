@@ -23,7 +23,7 @@ pub fn set_fonts(ctx: &egui::Context) {
     fonts.font_data.insert(
         ICON_FONT.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../res/noters.ttf"
+            "../../res/icons.ttf"
         ))),
     );
 
@@ -45,3 +45,8 @@ pub fn set_fonts(ctx: &egui::Context) {
 pub const NOTE: &str = "\u{E800}";
 pub const DIRECTORY: &str = "\u{E802}";
 pub const ATTACHMENT: &str = "\u{E803}";
+pub const SORT_UP: &str = "\u{F160}";
+pub const SORT_DOWN: &str = "\u{F161}";
+pub const SORT_TITLE_UP: &str = "\u{F15D}";
+pub const SORT_TITLE_DOWN: &str = "\u{F15E}";
+pub const LIST: &str = "\u{E801}";
