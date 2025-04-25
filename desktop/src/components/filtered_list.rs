@@ -112,7 +112,7 @@ where
         let ma = mouse_area(cont)
             .on_press(ListViewMsg::SelectHeader.into())
             .interaction(Interaction::Pointer)
-            .on_enter(KimunMessage::Select(RowSelection::Index(0)));
+            .on_enter(KimunMessage::Select(RowSelection::None));
 
         ma.into()
     }

@@ -99,6 +99,10 @@ where
                     task
                 }
             }
+            RowSelection::None => {
+                self.state_data.set_selected(None);
+                Task::done(KimunMessage::Select(RowSelection::Highlighted(None)))
+            }
             RowSelection::Index(index) => {
                 self.state_data.set_selected(Some(index));
                 Task::done(KimunMessage::Select(RowSelection::Highlighted(
@@ -189,6 +193,7 @@ fn styled(pair: palette::Pair) -> container::Style {
 pub enum RowSelection {
     Next,
     Previous,
+    None,
     Index(usize),
     Highlighted(Option<usize>),
     Enter,
