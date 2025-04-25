@@ -16,33 +16,20 @@ use super::{KimunComponent, KimunListElement};
 
 pub static SCROLLABLE_ID: LazyLock<scrollable::Id> = LazyLock::new(scrollable::Id::unique);
 
-pub trait ListSelector<E>
+pub struct KimunList<E>
 where
     E: KimunListElement,
-{
-    fn on_enter(&mut self, element: E) -> Task<KimunMessage>;
-}
-
-pub struct KimunList<E, S>
-where
-    E: KimunListElement,
-    S: ListSelector<E>,
 {
     state_data: StateData<E>,
-    selector: S,
 }
 
-impl<E, S> KimunList<E, S>
+impl<E> KimunList<E>
 where
     E: KimunListElement,
-    S: ListSelector<E>,
 {
-    pub fn new(selector: S) -> Self {
+    pub fn new() -> Self {
         let state_data = StateData::new();
-        Self {
-            state_data,
-            selector,
-        }
+        Self { state_data }
     }
 
     pub fn select_none(&mut self) {
@@ -126,7 +113,7 @@ where
             RowSelection::Enter => {
                 if let Some(row) = &self.get_selection() {
                     debug!("And there's a selection {:?}", row);
-                    self.selector.on_enter(row.to_owned())
+                    row.on_select()
                 } else {
                     Task::none()
                 }
@@ -135,10 +122,9 @@ where
     }
 }
 
-impl<E, S> KimunComponent for KimunList<E, S>
+impl<E> KimunComponent for KimunList<E>
 where
     E: KimunListElement,
-    S: ListSelector<E>,
 {
     fn update(&mut self, message: KimunMessage) -> iced::Task<KimunMessage> {
         if let KimunMessage::Select(message) = message {

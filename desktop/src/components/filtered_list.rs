@@ -11,13 +11,15 @@ use log::debug;
 
 use crate::{
     KimunMessage,
+    editor::EditorMsg,
     fonts::{FONT_UI, FONT_UI_ITALIC},
     icons::{ICON, KimunIcon},
+    style_units::SMALL_SPACING,
 };
 
 use super::{
     KimunComponent, KimunListElement,
-    list::{KimunList, ListSelector, RowSelection},
+    list::{KimunList, RowSelection},
 };
 
 static TEXT_INPUT_ID: LazyLock<text_input::Id> = LazyLock::new(text_input::Id::unique);
@@ -59,26 +61,24 @@ impl std::fmt::Display for ListViewMsg {
     }
 }
 
-pub struct FilteredList<F, S>
+pub struct FilteredList<F>
 where
     F: FilteredListFunctions + 'static,
-    S: ListSelector<VaultRow>,
 {
     functions: Arc<Mutex<F>>,
     ready: bool,
     filter_text: String,
-    list: KimunList<VaultRow, S>,
+    list: KimunList<VaultRow>,
 }
 
-impl<F, S> FilteredList<F, S>
+impl<F> FilteredList<F>
 where
     F: FilteredListFunctions + 'static,
-    S: ListSelector<VaultRow>,
 {
-    pub fn new(fun: F, sel: S) -> (Self, iced::Task<KimunMessage>) {
+    pub fn new(fun: F) -> (Self, iced::Task<KimunMessage>) {
         let functions = Arc::new(Mutex::new(fun));
         let filter_text = String::new();
-        let list = KimunList::new(sel);
+        let list = KimunList::new();
         (
             Self {
                 functions,
@@ -100,10 +100,10 @@ where
             iced::widget::text("Create new note: ").font(FONT_UI),
             iced::widget::text(header.path.to_string()).font(FONT_UI_ITALIC),
         ]
-        .spacing(8);
+        .spacing(SMALL_SPACING);
         let cont = iced::widget::container(v)
             .padding(Padding {
-                top: 0.0,
+                top: 8.0,
                 right: 10.0,
                 bottom: 0.0,
                 left: 10.0,
@@ -201,10 +201,9 @@ fn styled(pair: palette::Pair) -> container::Style {
     }
 }
 
-impl<F, S> KimunComponent for FilteredList<F, S>
+impl<F> KimunComponent for FilteredList<F>
 where
     F: FilteredListFunctions,
-    S: ListSelector<VaultRow>,
 {
     fn update(&mut self, message: KimunMessage) -> iced::Task<KimunMessage> {
         if let KimunMessage::ListViewMessage(message) = message {
@@ -411,6 +410,40 @@ impl KimunListElement for VaultRow {
             VaultRowType::Directory => 24.0,
             VaultRowType::Attachment => 22.0,
             VaultRowType::NewNote => 24.0,
+        }
+    }
+
+    fn on_select(&self) -> Task<KimunMessage> {
+        match self.entry_type {
+            VaultRowType::Note { title: _ } => {
+                debug!("Open note");
+                // We close first the modal, then we open the note
+                Task::batch([
+                    Task::done(KimunMessage::CloseModal),
+                    Task::done(KimunMessage::EditorMessage(EditorMsg::OpenNote(
+                        self.path.clone(),
+                    ))),
+                ])
+            }
+            VaultRowType::Directory => {
+                let directory = self.clone();
+                // let new_one = Self::new(self.path.clone(), self.vault.clone());
+
+                Task::done(KimunMessage::ListViewMessage(ListViewMsg::Initializing(
+                    Some(directory),
+                )))
+            }
+            VaultRowType::Attachment => Task::none(),
+            VaultRowType::NewNote => {
+                debug!("New note");
+                // We close first the modal, then we open the note
+                Task::batch([
+                    Task::done(KimunMessage::CloseModal),
+                    Task::done(KimunMessage::EditorMessage(EditorMsg::NewNote(
+                        self.path.clone(),
+                    ))),
+                ])
+            }
         }
     }
 }

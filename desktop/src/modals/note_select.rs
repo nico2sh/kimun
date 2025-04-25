@@ -9,29 +9,13 @@ use kimun_core::{
 
 use crate::{
     KimunMessage,
-    components::{
-        KimunComponent, KimunListElement,
-        list::{KimunList, ListSelector},
-    },
+    components::{KimunComponent, KimunListElement, list::KimunList},
     editor::EditorMsg,
     fonts::{FONT_UI, FONT_UI_ITALIC},
     icons::{ICON, KimunIcon},
 };
 
 use super::KimunModal;
-
-struct NoteSelector {}
-
-impl ListSelector<NoteRow> for NoteSelector {
-    fn on_enter(&mut self, element: NoteRow) -> Task<KimunMessage> {
-        Task::batch([
-            Task::done(KimunMessage::CloseModal),
-            Task::done(KimunMessage::EditorMessage(EditorMsg::OpenNote(
-                element.path.clone(),
-            ))),
-        ])
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct NoteRow {
@@ -55,6 +39,15 @@ impl KimunListElement for NoteRow {
     fn get_height(&self) -> f32 {
         44.0
     }
+
+    fn on_select(&self) -> Task<KimunMessage> {
+        Task::batch([
+            Task::done(KimunMessage::CloseModal),
+            Task::done(KimunMessage::EditorMessage(EditorMsg::OpenNote(
+                self.path.clone(),
+            ))),
+        ])
+    }
 }
 
 impl From<(NoteEntryData, NoteContentData)> for NoteRow {
@@ -67,13 +60,12 @@ impl From<(NoteEntryData, NoteContentData)> for NoteRow {
 }
 
 pub struct NoteSelect {
-    list: KimunList<NoteRow, NoteSelector>,
+    list: KimunList<NoteRow>,
 }
 
 impl NoteSelect {
     pub fn new() -> Self {
-        let selector = NoteSelector {};
-        let list = KimunList::new(selector);
+        let list = KimunList::new();
         Self { list }
     }
 
