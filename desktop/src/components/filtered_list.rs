@@ -1,7 +1,7 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use iced::{
-    Background, Element, Length, Padding, Task, Theme, border,
+    Background, Element, Length, Task, Theme, border,
     mouse::Interaction,
     theme::palette,
     widget::{container, mouse_area, text_input},
@@ -98,7 +98,7 @@ where
     }
 
     fn get_header_view(&self, header: &VaultRow) -> Element<'_, KimunMessage> {
-        let selected = false;
+        let selected = self.list.get_selection().is_none();
         let v = iced::widget::row![
             iced::widget::text(KimunIcon::Note.get_char()).font(ICON),
             iced::widget::text("Create new note: ").font(FONT_UI),
@@ -226,12 +226,17 @@ where
     }
 
     fn view(&self) -> iced::Element<KimunMessage> {
+        let submit_message = if self.list.get_selection().is_none() && self.header.is_some() {
+            KimunMessage::ListViewMessage(ListViewMsg::SelectHeader)
+        } else {
+            KimunMessage::Select(RowSelection::Enter)
+        };
         let text_filter = text_input("Search...", &self.filter_text)
             .on_input(|filter| {
                 KimunMessage::ListViewMessage(ListViewMsg::UpdateFilterText { filter })
             })
             .id(TEXT_INPUT_ID.clone())
-            .on_submit(KimunMessage::Select(RowSelection::Enter));
+            .on_submit(submit_message);
 
         // Insert header here
         if let Some(head_row) = &self.header {
