@@ -4,3 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+clap = { version = "4.5", features = ["derive"] }
+fastembed = "4.8"
+kimun_core = { path = "../core" }
+reqwest = "0.12"
+rusqlite = { version = "0.35", features = ["bundled"] }
+sqlite-vec = "0.1"
+zerocopy = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.11"
