@@ -23,6 +23,8 @@ pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
 pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
     let (frontmatter, text) = remove_frontmatter(md_text.as_ref());
 
+    let text = cleanup_wikilinks(text);
+
     let mut content_chunks = parse_text(&text);
     if !frontmatter.is_empty() {
         content_chunks.push(ContentChunk {
@@ -31,6 +33,24 @@ pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
         })
     };
     content_chunks
+}
+
+fn cleanup_wikilinks<S: AsRef<str>>(md_text: S) -> String {
+    let wiki_link_regex = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#; // Remember to check the pipe `|`
+    let rx = Regex::new(wiki_link_regex).unwrap();
+    let text = rx
+        .replace_all(md_text.as_ref(), |caps: &Captures| {
+            let items = &caps["link_text"];
+            let link_text = items.split("|").collect::<Vec<&str>>();
+            let text = match link_text.len() {
+                1 => link_text[0],
+                2 => link_text[1],
+                _ => "",
+            };
+            text.to_string()
+        })
+        .into_owned();
+    text
 }
 
 // Convert any wikilink into a link to a note
@@ -738,5 +758,33 @@ Some text"#;
         assert_eq!("Intro text", content_chunks[0].get_text());
         assert_eq!("Title", content_chunks[1].get_breadcrumb());
         assert_eq!("Some text", content_chunks[1].get_text());
+    }
+
+    #[test]
+    fn check_content_with_link() {
+        let markdown = r#"# Title
+
+[Some text linking](www.example.com)"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text linking", content_chunks[0].get_text());
+    }
+
+    #[test]
+    fn check_content_with_wikilink() {
+        let markdown = r#"# Title
+
+[[Some text linking]]"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text linking", content_chunks[0].get_text());
     }
 }
