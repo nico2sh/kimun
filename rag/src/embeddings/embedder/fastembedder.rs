@@ -19,14 +19,11 @@ impl FastEmbedder {
 }
 
 impl Embedder for FastEmbedder {
-    async fn generate_embeddings(
-        &self,
-        documents: &Vec<KimunChunk>,
-    ) -> anyhow::Result<Vec<Vec<f32>>> {
+    async fn generate_embeddings(&self, documents: &[KimunChunk]) -> anyhow::Result<Vec<Vec<f32>>> {
         let embeds = self.model.embed(
             documents
                 .iter()
-                .map(|chunk| format!("passage: {} - {}", chunk.metadata.title, chunk.content))
+                .map(|chunk| format!("passage: {}\n{}", chunk.metadata.title, chunk.content))
                 .collect(),
             None,
         )?;
