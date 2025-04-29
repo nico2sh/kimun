@@ -85,7 +85,6 @@ impl VecDB {
           FROM vec_items
           JOIN docs ON vec_items.rowid = docs.rowid
           WHERE vec_items.embedding MATCH ?1
-          AND distance < 0.80
           AND k = 128
           ORDER BY vec_items.distance
         ",
