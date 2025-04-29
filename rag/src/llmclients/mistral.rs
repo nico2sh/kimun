@@ -1,4 +1,5 @@
 use anyhow::bail;
+use log::debug;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,7 @@ impl MistralClient {
             if let Some(date) = chunk.metadata.get_date_string() {
                 context_string.push_str(&format!("Date: {date}\n"));
                 title = title
+                    .trim()
                     .strip_prefix(&date)
                     .map(|t| t.to_string())
                     .unwrap_or(title);
@@ -95,6 +97,16 @@ impl LLMClient for MistralClient {
                 .map(|c| c.message.content.to_owned())
                 .collect::<Vec<String>>()
                 .join("\n");
+            debug!(
+                "Prompt Tokens Used: {}",
+                mistral_response.usage.prompt_tokens
+            );
+            debug!(
+                "Completion Tokens Used: {}",
+                mistral_response.usage.completion_tokens
+            );
+            debug!("Total Tokens: {}", mistral_response.usage.total_tokens);
+
             Ok(response)
         } else {
             let status = response.status();

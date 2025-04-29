@@ -11,12 +11,6 @@ pub struct KimunChunk {
     pub metadata: KimunMetadata,
 }
 
-impl KimunChunk {
-    pub fn to_embed_payload(&self) -> String {
-        format!("passage: {}\n{}", self.metadata.title, self.content)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct KimunMetadata {
     pub source_path: String,
@@ -132,7 +126,7 @@ impl ChunkLoader {
         chunks
     }
 
-    pub fn chunk_document(doc: KimunChunk, chunk_size: usize, overlap: usize) -> Vec<KimunChunk> {
+    pub fn _chunk_document(doc: KimunChunk, chunk_size: usize, overlap: usize) -> Vec<KimunChunk> {
         let content = &doc.content;
         let mut chunks = Vec::new();
 
