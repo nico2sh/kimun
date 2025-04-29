@@ -1437,6 +1437,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "kimun_rag"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "env_logger",
+ "fastembed",
+ "kimun_core",
+ "log",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sqlite-vec",
+ "tokio",
+ "zerocopy",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2015,26 +2035,6 @@ name = "r-efi"
 version = "5.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74765f6d916ee2faa39bc8e68e4f3ed8949b48cccdac59983d287a7cb71ce9c5"
-
-[[package]]
-name = "rag"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "env_logger",
- "fastembed",
- "kimun_core",
- "log",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sqlite-vec",
- "tokio",
- "zerocopy",
-]
 
 [[package]]
 name = "rand"
