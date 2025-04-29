@@ -11,4 +11,4 @@
 **/*.rs.bk
 
 kimun.app
-.DS_Store
+**/.DS_Store
