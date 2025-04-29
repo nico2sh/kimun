@@ -5,6 +5,7 @@
 
 use kimun_core::{NoteVault, nfs::VaultPath, note::NoteDetails};
 
+#[derive(Debug, Clone)]
 pub struct KimunChunk {
     pub content: String,
     pub metadata: KimunMetadata,
@@ -16,6 +17,7 @@ impl KimunChunk {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct KimunMetadata {
     pub source_path: String,
     pub title: String,
@@ -64,10 +66,129 @@ impl ChunkLoader {
                     content: chunk.text.clone(),
                     metadata,
                 };
-                result.push(document);
+
+                // We chunk into manageable sizes
+                let doc_chunks = ChunkLoader::chunk_document_adaptive(document, 1024, 2048);
+                for doc in doc_chunks {
+                    result.push(doc);
+                }
             }
         }
 
         Ok(result)
+    }
+
+    pub fn chunk_document_adaptive(
+        doc: KimunChunk,
+        target_size: usize,
+        max_size: usize,
+    ) -> Vec<KimunChunk> {
+        let content = &doc.content;
+        let mut chunks = Vec::new();
+        let mut start = 0;
+
+        let mid_start_size = (target_size - (max_size - target_size) / 2).max(target_size / 2);
+
+        while start < content.len() {
+            // Calculate potential end points
+            let target_end = (start + target_size).min(content.len());
+            let min_end = (start + mid_start_size).min(content.len());
+            let max_end = (start + max_size).min(content.len());
+
+            // Try to find natural boundaries (paragraph break, then sentence, then word)
+            let paragraph_break = content[min_end..max_end]
+                .find("\n\n")
+                .map(|pos| min_end + pos + 2);
+
+            let sentence_break = content[min_end..max_end]
+                .find(['.', '!', '?', '\n'])
+                .map(|pos| min_end + pos + 1);
+
+            let word_break = content[min_end..max_end]
+                .find(' ')
+                .map(|pos| min_end + pos + 1);
+
+            // Choose the best breakpoint
+            let break_end = paragraph_break
+                .or(sentence_break)
+                .or(word_break)
+                .unwrap_or(max_end);
+
+            let end = if content.len() - target_end < content.len() - break_end {
+                content.len()
+            } else {
+                break_end
+            };
+
+            let chunk_content = content[start..end].to_string();
+            chunks.push(KimunChunk {
+                content: chunk_content.trim().to_string(),
+                metadata: doc.metadata.clone(),
+            });
+
+            start = end;
+        }
+
+        chunks
+    }
+
+    pub fn chunk_document(doc: KimunChunk, chunk_size: usize, overlap: usize) -> Vec<KimunChunk> {
+        let content = &doc.content;
+        let mut chunks = Vec::new();
+
+        // Simple chunking by characters with overlap
+        let mut start = 0;
+        while start < content.len() {
+            let end = (start + chunk_size).min(content.len());
+
+            // Find a good breaking point (end of sentence or paragraph)
+            let mut actual_end = end;
+            if end < content.len() {
+                // Try to find the end of a sentence
+                if let Some(pos) = content[start..end].rfind(['.', '!', '?', '\n']) {
+                    actual_end = start + pos + 1;
+                }
+            }
+
+            let chunk_content = content[start..actual_end].to_string();
+            chunks.push(KimunChunk {
+                content: chunk_content,
+                metadata: doc.metadata.clone(),
+            });
+
+            start = if actual_end == end && end < content.len() {
+                actual_end - overlap
+            } else {
+                actual_end
+            };
+        }
+
+        chunks
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{ChunkLoader, KimunChunk};
+
+    #[test]
+    fn split_chunks() {
+        let doc_content = r#"First paragraph.
+
+Second line"#;
+
+        let chunk = KimunChunk {
+            content: doc_content.to_string(),
+            metadata: super::KimunMetadata {
+                source_path: "path".to_string(),
+                title: "".to_string(),
+                date: None,
+            },
+        };
+
+        let chunks = ChunkLoader::chunk_document_adaptive(chunk, 10, 20);
+        assert_eq!(2, chunks.len());
+        assert_eq!("First paragraph.".to_string(), chunks[0].content);
+        assert_eq!("Second line".to_string(), chunks[1].content);
     }
 }

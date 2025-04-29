@@ -12,6 +12,8 @@ use crate::{
 use super::Link;
 
 const MAX_TITLE_LENGTH: usize = 40;
+const REGEX_WIKILINK: &str = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#;
+const REGEX_HASHTAG: &str = r#"#(?P<ht_text>[A-Za-z0-9_]+)"#;
 
 pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
     let hash = nfs::hash_text(md_text.as_ref());
@@ -23,7 +25,7 @@ pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
 pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
     let (frontmatter, text) = remove_frontmatter(md_text.as_ref());
 
-    let text = cleanup_wikilinks(text);
+    let text = cleanup_hashtags(cleanup_wikilinks(text));
 
     let mut content_chunks = parse_text(&text);
     if !frontmatter.is_empty() {
@@ -36,8 +38,7 @@ pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
 }
 
 fn cleanup_wikilinks<S: AsRef<str>>(md_text: S) -> String {
-    let wiki_link_regex = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#; // Remember to check the pipe `|`
-    let rx = Regex::new(wiki_link_regex).unwrap();
+    let rx = Regex::new(REGEX_WIKILINK).unwrap();
     let text = rx
         .replace_all(md_text.as_ref(), |caps: &Captures| {
             let items = &caps["link_text"];
@@ -53,10 +54,20 @@ fn cleanup_wikilinks<S: AsRef<str>>(md_text: S) -> String {
     text
 }
 
+fn cleanup_hashtags<S: AsRef<str>>(md_text: S) -> String {
+    let rx = Regex::new(REGEX_HASHTAG).unwrap();
+    let text = rx
+        .replace_all(md_text.as_ref(), |caps: &Captures| {
+            let text = &caps["ht_text"];
+            text.to_string()
+        })
+        .into_owned();
+    text
+}
+
 // Convert any wikilink into a link to a note
 fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
-    let wiki_link_regex = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#; // Remember to check the pipe `|`
-    let rx = Regex::new(wiki_link_regex).unwrap();
+    let rx = Regex::new(REGEX_WIKILINK).unwrap();
     let mut note_links = vec![];
     let text = rx
         .replace_all(md_text.as_ref(), |caps: &Captures| {
@@ -786,5 +797,22 @@ Some text"#;
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text linking", content_chunks[0].get_text());
+    }
+
+    #[test]
+    fn check_content_with_hashtags() {
+        let markdown = r#"# Title
+
+Some text, #hashtag and more text"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!(
+            "Some text, hashtag and more text",
+            content_chunks[0].get_text()
+        );
     }
 }
