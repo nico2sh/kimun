@@ -1,6 +1,8 @@
 use crate::document::KimunChunk;
 
 mod embedder;
+
+pub mod veclance;
 pub mod vecsqlite;
 
 pub trait Embeddings {

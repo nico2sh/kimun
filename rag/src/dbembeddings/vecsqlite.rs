@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::SystemTime};
+use std::{
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use chrono::NaiveDate;
 use log::debug;
@@ -21,14 +24,14 @@ pub struct VecSQLite {
 }
 
 impl VecSQLite {
-    pub fn new() -> Self {
+    pub fn new<P: AsRef<Path>>(path: P) -> Self {
         unsafe {
             sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
         }
 
         let embedder = FastEmbedder::new().unwrap();
 
-        let mut db_path = std::env::current_dir().unwrap();
+        let mut db_path = path.as_ref().to_path_buf();
         db_path.push(DB_FILENAME);
         Self { embedder, db_path }
     }
@@ -118,8 +121,8 @@ impl VecSQLite {
             result.len(),
             duration
         );
-        debug!("Max distance: {}", max_distance);
         debug!("Min distance: {}", min_distance);
+        debug!("Max distance: {}", max_distance);
         Ok(result)
     }
 }
