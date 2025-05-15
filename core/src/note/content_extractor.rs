@@ -120,7 +120,7 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
     let (_frontmatter, md_text) = remove_frontmatter(md_text);
     let mut parser = pulldown_cmark::Parser::new(md_text.as_ref());
     let result = loop_events(&mut parser);
-    // println!("{:?}", result);
+    // debug!("{:?}", result);
     let title = result
         .iter()
         .find_map(|tt| match tt {
@@ -249,23 +249,15 @@ impl TextLine {
     }
 }
 
-fn text_lines_to_string(text_lines: Vec<TextLine>) -> String {
-    text_lines
-        .iter()
-        .map(|tt| tt.to_text())
-        .collect::<Vec<String>>()
-        .join("\n")
-}
-
 fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
     let mut text_lines: Vec<TextLine> = vec![];
     let mut tag_stack = vec![];
     for event in parser.by_ref() {
-        println!("TEXT LINES BEFORE: {:?}", text_lines);
-        println!("EVENT: {:?}", event);
+        debug!("TEXT LINES BEFORE: {:?}", text_lines);
+        debug!("EVENT: {:?}", event);
         match event {
             Event::Start(tag) => {
-                println!(
+                debug!(
                     "FOUND TAG: {:?}\n -> CURRENT ELEMENT LIST: {:?}",
                     tag, text_lines
                 );
@@ -332,7 +324,7 @@ fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
                 text_lines.push(TextLine::Text(result.to_string()));
             }
         }
-        println!("TEXT LINES AFTER: {:?}", text_lines);
+        debug!("TEXT LINES AFTER: {:?}", text_lines);
     }
     text_lines
 }
@@ -345,7 +337,7 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
             classes: _,
             attrs: _,
         } => {
-            // println!("TEXT LINE: {:?}", text_type);
+            // debug!("TEXT LINE: {:?}", text_type);
             let level = match level {
                 pulldown_cmark::HeadingLevel::H1 => 1,
                 pulldown_cmark::HeadingLevel::H2 => 2,
@@ -416,7 +408,7 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
         }
         _ => {
             // nada
-            println!("LOOPING IN TAG: {:?}", tag);
+            debug!("LOOPING IN TAG: {:?}", tag);
             vec![current_line]
         }
     }
@@ -448,7 +440,7 @@ fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
         }
         _ => {
             // nada
-            println!("LOOPING IN TAG: {:?}", tag_end);
+            debug!("LOOPING IN TAG: {:?}", tag_end);
             vec![current_line]
         }
     }
@@ -456,6 +448,8 @@ fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
 
 #[cfg(test)]
 mod test {
+    use log::debug;
+
     use crate::{
         nfs::VaultPath,
         note::{
@@ -542,7 +536,7 @@ mod test {
             link.text.eq("note.md") && link.ltype.eq(&LinkType::Note(path))
         }));
         assert!(links.iter().any(|link| {
-            println!("{:?}", link);
+            debug!("{:?}", link);
             let url = "https://www.example.com".to_string();
             link.text.eq("url") && link.ltype.eq(&LinkType::Url) && link.raw_link.eq(&url)
         }));
@@ -852,7 +846,7 @@ Some text"#;
         let markdown = r#"# Title **bold** *italic*
 Some text"#;
         let content_chunks = get_content_chunks(markdown);
-        println!("===================================");
+        debug!("===================================");
         let data = get_content_data(markdown);
 
         assert_eq!(1, content_chunks.len());
