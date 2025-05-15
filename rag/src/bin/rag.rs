@@ -1,16 +1,8 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
-use document::ChunkLoader;
-
-use embeddings::Embeddings;
-use embeddings::vecsqlite::VecSQLite;
+use clap::{Parser, Subcommand, arg, command};
 use kimun_core::NoteVault;
-use llmclients::{LLMClient, mistral::MistralClient};
-
-mod document;
-mod embeddings;
-mod llmclients;
+use kimun_rag::KimunRag;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -35,23 +27,18 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let cli = Cli::parse();
 
-    let mut db = VecSQLite::new();
+    let mut rag = KimunRag::sqlite(&std::env::current_dir()?);
 
     match cli.command {
         Commands::Index => {
-            db.init()?;
+            rag.init()?;
             let vault_path = PathBuf::from("/Users/nhormazabal/OneDrive/Notes");
             let vault = NoteVault::new(vault_path)?;
-            let chunk_loader = ChunkLoader::new(vault);
-            let chunks = chunk_loader.load_notes()?;
-
-            db.store_embeddings(&chunks).await?;
+            rag.store_embeddings(vault).await?;
         }
         Commands::Ask { query } => {
-            let context = db.query_embedding(&query).await?;
+            let answer = rag.query(query).await?;
 
-            let mistral = MistralClient::new();
-            let answer = mistral.ask(query, context).await?;
             println!("{answer}");
         }
     }
