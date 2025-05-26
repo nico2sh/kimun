@@ -1916,6 +1916,7 @@ version = "0.14.0-dev"
 dependencies = [
  "iced_beacon",
  "iced_core",
+ "iced_futures",
  "log",
 ]
 
@@ -1926,6 +1927,7 @@ dependencies = [
  "iced_debug",
  "iced_program",
  "iced_widget",
+ "log",
 ]
 
 [[package]]
