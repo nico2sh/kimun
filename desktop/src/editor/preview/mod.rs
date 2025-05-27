@@ -159,7 +159,7 @@ impl PreviewPage {
                             fade_in: Animation::new(false)
                                 .quick()
                                 .easing(animation::Easing::EaseInOut)
-                                .go(true),
+                                .go(true, self.now),
                         })
                         .unwrap_or_else(Image::Errored),
                 );

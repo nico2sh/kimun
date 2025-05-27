@@ -1,0 +1,8 @@
+api.env
+target/
+pkg/
+**/*.rs.bk
+dist/
+traces/
+kimun_vec.sqlite
+.fastembed_cache/
