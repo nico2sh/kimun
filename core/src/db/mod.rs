@@ -1,8 +1,7 @@
-// pub mod async_db;
+mod async_db;
 mod search_terms;
 
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::path::{Path, PathBuf};
 
 use log::{debug, error};
