@@ -5,6 +5,7 @@ pub mod note;
 pub mod utilities;
 
 use std::{
+    collections::HashMap,
     fmt::Display,
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender},
@@ -18,7 +19,7 @@ use log::debug;
 use nfs::{
     load_note, save_note, visitor::NoteListVisitorBuilder, NoteEntryData, VaultEntry, VaultPath,
 };
-use note::{NoteContentData, NoteDetails};
+use note::{ContentChunk, NoteContentData, NoteDetails};
 use utilities::path_to_string;
 
 pub struct IndexReport {
@@ -224,6 +225,18 @@ impl NoteVault {
     pub fn load_note(&self, path: &VaultPath) -> Result<NoteDetails, VaultError> {
         let text = self.get_note_text(path)?;
         Ok(NoteDetails::new(path, text))
+    }
+
+    pub fn get_note_chunks(
+        &self,
+        path: &VaultPath,
+    ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, VaultError> {
+        let path = path.to_owned();
+        let a = self
+            .vault_db
+            .call(move |conn| db::get_notes_sections(conn, &path, false))?;
+
+        Ok(a)
     }
 
     // pub fn get_title<S: AsRef<str>>(text: S) -> String {
