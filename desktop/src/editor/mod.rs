@@ -220,13 +220,18 @@ pub fn manage_editor_keystrokes(
     } else if key.as_ref().eq(&Key::Named(Named::Tab)) {
         // Indenting
         let action = if modifiers.shift() {
-            widget::text_editor::Edit::Unindent
+            // We unindent
+            widget::text_editor::Binding::Custom(KimunMessage::EditorMessage(EditorMsg::Edit(
+                widget::text_editor::Action::Edit(widget::text_editor::Edit::Unindent),
+            )))
         } else {
-            widget::text_editor::Edit::Indent
+            // We add four spaces
+            widget::text_editor::Binding::Sequence(vec![
+                widget::text_editor::Binding::Insert(' ');
+                4
+            ])
         };
-        Some(widget::text_editor::Binding::Custom(
-            KimunMessage::EditorMessage(EditorMsg::Edit(widget::text_editor::Action::Edit(action))),
-        ))
+        Some(action)
     } else {
         None
     }
