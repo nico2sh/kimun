@@ -253,14 +253,14 @@ fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
     let mut text_lines: Vec<TextLine> = vec![];
     let mut tag_stack = vec![];
     for event in parser.by_ref() {
-        debug!("TEXT LINES BEFORE: {:?}", text_lines);
-        debug!("EVENT: {:?}", event);
+        // debug!("TEXT LINES BEFORE: {:?}", text_lines);
+        // debug!("EVENT: {:?}", event);
         match event {
             Event::Start(tag) => {
-                debug!(
-                    "FOUND TAG: {:?}\n -> CURRENT ELEMENT LIST: {:?}",
-                    tag, text_lines
-                );
+                // debug!(
+                //     "FOUND TAG: {:?}\n -> CURRENT ELEMENT LIST: {:?}",
+                //     tag, text_lines
+                // );
                 let tag = tag.to_owned();
                 let current_line = text_lines.pop().unwrap_or_default();
                 let new_lines = parse_tag(&tag, current_line);
@@ -293,7 +293,8 @@ fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
                 text_lines.push(last_text.append_text(cow_str.to_string()));
             }
             Event::Code(cow_str) => {
-                text_lines.push(TextLine::Text(format!("`{}`", cow_str)));
+                let current_line = text_lines.pop().unwrap_or_default();
+                text_lines.push(current_line.append_text(format!("`{}`", cow_str)));
             }
             Event::InlineMath(cow_str) => {
                 text_lines.push(TextLine::Text(cow_str.to_string()));
@@ -324,7 +325,7 @@ fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
                 text_lines.push(TextLine::Text(result.to_string()));
             }
         }
-        debug!("TEXT LINES AFTER: {:?}", text_lines);
+        // debug!("TEXT LINES AFTER: {:?}", text_lines);
     }
     text_lines
 }
@@ -366,9 +367,9 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
         }
         Tag::CodeBlock(kind) => {
             let open = match kind {
-                pulldown_cmark::CodeBlockKind::Indented => "```\n".to_string(),
+                pulldown_cmark::CodeBlockKind::Indented => "```".to_string(),
                 pulldown_cmark::CodeBlockKind::Fenced(cow_str) => {
-                    format!("```{}\n", cow_str)
+                    format!("```{}", cow_str)
                 }
             };
             vec![TextLine::Text(open), TextLine::Empty]
@@ -408,7 +409,7 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
         }
         _ => {
             // nada
-            debug!("LOOPING IN TAG: {:?}", tag);
+            // debug!("LOOPING IN TAG: {:?}", tag);
             vec![current_line]
         }
     }
@@ -440,7 +441,7 @@ fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
         }
         _ => {
             // nada
-            debug!("LOOPING IN TAG: {:?}", tag_end);
+            // debug!("LOOPING IN TAG: {:?}", tag_end);
             vec![current_line]
         }
     }
@@ -636,6 +637,25 @@ Some text"#;
             content_chunks[0].get_text()
         );
     }
+
+    #[test]
+    fn convert_list_empty_item() {
+        let markdown = r#"# Title
+
+- First Item
+- Second Item
+- 
+
+"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("* First Item\n* Second Item", content_chunks[0].get_text());
+    }
+
     #[test]
     fn check_title_no_header() {
         let markdown = r#"[No header](https://example.com)
@@ -914,6 +934,46 @@ Some text, #hashtag and more text"#;
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!(
             "Some text, hashtag and more text",
+            content_chunks[0].get_text()
+        );
+    }
+
+    #[test]
+    fn check_code() {
+        let markdown = r#"# Title
+
+Some text, `code` and more text"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!(
+            "Some text, `code` and more text",
+            content_chunks[0].get_text()
+        );
+    }
+
+    #[test]
+    fn check_code_block() {
+        let markdown = r#"# Title
+
+Some text
+
+```bash
+mkdir test
+ls -la ./test
+```"#;
+
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!(
+            "Some text\n```bash\nmkdir test\nls -la ./test\n```",
             content_chunks[0].get_text()
         );
     }
