@@ -1,6 +1,7 @@
-// pub mod async_db;
+mod async_db;
 mod search_terms;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use log::{debug, error};
@@ -9,7 +10,7 @@ use rusqlite::{params_from_iter, OpenFlags, OptionalExtension};
 use search_terms::SearchTerms;
 
 use crate::nfs::PATH_SEPARATOR;
-use crate::note::{LinkType, NoteContentData, NoteDetails};
+use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
 
 use super::error::DBError;
 
@@ -166,7 +167,7 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
     // Storing hash as a string, as SQlite doesn't like
     // unsigned 64bit integers, alternatively we could
     // have used signed numbers by substracting the half
-    // of the max value, but that looks like a worse conversion
+    // of the max value
     tx.execute(
         "CREATE TABLE notes (
             path TEXT PRIMARY KEY,
@@ -372,6 +373,35 @@ pub fn get_notes(
         .map(|el| el.map_err(DBError::DBError))
         .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
     Ok(res)
+}
+
+pub fn get_notes_sections(
+    connection: &mut Connection,
+    path: &VaultPath,
+    _recursive: bool,
+) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, DBError> {
+    let mut result = HashMap::new();
+    let sql = "SELECT path, breadcrumb, text FROM notesContent where path LIKE(?1 || '%')";
+    let mut stmt = connection.prepare(sql)?;
+    let mut res = stmt.query([path.to_string()])?;
+
+    while let Some(row) = res.next()? {
+        let path: String = row.get(0)?;
+        let breadcrumb: String = row.get(1)?;
+        let text: String = row.get(2)?;
+
+        let path = VaultPath::new(path);
+        let breadcrumb = breadcrumb
+            .split(">")
+            .map(|e| e.to_string())
+            .collect::<Vec<String>>();
+
+        let chunk = ContentChunk { breadcrumb, text };
+        let chunks = result.entry(path).or_insert_with(Vec::new);
+        chunks.push(chunk);
+    }
+
+    Ok(result)
 }
 
 pub fn insert_notes(tx: &Transaction, notes: &Vec<(NoteEntryData, String)>) -> Result<(), DBError> {

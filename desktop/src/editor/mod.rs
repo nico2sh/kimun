@@ -8,7 +8,7 @@ use iced::{
     Length::Fill,
     Padding, Task, highlighter,
     keyboard::{self, Key, Modifiers, key::Named},
-    widget::{row, text_editor},
+    widget,
 };
 use kimun_core::{
     NoteVault,
@@ -28,7 +28,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum EditorMsg {
-    Edit(text_editor::Action),
+    Edit(widget::text_editor::Action),
     SelectNote(Vec<(NoteEntryData, NoteContentData)>),
     OpenNote(VaultPath),
     NewNote(VaultPath),
@@ -56,7 +56,7 @@ impl From<EditorMsg> for KimunMessage {
 }
 
 pub struct Editor {
-    content: text_editor::Content,
+    content: widget::text_editor::Content,
     preview_page: Option<PreviewPage>,
     save_status: SaveStatus,
     vault: NoteVault,
@@ -95,7 +95,7 @@ impl Editor {
             }
             Err(e) => bail!(e),
         };
-        let content = text_editor::Content::with_text(&content_text);
+        let content = widget::text_editor::Content::with_text(&content_text);
         Ok(Self {
             content,
             preview_page: None,
@@ -171,7 +171,7 @@ impl Editor {
     }
 
     fn set_content(&mut self, details: &NoteDetails) {
-        self.content = text_editor::Content::with_text(&details.raw_text);
+        self.content = widget::text_editor::Content::with_text(&details.raw_text);
     }
 
     // fn chain_preview_message(&mut self, message: KimunMessage) -> Task<KimunMessage> {
@@ -205,28 +205,33 @@ pub fn manage_editor_hotkeys(
 pub fn manage_editor_keystrokes(
     key: &keyboard::Key,
     modifiers: &keyboard::Modifiers,
-) -> Option<text_editor::Binding<KimunMessage>> {
+) -> Option<widget::text_editor::Binding<KimunMessage>> {
     if modifiers.command() {
         // Command/Control pressed
         if key.as_ref().eq(&Key::Character("z")) {
             if modifiers.shift() {
-                Some(text_editor::Binding::Custom(EditorMsg::Redo.into()))
+                Some(widget::text_editor::Binding::Custom(EditorMsg::Redo.into()))
             } else {
-                Some(text_editor::Binding::Custom(EditorMsg::Undo.into()))
+                Some(widget::text_editor::Binding::Custom(EditorMsg::Undo.into()))
             }
         } else {
             None
         }
     } else if key.as_ref().eq(&Key::Named(Named::Tab)) {
-        // NO Command/Control pressed
-        // TODO: Manage indenting
-        // We insert spaces instead of tabs
-        let _tab: Option<text_editor::Binding<KimunMessage>> =
-            Some(text_editor::Binding::Insert('\t'));
-        let spaces: Option<text_editor::Binding<KimunMessage>> = Some(
-            text_editor::Binding::Sequence(vec![text_editor::Binding::Insert(' '); 4]),
-        );
-        spaces
+        // Indenting
+        let action = if modifiers.shift() {
+            // We unindent
+            widget::text_editor::Binding::Custom(KimunMessage::EditorMessage(EditorMsg::Edit(
+                widget::text_editor::Action::Edit(widget::text_editor::Edit::Unindent),
+            )))
+        } else {
+            // We add four spaces
+            widget::text_editor::Binding::Sequence(vec![
+                widget::text_editor::Binding::Insert(' ');
+                4
+            ])
+        };
+        Some(action)
     } else {
         None
     }
@@ -351,9 +356,9 @@ impl KimunPageView for Editor {
         } else {
             let path = iced::widget::text(self.path.to_string());
             let path_label = match self.save_status {
-                SaveStatus::Saved => row![path],
-                SaveStatus::Saving => row![path, iced::widget::text("+")],
-                SaveStatus::NotSaved => row![path, iced::widget::text("*")],
+                SaveStatus::Saved => widget::row![path],
+                SaveStatus::Saving => widget::row![path, iced::widget::text("+")],
+                SaveStatus::NotSaved => widget::row![path, iced::widget::text("*")],
             }
             .padding(Padding {
                 top: 0.0,
@@ -361,13 +366,20 @@ impl KimunPageView for Editor {
                 bottom: 0.0,
                 left: SMALL_PADDING as f32,
             });
-            let editor = text_editor(&self.content)
+            let editor = iced::widget::text_editor(&self.content)
                 .placeholder("Type your Markdown here...")
-                .on_action(|a| EditorMsg::Edit(a).into())
+                .on_action(|a| {
+                    // We modify the actions
+                    debug!("Action: {:?}", a);
+                    EditorMsg::Edit(a).into()
+                })
                 .height(Fill)
                 .font(Font::MONOSPACE)
                 .key_binding(move |kp| {
-                    if matches![kp.status, text_editor::Status::Focused { is_hovered: _ }] {
+                    if matches![
+                        kp.status,
+                        widget::text_editor::Status::Focused { is_hovered: _ }
+                    ] {
                         manage_editor_keystrokes(&kp.key, &kp.modifiers)
                     } else {
                         None
@@ -378,8 +390,8 @@ impl KimunPageView for Editor {
                         &self.vault,
                         &self.path,
                     )
-                    .map(text_editor::Binding::Custom)
-                    .or_else(|| text_editor::Binding::from_key_press(kp)))
+                    .map(widget::text_editor::Binding::Custom)
+                    .or_else(|| widget::text_editor::Binding::from_key_press(kp)))
                 })
                 .highlight("markdown", highlighter::Theme::Base16Ocean);
             iced::widget::column![editor, path_label]

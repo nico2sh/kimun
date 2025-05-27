@@ -1,7 +1,5 @@
-use std::cmp::min;
-
-use log::{debug, error};
-use pulldown_cmark::{Event, Parser, Tag};
+use log::debug;
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use regex::{Captures, Regex};
 
 use crate::{
@@ -11,7 +9,9 @@ use crate::{
 
 use super::Link;
 
-const MAX_TITLE_LENGTH: usize = 40;
+const _MAX_TITLE_LENGTH: usize = 40;
+const REGEX_WIKILINK: &str = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#;
+const REGEX_HASHTAG: &str = r#"#(?P<ht_text>[A-Za-z0-9_]+)"#;
 
 pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
     let hash = nfs::hash_text(md_text.as_ref());
@@ -23,6 +23,8 @@ pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
 pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
     let (frontmatter, text) = remove_frontmatter(md_text.as_ref());
 
+    let text = cleanup_hashtags(cleanup_wikilinks(text));
+
     let mut content_chunks = parse_text(&text);
     if !frontmatter.is_empty() {
         content_chunks.push(ContentChunk {
@@ -33,10 +35,37 @@ pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
     content_chunks
 }
 
+fn cleanup_wikilinks<S: AsRef<str>>(md_text: S) -> String {
+    let rx = Regex::new(REGEX_WIKILINK).unwrap();
+    let text = rx
+        .replace_all(md_text.as_ref(), |caps: &Captures| {
+            let items = &caps["link_text"];
+            let link_text = items.split("|").collect::<Vec<&str>>();
+            let text = match link_text.len() {
+                1 => link_text[0],
+                2 => link_text[1],
+                _ => "",
+            };
+            text.to_string()
+        })
+        .into_owned();
+    text
+}
+
+fn cleanup_hashtags<S: AsRef<str>>(md_text: S) -> String {
+    let rx = Regex::new(REGEX_HASHTAG).unwrap();
+    let text = rx
+        .replace_all(md_text.as_ref(), |caps: &Captures| {
+            let text = &caps["ht_text"];
+            text.to_string()
+        })
+        .into_owned();
+    text
+}
+
 // Convert any wikilink into a link to a note
 fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
-    let wiki_link_regex = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#; // Remember to check the pipe `|`
-    let rx = Regex::new(wiki_link_regex).unwrap();
+    let rx = Regex::new(REGEX_WIKILINK).unwrap();
     let mut note_links = vec![];
     let text = rx
         .replace_all(md_text.as_ref(), |caps: &Captures| {
@@ -89,46 +118,19 @@ pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) 
 
 pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
     let (_frontmatter, md_text) = remove_frontmatter(md_text);
-    let mut title = String::new();
     let mut parser = pulldown_cmark::Parser::new(md_text.as_ref());
-    while let Some(event) = parser.next() {
-        let tt = match event {
-            Event::Start(tag) => parse_start_tag(tag, &mut parser),
-            Event::End(_tag_end) => {
-                panic!("Non Matching Tags")
-            }
-            Event::Text(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::Code(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::InlineMath(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::DisplayMath(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::Html(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::InlineHtml(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::FootnoteReference(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::SoftBreak => TextType::None,
-            Event::HardBreak => TextType::None,
-            Event::Rule => TextType::None,
-            Event::TaskListMarker(result) => TextType::Text(result.to_string()),
-        };
-
-        if title.is_empty() {
-            let title_cand = match &tt {
-                TextType::Header(_, text) => text.to_owned(),
-                TextType::Text(text) => text.to_owned(),
-                TextType::None => String::new(),
-            };
-            title = title_cand
-                .lines()
-                .next()
-                .map(|t| {
-                    let title_length = min(MAX_TITLE_LENGTH, t.len());
-                    t.chars().take(title_length).collect()
-                })
-                .unwrap_or_default();
-            return title;
-        }
-    }
-
-    "<None>".to_string()
+    let result = loop_events(&mut parser);
+    // debug!("{:?}", result);
+    let title = result
+        .iter()
+        .find_map(|tt| match tt {
+            TextLine::Empty => None,
+            TextLine::Header(_level, text) => Some(text.to_owned()),
+            TextLine::Text(text) => Some(text.to_owned()),
+            TextLine::ListItem(_level, text) => Some(text.to_owned()),
+        })
+        .unwrap_or_default();
+    title
 }
 
 fn parse_text(md_text: &str) -> Vec<ContentChunk> {
@@ -137,43 +139,10 @@ fn parse_text(md_text: &str) -> Vec<ContentChunk> {
     let mut current_content = vec![];
 
     let mut parser = pulldown_cmark::Parser::new(md_text);
-    while let Some(event) = parser.next() {
-        let tt = match event {
-            Event::Start(tag) => parse_start_tag(tag, &mut parser),
-            Event::End(_tag_end) => {
-                panic!("Non Matching Tags")
-            }
-            Event::Text(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::Code(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::InlineMath(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::DisplayMath(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::Html(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::InlineHtml(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::FootnoteReference(cow_str) => TextType::Text(cow_str.to_string()),
-            Event::SoftBreak => TextType::None,
-            Event::HardBreak => TextType::None,
-            Event::Rule => TextType::None,
-            Event::TaskListMarker(result) => TextType::Text(result.to_string()),
-        };
-
-        // if title.is_empty() {
-        //     let title_cand = match &tt {
-        //         TextType::Header(_, text) => text.to_owned(),
-        //         TextType::Text(text) => text.to_owned(),
-        //         TextType::None => String::new(),
-        //     };
-        //     title = title_cand
-        //         .lines()
-        //         .next()
-        //         .map(|t| {
-        //             let title_length = min(MAX_TITLE_LENGTH, t.len());
-        //             t.chars().take(title_length).collect()
-        //         })
-        //         .unwrap_or_default();
-        // }
-
-        match tt {
-            TextType::Header(level, text) => {
+    let result = loop_events(&mut parser);
+    for text_line in result {
+        match text_line {
+            TextLine::Header(level, text) => {
                 if !current_breadcrumb.is_empty() || !current_content.is_empty() {
                     let breadcrumb = current_breadcrumb.clone();
                     let content =
@@ -191,12 +160,10 @@ fn parse_text(md_text: &str) -> Vec<ContentChunk> {
                 current_breadcrumb.push((level, text));
                 current_content.clear();
             }
-            TextType::Text(text) => {
-                current_content.push(text);
+            TextLine::Empty => {
+                // We do nothing
             }
-            TextType::None => {
-                // Don't do anything
-            }
+            _ => current_content.push(text_line.to_text()),
         }
     }
 
@@ -245,13 +212,125 @@ fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
     }
 }
 
-enum TextType {
-    None,
+#[derive(Debug, Default, Clone)]
+enum TextLine {
+    #[default]
+    Empty,
     Header(u8, String),
     Text(String),
+    ListItem(u8, String),
 }
 
-fn parse_start_tag(tag: Tag, parser: &mut Parser) -> TextType {
+impl TextLine {
+    fn append_text(&self, text: String) -> TextLine {
+        match self {
+            TextLine::Empty => TextLine::Text(text),
+            TextLine::Header(level, header_text) => {
+                TextLine::Header(level.to_owned(), format!("{}{}", header_text, text))
+            }
+            TextLine::Text(line_text) => TextLine::Text(format!("{}{}", line_text, text)),
+            TextLine::ListItem(level, item_text) => {
+                TextLine::ListItem(level.to_owned(), format!("{}{}", item_text, text))
+            }
+        }
+    }
+
+    fn to_text(&self) -> String {
+        match self {
+            TextLine::Empty => "".to_string(),
+            TextLine::Header(level, text) => {
+                format!("{} {}", "#".repeat(level.to_owned().into()), text)
+            }
+            TextLine::Text(text) => text.to_owned(),
+            TextLine::ListItem(level, text) => {
+                format!("{}* {}", " ".repeat((level.to_owned() * 4).into()), text)
+            }
+        }
+    }
+}
+
+fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
+    let mut text_lines: Vec<TextLine> = vec![];
+    let mut tag_stack = vec![];
+    for event in parser.by_ref() {
+        // debug!("TEXT LINES BEFORE: {:?}", text_lines);
+        // debug!("EVENT: {:?}", event);
+        match event {
+            Event::Start(tag) => {
+                // debug!(
+                //     "FOUND TAG: {:?}\n -> CURRENT ELEMENT LIST: {:?}",
+                //     tag, text_lines
+                // );
+                let tag = tag.to_owned();
+                let current_line = text_lines.pop().unwrap_or_default();
+                let new_lines = parse_tag(&tag, current_line);
+                for l in new_lines {
+                    text_lines.push(l);
+                }
+                tag_stack.push(tag);
+                // We get the current text
+                // let last_line = text_lines.pop().unwrap_or_default();
+                // let mut tag_text = parse_tag(&tag, parser, last_line);
+                // text_lines.append(&mut tag_text);
+            }
+            Event::End(tag_end) => {
+                if let Some(end) = tag_stack.pop() {
+                    if tag_end != end.to_end() {
+                        panic!("Non Matching Tags: {:?}", tag_end);
+                    } else {
+                        let current_line = text_lines.pop().unwrap_or_default();
+                        let new_lines = parse_tag_end(&tag_end, current_line);
+                        for l in new_lines {
+                            text_lines.push(l);
+                        }
+                    }
+                } else {
+                    panic!("Non Matching Tags: {:?}", tag_end);
+                }
+            }
+            Event::Text(cow_str) => {
+                let last_text = text_lines.pop().unwrap_or_default();
+                text_lines.push(last_text.append_text(cow_str.to_string()));
+            }
+            Event::Code(cow_str) => {
+                let current_line = text_lines.pop().unwrap_or_default();
+                text_lines.push(current_line.append_text(format!("`{}`", cow_str)));
+            }
+            Event::InlineMath(cow_str) => {
+                text_lines.push(TextLine::Text(cow_str.to_string()));
+            }
+            Event::DisplayMath(cow_str) => {
+                text_lines.push(TextLine::Text(cow_str.to_string()));
+            }
+            Event::Html(cow_str) => {
+                text_lines.push(TextLine::Text(cow_str.to_string()));
+            }
+            Event::InlineHtml(cow_str) => {
+                text_lines.push(TextLine::Text(cow_str.to_string()));
+            }
+            Event::FootnoteReference(cow_str) => {
+                text_lines.push(TextLine::Text(cow_str.to_string()));
+            }
+            Event::SoftBreak => {
+                text_lines.push(TextLine::Empty);
+            }
+            Event::HardBreak => {
+                text_lines.push(TextLine::Empty);
+                text_lines.push(TextLine::Empty);
+            }
+            Event::Rule => {
+                text_lines.push(TextLine::Empty);
+            }
+            Event::TaskListMarker(result) => {
+                text_lines.push(TextLine::Text(result.to_string()));
+            }
+        }
+        // debug!("TEXT LINES AFTER: {:?}", text_lines);
+    }
+    text_lines
+}
+
+fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
     match tag {
         Tag::Heading {
             level,
@@ -259,6 +338,7 @@ fn parse_start_tag(tag: Tag, parser: &mut Parser) -> TextType {
             classes: _,
             attrs: _,
         } => {
+            // debug!("TEXT LINE: {:?}", text_type);
             let level = match level {
                 pulldown_cmark::HeadingLevel::H1 => 1,
                 pulldown_cmark::HeadingLevel::H2 => 2,
@@ -267,8 +347,7 @@ fn parse_start_tag(tag: Tag, parser: &mut Parser) -> TextType {
                 pulldown_cmark::HeadingLevel::H5 => 5,
                 pulldown_cmark::HeadingLevel::H6 => 6,
             };
-            let text = get_text_till_end(parser);
-            TextType::Header(level, text)
+            vec![current_line, TextLine::Header(level, "".to_string())]
         }
         Tag::Link {
             link_type: _,
@@ -276,13 +355,7 @@ fn parse_start_tag(tag: Tag, parser: &mut Parser) -> TextType {
             title,
             id: _,
         } => {
-            let mut text = if title.is_empty() {
-                vec![]
-            } else {
-                vec![title.to_string()]
-            };
-            text.push(get_text_till_end(parser));
-            TextType::Text(text.join(" "))
+            vec![current_line.append_text(title.to_string())]
         }
         Tag::Image {
             link_type: _,
@@ -290,75 +363,94 @@ fn parse_start_tag(tag: Tag, parser: &mut Parser) -> TextType {
             title,
             id: _,
         } => {
-            let mut text = if title.is_empty() {
-                vec![]
-            } else {
-                vec![title.to_string()]
+            vec![current_line.append_text(title.to_string())]
+        }
+        Tag::CodeBlock(kind) => {
+            let open = match kind {
+                pulldown_cmark::CodeBlockKind::Indented => "```".to_string(),
+                pulldown_cmark::CodeBlockKind::Fenced(cow_str) => {
+                    format!("```{}", cow_str)
+                }
             };
-            text.push(get_text_till_end(parser));
-            TextType::Text(text.join(" "))
+            vec![TextLine::Text(open), TextLine::Empty]
+        }
+        Tag::List(_number) => {
+            let line = if let TextLine::ListItem(lvl, _) = current_line {
+                TextLine::ListItem(lvl + 1, "".to_string())
+            } else {
+                TextLine::ListItem(0, "".to_string())
+            };
+            vec![current_line, line]
+        }
+        Tag::Item => {
+            if let TextLine::ListItem(lvl, text) = &current_line {
+                let lvl = lvl.to_owned();
+                if text.is_empty() {
+                    vec![current_line]
+                } else {
+                    vec![
+                        current_line,
+                        TextLine::ListItem(lvl.to_owned(), "".to_string()),
+                    ]
+                }
+            } else {
+                vec![TextLine::ListItem(0, "".to_string())]
+            }
+        }
+        Tag::Paragraph => {
+            vec![current_line, TextLine::Empty]
+        }
+        Tag::Strong | Tag::Emphasis | Tag::Strikethrough | Tag::Subscript | Tag::Superscript => {
+            // We ignore format
+            vec![current_line]
+        }
+        Tag::BlockQuote(_kind) => {
+            vec![current_line]
         }
         _ => {
-            let text = get_text_till_end(parser);
-            TextType::Text(text)
+            // nada
+            // debug!("LOOPING IN TAG: {:?}", tag);
+            vec![current_line]
         }
     }
 }
 
-fn get_text_till_end(parser: &mut Parser) -> String {
-    let mut open_tags = 1;
-    let mut text_vec = vec![];
-    let mut current_text = String::new();
-    while open_tags > 0 {
-        let event = &parser.next();
-        if let Some(event) = event {
-            match event {
-                Event::Start(tag) => {
-                    let breaks = !matches!(
-                        tag,
-                        Tag::Emphasis
-                            | Tag::Strong
-                            | Tag::Link {
-                                link_type: _,
-                                dest_url: _,
-                                title: _,
-                                id: _,
-                            }
-                    );
-                    open_tags += 1;
-                    if !current_text.is_empty() && breaks {
-                        text_vec.push(current_text);
-                        current_text = String::new();
-                    }
+fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
+    match tag_end {
+        TagEnd::CodeBlock => {
+            vec![current_line, TextLine::Text("```".to_string())]
+        }
+        TagEnd::List(_) => {
+            if let TextLine::ListItem(lvl, text) = &current_line {
+                let last_line = if lvl > &0 {
+                    TextLine::ListItem(lvl - 1, "".to_string())
+                } else {
+                    TextLine::Empty
+                };
+                if text.is_empty() {
+                    vec![last_line]
+                } else {
+                    vec![current_line, last_line]
                 }
-                Event::End(_tag) => {
-                    open_tags -= 1;
-                }
-                Event::Text(cow_str) => current_text.push_str(cow_str.as_ref()),
-                Event::Code(cow_str) => current_text.push_str(cow_str.as_ref()),
-                Event::InlineMath(cow_str) => current_text.push_str(cow_str.as_ref()),
-                Event::DisplayMath(cow_str) => current_text.push_str(cow_str.as_ref()),
-                Event::Html(cow_str) => current_text.push_str(cow_str.as_ref()),
-                Event::InlineHtml(cow_str) => current_text.push_str(cow_str.as_ref()),
-                Event::FootnoteReference(cow_str) => current_text.push_str(cow_str.as_ref()),
-                Event::SoftBreak => current_text.push('\n'),
-                Event::HardBreak => current_text.push('\n'),
-                Event::Rule => current_text.push('\n'),
-                Event::TaskListMarker(_) => current_text.push('\n'),
+            } else {
+                vec![current_line]
             }
-        } else {
-            error!("Error parsing markdown");
-            open_tags = 0;
+        }
+        TagEnd::Paragraph => {
+            vec![current_line, TextLine::Empty]
+        }
+        _ => {
+            // nada
+            // debug!("LOOPING IN TAG: {:?}", tag_end);
+            vec![current_line]
         }
     }
-    if !current_text.is_empty() {
-        text_vec.push(current_text);
-    }
-    text_vec.join("\n")
 }
 
 #[cfg(test)]
 mod test {
+    use log::debug;
+
     use crate::{
         nfs::VaultPath,
         note::{
@@ -445,7 +537,7 @@ mod test {
             link.text.eq("note.md") && link.ltype.eq(&LinkType::Note(path))
         }));
         assert!(links.iter().any(|link| {
-            println!("{:?}", link);
+            debug!("{:?}", link);
             let url = "https://www.example.com".to_string();
             link.text.eq("url") && link.ltype.eq(&LinkType::Url) && link.raw_link.eq(&url)
         }));
@@ -499,9 +591,69 @@ Some text"#;
         assert_eq!("First Item".to_string(), data.title);
         assert_eq!("", content_chunks[0].get_breadcrumb());
         assert_eq!(
-            "First Item\nSecond Item\nSome text",
+            "* First Item\n* Second Item\nSome text",
             content_chunks[0].get_text()
         );
+    }
+
+    #[test]
+    fn convert_list() {
+        let markdown = r#"# Title
+
+- First *Item*
+- Second Item
+
+Some text"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!(
+            "* First Item\n* Second Item\nSome text",
+            content_chunks[0].get_text()
+        );
+    }
+
+    #[test]
+    fn convert_list_two_level() {
+        let markdown = r#"# Title
+
+- First Item
+    - First subitem
+    - Second subitem
+- Second Item
+
+Some text"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!(
+            "* First Item\n    * First subitem\n    * Second subitem\n* Second Item\nSome text",
+            content_chunks[0].get_text()
+        );
+    }
+
+    #[test]
+    fn convert_list_empty_item() {
+        let markdown = r#"# Title
+
+- First Item
+- Second Item
+- 
+
+"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("* First Item\n* Second Item", content_chunks[0].get_text());
     }
 
     #[test]
@@ -714,6 +866,7 @@ Some text"#;
         let markdown = r#"# Title **bold** *italic*
 Some text"#;
         let content_chunks = get_content_chunks(markdown);
+        debug!("===================================");
         let data = get_content_data(markdown);
 
         assert_eq!(1, content_chunks.len());
@@ -738,5 +891,90 @@ Some text"#;
         assert_eq!("Intro text", content_chunks[0].get_text());
         assert_eq!("Title", content_chunks[1].get_breadcrumb());
         assert_eq!("Some text", content_chunks[1].get_text());
+    }
+
+    #[test]
+    fn check_content_with_link() {
+        let markdown = r#"# Title
+
+[Some text linking](www.example.com)"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text linking", content_chunks[0].get_text());
+    }
+
+    #[test]
+    fn check_content_with_wikilink() {
+        let markdown = r#"# Title
+
+[[Some text linking]]"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!("Some text linking", content_chunks[0].get_text());
+    }
+
+    #[test]
+    fn check_content_with_hashtags() {
+        let markdown = r#"# Title
+
+Some text, #hashtag and more text"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!(
+            "Some text, hashtag and more text",
+            content_chunks[0].get_text()
+        );
+    }
+
+    #[test]
+    fn check_code() {
+        let markdown = r#"# Title
+
+Some text, `code` and more text"#;
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!(
+            "Some text, `code` and more text",
+            content_chunks[0].get_text()
+        );
+    }
+
+    #[test]
+    fn check_code_block() {
+        let markdown = r#"# Title
+
+Some text
+
+```bash
+mkdir test
+ls -la ./test
+```"#;
+
+        let content_chunks = get_content_chunks(markdown);
+        let data = get_content_data(markdown);
+
+        assert_eq!(1, content_chunks.len());
+        assert_eq!("Title".to_string(), data.title);
+        assert_eq!("Title", content_chunks[0].get_breadcrumb());
+        assert_eq!(
+            "Some text\n```bash\nmkdir test\nls -la ./test\n```",
+            content_chunks[0].get_text()
+        );
     }
 }

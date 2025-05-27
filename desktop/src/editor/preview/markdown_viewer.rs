@@ -49,7 +49,7 @@ impl<'a> markdown::Viewer<'a, PreviewMessage> for CustomViewer<'a> {
             .into()
         } else {
             pop(horizontal_space())
-                .key(url.as_str())
+                .key_ref(url.as_str())
                 .delay(milliseconds(500))
                 .on_show(|_size| PreviewMessage::ImageShown(url.clone()))
                 .into()
