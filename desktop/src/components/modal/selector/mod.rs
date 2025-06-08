@@ -3,7 +3,10 @@ pub mod note_select;
 
 use std::rc::Rc;
 
-use dioxus::{logger::tracing::debug, prelude::*};
+use dioxus::{
+    logger::tracing::{debug, info},
+    prelude::*,
+};
 
 use super::Modal;
 
@@ -27,6 +30,7 @@ where
     R: RowItem + 'static,
 {
     Closed,
+    Init,
     Open,
     Loaded(Vec<R>),
 }
@@ -54,13 +58,14 @@ where
     F: SelectorFunctions<R> + Clone + Send + 'static,
 {
     let mut filter_text = use_signal(|| filter_text);
-    let mut load_state = use_signal_sync(|| LoadState::Open);
+    let mut load_state = use_signal_sync(|| LoadState::Init);
     // For setting the focus in the text box
     let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let current_state = load_state.read().to_owned();
 
     let visible = match &current_state {
         LoadState::Closed => false,
+        LoadState::Init => true,
         LoadState::Open => {
             debug!("Opening Dialog View");
             // when the dialog is open and starts initializing
@@ -84,11 +89,15 @@ where
 
     let functions_load = functions.clone();
     let rows = use_resource(move || {
-        let current_state = current_state.clone();
+        let current_state = load_state.read().clone();
         let filter_text = filter_text.read().clone();
         let functions = functions_load.clone();
         async move {
             match current_state {
+                LoadState::Init => {
+                    load_state.set(LoadState::Open);
+                    vec![]
+                }
                 LoadState::Open => tokio::spawn(async move {
                     let items = functions.init();
                     load_state.set(LoadState::Loaded(items.clone()));
@@ -180,6 +189,8 @@ where
                             if row.on_select()() {
                                 load_state.set(LoadState::Closed);
                                 modal.write().close();
+                            } else {
+                                load_state.set(LoadState::Init);
                             }
                         }
                     }
@@ -210,6 +221,8 @@ where
                                     if row.on_select()() {
                                         load_state.set(LoadState::Closed);
                                         modal.write().close();
+                                    } else {
+                                        load_state.set(LoadState::Init);
                                     }
                                 },
                                 class: if *selected.read() == Some(index) { "element selected" } else { "element" },
