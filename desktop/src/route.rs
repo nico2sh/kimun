@@ -14,7 +14,7 @@ pub enum Route {
     #[route("/")]
     Main {},
     #[route("/editor")]
-    Editor { note_path: Option<VaultPath> },
+    Editor {},
     #[route("/settings")]
     Settings {},
 }

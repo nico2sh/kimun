@@ -37,13 +37,6 @@ impl SelectFunctions {
 
         let mut result = vec![];
 
-        if !current_base_path.is_root_or_empty() {
-            result.push(NoteSelectEntry::Directory {
-                path: current_base_path.get_parent_path().0,
-                name: "..".to_string(),
-                base_path_signal: self.current_base_path,
-            });
-        }
         while let Ok(sr) = rx.recv() {
             match sr.rtype {
                 ResultType::Note(note_content_data) => {
@@ -64,7 +57,17 @@ impl SelectFunctions {
                 _ => {}
             }
         }
-        result.sort_by_key(|b| sort_string(b));
+        result.sort_by_key(|b| std::cmp::Reverse(sort_string(b)));
+        if !current_base_path.is_root_or_empty() {
+            result.insert(
+                0,
+                NoteSelectEntry::Directory {
+                    path: current_base_path.get_parent_path().0,
+                    name: "..".to_string(),
+                    base_path_signal: self.current_base_path,
+                },
+            );
+        }
         result
     }
 }
@@ -203,10 +206,15 @@ impl NoteSelectEntry {
         content: NoteContentData,
         path_signal: SyncSignal<Option<VaultPath>>,
     ) -> Self {
-        let path_str = format!("{} {}", content.title, path);
+        let path_str = format!("{} {}", content.title, path.get_name());
+        let title = if content.title.is_empty() {
+            "<No title>".to_string()
+        } else {
+            content.title
+        };
         Self::Note {
             path: path.clone(),
-            title: content.title,
+            title,
             search_str: path_str,
             path_signal,
         }
@@ -216,7 +224,7 @@ impl NoteSelectEntry {
         path: VaultPath,
         base_path_signal: SyncSignal<VaultPath>,
     ) -> Self {
-        let name = path.get_parent_path().1;
+        let name = path.get_name();
         Self::Directory {
             path,
             name,
@@ -299,8 +307,10 @@ impl RowItem for NoteSelectEntry {
                 path_signal: _,
             } => {
                 rsx! {
-                    div { class: "title", "{title}" }
-                    div { class: "details", "{path.to_string()}" }
+                    div { class: "element",
+                        div { class: "icon-note title", "{title}" }
+                        div { class: "details", "{path.get_name()}" }
+                    }
                 }
             }
             NoteSelectEntry::Directory {
@@ -309,7 +319,9 @@ impl RowItem for NoteSelectEntry {
                 base_path_signal: _,
             } => {
                 rsx! {
-                    div { class: "title", "{name}" }
+                    div { class: "element",
+                        div { class: "icon-folder title", "{name}" }
+                    }
                 }
             }
             NoteSelectEntry::Create {

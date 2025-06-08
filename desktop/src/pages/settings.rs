@@ -6,7 +6,7 @@ use crate::{route::Route, settings};
 
 #[component]
 pub fn Settings() -> Element {
-    let mut settings: Signal<settings::Settings> = use_context();
+    let mut settings: Signal<settings::AppSettings> = use_context();
     // let mut settings = use_signal(|| settings::Settings::load_from_disk().unwrap_or_default());
 
     rsx! {
@@ -27,11 +27,10 @@ pub fn Settings() -> Element {
                 button {
                     onclick: move |_| {
                         let path = &settings.read().workspace_dir;
-                        let note_path = settings.read().last_paths.last().map(|p| p.to_owned());
                         match settings.read().save_to_disk() {
                             Ok(_) => {
-                                if let Some(p) = path {
-                                    navigator().replace(Route::Editor { note_path });
+                                if let Some(_p) = path {
+                                    navigator().replace(Route::Editor {});
                                 }
                             }
                             Err(_e) => todo!(),
