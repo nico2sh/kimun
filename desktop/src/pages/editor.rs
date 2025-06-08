@@ -61,12 +61,12 @@ pub fn Editor(note_path: Option<VaultPath>) -> Element {
                 }
             },
             // We close any modal if we click on the main UI
-            // onclick: move |_e| {
-            //     if modal.read().is_open() {
-            //         modal.write().close();
-            //         info!("Close dialog");
-            //     }
-            // },
+            onclick: move |_e| {
+                if modal.read().is_open() {
+                    modal.write().close();
+                    info!("Close dialog");
+                }
+            },
             aside { class: "sidebar",
                 NoteBrowser { vault: vault.clone(), note_path }
             }
