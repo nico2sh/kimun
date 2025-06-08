@@ -31,7 +31,6 @@ where
 {
     Closed,
     Init,
-    Open,
     Loaded(Vec<R>),
 }
 
@@ -65,8 +64,7 @@ where
 
     let visible = match &current_state {
         LoadState::Closed => false,
-        LoadState::Init => true,
-        LoadState::Open => {
+        LoadState::Init => {
             debug!("Opening Dialog View");
             // when the dialog is open and starts initializing
             spawn(async move {
@@ -88,6 +86,7 @@ where
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
 
     let functions_load = functions.clone();
+
     let rows = use_resource(move || {
         let current_state = load_state.read().clone();
         let filter_text = filter_text.read().clone();
@@ -95,16 +94,12 @@ where
         async move {
             match current_state {
                 LoadState::Init => {
-                    load_state.set(LoadState::Open);
+                    tokio::task::spawn(async move {
+                        let items = functions.init();
+                        load_state.set(LoadState::Loaded(items.clone()));
+                    });
                     vec![]
                 }
-                LoadState::Open => tokio::spawn(async move {
-                    let items = functions.init();
-                    load_state.set(LoadState::Loaded(items.clone()));
-                    functions.filter(filter_text, items)
-                })
-                .await
-                .unwrap(),
                 LoadState::Loaded(items) => {
                     selected.set(None);
                     tokio::spawn(async move { functions.filter(filter_text, items) })
@@ -145,6 +140,7 @@ where
             class: "search_modal",
             open: visible,
             autofocus: "true",
+            onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
                 let key = e.data.code();
                 if key == Code::Escape {

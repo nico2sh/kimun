@@ -11,13 +11,13 @@ const BASE_CONFIG_FILE: &str = ".kimun_test.toml";
 const LAST_PATH_HISTORY_SIZE: usize = 10;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct Settings {
+pub struct AppSettings {
     #[serde(default)]
     pub last_paths: Vec<VaultPath>,
     pub workspace_dir: Option<PathBuf>,
 }
 
-impl Default for Settings {
+impl Default for AppSettings {
     fn default() -> Self {
         Self {
             last_paths: vec![],
@@ -26,7 +26,7 @@ impl Default for Settings {
     }
 }
 
-impl Settings {
+impl AppSettings {
     fn get_config_file_path() -> anyhow::Result<PathBuf> {
         let home = dirs::home_dir();
         match home {

@@ -23,3 +23,7 @@ script = []
 # Javascript code file
 # serve: [dev-server] only
 script = []
+
+[bundle]
+identifier = "com.nico2sh"
+publisher = "Nico2sh"

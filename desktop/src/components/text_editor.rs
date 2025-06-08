@@ -1,5 +1,6 @@
 use std::{rc::Rc, sync::Arc};
 
+use crate::settings::AppSettings;
 use dioxus::{
     logger::tracing::{error, info},
     prelude::*,
@@ -30,7 +31,7 @@ impl EditorData {
         if self.is_dirty
             && tokio::spawn(async move {
                 info!("Saving");
-                vault.save_note(&path, text);
+                let _ = vault.save_note(&path, text);
             })
             .await
             .is_ok()
@@ -44,7 +45,7 @@ impl Drop for EditorData {
     fn drop(&mut self) {
         info!("Dropping Editor Data, saving so we don't lose data");
         if self.is_dirty {
-            self.vault.save_note(&self.path, &self.text);
+            let _ = self.vault.save_note(&self.path, &self.text);
         };
     }
 }
@@ -102,6 +103,8 @@ pub fn TextEditor(
     });
 
     let vault = content_edit_vault.clone();
+    let mut settings: Signal<AppSettings> = use_context();
+
     // TODO: Consider use_resource to async load the content
     let content = use_memo(move || {
         if let Some(path) = &*note_path.read() {
@@ -110,7 +113,12 @@ pub fn TextEditor(
                     error!("Error loading Note: {}", e);
                     String::new()
                 },
-                |d| d.raw_text,
+                |d| {
+                    // We save the settings for the last opened notes
+                    settings.write().add_path_history(path);
+                    let _r = settings.read().save_to_disk();
+                    d.raw_text
+                },
             );
             cr.send(EditorMsg::Init {
                 path: path.to_owned(),
@@ -135,11 +143,18 @@ pub fn TextEditor(
                     text: e.value(),
                 });
             },
+            onkeydown: move |e| {
+                match e.key() {
+                    Key::Tab => {
+                        e.prevent_default();
+                    }
+                    _ => {}
+                }
+            },
             spellcheck: false,
             wrap: "hard",
             resize: "none",
             placeholder: if disabled { "Create or select a note" } else { "Start writing something!" },
-            disabled,
             value: "{content}",
         }
     }

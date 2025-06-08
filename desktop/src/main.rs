@@ -2,20 +2,16 @@
 // need dioxus
 use dioxus::{logger::tracing::info, prelude::*};
 
-use components::Hero;
 use kimun_core::NoteVault;
 use route::Route;
-use settings::Settings;
+use settings::AppSettings;
 
 /// Define a components module that contains all shared components for our app.
 mod components;
-pub mod pages;
+mod pages;
 mod route;
 mod settings;
 
-// We can import assets in dioxus with the `asset!` macro. This macro takes a path to an asset relative to the crate root.
-// The macro returns an `Asset` type that will display as the path to the asset in the browser or a local path in desktop bundles.
-const FAVICON: Asset = asset!("/assets/favicon.ico");
 // The asset macro also minifies some assets like CSS and JS to make bundled smaller
 // const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 // Urls are relative to your Cargo.toml file
@@ -36,8 +32,8 @@ fn main() {
 /// Components should be annotated with `#[component]` to support props, better error messages, and autocomplete
 #[component]
 fn App() -> Element {
-    let settings = Settings::load_from_disk().unwrap();
-    use_context_provider(move || Signal::new(settings));
+    let app_settings = AppSettings::load_from_disk().unwrap();
+    use_context_provider(move || Signal::new(app_settings));
 
     // The `rsx!` macro lets us define HTML inside of rust. It expands to an Element with all of our HTML inside.
     rsx! {

@@ -8,18 +8,19 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
     components::{modal::Modal, note_browser::NoteBrowser, text_editor::TextEditor},
-    settings::Settings,
+    settings::AppSettings,
 };
 
 #[component]
-pub fn Editor(note_path: Option<VaultPath>) -> Element {
-    let settings: Signal<Settings> = use_context();
+pub fn Editor() -> Element {
+    let settings: Signal<AppSettings> = use_context();
     let settings = settings.read();
+    let last_note_path = settings.last_paths.last().map(|p| p.to_owned());
     let vault_path = settings.workspace_dir.as_ref().unwrap();
     let vault = NoteVault::new(vault_path).unwrap();
     debug!("Opening editor at {:?}", vault.workspace_path);
     let vault = Arc::new(vault);
-    let note_path = use_signal_sync(|| note_path);
+    let mut note_path = use_signal_sync(|| last_note_path);
     let note_path_display = use_memo(move || {
         let np = match note_path.read().to_owned() {
             Some(path) => path,
@@ -47,29 +48,39 @@ pub fn Editor(note_path: Option<VaultPath>) -> Element {
 
     rsx! {
         div {
+            tabindex: 0,
             class: "container",
             onkeydown: move |event: Event<KeyboardData>| {
                 let key = event.data.code();
                 let modifiers = event.data.modifiers();
-                if modifiers.meta() && key == Code::KeyO {
-                    debug!("Trigger Open Note Select");
-                    modal.write().set_note_select();
-                }
-                if modifiers.meta() && key == Code::KeyK {
-                    debug!("Trigger Open Note Search");
-                    modal.write().set_note_search();
+                if modifiers.meta() {
+                    match key {
+                        Code::KeyO => {
+                            debug!("Trigger Open Note Select");
+                            modal.write().set_note_select();
+                        }
+                        Code::KeyK => {
+                            debug!("Trigger Open Note Search");
+                            modal.write().set_note_search();
+                        }
+                        Code::KeyJ => {
+                            debug!("New Journal Entry");
+                            if let Ok(journal_entry) = vault.journal_entry() {
+                                note_path.set(Some(journal_entry.0.path));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             },
             // We close any modal if we click on the main UI
             onclick: move |_e| {
+                info!("{:?}", _e);
                 if modal.read().is_open() {
                     modal.write().close();
                     info!("Close dialog");
                 }
             },
-            aside { class: "sidebar",
-                NoteBrowser { vault: vault.clone(), note_path }
-            }
             header { class: "header",
                 div { class: "path", "{note_path_display}" }
             }

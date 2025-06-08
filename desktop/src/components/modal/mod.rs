@@ -9,7 +9,7 @@ mod selector;
 #[derive(Clone, Debug, PartialEq)]
 enum ModalType {
     None,
-    NoteBrowser,
+    NoteSelector,
     NoteSearch,
 }
 
@@ -31,15 +31,19 @@ impl Modal {
         self.modal_type = ModalType::None;
     }
     pub fn set_note_select(&mut self) {
-        self.modal_type = ModalType::NoteBrowser;
+        self.modal_type = ModalType::NoteSelector;
     }
     pub fn set_note_search(&mut self) {
         self.modal_type = ModalType::NoteSearch;
     }
-    pub fn get_element(modal: Signal<Self>, vault: Arc<NoteVault>, note_path: SyncSignal<Option<VaultPath>>) -> Element {
+    pub fn get_element(
+        modal: Signal<Self>,
+        vault: Arc<NoteVault>,
+        note_path: SyncSignal<Option<VaultPath>>,
+    ) -> Element {
         match &modal.read().modal_type {
             ModalType::None => rsx! {},
-            ModalType::NoteBrowser => rsx! {
+            ModalType::NoteSelector => rsx! {
                 NoteSelector {
                     modal,
                     vault,
