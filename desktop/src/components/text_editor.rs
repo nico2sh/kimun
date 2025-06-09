@@ -133,29 +133,32 @@ pub fn TextEditor(
     let disabled = note_path.read().as_ref().is_none();
 
     rsx! {
-        textarea {
-            class: "edittext",
-            onmounted: move |e| {
-                *editor_signal.write() = Some(e.data());
-            },
-            oninput: move |e| {
-                cr.send(EditorMsg::Update {
-                    text: e.value(),
-                });
-            },
-            onkeydown: move |e| {
-                match e.key() {
-                    Key::Tab => {
-                        e.prevent_default();
+        div { class: "editor-content",
+            textarea {
+                class: "text-editor",
+                id: "textEditor",
+                onmounted: move |e| {
+                    *editor_signal.write() = Some(e.data());
+                },
+                oninput: move |e| {
+                    cr.send(EditorMsg::Update {
+                        text: e.value(),
+                    });
+                },
+                onkeydown: move |e| {
+                    match e.key() {
+                        Key::Tab => {
+                            e.prevent_default();
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                }
-            },
-            spellcheck: false,
-            wrap: "hard",
-            resize: "none",
-            placeholder: if disabled { "Create or select a note" } else { "Start writing something!" },
-            value: "{content}",
+                },
+                spellcheck: false,
+                wrap: "hard",
+                resize: "none",
+                placeholder: if disabled { "Create or select a note" } else { "Start writing something!" },
+                value: "{content}",
+            }
         }
     }
 }

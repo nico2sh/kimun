@@ -136,9 +136,8 @@ where
     let row_number = rows.value().read().clone().unwrap_or_default().len();
 
     rsx! {
-        dialog {
+        div {
             class: "search_modal",
-            open: visible,
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
