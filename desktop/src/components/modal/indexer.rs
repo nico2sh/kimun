@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use kimun_core::{NoteVault, NotesValidation};
 
-use crate::components::modal::Modal;
+use crate::{components::modal::Modal, settings::AppSettings};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IndexType {
@@ -14,6 +14,8 @@ pub enum IndexType {
 
 #[component]
 pub fn Indexer(modal: Signal<Modal>, vault: Arc<NoteVault>, index_type: IndexType) -> Element {
+    let mut settings: Signal<AppSettings> = use_context();
+
     let (description, confirm_close) = match &index_type {
         IndexType::Validate => ("Validating the Vault", false),
         IndexType::Fast => ("Fast checking data", false),
@@ -41,6 +43,7 @@ pub fn Indexer(modal: Signal<Modal>, vault: Arc<NoteVault>, index_type: IndexTyp
     let index_result = match &*result.read_unchecked() {
         Some(r) => match r {
             Ok(rep) => {
+                settings.write().report_indexed();
                 let duration = rep.duration.as_secs();
                 if confirm_close {
                     rsx! {

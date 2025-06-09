@@ -7,7 +7,11 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
-    components::{modal::Modal, note_browser::NoteBrowser, text_editor::TextEditor},
+    components::{
+        modal::{indexer::IndexType, Modal},
+        note_browser::NoteBrowser,
+        text_editor::TextEditor,
+    },
     route::Route,
     settings::AppSettings,
 };
@@ -34,6 +38,12 @@ pub fn Editor() -> Element {
         }
     });
     let mut modal = use_signal(Modal::new);
+    if settings.needs_indexing() {
+        modal
+            .write()
+            .set_indexer(vault.clone(), IndexType::Validate);
+    }
+
     let editor_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     if !modal.read().is_open() {
         // TODO: Try with use_future
