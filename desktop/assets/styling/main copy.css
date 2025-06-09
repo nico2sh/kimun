@@ -1,0 +1,259 @@
+html,
+body {
+  font-family: InterVariable;
+  height: 100%;
+  margin: 0;
+  display: flex;
+  background-color: var(--background);
+  color: var(--text);
+}
+
+.container {
+  height: 100vh;
+  width: 100vw;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 32px 1fr 32px;
+  gap: 0px;
+  grid-auto-flow: row;
+  grid-template-areas:
+    "header"
+    "main"
+    "footer";
+}
+
+aside.sidebar {
+  display: flex;
+  flex-direction: column;
+  grid-area: sidebar;
+  border: solid 2px var(--border);
+  padding: 5px;
+}
+
+.sideheader {
+  color: var(--text-0);
+}
+
+.list {
+  flex: 1;
+  padding: 5px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  overflow-x: hidden;
+}
+
+.list>.element:hover {
+  cursor: pointer;
+}
+
+.sidebar>.list>.element:hover {
+  background-color: var(--overlay);
+}
+
+.list>.element.selected {
+  background-color: var(--overlay);
+}
+
+.list>.element {
+  display: flex;
+  text-wrap-mode: nowrap;
+  flex-direction: column;
+}
+
+.list>.element>.title {
+  font-weight: bold;
+  font-size: medium;
+  text-wrap-mode: nowrap;
+  overflow-x: hidden;
+}
+
+.list>.element>.note_create {
+  padding: 0.2em 0.2em 0.4em 0.2em;
+  text-wrap-mode: wrap;
+  margin-bottom: 0.1em;
+  border-bottom: 1px solid;
+}
+
+.emphasized {
+  font-style: italic;
+}
+
+.strong {
+  font-weight: bold;
+}
+
+.list>.element>.separator {
+  margin: 0.5em 0.2em;
+  border-bottom: 1px solid;
+}
+
+.list>.element>.separator:hover {
+  background-color: transparent;
+}
+
+.list>.element>.separator.selected {
+  background-color: transparent;
+}
+
+
+.list>.element>.details {
+  font-size: small;
+  font-style: italic;
+  overflow-x: hidden;
+  padding-left: 1em;
+}
+
+.header {
+  grid-area: header;
+  padding: 0.5em;
+}
+
+.mainarea {
+  display: flex;
+  padding: 1em;
+  grid-area: main;
+}
+
+.edittext {
+  flex: 1;
+  resize: none;
+  outline: none;
+  border: none;
+  border-radius: 5px;
+  padding: 10px;
+  background-color: var(--surface-0);
+  color: var(--text-1);
+  font-size: medium;
+  font-family: Consolas, Monaco, Lucida Console, Liberation Mono, DejaVu Sans Mono, Bitstream Vera Sans Mono, Courier New, monospace;
+}
+
+.footer {
+  grid-area: footer;
+}
+
+.search_modal {
+  position: absolute;
+  top: 64px;
+  display: grid;
+  grid-template-columns: 30% 70%;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0px 0px;
+  grid-template-areas:
+    "hint hint"
+    "search preview";
+  width: 50%;
+  max-width: 800px;
+  height: 50%;
+  max-height: 600px;
+  border-radius: 5px;
+  border-width: 2px;
+  border-color: var(--border);
+  background-color: var(--surface-1);
+  color: var(--text-1);
+}
+
+.hint {
+  grid-area: hint;
+  font-size: smaller;
+  font-style: italic;
+  padding: 2px 2px 4px 2px;
+}
+
+.search {
+  grid-area: search;
+  margin-right: 5px;
+  display: flex;
+  flex-direction: column;
+}
+
+.search_box {
+  margin-bottom: 5px;
+  background-color: var(--surface-2);
+  outline: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0 0.5em;
+  font-size: small;
+  color: var(--text-1);
+}
+
+.preview {
+  grid-area: preview;
+  /*padding: 5px;*/
+  border-radius: 5px;
+  overflow: hidden;
+  /*border-width: 2px;*/
+  /*border-color: var(--border);*/
+  background-color: var(--surface-2);
+}
+
+.preview>p {
+  white-space: pre-wrap;
+  margin: 0px;
+}
+
+@media (max-width: 800px) {
+  .search_modal {
+    grid-template-columns: 100% 0%;
+  }
+
+  .preview {
+    visibility: hidden;
+  }
+}
+
+/* Settings */
+.settings>.header {
+  font-size: x-large;
+}
+
+.settings_title {
+  font-size: large;
+  padding-bottom: 0.5em;
+}
+
+.settings_section {
+  padding: 0.5em;
+  border-width: 2px;
+  border-color: var(--border);
+  background-color: var(--surface-0);
+  height: fit-content;
+  width: 100%;
+}
+
+.settings_value {
+  border-width: 2px;
+  border-color: var(--border);
+  background-color: var(--surface-2);
+  overflow: hidden;
+}
+
+/* Buttons */
+.flat-btn {
+  background: var(--overlay);
+  color: var(--text);
+  border: none;
+  padding: 4px 8px;
+  font-size: small;
+  /* font-weight: 500; */
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  outline: none;
+  position: relative;
+  overflow: hidden;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  min-width: 80px;
+}
+
+.flat-btn:hover {
+  background: var(--surface-0);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(59, 130, 246, 0.3);
+}
+
+.flat-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 4px 15px rgba(59, 130, 246, 0.2);
+}

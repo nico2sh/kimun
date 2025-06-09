@@ -8,6 +8,7 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
     components::{modal::Modal, note_browser::NoteBrowser, text_editor::TextEditor},
+    route::Route,
     settings::AppSettings,
 };
 
@@ -49,7 +50,7 @@ pub fn Editor() -> Element {
     rsx! {
         div {
             tabindex: 0,
-            class: "container",
+            class: "editor-container",
             onkeydown: move |event: Event<KeyboardData>| {
                 let key = event.data.code();
                 let modifiers = event.data.modifiers();
@@ -69,6 +70,10 @@ pub fn Editor() -> Element {
                                 note_path.set(Some(journal_entry.0.path));
                             }
                         }
+                        Code::Comma => {
+                            debug!("Open Settings");
+                            navigator().replace(Route::Settings {});
+                        }
                         _ => {}
                     }
                 }
@@ -81,14 +86,17 @@ pub fn Editor() -> Element {
                     info!("Close dialog");
                 }
             },
-            header { class: "header",
-                div { class: "path", "{note_path_display}" }
+            div { class: "editor-header",
+                div { class: "title-section",
+                    div { class: "title-text", "{note_path_display}" }
+                    div { class: "status-indicator", id: "saveStatus" }
+                }
             }
-            div { class: "mainarea",
+            div { class: "editor-main",
                 {Modal::get_element(modal, vault.clone(), note_path)}
                 TextEditor { vault: vault.clone(), note_path, editor_signal }
             }
-            footer { class: "footer" }
+            div { class: "editor-footer" }
         }
     }
 }

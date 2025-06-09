@@ -44,19 +44,23 @@ impl Modal {
         match &modal.read().modal_type {
             ModalType::None => rsx! {},
             ModalType::NoteSelector => rsx! {
-                NoteSelector {
-                    modal,
-                    vault,
-                    note_path,
-                    filter_text: "".to_string(),
+                div { class: "dialog",
+                    NoteSelector {
+                        modal,
+                        vault,
+                        note_path,
+                        filter_text: "".to_string(),
+                    }
                 }
             },
             ModalType::NoteSearch => rsx! {
-                NoteSearch {
-                    modal,
-                    vault,
-                    note_path,
-                    filter_text: "".to_string(),
+                div { class: "dialog",
+                    NoteSearch {
+                        modal,
+                        vault,
+                        note_path,
+                        filter_text: "".to_string(),
+                    }
                 }
             },
         }

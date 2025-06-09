@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use dioxus::prelude::*;
+use dioxus::{html::label, prelude::*};
 
 use crate::{route::Route, settings};
 
@@ -10,33 +10,78 @@ pub fn Settings() -> Element {
     // let mut settings = use_signal(|| settings::Settings::load_from_disk().unwrap_or_default());
 
     rsx! {
-        div { id: "settings",
-            div { class: "settings_section",
-                div { class: "settings_title", "Workspace Path:" }
-                div { class: "settings_content", "{settings().get_workspace_string()}" }
-                button {
-                    onclick: move |_| {
-                        if let Ok(path) = pick_workspace() {
-                            settings.write().set_workspace(&path);
-                        }
-                    },
-                    "Browse"
-                }
+        div { class: "settings-container",
+            div { class: "settings-header",
+                h1 { "Settings" }
+                p { "Customize app settings" }
             }
-            div { class: "bottom",
-                button {
-                    onclick: move |_| {
-                        let path = &settings.read().workspace_dir;
-                        match settings.read().save_to_disk() {
-                            Ok(_) => {
-                                if let Some(_p) = path {
-                                    navigator().replace(Route::Editor {});
-                                }
+            div { class: "settings-content",
+                div { class: "settings-section",
+                    h2 { class: "section-title", "Workspace" }
+                    div { class: "form-group",
+                        label { class: "form-label", "Workspace Location" }
+                        div { class: "file-upload-container",
+                            button {
+                                class: "btn btn-primary",
+                                onclick: move |_| {
+                                    if let Ok(path) = pick_workspace() {
+                                        settings.write().set_workspace(&path);
+                                    }
+                                },
+                                "Browse"
                             }
-                            Err(_e) => todo!(),
-                        };
-                    },
-                    "Save and Close"
+                        }
+                        div {
+                            id: "config-filename",
+                            class: {
+                                if settings().workspace_dir.is_some() {
+                                    "file-name file-selected"
+                                } else {
+                                    "file-name"
+                                }
+                            },
+                            "{settings().get_workspace_string()}"
+                        }
+                        div { class: "description", "Sets the directory where your notes are located" }
+                    }
+                    div { class: "form-group",
+                        label { class: "form-label", "Vault Indexing" }
+                        div { class: "file-upload-container",
+                            button { class: "btn btn-primary", "Fast Index" }
+                        }
+                        div { class: "description", "Indexes the notes located in the directory" }
+                        div { class: "file-upload-container",
+                            button { class: "btn btn-primary", "Full Index" }
+                        }
+                        div { class: "description",
+                            "Performs a full index of the notes located in the directory, can take longer time depending on the number of notes"
+                        }
+                    }
+                }
+                div { class: "action-buttons",
+                    button {
+                        class: "btn btn-secondary",
+                        onclick: move |_| {
+                            navigator().replace(Route::Main {});
+                        },
+                        "Close without saving"
+                    }
+                    button {
+                        class: "btn btn-primary",
+
+                        onclick: move |_| {
+                            let path = &settings.read().workspace_dir;
+                            match settings.read().save_to_disk() {
+                                Ok(_) => {
+                                    if let Some(_p) = path {
+                                        navigator().replace(Route::Editor {});
+                                    }
+                                }
+                                Err(_e) => todo!(),
+                            };
+                        },
+                        "Save and Close"
+                    }
                 }
             }
         }
