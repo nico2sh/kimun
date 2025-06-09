@@ -268,10 +268,9 @@ body {
 
 /* Settings */
 .settings-container {
-  max-width: 900px;
+  /* max-width: 900px; */
   margin: 0 auto;
   background: var(--bg-main);
-  /* border-radius: 16px; */
   box-shadow: 0 10px 40px var(--shadow-primary);
   overflow: hidden;
 }
@@ -299,6 +298,8 @@ body {
 }
 
 .settings-section {
+  max-width: 900px;
+  margin: auto;
   margin-bottom: 40px;
   background: var(--bg-section);
   border-radius: 12px;

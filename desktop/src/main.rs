@@ -15,7 +15,7 @@ mod settings;
 // The asset macro also minifies some assets like CSS and JS to make bundled smaller
 // const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 // Urls are relative to your Cargo.toml file
-const THEME: Asset = asset!("/assets/styling/theme.css");
+const THEME: Asset = asset!("/assets/styling/gruvbox.css");
 const FONTS: Asset = asset!("/assets/styling/fonts.css");
 const ICONS: Asset = asset!("/assets/styling/icons.css");
 const STYLE: Asset = asset!("/assets/styling/main.css");
