@@ -50,6 +50,17 @@ pub struct NoteVault {
     vault_db: VaultDB,
 }
 
+impl Default for NoteVault {
+    fn default() -> Self {
+        let workspace_path = PathBuf::default();
+        let vault_db = VaultDB::new(workspace_path.clone());
+        Self {
+            workspace_path,
+            vault_db,
+        }
+    }
+}
+
 impl NoteVault {
     /// Creates a new instance of the Note Vault.
     /// Make sure you call `NoteVault::init_and_validate(&self)` to initialize the DB index if
