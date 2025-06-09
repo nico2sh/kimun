@@ -12,6 +12,10 @@ body {
   color: var(--text-primary);
 }
 
+progress {
+  color: var(--primary-color);
+}
+
 /* Editor */
 .editor-container {
   display: flex;
@@ -76,7 +80,7 @@ body {
 .editor-content {
   flex: 1;
   padding: 24px;
-  overflow: auto;
+  overflow: none;
 }
 
 .text-editor {
@@ -108,22 +112,37 @@ body {
   justify-content: space-between;
 }
 
-/* Search Modal */
+/* Modals */
 .dialog {
-  float: left;
-  left: 50%;
-  top: 30%;
-  max-width: 800px;
-  max-height: 600px;
-  width: 70%;
-  height: 50%;
-  transform: translate(-50%, -50%);
-  position: absolute;
+  margin: auto;
+  width: 100%;
+  height: 100%;
+  position: fixed;
 }
 
-.search_modal {
+/* Index Modal */
+.index-modal {
+  display: flex;
+  flex-direction: column;
   position: relative;
-  margin: 0 auto;
+  margin: 256px auto;
+  width: 400px;
+  box-shadow: 0 10px 40px var(--shadow-primary);
+  border-radius: 8px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  padding: 1em;
+}
+
+.index-progress {
+  margin-top: 8px;
+  width: 100%;
+}
+
+/* Search Modal */
+.search-modal {
+  position: relative;
+  margin: 64px auto;
   display: grid;
   grid-template-columns: 30% 70%;
   grid-template-rows: auto minmax(0, 1fr);
@@ -131,9 +150,11 @@ body {
   grid-template-areas:
     "hint hint"
     "search preview";
+  width: 70%;
   min-width: 400px;
+  max-width: 900px;
   max-height: 600px;
-  height: 100%;
+  height: 70%;
   /* border: 1px solid var(--border-focus); */
   box-shadow: 0 10px 40px var(--shadow-primary);
   border-radius: 8px;
