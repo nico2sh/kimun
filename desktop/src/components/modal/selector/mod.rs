@@ -137,7 +137,7 @@ where
 
     rsx! {
         div {
-            class: "search_modal",
+            class: "search-modal",
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {

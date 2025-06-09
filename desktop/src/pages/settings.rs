@@ -1,16 +1,23 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use dioxus::{html::label, prelude::*};
+use kimun_core::NoteVault;
 
-use crate::{route::Route, settings};
+use crate::{
+    components::modal::{indexer::IndexType, Modal},
+    route::Route,
+    settings,
+};
 
 #[component]
 pub fn Settings() -> Element {
     let mut settings: Signal<settings::AppSettings> = use_context();
+    let mut modal = use_signal(Modal::new);
     // let mut settings = use_signal(|| settings::Settings::load_from_disk().unwrap_or_default());
 
     rsx! {
         div { class: "settings-container",
+            {Modal::get_element(modal)}
             div { class: "settings-header",
                 h1 { "Settings" }
                 p { "Customize app settings" }
@@ -47,11 +54,31 @@ pub fn Settings() -> Element {
                     div { class: "form-group",
                         label { class: "form-label", "Vault Indexing" }
                         div { class: "file-upload-container",
-                            button { class: "btn btn-primary", "Fast Index" }
+                            button {
+                                class: "btn btn-primary",
+                                onclick: move |_| {
+                                    if let Some(workspace_dir) = settings().workspace_dir {
+                                        let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
+                                        modal.write().set_indexer(vault, IndexType::Fast);
+                                    }
+                                },
+                                disabled: {settings().workspace_dir.is_none()},
+                                "Fast Index"
+                            }
                         }
                         div { class: "description", "Indexes the notes located in the directory" }
                         div { class: "file-upload-container",
-                            button { class: "btn btn-primary", "Full Index" }
+                            button {
+                                class: "btn btn-primary",
+                                onclick: move |_| {
+                                    if let Some(workspace_dir) = settings().workspace_dir {
+                                        let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
+                                        modal.write().set_indexer(vault, IndexType::Full);
+                                    }
+                                },
+                                disabled: {settings().workspace_dir.is_none()},
+                                "Full Index"
+                            }
                         }
                         div { class: "description",
                             "Performs a full index of the notes located in the directory, can take longer time depending on the number of notes"

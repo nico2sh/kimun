@@ -58,11 +58,11 @@ pub fn Editor() -> Element {
                     match key {
                         Code::KeyO => {
                             debug!("Trigger Open Note Select");
-                            modal.write().set_note_select();
+                            modal.write().set_note_select(vault.clone(), note_path);
                         }
                         Code::KeyK => {
                             debug!("Trigger Open Note Search");
-                            modal.write().set_note_search();
+                            modal.write().set_note_search(vault.clone(), note_path);
                         }
                         Code::KeyJ => {
                             debug!("New Journal Entry");
@@ -86,6 +86,7 @@ pub fn Editor() -> Element {
                     info!("Close dialog");
                 }
             },
+            {Modal::get_element(modal)}
             div { class: "editor-header",
                 div { class: "title-section",
                     div { class: "title-text", "{note_path_display}" }
@@ -93,7 +94,6 @@ pub fn Editor() -> Element {
                 }
             }
             div { class: "editor-main",
-                {Modal::get_element(modal, vault.clone(), note_path)}
                 TextEditor { vault: vault.clone(), note_path, editor_signal }
             }
             div { class: "editor-footer" }
