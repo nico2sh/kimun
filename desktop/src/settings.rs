@@ -15,6 +15,12 @@ pub struct AppSettings {
     #[serde(default)]
     pub last_paths: Vec<VaultPath>,
     pub workspace_dir: Option<PathBuf>,
+    #[serde(skip, default = "yes")]
+    needs_indexing: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -22,6 +28,7 @@ impl Default for AppSettings {
         Self {
             last_paths: vec![],
             workspace_dir: None,
+            needs_indexing: true,
         }
     }
 }
@@ -76,10 +83,19 @@ impl AppSettings {
             if workspace_path != current_workspace_dir {
                 // We clean up the data related with the workspace
                 self.last_paths = vec![];
+                self.needs_indexing = true;
             }
         }
 
         self.workspace_dir = Some(workspace_path.to_owned());
+    }
+
+    pub fn report_indexed(&mut self) {
+        self.needs_indexing = false;
+    }
+
+    pub fn needs_indexing(&self) -> bool {
+        self.needs_indexing
     }
 
     pub fn add_path_history(&mut self, note_path: &VaultPath) {
