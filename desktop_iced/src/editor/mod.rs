@@ -135,22 +135,25 @@ impl Editor {
     }
 
     fn save_task(&mut self) -> Task<KimunMessage> {
-        self.save_status = SaveStatus::Saving;
-        let vault = self.vault.clone();
-        let path = self.path.clone();
-        let content = self.content.text();
-        Task::perform(
-            async move { vault.save_note(&path, content) },
-            |res| match res {
-                Ok((entry, _content)) => EditorMsg::Saved(entry.path).into(),
-                Err(e) => KimunMessage::add_error(format!("Error saving note: {}", e)),
-            },
-        )
+        if self.save_status != SaveStatus::Saved {
+            self.save_status = SaveStatus::Saving;
+            let vault = self.vault.clone();
+            let path = self.path.clone();
+            let content = self.content.text();
+            Task::perform(
+                async move { vault.save_note(&path, content) },
+                |res| match res {
+                    Ok((entry, _content)) => EditorMsg::Saved(entry.path).into(),
+                    Err(e) => KimunMessage::add_error(format!("Error saving note: {}", e)),
+                },
+            )
+        } else {
+            Task::none()
+        }
     }
 
     /// Creates a note from the path
     fn new_note_at_path(&mut self, note_path: &VaultPath) -> anyhow::Result<()> {
-        // We will save the current note
         let mut np = note_path.clone();
         loop {
             if self.vault.exists(&np).is_none() {
@@ -161,8 +164,9 @@ impl Editor {
         }
         if np.is_note() {
             let details = NoteDetails::new(&np, String::new());
-            self.save_status = SaveStatus::Saved;
             self.set_content(&details);
+            self.path = np.to_owned();
+            self.save_status = SaveStatus::Saved;
         } else {
             bail!("Note path is not a note: {}", np)
         };

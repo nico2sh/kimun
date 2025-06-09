@@ -1,0 +1,48 @@
+/* :root {
+  --text: #cad3f5;
+  --text-0: #b8c0e0;
+  --text-1: #a5adcb;
+  --background: #24273a;
+  --border: #181926;
+  --overlay: #6e738d;
+  --surface-2: #5b6078;
+  --surface-1: #494d64;
+  --surface-0: #363a4f;
+} */
+
+:root {
+  /* Primary Colors */
+  --primary-color: #667eea;
+  --primary-dark: #5a67d8;
+  --secondary-color: #764ba2;
+
+  /* Accent Colors */
+  --accent-blue: #3b82f6;
+  --accent-blue-dark: #2563eb;
+  --accent-green: #10b981;
+  --accent-green-dark: #059669;
+  --accent-gray: #6b7280;
+  --accent-gray-dark: #4b5563;
+
+  /* Background Colors */
+  --bg-main: #f8fafc;
+  --bg-section: #f1f5f9;
+  --bg-hover: #e2e8f0;
+
+  /* Text Colors */
+  --text-primary: #333333;
+  --text-secondary: #2d3748;
+  --text-muted: #4a5568;
+  --text-light: #6b7280;
+  --text-contrast: #ffffff;
+
+  /* Border Colors */
+  --border-light: #e2e8f0;
+  --border-focus: var(--primary-color);
+  --border-hover: #cbd5e0;
+
+  /* Shadow Colors */
+  --shadow-primary: rgba(0, 0, 0, 0.1);
+  --shadow-focus: rgba(102, 126, 234, 0.1);
+  --shadow-hover: rgba(102, 126, 234, 0.3);
+}

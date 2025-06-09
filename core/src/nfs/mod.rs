@@ -383,6 +383,10 @@ impl VaultPath {
         }
     }
 
+    pub fn is_root_or_empty(&self) -> bool {
+        self.slices.is_empty()
+    }
+
     // returns a NotePath that increases a prefix when
     // conflicting the name
     pub fn get_name_on_conflict(&self) -> VaultPath {
@@ -508,19 +512,18 @@ impl VaultPath {
             .map_err(|_e| FSError::InvalidPath {
                 path: path_to_string(&full_path),
             })?;
-        let path_list = relative
-            .components()
-            .map(|component| {
-                let os_str = component.as_os_str();
-                match os_str.to_str() {
-                    Some(comp) => comp.to_owned(),
-                    None => os_str.to_string_lossy().to_string(),
-                }
-            })
-            .collect::<Vec<String>>()
-            .join(PATH_SEPARATOR.to_string().as_str());
+        let mut path_list = vec![PATH_SEPARATOR.to_string()];
+        relative.components().for_each(|component| {
+            let os_str = component.as_os_str();
+            let slice = match os_str.to_str() {
+                Some(comp) => comp.to_owned(),
+                None => os_str.to_string_lossy().to_string(),
+            };
+            path_list.push(slice);
+        });
+        let pl = path_list.join(PATH_SEPARATOR.to_string().as_str());
 
-        Ok(VaultPath::new(path_list))
+        Ok(VaultPath::new(pl))
     }
 
     // returns true if it's just a note file, no path relative to the vault
