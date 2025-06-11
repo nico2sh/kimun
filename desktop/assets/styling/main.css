@@ -292,7 +292,7 @@ progress {
   /* max-width: 900px; */
   margin: 0 auto;
   background: var(--bg-main);
-  box-shadow: 0 10px 40px var(--shadow-primary);
+  /* box-shadow: 0 10px 40px var(--shadow-primary); */
   overflow: hidden;
 }
 
@@ -392,13 +392,29 @@ progress {
 
 /* Buttons */
 /* Action Buttons */
-.action-buttons {
+/* .action-buttons {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
   margin-top: 32px;
   padding-top: 24px;
   border-top: 1px solid var(--border-light);
+} */
+.action-buttons {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  /* max-width: 900px; */
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 20px 40px;
+  background: var(--bg-main);
+  border-top: 1px solid var(--border-light);
+  box-shadow: 0 -4px 20px var(--shadow-primary);
+  z-index: 1000;
 }
 
 .btn {
