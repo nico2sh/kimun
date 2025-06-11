@@ -141,11 +141,13 @@ pub fn TextEditor(
                     *editor_signal.write() = Some(e.data());
                 },
                 oninput: move |e| {
+                    info!("input: {:?}", e);
                     cr.send(EditorMsg::Update {
                         text: e.value(),
                     });
                 },
                 onkeydown: move |e| {
+                    info!("key down: {:?}", e);
                     match e.key() {
                         Key::Tab => {
                             e.prevent_default();

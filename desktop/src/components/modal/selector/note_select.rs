@@ -35,6 +35,8 @@ impl SelectFunctions {
             .build();
         let _res = self.vault.browse_vault(search_options);
 
+        info!("Base path: {}", current_base_path);
+
         let mut result = vec![];
 
         while let Ok(sr) = rx.recv() {
@@ -47,7 +49,8 @@ impl SelectFunctions {
                     ));
                 }
                 ResultType::Directory => {
-                    if sr.path != current_base_path {
+                    info!("result path: {}, base path: {}", sr.path, current_base_path);
+                    if !sr.path.is_like(&current_base_path) {
                         result.push(NoteSelectEntry::from_directory_details(
                             sr.path,
                             self.current_base_path,
@@ -87,6 +90,7 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
             if !filter_text.is_empty() {
                 result.push(NoteSelectEntry::create_from_name(
                     filter_text.to_owned(),
+                    self.current_base_path.read().to_owned(),
                     self.current_note_path,
                 ));
             }
@@ -133,6 +137,7 @@ fn sort_string(entry: &NoteSelectEntry) -> String {
         } => format!("1-{}", path),
         NoteSelectEntry::Create {
             name: _,
+            new_note_path: _,
             path_signal: _,
         } => format!("0"),
     }
@@ -155,16 +160,21 @@ fn filter_items(items: Vec<NoteSelectEntry>, filter_text: String) -> Vec<NoteSel
 #[allow(non_snake_case)]
 pub fn NoteSelector(props: SelectorProps) -> Element {
     let current_note_path = props.note_path;
+    info!("Current note path: {:?}", current_note_path.read());
     let current_base_path = use_signal_sync(|| {
         let path = match current_note_path.read().to_owned() {
             Some(path) => path.to_owned(),
             None => VaultPath::root(),
         };
-        if path.is_note() {
+        let mut p = if path.is_note() {
             path.get_parent_path().0
         } else {
             path
+        };
+        if p.is_relative() {
+            p.to_absolute();
         }
+        p
     });
     let vault = props.vault;
 
@@ -195,6 +205,7 @@ pub enum NoteSelectEntry {
         base_path_signal: SyncSignal<VaultPath>,
     },
     Create {
+        new_note_path: VaultPath,
         name: String,
         path_signal: SyncSignal<Option<VaultPath>>,
     },
@@ -231,8 +242,19 @@ impl NoteSelectEntry {
             base_path_signal,
         }
     }
-    pub fn create_from_name(name: String, path_signal: SyncSignal<Option<VaultPath>>) -> Self {
-        Self::Create { name, path_signal }
+    pub fn create_from_name(
+        name: String,
+        base_path: VaultPath,
+        path_signal: SyncSignal<Option<VaultPath>>,
+    ) -> Self {
+        let note_path = VaultPath::note_path_from(name);
+        let new_note_path = base_path.append(&note_path);
+        let name = new_note_path.to_string();
+        Self::Create {
+            new_note_path,
+            name,
+            path_signal,
+        }
     }
 }
 
@@ -251,9 +273,10 @@ impl AsRef<str> for NoteSelectEntry {
                 base_path_signal: _,
             } => name.as_str(),
             NoteSelectEntry::Create {
+                new_note_path: _,
                 name,
                 path_signal: _,
-            } => name,
+            } => name.as_str(),
         }
     }
 }
@@ -287,9 +310,13 @@ impl RowItem for NoteSelectEntry {
                     false
                 })
             }
-            NoteSelectEntry::Create { name, path_signal } => {
-                let path = VaultPath::note_path_from(name);
+            NoteSelectEntry::Create {
+                new_note_path,
+                name: _,
+                path_signal,
+            } => {
                 let mut s = *path_signal;
+                let path = new_note_path.clone();
                 Box::new(move || {
                     s.set(Some(path.clone()));
                     true
@@ -325,6 +352,7 @@ impl RowItem for NoteSelectEntry {
                 }
             }
             NoteSelectEntry::Create {
+                new_note_path: _,
                 name,
                 path_signal: _,
             } => {

@@ -9,7 +9,6 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 use crate::{
     components::{
         modal::{indexer::IndexType, Modal},
-        note_browser::NoteBrowser,
         text_editor::TextEditor,
     },
     route::Route,
@@ -90,7 +89,6 @@ pub fn Editor() -> Element {
             },
             // We close any modal if we click on the main UI
             onclick: move |_e| {
-                info!("{:?}", _e);
                 if modal.read().is_open() {
                     modal.write().close();
                     info!("Close dialog");

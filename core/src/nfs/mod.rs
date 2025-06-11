@@ -545,6 +545,14 @@ impl VaultPath {
         !self.absolute
     }
 
+    pub fn to_absolute(&mut self) {
+        self.absolute = true;
+    }
+
+    pub fn to_relative(&mut self) {
+        self.absolute = false;
+    }
+
     pub fn get_parent_path(&self) -> (VaultPath, String) {
         let mut new_path = self.slices.clone();
         let current = new_path
@@ -568,6 +576,11 @@ impl VaultPath {
             absolute: self.absolute,
             slices,
         }
+    }
+
+    // Compares two paths, ignoring if they are absolute or not
+    pub fn is_like(&self, other: &VaultPath) -> bool {
+        self.slices.eq(&other.slices)
     }
 }
 
