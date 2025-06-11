@@ -2,7 +2,6 @@
 
 // use axum::Router;
 use dioxus::prelude::*;
-use kimun_core::nfs::VaultPath;
 
 use crate::pages::editor::Editor;
 use crate::pages::main::Main;
