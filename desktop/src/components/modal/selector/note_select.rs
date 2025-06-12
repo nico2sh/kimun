@@ -84,7 +84,7 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
         items
     }
 
-    fn filter(&self, filter_text: String, items: Vec<NoteSelectEntry>) -> Vec<NoteSelectEntry> {
+    fn filter(&self, filter_text: String, items: &Vec<NoteSelectEntry>) -> Vec<NoteSelectEntry> {
         if !items.is_empty() {
             let mut result = Vec::new();
             if !filter_text.is_empty() {
@@ -143,7 +143,7 @@ fn sort_string(entry: &NoteSelectEntry) -> String {
     }
 }
 
-fn filter_items(items: Vec<NoteSelectEntry>, filter_text: String) -> Vec<NoteSelectEntry> {
+fn filter_items(items: &Vec<NoteSelectEntry>, filter_text: String) -> Vec<NoteSelectEntry> {
     let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
     let filtered = nucleo::pattern::Pattern::parse(
         filter_text.as_ref(),

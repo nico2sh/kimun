@@ -6,7 +6,7 @@ use dioxus::{
 };
 use kimun_core::{
     nfs::{NoteEntryData, VaultPath},
-    note::{NoteContentData, NoteDetails},
+    note::NoteContentData,
     NoteVault,
 };
 
@@ -32,7 +32,7 @@ impl SelectorFunctions<NoteSearchEntry> for SearchFunctions {
         vec![]
     }
 
-    fn filter(&self, filter_text: String, _items: Vec<NoteSearchEntry>) -> Vec<NoteSearchEntry> {
+    fn filter(&self, filter_text: String, _items: &Vec<NoteSearchEntry>) -> Vec<NoteSearchEntry> {
         match self.vault.search_notes(filter_text) {
             Ok(res) => res
                 .into_iter()
