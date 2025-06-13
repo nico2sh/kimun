@@ -2,6 +2,7 @@
 
 // use axum::Router;
 use dioxus::prelude::*;
+use kimun_core::nfs::VaultPath;
 
 use crate::pages::editor::Editor;
 use crate::pages::main::Main;
@@ -12,8 +13,8 @@ use crate::pages::settings::Settings;
 pub enum Route {
     #[route("/")]
     Main {},
-    #[route("/editor")]
-    Editor {},
+    #[route("/edit/:note_path?:create")]
+    Editor { note_path: VaultPath, create: bool },
     #[route("/settings")]
     Settings {},
 }

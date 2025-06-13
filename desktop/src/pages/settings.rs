@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use dioxus::{html::label, prelude::*};
-use kimun_core::NoteVault;
+use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
     components::modal::{indexer::IndexType, Modal},
@@ -101,7 +101,16 @@ pub fn Settings() -> Element {
                             match settings.read().save_to_disk() {
                                 Ok(_) => {
                                     if let Some(_p) = path {
-                                        navigator().replace(Route::Editor {});
+                                        let note_path = settings
+                                            .read()
+                                            .last_paths
+                                            .last()
+                                            .map_or_else(|| VaultPath::root(), |p| p.to_owned());
+                                        navigator()
+                                            .replace(Route::Editor {
+                                                note_path,
+                                                create: false,
+                                            });
                                     }
                                 }
                                 Err(_e) => todo!(),
