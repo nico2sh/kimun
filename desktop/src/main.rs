@@ -1,8 +1,7 @@
 // The dioxus prelude contains a ton of common items used in dioxus apps. It's a good idea to import wherever you
 // need dioxus
-use dioxus::{logger::tracing::info, prelude::*};
+use dioxus::prelude::*;
 
-use kimun_core::NoteVault;
 use route::Route;
 use settings::AppSettings;
 

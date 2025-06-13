@@ -1,7 +1,6 @@
 use dioxus::logger::tracing::debug;
-use dioxus::{logger::tracing::info, prelude::*};
+use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
-use kimun_core::NoteVault;
 
 use crate::route::Route;
 use crate::settings::AppSettings;
