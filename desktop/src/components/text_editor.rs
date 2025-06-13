@@ -1,10 +1,7 @@
 use std::rc::Rc;
 
-use crate::pages::editor::EditorMsg;
-use dioxus::{
-    logger::tracing::{error, info},
-    prelude::*,
-};
+use crate::pages::editor::{EditorContent, EditorMsg};
+use dioxus::{logger::tracing::info, prelude::*};
 
 #[component]
 pub fn EditorHeader(note_path_display: String, is_dirty: Signal<bool>) -> Element {
@@ -23,44 +20,64 @@ pub fn EditorHeader(note_path_display: String, is_dirty: Signal<bool>) -> Elemen
 
 #[component]
 pub fn TextEditor(
-    content: String,
+    content: EditorContent,
     editor_signal: Signal<Option<Rc<MountedData>>>,
-    disabled: bool,
     cr: Coroutine<EditorMsg>,
 ) -> Element {
     info!("Refreshing editor");
     // This manages the editor state
     rsx! {
         div { class: "editor-content",
-            textarea {
-                class: "text-editor",
-                id: "textEditor",
-                autofocus: true,
-                onmounted: move |e| {
-                    *editor_signal.write() = Some(e.data());
-                },
-                oninput: move |e| {
-                    cr.send(EditorMsg::Update {
-                        text: e.value(),
-                    });
-                },
-                onkeydown: move |e| {
-                    if disabled {
-                        e.prevent_default();
-                    } else {
-                        match e.key() {
-                            Key::Tab => {
-                                e.prevent_default();
-                            }
-                            _ => {}
+            {
+                match content {
+                    EditorContent::Loading => rsx! {
+                        div {
+                            onmounted: move |e| {
+                                *editor_signal.write() = Some(e.data());
+                            },
+                            "Loading..."
                         }
-                    }
-                },
-                spellcheck: false,
-                wrap: "hard",
-                resize: "none",
-                placeholder: if disabled { "Create or select a note" } else { "Start writing something!" },
-                value: "{content}",
+                    },
+                    EditorContent::Enabled { content } => rsx! {
+                        textarea {
+                            class: "text-editor",
+                            id: "textEditor",
+                            autofocus: true,
+                            onmounted: move |e| {
+                                *editor_signal.write() = Some(e.data());
+                            },
+                            onselect: move |e| {
+                                info!("Select event {:?}", e);
+                            },
+                            oninput: move |e| {
+                                cr.send(EditorMsg::Update {
+                                    text: e.value(),
+                                });
+                            },
+                            onkeydown: move |e| {
+                                match e.key() {
+                                    Key::Tab => {
+                                        e.prevent_default();
+                                    }
+                                    _ => {}
+                                }
+                            },
+                            spellcheck: false,
+                            wrap: "hard",
+                            resize: "none",
+                            placeholder: "Start writing something!",
+                            value: "{content}",
+                        }
+                    },
+                    EditorContent::Disabled => rsx! {
+                        div {
+                            onmounted: move |e| {
+                                *editor_signal.write() = Some(e.data());
+                            },
+                            "No note in here...\nCreate or select a note"
+                        }
+                    },
+                }
             }
         }
     }

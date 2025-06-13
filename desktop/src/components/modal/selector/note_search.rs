@@ -17,13 +17,11 @@ pub struct SearchProps {
     modal: Signal<Modal>,
     vault: Arc<NoteVault>,
     filter_text: String,
-    note_path: SyncSignal<Option<VaultPath>>,
 }
 
 #[derive(Clone, PartialEq)]
 struct SearchFunctions {
     vault: Arc<NoteVault>,
-    current_note_path: SyncSignal<Option<VaultPath>>,
 }
 
 impl SelectorFunctions<NoteSearchEntry> for SearchFunctions {
@@ -36,7 +34,7 @@ impl SelectorFunctions<NoteSearchEntry> for SearchFunctions {
         match self.vault.search_notes(filter_text) {
             Ok(res) => res
                 .into_iter()
-                .map(|p| NoteSearchEntry::from_note_details(p, self.current_note_path))
+                .map(|p| NoteSearchEntry::from_note_details(p))
                 .collect::<Vec<NoteSearchEntry>>(),
             Err(e) => {
                 error!("Error searching notes: {}", e);
@@ -56,12 +54,10 @@ impl SelectorFunctions<NoteSearchEntry> for SearchFunctions {
 
 #[allow(non_snake_case)]
 pub fn NoteSearch(props: SearchProps) -> Element {
-    let current_note_path = props.note_path;
     let vault = props.vault;
 
     let search_functions = SearchFunctions {
         vault: vault.clone(),
-        current_note_path,
     };
 
     SelectorView(
@@ -77,14 +73,10 @@ pub struct NoteSearchEntry {
     note_path: VaultPath,
     note_title: String,
     search_str: String,
-    path_signal: SyncSignal<Option<VaultPath>>,
 }
 
 impl NoteSearchEntry {
-    pub fn from_note_details(
-        note: (NoteEntryData, NoteContentData),
-        path_signal: SyncSignal<Option<VaultPath>>,
-    ) -> Self {
+    pub fn from_note_details(note: (NoteEntryData, NoteContentData)) -> Self {
         let entry = note.0;
         let content = note.1;
         let note_path = entry.path.clone();
@@ -94,7 +86,6 @@ impl NoteSearchEntry {
             note_path,
             note_title,
             search_str: path_str,
-            path_signal,
         }
     }
 }
@@ -107,10 +98,12 @@ impl AsRef<str> for NoteSearchEntry {
 
 impl RowItem for NoteSearchEntry {
     fn on_select(&self) -> Box<dyn FnMut() -> bool> {
-        let p = self.note_path.clone();
-        let mut s = self.path_signal;
+        let path = self.note_path.to_owned();
         Box::new(move || {
-            s.set(Some(p.clone()));
+            navigator().replace(crate::Route::Editor {
+                note_path: path.clone(),
+                create: false,
+            });
             true
         })
     }

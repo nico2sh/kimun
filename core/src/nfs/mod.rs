@@ -6,6 +6,7 @@ use std::{
     hash::Hash,
     io::Write,
     path::{Path, PathBuf},
+    str::FromStr,
     time::UNIX_EPOCH,
 };
 
@@ -14,6 +15,8 @@ use ignore::{WalkBuilder, WalkParallel};
 use log::{info, warn};
 use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
+
+use crate::error::VaultError;
 
 use super::{error::FSError, DirectoryDetails, NoteDetails};
 
@@ -236,6 +239,14 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
 pub struct VaultPath {
     absolute: bool,
     slices: Vec<VaultPathSlice>,
+}
+
+impl FromStr for VaultPath {
+    type Err = FSError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_string(s)
+    }
 }
 
 impl TryFrom<String> for VaultPath {

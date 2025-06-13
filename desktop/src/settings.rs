@@ -7,7 +7,11 @@ use anyhow::bail;
 use dioxus::logger::tracing::debug;
 use kimun_core::nfs::VaultPath;
 
+#[cfg(debug_assertions)]
+const BASE_CONFIG_FILE: &str = ".kimun_debug.toml";
+#[cfg(not(debug_assertions))]
 const BASE_CONFIG_FILE: &str = ".kimun.toml";
+
 const LAST_PATH_HISTORY_SIZE: usize = 10;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]

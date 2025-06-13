@@ -16,26 +16,25 @@ pub struct SelectorProps {
     modal: Signal<Modal>,
     vault: Arc<NoteVault>,
     filter_text: String,
-    note_path: SyncSignal<Option<VaultPath>>,
+    note_path: VaultPath,
 }
 
 #[derive(Clone, PartialEq)]
 struct SelectFunctions {
     vault: Arc<NoteVault>,
-    current_note_path: SyncSignal<Option<VaultPath>>,
-    current_base_path: SyncSignal<VaultPath>,
+    current_browse_path: SyncSignal<VaultPath>,
 }
 
 impl SelectFunctions {
     fn open(&self) -> Vec<NoteSelectEntry> {
-        let current_base_path = self.current_base_path.read().to_owned();
-        let (search_options, rx) = VaultBrowseOptionsBuilder::new(&current_base_path)
+        let current_browse_path = self.current_browse_path.read().to_owned();
+        let (search_options, rx) = VaultBrowseOptionsBuilder::new(&current_browse_path)
             .no_validation()
             .non_recursive()
             .build();
         let _res = self.vault.browse_vault(search_options);
 
-        info!("Base path: {}", current_base_path);
+        info!("Base path: {}", current_browse_path);
 
         let mut result = vec![];
 
@@ -45,15 +44,17 @@ impl SelectFunctions {
                     result.push(NoteSelectEntry::from_note_details(
                         sr.path,
                         note_content_data,
-                        self.current_note_path,
                     ));
                 }
                 ResultType::Directory => {
-                    info!("result path: {}, base path: {}", sr.path, current_base_path);
-                    if !sr.path.is_like(&current_base_path) {
+                    info!(
+                        "result path: {}, base path: {}",
+                        sr.path, current_browse_path
+                    );
+                    if !sr.path.is_like(&current_browse_path) {
                         result.push(NoteSelectEntry::from_directory_details(
                             sr.path,
-                            self.current_base_path,
+                            self.current_browse_path,
                         ));
                     }
                 }
@@ -61,13 +62,13 @@ impl SelectFunctions {
             }
         }
         result.sort_by_key(|b| std::cmp::Reverse(sort_string(b)));
-        if !current_base_path.is_root_or_empty() {
+        if !current_browse_path.is_root_or_empty() {
             result.insert(
                 0,
                 NoteSelectEntry::Directory {
-                    path: current_base_path.get_parent_path().0,
+                    path: current_browse_path.get_parent_path().0,
                     name: "..".to_string(),
-                    base_path_signal: self.current_base_path,
+                    browse_path_signal: self.current_browse_path,
                 },
             );
         }
@@ -90,8 +91,7 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
             if !filter_text.is_empty() {
                 result.push(NoteSelectEntry::create_from_name(
                     filter_text.to_owned(),
-                    self.current_base_path.read().to_owned(),
-                    self.current_note_path,
+                    self.current_browse_path.read().to_owned(),
                 ));
             }
             debug!("Filtering {}", filter_text);
@@ -109,7 +109,6 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
             path,
             title: _,
             search_str: _,
-            path_signal: _,
         } = element
         {
             self.vault
@@ -128,17 +127,15 @@ fn sort_string(entry: &NoteSelectEntry) -> String {
             path,
             title: _,
             search_str: _,
-            path_signal: _,
         } => format!("2-{}", path),
         NoteSelectEntry::Directory {
             path,
             name: _,
-            base_path_signal: _,
+            browse_path_signal: _,
         } => format!("1-{}", path),
         NoteSelectEntry::Create {
             name: _,
             new_note_path: _,
-            path_signal: _,
         } => format!("0"),
     }
 }
@@ -160,16 +157,12 @@ fn filter_items(items: &Vec<NoteSelectEntry>, filter_text: String) -> Vec<NoteSe
 #[allow(non_snake_case)]
 pub fn NoteSelector(props: SelectorProps) -> Element {
     let current_note_path = props.note_path;
-    info!("Current note path: {:?}", current_note_path.read());
+    info!("Current note path: {:?}", current_note_path);
     let current_base_path = use_signal_sync(|| {
-        let path = match current_note_path.read().to_owned() {
-            Some(path) => path.to_owned(),
-            None => VaultPath::root(),
-        };
-        let mut p = if path.is_note() {
-            path.get_parent_path().0
+        let mut p = if current_note_path.is_note() {
+            current_note_path.get_parent_path().0
         } else {
-            path
+            current_note_path
         };
         if p.is_relative() {
             p.to_absolute();
@@ -180,8 +173,7 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
 
     let select_functions = SelectFunctions {
         vault: vault.clone(),
-        current_note_path,
-        current_base_path,
+        current_browse_path: current_base_path,
     };
     SelectorView(
         "Use keywords to find notes, search is case insensitive and special characters are ignored.".to_string(),
@@ -197,26 +189,20 @@ pub enum NoteSelectEntry {
         path: VaultPath,
         title: String,
         search_str: String,
-        path_signal: SyncSignal<Option<VaultPath>>,
     },
     Directory {
         path: VaultPath,
         name: String,
-        base_path_signal: SyncSignal<VaultPath>,
+        browse_path_signal: SyncSignal<VaultPath>,
     },
     Create {
         new_note_path: VaultPath,
         name: String,
-        path_signal: SyncSignal<Option<VaultPath>>,
     },
 }
 
 impl NoteSelectEntry {
-    pub fn from_note_details(
-        path: VaultPath,
-        content: NoteContentData,
-        path_signal: SyncSignal<Option<VaultPath>>,
-    ) -> Self {
+    pub fn from_note_details(path: VaultPath, content: NoteContentData) -> Self {
         let path_str = format!("{} {}", content.title, path.get_name());
         let title = if content.title.is_empty() {
             "<No title>".to_string()
@@ -227,7 +213,6 @@ impl NoteSelectEntry {
             path: path.clone(),
             title,
             search_str: path_str,
-            path_signal,
         }
     }
 
@@ -239,21 +224,16 @@ impl NoteSelectEntry {
         Self::Directory {
             path,
             name,
-            base_path_signal,
+            browse_path_signal: base_path_signal,
         }
     }
-    pub fn create_from_name(
-        name: String,
-        base_path: VaultPath,
-        path_signal: SyncSignal<Option<VaultPath>>,
-    ) -> Self {
+    pub fn create_from_name(name: String, base_path: VaultPath) -> Self {
         let note_path = VaultPath::note_path_from(name);
         let new_note_path = base_path.append(&note_path);
         let name = new_note_path.to_string();
         Self::Create {
             new_note_path,
             name,
-            path_signal,
         }
     }
 }
@@ -265,17 +245,15 @@ impl AsRef<str> for NoteSelectEntry {
                 path: _,
                 title: _,
                 search_str,
-                path_signal: _,
             } => search_str.as_str(),
             NoteSelectEntry::Directory {
                 path: _,
                 name,
-                base_path_signal: _,
+                browse_path_signal: _,
             } => name.as_str(),
             NoteSelectEntry::Create {
                 new_note_path: _,
                 name,
-                path_signal: _,
             } => name.as_str(),
         }
     }
@@ -288,19 +266,20 @@ impl RowItem for NoteSelectEntry {
                 path,
                 title: _,
                 search_str: _,
-                path_signal,
             } => {
-                let p = path.clone();
-                let mut s = *path_signal;
+                let path = path.to_owned();
                 Box::new(move || {
-                    s.set(Some(p.clone()));
+                    navigator().replace(crate::Route::Editor {
+                        note_path: path.clone(),
+                        create: false,
+                    });
                     true
                 })
             }
             NoteSelectEntry::Directory {
                 path,
                 name: _,
-                base_path_signal,
+                browse_path_signal: base_path_signal,
             } => {
                 let p = path.clone();
                 let mut s = *base_path_signal;
@@ -313,12 +292,13 @@ impl RowItem for NoteSelectEntry {
             NoteSelectEntry::Create {
                 new_note_path,
                 name: _,
-                path_signal,
             } => {
-                let mut s = *path_signal;
-                let path = new_note_path.clone();
+                let path = new_note_path.to_owned();
                 Box::new(move || {
-                    s.set(Some(path.clone()));
+                    navigator().replace(crate::Route::Editor {
+                        note_path: path.clone(),
+                        create: true,
+                    });
                     true
                 })
             }
@@ -331,7 +311,6 @@ impl RowItem for NoteSelectEntry {
                 path,
                 title,
                 search_str: _,
-                path_signal: _,
             } => {
                 rsx! {
                     div { class: "element",
@@ -343,7 +322,7 @@ impl RowItem for NoteSelectEntry {
             NoteSelectEntry::Directory {
                 path: _,
                 name,
-                base_path_signal: _,
+                browse_path_signal: _,
             } => {
                 rsx! {
                     div { class: "element",
@@ -354,7 +333,6 @@ impl RowItem for NoteSelectEntry {
             NoteSelectEntry::Create {
                 new_note_path: _,
                 name,
-                path_signal: _,
             } => {
                 rsx! {
                     div { class: "note_create",
