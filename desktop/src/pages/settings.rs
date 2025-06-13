@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use dioxus::{html::label, prelude::*};
+use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
@@ -62,7 +62,7 @@ pub fn Settings() -> Element {
                                         modal.write().set_indexer(vault, IndexType::Fast);
                                     }
                                 },
-                                disabled: {settings().workspace_dir.is_none()},
+                                disabled: settings().workspace_dir.is_none(),
                                 "Fast Index"
                             }
                         }
@@ -76,7 +76,7 @@ pub fn Settings() -> Element {
                                         modal.write().set_indexer(vault, IndexType::Full);
                                     }
                                 },
-                                disabled: {settings().workspace_dir.is_none()},
+                                disabled: settings().workspace_dir.is_none(),
                                 "Full Index"
                             }
                         }
