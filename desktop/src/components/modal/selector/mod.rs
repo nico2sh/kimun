@@ -16,12 +16,18 @@ where
 {
     fn init(&self) -> Vec<R>;
     fn filter(&self, filter_text: String, items: &Vec<R>) -> Vec<R>;
-    fn preview(&self, element: &R) -> Option<String>;
+    fn preview(&self, element: &R) -> Option<PreviewData>;
 }
 
 pub trait RowItem: PartialEq + Eq + Clone {
     fn on_select(&self) -> Box<dyn FnMut() -> bool>;
     fn get_view(&self) -> Element;
+}
+
+pub struct PreviewData {
+    title: String,
+    data: String,
+    content: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -128,7 +134,7 @@ where
 
     rsx! {
         div {
-            class: "search-modal",
+            class: "notes-modal",
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
@@ -182,11 +188,13 @@ where
                     }
                 }
             },
-            div { class: "hint", "{hint}" }
-            div { class: "search",
+            div { class: "search-header",
+                div { class: "search-title", "Browse Notes" }
+                // "{hint}"
                 input {
-                    class: "search_box",
+                    class: "search-box",
                     r#type: "search",
+                    placeholder: "Search...",
                     value: "{filter_text}",
                     spellcheck: false,
                     onmounted: move |e| {
@@ -196,37 +204,41 @@ where
                         filter_text.set(e.value().clone().to_string());
                     },
                 }
-                div { class: "list",
-                    if let Some(rs) = rows.value().read().clone() {
-                        for (index , row) in rs.into_iter().enumerate() {
-                            div {
-                                onmouseover: move |_e| {
-                                    selected.set(Some(index));
-                                },
-                                onclick: move |_e| {
-                                    if row.on_select()() {
-                                        load_state.set(LoadState::Closed);
-                                        modal.write().close();
-                                    } else {
-                                        load_state.set(LoadState::Init);
-                                    }
-                                },
-                                class: if *selected.read() == Some(index) { "element selected" } else { "element" },
-                                id: "element-{index}",
-                                {row.get_view()}
-                            }
+            }
+            div { class: "notes-list",
+                if let Some(rs) = rows.value().read().clone() {
+                    for (index , row) in rs.into_iter().enumerate() {
+                        div {
+                            class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
+                            id: "element-{index}",
+                            onmouseover: move |_e| {
+                                selected.set(Some(index));
+                            },
+                            onclick: move |_e| {
+                                if row.on_select()() {
+                                    load_state.set(LoadState::Closed);
+                                    modal.write().close();
+                                } else {
+                                    load_state.set(LoadState::Init);
+                                }
+                            },
+                            {row.get_view()}
                         }
-                    } else {
-                        div { "Loading..." }
                     }
+                } else {
+                    div { "Loading..." }
                 }
             }
-            div { class: "preview",
+            div { class: "preview-pane",
                 match &*preview_text.read_unchecked() {
                     Some(text) => {
-                        if let Some(t) = text {
+                        if let Some(p) = text {
                             rsx! {
-                                p { "{t}" }
+                                div { class: "preview-header",
+                                    div { class: "preview-title", "{p.title}" }
+                                    div { class: "preview-meta", "{p.data}" }
+                                }
+                                div { class: "preview-content", "{p.content}" }
                             }
                         } else {
                             rsx! {

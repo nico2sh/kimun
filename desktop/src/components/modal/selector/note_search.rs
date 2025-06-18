@@ -10,6 +10,8 @@ use kimun_core::{
     NoteVault,
 };
 
+use crate::components::modal::selector::PreviewData;
+
 use super::{Modal, RowItem, SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
@@ -43,11 +45,19 @@ impl SelectorFunctions<NoteSearchEntry> for SearchFunctions {
         }
     }
 
-    fn preview(&self, element: &NoteSearchEntry) -> Option<String> {
-        let preview = self
-            .vault
-            .load_note(&element.note_path)
-            .map_or_else(|_e| "Error loading preview...".to_string(), |d| d.raw_text);
+    fn preview(&self, element: &NoteSearchEntry) -> Option<PreviewData> {
+        let preview = self.vault.load_note(&element.note_path).map_or_else(
+            |e| PreviewData {
+                title: "Error loading preview...".to_string(),
+                data: e.to_string(),
+                content: "".to_string(),
+            },
+            |d| PreviewData {
+                title: d.get_title(),
+                data: d.path.to_string(),
+                content: d.raw_text,
+            },
+        );
         Some(preview)
     }
 }
@@ -110,8 +120,8 @@ impl RowItem for NoteSearchEntry {
 
     fn get_view(&self) -> Element {
         rsx! {
-            div { class: "title", "{self.note_title}" }
-            div { class: "details", "{self.note_path.to_string()}" }
+            div { class: "note-title", "{self.note_title}" }
+            div { class: "note-meta", "{self.note_path.to_string()}" }
         }
     }
 }
