@@ -526,9 +526,19 @@ progress {
 .description {
   font-size: 13px;
   color: var(--text-light);
-  margin-top: 4px;
+  margin-top: 2px;
+  margin-bottom: 2px;
   line-height: 1.4;
 }
+
+.header-description {
+  font-size: 13px;
+  color: var(--text-head);
+  margin-top: 2px;
+  margin-bottom: 2px;
+  line-height: 1.4;
+}
+
 
 /* Select/Listbox Styling */
 .select-container {
