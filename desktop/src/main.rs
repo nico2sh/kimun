@@ -1,8 +1,7 @@
 // The dioxus prelude contains a ton of common items used in dioxus apps. It's a good idea to import wherever you
 // need dioxus
-use dioxus::{logger::tracing::info, prelude::*};
+use dioxus::prelude::*;
 
-use kimun_core::NoteVault;
 use route::Route;
 use settings::AppSettings;
 
@@ -15,7 +14,6 @@ mod settings;
 // The asset macro also minifies some assets like CSS and JS to make bundled smaller
 // const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 // Urls are relative to your Cargo.toml file
-const THEME: Asset = asset!("/assets/styling/gruvbox.css");
 const FONTS: Asset = asset!("/assets/styling/fonts.css");
 const ICONS: Asset = asset!("/assets/styling/icons.css");
 const STYLE: Asset = asset!("/assets/styling/main.css");
@@ -32,14 +30,15 @@ fn main() {
 /// Components should be annotated with `#[component]` to support props, better error messages, and autocomplete
 #[component]
 fn App() -> Element {
-    let app_settings = AppSettings::load_from_disk().unwrap();
-    use_context_provider(move || Signal::new(app_settings));
+    let app_settings = use_signal(|| AppSettings::load_from_disk().unwrap());
+    use_context_provider(move || app_settings);
+    let theme = app_settings.read().get_theme();
 
     // The `rsx!` macro lets us define HTML inside of rust. It expands to an Element with all of our HTML inside.
     rsx! {
         // In addition to element and text (which we will see later), rsx can contain other components. In this case,
         // we are using the `document::Link` component to add a link to our favicon and main CSS file into the head of our app.
-        document::Link { rel: "stylesheet", href: THEME }
+        document::Link { rel: "stylesheet", href: theme.css }
         document::Link { rel: "stylesheet", href: FONTS }
         document::Link { rel: "stylesheet", href: ICONS }
         document::Link { rel: "stylesheet", href: STYLE }

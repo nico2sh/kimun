@@ -43,23 +43,50 @@ pub fn Indexer(modal: Signal<Modal>, vault: Arc<NoteVault>, index_type: IndexTyp
     let index_result = match &*result.read_unchecked() {
         Some(r) => match r {
             Ok(rep) => {
-                settings.write().report_indexed();
                 let duration = rep.duration.as_secs();
-                if confirm_close {
-                    rsx! {
-                        div { "Done in {duration} seconds" }
-                        button {
-                            class: "btn btn-primary",
-                            onclick: move |_| {
-                                modal.write().close();
-                            },
-                            "Close"
+                rsx! {
+                    div { onmounted: move |_| { settings.write().report_indexed() },
+                        "Done in {duration} seconds"
+                    }
+                    {
+                        if confirm_close {
+                            rsx! {
+                                button {
+                                    class: "btn btn-primary",
+                                    onclick: move |_| {
+                                        modal.write().close();
+                                    },
+                                    "Close"
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                div {
+                                    onmounted: move |_| {
+                                        modal.write().close();
+                                    },
+                                }
+                            }
                         }
                     }
-                } else {
-                    modal.write().close();
-                    rsx! {}
                 }
+
+                // let duration = rep.duration.as_secs();
+                // if confirm_close {
+                //     rsx! {
+                //         div { "Done in {duration} seconds" }
+                //         button {
+                //             class: "btn btn-primary",
+                //             onclick: move |_| {
+                //                 modal.write().close();
+                //             },
+                //             "Close"
+                //         }
+                //     }
+                // } else {
+                //     modal.write().close();
+                //     rsx! {}
+                // }
             }
             Err(e) => rsx! { "Error indexing vault: {e}" },
         },

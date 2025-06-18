@@ -13,7 +13,7 @@ body {
 }
 
 progress {
-  color: var(--primary-color);
+  color: var(--accent-yellow);
 }
 
 /* Editor */
@@ -28,8 +28,8 @@ progress {
 }
 
 .editor-header {
-  background: var(--primary-color);
-  color: var(--text-contrast);
+  background: var(--bg-head);
+  color: var(--text-head);
   padding: 16px 24px;
   display: flex;
   align-items: center;
@@ -118,6 +118,7 @@ progress {
   width: 100%;
   height: 100%;
   position: fixed;
+  background: rgba(0, 0, 0, 0.5);
 }
 
 /* Index Modal */
@@ -155,10 +156,10 @@ progress {
   max-width: 900px;
   max-height: 600px;
   height: 70%;
-  /* border: 1px solid var(--border-focus); */
+  /* border: 1px solid var(--border-light); */
   box-shadow: 0 10px 40px var(--shadow-primary);
   border-radius: 8px;
-  background: var(--bg-main);
+  background: var(--bg-section);
   color: var(--text-primary);
 }
 
@@ -166,8 +167,9 @@ progress {
   grid-area: hint;
   font-size: smaller;
   font-style: italic;
-  background: var(--primary-dark);
+  background: var(--bg-head);
   color: var(--text-contrast);
+  border: 1px solid var(--border-light);
   padding: 8px 4px;
 }
 
@@ -180,13 +182,13 @@ progress {
 
 .search_box {
   margin: 4px 2px;
-  background-color: var(--bg-section);
   outline: none;
   border-radius: 4px;
   padding: 0 0.5em;
   font-size: small;
   color: var(--text-secondary);
-  border: 1px solid var(--border-focus);
+  background-color: var(--bg-section);
+  border: 1px solid var(--border-light);
 }
 
 .preview {
@@ -200,7 +202,8 @@ progress {
   font-size: smaller;
   /*border-width: 2px;*/
   /*border-color: var(--border);*/
-  background-color: var(--bg-section);
+  color: var(--text-secondary);
+  background-color: var(--bg-surface);
 }
 
 .preview>p {
@@ -292,13 +295,13 @@ progress {
   /* max-width: 900px; */
   margin: 0 auto;
   background: var(--bg-main);
-  box-shadow: 0 10px 40px var(--shadow-primary);
+  /* box-shadow: 0 10px 40px var(--shadow-primary); */
   overflow: hidden;
 }
 
 .settings-header {
-  background: var(--primary-color);
-  color: var(--text-contrast);
+  background: var(--bg-head);
+  color: var(--text-head);
   padding: 30px;
   text-align: center;
 }
@@ -342,7 +345,7 @@ progress {
   content: '';
   width: 4px;
   height: 20px;
-  background: var(--primary-color);
+  background: var(--accent-yellow);
   border-radius: 2px;
 }
 
@@ -390,15 +393,56 @@ progress {
   line-height: 1.4;
 }
 
+/* Select/Listbox Styling */
+.select-container {
+  position: relative;
+}
+
+.custom-select {
+  width: 100%;
+  padding: 12px 16px;
+  border: 2px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-white);
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px;
+}
+
+.custom-select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--shadow-focus);
+}
+
+.custom-select:hover {
+  border-color: var(--border-hover);
+}
+
 /* Buttons */
 /* Action Buttons */
 .action-buttons {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  /* max-width: 900px; */
   display: flex;
   justify-content: flex-end;
   gap: 12px;
-  margin-top: 32px;
-  padding-top: 24px;
+  padding: 20px 40px;
+  background: var(--bg-section);
+  /* background: var(--bg-main); */
   border-top: 1px solid var(--border-light);
+  box-shadow: 0 -4px 20px var(--shadow-primary);
+  z-index: 1000;
 }
 
 .btn {

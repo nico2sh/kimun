@@ -6,6 +6,7 @@ use std::{
     hash::Hash,
     io::Write,
     path::{Path, PathBuf},
+    str::FromStr,
     time::UNIX_EPOCH,
 };
 
@@ -14,6 +15,8 @@ use ignore::{WalkBuilder, WalkParallel};
 use log::{info, warn};
 use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
+
+use crate::error::VaultError;
 
 use super::{error::FSError, DirectoryDetails, NoteDetails};
 
@@ -236,6 +239,14 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
 pub struct VaultPath {
     absolute: bool,
     slices: Vec<VaultPathSlice>,
+}
+
+impl FromStr for VaultPath {
+    type Err = FSError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_string(s)
+    }
 }
 
 impl TryFrom<String> for VaultPath {
@@ -545,6 +556,14 @@ impl VaultPath {
         !self.absolute
     }
 
+    pub fn to_absolute(&mut self) {
+        self.absolute = true;
+    }
+
+    pub fn to_relative(&mut self) {
+        self.absolute = false;
+    }
+
     pub fn get_parent_path(&self) -> (VaultPath, String) {
         let mut new_path = self.slices.clone();
         let current = new_path
@@ -568,6 +587,11 @@ impl VaultPath {
             absolute: self.absolute,
             slices,
         }
+    }
+
+    // Compares two paths, ignoring if they are absolute or not
+    pub fn is_like(&self, other: &VaultPath) -> bool {
+        self.slices.eq(&other.slices)
     }
 }
 
