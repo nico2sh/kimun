@@ -6,7 +6,7 @@ use crate::route::Route;
 use crate::settings::AppSettings;
 
 #[component]
-pub fn Main() -> Element {
+pub fn Start() -> Element {
     let settings: Signal<AppSettings> = use_context();
     let workspace_dir = &settings.read().workspace_dir;
     if let Some(path) = workspace_dir {

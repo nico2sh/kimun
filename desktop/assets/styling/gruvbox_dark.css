@@ -1,17 +1,13 @@
 :root {
-    /* Primary Colors */
-    --primary-color: #fabd2f;
-    /* Bright yellow */
-    --primary-dark: #d79921;
-    /* Standard yellow */
-    --secondary-color: #fb4934;
-    /* Bright red */
-
     /* Accent Colors */
     --accent-blue: #83a598;
     /* Light blue */
     --accent-blue-dark: #458588;
     /* Standard blue */
+    --accent-yellow: #fabd2f;
+    /* Light yellow */
+    --accent-yellow-dark: #d79921;
+    /* Standard yellow */
     --accent-green: #b8bb26;
     /* Bright green */
     --accent-green-dark: #98971a;
@@ -23,11 +19,14 @@
 
     /* Background Colors */
     --bg-main: #282828;
-    /* Gruvbox dark background */
-    --bg-section: #3c3836;
-    /* Slightly lighter dark */
+    /* bg */
+    --bg-section: #32302f;
+    /* bg0_s */
     --bg-hover: #504945;
-    /* Hover background */
+    /* bg1 */
+    --bg-surface: #7c6f64;
+    /* bg4 */
+    --bg-head: var(--accent-yellow-dark);
 
     /* Text Colors */
     --text-primary: #ebdbb2;
@@ -40,6 +39,7 @@
     /* Light gray */
     --text-contrast: #282828;
     /* Dark background for contrast */
+    --text-head: var(--text-contrast);
 
     /* Border Colors */
     --border-light: #504945;

@@ -57,7 +57,7 @@ where
     F: SelectorFunctions<R> + Clone + Send + 'static,
 {
     let mut filter_text = use_signal(|| filter_text);
-    let mut load_state = use_signal_sync(|| LoadState::Init);
+    let mut load_state: Signal<LoadState<R>, SyncStorage> = use_signal_sync(|| LoadState::Init);
     // For setting the focus in the text box
     let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
@@ -99,15 +99,16 @@ where
 
     let preview_text = use_resource(move || {
         let functions = functions.clone();
+        // We get a copy of the selected one so we don't have borrow issues
+        let selected = selected.read().to_owned();
         async move {
-            if let Some(selection) = &*selected.read() {
+            if let Some(selection) = selected {
                 info!("Preview Text for {}", selected.unwrap());
                 let r = rows.read_unchecked();
                 let entry = match &*r {
-                    Some(rows) => rows.get(selection.to_owned()),
+                    Some(rows) => rows.get(selection),
                     None => None,
                 };
-                // let entry = rows.read_unchecked().get(selection);
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
                     tokio::spawn(async move { functions.preview(&value_copy) })

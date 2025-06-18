@@ -5,7 +5,12 @@ use std::fs::File;
 
 use anyhow::bail;
 use dioxus::logger::tracing::debug;
+use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
+
+use crate::settings::theme::Theme;
+
+pub mod theme;
 
 #[cfg(debug_assertions)]
 const BASE_CONFIG_FILE: &str = ".kimun_debug.toml";
@@ -14,17 +19,32 @@ const BASE_CONFIG_FILE: &str = ".kimun.toml";
 
 const LAST_PATH_HISTORY_SIZE: usize = 10;
 
+const THEME_GRUVBOX_DARK: Asset = asset!("/assets/styling/gruvbox_dark.css");
+const THEME_GRUVBOX_LIGHT: Asset = asset!("/assets/styling/gruvbox_light.css");
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct AppSettings {
     #[serde(default)]
     pub last_paths: Vec<VaultPath>,
     pub workspace_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub theme: String,
     #[serde(skip, default = "yes")]
     needs_indexing: bool,
+    #[serde(skip, default = "load_theme_list")]
+    pub theme_list: Vec<Theme>,
 }
 
 fn yes() -> bool {
     true
+}
+
+fn load_theme_list() -> Vec<Theme> {
+    let mut list = vec![];
+    list.push(Theme::default());
+    list.push(Theme::new(THEME_GRUVBOX_LIGHT.to_string(), "Gruvbox Light"));
+    list.push(Theme::new(THEME_GRUVBOX_DARK.to_string(), "Gruvbox Dark"));
+    list
 }
 
 impl Default for AppSettings {
@@ -32,7 +52,9 @@ impl Default for AppSettings {
         Self {
             last_paths: vec![],
             workspace_dir: None,
+            theme: Default::default(),
             needs_indexing: true,
+            theme_list: load_theme_list(),
         }
     }
 }
@@ -94,6 +116,10 @@ impl AppSettings {
         self.workspace_dir = Some(workspace_path.to_owned());
     }
 
+    pub fn set_theme(&mut self, theme: String) {
+        self.theme = theme;
+    }
+
     pub fn report_indexed(&mut self) {
         self.needs_indexing = false;
     }
@@ -114,5 +140,18 @@ impl AppSettings {
             }
             self.last_paths.push(note_path.to_owned());
         }
+    }
+
+    pub fn get_theme(&self) -> Theme {
+        self.theme_list
+            .iter()
+            .find_map(|t| {
+                if t.name == self.theme {
+                    Some(t.to_owned())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
     }
 }

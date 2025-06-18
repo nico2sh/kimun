@@ -21,6 +21,7 @@ pub fn EditorHeader(note_path_display: String, is_dirty: Signal<bool>) -> Elemen
 #[component]
 pub fn TextEditor(
     content: EditorContent,
+    // This is to attach the signal to set the focus
     editor_signal: Signal<Option<Rc<MountedData>>>,
     cr: Coroutine<EditorMsg>,
 ) -> Element {
