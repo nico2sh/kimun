@@ -1,0 +1,58 @@
+:root {
+    /* Accent Colors */
+    --accent-blue: #83a598;
+    /* Light blue */
+    --accent-blue-dark: #458588;
+    /* Standard blue */
+    --accent-yellow: #fabd2f;
+    /* Light yellow */
+    --accent-yellow-dark: #d79921;
+    /* Standard yellow */
+    --accent-green: #b8bb26;
+    /* Bright green */
+    --accent-green-dark: #98971a;
+    /* Standard green */
+    --accent-gray: #a89984;
+    /* Light gray */
+    --accent-gray-dark: #928374;
+    /* Standard gray */
+
+    /* Background Colors */
+    --bg-main: #282828;
+    /* bg */
+    --bg-section: #32302f;
+    /* bg0_s */
+    --bg-hover: #504945;
+    /* bg1 */
+    --bg-surface: #7c6f64;
+    /* bg4 */
+    --bg-head: var(--accent-yellow-dark);
+
+    /* Text Colors */
+    --text-primary: #ebdbb2;
+    /* Light cream */
+    --text-secondary: #d5c4a1;
+    /* Medium cream */
+    --text-muted: #bdae93;
+    /* Muted cream */
+    --text-light: #a89984;
+    /* Light gray */
+    --text-contrast: #282828;
+    /* Dark background for contrast */
+    --text-head: var(--text-contrast);
+
+    /* Border Colors */
+    --border-light: #504945;
+    /* Dark border */
+    --border-focus: var(--primary-color);
+    --border-hover: #665c54;
+    /* Hover border */
+
+    /* Shadow Colors */
+    --shadow-primary: rgba(0, 0, 0, 0.3);
+    /* Darker shadows */
+    --shadow-focus: rgba(250, 189, 47, 0.2);
+    /* Yellow shadow */
+    --shadow-hover: rgba(250, 189, 47, 0.4);
+    /* Stronger yellow shadow */
+}

@@ -15,11 +15,10 @@ enum ModalType {
     None,
     NoteSelector {
         vault: Arc<NoteVault>,
-        note_path: SyncSignal<Option<VaultPath>>,
+        from_path: VaultPath,
     },
     NoteSearch {
         vault: Arc<NoteVault>,
-        note_path: SyncSignal<Option<VaultPath>>,
     },
     Index {
         vault: Arc<NoteVault>,
@@ -44,19 +43,14 @@ impl Modal {
     pub fn close(&mut self) {
         self.modal_type = ModalType::None;
     }
-    pub fn set_note_select(
-        &mut self,
-        vault: Arc<NoteVault>,
-        note_path: SyncSignal<Option<VaultPath>>,
-    ) {
-        self.modal_type = ModalType::NoteSelector { vault, note_path };
+    pub fn set_note_select(&mut self, vault: Arc<NoteVault>, note_path: VaultPath) {
+        self.modal_type = ModalType::NoteSelector {
+            vault,
+            from_path: note_path,
+        };
     }
-    pub fn set_note_search(
-        &mut self,
-        vault: Arc<NoteVault>,
-        note_path: SyncSignal<Option<VaultPath>>,
-    ) {
-        self.modal_type = ModalType::NoteSearch { vault, note_path };
+    pub fn set_note_search(&mut self, vault: Arc<NoteVault>) {
+        self.modal_type = ModalType::NoteSearch { vault };
     }
     pub fn set_indexer(&mut self, vault: Arc<NoteVault>, index_type: IndexType) {
         self.modal_type = ModalType::Index { vault, index_type };
@@ -64,22 +58,21 @@ impl Modal {
     pub fn get_element(modal: Signal<Self>) -> Element {
         match &modal.read().modal_type {
             ModalType::None => rsx! {},
-            ModalType::NoteSelector { vault, note_path } => rsx! {
+            ModalType::NoteSelector { vault, from_path } => rsx! {
                 div { class: "dialog",
                     NoteSelector {
                         modal,
                         vault: vault.clone(),
-                        note_path: note_path.clone(),
+                        note_path: from_path.clone(),
                         filter_text: "".to_string(),
                     }
                 }
             },
-            ModalType::NoteSearch { vault, note_path } => rsx! {
+            ModalType::NoteSearch { vault } => rsx! {
                 div { class: "dialog",
                     NoteSearch {
                         modal,
                         vault: vault.clone(),
-                        note_path: note_path.clone(),
                         filter_text: "".to_string(),
                     }
                 }

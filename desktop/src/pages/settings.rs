@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
-use dioxus::{html::label, prelude::*};
-use kimun_core::NoteVault;
+use dioxus::prelude::*;
+use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
     components::modal::{indexer::IndexType, Modal},
@@ -13,7 +13,6 @@ use crate::{
 pub fn Settings() -> Element {
     let mut settings: Signal<settings::AppSettings> = use_context();
     let mut modal = use_signal(Modal::new);
-    // let mut settings = use_signal(|| settings::Settings::load_from_disk().unwrap_or_default());
 
     rsx! {
         div { class: "settings-container",
@@ -62,7 +61,7 @@ pub fn Settings() -> Element {
                                         modal.write().set_indexer(vault, IndexType::Fast);
                                     }
                                 },
-                                disabled: {settings().workspace_dir.is_none()},
+                                disabled: settings().workspace_dir.is_none(),
                                 "Fast Index"
                             }
                         }
@@ -76,7 +75,7 @@ pub fn Settings() -> Element {
                                         modal.write().set_indexer(vault, IndexType::Full);
                                     }
                                 },
-                                disabled: {settings().workspace_dir.is_none()},
+                                disabled: settings().workspace_dir.is_none(),
                                 "Full Index"
                             }
                         }
@@ -84,12 +83,38 @@ pub fn Settings() -> Element {
                             "Performs a full index of the notes located in the directory, can take longer time depending on the number of notes"
                         }
                     }
+                
                 }
+
+                div { class: "settings-section",
+                    h2 { class: "section-title", "Theme" }
+                    div { class: "form-group",
+                        label { class: "form-label", "Theme Settings" }
+                        div { class: "select-container",
+                            select {
+                                class: "custom-select",
+                                id: "theme-select",
+                                onchange: move |e| {
+                                    settings.write().set_theme(e.data().value());
+                                },
+                                for theme in settings().theme_list {
+                                    option {
+                                        value: "{theme.name}",
+                                        selected: settings().theme == theme.name,
+                                        "{theme.name}"
+                                    }
+                                }
+                            }
+                        }
+                        div { class: "description", "Choose your application theme" }
+                    }
+                }
+
                 div { class: "action-buttons",
                     button {
                         class: "btn btn-secondary",
                         onclick: move |_| {
-                            navigator().replace(Route::Main {});
+                            navigator().replace(Route::Start {});
                         },
                         "Close without saving"
                     }
@@ -101,7 +126,16 @@ pub fn Settings() -> Element {
                             match settings.read().save_to_disk() {
                                 Ok(_) => {
                                     if let Some(_p) = path {
-                                        navigator().replace(Route::Editor {});
+                                        let note_path = settings
+                                            .read()
+                                            .last_paths
+                                            .last()
+                                            .map_or_else(|| VaultPath::root(), |p| p.to_owned());
+                                        navigator()
+                                            .replace(Route::Editor {
+                                                note_path,
+                                                create: false,
+                                            });
                                     }
                                 }
                                 Err(_e) => todo!(),

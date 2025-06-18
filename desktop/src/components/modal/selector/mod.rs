@@ -15,7 +15,7 @@ where
     R: RowItem,
 {
     fn init(&self) -> Vec<R>;
-    fn filter(&self, filter_text: String, items: Vec<R>) -> Vec<R>;
+    fn filter(&self, filter_text: String, items: &Vec<R>) -> Vec<R>;
     fn preview(&self, element: &R) -> Option<String>;
 }
 
@@ -57,39 +57,16 @@ where
     F: SelectorFunctions<R> + Clone + Send + 'static,
 {
     let mut filter_text = use_signal(|| filter_text);
-    let mut load_state = use_signal_sync(|| LoadState::Init);
+    let mut load_state: Signal<LoadState<R>, SyncStorage> = use_signal_sync(|| LoadState::Init);
     // For setting the focus in the text box
     let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
-    let current_state = load_state.read().to_owned();
-
-    let visible = match &current_state {
-        LoadState::Closed => false,
-        LoadState::Init => {
-            debug!("Opening Dialog View");
-            // when the dialog is open and starts initializing
-            spawn(async move {
-                loop {
-                    if let Some(e) = dialog.with(|f| f.clone()) {
-                        debug!("Focus input");
-                        let _ = e.set_focus(true).await;
-                        break;
-                    }
-                }
-            });
-            true
-        }
-        LoadState::Loaded(_) => {
-            // when the dialog has initialized
-            true
-        }
-    };
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
 
     let functions_load = functions.clone();
 
     let rows = use_resource(move || {
-        let current_state = load_state.read().clone();
         let filter_text = filter_text.read().clone();
+        let current_state = load_state.read().clone();
         let functions = functions_load.clone();
         async move {
             match current_state {
@@ -98,11 +75,20 @@ where
                         let items = functions.init();
                         load_state.set(LoadState::Loaded(items.clone()));
                     });
+
+                    // We put the focus on the text
+                    loop {
+                        if let Some(e) = dialog.with(|f| f.clone()) {
+                            debug!("Focus input");
+                            let _ = e.set_focus(true).await;
+                            break;
+                        }
+                    }
                     vec![]
                 }
                 LoadState::Loaded(items) => {
                     selected.set(None);
-                    tokio::spawn(async move { functions.filter(filter_text, items) })
+                    tokio::spawn(async move { functions.filter(filter_text, &items) })
                         .await
                         .unwrap()
                 }
@@ -112,12 +98,17 @@ where
     });
 
     let preview_text = use_resource(move || {
-        let rows: Vec<R> = rows.value().read().clone().unwrap_or_default();
         let functions = functions.clone();
+        // We get a copy of the selected one so we don't have borrow issues
         let selected = selected.read().to_owned();
         async move {
             if let Some(selection) = selected {
-                let entry = rows.get(selection);
+                info!("Preview Text for {}", selected.unwrap());
+                let r = rows.read_unchecked();
+                let entry = match &*r {
+                    Some(rows) => rows.get(selection),
+                    None => None,
+                };
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
                     tokio::spawn(async move { functions.preview(&value_copy) })
@@ -231,14 +222,16 @@ where
                 }
             }
             div { class: "preview",
-                match &*preview_text.read() {
+                match &*preview_text.read_unchecked() {
                     Some(text) => {
                         if let Some(t) = text {
                             rsx! {
                                 p { "{t}" }
                             }
                         } else {
-                            rsx! {}
+                            rsx! {
+                                p { "<No preview>" }
+                            }
                         }
                     }
                     None => rsx! { "Loading..." },
