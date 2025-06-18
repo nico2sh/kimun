@@ -190,7 +190,7 @@ where
             },
             div { class: "search-header",
                 div { class: "search-title", "Browse Notes" }
-                // "{hint}"
+                div { class: "header-description", "{hint}" }
                 input {
                     class: "search-box",
                     r#type: "search",
@@ -242,7 +242,7 @@ where
                             }
                         } else {
                             rsx! {
-                                p { "<No preview>" }
+                                div { class: "no-preview", "<No preview>" }
                             }
                         }
                     }
