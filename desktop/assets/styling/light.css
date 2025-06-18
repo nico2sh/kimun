@@ -1,24 +1,9 @@
-/* :root {
-  --text: #cad3f5;
-  --text-0: #b8c0e0;
-  --text-1: #a5adcb;
-  --background: #24273a;
-  --border: #181926;
-  --overlay: #6e738d;
-  --surface-2: #5b6078;
-  --surface-1: #494d64;
-  --surface-0: #363a4f;
-} */
-
 :root {
-  /* Primary Colors */
-  --primary-color: #667eea;
-  --primary-dark: #5a67d8;
-  --secondary-color: #764ba2;
-
   /* Accent Colors */
   --accent-blue: #3b82f6;
   --accent-blue-dark: #2563eb;
+  --accent-yellow: #eab308;
+  --accent-yellow-dark: #ca8a04;
   --accent-green: #10b981;
   --accent-green-dark: #059669;
   --accent-gray: #6b7280;
@@ -28,6 +13,8 @@
   --bg-main: #f8fafc;
   --bg-section: #f1f5f9;
   --bg-hover: #e2e8f0;
+  --bg-surface: #6b7280;
+  --bg-head: var(--accent-blue-dark);
 
   /* Text Colors */
   --text-primary: #333333;
@@ -35,6 +22,7 @@
   --text-muted: #4a5568;
   --text-light: #6b7280;
   --text-contrast: #ffffff;
+  --text-head: var(--text-contrast);
 
   /* Border Colors */
   --border-light: #e2e8f0;

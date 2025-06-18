@@ -1,0 +1,58 @@
+:root {
+    /* Accent Colors */
+    --accent-blue: #458588;
+    /* Gruvbox blue */
+    --accent-blue-dark: #076678;
+    /* Dark blue */
+    --accent-yellow: #d79921;
+    /* Light yellow */
+    --accent-yellow-dark: #b57614;
+    /* Standard yellow */
+    --accent-green: #98971a;
+    /* Gruvbox green */
+    --accent-green-dark: #79740e;
+    /* Dark green */
+    --accent-gray: #928374;
+    /* Gruvbox gray */
+    --accent-gray-dark: #7c6f64;
+    /* Dark gray */
+
+    /* Background Colors */
+    --bg-main: #fbf1c7;
+    /* bg */
+    --bg-section: #f2e5bc;
+    /* bg0_s */
+    --bg-hover: #ebdbb2;
+    /* bg1 */
+    --bg-surface: #a89984;
+    /* bg4 */
+    --bg-head: var(--accent-green);
+
+    /* Text Colors */
+    --text-primary: #3c3836;
+    /* fg */
+    --text-secondary: #504945;
+    /* fg2 */
+    --text-muted: #665c54;
+    /* fg3 */
+    --text-light: #7c6f64;
+    /* fg4 */
+    --text-contrast: #fbf1c7;
+    /* bg0 */
+    --text-head: var(--text-contrast);
+
+    /* Border Colors */
+    --border-light: #d5c4a1;
+    /* Light brown */
+    --border-focus: var(--primary-color);
+    --border-hover: #bdae93;
+    /* Medium brown */
+
+    /* Shadow Colors */
+    --shadow-primary: rgba(60, 56, 54, 0.1);
+    /* Dark gray shadow */
+    --shadow-focus: rgba(215, 153, 33, 0.1);
+    /* Yellow shadow */
+    --shadow-hover: rgba(215, 153, 33, 0.3);
+    /* Stronger yellow shadow */
+}
