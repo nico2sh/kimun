@@ -59,7 +59,7 @@ impl Modal {
         match &modal.read().modal_type {
             ModalType::None => rsx! {},
             ModalType::NoteSelector { vault, from_path } => rsx! {
-                div { class: "dialog",
+                div { class: "modal-overlay",
                     NoteSelector {
                         modal,
                         vault: vault.clone(),
@@ -69,7 +69,7 @@ impl Modal {
                 }
             },
             ModalType::NoteSearch { vault } => rsx! {
-                div { class: "dialog",
+                div { class: "modal-overlay",
                     NoteSearch {
                         modal,
                         vault: vault.clone(),
@@ -78,7 +78,7 @@ impl Modal {
                 }
             },
             ModalType::Index { vault, index_type } => rsx! {
-                div { class: "dialog",
+                div { class: "modal-overlay",
                     Indexer {
                         modal,
                         vault: vault.clone(),

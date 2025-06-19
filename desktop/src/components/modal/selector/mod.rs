@@ -16,12 +16,18 @@ where
 {
     fn init(&self) -> Vec<R>;
     fn filter(&self, filter_text: String, items: &Vec<R>) -> Vec<R>;
-    fn preview(&self, element: &R) -> Option<String>;
+    fn preview(&self, element: &R) -> Option<PreviewData>;
 }
 
 pub trait RowItem: PartialEq + Eq + Clone {
     fn on_select(&self) -> Box<dyn FnMut() -> bool>;
     fn get_view(&self) -> Element;
+}
+
+pub struct PreviewData {
+    title: String,
+    data: String,
+    content: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +67,7 @@ where
     // For setting the focus in the text box
     let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
+    let mut row_mount = use_signal(Vec::<Rc<MountedData>>::new);
 
     let functions_load = functions.clone();
 
@@ -71,6 +78,7 @@ where
         async move {
             match current_state {
                 LoadState::Init => {
+                    row_mount.write().clear();
                     tokio::task::spawn(async move {
                         let items = functions.init();
                         load_state.set(LoadState::Loaded(items.clone()));
@@ -128,10 +136,10 @@ where
 
     rsx! {
         div {
-            class: "search-modal",
+            class: "notes-modal",
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
-            onkeydown: move |e: Event<KeyboardData>| {
+            onkeydown: move |e: Event<KeyboardData>| async move {
                 let key = e.data.code();
                 if key == Code::Escape {
                     load_state.set(LoadState::Closed);
@@ -151,6 +159,11 @@ where
                     } else {
                         Some(0)
                     };
+                    if let Some(sel) = new_selected {
+                        if let Some(mount) = row_mount.read().get(sel) {
+                            let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
+                        }
+                    }
                     selected.set(new_selected);
                 }
                 if key == Code::ArrowUp {
@@ -166,6 +179,11 @@ where
                     } else {
                         Some(0)
                     };
+                    if let Some(sel) = new_selected {
+                        if let Some(mount) = row_mount.read().get(sel) {
+                            let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
+                        }
+                    }
                     selected.set(new_selected);
                 }
                 if key == Code::Enter && row_number > 0 {
@@ -182,11 +200,13 @@ where
                     }
                 }
             },
-            div { class: "hint", "{hint}" }
-            div { class: "search",
+            div { class: "search-header",
+                div { class: "search-title", "Browse Notes" }
+                div { class: "header-description", "{hint}" }
                 input {
-                    class: "search_box",
+                    class: "search-box",
                     r#type: "search",
+                    placeholder: "Search...",
                     value: "{filter_text}",
                     spellcheck: false,
                     onmounted: move |e| {
@@ -195,42 +215,61 @@ where
                     oninput: move |e| {
                         filter_text.set(e.value().clone().to_string());
                     },
-                }
-                div { class: "list",
-                    if let Some(rs) = rows.value().read().clone() {
-                        for (index , row) in rs.into_iter().enumerate() {
-                            div {
-                                onmouseover: move |_e| {
-                                    selected.set(Some(index));
-                                },
-                                onclick: move |_e| {
-                                    if row.on_select()() {
-                                        load_state.set(LoadState::Closed);
-                                        modal.write().close();
-                                    } else {
-                                        load_state.set(LoadState::Init);
-                                    }
-                                },
-                                class: if *selected.read() == Some(index) { "element selected" } else { "element" },
-                                id: "element-{index}",
-                                {row.get_view()}
+                    onkeydown: move |e: Event<KeyboardData>| {
+                        let key = e.data.code();
+                        match key {
+                            Code::ArrowDown | Code::ArrowUp | Code::Tab => {
+                                e.prevent_default();
                             }
+                            _ => {}
                         }
-                    } else {
-                        div { "Loading..." }
-                    }
+                    },
+                    onfocusout: move |_e| {
+                        modal.write().close();
+                    },
                 }
             }
-            div { class: "preview",
+            div { class: "notes-list",
+                if let Some(rs) = rows.value().read().clone() {
+                    for (index , row) in rs.into_iter().enumerate() {
+                        div {
+                            class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
+                            id: "element-{index}",
+                            onmounted: move |e| {
+                                row_mount.write().push(e.data());
+                            },
+                            onmouseenter: move |_e| {
+                                selected.set(Some(index));
+                            },
+                            onclick: move |_e| {
+                                if row.on_select()() {
+                                    load_state.set(LoadState::Closed);
+                                    modal.write().close();
+                                } else {
+                                    load_state.set(LoadState::Init);
+                                }
+                            },
+                            {row.get_view()}
+                        }
+                    }
+                } else {
+                    div { "Loading..." }
+                }
+            }
+            div { class: "preview-pane",
                 match &*preview_text.read_unchecked() {
                     Some(text) => {
-                        if let Some(t) = text {
+                        if let Some(p) = text {
                             rsx! {
-                                p { "{t}" }
+                                div { class: "preview-header",
+                                    div { class: "preview-title", "{p.title}" }
+                                    div { class: "preview-meta", "{p.data}" }
+                                }
+                                div { class: "preview-content", "{p.content}" }
                             }
                         } else {
                             rsx! {
-                                p { "<No preview>" }
+                                div { class: "no-preview", "<No preview>" }
                             }
                         }
                     }
