@@ -43,7 +43,7 @@ impl IndexReport {
     }
 }
 
-const JOURNAL_PATH: &str = "journal";
+const JOURNAL_PATH: &str = "/journal";
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteVault {
     pub workspace_path: PathBuf,
@@ -194,7 +194,9 @@ impl NoteVault {
 
         (
             today_string.clone(),
-            VaultPath::new(JOURNAL_PATH).append(&VaultPath::note_path_from(&today_string)),
+            VaultPath::new(JOURNAL_PATH)
+                .append(&VaultPath::note_path_from(&today_string))
+                .absolute(),
         )
     }
 
