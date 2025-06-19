@@ -67,7 +67,8 @@ where
     // For setting the focus in the text box
     let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
-    let mut row_mount = use_signal(Vec::<Rc<MountedData>>::new);
+    let mut row_mounts = use_signal(Vec::<Rc<MountedData>>::new);
+    let mut select_by_mouse = use_signal(|| true);
 
     let functions_load = functions.clone();
 
@@ -78,7 +79,7 @@ where
         async move {
             match current_state {
                 LoadState::Init => {
-                    row_mount.write().clear();
+                    row_mounts.write().clear();
                     tokio::task::spawn(async move {
                         let items = functions.init();
                         load_state.set(LoadState::Loaded(items.clone()));
@@ -160,8 +161,9 @@ where
                         Some(0)
                     };
                     if let Some(sel) = new_selected {
-                        if let Some(mount) = row_mount.read().get(sel) {
+                        if let Some(mount) = row_mounts.read().get(sel) {
                             let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
+                            select_by_mouse.set(false);
                         }
                     }
                     selected.set(new_selected);
@@ -180,8 +182,9 @@ where
                         Some(0)
                     };
                     if let Some(sel) = new_selected {
-                        if let Some(mount) = row_mount.read().get(sel) {
+                        if let Some(mount) = row_mounts.read().get(sel) {
                             let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
+                            select_by_mouse.set(false);
                         }
                     }
                     selected.set(new_selected);
@@ -229,17 +232,25 @@ where
                     },
                 }
             }
-            div { class: "notes-list",
+            div {
+                class: "notes-list",
+                onmousemove: move |_e| {
+                    if !*select_by_mouse.read() {
+                        select_by_mouse.set(true);
+                    }
+                },
                 if let Some(rs) = rows.value().read().clone() {
                     for (index , row) in rs.into_iter().enumerate() {
                         div {
                             class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
                             id: "element-{index}",
                             onmounted: move |e| {
-                                row_mount.write().push(e.data());
+                                row_mounts.write().push(e.data());
                             },
                             onmouseenter: move |_e| {
-                                selected.set(Some(index));
+                                if *select_by_mouse.read() {
+                                    selected.set(Some(index));
+                                }
                             },
                             onclick: move |_e| {
                                 if row.on_select()() {
