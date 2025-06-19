@@ -67,6 +67,7 @@ where
     // For setting the focus in the text box
     let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
+    let mut row_mount = use_signal(Vec::<Rc<MountedData>>::new);
 
     let functions_load = functions.clone();
 
@@ -77,6 +78,7 @@ where
         async move {
             match current_state {
                 LoadState::Init => {
+                    row_mount.write().clear();
                     tokio::task::spawn(async move {
                         let items = functions.init();
                         load_state.set(LoadState::Loaded(items.clone()));
@@ -137,7 +139,7 @@ where
             class: "notes-modal",
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
-            onkeydown: move |e: Event<KeyboardData>| {
+            onkeydown: move |e: Event<KeyboardData>| async move {
                 let key = e.data.code();
                 if key == Code::Escape {
                     load_state.set(LoadState::Closed);
@@ -157,6 +159,11 @@ where
                     } else {
                         Some(0)
                     };
+                    if let Some(sel) = new_selected {
+                        if let Some(mount) = row_mount.read().get(sel) {
+                            let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
+                        }
+                    }
                     selected.set(new_selected);
                 }
                 if key == Code::ArrowUp {
@@ -172,6 +179,11 @@ where
                     } else {
                         Some(0)
                     };
+                    if let Some(sel) = new_selected {
+                        if let Some(mount) = row_mount.read().get(sel) {
+                            let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
+                        }
+                    }
                     selected.set(new_selected);
                 }
                 if key == Code::Enter && row_number > 0 {
@@ -203,6 +215,18 @@ where
                     oninput: move |e| {
                         filter_text.set(e.value().clone().to_string());
                     },
+                    onkeydown: move |e: Event<KeyboardData>| {
+                        let key = e.data.code();
+                        match key {
+                            Code::ArrowDown | Code::ArrowUp | Code::Tab => {
+                                e.prevent_default();
+                            }
+                            _ => {}
+                        }
+                    },
+                    onfocusout: move |_e| {
+                        modal.write().close();
+                    },
                 }
             }
             div { class: "notes-list",
@@ -211,7 +235,10 @@ where
                         div {
                             class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
                             id: "element-{index}",
-                            onmouseover: move |_e| {
+                            onmounted: move |e| {
+                                row_mount.write().push(e.data());
+                            },
+                            onmouseenter: move |_e| {
                                 selected.set(Some(index));
                             },
                             onclick: move |_e| {
