@@ -560,6 +560,11 @@ impl VaultPath {
         self.absolute = true;
     }
 
+    pub fn absolute(mut self) -> Self {
+        self.absolute = true;
+        self
+    }
+
     pub fn to_relative(&mut self) {
         self.absolute = false;
     }
