@@ -79,7 +79,8 @@ where
         async move {
             match current_state {
                 LoadState::Init => {
-                    row_mounts.write().clear();
+                    // row_mounts.write().clear();
+                    info!("---=== Initializing");
                     tokio::task::spawn(async move {
                         let items = functions.init();
                         load_state.set(LoadState::Loaded(items.clone()));
@@ -97,9 +98,12 @@ where
                 }
                 LoadState::Loaded(items) => {
                     selected.set(None);
-                    tokio::spawn(async move { functions.filter(filter_text, &items) })
+                    let rows = tokio::spawn(async move { functions.filter(filter_text, &items) })
                         .await
-                        .unwrap()
+                        .unwrap();
+                    info!("We truncate the row mounts with {} values", rows.len());
+                    row_mounts.truncate(rows.len());
+                    rows
                 }
                 LoadState::Closed => vec![],
             }
@@ -245,6 +249,7 @@ where
                             class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
                             id: "element-{index}",
                             onmounted: move |e| {
+                                info!("Adding mount at {} position", index);
                                 row_mounts.write().push(e.data());
                             },
                             onmouseenter: move |_e| {
