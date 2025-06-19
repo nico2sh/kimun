@@ -235,9 +235,9 @@ progress {
   gap: 6px;
 }
 
-.note-item:hover {
+/* .note-item:hover {
   background: var(--bg-hover);
-}
+} */
 
 .note-item.selected {
   background: var(--bg-hover);
