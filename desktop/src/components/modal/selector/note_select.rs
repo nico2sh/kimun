@@ -9,6 +9,8 @@ use kimun_core::{
 };
 use nucleo::Matcher;
 
+use crate::components::modal::selector::PreviewData;
+
 use super::{Modal, RowItem, SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
@@ -104,20 +106,30 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
         }
     }
 
-    fn preview(&self, element: &NoteSelectEntry) -> Option<String> {
+    fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData> {
         let preview = if let NoteSelectEntry::Note {
             path,
             title: _,
             search_str: _,
         } = element
         {
-            self.vault
-                .load_note(&path)
-                .map_or_else(|_e| "Error loading preview...".to_string(), |d| d.raw_text)
+            let p = self.vault.load_note(&path).map_or_else(
+                |e| PreviewData {
+                    title: "Error loading preview...".to_string(),
+                    data: e.to_string(),
+                    content: "".to_string(),
+                },
+                |d| PreviewData {
+                    title: d.get_title(),
+                    data: d.path.to_string(),
+                    content: d.raw_text,
+                },
+            );
+            Some(p)
         } else {
-            "".to_string()
+            None
         };
-        Some(preview)
+        preview
     }
 }
 
@@ -314,8 +326,8 @@ impl RowItem for NoteSelectEntry {
             } => {
                 rsx! {
                     div { class: "element",
-                        div { class: "icon-note title", "{title}" }
-                        div { class: "details", "{path.get_name()}" }
+                        div { class: "icon-note note-title", "{title}" }
+                        div { class: "note-meta", "{path.get_name()}" }
                     }
                 }
             }
