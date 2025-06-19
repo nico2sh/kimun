@@ -269,7 +269,7 @@ where
                             }
                         } else {
                             rsx! {
-                                div { class: "no-preview", "<No preview>" }
+                                div { class: "no-preview", "" }
                             }
                         }
                     }
