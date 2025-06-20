@@ -2,7 +2,7 @@
 
 A notes app. Focus on simplicity, but powerful on searchability.
 
-100% human written.
+Mostly human written. Except CSS, CSS is hard.
 
 ## Building
 
