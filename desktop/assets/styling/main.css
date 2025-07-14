@@ -10,6 +10,8 @@ body {
   height: 100vh;
   /* padding: 20px; */
   color: var(--text-primary);
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-hover) var(--bg-section);
 }
 
 progress {
@@ -321,24 +323,20 @@ progress {
 }
 
 /* Scrollbar Styling */
-.notes-list::-webkit-scrollbar,
-.preview-pane::-webkit-scrollbar {
+body::-webkit-scrollbar {
   width: 8px;
 }
 
-.notes-list::-webkit-scrollbar-track,
-.preview-pane::-webkit-scrollbar-track {
+body::-webkit-scrollbar-track {
   background: var(--bg-section);
 }
 
-.notes-list::-webkit-scrollbar-thumb,
-.preview-pane::-webkit-scrollbar-thumb {
+body::-webkit-scrollbar-thumb {
   background: var(--bg-hover);
   border-radius: 4px;
 }
 
-.notes-list::-webkit-scrollbar-thumb:hover,
-.preview-pane::-webkit-scrollbar-thumb:hover {
+body::-webkit-scrollbar-thumb:hover {
   background: var(--border-hover);
 }
 
