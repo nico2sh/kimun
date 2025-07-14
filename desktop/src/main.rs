@@ -10,6 +10,7 @@ mod components;
 mod pages;
 mod route;
 mod settings;
+pub mod utils;
 
 // The asset macro also minifies some assets like CSS and JS to make bundled smaller
 // const MAIN_CSS: Asset = asset!("/assets/styling/main.css");

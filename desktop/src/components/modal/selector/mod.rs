@@ -8,6 +8,8 @@ use dioxus::{
     prelude::*,
 };
 
+use crate::utils::sparse_vector::SparseVector;
+
 use super::Modal;
 
 trait SelectorFunctions<R>: Clone
@@ -67,7 +69,7 @@ where
     // For setting the focus in the text box
     let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
-    let mut row_mounts = use_signal(Vec::<Rc<MountedData>>::new);
+    let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
     let mut select_by_mouse = use_signal(|| true);
 
     let functions_load = functions.clone();
@@ -102,7 +104,7 @@ where
                         .await
                         .unwrap();
                     info!("We truncate the row mounts with {} values", rows.len());
-                    row_mounts.truncate(rows.len());
+                    row_mounts.write().truncate(rows.len());
                     rows
                 }
                 LoadState::Closed => vec![],
@@ -231,9 +233,6 @@ where
                             _ => {}
                         }
                     },
-                    onfocusout: move |_e| {
-                        modal.write().close();
-                    },
                 }
             }
             div {
@@ -250,14 +249,16 @@ where
                             id: "element-{index}",
                             onmounted: move |e| {
                                 info!("Adding mount at {} position", index);
-                                row_mounts.write().push(e.data());
+                                row_mounts.write().insert(index, e.data());
                             },
                             onmouseenter: move |_e| {
                                 if *select_by_mouse.read() {
                                     selected.set(Some(index));
                                 }
                             },
-                            onclick: move |_e| {
+                            onclick: move |e| {
+                                info!("Clicked element");
+                                e.stop_propagation();
                                 if row.on_select()() {
                                     load_state.set(LoadState::Closed);
                                     modal.write().close();
