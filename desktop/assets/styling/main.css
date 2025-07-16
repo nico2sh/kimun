@@ -358,7 +358,7 @@ progress {
 }
 
 .note-item {
-  padding: 16px 20px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border-light);
   cursor: pointer;
   transition: all 0.2s ease;
@@ -487,9 +487,9 @@ body::-webkit-scrollbar-thumb:hover {
 }
 
 /* Lists */
-.list {
+/* .list {
   flex: 1;
-  padding: 5px;
+  padding: 6px;
   overflow-y: auto;
   scroll-behavior: smooth;
   overflow-x: hidden;
@@ -525,7 +525,7 @@ body::-webkit-scrollbar-thumb:hover {
   text-wrap-mode: wrap;
   margin-bottom: 0.1em;
   border-bottom: 1px solid;
-}
+} */
 
 .emphasized {
   font-style: italic;
@@ -535,7 +535,7 @@ body::-webkit-scrollbar-thumb:hover {
   font-weight: bold;
 }
 
-.list>.element>.separator {
+/* .list>.element>.separator {
   margin: 0.5em 0.2em;
   border-bottom: 1px solid;
 }
@@ -553,7 +553,7 @@ body::-webkit-scrollbar-thumb:hover {
   font-style: italic;
   overflow-x: hidden;
   padding-left: 1em;
-}
+} */
 
 /* Settings */
 .settings-container {
