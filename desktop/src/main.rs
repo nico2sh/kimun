@@ -44,6 +44,6 @@ fn App() -> Element {
         document::Link { rel: "stylesheet", href: ICONS }
         document::Link { rel: "stylesheet", href: STYLE }
 
-        Router::<Route> {}
+        div { class: "app-container", Router::<Route> {} }
     }
 }

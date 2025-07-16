@@ -13,6 +13,7 @@ use kimun_core::{
 use crate::{
     components::{
         modal::{indexer::IndexType, Modal},
+        note_browser::NoteBrowser,
         text_editor::{EditorHeader, TextEditor},
     },
     route::Route,
@@ -227,55 +228,60 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
         .map_or_else(EditorContent::default, |ec| ec.to_owned());
 
     rsx! {
-        div {
-            tabindex: 0,
-            class: "editor-container",
-            onkeydown: move |event: Event<KeyboardData>| {
-                let key = event.data.code();
-                let modifiers = event.data.modifiers();
-                if modifiers.meta() {
-                    match key {
-                        Code::KeyO => {
-                            debug!("Trigger Open Note Select");
-                            modal
-                                .write()
-                                .set_note_select(vault.clone(), note_path.read().clone());
-                        }
-                        Code::KeyK => {
-                            debug!("Trigger Open Note Search");
-                            modal.write().set_note_search(vault.clone());
-                        }
-                        Code::KeyJ => {
-                            debug!("New Journal Entry");
-                            if let Ok(journal_entry) = vault.journal_entry() {
-                                navigator()
-                                    .replace(crate::Route::Editor {
-                                        note_path: journal_entry.0.path,
-                                        create: true,
-                                    });
+        div { class: "sidebar open",
+            NoteBrowser { vault: vault.clone(), base_path: note_path.read().to_owned() }
+        }
+        div { class: "editor-area",
+            div {
+                class: "editor-container",
+                tabindex: 0,
+                onkeydown: move |event: Event<KeyboardData>| {
+                    let key = event.data.code();
+                    let modifiers = event.data.modifiers();
+                    if modifiers.meta() {
+                        match key {
+                            Code::KeyO => {
+                                debug!("Trigger Open Note Select");
+                                modal
+                                    .write()
+                                    .set_note_select(vault.clone(), note_path.read().clone());
                             }
+                            Code::KeyK => {
+                                debug!("Trigger Open Note Search");
+                                modal.write().set_note_search(vault.clone());
+                            }
+                            Code::KeyJ => {
+                                debug!("New Journal Entry");
+                                if let Ok(journal_entry) = vault.journal_entry() {
+                                    navigator()
+                                        .replace(crate::Route::Editor {
+                                            note_path: journal_entry.0.path,
+                                            create: true,
+                                        });
+                                }
+                            }
+                            Code::Comma => {
+                                debug!("Open Settings");
+                                navigator().replace(Route::Settings {});
+                            }
+                            _ => {}
                         }
-                        Code::Comma => {
-                            debug!("Open Settings");
-                            navigator().replace(Route::Settings {});
-                        }
-                        _ => {}
                     }
+                },
+                // We close any modal if we click on the main UI
+                onclick: move |_e| {
+                    if modal.read().is_open() {
+                        modal.write().close();
+                        info!("Close dialog");
+                    }
+                },
+                {Modal::get_element(modal)}
+                EditorHeader { note_path_display, is_dirty }
+                div { class: "editor-main",
+                    TextEditor { content, editor_signal, cr }
                 }
-            },
-            // We close any modal if we click on the main UI
-            onclick: move |_e| {
-                if modal.read().is_open() {
-                    modal.write().close();
-                    info!("Close dialog");
-                }
-            },
-            {Modal::get_element(modal)}
-            EditorHeader { note_path_display, is_dirty }
-            div { class: "editor-main",
-                TextEditor { content, editor_signal, cr }
+                div { class: "editor-footer" }
             }
-            div { class: "editor-footer" }
         }
     }
 }

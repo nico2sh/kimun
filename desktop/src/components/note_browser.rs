@@ -1,31 +1,46 @@
 use std::sync::Arc;
 
-use dioxus::{hooks::use_signal, logger::tracing::info, prelude::*};
+use dioxus::{hooks::use_signal, html::div, logger::tracing::info, prelude::*};
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, SearchResult, VaultBrowseOptionsBuilder};
 
 #[component]
-pub fn NoteBrowser(vault: Arc<NoteVault>, note_path: SyncSignal<Option<VaultPath>>) -> Element {
+pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
     info!("Open Note Browser");
     let mut browsing_directory = use_signal(move || {
-        let path = match note_path.read().as_ref() {
-            Some(path) => path.to_owned(),
-            None => VaultPath::root(),
-        };
-        if path.is_note() {
-            path.get_parent_path().0
+        if base_path.is_note() {
+            base_path.get_parent_path().0
         } else {
-            path.to_owned()
+            base_path.to_owned()
         }
     });
     let notes_and_dirs = NotesAndDirs::new(vault, browsing_directory);
     let current_path = notes_and_dirs.get_current();
 
     rsx! {
-        div { class: "sideheader", "Files: {current_path.to_string()}" }
-        div { class: "list",
+        div { class: "sidebar-header",
+            div { class: "sidebar-title", "{current_path.to_string()}" }
+            button { class: "sidebar-toggle", onclick: move |_| {},
+                svg {
+                    width: 16,
+                    height: 16,
+                    view_box: "0 0 24 24",
+                    fill: "none",
+                    stroke: "currentColor",
+                    stroke_width: 2,
+                }
+            }
+        }
+        div { class: "sidebar-search",
+            input {
+                r#type: "text",
+                class: "search-input",
+                placeholder: "search",
+            }
+        }
+        div { class: "entry-list", id: "entryList",
             if !current_path.is_root_or_empty() {
                 div {
-                    class: "element",
+                    class: "entry-item",
                     onclick: move |_| {
                         let parent_path = browsing_directory.read().get_parent_path().0;
                         browsing_directory.set(parent_path);
@@ -39,9 +54,7 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, note_path: SyncSignal<Option<VaultPath
                         ResultType::Note(data) => {
                             let (_directory, file) = entry.path.get_parent_path();
                             rsx! {
-                                div {
-                                    class: "element",
-                                    onclick: move |_| *note_path.write() = Some(entry.path.clone()),
+                                div { class: "entry-item", onclick: move |_| {},
                                     div { class: "icon-note title", "{data.title}" }
                                     div { class: "details", "{file}" }
                                 }
@@ -51,7 +64,7 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, note_path: SyncSignal<Option<VaultPath
                             let (_directory, path) = entry.path.get_parent_path();
                             rsx! {
                                 div {
-                                    class: "element",
+                                    class: "entry-item",
                                     onclick: move |_| browsing_directory.set(entry.path.to_owned()),
                                     div { class: "icon-folder title", "{path}" }
                                 }
