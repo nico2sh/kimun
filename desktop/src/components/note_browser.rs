@@ -6,16 +6,39 @@ use dioxus::{
     prelude::*,
 };
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
-use nucleo::Matcher;
 
 use crate::{
-    components::note_select_entry::{NoteSelectEntry, RowItem},
+    components::note_select_entry::{NoteSelectEntry, RowItem, SortCriteria},
     utils::sparse_vector::SparseVector,
 };
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct Sort {
+    criteria: SortCriteria,
+    ascending: bool,
+}
+
+impl Sort {
+    fn set_criteria(&mut self, criteria: SortCriteria) {
+        self.criteria = criteria;
+    }
+
+    fn toggle_order(&mut self) {
+        self.ascending = !self.ascending;
+    }
+}
+
+impl Default for Sort {
+    fn default() -> Self {
+        Self {
+            criteria: SortCriteria::FileName,
+            ascending: false,
+        }
+    }
+}
+
 #[component]
 pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
-    info!("Open Note Browser");
     let browsing_directory = use_signal_sync(move || {
         if base_path.is_note() {
             base_path.get_parent_path().0
@@ -23,6 +46,8 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
             base_path.to_owned()
         }
     });
+
+    let mut sort = use_signal(|| Sort::default());
 
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
@@ -102,9 +127,14 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
     });
 
     let sorted_entries = use_resource(move || async move {
+        info!("Sorting entries");
         let mut filtered_entries = filtered_entries.read().to_owned();
         if let Some(result) = filtered_entries.as_mut() {
-            result.sort_by_key(|b| std::cmp::Reverse(b.sort_string()));
+            if sort.read().ascending {
+                result.sort_by_key(|b| b.sort_string_for(&sort.read().criteria));
+            } else {
+                result.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort.read().criteria)));
+            };
             if !browsing_directory.read().is_root_or_empty() {
                 result.insert(
                     0,
@@ -132,6 +162,7 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
                     fill: "none",
                     stroke: "currentColor",
                     stroke_width: 2,
+                    path { d: "M18 6L6 18M6 6l12 12" }
                 }
             }
         }
@@ -147,7 +178,48 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
             }
         }
         div { class: "sidebar-controls",
-            div { class: "sort-controls" }
+            div { class: "sort-controls",
+                select {
+                    class: "sort-select",
+                    id: "sortBy",
+                    onchange: move |e| {
+                        let val = e.value();
+                        if val.eq("title") {
+                            sort.write().set_criteria(SortCriteria::Title);
+                        }
+                        if val.eq("filename") {
+                            sort.write().set_criteria(SortCriteria::FileName);
+                        }
+                    },
+                    option {
+                        value: "filename",
+                        selected: if sort.read().criteria == SortCriteria::FileName { true },
+                        "File Name"
+                    }
+                    option {
+                        value: "title",
+                        selected: if sort.read().criteria == SortCriteria::Title { true },
+                        "Title"
+                    }
+                }
+                button {
+                    class: if sort.read().ascending { "sort-order" } else { "sort-order descending" },
+                    id: "sortOrder",
+                    onclick: move |_e| {
+                        sort.write().toggle_order();
+                    },
+                    title { "Toggle sort Order" }
+                    svg {
+                        width: 14,
+                        height: 14,
+                        view_box: "0 0 24 24",
+                        fill: "none",
+                        stroke: "currentColor",
+                        stroke_width: "2",
+                        path { d: "M3 6h18M7 12h10M11 18h2" }
+                    }
+                }
+            }
         }
         div {
             class: "entry-list",
