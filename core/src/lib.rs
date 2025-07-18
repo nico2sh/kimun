@@ -12,7 +12,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use db::VaultDB;
 use error::{DBError, FSError, VaultError};
 use log::debug;
@@ -21,6 +21,8 @@ use nfs::{
 };
 use note::{ContentChunk, NoteContentData, NoteDetails};
 use utilities::path_to_string;
+
+pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
 
 pub struct IndexReport {
     pub start: SystemTime,
@@ -43,10 +45,10 @@ impl IndexReport {
     }
 }
 
-const JOURNAL_PATH: &str = "/journal";
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteVault {
     pub workspace_path: PathBuf,
+    journal_path: VaultPath,
     vault_db: VaultDB,
 }
 
@@ -56,6 +58,7 @@ impl Default for NoteVault {
         let vault_db = VaultDB::new(workspace_path.clone());
         Self {
             workspace_path,
+            journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             vault_db,
         }
     }
@@ -82,6 +85,7 @@ impl NoteVault {
         let vault_db = VaultDB::new(&workspace_path);
         let note_vault = Self {
             workspace_path,
+            journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             vault_db,
         };
         Ok(note_vault)
@@ -194,13 +198,27 @@ impl NoteVault {
 
         (
             today_string.clone(),
-            VaultPath::new(JOURNAL_PATH)
+            self.journal_path
                 .append(&VaultPath::note_path_from(&today_string))
                 .absolute(),
         )
     }
 
-    // Loads a note in the specified path, if the path doesn't exist
+    // Returns a NaiveDate if the note path is a valid journal entry
+    pub fn journal_date(&self, note_path: &VaultPath) -> Option<NaiveDate> {
+        if !note_path.is_note() {
+            return None;
+        }
+
+        let (parent, _) = note_path.get_parent_path();
+        if parent.eq(&self.journal_path) {
+            let name = note_path.get_clean_name();
+            NaiveDate::parse_from_str(&name, "%Y-%m-%d").ok()
+        } else {
+            None
+        }
+    }
+
     // create a new one, a text can be specified as the initial text for the
     // note when created
     pub fn load_or_create_note(
