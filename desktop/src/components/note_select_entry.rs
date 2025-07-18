@@ -1,6 +1,12 @@
 use dioxus::{logger::tracing::info, prelude::*, signals::SyncSignal};
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
+#[derive(Clone, Eq, PartialEq)]
+pub enum SortCriteria {
+    Title,
+    FileName,
+}
+
 pub trait RowItem: PartialEq + Eq + Clone {
     fn on_select(&self) -> Box<dyn FnMut() -> bool>;
     fn get_view(&self) -> Element;
@@ -67,6 +73,31 @@ impl NoteSelectEntry {
                 title: _,
                 search_str: _,
             } => format!("2-{}", path),
+            NoteSelectEntry::Directory {
+                path,
+                name: _,
+                browse_path_signal: _,
+            } => format!("1-{}", path),
+            NoteSelectEntry::Create {
+                name: _,
+                new_note_path: _,
+            } => format!("0"),
+        }
+    }
+
+    pub fn sort_string_for(&self, criteria: &SortCriteria) -> String {
+        match &self {
+            NoteSelectEntry::Note {
+                path,
+                title,
+                search_str: _,
+            } => format!(
+                "2-{}",
+                match criteria {
+                    SortCriteria::Title => title.to_owned(),
+                    SortCriteria::FileName => path.to_string(),
+                }
+            ),
             NoteSelectEntry::Directory {
                 path,
                 name: _,

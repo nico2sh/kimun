@@ -92,6 +92,60 @@ progress {
   border-bottom: 1px solid var(--border-light);
 }
 
+/* Sidebar Sort */
+.sidebar-controls {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-main);
+}
+
+.sort-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sort-select {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  background: var(--bg-section);
+  -webkit-appearance: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+.sort-select:focus {
+  border-color: var(--border-focus);
+}
+
+.sort-order {
+  background: var(--bg-section);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  min-width: 32px;
+  height: 32px;
+}
+
+.sort-order:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-hover);
+}
+
+.sort-order.descending {
+  transform: rotate(180deg);
+}
+
 /* Sidebar Input */
 .search-input {
   width: 100%;
