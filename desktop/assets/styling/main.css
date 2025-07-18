@@ -224,6 +224,29 @@ progress {
   border-bottom: 1px solid var(--border-light);
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sidebar-toggle-main {
+  background: none;
+  border: none;
+  color: var(--text-head);
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 4px;
+  transition: background 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-toggle-main:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
 .title-section {
   display: flex;
   align-items: center;
