@@ -638,7 +638,7 @@ progress {
   margin: 0 auto;
   background: var(--bg-main);
   /* box-shadow: 0 10px 40px var(--shadow-primary); */
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .settings-header {

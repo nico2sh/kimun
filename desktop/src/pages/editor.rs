@@ -229,13 +229,15 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
 
     rsx! {
         if *show_browser.read() {
-            div { class: "sidebar open",
+            div { class: "sidebar",
                 NoteBrowser {
                     vault: vault.clone(),
                     base_path: note_path.read().to_owned(),
                     show_browser,
                 }
             }
+        } else {
+            div { class: "sidebar collapsed" }
         }
         div { class: "editor-area",
             div {
