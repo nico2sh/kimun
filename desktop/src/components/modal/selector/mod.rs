@@ -8,7 +8,7 @@ use dioxus::{
     prelude::*,
 };
 
-use crate::utils::sparse_vector::SparseVector;
+use crate::{components::note_select_entry::RowItem, utils::sparse_vector::SparseVector};
 
 use super::Modal;
 
@@ -19,11 +19,6 @@ where
     fn init(&self) -> Vec<R>;
     fn filter(&self, filter_text: String, items: &Vec<R>) -> Vec<R>;
     fn preview(&self, element: &R) -> Option<PreviewData>;
-}
-
-pub trait RowItem: PartialEq + Eq + Clone {
-    fn on_select(&self) -> Box<dyn FnMut() -> bool>;
-    fn get_view(&self) -> Element;
 }
 
 pub struct PreviewData {

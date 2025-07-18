@@ -89,7 +89,6 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
         while let Some(msg) = rx.next().await {
             match msg {
                 EditorMsg::Init { editor_data } => {
-                    debug!("Initialized with Editor Data {:?}", editor_data);
                     ed = editor_data;
                 }
                 EditorMsg::Update { text } => {

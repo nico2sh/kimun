@@ -1,20 +1,125 @@
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
-use dioxus::{hooks::use_signal, html::div, logger::tracing::info, prelude::*};
-use kimun_core::{nfs::VaultPath, NoteVault, ResultType, SearchResult, VaultBrowseOptionsBuilder};
+use dioxus::{
+    hooks::use_signal,
+    logger::tracing::{debug, info},
+    prelude::*,
+};
+use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
+use nucleo::Matcher;
+
+use crate::{
+    components::note_select_entry::{NoteSelectEntry, RowItem},
+    utils::sparse_vector::SparseVector,
+};
 
 #[component]
 pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
     info!("Open Note Browser");
-    let mut browsing_directory = use_signal(move || {
+    let browsing_directory = use_signal_sync(move || {
         if base_path.is_note() {
             base_path.get_parent_path().0
         } else {
             base_path.to_owned()
         }
     });
-    let notes_and_dirs = NotesAndDirs::new(vault, browsing_directory);
-    let current_path = notes_and_dirs.get_current();
+
+    let mut selected: Signal<Option<usize>> = use_signal(|| None);
+    let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
+    let mut select_by_mouse = use_signal(|| true);
+
+    let mut filter_text = use_signal(|| "".to_string());
+    let current_path = browsing_directory.read().clone();
+
+    // Since this is a resource that depends on the current_path
+    // the entries change every time the current_path is changed
+    let all_entries = use_resource(move || {
+        let vault = vault.clone();
+        async move {
+            info!("Load all entries");
+            let mut entries = vec![];
+            let (search_options, rx) = VaultBrowseOptionsBuilder::new(&*browsing_directory.read())
+                .full_validation()
+                .non_recursive()
+                .build();
+            let _ = tokio::spawn(async move {
+                vault
+                    .browse_vault(search_options)
+                    .expect("Error fetching Entries");
+            })
+            .await;
+
+            while let Ok(entry) = rx.recv() {
+                match &entry.rtype {
+                    ResultType::Note(note_details) => {
+                        let entry =
+                            NoteSelectEntry::from_note_details(entry.path, note_details.to_owned());
+                        entries.push(entry)
+                    }
+                    ResultType::Directory => {
+                        if entry.path != *browsing_directory.read() {
+                            let entry = NoteSelectEntry::from_directory_details(
+                                entry.path,
+                                browsing_directory,
+                            );
+                            entries.push(entry.to_owned())
+                        }
+                    }
+                    ResultType::Attachment => {
+                        // Do nothing
+                    }
+                };
+            }
+            entries
+        }
+    });
+
+    let filtered_entries = use_resource(move || async move {
+        info!("Filtering entries");
+        let res = if let Some(entries) = &*all_entries.read() {
+            if !entries.is_empty() {
+                debug!("Filtering {}", filter_text);
+                let filtered = entries
+                    .iter()
+                    .filter_map(|entry| {
+                        let entry_text = entry.as_ref().to_lowercase();
+                        if entry_text.contains(&filter_text.read().to_lowercase()) {
+                            Some(entry.to_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<NoteSelectEntry>>();
+                filtered
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+        row_mounts.write().truncate(res.len());
+        res
+    });
+
+    let sorted_entries = use_resource(move || async move {
+        let mut filtered_entries = filtered_entries.read().to_owned();
+        if let Some(result) = filtered_entries.as_mut() {
+            result.sort_by_key(|b| std::cmp::Reverse(b.sort_string()));
+            if !browsing_directory.read().is_root_or_empty() {
+                result.insert(
+                    0,
+                    NoteSelectEntry::Directory {
+                        path: browsing_directory.read().get_parent_path().0,
+                        name: "..".to_string(),
+                        browse_path_signal: browsing_directory,
+                    },
+                );
+            }
+            result.to_owned()
+        } else {
+            vec![]
+        }
+    });
 
     rsx! {
         div { class: "sidebar-header",
@@ -35,114 +140,47 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
                 r#type: "text",
                 class: "search-input",
                 placeholder: "search",
+                value: "{filter_text}",
+                oninput: move |e| {
+                    filter_text.set(e.value().to_string());
+                },
             }
         }
-        div { class: "entry-list", id: "entryList",
-            if !current_path.is_root_or_empty() {
-                div {
-                    class: "entry-item",
-                    onclick: move |_| {
-                        let parent_path = browsing_directory.read().get_parent_path().0;
-                        browsing_directory.set(parent_path);
-                    },
-                    div { class: "icon-folder title", ".." }
+        div { class: "sidebar-controls",
+            div { class: "sort-controls" }
+        }
+        div {
+            class: "entry-list",
+            id: "entryList",
+            onmousemove: move |_e| {
+                if !*select_by_mouse.read() {
+                    select_by_mouse.set(true);
                 }
-            }
-            if let Some(entries) = notes_and_dirs.entries.value().read().clone() {
-                for entry in entries {
-                    match entry.rtype {
-                        ResultType::Note(data) => {
-                            let (_directory, file) = entry.path.get_parent_path();
-                            rsx! {
-                                div { class: "entry-item", onclick: move |_| {},
-                                    div { class: "icon-note title", "{data.title}" }
-                                    div { class: "details", "{file}" }
-                                }
+            },
+            if let Some(entries) = sorted_entries.value().read().clone() {
+                for (index , entry) in entries.into_iter().enumerate() {
+                    div {
+                        class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
+                        id: "element-{index}",
+                        onmounted: move |e| {
+                            row_mounts.write().insert(index, e.data());
+                        },
+                        onmouseenter: move |_e| {
+                            if *select_by_mouse.read() {
+                                selected.set(Some(index));
                             }
-                        }
-                        ResultType::Directory => {
-                            let (_directory, path) = entry.path.get_parent_path();
-                            rsx! {
-                                div {
-                                    class: "entry-item",
-                                    onclick: move |_| browsing_directory.set(entry.path.to_owned()),
-                                    div { class: "icon-folder title", "{path}" }
-                                }
-                            }
-                        }
-                        ResultType::Attachment => {
-                            rsx! {
-                                div { "This shouldn't show up" }
-                            }
-                        }
+                        },
+                        onclick: move |e| {
+                            info!("Clicked element");
+                            e.stop_propagation();
+                            let _ = entry.on_select()();
+                        },
+                        {entry.get_view()}
                     }
                 }
             } else {
                 div { "Loading..." }
             }
         }
-    }
-}
-
-#[derive(Clone)]
-struct NotesAndDirs {
-    current_path: Signal<VaultPath>,
-    entries: Resource<Vec<SearchResult>>,
-}
-
-impl NotesAndDirs {
-    fn new(vault: Arc<NoteVault>, path: Signal<VaultPath>) -> Self {
-        // Since this is a resource that depends on the current_path
-        // the entries change every time the current_path is changed
-        let entries = use_resource(move || {
-            let vault = vault.clone();
-            let mut entries = vec![];
-            async move {
-                let current_path = path.read().clone();
-                let (search_options, rx) = VaultBrowseOptionsBuilder::new(&current_path)
-                    .full_validation()
-                    .non_recursive()
-                    .build();
-                let _ = tokio::spawn(async move {
-                    vault
-                        .browse_vault(search_options)
-                        .expect("Error fetching Entries");
-                })
-                .await;
-                let current_path = path.read().clone();
-                while let Ok(entry) = rx.recv() {
-                    match &entry.rtype {
-                        ResultType::Note(_note_details) => entries.push(entry.to_owned()),
-                        ResultType::Directory => {
-                            if entry.path != current_path {
-                                info!("entry: {} - current: {}", entry.path, current_path);
-                                entries.push(entry.to_owned())
-                            }
-                        }
-                        ResultType::Attachment => {
-                            // Do nothing
-                        }
-                    };
-                }
-                entries.sort_by_key(|b| std::cmp::Reverse(sort_string(b)));
-                entries
-            }
-        });
-        Self {
-            current_path: path,
-            entries,
-        }
-    }
-
-    fn get_current(&self) -> VaultPath {
-        self.current_path.read().clone()
-    }
-}
-
-fn sort_string(entry: &SearchResult) -> String {
-    match &entry.rtype {
-        ResultType::Directory => format!("1-{}", entry.path),
-        ResultType::Note(_data) => format!("2-{}", entry.path),
-        ResultType::Attachment => format!("3-{}", entry.path),
     }
 }
