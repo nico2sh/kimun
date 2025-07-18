@@ -1,7 +1,6 @@
 pub mod visitor;
 // Contains the structs to support the data types
 use std::{
-    ffi::OsStr,
     fmt::Display,
     hash::Hash,
     io::Write,
@@ -15,8 +14,6 @@ use ignore::{WalkBuilder, WalkParallel};
 use log::{info, warn};
 use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
-
-use crate::error::VaultError;
 
 use super::{error::FSError, DirectoryDetails, NoteDetails};
 
@@ -420,6 +417,15 @@ impl VaultPath {
                 }
             }
             None => VaultPath::new("0"),
+        }
+    }
+
+    pub fn get_clean_name(&self) -> String {
+        let (_, name) = self.get_parent_path();
+        if let Some(name) = name.strip_suffix(NOTE_EXTENSION) {
+            name.to_string()
+        } else {
+            name
         }
     }
 

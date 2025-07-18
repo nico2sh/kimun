@@ -453,6 +453,10 @@ progress {
   border-left: 4px solid var(--accent-yellow);
 }
 
+.note-item.active {
+  border-left: 4px solid var(--accent-green);
+}
+
 .note-title {
   font-size: 15px;
   font-weight: 600;
@@ -479,6 +483,12 @@ progress {
   color: var(--text-light);
   font-style: italic;
   margin-top: 2px;
+}
+
+.note-journal {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
 }
 
 /* Preview Pane */

@@ -1,5 +1,6 @@
 use std::{rc::Rc, sync::Arc};
 
+use chrono::Datelike;
 use dioxus::{
     hooks::use_signal,
     logger::tracing::{debug, info},
@@ -40,14 +41,15 @@ impl Default for Sort {
 #[component]
 pub fn NoteBrowser(
     vault: Arc<NoteVault>,
-    base_path: VaultPath,
+    note_path: ReadOnlySignal<VaultPath>,
     show_browser: Signal<bool>,
 ) -> Element {
     let browsing_directory = use_signal_sync(move || {
-        if base_path.is_note() {
-            base_path.get_parent_path().0
+        let np = note_path.read();
+        if np.is_note() {
+            np.get_parent_path().0
         } else {
-            base_path.to_owned()
+            np.to_owned()
         }
     });
 
@@ -71,8 +73,9 @@ pub fn NoteBrowser(
                 .full_validation()
                 .non_recursive()
                 .build();
+            let browsing_vault = vault.clone();
             let _ = tokio::spawn(async move {
-                vault
+                browsing_vault
                     .browse_vault(search_options)
                     .expect("Error fetching Entries");
             })
@@ -81,17 +84,24 @@ pub fn NoteBrowser(
             while let Ok(entry) = rx.recv() {
                 match &entry.rtype {
                     ResultType::Note(note_details) => {
-                        let entry =
-                            NoteSelectEntry::from_note_details(entry.path, note_details.to_owned());
-                        entries.push(entry)
+                        let e = if let Some(date) = vault.journal_date(&entry.path) {
+                            NoteSelectEntry::from_note_journal(
+                                entry.path,
+                                note_details.to_owned(),
+                                date,
+                            )
+                        } else {
+                            NoteSelectEntry::from_note_details(entry.path, note_details.to_owned())
+                        };
+                        entries.push(e)
                     }
                     ResultType::Directory => {
                         if entry.path != *browsing_directory.read() {
-                            let entry = NoteSelectEntry::from_directory_details(
+                            let e = NoteSelectEntry::from_directory_details(
                                 entry.path,
                                 browsing_directory,
                             );
-                            entries.push(entry.to_owned())
+                            entries.push(e)
                         }
                     }
                     ResultType::Attachment => {
@@ -237,10 +247,19 @@ pub fn NoteBrowser(
                     select_by_mouse.set(true);
                 }
             },
+            onmouseleave: move |_e| {
+                if *select_by_mouse.read() {
+                    selected.set(None);
+                }
+            },
             if let Some(entries) = sorted_entries.value().read().clone() {
                 for (index , entry) in entries.into_iter().enumerate() {
                     div {
-                        class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
+                        class: if *selected.read() == Some(index) { "note-item selected" } else { if entry.get_path().eq(&*note_path.read()) {
+                            "note-item active"
+                        } else {
+                            "note-item"
+                        } },
                         id: "element-{index}",
                         onmounted: move |e| {
                             row_mounts.write().insert(index, e.data());
