@@ -66,25 +66,6 @@ impl NoteSelectEntry {
         }
     }
 
-    pub fn sort_string(&self) -> String {
-        match &self {
-            NoteSelectEntry::Note {
-                path,
-                title: _,
-                search_str: _,
-            } => format!("2-{}", path),
-            NoteSelectEntry::Directory {
-                path,
-                name: _,
-                browse_path_signal: _,
-            } => format!("1-{}", path),
-            NoteSelectEntry::Create {
-                name: _,
-                new_note_path: _,
-            } => format!("0"),
-        }
-    }
-
     pub fn sort_string_for(&self, criteria: &SortCriteria) -> String {
         match &self {
             NoteSelectEntry::Note {

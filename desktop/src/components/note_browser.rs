@@ -38,7 +38,11 @@ impl Default for Sort {
 }
 
 #[component]
-pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
+pub fn NoteBrowser(
+    vault: Arc<NoteVault>,
+    base_path: VaultPath,
+    show_browser: Signal<bool>,
+) -> Element {
     let browsing_directory = use_signal_sync(move || {
         if base_path.is_note() {
             base_path.get_parent_path().0
@@ -154,7 +158,11 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, base_path: VaultPath) -> Element {
     rsx! {
         div { class: "sidebar-header",
             div { class: "sidebar-title", "{current_path.to_string()}" }
-            button { class: "sidebar-toggle", onclick: move |_| {},
+            button {
+                class: "sidebar-toggle",
+                onclick: move |_| {
+                    show_browser.set(false);
+                },
                 svg {
                     width: 16,
                     height: 16,

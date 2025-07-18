@@ -4,9 +4,48 @@ use crate::pages::editor::{EditorContent, EditorMsg};
 use dioxus::{logger::tracing::info, prelude::*};
 
 #[component]
-pub fn EditorHeader(note_path_display: String, is_dirty: Signal<bool>) -> Element {
+pub fn EditorHeader(
+    note_path_display: String,
+    show_browser: Signal<bool>,
+    is_dirty: Signal<bool>,
+) -> Element {
     rsx! {
         div { class: "editor-header",
+            div { class: "header-left",
+                button {
+                    class: "sidebar-toggle-main",
+                    onclick: move |_| {
+                        let showing = *show_browser.read();
+                        show_browser.set(!showing);
+                    },
+                    svg {
+                        width: 20,
+                        height: 20,
+                        view_box: "0 0 24 24",
+                        fill: "none",
+                        stroke: "currentColor",
+                        stroke_width: "2",
+                        line {
+                            x1: 3,
+                            y1: 6,
+                            x2: 21,
+                            y2: 6,
+                        }
+                        line {
+                            x1: 3,
+                            y1: 12,
+                            x2: 21,
+                            y2: 12,
+                        }
+                        line {
+                            x1: 3,
+                            y1: 18,
+                            x2: 21,
+                            y2: 18,
+                        }
+                    }
+                }
+            }
             div { class: "title-section",
                 div { class: "title-text", "{note_path_display}" }
                 div {

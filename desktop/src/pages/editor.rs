@@ -80,6 +80,7 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
     debug!("Opening note '{}'", note_path);
 
     let mut is_dirty = use_signal(|| false);
+    let mut show_browser = use_signal(|| false);
     let vault = Arc::new(vault);
 
     let editor_vault = vault.clone();
@@ -227,8 +228,14 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
         .map_or_else(EditorContent::default, |ec| ec.to_owned());
 
     rsx! {
-        div { class: "sidebar open",
-            NoteBrowser { vault: vault.clone(), base_path: note_path.read().to_owned() }
+        if *show_browser.read() {
+            div { class: "sidebar open",
+                NoteBrowser {
+                    vault: vault.clone(),
+                    base_path: note_path.read().to_owned(),
+                    show_browser,
+                }
+            }
         }
         div { class: "editor-area",
             div {
@@ -239,6 +246,11 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                     let modifiers = event.data.modifiers();
                     if modifiers.meta() {
                         match key {
+                            Code::Slash => {
+                                debug!("Toggle note browser");
+                                let shown = *show_browser.read();
+                                show_browser.set(!shown);
+                            }
                             Code::KeyO => {
                                 debug!("Trigger Open Note Select");
                                 modal
@@ -275,7 +287,7 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                     }
                 },
                 {Modal::get_element(modal)}
-                EditorHeader { note_path_display, is_dirty }
+                EditorHeader { note_path_display, show_browser, is_dirty }
                 div { class: "editor-main",
                     TextEditor { content, editor_signal, cr }
                 }

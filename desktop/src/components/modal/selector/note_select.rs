@@ -7,7 +7,10 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 use nucleo::Matcher;
 
-use crate::components::{modal::selector::PreviewData, note_select_entry::NoteSelectEntry};
+use crate::components::{
+    modal::selector::PreviewData,
+    note_select_entry::{NoteSelectEntry, SortCriteria},
+};
 
 use super::{Modal, SelectorFunctions, SelectorView};
 
@@ -61,7 +64,7 @@ impl SelectFunctions {
                 _ => {}
             }
         }
-        result.sort_by_key(|b| std::cmp::Reverse(sort_string(b)));
+        result.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&SortCriteria::FileName)));
         if !current_browse_path.is_root_or_empty() {
             result.insert(
                 0,
@@ -128,25 +131,6 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
             None
         };
         preview
-    }
-}
-
-fn sort_string(entry: &NoteSelectEntry) -> String {
-    match &entry {
-        NoteSelectEntry::Note {
-            path,
-            title: _,
-            search_str: _,
-        } => format!("2-{}", path),
-        NoteSelectEntry::Directory {
-            path,
-            name: _,
-            browse_path_signal: _,
-        } => format!("1-{}", path),
-        NoteSelectEntry::Create {
-            name: _,
-            new_note_path: _,
-        } => format!("0"),
     }
 }
 
