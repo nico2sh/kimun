@@ -25,6 +25,7 @@ futures = "0.3.31"
 chrono = "0.4"
 
 [features]
+bundle = []
 default = ["desktop"]
 # The feature that are only required for the web = ["dioxus/web"] build target should be optional and only enabled in the web = ["dioxus/web"] feature
 web = ["dioxus/web"]
