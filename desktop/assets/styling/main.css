@@ -435,18 +435,14 @@ progress {
 }
 
 .note-item {
-  padding: 8px 16px;
+  padding: 8px 4px 8px 16px;
   border-bottom: 1px solid var(--border-light);
   cursor: pointer;
   transition: all 0.2s ease;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  flex-direction: row;
+  gap: 4px;
 }
-
-/* .note-item:hover {
-  background: var(--bg-hover);
-} */
 
 .note-item.selected {
   background: var(--bg-hover);
@@ -455,6 +451,68 @@ progress {
 
 .note-item.active {
   border-left: 4px solid var(--accent-green);
+}
+
+.note-item-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  /* gap: 4px; */
+}
+
+.note-actions {
+  transition: opacity 0.2s ease;
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+  justify-content: center;
+  /* padding-top: 2px;
+  margin-top: 2px; */
+  /* border-top: 1px solid var(--border-light); */
+}
+
+.action-btn {
+  background: var(--bg-section);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  color: var(--text-light);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 10px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* gap: 2px; */
+  min-width: 40px;
+  height: 24px;
+}
+
+.action-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+.action-btn.delete:hover {
+  background: #cc241d;
+  color: white;
+  border-color: #cc241d;
+}
+
+.action-btn.rename:hover {
+  background: var(--accent-blue);
+  color: var(--text-contrast);
+  border-color: var(--accent-blue);
+}
+
+.action-btn.move:hover {
+  background: var(--accent-yellow);
+  color: var(--text-contrast);
+  border-color: var(--accent-yellow);
 }
 
 .note-title {
