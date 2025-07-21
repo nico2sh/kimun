@@ -18,6 +18,7 @@ use crate::{
     },
     route::Route,
     settings::AppSettings,
+    utils::keys::{key_action, meta_ctrl, Shortcuts},
 };
 
 const AUTOSAVE_SECS: u64 = 5;
@@ -240,41 +241,33 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                 class: "editor-container",
                 tabindex: 0,
                 onkeydown: move |event: Event<KeyboardData>| {
-                    let key = event.data.code();
-                    let modifiers = event.data.modifiers();
-                    if modifiers.meta() {
-                        match key {
-                            Code::Slash => {
-                                debug!("Toggle note browser");
-                                let shown = *show_browser.read();
-                                show_browser.set(!shown);
-                            }
-                            Code::KeyO => {
-                                debug!("Trigger Open Note Select");
-                                modal
-                                    .write()
-                                    .set_note_select(vault.clone(), note_path.read().clone());
-                            }
-                            Code::KeyK => {
-                                debug!("Trigger Open Note Search");
-                                modal.write().set_note_search(vault.clone());
-                            }
-                            Code::KeyJ => {
-                                debug!("New Journal Entry");
-                                if let Ok(journal_entry) = vault.journal_entry() {
-                                    navigator()
-                                        .replace(crate::Route::Editor {
-                                            note_path: journal_entry.0.path,
-                                            create: true,
-                                        });
-                                }
-                            }
-                            Code::Comma => {
-                                debug!("Open Settings");
-                                navigator().replace(Route::Settings {});
-                            }
-                            _ => {}
+                    let data = event.data;
+                    if key_action(&data, Shortcuts::ToggleNoteBrowser) {
+                        debug!("Toggle note browser");
+                        let shown = *show_browser.read();
+                        show_browser.set(!shown);
+                    }
+                    if key_action(&data, Shortcuts::OpenNote) {
+                        debug!("Trigger Open Note Select");
+                        modal.write().set_note_select(vault.clone(), note_path.read().clone());
+                    }
+                    if key_action(&data, Shortcuts::SearchNotes) {
+                        debug!("Trigger Open Note Search");
+                        modal.write().set_note_search(vault.clone());
+                    }
+                    if key_action(&data, Shortcuts::NewJournal) {
+                        debug!("New Journal Entry");
+                        if let Ok(journal_entry) = vault.journal_entry() {
+                            navigator()
+                                .replace(crate::Route::Editor {
+                                    note_path: journal_entry.0.path,
+                                    create: true,
+                                });
                         }
+                    }
+                    if key_action(&data, Shortcuts::OpenSettings) {
+                        debug!("Open Settings");
+                        navigator().replace(Route::Settings {});
                     }
                 },
                 // We close any modal if we click on the main UI
