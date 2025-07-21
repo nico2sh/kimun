@@ -1,7 +1,8 @@
 use dioxus::prelude::*;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Shortcuts {
+    None,
     OpenSettings,
     ToggleNoteBrowser,
     SearchNotes,
@@ -19,14 +20,19 @@ pub fn meta_ctrl(ke: &KeyboardData) -> bool {
     ke.modifiers().ctrl()
 }
 
-pub fn key_action<K: AsRef<KeyboardData>>(kd: &K, action: Shortcuts) -> bool {
+pub fn get_action<K: AsRef<KeyboardData>>(kd: &K) -> Shortcuts {
     let kd = kd.as_ref();
     let code = kd.code();
-    match action {
-        Shortcuts::OpenSettings => meta_ctrl(kd) && code == Code::Comma,
-        Shortcuts::ToggleNoteBrowser => meta_ctrl(kd) && code == Code::Slash,
-        Shortcuts::SearchNotes => meta_ctrl(kd) && code == Code::KeyK,
-        Shortcuts::OpenNote => meta_ctrl(kd) && code == Code::KeyO,
-        Shortcuts::NewJournal => meta_ctrl(kd) && code == Code::KeyJ,
+    if meta_ctrl(kd) {
+        match code {
+            Code::Comma => Shortcuts::OpenSettings,
+            Code::Slash => Shortcuts::ToggleNoteBrowser,
+            Code::KeyK => Shortcuts::SearchNotes,
+            Code::KeyO => Shortcuts::OpenNote,
+            Code::KeyJ => Shortcuts::NewJournal,
+            _ => Shortcuts::None,
+        }
+    } else {
+        Shortcuts::None
     }
 }

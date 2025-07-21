@@ -53,6 +53,17 @@ impl NoteSelectEntry {
         }
     }
 
+    pub fn is_up_dir(&self) -> bool {
+        match self {
+            NoteSelectEntry::Directory {
+                path: _,
+                name,
+                browse_path_signal: _,
+            } => name.eq(".."),
+            _ => false,
+        }
+    }
+
     pub fn from_note_journal(path: VaultPath, content: NoteContentData, date: NaiveDate) -> Self {
         let path_str = format!("{} {}", content.title, path.get_name());
         let title = if content.title.trim().is_empty() {

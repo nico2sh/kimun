@@ -254,27 +254,81 @@ pub fn NoteBrowser(
             },
             if let Some(entries) = sorted_entries.value().read().clone() {
                 for (index , entry) in entries.into_iter().enumerate() {
-                    div {
-                        class: if *selected.read() == Some(index) { "note-item selected" } else { if entry.get_path().eq(&*note_path.read()) {
-                            "note-item active"
-                        } else {
-                            "note-item"
-                        } },
-                        id: "element-{index}",
-                        onmounted: move |e| {
-                            row_mounts.write().insert(index, e.data());
-                        },
-                        onmouseenter: move |_e| {
-                            if *select_by_mouse.read() {
-                                selected.set(Some(index));
+                    {
+                        let slct = *selected.read() == Some(index);
+                        rsx! {
+                            div {
+                                class: if slct { "note-item selected" } else { if entry.get_path().eq(&*note_path.read()) {
+                                    "note-item active"
+                                } else {
+                                    "note-item"
+                                } },
+                                id: "element-{index}",
+                                onmounted: move |e| {
+                                    row_mounts.write().insert(index, e.data());
+                                },
+                                onmouseenter: move |_e| {
+                                    if *select_by_mouse.read() {
+                                        selected.set(Some(index));
+                                    }
+                                },
+                                div {
+                                    class: "note-item-content",
+                                    onclick: move |e| {
+                                        info!("Clicked element");
+                                        e.stop_propagation();
+                                        let _ = entry.on_select()();
+                                    },
+                                    {entry.get_view()}
+                                }
+                                if !entry.is_up_dir() && slct {
+                                    div { class: "note-actions",
+                                        button {
+                                            class: "action-btn rename",
+                                            title: "Rename",
+                                            onclick: move |_| {},
+                                            svg {
+                                                width: 12,
+                                                height: 12,
+                                                view_box: "0 0 24 24",
+                                                fill: "none",
+                                                stroke: "currentColor",
+                                                stroke_width: 2,
+                                                path { d: "M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" }
+                                            }
+                                        }
+                                        button {
+                                            class: "action-btn move",
+                                            title: "Move",
+                                            onclick: move |_| {},
+                                            svg {
+                                                width: 12,
+                                                height: 12,
+                                                view_box: "0 0 24 24",
+                                                fill: "none",
+                                                stroke: "currentColor",
+                                                stroke_width: 2,
+                                                path { d: "M21 9l-9-9-9 9h4v11h10V9h4z" }
+                                            }
+                                        }
+                                        button {
+                                            class: "action-btn delete",
+                                            title: "Delete",
+                                            onclick: move |_| {},
+                                            svg {
+                                                width: 12,
+                                                height: 12,
+                                                view_box: "0 0 24 24",
+                                                fill: "none",
+                                                stroke: "currentColor",
+                                                stroke_width: 2,
+                                                path { d: "M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                        },
-                        onclick: move |e| {
-                            info!("Clicked element");
-                            e.stop_propagation();
-                            let _ = entry.on_select()();
-                        },
-                        {entry.get_view()}
+                        }
                     }
                 }
             } else {
