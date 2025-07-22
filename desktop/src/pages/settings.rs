@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
-    components::modal::{indexer::IndexType, Modal},
+    components::modal::{indexer::IndexType, ModalManager},
     route::Route,
     settings,
 };
@@ -12,11 +12,11 @@ use crate::{
 #[component]
 pub fn Settings() -> Element {
     let mut settings: Signal<settings::AppSettings> = use_context();
-    let mut modal = use_signal(Modal::new);
+    let mut modal = use_signal(ModalManager::new);
 
     rsx! {
         div { class: "settings-container",
-            {Modal::get_element(modal)}
+            {ModalManager::get_element(modal)}
             div { class: "settings-header",
                 h1 { "Settings" }
                 p { "Customize app settings" }
@@ -83,7 +83,7 @@ pub fn Settings() -> Element {
                             "Performs a full index of the notes located in the directory, can take longer time depending on the number of notes"
                         }
                     }
-                
+
                 }
 
                 div { class: "settings-section",

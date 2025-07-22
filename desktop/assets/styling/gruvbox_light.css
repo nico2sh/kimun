@@ -4,6 +4,10 @@
     /* Gruvbox blue */
     --accent-blue-dark: #076678;
     /* Dark blue */
+    --accent-red: #cc241d;
+    /* Light red */
+    --accent-red-dark: #9d0006;
+    /* Standard red */
     --accent-yellow: #d79921;
     /* Light yellow */
     --accent-yellow-dark: #b57614;

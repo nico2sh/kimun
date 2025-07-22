@@ -10,7 +10,7 @@ use dioxus::{
 
 use crate::{components::note_select_entry::RowItem, utils::sparse_vector::SparseVector};
 
-use super::Modal;
+use super::ModalManager;
 
 trait SelectorFunctions<R>: Clone
 where
@@ -45,14 +45,14 @@ where
 {
     filter_text: Signal<String>,
     load_state: Signal<LoadState<R>>,
-    modal: SyncSignal<Modal>,
+    modal: SyncSignal<ModalManager>,
 }
 
 #[allow(non_snake_case)]
 fn SelectorView<R, F>(
     hint: String,
     filter_text: String,
-    mut modal: Signal<Modal>,
+    mut modal: Signal<ModalManager>,
     functions: F,
 ) -> Element
 where

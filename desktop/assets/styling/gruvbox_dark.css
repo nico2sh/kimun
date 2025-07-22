@@ -4,6 +4,10 @@
     /* Light blue */
     --accent-blue-dark: #458588;
     /* Standard blue */
+    --accent-red: #fb4934;
+    /* Light red */
+    --accent-red-dark: #cc241d;
+    /* Standard red */
     --accent-yellow: #fabd2f;
     /* Light yellow */
     --accent-yellow-dark: #d79921;

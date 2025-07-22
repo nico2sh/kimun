@@ -12,11 +12,11 @@ use kimun_core::{
 
 use crate::components::modal::selector::PreviewData;
 
-use super::{Modal, RowItem, SelectorFunctions, SelectorView};
+use super::{ModalManager, RowItem, SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SearchProps {
-    modal: Signal<Modal>,
+    modal: Signal<ModalManager>,
     vault: Arc<NoteVault>,
     filter_text: String,
 }
