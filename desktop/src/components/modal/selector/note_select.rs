@@ -12,11 +12,11 @@ use crate::components::{
     note_select_entry::{NoteSelectEntry, SortCriteria},
 };
 
-use super::{Modal, SelectorFunctions, SelectorView};
+use super::{ModalManager, SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SelectorProps {
-    modal: Signal<Modal>,
+    modal: Signal<ModalManager>,
     vault: Arc<NoteVault>,
     filter_text: String,
     note_path: VaultPath,

@@ -322,6 +322,7 @@ progress {
 }
 
 /* Modals */
+/* Modal Overlay */
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -333,6 +334,100 @@ progress {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+}
+
+/* General Modal */
+.modal {
+  background: var(--bg-main);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 10px 40px var(--shadow-primary);
+  transform: scale(0.95);
+  transition: transform 0.3s ease;
+}
+
+.modal-header {
+  margin-bottom: 16px;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.modal-subtitle {
+  font-size: 14px;
+  color: var(--text-light);
+}
+
+.modal-body {
+  margin-bottom: 20px;
+}
+
+.modal-input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--bg-section);
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.modal-input:focus {
+  border-color: var(--border-focus);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.modal-btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 80px;
+}
+
+.modal-btn.primary {
+  background: var(--accent-blue);
+  color: var(--text-contrast);
+}
+
+.modal-btn.primary:hover {
+  background: var(--accent-blue-dark);
+}
+
+.modal-btn.danger {
+  background: var(--accent-red);
+  color: white;
+}
+
+.modal-btn.danger:hover {
+  background: var(--accent-red-dark);
+}
+
+.modal-btn.secondary {
+  background: var(--bg-section);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+}
+
+.modal-btn.secondary:hover {
+  background: var(--bg-hover);
 }
 
 /* Index Modal */
@@ -352,20 +447,6 @@ progress {
 .index-progress {
   margin-top: 8px;
   width: 100%;
-}
-
-/* Modal Overlay */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
 }
 
 /* Notes Browser Modal */
@@ -498,9 +579,9 @@ progress {
 }
 
 .action-btn.delete:hover {
-  background: #cc241d;
+  background: var(--accent-red);
   color: white;
-  border-color: #cc241d;
+  border-color: var(--accent-red);
 }
 
 .action-btn.rename:hover {
@@ -616,7 +697,16 @@ progress {
 }
 
 /* Responsive Design */
-@media (max-width: 800px) {
+@media (max-width: 768px) {
+  .sidebar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    z-index: 200;
+    width: 280px;
+  }
+
   .notes-modal {
     grid-template-columns: 1fr;
     grid-template-areas:
@@ -631,47 +721,6 @@ progress {
   }
 }
 
-/* Lists */
-/* .list {
-  flex: 1;
-  padding: 6px;
-  overflow-y: auto;
-  scroll-behavior: smooth;
-  overflow-x: hidden;
-}
-
-.list>.element:hover {
-  cursor: pointer;
-}
-
-.list>.element:hover {
-  background-color: var(--bg-hover);
-}
-
-.list>.element.selected {
-  background-color: var(--bg-hover);
-}
-
-.list>.element {
-  display: flex;
-  text-wrap-mode: nowrap;
-  flex-direction: column;
-}
-
-.list>.element>.title {
-  font-weight: bold;
-  font-size: medium;
-  text-wrap-mode: nowrap;
-  overflow-x: hidden;
-}
-
-.list>.element>.note_create {
-  padding: 0.2em 0.2em 0.4em 0.2em;
-  text-wrap-mode: wrap;
-  margin-bottom: 0.1em;
-  border-bottom: 1px solid;
-} */
-
 .emphasized {
   font-style: italic;
 }
@@ -679,26 +728,6 @@ progress {
 .strong {
   font-weight: bold;
 }
-
-/* .list>.element>.separator {
-  margin: 0.5em 0.2em;
-  border-bottom: 1px solid;
-}
-
-.list>.element>.separator:hover {
-  background-color: transparent;
-}
-
-.list>.element>.separator.selected {
-  background-color: transparent;
-}
-
-.list>.element>.details {
-  font-size: small;
-  font-style: italic;
-  overflow-x: hidden;
-  padding-left: 1em;
-} */
 
 /* Settings */
 .settings-container {

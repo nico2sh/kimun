@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use dioxus::prelude::*;
+use dioxus::{html::div, prelude::*};
 use indexer::Indexer;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use selector::{note_search::NoteSearch, note_select::NoteSelector};
 
-use crate::components::modal::indexer::IndexType;
+use crate::components::modal::{confirmations::DeleteConfirm, indexer::IndexType};
 
+mod confirmations;
 pub mod indexer;
 mod selector;
 
@@ -24,14 +25,18 @@ enum ModalType {
         vault: Arc<NoteVault>,
         index_type: IndexType,
     },
+    DeleteNote {
+        vault: Arc<NoteVault>,
+        path: VaultPath,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Modal {
+pub struct ModalManager {
     modal_type: ModalType,
 }
 
-impl Modal {
+impl ModalManager {
     pub fn new() -> Self {
         Self {
             modal_type: ModalType::None,
@@ -86,6 +91,57 @@ impl Modal {
                     }
                 }
             },
+            ModalType::DeleteNote { vault, path } => {
+                rsx! {
+                    div { class: "modal-overlay",
+                        DeleteConfirm {
+                            modal,
+                            vault: vault.clone(),
+                            path: path.clone(),
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+// General Modal
+#[component]
+fn BasicModal(title: String, subtitle: String, body: Element, actions: Element) -> Element {
+    rsx! {
+        div { class: "modal",
+            div { class: "modal-header",
+                div { class: "modal-title", {title} }
+                div { class: "modal-subtitle", {subtitle} }
+            }
+            div { class: "modal-body", {body} }
+            div { class: "modal-actions", {actions} }
+        }
+    }
+}
+
+#[component]
+fn ModalButton(text: String, button_type: ButtonType, onclick: fn(Event<MouseData>)) -> Element {
+    rsx! {
+        button { class: "{button_type.get_class()}", onclick, "{text}" }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ButtonType {
+    Primary,
+    Secondary,
+    Danger,
+}
+
+impl ButtonType {
+    fn get_class(&self) -> String {
+        match self {
+            ButtonType::Primary => "modal-btn-primary",
+            ButtonType::Secondary => "modal-btn-secondary",
+            ButtonType::Danger => "modal-btn-danger",
+        }
+        .to_string()
     }
 }

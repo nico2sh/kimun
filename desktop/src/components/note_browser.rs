@@ -9,7 +9,10 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
 use crate::{
-    components::note_select_entry::{NoteSelectEntry, RowItem, SortCriteria},
+    components::{
+        modal::ModalManager,
+        note_select_entry::{NoteSelectEntry, RowItem, SortCriteria},
+    },
     utils::sparse_vector::SparseVector,
 };
 
@@ -42,6 +45,7 @@ impl Default for Sort {
 pub fn NoteBrowser(
     vault: Arc<NoteVault>,
     note_path: ReadOnlySignal<VaultPath>,
+    modal_manager: Signal<ModalManager>,
     show_browser: Signal<bool>,
 ) -> Element {
     let browsing_directory = use_signal_sync(move || {

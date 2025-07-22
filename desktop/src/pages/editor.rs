@@ -12,7 +12,7 @@ use kimun_core::{
 
 use crate::{
     components::{
-        modal::{indexer::IndexType, Modal},
+        modal::{indexer::IndexType, ModalManager},
         note_browser::NoteBrowser,
         text_editor::{EditorHeader, TextEditor},
     },
@@ -201,18 +201,18 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
     // This is for the autofocus
     let editor_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     // Modal setup and Indexing on the first run
-    let mut modal = use_signal(Modal::new);
+    let mut modal_manager = use_signal(ModalManager::new);
     let index_vault = vault.clone();
     use_effect(move || {
         if settings.read().needs_indexing() {
             debug!("triggering indexer");
-            modal
+            modal_manager
                 .write()
                 .set_indexer(index_vault.clone(), IndexType::Validate);
         }
     });
 
-    if !modal.read().is_open() {
+    if !modal_manager.read().is_open() {
         spawn(async move {
             loop {
                 if let Some(e) = editor_signal.with(|f| f.clone()) {
@@ -231,7 +231,12 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
     rsx! {
         if *show_browser.read() {
             div { class: "sidebar",
-                NoteBrowser { vault: vault.clone(), note_path, show_browser }
+                NoteBrowser {
+                    vault: vault.clone(),
+                    note_path,
+                    modal_manager,
+                    show_browser,
+                }
             }
         } else {
             div { class: "sidebar collapsed" }
@@ -255,11 +260,13 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                         }
                         Shortcuts::SearchNotes => {
                             debug!("Trigger Open Note Search");
-                            modal.write().set_note_search(vault.clone());
+                            modal_manager.write().set_note_search(vault.clone());
                         }
                         Shortcuts::OpenNote => {
                             debug!("Trigger Open Note Select");
-                            modal.write().set_note_select(vault.clone(), note_path.read().clone());
+                            modal_manager
+                                .write()
+                                .set_note_select(vault.clone(), note_path.read().clone());
                         }
                         Shortcuts::NewJournal => {
                             debug!("New Journal Entry");
@@ -275,12 +282,12 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                 },
                 // We close any modal if we click on the main UI
                 onclick: move |_e| {
-                    if modal.read().is_open() {
-                        modal.write().close();
+                    if modal_manager.read().is_open() {
+                        modal_manager.write().close();
                         info!("Close dialog");
                     }
                 },
-                {Modal::get_element(modal)}
+                {ModalManager::get_element(modal_manager)}
                 EditorHeader { note_path_display, show_browser, is_dirty }
                 div { class: "editor-main",
                     TextEditor { content, editor_signal, cr }
