@@ -5,6 +5,12 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::components::modal::ModalManager;
 
+pub enum ConfirmationType {
+    Delete(VaultPath),
+    Move(VaultPath, VaultPath),
+    Rename(VaultPath, String),
+}
+
 // General Modal
 #[component]
 fn BasicModal(title: String, subtitle: String, body: Element, actions: Element) -> Element {
@@ -46,7 +52,7 @@ pub fn DeleteConfirm(
                     onclick: move |_| {
                         modal.write().close();
                     },
-                    "Cancel"
+                    "Delete"
                 }
             }
         }

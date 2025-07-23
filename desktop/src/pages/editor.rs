@@ -78,7 +78,7 @@ pub fn Editor(note_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
 
     let vault_path = settings_value.workspace_dir.as_ref().unwrap();
     let vault = NoteVault::new(vault_path).unwrap();
-    debug!("Opening note '{}'", note_path);
+    debug!("Opening editor at '{}'", note_path);
 
     let mut is_dirty = use_signal(|| false);
     let mut show_browser = use_signal(|| false);
