@@ -27,4 +27,4 @@ script = []
 [bundle]
 publisher = "Nico2sh"
 identifier = "com.nico2sh"
-icon = ["assets/icons/kimun.icns", "assets/icons/kimun.ico"]
+icon = ["icons/kimun.icns", "icons/icon.ico"]

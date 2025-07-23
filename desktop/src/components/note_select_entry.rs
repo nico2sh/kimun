@@ -213,7 +213,7 @@ impl RowItem for NoteSelectEntry {
                 let path = path.to_owned();
                 Box::new(move || {
                     navigator().replace(crate::Route::Editor {
-                        note_path: path.clone(),
+                        editor_path: path.clone(),
                         create: false,
                     });
                     true
@@ -228,7 +228,7 @@ impl RowItem for NoteSelectEntry {
                 let path = path.to_owned();
                 Box::new(move || {
                     navigator().replace(crate::Route::Editor {
-                        note_path: path.clone(),
+                        editor_path: path.clone(),
                         create: false,
                     });
                     true
@@ -254,7 +254,7 @@ impl RowItem for NoteSelectEntry {
                 let path = new_note_path.to_owned();
                 Box::new(move || {
                     navigator().replace(crate::Route::Editor {
-                        note_path: path.clone(),
+                        editor_path: path.clone(),
                         create: true,
                     });
                     true
