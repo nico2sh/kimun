@@ -5,9 +5,12 @@ use indexer::Indexer;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use selector::{note_search::NoteSearch, note_select::NoteSelector};
 
-use crate::components::modal::{confirmations::DeleteConfirm, indexer::IndexType};
+use crate::components::modal::{
+    confirmations::{ConfirmationType, DeleteConfirm},
+    indexer::IndexType,
+};
 
-mod confirmations;
+pub mod confirmations;
 pub mod indexer;
 mod selector;
 
@@ -60,6 +63,19 @@ impl ModalManager {
     pub fn set_indexer(&mut self, vault: Arc<NoteVault>, index_type: IndexType) {
         self.modal_type = ModalType::Index { vault, index_type };
     }
+    pub fn set_confirm(&mut self, vault: Arc<NoteVault>, confirmation: ConfirmationType) {
+        match confirmation {
+            ConfirmationType::Delete(vault_path) => {
+                self.modal_type = ModalType::DeleteNote {
+                    vault,
+                    path: vault_path,
+                }
+            }
+            ConfirmationType::Move(vault_path, vault_path1) => todo!(),
+            ConfirmationType::Rename(vault_path, _) => todo!(),
+        }
+    }
+
     pub fn get_element(modal: Signal<Self>) -> Element {
         match &modal.read().modal_type {
             ModalType::None => rsx! {},

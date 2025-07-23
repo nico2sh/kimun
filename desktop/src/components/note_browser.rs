@@ -10,7 +10,7 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilde
 
 use crate::{
     components::{
-        modal::ModalManager,
+        modal::{confirmations::ConfirmationType, ModalManager},
         note_select_entry::{NoteSelectEntry, RowItem, SortCriteria},
     },
     utils::sparse_vector::SparseVector,
@@ -68,8 +68,9 @@ pub fn NoteBrowser(
 
     // Since this is a resource that depends on the current_path
     // the entries change every time the current_path is changed
+    let vault_fetch = vault.clone();
     let all_entries = use_resource(move || {
-        let vault = vault.clone();
+        let vault = vault_fetch.clone();
         async move {
             info!("Load all entries");
             let mut entries = vec![];
@@ -259,14 +260,13 @@ pub fn NoteBrowser(
             if let Some(entries) = sorted_entries.value().read().clone() {
                 for (index , entry) in entries.into_iter().enumerate() {
                     {
+                        let entry_path = entry.get_path().to_owned();
                         let slct = *selected.read() == Some(index);
+                        let active = entry_path.eq(&*note_path.read());
+                        let vault = vault.clone();
                         rsx! {
                             div {
-                                class: if slct { "note-item selected" } else { if entry.get_path().eq(&*note_path.read()) {
-                                    "note-item active"
-                                } else {
-                                    "note-item"
-                                } },
+                                class: if slct { "note-item selected" } else { if active { "note-item active" } else { "note-item" } },
                                 id: "element-{index}",
                                 onmounted: move |e| {
                                     row_mounts.write().insert(index, e.data());
@@ -318,7 +318,11 @@ pub fn NoteBrowser(
                                         button {
                                             class: "action-btn delete",
                                             title: "Delete",
-                                            onclick: move |_| {},
+                                            onclick: move |_| {
+                                                modal_manager
+                                                    .write()
+                                                    .set_confirm(vault.clone(), ConfirmationType::Delete(entry_path.to_owned()));
+                                            },
                                             svg {
                                                 width: 12,
                                                 height: 12,
