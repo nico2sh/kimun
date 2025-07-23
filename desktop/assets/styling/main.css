@@ -112,6 +112,7 @@ progress {
   border-radius: 4px;
   background: var(--bg-section);
   -webkit-appearance: none;
+  appearance: none;
   color: var(--text-primary);
   font-size: 12px;
   outline: none;
