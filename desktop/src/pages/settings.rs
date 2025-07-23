@@ -83,7 +83,6 @@ pub fn Settings() -> Element {
                             "Performs a full index of the notes located in the directory, can take longer time depending on the number of notes"
                         }
                     }
-
                 }
 
                 div { class: "settings-section",
@@ -126,14 +125,14 @@ pub fn Settings() -> Element {
                             match settings.read().save_to_disk() {
                                 Ok(_) => {
                                     if let Some(_p) = path {
-                                        let note_path = settings
+                                        let editor_path = settings
                                             .read()
                                             .last_paths
                                             .last()
                                             .map_or_else(|| VaultPath::root(), |p| p.to_owned());
                                         navigator()
                                             .replace(Route::Editor {
-                                                note_path,
+                                                editor_path,
                                                 create: false,
                                             });
                                     }

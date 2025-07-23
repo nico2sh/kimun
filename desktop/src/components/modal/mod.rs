@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use dioxus::{html::div, prelude::*};
+use dioxus::{html::div, logger::tracing::debug, prelude::*};
 use indexer::Indexer;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use selector::{note_search::NoteSearch, note_select::NoteSelector};
@@ -49,6 +49,7 @@ impl ModalManager {
         !matches!(self.modal_type, ModalType::None)
     }
     pub fn close(&mut self) {
+        debug!("[Modal] Closing Modal");
         self.modal_type = ModalType::None;
     }
     pub fn set_note_select(&mut self, vault: Arc<NoteVault>, note_path: VaultPath) {
@@ -61,6 +62,7 @@ impl ModalManager {
         self.modal_type = ModalType::NoteSearch { vault };
     }
     pub fn set_indexer(&mut self, vault: Arc<NoteVault>, index_type: IndexType) {
+        debug!("[Modal] Set Modal Indexer");
         self.modal_type = ModalType::Index { vault, index_type };
     }
     pub fn set_confirm(&mut self, vault: Arc<NoteVault>, confirmation: ConfirmationType) {

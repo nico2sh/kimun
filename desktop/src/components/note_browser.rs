@@ -1,6 +1,5 @@
 use std::{rc::Rc, sync::Arc};
 
-use chrono::Datelike;
 use dioxus::{
     hooks::use_signal,
     logger::tracing::{debug, info},
@@ -44,12 +43,12 @@ impl Default for Sort {
 #[component]
 pub fn NoteBrowser(
     vault: Arc<NoteVault>,
-    note_path: ReadOnlySignal<VaultPath>,
+    editor_path: ReadOnlySignal<VaultPath>,
     modal_manager: Signal<ModalManager>,
     show_browser: Signal<bool>,
 ) -> Element {
     let browsing_directory = use_signal_sync(move || {
-        let np = note_path.read();
+        let np = editor_path.read();
         if np.is_note() {
             np.get_parent_path().0
         } else {
@@ -262,7 +261,7 @@ pub fn NoteBrowser(
                     {
                         let entry_path = entry.get_path().to_owned();
                         let slct = *selected.read() == Some(index);
-                        let active = entry_path.eq(&*note_path.read());
+                        let active = entry_path.eq(&*editor_path.read());
                         let vault = vault.clone();
                         rsx! {
                             div {

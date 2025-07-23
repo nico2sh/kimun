@@ -111,7 +111,7 @@ impl RowItem for NoteSearchEntry {
         let path = self.note_path.to_owned();
         Box::new(move || {
             navigator().replace(crate::Route::Editor {
-                note_path: path.clone(),
+                editor_path: path.clone(),
                 create: false,
             });
             true
