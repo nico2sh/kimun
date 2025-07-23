@@ -6,7 +6,7 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 use selector::{note_search::NoteSearch, note_select::NoteSelector};
 
 use crate::components::modal::{
-    confirmations::{ConfirmationType, DeleteConfirm},
+    confirmations::{ConfirmationType, DeleteConfirm, MoveConfirm, RenameConfirm},
     indexer::IndexType,
 };
 
@@ -31,6 +31,16 @@ enum ModalType {
     DeleteNote {
         vault: Arc<NoteVault>,
         path: VaultPath,
+    },
+    MoveNote {
+        vault: Arc<NoteVault>,
+        from_path: VaultPath,
+        to_path: VaultPath,
+    },
+    RenameNote {
+        vault: Arc<NoteVault>,
+        path: VaultPath,
+        new_name: String,
     },
 }
 
@@ -73,8 +83,20 @@ impl ModalManager {
                     path: vault_path,
                 }
             }
-            ConfirmationType::Move(vault_path, vault_path1) => todo!(),
-            ConfirmationType::Rename(vault_path, _) => todo!(),
+            ConfirmationType::Move(from_path, to_path) => {
+                self.modal_type = ModalType::MoveNote {
+                    vault,
+                    from_path,
+                    to_path,
+                }
+            }
+            ConfirmationType::Rename(path, new_name) => {
+                self.modal_type = ModalType::RenameNote {
+                    vault,
+                    path,
+                    new_name,
+                }
+            }
         }
     }
 
@@ -120,6 +142,36 @@ impl ModalManager {
                     }
                 }
             }
+            ModalType::MoveNote {
+                vault,
+                from_path,
+                to_path,
+            } => {
+                rsx! {
+                    div { class: "modal-overlay",
+                        MoveConfirm {
+                            modal,
+                            vault: vault.clone(),
+                            from_path: from_path.clone(),
+                            to_path: to_path.clone(),
+                        }
+                    }
+                }
+            }
+            ModalType::RenameNote {
+                vault,
+                path,
+                new_name,
+            } => rsx! {
+                div { class: "modal-overlay",
+                    RenameConfirm {
+                        modal,
+                        vault: vault.clone(),
+                        path: path.clone(),
+                        new_name: new_name.clone(),
+                    }
+                }
+            },
         }
     }
 }

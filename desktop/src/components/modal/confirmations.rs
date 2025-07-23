@@ -58,3 +58,74 @@ pub fn DeleteConfirm(
         }
     }
 }
+
+#[component]
+pub fn MoveConfirm(
+    modal: Signal<ModalManager>,
+    vault: Arc<NoteVault>,
+    from_path: VaultPath,
+    to_path: VaultPath,
+) -> Element {
+    let dest_path = use_signal(|| to_path);
+    rsx! {
+        div { class: "modal",
+            div { class: "modal-header",
+                div { class: "modal-title", "Move Note" }
+                div { class: "modal-subtitle", "Moving: \"{from_path}\"?" }
+            }
+            div { class: "modal-body", "<List of paths>" }
+            div { class: "modal-actions",
+                button {
+                    class: "modal-btn secondary",
+                    onclick: move |_| {
+                        modal.write().close();
+                    },
+                    "Cancel"
+                }
+                button {
+                    class: "modal-btn primary",
+                    onclick: move |_| {
+                        modal.write().close();
+                    },
+                    "Move"
+                }
+            }
+        }
+    }
+}
+
+#[component]
+pub fn RenameConfirm(
+    modal: Signal<ModalManager>,
+    vault: Arc<NoteVault>,
+    path: VaultPath,
+    new_name: String,
+) -> Element {
+    let new_name = use_signal(|| new_name);
+    let current_name = path.get_name();
+    rsx! {
+        div { class: "modal",
+            div { class: "modal-header",
+                div { class: "modal-title", "Move Note" }
+                div { class: "modal-subtitle", "Current name: \"{current_name}\"?" }
+            }
+            div { class: "modal-body", "<List of paths>" }
+            div { class: "modal-actions",
+                button {
+                    class: "modal-btn secondary",
+                    onclick: move |_| {
+                        modal.write().close();
+                    },
+                    "Cancel"
+                }
+                button {
+                    class: "modal-btn primary",
+                    onclick: move |_| {
+                        modal.write().close();
+                    },
+                    "Move"
+                }
+            }
+        }
+    }
+}
