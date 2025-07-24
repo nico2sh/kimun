@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use dioxus::{html::div, logger::tracing::debug, prelude::*};
+use dioxus::{logger::tracing::debug, prelude::*};
 use indexer::Indexer;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use selector::{note_search::NoteSearch, note_select::NoteSelector};
 
 use crate::components::modal::{
-    confirmations::{ConfirmationType, DeleteConfirm, MoveConfirm, RenameConfirm},
+    confirmations::{ConfirmationType, DeleteConfirm, Error, MoveConfirm, RenameConfirm},
     indexer::IndexType,
 };
 
@@ -17,6 +17,10 @@ mod selector;
 #[derive(Clone, Debug, PartialEq)]
 enum ModalType {
     None,
+    Error {
+        message: String,
+        error: String,
+    },
     NoteSelector {
         vault: Arc<NoteVault>,
         from_path: VaultPath,
@@ -60,6 +64,9 @@ impl ModalManager {
         debug!("[Modal] Closing Modal");
         self.modal_type = ModalType::None;
     }
+    pub fn set_error(&mut self, message: String, error: String) {
+        self.modal_type = ModalType::Error { message, error };
+    }
     pub fn set_note_select(&mut self, vault: Arc<NoteVault>, note_path: VaultPath) {
         self.modal_type = ModalType::NoteSelector {
             vault,
@@ -93,6 +100,11 @@ impl ModalManager {
     pub fn get_element(modal: Signal<Self>) -> Element {
         match &modal.read().modal_type {
             ModalType::None => rsx! {},
+            ModalType::Error { message, error } => rsx! {
+                div { class: "modal-overlay",
+                    Error { modal, message, error }
+                }
+            },
             ModalType::NoteSelector { vault, from_path } => rsx! {
                 div { class: "modal-overlay",
                     NoteSelector {
@@ -149,45 +161,5 @@ impl ModalManager {
                 }
             },
         }
-    }
-}
-
-// General Modal
-#[component]
-fn BasicModal(title: String, subtitle: String, body: Element, actions: Element) -> Element {
-    rsx! {
-        div { class: "modal",
-            div { class: "modal-header",
-                div { class: "modal-title", {title} }
-                div { class: "modal-subtitle", {subtitle} }
-            }
-            div { class: "modal-body", {body} }
-            div { class: "modal-actions", {actions} }
-        }
-    }
-}
-
-#[component]
-fn ModalButton(text: String, button_type: ButtonType, onclick: fn(Event<MouseData>)) -> Element {
-    rsx! {
-        button { class: "{button_type.get_class()}", onclick, "{text}" }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-enum ButtonType {
-    Primary,
-    Secondary,
-    Danger,
-}
-
-impl ButtonType {
-    fn get_class(&self) -> String {
-        match self {
-            ButtonType::Primary => "modal-btn-primary",
-            ButtonType::Secondary => "modal-btn-secondary",
-            ButtonType::Danger => "modal-btn-danger",
-        }
-        .to_string()
     }
 }

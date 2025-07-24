@@ -540,6 +540,10 @@ fn delete_note(tx: &Transaction, path: &VaultPath) -> Result<(), DBError> {
         "DELETE FROM notesContent WHERE path = ?1",
         params![path.to_string()],
     )?;
+    tx.execute(
+        "DELETE FROM links WHERE source = ?1",
+        params![path.to_string()],
+    )?;
 
     Ok(())
 }
@@ -557,9 +561,11 @@ fn delete_directory(tx: &Transaction, directory_path: &VaultPath) -> Result<(), 
     let path_string = directory_path.to_string();
     let sql1 = "DELETE FROM notes WHERE path LIKE (?1 || '%')";
     let sql2 = "DELETE FROM notesContent WHERE path LIKE (?1 || '%')";
+    let sql3 = "DELETE FROM links WHERE source = LIKE (?1 || '%')";
 
     tx.execute(sql1, params![path_string])?;
     tx.execute(sql2, params![path_string])?;
+    tx.execute(sql3, params![path_string])?;
 
     Ok(())
 }

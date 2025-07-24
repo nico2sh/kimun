@@ -49,11 +49,32 @@ pub fn ConfirmationModal(props: ConfirmationModalProps) -> Element {
 }
 
 #[component]
+pub fn Error(modal: Signal<ModalManager>, message: String, error: String) -> Element {
+    rsx! {
+        ConfirmationModal {
+            modal,
+            title: "Error",
+            subtitle: "{message}",
+            body: rsx! { "error" },
+            buttons: vec![
+                ButtonBuilder::secondary(
+                    "Ok",
+                    Callback::new(move |_e| {
+                        modal.write().close();
+                    }),
+                ),
+            ],
+        }
+    }
+}
+
+#[component]
 pub fn DeleteConfirm(
     modal: Signal<ModalManager>,
     vault: Arc<NoteVault>,
     path: VaultPath,
 ) -> Element {
+    let delete_path = path.clone();
     let buttons = vec![
         ButtonBuilder::secondary(
             "Cancel",
@@ -63,8 +84,12 @@ pub fn DeleteConfirm(
         ),
         ButtonBuilder::danger(
             "Delete",
-            Callback::new(move |_e| {
-                modal.write().close();
+            Callback::new(move |_e| match vault.delete_note(&delete_path) {
+                Ok(_) => modal.write().close(),
+                Err(e) => modal.write().set_error(
+                    "There has been an error deleting the note".to_string(),
+                    e.to_string(),
+                ),
             }),
         ),
     ];
