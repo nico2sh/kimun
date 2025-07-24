@@ -35,12 +35,10 @@ enum ModalType {
     MoveNote {
         vault: Arc<NoteVault>,
         from_path: VaultPath,
-        to_path: VaultPath,
     },
     RenameNote {
         vault: Arc<NoteVault>,
         path: VaultPath,
-        new_name: String,
     },
 }
 
@@ -83,19 +81,11 @@ impl ModalManager {
                     path: vault_path,
                 }
             }
-            ConfirmationType::Move(from_path, to_path) => {
-                self.modal_type = ModalType::MoveNote {
-                    vault,
-                    from_path,
-                    to_path,
-                }
+            ConfirmationType::Move(from_path) => {
+                self.modal_type = ModalType::MoveNote { vault, from_path }
             }
-            ConfirmationType::Rename(path, new_name) => {
-                self.modal_type = ModalType::RenameNote {
-                    vault,
-                    path,
-                    new_name,
-                }
+            ConfirmationType::Rename(path) => {
+                self.modal_type = ModalType::RenameNote { vault, path }
             }
         }
     }
@@ -142,34 +132,20 @@ impl ModalManager {
                     }
                 }
             }
-            ModalType::MoveNote {
-                vault,
-                from_path,
-                to_path,
-            } => {
+            ModalType::MoveNote { vault, from_path } => {
                 rsx! {
                     div { class: "modal-overlay",
                         MoveConfirm {
                             modal,
                             vault: vault.clone(),
                             from_path: from_path.clone(),
-                            to_path: to_path.clone(),
                         }
                     }
                 }
             }
-            ModalType::RenameNote {
-                vault,
-                path,
-                new_name,
-            } => rsx! {
+            ModalType::RenameNote { vault, path } => rsx! {
                 div { class: "modal-overlay",
-                    RenameConfirm {
-                        modal,
-                        vault: vault.clone(),
-                        path: path.clone(),
-                        new_name: new_name.clone(),
-                    }
+                    RenameConfirm { modal, vault: vault.clone(), path: path.clone() }
                 }
             },
         }

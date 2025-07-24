@@ -148,7 +148,7 @@ progress {
 }
 
 /* Sidebar Input */
-.search-input {
+.input {
   width: 100%;
   padding: 8px 12px;
   border: 1px solid var(--border-light);
@@ -160,11 +160,11 @@ progress {
   transition: border-color 0.2s ease;
 }
 
-.search-input:focus {
+.input:focus {
   border-color: var(--border-focus);
 }
 
-.search-input::placeholder {
+.input::placeholder {
   color: var(--text-light);
 }
 
@@ -396,7 +396,7 @@ progress {
   margin-bottom: 20px;
 }
 
-.modal-input {
+/* .modal-input {
   width: 100%;
   padding: 12px;
   border: 1px solid var(--border-light);
@@ -410,51 +410,12 @@ progress {
 
 .modal-input:focus {
   border-color: var(--border-focus);
-}
+} */
 
 .modal-actions {
   display: flex;
   gap: 12px;
   justify-content: flex-end;
-}
-
-.modal-btn {
-  padding: 10px 16px;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  min-width: 80px;
-}
-
-.modal-btn.primary {
-  background: var(--accent-blue);
-  color: var(--text-contrast);
-}
-
-.modal-btn.primary:hover {
-  background: var(--accent-blue-dark);
-}
-
-.modal-btn.danger {
-  background: var(--accent-red);
-  color: white;
-}
-
-.modal-btn.danger:hover {
-  background: var(--accent-red-dark);
-}
-
-.modal-btn.secondary {
-  background: var(--bg-section);
-  color: var(--text-primary);
-  border: 1px solid var(--border-light);
-}
-
-.modal-btn.secondary:hover {
-  background: var(--bg-hover);
 }
 
 /* Index Modal */
@@ -921,7 +882,7 @@ progress {
   z-index: 1000;
 }
 
-.btn {
+/* .btn {
   padding: 8px 12px;
   border: none;
   border-radius: 8px;
@@ -950,4 +911,47 @@ progress {
 .btn-secondary:hover {
   background: var(--accent-gray-dark);
   transform: translateY(-1px);
+} */
+
+.btn {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  min-width: 100px;
+}
+
+/* .btn:hover {
+  transform: translateY(-1px);
+} */
+
+.btn.primary {
+  background: var(--accent-blue);
+  color: var(--text-contrast);
+}
+
+.btn.primary:hover {
+  background: var(--accent-blue-dark);
+}
+
+.btn.danger {
+  background: var(--accent-red);
+  color: white;
+}
+
+.btn.danger:hover {
+  background: var(--accent-red-dark);
+}
+
+.btn.secondary {
+  background: var(--bg-section);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+}
+
+.btn.secondary:hover {
+  background: var(--bg-hover);
 }
