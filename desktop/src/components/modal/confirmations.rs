@@ -3,25 +3,47 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, NoteVault};
 
-use crate::components::modal::ModalManager;
+use crate::components::{button::ButtonBuilder, modal::ModalManager};
 
 pub enum ConfirmationType {
     Delete(VaultPath),
-    Move(VaultPath, VaultPath),
-    Rename(VaultPath, String),
+    Move(VaultPath),
+    Rename(VaultPath),
 }
 
-// General Modal
+#[derive(Props, Clone, PartialEq)]
+pub struct ConfirmationModalProps {
+    modal: Signal<ModalManager>,
+    title: String,
+    subtitle: String,
+    body: Element,
+    buttons: Vec<ButtonBuilder>,
+}
+
+// General Confirmation Modal
 #[component]
-fn BasicModal(title: String, subtitle: String, body: Element, actions: Element) -> Element {
+pub fn ConfirmationModal(props: ConfirmationModalProps) -> Element {
+    let mut modal = props.modal;
     rsx! {
-        div { class: "modal",
+        div {
+            class: "modal",
+            onclick: move |e| e.stop_propagation(),
+            onkeydown: move |e: Event<KeyboardData>| async move {
+                let key = e.data.code();
+                if key == Code::Escape {
+                    modal.write().close();
+                }
+            },
             div { class: "modal-header",
-                div { class: "modal-title", {title} }
-                div { class: "modal-subtitle", {subtitle} }
+                div { class: "modal-title", {props.title} }
+                div { class: "modal-subtitle", {props.subtitle} }
             }
-            div { class: "modal-body", {body} }
-            div { class: "modal-actions", {actions} }
+            div { class: "modal-body", {props.body} }
+            div { class: "modal-actions",
+                for button in props.buttons {
+                    {button.build()}
+                }
+            }
         }
     }
 }
@@ -32,29 +54,27 @@ pub fn DeleteConfirm(
     vault: Arc<NoteVault>,
     path: VaultPath,
 ) -> Element {
+    let buttons = vec![
+        ButtonBuilder::secondary(
+            "Cancel",
+            Callback::new(move |_e| {
+                modal.write().close();
+            }),
+        ),
+        ButtonBuilder::danger(
+            "Delete",
+            Callback::new(move |_e| {
+                modal.write().close();
+            }),
+        ),
+    ];
     rsx! {
-        div { class: "modal",
-            div { class: "modal-header",
-                div { class: "modal-title", "Delete Note" }
-                div { class: "modal-subtitle", "Are you sure you want to delete \"{path}\"?" }
-            }
-            div { class: "modal-body", "This action cannot be undone." }
-            div { class: "modal-actions",
-                button {
-                    class: "modal-btn secondary",
-                    onclick: move |_| {
-                        modal.write().close();
-                    },
-                    "Cancel"
-                }
-                button {
-                    class: "modal-btn danger",
-                    onclick: move |_| {
-                        modal.write().close();
-                    },
-                    "Delete"
-                }
-            }
+        ConfirmationModal {
+            modal,
+            title: "Delete Note",
+            subtitle: "Are you sure you want to delete \"{path}\"?",
+            body: rsx! { "This action cannot be undone." },
+            buttons,
         }
     }
 }
@@ -64,32 +84,30 @@ pub fn MoveConfirm(
     modal: Signal<ModalManager>,
     vault: Arc<NoteVault>,
     from_path: VaultPath,
-    to_path: VaultPath,
 ) -> Element {
+    let to_path = from_path.clone();
     let dest_path = use_signal(|| to_path);
+    let buttons = vec![
+        ButtonBuilder::secondary(
+            "Cancel",
+            Callback::new(move |_e| {
+                modal.write().close();
+            }),
+        ),
+        ButtonBuilder::primary(
+            "Move",
+            Callback::new(move |_e| {
+                modal.write().close();
+            }),
+        ),
+    ];
     rsx! {
-        div { class: "modal",
-            div { class: "modal-header",
-                div { class: "modal-title", "Move Note" }
-                div { class: "modal-subtitle", "Moving: \"{from_path}\"?" }
-            }
-            div { class: "modal-body", "<List of paths>" }
-            div { class: "modal-actions",
-                button {
-                    class: "modal-btn secondary",
-                    onclick: move |_| {
-                        modal.write().close();
-                    },
-                    "Cancel"
-                }
-                button {
-                    class: "modal-btn primary",
-                    onclick: move |_| {
-                        modal.write().close();
-                    },
-                    "Move"
-                }
-            }
+        ConfirmationModal {
+            modal,
+            title: "Move Note",
+            subtitle: "Moving: \"{from_path}\"",
+            body: rsx! { "<List of paths>" },
+            buttons,
         }
     }
 }
@@ -99,33 +117,40 @@ pub fn RenameConfirm(
     modal: Signal<ModalManager>,
     vault: Arc<NoteVault>,
     path: VaultPath,
-    new_name: String,
 ) -> Element {
-    let new_name = use_signal(|| new_name);
     let current_name = path.get_name();
+    let mut new_name = use_signal(|| current_name.clone());
+    let buttons = vec![
+        ButtonBuilder::secondary(
+            "Cancel",
+            Callback::new(move |_e| {
+                modal.write().close();
+            }),
+        ),
+        ButtonBuilder::primary(
+            "Rename",
+            Callback::new(move |_e| {
+                modal.write().close();
+            }),
+        ),
+    ];
     rsx! {
-        div { class: "modal",
-            div { class: "modal-header",
-                div { class: "modal-title", "Move Note" }
-                div { class: "modal-subtitle", "Current name: \"{current_name}\"?" }
-            }
-            div { class: "modal-body", "<List of paths>" }
-            div { class: "modal-actions",
-                button {
-                    class: "modal-btn secondary",
-                    onclick: move |_| {
-                        modal.write().close();
+        ConfirmationModal {
+            modal,
+            title: "Rename Note",
+            subtitle: "Current name: \"{current_name}\"",
+            body: rsx! {
+                input {
+                    r#type: "text",
+                    class: "input",
+                    value: "{new_name}",
+                    placeholder: "Enter new file name",
+                    oninput: move |e| {
+                        new_name.set(e.value());
                     },
-                    "Cancel"
                 }
-                button {
-                    class: "modal-btn primary",
-                    onclick: move |_| {
-                        modal.write().close();
-                    },
-                    "Move"
-                }
-            }
+            },
+            buttons,
         }
     }
 }
