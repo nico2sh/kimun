@@ -214,6 +214,7 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     if !path.is_note() {
         return Err(FSError::InvalidPath {
             path: path.to_string(),
+            message: "Path provided is not a note".to_string(),
         });
     }
     let (parent, note) = path.get_parent_path();
@@ -230,6 +231,21 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
 
     let entry = NoteEntryData::from_path(workspace_path, path)?;
     Ok(entry)
+}
+
+pub fn delete_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<(), FSError> {
+    let full_path = path.to_pathbuf(workspace_path);
+    std::fs::remove_file(full_path)?;
+    Ok(())
+}
+
+pub fn delete_directory<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<(), FSError> {
+    let full_path = path.to_pathbuf(workspace_path);
+    std::fs::remove_dir_all(full_path)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -332,6 +348,7 @@ impl VaultPath {
         } else {
             Err(FSError::InvalidPath {
                 path: path.to_string(),
+                message: "path contains invalid characters".to_string(),
             })
         }
     }
@@ -525,9 +542,13 @@ impl VaultPath {
     ) -> Result<Self, FSError> {
         let fp = full_path.as_ref();
         let relative = fp
-            .strip_prefix(workspace_path)
+            .strip_prefix(&workspace_path)
             .map_err(|_e| FSError::InvalidPath {
                 path: path_to_string(&full_path),
+                message: format!(
+                    "The path provided is not a path belonging to the workspace: {}",
+                    path_to_string(workspace_path)
+                ),
             })?;
         let mut path_list = vec![PATH_SEPARATOR.to_string()];
         relative.components().for_each(|component| {
