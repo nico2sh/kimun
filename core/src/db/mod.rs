@@ -548,6 +548,28 @@ fn delete_note(tx: &Transaction, path: &VaultPath) -> Result<(), DBError> {
     Ok(())
 }
 
+pub fn rename_note(tx: &Transaction, from: &VaultPath, to: &VaultPath) -> Result<(), DBError> {
+    let new_note_name = to.get_name();
+    tx.execute(
+        "UPDATE notes SET path = ?1, name = ?2 WHERE path = ?3",
+        params![to.to_string(), new_note_name, from.to_string()],
+    )?;
+    tx.execute(
+        "UPDATE notesContent SET path = ?1 WHERE path = ?2",
+        params![to.to_string(), from.to_string()],
+    )?;
+    tx.execute(
+        "UPDATE links SET source = ?1 WHERE source = ?2",
+        params![to.to_string(), from.to_string()],
+    )?;
+    tx.execute(
+        "UPDATE links SET destination = ?1 WHERE destination = ?2",
+        params![to.to_string(), from.to_string()],
+    )?;
+
+    Ok(())
+}
+
 pub fn delete_directories(tx: &Transaction, directories: &Vec<VaultPath>) -> Result<(), DBError> {
     if !directories.is_empty() {
         for directory in directories {

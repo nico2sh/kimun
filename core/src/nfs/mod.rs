@@ -78,7 +78,7 @@ impl NoteEntryData {
             .map(|t| t.duration_since(UNIX_EPOCH).unwrap().as_secs())
             .unwrap_or_else(|_e| 0);
         Ok(NoteEntryData {
-            path: path.clone(),
+            path: path.flatten(),
             size,
             modified_secs,
         })
@@ -233,6 +233,63 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     Ok(entry)
 }
 
+pub fn move_note<P: AsRef<Path>>(
+    workspace_path: P,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<(), FSError> {
+    if !from.is_note() {
+        return Err(FSError::InvalidPath {
+            path: from.to_string(),
+            message: "Path is not a note".to_string(),
+        });
+    }
+    if !to.is_note() {
+        return Err(FSError::InvalidPath {
+            path: to.to_string(),
+            message: "Path is not a note".to_string(),
+        });
+    }
+
+    let full_from_path = from.to_pathbuf(&workspace_path);
+    let full_to_path = to.to_pathbuf(&workspace_path);
+    // We create the destination directory if doesn't exist
+    if let Some(parent) = full_to_path.parent() {
+        if !std::fs::exists(parent)? || !parent.is_dir() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::rename(full_from_path, full_to_path)?;
+    Ok(())
+}
+
+pub fn move_directory<P: AsRef<Path>>(
+    workspace_path: P,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<(), FSError> {
+    if from.is_note() {
+        return Err(FSError::InvalidPath {
+            path: from.to_string(),
+            message: "Path is not a directory".to_string(),
+        });
+    }
+    if to.is_note() {
+        return Err(FSError::InvalidPath {
+            path: to.to_string(),
+            message: "Path is not a Directory".to_string(),
+        });
+    }
+
+    let full_from_path = from.to_pathbuf(&workspace_path);
+    let full_to_path = to.to_pathbuf(&workspace_path);
+    // We create the destination directory if doesn't exist
+    if !std::fs::exists(&full_to_path)? || !full_to_path.is_dir() {
+        std::fs::create_dir_all(&full_to_path)?;
+    }
+    std::fs::rename(full_from_path, full_to_path)?;
+    Ok(())
+}
 pub fn delete_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<(), FSError> {
     let full_path = path.to_pathbuf(workspace_path);
     std::fs::remove_file(full_path)?;
@@ -480,6 +537,8 @@ impl VaultPath {
         path
     }
 
+    /// Returns a full path without any relative slices
+    /// It will always return an absolute path, as it assumes the path is relative to the root
     pub fn flatten(&self) -> VaultPath {
         let mut slices = vec![];
         for slice in &self.slices {
@@ -494,11 +553,13 @@ impl VaultPath {
             }
         }
         VaultPath {
-            absolute: self.absolute,
+            absolute: true,
             slices,
         }
     }
 
+    /// Returns the last part of the path slices
+    /// if it is a note, will return the note filename, if it is a directory, will return the directory name
     pub fn get_name(&self) -> String {
         self.flatten().slices.last().map_or_else(String::new, |s| {
             if let VaultPathSlice::PathSlice(name) = s {
@@ -722,9 +783,13 @@ pub fn get_file_walker<P: AsRef<Path>>(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use crate::{error::FSError, utilities::path_to_string};
+    use crate::{
+        error::FSError,
+        nfs::{delete_directory, delete_note, move_directory, move_note, save_note},
+        utilities::path_to_string,
+    };
 
     use super::{load_note, VaultPath, VaultPathSlice};
 
@@ -928,5 +993,71 @@ mod tests {
         let entry = VaultPath::from_path(&workspace, &path).unwrap();
 
         assert_eq!("workspace/note.md", entry.to_string());
+    }
+
+    #[test]
+    fn create_a_note() -> Result<(), FSError> {
+        let workspace_path = Path::new("testdata");
+        let note_path = VaultPath::new("note.md");
+        let note_text = "this is an empty note".to_string();
+
+        save_note(workspace_path, &note_path, &note_text)?;
+        let note = load_note(workspace_path, &note_path)?;
+        assert_eq!(note, note_text);
+
+        delete_note(workspace_path, &note_path)?;
+        assert!(load_note(workspace_path, &note_path).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn move_a_note() -> Result<(), FSError> {
+        let workspace_path = Path::new("testdata");
+        let note_path = VaultPath::new("note.md");
+        let dest_note_path = VaultPath::new("directory/moved_note.md");
+        let note_text = "this is an empty note".to_string();
+
+        save_note(workspace_path, &note_path, &note_text)?;
+        let note = load_note(workspace_path, &note_path)?;
+        assert_eq!(note, note_text);
+
+        move_note(workspace_path, &note_path, &dest_note_path)?;
+        let moved_note = load_note(workspace_path, &dest_note_path)?;
+        assert_eq!(note, moved_note);
+        assert!(load_note(workspace_path, &note_path).is_err());
+
+        delete_note(workspace_path, &dest_note_path)?;
+        assert!(load_note(workspace_path, &dest_note_path).is_err());
+
+        delete_directory(workspace_path, &dest_note_path.get_parent_path().0)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn move_a_directory() -> Result<(), FSError> {
+        let workspace_path = Path::new("testdata");
+        let from_note_dir = VaultPath::new("old_dir");
+        let from_note_path = from_note_dir.append(&VaultPath::new("note.md"));
+        let dest_note_dir = VaultPath::new("new_dir/two_levels");
+        let dest_note_path = dest_note_dir.append(&VaultPath::new("note.md"));
+        let note_text = "this is an empty note".to_string();
+
+        save_note(workspace_path, &from_note_path, &note_text)?;
+        let note = load_note(workspace_path, &from_note_path)?;
+        assert_eq!(note, note_text);
+
+        move_directory(workspace_path, &from_note_dir, &dest_note_dir)?;
+        let moved_note = load_note(workspace_path, &dest_note_path)?;
+        assert_eq!(note, moved_note);
+        assert!(load_note(workspace_path, &from_note_dir).is_err());
+
+        delete_note(workspace_path, &dest_note_path)?;
+        assert!(load_note(workspace_path, &dest_note_path).is_err());
+
+        delete_directory(workspace_path, &dest_note_path.get_parent_path().0)?;
+
+        Ok(())
     }
 }

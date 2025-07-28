@@ -1,4 +1,4 @@
-use log::debug;
+use log::{debug, warn};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use regex::{Captures, Regex};
 
@@ -64,9 +64,8 @@ fn cleanup_hashtags<S: AsRef<str>>(md_text: S) -> String {
 }
 
 // Convert any wikilink into a link to a note
-fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
+fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> String {
     let rx = Regex::new(REGEX_WIKILINK).unwrap();
-    let mut note_links = vec![];
     let text = rx
         .replace_all(md_text.as_ref(), |caps: &Captures| {
             let items = &caps["link_text"];
@@ -77,17 +76,22 @@ fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
                 _ => ("", ""),
             };
             if !link.is_empty() && VaultPath::is_valid(link) {
-                note_links.push(Link::note(link, text));
                 format!("[{}]({})", text, link)
             } else {
                 format!("[[{}]]", items)
             }
         })
         .into_owned();
-    (text, note_links)
+    text
 }
 
-pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) {
+/// Returns the converted text into Markdown (replacing wikilinks to markdown links)
+/// And a list of the links existing in the note, relative links are transformed to absolute links.
+pub fn get_markdown_and_links<S: AsRef<str>>(
+    note_path: &VaultPath,
+    md_text: S,
+) -> (String, Vec<Link>) {
+    let md_text = convert_wikilinks(md_text);
     let mut links = vec![];
     let md_link_regex = r#"(?P<bang>!?)(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#;
     let url_regex = r#"^https?:\/\/[\w\d]+\.[\w\d]+(?:(?:\.[\w\d]+)|(?:[\w\d\/?=#]+))+$"#;
@@ -100,7 +104,23 @@ pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) 
         if bang.is_empty() {
             debug!("checking link {}", link);
             if VaultPath::is_valid(link) {
-                links.push(Link::vault_path(link, text));
+                let path = VaultPath::new(link);
+                // If it is a relative path, and not pointing to a single note, we convert to absolute
+                let path = if path.is_relative() && !path.is_note_file() {
+                    let base_path = if note_path.is_note() {
+                        note_path.get_parent_path().0
+                    } else {
+                        warn!(
+                            "Note path is not a note, something's fishy here: {}",
+                            note_path
+                        );
+                        note_path.to_owned()
+                    };
+                    base_path.append(&path).flatten()
+                } else {
+                    path
+                };
+                links.push(Link::vault_path(&path, text));
             } else {
                 let rxurl = Regex::new(url_regex).unwrap();
                 if rxurl.is_match(link) {
@@ -111,8 +131,6 @@ pub fn get_markdown_and_links<S: AsRef<str>>(md_text: S) -> (String, Vec<Link>) 
             }
         }
     });
-    let (md_text, mut note_links) = convert_wikilinks(md_text);
-    links.append(&mut note_links);
     (md_text, links)
 }
 
@@ -236,6 +254,7 @@ impl TextLine {
     }
 
     fn to_text(&self) -> String {
+        println!("{:?}", self);
         match self {
             TextLine::Empty => "".to_string(),
             TextLine::Header(level, text) => {
@@ -244,6 +263,19 @@ impl TextLine {
             TextLine::Text(text) => text.to_owned(),
             TextLine::ListItem(level, text) => {
                 format!("{}* {}", " ".repeat((level.to_owned() * 4).into()), text)
+            }
+        }
+    }
+
+    fn trim(&self) -> Self {
+        match self {
+            TextLine::Empty => TextLine::Empty,
+            TextLine::Header(level, text) => {
+                TextLine::Header(level.to_owned(), text.trim().to_string())
+            }
+            TextLine::Text(text) => TextLine::Text(text.trim().to_string()),
+            TextLine::ListItem(level, text) => {
+                TextLine::ListItem(level.to_owned(), text.trim().to_string())
             }
         }
     }
@@ -418,7 +450,7 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
 fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
     match tag_end {
         TagEnd::CodeBlock => {
-            vec![current_line, TextLine::Text("```".to_string())]
+            vec![current_line.trim(), TextLine::Text("```".to_string())]
         }
         TagEnd::List(_) => {
             if let TextLine::ListItem(lvl, text) = &current_line {
@@ -455,7 +487,7 @@ mod test {
         nfs::VaultPath,
         note::{
             content_extractor::{get_content_chunks, get_content_data},
-            Link, LinkType,
+            LinkType,
         },
     };
 
@@ -465,13 +497,9 @@ mod test {
     fn convert_wiki_link() {
         let markdown = r#"Here is a [[Wikilink|text with link]]"#;
 
-        let (md, links) = convert_wikilinks(markdown);
+        let md = convert_wikilinks(markdown);
 
         assert_eq!(md, "Here is a [text with link](Wikilink)");
-        assert_eq!(1, links.len());
-        assert!(links
-            .iter()
-            .any(|link| { link.eq(&Link::note("Wikilink", "text with link")) }));
     }
 
     #[test]
@@ -480,7 +508,7 @@ mod test {
 
     And a [[https://example.com|url link]]"#;
 
-        let (md, links) = convert_wikilinks(markdown);
+        let md = convert_wikilinks(markdown);
 
         assert_eq!(
             md,
@@ -488,22 +516,29 @@ mod test {
 
     And a [[https://example.com|url link]]"#
         );
-        assert_eq!(2, links.len());
-        assert!(links
-            .iter()
-            .any(|link| { link.eq(&Link::note("Wikilink", "text with link")) }));
-        assert!(links
-            .iter()
-            .any(|link| { link.eq(&Link::note("Link", "Link")) }))
     }
 
     #[test]
     fn ignore_image_links() {
         let markdown = r#"This is an ![image](image.png)"#;
 
-        let (_md, links) = get_markdown_and_links(markdown);
+        let (_md, links) = get_markdown_and_links(&VaultPath::root(), markdown);
 
         assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_relative_link_from_text() {
+        let markdown =
+            r#"This is a [link](../main.md) to a note, this is a [non](:caca) valid link"#;
+        let note_path = VaultPath::new("/directory/test_note.md");
+
+        let (_md, links) = get_markdown_and_links(&note_path, markdown);
+
+        assert_eq!(1, links.len());
+        let link = links.first().unwrap();
+        assert_eq!("link", link.text);
+        assert_eq!(LinkType::Note(VaultPath::new("/main.md")), link.ltype);
     }
 
     #[test]
@@ -511,12 +546,13 @@ mod test {
         let markdown =
             r#"This is a [link](notes/main.md) to a note, this is a [non](:caca) valid link"#;
 
-        let (_md, links) = get_markdown_and_links(markdown);
+        let note_path = VaultPath::new("/test_note.md");
+        let (_md, links) = get_markdown_and_links(&note_path, markdown);
 
         assert_eq!(1, links.len());
         let link = links.first().unwrap();
         assert_eq!("link", link.text);
-        assert_eq!(LinkType::Note(VaultPath::new("notes/main.md")), link.ltype);
+        assert_eq!(LinkType::Note(VaultPath::new("/notes/main.md")), link.ltype);
     }
 
     #[test]
@@ -525,11 +561,13 @@ mod test {
 
     Here's a [url](https://www.example.com)"#;
 
-        let (_md, links) = get_markdown_and_links(markdown);
+        let note_path = VaultPath::new("/test_note.md");
+        let (_md, links) = get_markdown_and_links(&note_path, markdown);
 
         assert_eq!(3, links.len());
+        // Now has an absolute path
         assert!(links.iter().any(|link| {
-            let path = VaultPath::new("notes/main.md");
+            let path = VaultPath::new("/notes/main.md");
             link.text.eq("link") && link.ltype.eq(&LinkType::Note(path))
         }));
         assert!(links.iter().any(|link| {
