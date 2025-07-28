@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dioxus::prelude::*;
-use kimun_core::{nfs::VaultPath, NoteVault};
+use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
 use crate::components::{button::ButtonBuilder, modal::ModalManager};
 
@@ -111,7 +111,29 @@ pub fn MoveConfirm(
     from_path: VaultPath,
 ) -> Element {
     let to_path = from_path.clone();
-    let dest_path = use_signal(|| to_path);
+    let mut dest_path = use_signal(|| to_path);
+    let current_base_path = from_path.get_parent_path().0;
+    let list_of_paths = use_resource(move || {
+        let vault = vault.clone();
+        async move {
+            let mut entries = vec![];
+            let (options, receiver) = VaultBrowseOptionsBuilder::new(&VaultPath::root())
+                .recursive()
+                .no_validation()
+                .build();
+            let _ = tokio::spawn(async move {
+                vault.browse_vault(options).expect("Error fetching Entries");
+            })
+            .await;
+            while let Ok(res) = receiver.recv() {
+                if let ResultType::Directory = res.rtype {
+                    entries.push(res.path)
+                }
+            }
+            entries.sort();
+            entries
+        }
+    });
     let buttons = vec![
         ButtonBuilder::secondary(
             "Cancel",
@@ -131,7 +153,23 @@ pub fn MoveConfirm(
             modal,
             title: "Move Note",
             subtitle: "Moving: \"{from_path}\"",
-            body: rsx! { "<List of paths>" },
+            body: rsx! {
+                div { class: "controls",
+                    if let Some(paths) = &*list_of_paths.read() {
+                        select {
+                            class: "select",
+                            onchange: move |e| {
+                                dest_path.set(VaultPath::new(e.value()));
+                            },
+                            for path in paths {
+                                option { value: "{path}", selected: current_base_path.eq(path), "{path}" }
+                            }
+                        }
+                    } else {
+                        div { class: "select", "<Loading...>" }
+                    }
+                }
+            },
             buttons,
         }
     }

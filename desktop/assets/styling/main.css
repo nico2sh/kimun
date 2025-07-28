@@ -105,7 +105,13 @@ progress {
   align-items: center;
 }
 
-.sort-select {
+.controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.select {
   flex: 1;
   padding: 6px 8px;
   border: 1px solid var(--border-light);
@@ -119,7 +125,7 @@ progress {
   cursor: pointer;
 }
 
-.sort-select:focus {
+.select:focus {
   border-color: var(--border-focus);
 }
 

@@ -202,7 +202,7 @@ pub fn NoteBrowser(
         div { class: "sidebar-controls",
             div { class: "sort-controls",
                 select {
-                    class: "sort-select",
+                    class: "select",
                     id: "sortBy",
                     onchange: move |e| {
                         let val = e.value();
