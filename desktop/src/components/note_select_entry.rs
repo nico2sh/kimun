@@ -10,8 +10,23 @@ pub enum SortCriteria {
 }
 
 pub trait RowItem: PartialEq + Eq + Clone {
-    fn on_select(&self) -> Box<dyn FnMut() -> bool>;
+    fn on_select(&self) -> bool;
     fn get_view(&self) -> Element;
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub enum NoteSelectEntryListStatus {
+    Loading,
+    Loaded(Vec<NoteSelectEntry>),
+}
+
+impl NoteSelectEntryListStatus {
+    pub fn len(&self) -> usize {
+        match self {
+            NoteSelectEntryListStatus::Loading => 0,
+            NoteSelectEntryListStatus::Loaded(items) => items.len(),
+        }
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -203,7 +218,7 @@ impl AsRef<str> for NoteSelectEntry {
 }
 
 impl RowItem for NoteSelectEntry {
-    fn on_select(&self) -> Box<dyn FnMut() -> bool> {
+    fn on_select(&self) -> bool {
         match self {
             NoteSelectEntry::Note {
                 path,
@@ -211,13 +226,11 @@ impl RowItem for NoteSelectEntry {
                 search_str: _,
             } => {
                 let path = path.to_owned();
-                Box::new(move || {
-                    navigator().replace(crate::Route::Editor {
-                        editor_path: path.clone(),
-                        create: false,
-                    });
-                    true
-                })
+                navigator().replace(crate::Route::Editor {
+                    editor_path: path.clone(),
+                    create: false,
+                });
+                true
             }
             NoteSelectEntry::Journal {
                 path,
@@ -226,13 +239,11 @@ impl RowItem for NoteSelectEntry {
                 search_str: _,
             } => {
                 let path = path.to_owned();
-                Box::new(move || {
-                    navigator().replace(crate::Route::Editor {
-                        editor_path: path.clone(),
-                        create: false,
-                    });
-                    true
-                })
+                navigator().replace(crate::Route::Editor {
+                    editor_path: path.clone(),
+                    create: false,
+                });
+                true
             }
             NoteSelectEntry::Directory {
                 path,
@@ -242,23 +253,19 @@ impl RowItem for NoteSelectEntry {
                 let p = path.clone();
                 let mut s = *base_path_signal;
                 info!("Selected dir: {}", p);
-                Box::new(move || {
-                    s.set(p.clone());
-                    false
-                })
+                s.set(p.clone());
+                false
             }
             NoteSelectEntry::Create {
                 new_note_path,
                 name: _,
             } => {
                 let path = new_note_path.to_owned();
-                Box::new(move || {
-                    navigator().replace(crate::Route::Editor {
-                        editor_path: path.clone(),
-                        create: true,
-                    });
-                    true
-                })
+                navigator().replace(crate::Route::Editor {
+                    editor_path: path.clone(),
+                    create: true,
+                });
+                true
             }
         }
     }
@@ -298,7 +305,7 @@ impl RowItem for NoteSelectEntry {
             } => {
                 rsx! {
                     div { class: "element",
-                        div { class: "icon-folder title", "{name}" }
+                        div { class: "icon-folder note-title", "{name}" }
                     }
                 }
             }

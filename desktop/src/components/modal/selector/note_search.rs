@@ -107,15 +107,13 @@ impl AsRef<str> for NoteSearchEntry {
 }
 
 impl RowItem for NoteSearchEntry {
-    fn on_select(&self) -> Box<dyn FnMut() -> bool> {
+    fn on_select(&self) -> bool {
         let path = self.note_path.to_owned();
-        Box::new(move || {
-            navigator().replace(crate::Route::Editor {
-                editor_path: path.clone(),
-                create: false,
-            });
-            true
-        })
+        navigator().replace(crate::Route::Editor {
+            editor_path: path.clone(),
+            create: false,
+        });
+        true
     }
 
     fn get_view(&self) -> Element {

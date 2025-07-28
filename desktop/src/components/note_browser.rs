@@ -10,7 +10,7 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilde
 use crate::{
     components::{
         modal::{confirmations::ConfirmationType, ModalManager},
-        note_select_entry::{NoteSelectEntry, RowItem, SortCriteria},
+        note_select_entry::{NoteSelectEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
     },
     utils::sparse_vector::SparseVector,
 };
@@ -63,7 +63,6 @@ pub fn NoteBrowser(
     let mut select_by_mouse = use_signal(|| true);
 
     let mut filter_text = use_signal(|| "".to_string());
-    let current_path = browsing_directory.read().clone();
 
     // Since this is a resource that depends on the current_path
     // the entries change every time the current_path is changed
@@ -117,6 +116,7 @@ pub fn NoteBrowser(
         }
     });
 
+    // Filter Entries
     let filtered_entries = use_resource(move || async move {
         info!("Filtering entries");
         let res = if let Some(entries) = &*all_entries.read() {
@@ -133,21 +133,23 @@ pub fn NoteBrowser(
                         }
                     })
                     .collect::<Vec<NoteSelectEntry>>();
-                filtered
+
+                NoteSelectEntryListStatus::Loaded(filtered)
             } else {
-                vec![]
+                NoteSelectEntryListStatus::Loaded(vec![])
             }
         } else {
-            vec![]
+            NoteSelectEntryListStatus::Loading
         };
         row_mounts.write().truncate(res.len());
         res
     });
 
+    // Sort Entries
     let sorted_entries = use_resource(move || async move {
         info!("Sorting entries");
         let mut filtered_entries = filtered_entries.read().to_owned();
-        if let Some(result) = filtered_entries.as_mut() {
+        if let Some(NoteSelectEntryListStatus::Loaded(result)) = filtered_entries.as_mut() {
             if sort.read().ascending {
                 result.sort_by_key(|b| b.sort_string_for(&sort.read().criteria));
             } else {
@@ -163,15 +165,15 @@ pub fn NoteBrowser(
                     },
                 );
             }
-            result.to_owned()
+            NoteSelectEntryListStatus::Loaded(result.to_owned())
         } else {
-            vec![]
+            NoteSelectEntryListStatus::Loading
         }
     });
 
     rsx! {
         div { class: "sidebar-header",
-            div { class: "sidebar-title", "{current_path.to_string()}" }
+            div { class: "sidebar-title", "{browsing_directory}" }
             button {
                 class: "sidebar-toggle",
                 onclick: move |_| {
@@ -256,7 +258,11 @@ pub fn NoteBrowser(
                     selected.set(None);
                 }
             },
-            if let Some(entries) = sorted_entries.value().read().clone() {
+            if let Some(NoteSelectEntryListStatus::Loaded(entries)) = sorted_entries
+                .value()
+                .read()
+                .clone()
+            {
                 for (index , entry) in entries.into_iter().enumerate() {
                     {
                         let entry_path = entry.get_path().to_owned();
@@ -280,7 +286,7 @@ pub fn NoteBrowser(
                                     onclick: move |e| {
                                         info!("Clicked element");
                                         e.stop_propagation();
-                                        let _ = entry.on_select()();
+                                        let _ = entry.on_select();
                                     },
                                     {entry.get_view()}
                                 }
@@ -292,7 +298,9 @@ pub fn NoteBrowser(
                     }
                 }
             } else {
-                div { "Loading..." }
+                div { class: "controls",
+                    div { class: "info-text", "Loading..." }
+                }
             }
         }
     }

@@ -194,7 +194,7 @@ where
                     let current_selected = (*selected.read()).unwrap_or(0);
                     if let Some(rows) = &*rows.value().read() {
                         if let Some(row) = rows.get(current_selected) {
-                            if row.on_select()() {
+                            if row.on_select() {
                                 load_state.set(LoadState::Closed);
                                 modal.write().close();
                             } else {
@@ -254,7 +254,7 @@ where
                             onclick: move |e| {
                                 info!("Clicked element");
                                 e.stop_propagation();
-                                if row.on_select()() {
+                                if row.on_select() {
                                     load_state.set(LoadState::Closed);
                                     modal.write().close();
                                 } else {

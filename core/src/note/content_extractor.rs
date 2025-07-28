@@ -254,7 +254,6 @@ impl TextLine {
     }
 
     fn to_text(&self) -> String {
-        println!("{:?}", self);
         match self {
             TextLine::Empty => "".to_string(),
             TextLine::Header(level, text) => {
