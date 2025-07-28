@@ -233,7 +233,7 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     Ok(entry)
 }
 
-pub fn move_note<P: AsRef<Path>>(
+pub fn rename_note<P: AsRef<Path>>(
     workspace_path: P,
     from: &VaultPath,
     to: &VaultPath,
@@ -263,7 +263,7 @@ pub fn move_note<P: AsRef<Path>>(
     Ok(())
 }
 
-pub fn move_directory<P: AsRef<Path>>(
+pub fn rename_directory<P: AsRef<Path>>(
     workspace_path: P,
     from: &VaultPath,
     to: &VaultPath,
@@ -305,7 +305,7 @@ pub fn delete_directory<P: AsRef<Path>>(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VaultPath {
     absolute: bool,
     slices: Vec<VaultPathSlice>,
@@ -787,7 +787,7 @@ mod tests {
 
     use crate::{
         error::FSError,
-        nfs::{delete_directory, delete_note, move_directory, move_note, save_note},
+        nfs::{delete_directory, delete_note, rename_directory, rename_note, save_note},
         utilities::path_to_string,
     };
 
@@ -1022,7 +1022,7 @@ mod tests {
         let note = load_note(workspace_path, &note_path)?;
         assert_eq!(note, note_text);
 
-        move_note(workspace_path, &note_path, &dest_note_path)?;
+        rename_note(workspace_path, &note_path, &dest_note_path)?;
         let moved_note = load_note(workspace_path, &dest_note_path)?;
         assert_eq!(note, moved_note);
         assert!(load_note(workspace_path, &note_path).is_err());
@@ -1048,7 +1048,7 @@ mod tests {
         let note = load_note(workspace_path, &from_note_path)?;
         assert_eq!(note, note_text);
 
-        move_directory(workspace_path, &from_note_dir, &dest_note_dir)?;
+        rename_directory(workspace_path, &from_note_dir, &dest_note_dir)?;
         let moved_note = load_note(workspace_path, &dest_note_path)?;
         assert_eq!(note, moved_note);
         assert!(load_note(workspace_path, &from_note_dir).is_err());

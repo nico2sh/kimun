@@ -332,28 +332,39 @@ impl NoteVault {
         Ok(())
     }
 
-    pub fn get_notes(
+    // pub fn get_notes(
+    //     &self,
+    //     path: &VaultPath,
+    //     recursive: bool,
+    // ) -> Result<Vec<NoteContentData>, VaultError> {
+    //     let start = std::time::SystemTime::now();
+    //     debug!("> Start fetching files from cache");
+    //     let note_path = path.into();
+
+    //     let cached_notes = self.vault_db.call(move |conn| {
+    //         let notes = db::get_notes(conn, &note_path, recursive)?;
+    //         Ok(notes)
+    //     })?;
+
+    //     let result = cached_notes
+    //         .iter()
+    //         .map(|(_data, details)| details.to_owned())
+    //         .collect::<Vec<NoteContentData>>();
+    //     let time = std::time::SystemTime::now()
+    //         .duration_since(start)
+    //         .expect("Something's wrong with the time");
+    //     debug!("> Files fetched in {} milliseconds", time.as_millis());
+    //     Ok(result)
+    // }
+
+    /// Convenience method to get the directories from the filesystem
+    pub fn get_directories(
         &self,
         path: &VaultPath,
         recursive: bool,
-    ) -> Result<Vec<NoteContentData>, VaultError> {
-        let start = std::time::SystemTime::now();
-        debug!("> Start fetching files from cache");
-        let note_path = path.into();
+    ) -> Result<Vec<DirectoryDetails>, VaultError> {
+        let result = vec![];
 
-        let cached_notes = self.vault_db.call(move |conn| {
-            let notes = db::get_notes(conn, &note_path, recursive)?;
-            Ok(notes)
-        })?;
-
-        let result = cached_notes
-            .iter()
-            .map(|(_data, details)| details.to_owned())
-            .collect::<Vec<NoteContentData>>();
-        let time = std::time::SystemTime::now()
-            .duration_since(start)
-            .expect("Something's wrong with the time");
-        debug!("> Files fetched in {} milliseconds", time.as_millis());
         Ok(result)
     }
 
@@ -462,7 +473,7 @@ impl NoteVault {
         Ok(())
     }
 
-    pub fn move_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+    pub fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
 
@@ -472,13 +483,19 @@ impl NoteVault {
                 message: "Destination path already exists".to_string(),
             }));
         }
-        nfs::move_note(&self.workspace_path, &from, &to)?;
-        // TODO: Move the DB entry
+        nfs::rename_note(&self.workspace_path, &from, &to)?;
+
+        self.vault_db.call(move |conn| {
+            let tx = conn.transaction()?;
+            db::rename_note(&tx, &from, &to)?;
+            tx.commit()?;
+            Ok(())
+        })?;
 
         Ok(())
     }
 
-    pub fn move_directory(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+    pub fn rename_directory(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
 
@@ -488,8 +505,14 @@ impl NoteVault {
                 message: "Destination path already exists".to_string(),
             }));
         }
-        nfs::move_directory(&self.workspace_path, &from, &to)?;
-        // TODO: Move the DB entry
+        nfs::rename_directory(&self.workspace_path, &from, &to)?;
+
+        self.vault_db.call(move |conn| {
+            let tx = conn.transaction()?;
+            db::rename_directory(&tx, &from, &to)?;
+            tx.commit()?;
+            Ok(())
+        })?;
 
         Ok(())
     }
