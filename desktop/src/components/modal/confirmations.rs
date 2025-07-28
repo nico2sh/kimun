@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use dioxus::prelude::*;
+use dioxus::{logger::tracing::error, prelude::*};
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
 use crate::components::{button::ButtonBuilder, modal::ModalManager};
@@ -55,7 +55,9 @@ pub fn Error(modal: Signal<ModalManager>, message: String, error: String) -> Ele
             modal,
             title: "Error",
             subtitle: "{message}",
-            body: rsx! { "error" },
+            body: rsx! {
+            "{error}"
+            },
             buttons: vec![
                 ButtonBuilder::secondary(
                     "Ok",
@@ -110,9 +112,11 @@ pub fn MoveConfirm(
     vault: Arc<NoteVault>,
     from_path: VaultPath,
 ) -> Element {
+    let is_note = from_path.is_note();
     let to_path = from_path.clone();
     let mut dest_path = use_signal(|| to_path);
-    let current_base_path = from_path.get_parent_path().0;
+    let (current_base_path, current_note_name) = from_path.get_parent_path();
+    let move_vault = vault.clone();
     let list_of_paths = use_resource(move || {
         let vault = vault.clone();
         async move {
@@ -134,6 +138,7 @@ pub fn MoveConfirm(
             entries
         }
     });
+    let from = from_path.clone();
     let buttons = vec![
         ButtonBuilder::secondary(
             "Cancel",
@@ -144,15 +149,33 @@ pub fn MoveConfirm(
         ButtonBuilder::primary(
             "Move",
             Callback::new(move |_e| {
-                modal.write().close();
+                let destination = dest_path.read().append(&VaultPath::new(&current_note_name));
+                let res = if is_note {
+                    move_vault.rename_note(&from_path, &destination)
+                } else {
+                    move_vault.rename_directory(&from_path, &destination)
+                };
+                if let Err(e) = res {
+                    error!("Error: {}", e);
+                    modal.write().set_error(
+                        format!(
+                            "Error moving {}: {}",
+                            if is_note { "note" } else { "directory" },
+                            from_path
+                        ),
+                        format!("{}", e),
+                    );
+                } else {
+                    modal.write().close();
+                }
             }),
         ),
     ];
     rsx! {
         ConfirmationModal {
             modal,
-            title: "Move Note",
-            subtitle: "Moving: \"{from_path}\"",
+            title: if is_note { "Move Note" } else { "Move Directory" },
+            subtitle: "Moving: \"{from}\"",
             body: rsx! {
                 div { class: "controls",
                     if let Some(paths) = &*list_of_paths.read() {

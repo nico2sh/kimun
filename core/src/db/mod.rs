@@ -550,10 +550,16 @@ fn delete_note(tx: &Transaction, path: &VaultPath) -> Result<(), DBError> {
 
 pub fn rename_note(tx: &Transaction, from: &VaultPath, to: &VaultPath) -> Result<(), DBError> {
     let old_note_name = from.get_name();
-    let new_note_name = to.get_name();
+    let (new_base_path, new_note_name) = to.get_parent_path();
+
     tx.execute(
-        "UPDATE notes SET path = ?1, name = ?2 WHERE path = ?3",
-        params![to.to_string(), new_note_name, from.to_string()],
+        "UPDATE notes SET path = ?1, basePath = ?2, noteName = ?3 WHERE path = ?4",
+        params![
+            to.to_string(),
+            new_base_path.to_string(),
+            new_note_name,
+            from.to_string()
+        ],
     )?;
     tx.execute(
         "UPDATE notesContent SET path = ?1 WHERE path = ?2",
