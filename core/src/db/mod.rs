@@ -549,6 +549,7 @@ fn delete_note(tx: &Transaction, path: &VaultPath) -> Result<(), DBError> {
 }
 
 pub fn rename_note(tx: &Transaction, from: &VaultPath, to: &VaultPath) -> Result<(), DBError> {
+    let old_note_name = from.get_name();
     let new_note_name = to.get_name();
     tx.execute(
         "UPDATE notes SET path = ?1, name = ?2 WHERE path = ?3",
@@ -565,6 +566,46 @@ pub fn rename_note(tx: &Transaction, from: &VaultPath, to: &VaultPath) -> Result
     tx.execute(
         "UPDATE links SET destination = ?1 WHERE destination = ?2",
         params![to.to_string(), from.to_string()],
+    )?;
+    tx.execute(
+        "UPDATE links SET destination = ?1 WHERE destination = ?2",
+        params![old_note_name, new_note_name],
+    )?;
+
+    Ok(())
+}
+
+pub fn rename_directory(tx: &Transaction, from: &VaultPath, to: &VaultPath) -> Result<(), DBError> {
+    let from = {
+        let s = from.to_string();
+        if s.ends_with('/') {
+            s
+        } else {
+            s + "/"
+        }
+    };
+    let to = {
+        let s = to.to_string();
+        if s.ends_with('/') {
+            s
+        } else {
+            s + "/"
+        }
+    };
+    let notes_sql = "UPDATE notes SET path = ?2 || SUBSTR(path, LENGTH(?1) + 1), basePath = ?2 || SUBSTR(basePath, LENGTH(?1) + 1) WHERE basePath LIKE (?1 || '%')";
+    tx.execute(notes_sql, params![from, to])?;
+
+    tx.execute(
+        "UPDATE notesContent SET path = ?2 || SUBSTR(path, LENGTH(?1) + 1) WHERE path LIKE (?1 || '%')",
+        params![from, to],
+    )?;
+    tx.execute(
+        "UPDATE links SET source = ?2 || SUBSTR(path, LENGTH(?1) + 1) WHERE source LIKE (?1 || '%')",
+        params![from, to],
+    )?;
+    tx.execute(
+        "UPDATE links SET destination = ?2 || SUBSTR(path, LENGTH(?1) + 1) WHERE destination LIKE (?1 || '%')",
+        params![from, to],
     )?;
 
     Ok(())
