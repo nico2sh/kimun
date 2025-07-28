@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dioxus::{logger::tracing::error, prelude::*};
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
-use crate::components::{button::ButtonBuilder, modal::ModalManager};
+use crate::components::{button::ButtonBuilder, modal::ModalType};
 
 pub enum ConfirmationType {
     Delete(VaultPath),
@@ -13,7 +13,7 @@ pub enum ConfirmationType {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct ConfirmationModalProps {
-    modal: Signal<ModalManager>,
+    modal_type: Signal<ModalType>,
     title: String,
     subtitle: String,
     body: Element,
@@ -23,7 +23,7 @@ pub struct ConfirmationModalProps {
 // General Confirmation Modal
 #[component]
 pub fn ConfirmationModal(props: ConfirmationModalProps) -> Element {
-    let mut modal = props.modal;
+    let mut modal = props.modal_type;
     rsx! {
         div {
             class: "modal",
@@ -49,10 +49,10 @@ pub fn ConfirmationModal(props: ConfirmationModalProps) -> Element {
 }
 
 #[component]
-pub fn Error(modal: Signal<ModalManager>, message: String, error: String) -> Element {
+pub fn Error(modal_type: Signal<ModalType>, message: String, error: String) -> Element {
     rsx! {
         ConfirmationModal {
-            modal,
+            modal_type,
             title: "Error",
             subtitle: "{message}",
             body: rsx! {
@@ -62,7 +62,7 @@ pub fn Error(modal: Signal<ModalManager>, message: String, error: String) -> Ele
                 ButtonBuilder::secondary(
                     "Ok",
                     Callback::new(move |_e| {
-                        modal.write().close();
+                        modal_type.write().close();
                     }),
                 ),
             ],
@@ -84,7 +84,7 @@ pub struct SuccessRename {
 
 #[component]
 pub fn DeleteConfirm(
-    modal: Signal<ModalManager>,
+    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     path: VaultPath,
 ) -> Element {
@@ -93,14 +93,14 @@ pub fn DeleteConfirm(
         ButtonBuilder::secondary(
             "Cancel",
             Callback::new(move |_e| {
-                modal.write().close();
+                modal_type.write().close();
             }),
         ),
         ButtonBuilder::danger(
             "Delete",
             Callback::new(move |_e| match vault.delete_note(&delete_path) {
-                Ok(_) => modal.write().close(),
-                Err(e) => modal.write().set_error(
+                Ok(_) => modal_type.write().close(),
+                Err(e) => modal_type.write().set_error(
                     "There has been an error deleting the note".to_string(),
                     e.to_string(),
                 ),
@@ -109,7 +109,7 @@ pub fn DeleteConfirm(
     ];
     rsx! {
         ConfirmationModal {
-            modal,
+            modal_type,
             title: "Delete Note",
             subtitle: "Are you sure you want to delete \"{path}\"?",
             body: rsx! { "This action cannot be undone." },
@@ -120,7 +120,7 @@ pub fn DeleteConfirm(
 
 #[component]
 pub fn MoveConfirm(
-    modal: Signal<ModalManager>,
+    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     from_path: VaultPath,
 ) -> Element {
@@ -155,7 +155,7 @@ pub fn MoveConfirm(
         ButtonBuilder::secondary(
             "Cancel",
             Callback::new(move |_e| {
-                modal.write().close();
+                modal_type.write().close();
             }),
         ),
         ButtonBuilder::primary(
@@ -169,7 +169,7 @@ pub fn MoveConfirm(
                 };
                 if let Err(e) = res {
                     error!("Error: {}", e);
-                    modal.write().set_error(
+                    modal_type.write().set_error(
                         format!(
                             "Error moving {}: {}",
                             if is_note { "note" } else { "directory" },
@@ -178,14 +178,14 @@ pub fn MoveConfirm(
                         format!("{}", e),
                     );
                 } else {
-                    modal.write().close();
+                    modal_type.write().close();
                 }
             }),
         ),
     ];
     rsx! {
         ConfirmationModal {
-            modal,
+            modal_type,
             title: if is_note { "Move Note" } else { "Move Directory" },
             subtitle: "Moving: \"{from}\"",
             body: rsx! {
@@ -212,29 +212,29 @@ pub fn MoveConfirm(
 
 #[component]
 pub fn RenameConfirm(
-    modal: Signal<ModalManager>,
+    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     path: VaultPath,
 ) -> Element {
-    let current_name = path.get_name();
+    let current_name: String = path.get_name();
     let mut new_name = use_signal(|| current_name.clone());
     let buttons = vec![
         ButtonBuilder::secondary(
             "Cancel",
             Callback::new(move |_e| {
-                modal.write().close();
+                modal_type.write().close();
             }),
         ),
         ButtonBuilder::primary(
             "Rename",
             Callback::new(move |_e| {
-                modal.write().close();
+                modal_type.write().close();
             }),
         ),
     ];
     rsx! {
         ConfirmationModal {
-            modal,
+            modal_type,
             title: "Rename Note",
             subtitle: "Current name: \"{current_name}\"",
             body: rsx! {

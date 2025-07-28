@@ -8,9 +8,10 @@ use dioxus::{
     prelude::*,
 };
 
-use crate::{components::note_select_entry::RowItem, utils::sparse_vector::SparseVector};
-
-use super::ModalManager;
+use crate::{
+    components::{modal::ModalType, note_select_entry::RowItem},
+    utils::sparse_vector::SparseVector,
+};
 
 trait SelectorFunctions<R>: Clone
 where
@@ -45,14 +46,14 @@ where
 {
     filter_text: Signal<String>,
     load_state: Signal<LoadState<R>>,
-    modal: SyncSignal<ModalManager>,
+    modal_type: SyncSignal<ModalType>,
 }
 
 #[allow(non_snake_case)]
 fn SelectorView<R, F>(
     hint: String,
     filter_text: String,
-    mut modal: Signal<ModalManager>,
+    mut modal_type: Signal<ModalType>,
     functions: F,
 ) -> Element
 where
@@ -145,7 +146,7 @@ where
                 let key = e.data.code();
                 if key == Code::Escape {
                     load_state.set(LoadState::Closed);
-                    modal.write().close();
+                    modal_type.write().close();
                 }
                 if key == Code::ArrowDown {
                     let max_items = row_number;
@@ -196,7 +197,7 @@ where
                         if let Some(row) = rows.get(current_selected) {
                             if row.on_select() {
                                 load_state.set(LoadState::Closed);
-                                modal.write().close();
+                                modal_type.write().close();
                             } else {
                                 load_state.set(LoadState::Init);
                             }
@@ -256,7 +257,7 @@ where
                                 e.stop_propagation();
                                 if row.on_select() {
                                     load_state.set(LoadState::Closed);
-                                    modal.write().close();
+                                    modal_type.write().close();
                                 } else {
                                     load_state.set(LoadState::Init);
                                 }

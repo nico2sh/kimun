@@ -9,7 +9,7 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilde
 
 use crate::{
     components::{
-        modal::{confirmations::ConfirmationType, ModalManager},
+        modal::{confirmations::ConfirmationType, ModalType},
         note_select_entry::{NoteSelectEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
     },
     utils::sparse_vector::SparseVector,
@@ -44,7 +44,7 @@ impl Default for Sort {
 pub fn NoteBrowser(
     vault: Arc<NoteVault>,
     editor_path: ReadOnlySignal<VaultPath>,
-    modal_manager: Signal<ModalManager>,
+    modal_type: Signal<ModalType>,
     show_browser: Signal<bool>,
 ) -> Element {
     let browsing_directory = use_signal_sync(move || {
@@ -291,7 +291,7 @@ pub fn NoteBrowser(
                                     {entry.get_view()}
                                 }
                                 if !entry.is_up_dir() && slct {
-                                    NoteActions { vault, modal_manager, entry_path }
+                                    NoteActions { vault, modal_type, entry_path }
                                 }
                             }
                         }
@@ -309,7 +309,7 @@ pub fn NoteBrowser(
 #[component]
 fn NoteActions(
     vault: Arc<NoteVault>,
-    modal_manager: Signal<ModalManager>,
+    modal_type: Signal<ModalType>,
     entry_path: VaultPath,
 ) -> Element {
     let rename_vault = vault.clone();
@@ -324,7 +324,7 @@ fn NoteActions(
                 title: "Rename",
                 onclick: move |_| {
                     let rename_path = rename_path.clone();
-                    modal_manager
+                    modal_type
                         .write()
                         .set_confirm(rename_vault.clone(), ConfirmationType::Rename(rename_path));
                 },
@@ -343,7 +343,7 @@ fn NoteActions(
                 title: "Move",
                 onclick: move |_| {
                     let move_path = move_path.clone();
-                    modal_manager
+                    modal_type
                         .write()
                         .set_confirm(move_vault.clone(), ConfirmationType::Move(move_path.clone()));
                 },
@@ -362,7 +362,7 @@ fn NoteActions(
                 title: "Delete",
                 onclick: move |_| {
                     let delete_path = entry_path.clone();
-                    modal_manager
+                    modal_type
                         .write()
                         .set_confirm(
                             delete_vault.clone(),

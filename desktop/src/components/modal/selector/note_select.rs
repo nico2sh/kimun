@@ -8,15 +8,15 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilde
 use nucleo::Matcher;
 
 use crate::components::{
-    modal::selector::PreviewData,
+    modal::{selector::PreviewData, ModalType},
     note_select_entry::{NoteSelectEntry, SortCriteria},
 };
 
-use super::{ModalManager, SelectorFunctions, SelectorView};
+use super::{SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SelectorProps {
-    modal: Signal<ModalManager>,
+    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     filter_text: String,
     note_path: VaultPath,
@@ -172,7 +172,7 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
     SelectorView(
         "Use keywords to find notes, search is case insensitive and special characters are ignored.".to_string(),
         props.filter_text,
-        props.modal,
+        props.modal_type,
         select_functions
     )
 }
