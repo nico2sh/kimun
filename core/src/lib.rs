@@ -417,6 +417,7 @@ impl NoteVault {
     }
 
     pub fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
+        let path = path.flatten();
         if !path.is_note() {
             return Err(VaultError::FSError(FSError::InvalidPath {
                 path: path.to_string(),
@@ -433,12 +434,13 @@ impl NoteVault {
             Ok(())
         })?;
 
-        nfs::delete_note(&self.workspace_path, path)?;
+        nfs::delete_note(&self.workspace_path, &path)?;
 
         Ok(())
     }
 
     pub fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
+        let path = path.flatten();
         if path.is_note() {
             return Err(VaultError::FSError(FSError::InvalidPath {
                 path: path.to_string(),
@@ -455,7 +457,39 @@ impl NoteVault {
             Ok(())
         })?;
 
-        nfs::delete_directory(&self.workspace_path, path)?;
+        nfs::delete_directory(&self.workspace_path, &path)?;
+
+        Ok(())
+    }
+
+    pub fn move_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+        let from = from.flatten();
+        let to = to.flatten();
+
+        if self.exists(&to).is_some() {
+            return Err(VaultError::FSError(FSError::InvalidPath {
+                path: to.to_string(),
+                message: "Destination path already exists".to_string(),
+            }));
+        }
+        nfs::move_note(&self.workspace_path, &from, &to)?;
+        // TODO: Move the DB entry
+
+        Ok(())
+    }
+
+    pub fn move_directory(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+        let from = from.flatten();
+        let to = to.flatten();
+
+        if self.exists(&to).is_some() {
+            return Err(VaultError::FSError(FSError::InvalidPath {
+                path: to.to_string(),
+                message: "Destination path already exists".to_string(),
+            }));
+        }
+        nfs::move_directory(&self.workspace_path, &from, &to)?;
+        // TODO: Move the DB entry
 
         Ok(())
     }
