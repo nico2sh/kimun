@@ -10,13 +10,13 @@ use kimun_core::{
     NoteVault,
 };
 
-use crate::components::modal::selector::PreviewData;
+use crate::components::modal::{selector::PreviewData, ModalType};
 
-use super::{ModalManager, RowItem, SelectorFunctions, SelectorView};
+use super::{RowItem, SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SearchProps {
-    modal: Signal<ModalManager>,
+    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     filter_text: String,
 }
@@ -73,7 +73,7 @@ pub fn NoteSearch(props: SearchProps) -> Element {
     SelectorView(
         "Select a note, use up and down to select, <Return> selects the first result.".to_string(),
         props.filter_text,
-        props.modal,
+        props.modal_type,
         search_functions,
     )
 }

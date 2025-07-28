@@ -6,7 +6,7 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 use crate::{
     components::{
         button::Button,
-        modal::{indexer::IndexType, ModalManager},
+        modal::{indexer::IndexType, Modal, ModalType},
     },
     route::Route,
     settings,
@@ -15,11 +15,11 @@ use crate::{
 #[component]
 pub fn Settings() -> Element {
     let mut settings: Signal<settings::AppSettings> = use_context();
-    let mut modal = use_signal(ModalManager::new);
+    let mut modal_type = use_signal(|| ModalType::None);
 
     rsx! {
         div { class: "settings-container",
-            {ModalManager::get_element(modal)}
+            Modal { modal_type }
             div { class: "settings-header",
                 h1 { "Settings" }
                 p { "Customize app settings" }
@@ -60,7 +60,7 @@ pub fn Settings() -> Element {
                                 action: move |_| {
                                     if let Some(workspace_dir) = settings().workspace_dir {
                                         let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
-                                        modal.write().set_indexer(vault, IndexType::Fast);
+                                        modal_type.write().set_indexer(vault, IndexType::Fast);
                                     }
                                 },
                                 disabled: settings().workspace_dir.is_none(),
@@ -73,7 +73,7 @@ pub fn Settings() -> Element {
                                 action: move |_| {
                                     if let Some(workspace_dir) = settings().workspace_dir {
                                         let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
-                                        modal.write().set_indexer(vault, IndexType::Full);
+                                        modal_type.write().set_indexer(vault, IndexType::Full);
                                     }
                                 },
                                 disabled: settings().workspace_dir.is_none(),

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use kimun_core::{NoteVault, NotesValidation};
 
-use crate::{components::modal::ModalManager, settings::AppSettings};
+use crate::{components::modal::ModalType, settings::AppSettings};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IndexType {
@@ -14,7 +14,7 @@ pub enum IndexType {
 
 #[component]
 pub fn Indexer(
-    modal: Signal<ModalManager>,
+    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     index_type: IndexType,
 ) -> Element {
@@ -59,14 +59,14 @@ pub fn Indexer(
                             button {
                                 class: "modal-btn secondary",
                                 onclick: move |_| {
-                                    modal.write().close();
+                                    modal_type.write().close();
                                 },
                                 "Close"
                             }
                         } else {
                             div {
                                 onmounted: move |_| {
-                                    modal.write().close();
+                                    modal_type.write().close();
                                 },
                             }
                         }
@@ -79,7 +79,7 @@ pub fn Indexer(
                     button {
                         class: "modal-btn secondary",
                         onclick: move |_| {
-                            modal.write().close();
+                            modal_type.write().close();
                         },
                         "Close"
                     }

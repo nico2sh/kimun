@@ -15,7 +15,7 @@ pub mod indexer;
 mod selector;
 
 #[derive(Clone, Debug, PartialEq)]
-enum ModalType {
+pub enum ModalType {
     None,
     Error {
         message: String,
@@ -46,42 +46,28 @@ enum ModalType {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct ModalManager {
-    modal_type: ModalType,
-}
-
-impl ModalManager {
-    pub fn new() -> Self {
-        Self {
-            modal_type: ModalType::None,
-        }
-    }
-    pub fn is_open(&self) -> bool {
-        !matches!(self.modal_type, ModalType::None)
-    }
+impl ModalType {
     pub fn close(&mut self) {
-        debug!("[Modal] Closing Modal");
-        self.modal_type = ModalType::None;
+        *self = ModalType::None;
     }
     pub fn set_error(&mut self, message: String, error: String) {
-        self.modal_type = ModalType::Error { message, error };
+        *self = ModalType::Error { message, error };
     }
     pub fn set_note_select(&mut self, vault: Arc<NoteVault>, note_path: VaultPath) {
-        self.modal_type = ModalType::NoteSelector {
+        *self = ModalType::NoteSelector {
             vault,
             from_path: note_path,
         };
     }
     pub fn set_note_search(&mut self, vault: Arc<NoteVault>) {
-        self.modal_type = ModalType::NoteSearch { vault };
+        *self = ModalType::NoteSearch { vault };
     }
     pub fn set_indexer(&mut self, vault: Arc<NoteVault>, index_type: IndexType) {
         debug!("[Modal] Set Modal Indexer");
-        self.modal_type = ModalType::Index { vault, index_type };
+        *self = ModalType::Index { vault, index_type };
     }
     pub fn set_confirm(&mut self, vault: Arc<NoteVault>, confirmation: ConfirmationType) {
-        self.modal_type = match confirmation {
+        *self = match confirmation {
             ConfirmationType::Delete(vault_path) => ModalType::DeleteNote {
                 vault,
                 path: vault_path,
@@ -90,70 +76,80 @@ impl ModalManager {
             ConfirmationType::Rename(path) => ModalType::RenameNote { vault, path },
         }
     }
+    pub fn is_open(&self) -> bool {
+        match self {
+            ModalType::None => false,
+            _ => true,
+        }
+    }
+}
 
-    pub fn get_element(modal: Signal<Self>) -> Element {
-        match &modal.read().modal_type {
-            ModalType::None => rsx! {},
-            ModalType::Error { message, error } => rsx! {
-                div { class: "modal-overlay",
-                    Error { modal, message, error }
-                }
-            },
-            ModalType::NoteSelector { vault, from_path } => rsx! {
-                div { class: "modal-overlay",
-                    NoteSelector {
-                        modal,
-                        vault: vault.clone(),
-                        note_path: from_path.clone(),
-                        filter_text: "".to_string(),
-                    }
-                }
-            },
-            ModalType::NoteSearch { vault } => rsx! {
-                div { class: "modal-overlay",
-                    NoteSearch {
-                        modal,
-                        vault: vault.clone(),
-                        filter_text: "".to_string(),
-                    }
-                }
-            },
-            ModalType::Index { vault, index_type } => rsx! {
-                div { class: "modal-overlay",
-                    Indexer {
-                        modal,
-                        vault: vault.clone(),
-                        index_type: index_type.clone(),
-                    }
-                }
-            },
-            ModalType::DeleteNote { vault, path } => {
-                rsx! {
-                    div { class: "modal-overlay",
-                        DeleteConfirm {
-                            modal,
-                            vault: vault.clone(),
-                            path: path.clone(),
+#[derive(Props, Clone, PartialEq)]
+pub struct ModalProps {
+    modal_type: Signal<ModalType>,
+}
+
+#[component]
+pub fn Modal(props: ModalProps) -> Element {
+    let modal_type = props.modal_type;
+    let mt = &*modal_type.read();
+
+    if let ModalType::None = mt {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "modal-overlay",
+            match &*modal_type.read() {
+                ModalType::None => rsx! {},
+                ModalType::Error { message, error } => rsx! {
+                    Error { modal_type, message, error }
+                },
+                ModalType::NoteSelector { vault, from_path } => {
+                    rsx! {
+                        div { class: "modal-overlay",
+                            NoteSelector {
+                                modal_type,
+                                vault: vault.clone(),
+                                note_path: from_path.clone(),
+                                filter_text: "".to_string(),
+                            }
                         }
                     }
                 }
-            }
-            ModalType::MoveNote { vault, from_path } => {
-                rsx! {
+                ModalType::NoteSearch { vault } => rsx! {
                     div { class: "modal-overlay",
-                        MoveConfirm {
-                            modal,
+                        NoteSearch { modal_type, vault: vault.clone(), filter_text: "".to_string() }
+                    }
+                },
+                ModalType::Index { vault, index_type } => rsx! {
+                    div { class: "modal-overlay",
+                        Indexer {
+                            modal_type,
                             vault: vault.clone(),
-                            from_path: from_path.clone(),
+                            index_type: index_type.clone(),
+                        }
+                    }
+                },
+                ModalType::DeleteNote { vault, path } => {
+                    rsx! {
+                        div { class: "modal-overlay",
+                            DeleteConfirm { modal_type, vault: vault.clone(), path: path.clone() }
                         }
                     }
                 }
-            }
-            ModalType::RenameNote { vault, path } => rsx! {
-                div { class: "modal-overlay",
-                    RenameConfirm { modal, vault: vault.clone(), path: path.clone() }
+                ModalType::MoveNote { vault, from_path } => {
+                    rsx! {
+                        div { class: "modal-overlay",
+                            MoveConfirm { modal_type, vault: vault.clone(), from_path: from_path.clone() }
+                        }
+                    }
                 }
-            },
+                ModalType::RenameNote { vault, path } => rsx! {
+                    div { class: "modal-overlay",
+                        RenameConfirm { modal_type, vault: vault.clone(), path: path.clone() }
+                    }
+                },
+            }
         }
     }
 }

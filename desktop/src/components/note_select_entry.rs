@@ -1,4 +1,3 @@
-use chrono::Datelike;
 use chrono::NaiveDate;
 use dioxus::{logger::tracing::info, prelude::*, signals::SyncSignal};
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
