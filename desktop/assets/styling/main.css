@@ -109,6 +109,7 @@ progress {
   display: flex;
   gap: 8px;
   align-items: center;
+  justify-content: center;
 }
 
 .select {
@@ -590,6 +591,16 @@ progress {
   border-color: var(--accent-yellow);
 }
 
+.info-text {
+  font-size: 12px;
+  color: var(--text-light);
+  font-style: italic;
+  margin: 2px 0px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .note-title {
   font-size: 15px;
   font-weight: 600;
@@ -616,12 +627,18 @@ progress {
   color: var(--text-light);
   font-style: italic;
   margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .note-journal {
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Preview Pane */

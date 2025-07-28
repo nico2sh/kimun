@@ -81,19 +81,13 @@ impl ModalManager {
         self.modal_type = ModalType::Index { vault, index_type };
     }
     pub fn set_confirm(&mut self, vault: Arc<NoteVault>, confirmation: ConfirmationType) {
-        match confirmation {
-            ConfirmationType::Delete(vault_path) => {
-                self.modal_type = ModalType::DeleteNote {
-                    vault,
-                    path: vault_path,
-                }
-            }
-            ConfirmationType::Move(from_path) => {
-                self.modal_type = ModalType::MoveNote { vault, from_path }
-            }
-            ConfirmationType::Rename(path) => {
-                self.modal_type = ModalType::RenameNote { vault, path }
-            }
+        self.modal_type = match confirmation {
+            ConfirmationType::Delete(vault_path) => ModalType::DeleteNote {
+                vault,
+                path: vault_path,
+            },
+            ConfirmationType::Move(from_path) => ModalType::MoveNote { vault, from_path },
+            ConfirmationType::Rename(path) => ModalType::RenameNote { vault, path },
         }
     }
 

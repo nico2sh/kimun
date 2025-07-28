@@ -70,6 +70,18 @@ pub fn Error(modal: Signal<ModalManager>, message: String, error: String) -> Ele
     }
 }
 
+pub struct SuccessDelete {
+    path: VaultPath,
+}
+
+pub struct SuccessMove {
+    new_path: VaultPath,
+}
+
+pub struct SuccessRename {
+    new_path: VaultPath,
+}
+
 #[component]
 pub fn DeleteConfirm(
     modal: Signal<ModalManager>,
@@ -189,7 +201,7 @@ pub fn MoveConfirm(
                             }
                         }
                     } else {
-                        div { class: "select", "<Loading...>" }
+                        div { class: "info-text", "<Loading...>" }
                     }
                 }
             },
