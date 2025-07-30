@@ -1,12 +1,17 @@
 use std::sync::Arc;
 
-use dioxus::{logger::tracing::debug, prelude::*};
+use dioxus::{
+    logger::tracing::{debug, warn},
+    prelude::*,
+};
 use indexer::Indexer;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use selector::{note_search::NoteSearch, note_select::NoteSelector};
 
 use crate::components::modal::{
-    confirmations::{ConfirmationType, DeleteConfirm, Error, MoveConfirm, RenameConfirm},
+    confirmations::{
+        ConfirmationType, DeleteConfirm, Error, ModalAction, MoveConfirm, RenameConfirm,
+    },
     indexer::IndexType,
 };
 
@@ -16,7 +21,7 @@ mod selector;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModalType {
-    None,
+    None(Option<ModalAction>),
     Error {
         message: String,
         error: String,
@@ -46,9 +51,18 @@ pub enum ModalType {
     },
 }
 
+impl Default for ModalType {
+    fn default() -> Self {
+        ModalType::None(None)
+    }
+}
+
 impl ModalType {
     pub fn close(&mut self) {
-        *self = ModalType::None;
+        *self = ModalType::None(None);
+    }
+    pub fn close_with_action(&mut self, status: ModalAction) {
+        *self = ModalType::None(Some(status));
     }
     pub fn set_error(&mut self, message: String, error: String) {
         *self = ModalType::Error { message, error };
@@ -78,7 +92,7 @@ impl ModalType {
     }
     pub fn is_open(&self) -> bool {
         match self {
-            ModalType::None => false,
+            ModalType::None(_) => false,
             _ => true,
         }
     }
@@ -94,61 +108,50 @@ pub fn Modal(props: ModalProps) -> Element {
     let modal_type = props.modal_type;
     let mt = &*modal_type.read();
 
-    if let ModalType::None = mt {
+    if let ModalType::None(_) = mt {
         return rsx! {};
     }
     rsx! {
         div { class: "modal-overlay",
-            match &*modal_type.read() {
-                ModalType::None => rsx! {},
+            match modal_type.read().to_owned() {
+                ModalType::None(_) => {
+                    warn!("This shouldn't be called");
+                    rsx! {}
+                }
                 ModalType::Error { message, error } => rsx! {
                     Error { modal_type, message, error }
                 },
                 ModalType::NoteSelector { vault, from_path } => {
                     rsx! {
-                        div { class: "modal-overlay",
-                            NoteSelector {
-                                modal_type,
-                                vault: vault.clone(),
-                                note_path: from_path.clone(),
-                                filter_text: "".to_string(),
-                            }
+                        NoteSelector {
+                            modal_type,
+                            vault: vault.clone(),
+                            note_path: from_path.clone(),
+                            filter_text: "".to_string(),
                         }
                     }
                 }
                 ModalType::NoteSearch { vault } => rsx! {
-                    div { class: "modal-overlay",
-                        NoteSearch { modal_type, vault: vault.clone(), filter_text: "".to_string() }
-                    }
+                    NoteSearch { modal_type, vault: vault.clone(), filter_text: "".to_string() }
                 },
                 ModalType::Index { vault, index_type } => rsx! {
-                    div { class: "modal-overlay",
-                        Indexer {
-                            modal_type,
-                            vault: vault.clone(),
-                            index_type: index_type.clone(),
-                        }
-                    }
+                    Indexer { modal_type, vault: vault.clone(), index_type: index_type.clone() }
                 },
                 ModalType::DeleteNote { vault, path } => {
                     rsx! {
-                        div { class: "modal-overlay",
-                            DeleteConfirm { modal_type, vault: vault.clone(), path: path.clone() }
-                        }
+                        DeleteConfirm { modal_type, vault: vault.clone(), path: path.clone() }
                     }
                 }
                 ModalType::MoveNote { vault, from_path } => {
                     rsx! {
-                        div { class: "modal-overlay",
-                            MoveConfirm { modal_type, vault: vault.clone(), from_path: from_path.clone() }
-                        }
+                        MoveConfirm { modal_type, vault: vault.clone(), from_path: from_path.clone() }
                     }
                 }
-                ModalType::RenameNote { vault, path } => rsx! {
-                    div { class: "modal-overlay",
+                ModalType::RenameNote { vault, path } => {
+                    rsx! {
                         RenameConfirm { modal_type, vault: vault.clone(), path: path.clone() }
                     }
-                },
+                }
             }
         }
     }

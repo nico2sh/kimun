@@ -46,7 +46,7 @@ where
 {
     filter_text: Signal<String>,
     load_state: Signal<LoadState<R>>,
-    modal_type: SyncSignal<ModalType>,
+    modal_type: Signal<ModalType>,
 }
 
 #[allow(non_snake_case)]

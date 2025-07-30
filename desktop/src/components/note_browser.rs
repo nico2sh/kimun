@@ -9,7 +9,10 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilde
 
 use crate::{
     components::{
-        modal::{confirmations::ConfirmationType, ModalType},
+        modal::{
+            confirmations::{ConfirmationType, ModalAction},
+            ModalType,
+        },
         note_select_entry::{NoteSelectEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
     },
     utils::sparse_vector::SparseVector,
@@ -317,6 +320,7 @@ fn NoteActions(
     let move_vault = vault.clone();
     let move_path = entry_path.clone();
     let delete_vault = vault.clone();
+
     rsx! {
         div { class: "note-actions",
             button {

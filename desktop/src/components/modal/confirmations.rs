@@ -1,6 +1,9 @@
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
-use dioxus::{logger::tracing::error, prelude::*};
+use dioxus::{
+    logger::tracing::{debug, error},
+    prelude::*,
+};
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
 use crate::components::{button::ButtonBuilder, modal::ModalType};
@@ -70,18 +73,6 @@ pub fn Error(modal_type: Signal<ModalType>, message: String, error: String) -> E
     }
 }
 
-pub struct SuccessDelete {
-    path: VaultPath,
-}
-
-pub struct SuccessMove {
-    new_path: VaultPath,
-}
-
-pub struct SuccessRename {
-    new_path: VaultPath,
-}
-
 #[component]
 pub fn DeleteConfirm(
     modal_type: Signal<ModalType>,
@@ -99,7 +90,11 @@ pub fn DeleteConfirm(
         ButtonBuilder::danger(
             "Delete",
             Callback::new(move |_e| match vault.delete_note(&delete_path) {
-                Ok(_) => modal_type.write().close(),
+                Ok(_) => {
+                    modal_type
+                        .write()
+                        .close_with_action(ModalAction::Delete(delete_path.clone()));
+                }
                 Err(e) => modal_type.write().set_error(
                     "There has been an error deleting the note".to_string(),
                     e.to_string(),
@@ -116,6 +111,13 @@ pub fn DeleteConfirm(
             buttons,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModalAction {
+    Delete(VaultPath),
+    Move { from: VaultPath, to: VaultPath },
+    Rename(VaultPath),
 }
 
 #[component]
@@ -162,24 +164,10 @@ pub fn MoveConfirm(
             "Move",
             Callback::new(move |_e| {
                 let destination = dest_path.read().append(&VaultPath::new(&current_note_name));
-                let res = if is_note {
-                    move_vault.rename_note(&from_path, &destination)
-                } else {
-                    move_vault.rename_directory(&from_path, &destination)
-                };
-                if let Err(e) = res {
-                    error!("Error: {}", e);
-                    modal_type.write().set_error(
-                        format!(
-                            "Error moving {}: {}",
-                            if is_note { "note" } else { "directory" },
-                            from_path
-                        ),
-                        format!("{}", e),
-                    );
-                } else {
-                    modal_type.write().close();
-                }
+                modal_type.write().close_with_action(ModalAction::Move {
+                    from: from_path.clone(),
+                    to: destination.clone(),
+                });
             }),
         ),
     ];
