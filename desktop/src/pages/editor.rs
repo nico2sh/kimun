@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dioxus::{
-    logger::tracing::{debug, info},
+    logger::tracing::{debug, error, info},
     prelude::*,
 };
 use kimun_core::{
@@ -11,9 +11,9 @@ use kimun_core::{
 
 use crate::{
     components::{
-        modal::{indexer::IndexType, Modal, ModalType},
+        modal::{confirmations::ModalAction, indexer::IndexType, Modal, ModalType},
         note_browser::NoteBrowser,
-        text_editor::{EditorHeader, NoText, TextEditor},
+        text_editor::{EditorData, EditorHeader, NoText, TextEditor},
     },
     route::Route,
     settings::AppSettings,
@@ -30,6 +30,7 @@ enum PathType {
 #[component]
 pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
     debug!("-== [Editor] Starting Editor at '{}' ==-", editor_path);
+    // let editor_path = use_signal(|| editor_path().to_owned());
     let settings: Signal<AppSettings> = use_context();
     let settings_value = settings.read();
 
@@ -39,13 +40,76 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
     let vault = NoteVault::new(vault_path).unwrap();
     let vault = Arc::new(vault);
 
-    let index_vault = vault.clone();
-
     // Modal setup and Indexing on the first run
     let mut modal_type = use_signal(|| {
-        debug!("We initialize the modal manager");
-        ModalType::None
+        debug!("We set the modal to nothing");
+        ModalType::None(None)
     });
+
+    // We monitor results from the modal
+    let confirm_action = use_memo(move || {
+        debug!("Modal changed");
+        let mt = modal_type().clone();
+        if let ModalType::None(action) = mt {
+            action
+        } else {
+            None
+        }
+    });
+    let action_vault = vault.clone();
+    use_effect(move || {
+        if let Some(status) = confirm_action() {
+            match status {
+                ModalAction::Delete(vault_path) => debug!("Deleted"),
+                ModalAction::Move { from, to } => {
+                    debug!("Move");
+
+                    let is_current = editor_path.read().eq(&from);
+                    if is_current {
+                        let parent = from.get_parent_path().0;
+                        navigator().replace(crate::Route::Editor {
+                            editor_path: parent,
+                            create: false,
+                        });
+                    }
+                    let is_note = from.is_note();
+                    let move_result = if is_note {
+                        action_vault.rename_note(&from, &to)
+                    } else {
+                        action_vault.rename_directory(&from, &to)
+                    };
+
+                    if let Err(e) = move_result {
+                        error!("Error: {}", e);
+                        modal_type.write().set_error(
+                            format!(
+                                "Error moving {}: {}",
+                                if is_note { "note" } else { "directory" },
+                                from
+                            ),
+                            format!("{}", e),
+                        );
+                    } else {
+                        modal_type.write().close_with_action(ModalAction::Move {
+                            from: from.clone(),
+                            to: to.clone(),
+                        });
+                    }
+                    if editor_path.read().eq(&from) {
+                        navigator().replace(crate::Route::Editor {
+                            editor_path: to.clone(),
+                            create: false,
+                        });
+                    }
+                }
+                ModalAction::Rename(vault_path) => debug!("renamed"),
+            }
+            // We reset the modal status
+            modal_type.set(ModalType::default());
+        }
+    });
+
+    let index_vault = vault.clone();
     use_effect(move || {
         debug!("We check if we have to trigger the indexer");
         if settings.read().needs_indexing() {
@@ -58,7 +122,11 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
         }
     });
 
-    let dirty_status = use_signal(|| false);
+    let editor_vault = vault.clone();
+    let editor_signal = use_signal(|| {
+        debug!("> We create new dirty status");
+        None
+    });
 
     let editor_vault = vault.clone();
     let content_path = use_memo(move || {
@@ -140,12 +208,12 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                     }
                 },
                 Modal { modal_type }
-                EditorHeader { path: editor_path, show_browser, dirty_status }
+                EditorHeader { path: editor_path, show_browser, editor_signal }
                 div { class: "editor-main",
                     match &*content_path.read() {
                         PathType::Note => {
                             rsx! {
-                                TextEditor { vault: vault.clone(), note_path: editor_path, dirty_status }
+                                TextEditor { note_path: editor_path, editor_signal }
                             }
                         }
                         PathType::Directory => {
