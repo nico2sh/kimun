@@ -606,11 +606,11 @@ pub fn rename_directory(tx: &Transaction, from: &VaultPath, to: &VaultPath) -> R
         params![from, to],
     )?;
     tx.execute(
-        "UPDATE links SET source = ?2 || SUBSTR(path, LENGTH(?1) + 1) WHERE source LIKE (?1 || '%')",
+        "UPDATE links SET source = ?2 || SUBSTR(source, LENGTH(?1) + 1) WHERE source LIKE (?1 || '%')",
         params![from, to],
     )?;
     tx.execute(
-        "UPDATE links SET destination = ?2 || SUBSTR(path, LENGTH(?1) + 1) WHERE destination LIKE (?1 || '%')",
+        "UPDATE links SET destination = ?2 || SUBSTR(destination, LENGTH(?1) + 1) WHERE destination LIKE (?1 || '%')",
         params![from, to],
     )?;
 
@@ -630,7 +630,7 @@ fn delete_directory(tx: &Transaction, directory_path: &VaultPath) -> Result<(), 
     let path_string = directory_path.to_string();
     let sql1 = "DELETE FROM notes WHERE path LIKE (?1 || '%')";
     let sql2 = "DELETE FROM notesContent WHERE path LIKE (?1 || '%')";
-    let sql3 = "DELETE FROM links WHERE source = LIKE (?1 || '%')";
+    let sql3 = "DELETE FROM links WHERE source LIKE (?1 || '%')";
 
     tx.execute(sql1, params![path_string])?;
     tx.execute(sql2, params![path_string])?;

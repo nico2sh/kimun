@@ -15,7 +15,7 @@ use crate::{
 #[component]
 pub fn Settings() -> Element {
     let mut settings: Signal<settings::AppSettings> = use_context();
-    let mut modal_type = use_signal(|| ModalType::None(None));
+    let mut modal_type = use_signal(|| ModalType::None);
 
     rsx! {
         div { class: "settings-container",

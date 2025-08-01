@@ -6,8 +6,11 @@ use dioxus::prelude::*;
 use route::Route;
 use settings::AppSettings;
 
+use crate::global_events::PubSub;
+
 /// Define a components module that contains all shared components for our app.
 mod components;
+pub mod global_events;
 mod pages;
 mod route;
 mod settings;
@@ -34,6 +37,8 @@ fn main() {
 fn App() -> Element {
     let app_settings = use_signal(|| AppSettings::load_from_disk().unwrap());
     use_context_provider(move || app_settings);
+    let pub_sub = use_signal(|| PubSub::new());
+    use_context_provider(move || pub_sub);
     let theme = app_settings.read().get_theme();
 
     // The `rsx!` macro lets us define HTML inside of rust. It expands to an Element with all of our HTML inside.

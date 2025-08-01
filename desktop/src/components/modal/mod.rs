@@ -9,9 +9,7 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 use selector::{note_search::NoteSearch, note_select::NoteSelector};
 
 use crate::components::modal::{
-    confirmations::{
-        ConfirmationType, DeleteConfirm, Error, ModalAction, MoveConfirm, RenameConfirm,
-    },
+    confirmations::{ConfirmationType, DeleteConfirm, Error, MoveConfirm, RenameConfirm},
     indexer::IndexType,
 };
 
@@ -21,7 +19,7 @@ mod selector;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModalType {
-    None(Option<ModalAction>),
+    None,
     Error {
         message: String,
         error: String,
@@ -53,17 +51,17 @@ pub enum ModalType {
 
 impl Default for ModalType {
     fn default() -> Self {
-        ModalType::None(None)
+        ModalType::None
     }
 }
 
 impl ModalType {
     pub fn close(&mut self) {
-        *self = ModalType::None(None);
+        *self = ModalType::None;
     }
-    pub fn close_with_action(&mut self, status: ModalAction) {
-        *self = ModalType::None(Some(status));
-    }
+    // pub fn close_with_action(&mut self, status: GlobalEvent) {
+    //     *self = ModalType::None(Some(status));
+    // }
     pub fn set_error(&mut self, message: String, error: String) {
         *self = ModalType::Error { message, error };
     }
@@ -92,10 +90,17 @@ impl ModalType {
     }
     pub fn is_open(&self) -> bool {
         match self {
-            ModalType::None(_) => false,
+            ModalType::None => false,
             _ => true,
         }
     }
+    // pub fn get_action(&self) -> Option<GlobalEvent> {
+    //     if let ModalType::None(action) = self {
+    //         action.to_owned()
+    //     } else {
+    //         None
+    //     }
+    // }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -108,13 +113,13 @@ pub fn Modal(props: ModalProps) -> Element {
     let modal_type = props.modal_type;
     let mt = &*modal_type.read();
 
-    if let ModalType::None(_) = mt {
+    if let ModalType::None = mt {
         return rsx! {};
     }
     rsx! {
         div { class: "modal-overlay",
             match modal_type.read().to_owned() {
-                ModalType::None(_) => {
+                ModalType::None => {
                     warn!("This shouldn't be called");
                     rsx! {}
                 }
