@@ -9,14 +9,14 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilde
 
 use crate::{
     components::{
-        modal::{
-            confirmations::{ConfirmationType, ModalAction},
-            ModalType,
-        },
+        modal::{confirmations::ConfirmationType, ModalType},
         note_select_entry::{NoteSelectEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
     },
+    global_events::PubSub,
     utils::sparse_vector::SparseVector,
 };
+
+const NOTE_BROWSER: &str = "note_browser";
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct Sort {
@@ -70,7 +70,7 @@ pub fn NoteBrowser(
     // Since this is a resource that depends on the current_path
     // the entries change every time the current_path is changed
     let vault_fetch = vault.clone();
-    let all_entries = use_resource(move || {
+    let mut all_entries = use_resource(move || {
         let vault = vault_fetch.clone();
         async move {
             info!("Load all entries");
@@ -172,6 +172,20 @@ pub fn NoteBrowser(
         } else {
             NoteSelectEntryListStatus::Loading
         }
+    });
+
+    let mut pub_sub: Signal<PubSub> = use_context();
+    use_effect(move || {
+        pub_sub.write().subscribe(
+            NOTE_BROWSER,
+            Callback::new(move |g| {
+                debug!("event: {:?}", g);
+                all_entries.restart();
+            }),
+        );
+    });
+    use_drop(move || {
+        pub_sub.write().unsubscribe(NOTE_BROWSER);
     });
 
     rsx! {

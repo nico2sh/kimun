@@ -7,38 +7,105 @@ use dioxus::{
 use futures::StreamExt;
 use kimun_core::{nfs::VaultPath, NoteVault};
 
-use crate::settings::AppSettings;
+use crate::{
+    global_events::{GlobalEvent, PubSub},
+    settings::AppSettings,
+};
 
 const AUTOSAVE_SECS: u64 = 5;
-
-#[derive(Default, Debug, Clone, PartialEq)]
-pub enum EditorStatus {
-    #[default]
-    Loading,
-    Enabled {
-        content: String,
-    },
-}
+const TEXT_EDITOR: &str = "text_editor";
 
 #[derive(Debug, Clone)]
 pub struct EditorData {
     path: VaultPath,
     vault: Arc<NoteVault>,
-    content: Signal<Option<EditorContent>>,
+    content: Signal<EditorContent>,
 }
 
-#[derive(Debug, Clone)]
-pub struct EditorContent {
-    text: String,
-    dirty_status: bool,
+#[derive(Debug, Clone, Default)]
+pub enum EditorContent {
+    #[default]
+    None,
+    Note {
+        text: String,
+        dirty_status: bool,
+    },
+}
+
+impl EditorContent {
+    pub fn init(&mut self, new_text: String) {
+        // Make sure you saved the content before
+        match self {
+            EditorContent::None => {
+                *self = EditorContent::Note {
+                    text: new_text,
+                    dirty_status: false,
+                }
+            }
+            EditorContent::Note { text, dirty_status } => {
+                *text = new_text;
+                *dirty_status = false;
+            }
+        }
+    }
+
+    pub fn update_text(&mut self, new_text: String) {
+        match self {
+            EditorContent::None => {
+                *self = EditorContent::Note {
+                    text: new_text,
+                    dirty_status: false,
+                }
+            }
+            EditorContent::Note { text, dirty_status } => {
+                *text = new_text;
+                *dirty_status = true;
+            }
+        }
+    }
+
+    pub fn has_content(&self) -> bool {
+        match self {
+            EditorContent::Note {
+                text: _,
+                dirty_status: _,
+            } => true,
+            _ => false,
+        }
+    }
+    pub fn is_dirty(&self) -> bool {
+        match self {
+            EditorContent::Note {
+                text: _,
+                dirty_status,
+            } => *dirty_status,
+            _ => false,
+        }
+    }
+
+    pub fn get_text(&self) -> String {
+        match self {
+            EditorContent::Note {
+                text,
+                dirty_status: _,
+            } => text.to_owned(),
+            _ => "".to_string(),
+        }
+    }
+
+    pub fn mark_clean(&mut self) {
+        if let EditorContent::Note {
+            text: _,
+            dirty_status,
+        } = self
+        {
+            *dirty_status = false
+        }
+    }
 }
 
 impl EditorData {
-    pub fn new(
-        path: VaultPath,
-        vault: Arc<NoteVault>,
-        content: Signal<Option<EditorContent>>,
-    ) -> Self {
+    pub fn new(path: VaultPath, vault: Arc<NoteVault>, content: Signal<EditorContent>) -> Self {
         Self {
             path,
             vault,
@@ -47,48 +114,37 @@ impl EditorData {
     }
 
     async fn save(&mut self) -> anyhow::Result<()> {
-        if let Some(content) = self.content.as_mut() {
-            if content.dirty_status {
-                let path = self.path.clone();
-                let text = content.text.clone();
-                let vault = self.vault.clone();
-                tokio::spawn(async move {
-                    debug!("Saving at {}", path);
-                    let _ = vault.save_note(&path, text);
-                })
-                .await?;
-                content.dirty_status = false;
-            }
+        debug!("Triggered save");
+        let dirty_status = self.content.read().is_dirty();
+        if dirty_status {
+            let path = self.path.clone();
+            let text = self.content.read().get_text();
+            let vault = self.vault.clone();
+            tokio::spawn(async move {
+                debug!("Saving at {}", path);
+                let _ = vault.save_note(&path, text);
+            })
+            .await?;
+            self.content.write().mark_clean();
         }
         Ok(())
-    }
-
-    pub fn update_text(&mut self, text: String) {
-        if let Some(content) = self.content.as_mut() {
-            content.text = text;
-            content.dirty_status = true;
-        } else {
-            self.content = Some(EditorContent {
-                text,
-                dirty_status: false,
-            })
-        }
     }
 }
 
 impl Drop for EditorData {
     fn drop(&mut self) {
         debug!("Dropping Editor Data at path {}", self.path);
-        if let Some(content) = self.content.as_mut() {
-            if content.dirty_status {
-                debug!("Saving so we don't lose data");
-                let _ = self.vault.save_note(&self.path, &content.text);
-            }
+        let dirty_status = self.content.read().is_dirty();
+        if dirty_status {
+            debug!("Saving so we don't lose data");
+            let text = self.content.read().get_text();
+            let _ = self.vault.save_note(&self.path, text);
         }
     }
 }
 
 pub enum EditorMsg {
+    Init { text: String },
     Save,
 }
 
@@ -96,7 +152,7 @@ pub enum EditorMsg {
 pub fn EditorHeader(
     path: ReadOnlySignal<VaultPath>,
     show_browser: Signal<bool>,
-    editor_signal: Signal<EditorData>,
+    editor_signal: Signal<EditorContent>,
 ) -> Element {
     let note_path_display = path.read().to_string();
     rsx! {
@@ -138,9 +194,9 @@ pub fn EditorHeader(
             }
             div { class: "title-section",
                 div { class: "title-text", "{note_path_display}" }
-                if let Some(content) = editor_signal().content.as_ref() {
+                if editor_signal().has_content() {
                     div {
-                        class: if !content.dirty_status { "status-indicator" } else { "status-indicator unsaved" },
+                        class: if !editor_signal().is_dirty() { "status-indicator" } else { "status-indicator unsaved" },
                         id: "saveStatus",
                     }
                 }
@@ -150,17 +206,19 @@ pub fn EditorHeader(
 }
 
 #[component]
-pub fn NoText(path: ReadOnlySignal<VaultPath>) -> Element {
+pub fn NoText(path: ReadOnlySignal<VaultPath>, editor_signal: Signal<EditorContent>) -> Element {
+    use_effect(move || *editor_signal.write() = EditorContent::None);
+
     let mut text_area_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
-    spawn(async move {
-        loop {
-            if let Some(e) = text_area_signal.with(|f| f.clone()) {
-                debug!("Attached main UI for focus");
-                let _ = e.set_focus(true).await;
-                break;
-            }
-        }
-    });
+    // spawn(async move {
+    //     loop {
+    //         if let Some(e) = text_area_signal.with(|f| f.clone()) {
+    //             debug!("Attached main UI for focus");
+    //             let _ = e.set_focus(true).await;
+    //             break;
+    //         }
+    //     }
+    // });
 
     rsx! {
         div {
@@ -179,7 +237,7 @@ pub fn NoText(path: ReadOnlySignal<VaultPath>) -> Element {
 pub fn TextEditor(
     note_path: ReadOnlySignal<VaultPath>,
     vault: Arc<NoteVault>,
-    editor_signal: Signal<Option<EditorContent>>,
+    editor_signal: Signal<EditorContent>,
 ) -> Element {
     debug!(
         "-==== [Text Editor] Starting Editor at '{}' ====-",
@@ -198,13 +256,36 @@ pub fn TextEditor(
     });
 
     let mut settings: Signal<AppSettings> = use_context();
-    let cr = use_coroutine(move |mut rx: UnboundedReceiver<EditorMsg>| async move {
-        debug!("We start listening for editor update events");
-        while let Some(msg) = rx.next().await {
-            match msg {
-                EditorMsg::Save => {
-                    debug!("Received save signal");
-                    let _ = editor_signal.write().save();
+
+    let editor_vault = vault.clone();
+    let cr = use_coroutine(move |mut rx: UnboundedReceiver<EditorMsg>| {
+        let editor_vault = editor_vault.clone();
+        async move {
+            debug!("We start listening for editor update events");
+            let mut ed: Option<EditorData> = None;
+            while let Some(msg) = rx.next().await {
+                match msg {
+                    EditorMsg::Init { text } => {
+                        // We check if we already have an editor_data and we save
+                        if let Some(editor_data) = ed.as_mut() {
+                            let _ = editor_data.save().await;
+                        }
+                        // We create a new instance of the editor data
+
+                        editor_signal.write().init(text.clone());
+                        let editor_data = EditorData {
+                            content: editor_signal,
+                            path: note_path.read().to_owned(),
+                            vault: editor_vault.clone(),
+                        };
+                        ed = Some(editor_data);
+                    }
+                    EditorMsg::Save => {
+                        debug!("Received save signal");
+                        if let Some(editor_data) = ed.as_mut() {
+                            let _ = editor_data.save().await;
+                        }
+                    }
                 }
             }
         }
@@ -218,9 +299,10 @@ pub fn TextEditor(
         }
     });
 
-    let initial_content = use_resource(move || {
+    let vault_content = vault.clone();
+    let note_content = use_resource(move || {
         debug!("[Initial Content] Loading text content");
-        let vault = editor_signal.peek().vault.clone();
+        let vault = vault_content.clone();
         async move {
             let exists = vault.exists(&note_path.read()).is_some();
             debug!("[Initial Content] Exists: {:?}", exists);
@@ -244,32 +326,57 @@ pub fn TextEditor(
                     "[Initial Content] Creating Editor Data for existing note with path: {}",
                     note_path
                 );
-                editor_signal.write().update_text(text.clone());
+                cr.send(EditorMsg::Init { text: text.clone() });
                 debug!("[Initial Content] Init message sent");
-                EditorStatus::Enabled { content: text }
+                text
             } else {
                 let text = "".to_string();
                 debug!(
                     "[Initial Content] Creating new Editor Data for new note with path: {}",
                     note_path
                 );
-                editor_signal.write().update_text(text.clone());
-                EditorStatus::Enabled { content: text }
+                cr.send(EditorMsg::Init { text: text.clone() });
+                debug!("[Initial Content] Init message sent");
+                text
             }
         }
     });
 
-    let content = initial_content
-        .read_unchecked()
-        .as_ref()
-        .map_or_else(EditorStatus::default, |ec| ec.to_owned());
+    let mut pub_sub: Signal<PubSub> = use_context();
+    use_effect(move || {
+        let vault = vault.clone();
+        pub_sub.write().subscribe(
+            TEXT_EDITOR.to_string(),
+            Callback::new(move |g| {
+                match g {
+                    GlobalEvent::SaveCurrentNote => {
+                        let dirty_status = editor_signal.peek().is_dirty();
+                        if dirty_status {
+                            debug!("Saving so we don't lose data");
+                            let text = editor_signal.peek().get_text();
+                            let _ = vault.save_note(&note_path.read(), text);
+                            editor_signal.write().mark_clean();
+                        }
+                    }
+                    GlobalEvent::MarkNoteClean => {
+                        editor_signal.write().mark_clean();
+                    }
+                    _ => {}
+                }
+                debug!("Saving a note");
+            }),
+        );
+    });
+    use_drop(move || {
+        pub_sub.write().unsubscribe(TEXT_EDITOR.to_string());
+    });
 
     // This manages the editor state
     rsx! {
         div { class: "editor-content",
             {
-                match content {
-                    EditorStatus::Loading => rsx! {
+                match &*note_content.read() {
+                    None => rsx! {
                         div {
                             onmounted: move |e| {
                                 *text_area_signal.write() = Some(e.data());
@@ -277,7 +384,7 @@ pub fn TextEditor(
                             "Loading..."
                         }
                     },
-                    EditorStatus::Enabled { content } => rsx! {
+                    Some(content) => rsx! {
                         textarea {
                             class: "text-editor",
                             id: "textEditor",

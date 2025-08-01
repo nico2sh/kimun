@@ -1,12 +1,12 @@
-use std::{rc::Rc, sync::Arc};
+use std::sync::Arc;
 
-use dioxus::{
-    logger::tracing::{debug, error},
-    prelude::*,
-};
+use dioxus::{logger::tracing::error, prelude::*};
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
-use crate::components::{button::ButtonBuilder, modal::ModalType};
+use crate::{
+    components::{button::ButtonBuilder, modal::ModalType},
+    global_events::{GlobalEvent, PubSub},
+};
 
 pub enum ConfirmationType {
     Delete(VaultPath),
@@ -79,6 +79,7 @@ pub fn DeleteConfirm(
     vault: Arc<NoteVault>,
     path: VaultPath,
 ) -> Element {
+    let pub_sub: Signal<PubSub> = use_context();
     let delete_path = path.clone();
     let buttons = vec![
         ButtonBuilder::secondary(
@@ -89,16 +90,32 @@ pub fn DeleteConfirm(
         ),
         ButtonBuilder::danger(
             "Delete",
-            Callback::new(move |_e| match vault.delete_note(&delete_path) {
-                Ok(_) => {
-                    modal_type
-                        .write()
-                        .close_with_action(ModalAction::Delete(delete_path.clone()));
+            Callback::new(move |_e| {
+                // We don't want to auto save the note, so we mark it as saved
+                pub_sub.read().publish(GlobalEvent::MarkNoteClean);
+
+                let is_note = delete_path.is_note();
+                let delete_result = if is_note {
+                    vault.delete_note(&delete_path)
+                } else {
+                    vault.delete_directory(&delete_path)
+                };
+                if let Err(e) = delete_result {
+                    error!("Error: {}", e);
+                    modal_type.write().set_error(
+                        format!(
+                            "Error deleting {}: {}",
+                            if is_note { "note" } else { "directory" },
+                            delete_path
+                        ),
+                        format!("{}", e),
+                    );
+                } else {
+                    pub_sub
+                        .read()
+                        .publish(GlobalEvent::Deleted(delete_path.clone()));
+                    modal_type.write().close();
                 }
-                Err(e) => modal_type.write().set_error(
-                    "There has been an error deleting the note".to_string(),
-                    e.to_string(),
-                ),
             }),
         ),
     ];
@@ -113,26 +130,20 @@ pub fn DeleteConfirm(
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ModalAction {
-    Delete(VaultPath),
-    Move { from: VaultPath, to: VaultPath },
-    Rename(VaultPath),
-}
-
 #[component]
 pub fn MoveConfirm(
     modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     from_path: VaultPath,
 ) -> Element {
+    let pub_sub: Signal<PubSub> = use_context();
     let is_note = from_path.is_note();
     let to_path = from_path.clone();
     let mut dest_path = use_signal(|| to_path);
     let (current_base_path, current_note_name) = from_path.get_parent_path();
-    let move_vault = vault.clone();
+    let list_vault = vault.clone();
     let list_of_paths = use_resource(move || {
-        let vault = vault.clone();
+        let vault = list_vault.clone();
         async move {
             let mut entries = vec![];
             let (options, receiver) = VaultBrowseOptionsBuilder::new(&VaultPath::root())
@@ -163,11 +174,33 @@ pub fn MoveConfirm(
         ButtonBuilder::primary(
             "Move",
             Callback::new(move |_e| {
-                let destination = dest_path.read().append(&VaultPath::new(&current_note_name));
-                modal_type.write().close_with_action(ModalAction::Move {
-                    from: from_path.clone(),
-                    to: destination.clone(),
-                });
+                pub_sub.read().publish(GlobalEvent::SaveCurrentNote);
+                let to = dest_path.read().append(&VaultPath::new(&current_note_name));
+                let is_note = from_path.is_note();
+                let move_result = if is_note {
+                    vault.rename_note(&from_path, &to)
+                } else {
+                    vault.rename_directory(&from_path, &to)
+                };
+
+                if let Err(e) = move_result {
+                    error!("Error: {}", e);
+                    modal_type.write().set_error(
+                        format!(
+                            "Error moving {}: {}",
+                            if is_note { "note" } else { "directory" },
+                            from_path
+                        ),
+                        format!("{}", e),
+                    );
+                } else {
+                    pub_sub.read().publish(GlobalEvent::Moved {
+                        from: from_path.clone(),
+                        to,
+                    });
+
+                    modal_type.write().close();
+                }
             }),
         ),
     ];
@@ -204,7 +237,8 @@ pub fn RenameConfirm(
     vault: Arc<NoteVault>,
     path: VaultPath,
 ) -> Element {
-    let current_name: String = path.get_name();
+    let pub_sub: Signal<PubSub> = use_context();
+    let (current_path, current_name) = path.get_parent_path();
     let mut new_name = use_signal(|| current_name.clone());
     let buttons = vec![
         ButtonBuilder::secondary(
@@ -216,7 +250,33 @@ pub fn RenameConfirm(
         ButtonBuilder::primary(
             "Rename",
             Callback::new(move |_e| {
-                modal_type.write().close();
+                pub_sub.read().publish(GlobalEvent::SaveCurrentNote);
+                let to = current_path.append(&VaultPath::new(&*new_name.read()));
+                let is_note = path.is_note();
+                let move_result = if is_note {
+                    vault.rename_note(&path, &to)
+                } else {
+                    vault.rename_directory(&path, &to)
+                };
+
+                if let Err(e) = move_result {
+                    error!("Error: {}", e);
+                    modal_type.write().set_error(
+                        format!(
+                            "Error renaming {}: {}",
+                            if is_note { "note" } else { "directory" },
+                            path
+                        ),
+                        format!("{}", e),
+                    );
+                } else {
+                    pub_sub.read().publish(GlobalEvent::Renamed {
+                        old_name: path.clone(),
+                        new_name: to.clone(),
+                    });
+
+                    modal_type.write().close();
+                }
             }),
         ),
     ];
