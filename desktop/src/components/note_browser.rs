@@ -189,22 +189,52 @@ pub fn NoteBrowser(
         pub_sub.unsubscribe(NOTE_BROWSER);
     });
 
+    let new_note_vault = vault.clone();
     rsx! {
         div { class: "sidebar-header",
             div { class: "sidebar-title", "{browsing_directory}" }
-            button {
-                class: "sidebar-toggle",
-                onclick: move |_| {
-                    show_browser.set(false);
-                },
-                svg {
-                    width: 16,
-                    height: 16,
-                    view_box: "0 0 24 24",
-                    fill: "none",
-                    stroke: "currentColor",
-                    stroke_width: 2,
-                    path { d: "M18 6L6 18M6 6l12 12" }
+            div { class: "sidebar-header-actions",
+                button {
+                    class: "sidebar-btn",
+                    title: "Create new note",
+                    onclick: move |_e| {
+                        let create_path = editor_path.read().clone();
+                        modal_type
+                            .write()
+                            .set_confirm(
+                                new_note_vault.clone(),
+                                ConfirmationType::NewNote(create_path.clone()),
+                            );
+                    },
+                    svg {
+                        width: 16,
+                        height: 16,
+                        view_box: "0 0 24 24",
+                        fill: "none",
+                        stroke: "currentColor",
+                        path { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M12 13v6M9 16h6" }
+                    }
+                }
+                button {
+                    class: "sidebar-btn",
+                    title: "Create new directory",
+                    onclick: move |_e| {
+                        let create_path = editor_path.read().clone();
+                        modal_type
+                            .write()
+                            .set_confirm(
+                                vault.clone(),
+                                ConfirmationType::NewDirectory(create_path.clone()),
+                            );
+                    },
+                    svg {
+                        width: 16,
+                        height: 16,
+                        view_box: "0 0 24 24",
+                        fill: "none",
+                        stroke: "currentColor",
+                        path { d: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v11zM12 13v6M9 16h6" }
+                    }
                 }
             }
         }
@@ -245,7 +275,7 @@ pub fn NoteBrowser(
                     }
                 }
                 button {
-                    class: if sort.read().ascending { "sort-order" } else { "sort-order descending" },
+                    class: if sort.read().ascending { "sort-order ascending" } else { "sort-order" },
                     id: "sortOrder",
                     onclick: move |_e| {
                         sort.write().toggle_order();

@@ -16,6 +16,8 @@ pub enum VaultError {
     FSError(#[from] FSError),
     #[error("Note already exists at: {path}")]
     NoteExists { path: VaultPath },
+    #[error("Directory already exists at: {path}")]
+    DirectoryExists { path: VaultPath },
 }
 
 #[derive(Error, Debug)]

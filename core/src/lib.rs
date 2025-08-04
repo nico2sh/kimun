@@ -20,6 +20,8 @@ use nfs::{visitor::NoteListVisitorBuilder, NoteEntryData, VaultEntry, VaultPath}
 use note::{ContentChunk, NoteContentData, NoteDetails};
 use utilities::path_to_string;
 
+use crate::nfs::DirectoryEntryData;
+
 pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
 
 pub struct IndexReport {
@@ -377,6 +379,15 @@ impl NoteVault {
             self.save_note(path, text)
         } else {
             Err(VaultError::NoteExists { path: path.clone() })
+        }
+    }
+
+    pub fn create_directory(&self, path: &VaultPath) -> Result<DirectoryEntryData, VaultError> {
+        if self.exists(path).is_none() {
+            let ded = nfs::create_directory(&self.workspace_path, path)?;
+            Ok(ded)
+        } else {
+            Err(VaultError::DirectoryExists { path: path.clone() })
         }
     }
 

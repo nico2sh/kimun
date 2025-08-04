@@ -206,6 +206,24 @@ pub(crate) fn load_note<P: AsRef<Path>>(
     }
 }
 
+pub fn create_directory<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<DirectoryEntryData, FSError> {
+    if path.is_note() {
+        return Err(FSError::InvalidPath {
+            path: path.to_string(),
+            message: "Path provided is a note".to_string(),
+        });
+    }
+
+    let full_path = path.to_pathbuf(workspace_path);
+    std::fs::create_dir_all(full_path)?;
+    Ok(DirectoryEntryData {
+        path: path.to_owned(),
+    })
+}
+
 pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     workspace_path: P,
     path: &VaultPath,
