@@ -69,4 +69,5 @@ pub enum GlobalEvent {
         new_name: VaultPath,
     },
     NewNoteCreated(VaultPath),
+    NewDirectoryCreated(VaultPath),
 }

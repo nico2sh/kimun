@@ -164,6 +164,7 @@ pub fn EditorHeader(
                         let showing = *show_browser.read();
                         show_browser.set(!showing);
                     },
+
                     svg {
                         width: 20,
                         height: 20,
@@ -171,23 +172,27 @@ pub fn EditorHeader(
                         fill: "none",
                         stroke: "currentColor",
                         stroke_width: "2",
-                        line {
-                            x1: 3,
-                            y1: 6,
-                            x2: 21,
-                            y2: 6,
-                        }
-                        line {
-                            x1: 3,
-                            y1: 12,
-                            x2: 21,
-                            y2: 12,
-                        }
-                        line {
-                            x1: 3,
-                            y1: 18,
-                            x2: 21,
-                            y2: 18,
+                        if *show_browser.read() {
+                            path { d: "M18 6L6 18M6 6l12 12" }
+                        } else {
+                            line {
+                                x1: 3,
+                                y1: 6,
+                                x2: 21,
+                                y2: 6,
+                            }
+                            line {
+                                x1: 3,
+                                y1: 12,
+                                x2: 21,
+                                y2: 12,
+                            }
+                            line {
+                                x1: 3,
+                                y1: 18,
+                                x2: 21,
+                                y2: 18,
+                            }
                         }
                     }
                 }

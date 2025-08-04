@@ -130,8 +130,11 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                             PathType::Note
                         }
                         Err(e) => {
-                            error!("Error creating note: {}", e);
                             let parent = note_path.get_parent_path().0;
+                            modal_type.set(ModalType::Error {
+                                message: "Error Creating new Note".to_string(),
+                                error: e.to_string(),
+                            });
                             PathType::Reroute(parent)
                         }
                     }

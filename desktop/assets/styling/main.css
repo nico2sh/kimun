@@ -51,6 +51,33 @@ progress {
   justify-content: space-between;
 }
 
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: var(--text-head);
+  cursor: pointer;
+  padding: 6px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+.sidebar-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.3);
+  transform: scale(1.05);
+}
+
 .sidebar-title {
   font-weight: 600;
   font-size: 16px;
@@ -105,11 +132,27 @@ progress {
   align-items: center;
 }
 
-.controls {
+.dialog-controls {
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  align-items: center;
-  justify-content: center;
+  /* align-items: center;
+  justify-content: center; */
+}
+
+/* .dialog-controls .select {
+  width: 100%;
+} */
+
+.dialog-controls label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-light);
+}
+
+label.error {
+  color: var(--accent-red-dark);
 }
 
 .select {
@@ -150,7 +193,7 @@ progress {
   border-color: var(--border-hover);
 }
 
-.sort-order.descending {
+.sort-order.ascending {
   transform: rotate(180deg);
 }
 

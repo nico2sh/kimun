@@ -9,7 +9,10 @@ use kimun_core::{nfs::VaultPath, NoteVault};
 use selector::{note_search::NoteSearch, note_select::NoteSelector};
 
 use crate::components::modal::{
-    confirmations::{ConfirmationType, DeleteConfirm, Error, MoveConfirm, RenameConfirm},
+    confirmations::{
+        ConfirmationType, CreateDirectory, CreateNote, DeleteConfirm, Error, MoveConfirm,
+        RenameConfirm,
+    },
     indexer::IndexType,
 };
 
@@ -44,6 +47,14 @@ pub enum ModalType {
         from_path: VaultPath,
     },
     RenameNote {
+        vault: Arc<NoteVault>,
+        path: VaultPath,
+    },
+    NewNote {
+        vault: Arc<NoteVault>,
+        path: VaultPath,
+    },
+    NewDirectory {
         vault: Arc<NoteVault>,
         path: VaultPath,
     },
@@ -86,6 +97,8 @@ impl ModalType {
             },
             ConfirmationType::Move(from_path) => ModalType::MoveNote { vault, from_path },
             ConfirmationType::Rename(path) => ModalType::RenameNote { vault, path },
+            ConfirmationType::NewNote(path) => ModalType::NewNote { vault, path },
+            ConfirmationType::NewDirectory(path) => ModalType::NewDirectory { vault, path },
         }
     }
     pub fn is_open(&self) -> bool {
@@ -157,6 +170,12 @@ pub fn Modal(props: ModalProps) -> Element {
                         RenameConfirm { modal_type, vault: vault.clone(), path: path.clone() }
                     }
                 }
+                ModalType::NewNote { vault, path } => rsx! {
+                    CreateNote { modal_type, vault: vault.clone(), from_path: path.clone() }
+                },
+                ModalType::NewDirectory { vault, path } => rsx! {
+                    CreateDirectory { modal_type, vault: vault.clone(), from_path: path.clone() }
+                },
             }
         }
     }
