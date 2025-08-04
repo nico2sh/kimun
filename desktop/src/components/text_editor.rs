@@ -105,14 +105,6 @@ impl EditorContent {
 }
 
 impl EditorData {
-    pub fn new(path: VaultPath, vault: Arc<NoteVault>, content: Signal<EditorContent>) -> Self {
-        Self {
-            path,
-            vault,
-            content,
-        }
-    }
-
     async fn save(&mut self) -> anyhow::Result<()> {
         debug!("Triggered save");
         let dirty_status = self.content.read().is_dirty();
@@ -172,27 +164,23 @@ pub fn EditorHeader(
                         fill: "none",
                         stroke: "currentColor",
                         stroke_width: "2",
-                        if *show_browser.read() {
-                            path { d: "M18 6L6 18M6 6l12 12" }
-                        } else {
-                            line {
-                                x1: 3,
-                                y1: 6,
-                                x2: 21,
-                                y2: 6,
-                            }
-                            line {
-                                x1: 3,
-                                y1: 12,
-                                x2: 21,
-                                y2: 12,
-                            }
-                            line {
-                                x1: 3,
-                                y1: 18,
-                                x2: 21,
-                                y2: 18,
-                            }
+                        line {
+                            x1: 3,
+                            y1: 6,
+                            x2: 21,
+                            y2: 6,
+                        }
+                        line {
+                            x1: 3,
+                            y1: 12,
+                            x2: 21,
+                            y2: 12,
+                        }
+                        line {
+                            x1: 3,
+                            y1: 18,
+                            x2: 21,
+                            y2: 18,
                         }
                     }
                 }
