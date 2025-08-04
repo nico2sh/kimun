@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dioxus::{
-    logger::tracing::{debug, info},
+    logger::tracing::{debug, error, info},
     prelude::*,
 };
 use kimun_core::{
@@ -95,7 +95,8 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
             }),
         );
     });
-    use_drop(move || pub_sub.unsubscribe(EDITOR));
+    let drop_pub_sub = pub_sub.clone();
+    use_drop(move || drop_pub_sub.unsubscribe(EDITOR));
 
     let index_vault = vault.clone();
     use_effect(move || {
@@ -122,7 +123,18 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                 debug!("Path doesn't exist");
                 if editor_path.read().is_note() && create {
                     debug!("It's a note and we have to create it");
-                    PathType::Note
+                    let note_path = editor_path.read().to_owned();
+                    match editor_vault.create_note(&note_path, "") {
+                        Ok(_) => {
+                            pub_sub.publish(GlobalEvent::NewNoteCreated(note_path));
+                            PathType::Note
+                        }
+                        Err(e) => {
+                            error!("Error creating note: {}", e);
+                            let parent = note_path.get_parent_path().0;
+                            PathType::Reroute(parent)
+                        }
+                    }
                 } else {
                     debug!("We reroute to the root");
                     PathType::Reroute(VaultPath::root())

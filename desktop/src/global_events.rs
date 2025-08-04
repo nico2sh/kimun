@@ -48,7 +48,7 @@ where
         self.subscribers.borrow_mut().remove(id.as_ref());
     }
     pub fn publish(&self, event: E) {
-        for (_entry, subscription) in self.subscribers.borrow().iter() {
+        for subscription in self.subscribers.borrow().values() {
             subscription.callback.call(event.clone());
         }
     }
@@ -68,4 +68,5 @@ pub enum GlobalEvent {
         old_name: VaultPath,
         new_name: VaultPath,
     },
+    NewNoteCreated(VaultPath),
 }

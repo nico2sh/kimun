@@ -974,7 +974,6 @@ dependencies = [
  "dioxus-hooks",
  "dioxus-html",
  "dioxus-logger",
- "dioxus-mobile",
  "dioxus-router",
  "dioxus-signals",
  "dioxus-web",
@@ -1152,7 +1151,6 @@ dependencies = [
  "dioxus-devtools",
  "dioxus-history",
  "dioxus-lib",
- "dioxus-mobile",
  "dioxus-web",
  "dioxus_server_macro",
  "futures-channel",
@@ -1162,7 +1160,6 @@ dependencies = [
  "serde",
  "server_fn",
  "tracing",
- "web-sys",
 ]
 
 [[package]]
@@ -1281,28 +1278,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "dioxus-mobile"
-version = "0.6.2"
+name = "dioxus-query"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d1295388909f427758993f32a571e0f8698d6ce0f125fa0e81b8bfdec3fa952"
-dependencies = [
- "dioxus-cli-config",
- "dioxus-desktop",
- "dioxus-lib",
- "jni",
- "libc",
- "once_cell",
-]
-
-[[package]]
-name = "dioxus-radio"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "283a38a8aab64abdabc03a22f9e512c371025104cebd4c6e777f3946859fb85c"
+checksum = "fa5eb6f70fb2e14f21a1da5ee870795f9a71e51ba99f032dd1e91f1017b162a1"
 dependencies = [
  "dioxus-lib",
- "generational-box",
+ "futures-util",
+ "tokio",
  "warnings",
+ "wasmtimer",
+ "web-time",
 ]
 
 [[package]]
@@ -2767,7 +2753,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dioxus",
- "dioxus-radio",
+ "dioxus-query",
  "dirs",
  "futures",
  "kimun_core",
@@ -4813,9 +4799,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.47.0"
+version = "1.47.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43864ed400b6043a4757a25c7a64a8efde741aed79a056a2fb348a406701bb35"
+checksum = "89e49afdadebb872d3145a5638b59eb0691ea23e46ca484037cfab3b76b95038"
 dependencies = [
  "backtrace",
  "bytes",
@@ -5352,6 +5338,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmtimer"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8d49b5d6c64e8558d9b1b065014426f35c18de636895d24893dbbd329743446"
+dependencies = [
+ "futures",
+ "js-sys",
+ "parking_lot",
+ "pin-utils",
+ "slab",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "wayland-backend"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5416,6 +5416,16 @@ name = "web-sys"
 version = "0.3.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33b6dd2ef9186f1f2072e409e99cd22a975331a6b3591b12c764e0e55c60d5d2"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
