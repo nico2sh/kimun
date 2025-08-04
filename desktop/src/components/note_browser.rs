@@ -75,7 +75,7 @@ pub fn NoteBrowser(
         async move {
             info!("Load all entries");
             let mut entries = vec![];
-            let (search_options, rx) = VaultBrowseOptionsBuilder::new(&*browsing_directory.read())
+            let (search_options, rx) = VaultBrowseOptionsBuilder::new(&browsing_directory())
                 .full_validation()
                 .non_recursive()
                 .build();
@@ -102,7 +102,7 @@ pub fn NoteBrowser(
                         entries.push(e)
                     }
                     ResultType::Directory => {
-                        if entry.path != *browsing_directory.read() {
+                        if entry.path != browsing_directory() {
                             let e = NoteSelectEntry::from_directory_details(
                                 entry.path,
                                 browsing_directory,
@@ -198,12 +198,11 @@ pub fn NoteBrowser(
                     class: "sidebar-btn",
                     title: "Create new note",
                     onclick: move |_e| {
-                        let create_path = editor_path.read().clone();
                         modal_type
                             .write()
                             .set_confirm(
                                 new_note_vault.clone(),
-                                ConfirmationType::NewNote(create_path.clone()),
+                                ConfirmationType::NewNote(browsing_directory()),
                             );
                     },
                     svg {
@@ -219,12 +218,11 @@ pub fn NoteBrowser(
                     class: "sidebar-btn",
                     title: "Create new directory",
                     onclick: move |_e| {
-                        let create_path = editor_path.read().clone();
                         modal_type
                             .write()
                             .set_confirm(
                                 vault.clone(),
-                                ConfirmationType::NewDirectory(create_path.clone()),
+                                ConfirmationType::NewDirectory(browsing_directory()),
                             );
                     },
                     svg {
@@ -297,12 +295,12 @@ pub fn NoteBrowser(
             class: "entry-list",
             id: "entryList",
             onmousemove: move |_e| {
-                if !*select_by_mouse.read() {
+                if !select_by_mouse() {
                     select_by_mouse.set(true);
                 }
             },
             onmouseleave: move |_e| {
-                if *select_by_mouse.read() {
+                if select_by_mouse() {
                     selected.set(None);
                 }
             },
@@ -314,9 +312,10 @@ pub fn NoteBrowser(
                 for (index , entry) in entries.into_iter().enumerate() {
                     {
                         let entry_path = entry.get_path().to_owned();
-                        let slct = *selected.read() == Some(index);
+                        let slct = selected() == Some(index);
                         let active = entry_path.eq(&*editor_path.read());
                         let vault = vault.clone();
+                        let entry_action = entry.clone();
                         rsx! {
                             div {
                                 class: if slct { "note-item selected" } else { if active { "note-item active" } else { "note-item" } },
@@ -325,7 +324,7 @@ pub fn NoteBrowser(
                                     row_mounts.write().insert(index, e.data());
                                 },
                                 onmouseenter: move |_e| {
-                                    if *select_by_mouse.read() {
+                                    if select_by_mouse() {
                                         selected.set(Some(index));
                                     }
                                 },
@@ -339,7 +338,15 @@ pub fn NoteBrowser(
                                     {entry.get_view()}
                                 }
                                 if !entry.is_up_dir() && slct {
-                                    NoteActions { vault, modal_type, entry_path }
+                                    NoteActions {
+                                        vault,
+                                        modal_type,
+                                        entry_path,
+                                        onclick: move |_e| {
+                                            info!("Clicked element");
+                                            let _ = entry_action.on_select();
+                                        },
+                                    }
                                 }
                             }
                         }
@@ -354,24 +361,35 @@ pub fn NoteBrowser(
     }
 }
 
-#[component]
-fn NoteActions(
+#[derive(PartialEq, Clone, Props)]
+struct NoteActionsProps {
     vault: Arc<NoteVault>,
     modal_type: Signal<ModalType>,
     entry_path: VaultPath,
-) -> Element {
-    let rename_vault = vault.clone();
-    let rename_path = entry_path.clone();
-    let move_vault = vault.clone();
-    let move_path = entry_path.clone();
-    let delete_vault = vault.clone();
+    onclick: EventHandler<MouseEvent>,
+}
+
+#[component]
+fn NoteActions(props: NoteActionsProps) -> Element {
+    let rename_vault = props.vault.clone();
+    let rename_path = props.entry_path.clone();
+    let move_vault = props.vault.clone();
+    let move_path = props.entry_path.clone();
+    let delete_vault = props.vault.clone();
+
+    let mut modal_type = props.modal_type;
 
     rsx! {
-        div { class: "note-actions",
+        div {
+            class: "note-actions",
+            onclick: move |e| {
+                props.onclick.call(e);
+            },
             button {
                 class: "action-btn rename",
                 title: "Rename",
-                onclick: move |_| {
+                onclick: move |e| {
+                    e.stop_propagation();
                     let rename_path = rename_path.clone();
                     modal_type
                         .write()
@@ -390,7 +408,8 @@ fn NoteActions(
             button {
                 class: "action-btn move",
                 title: "Move",
-                onclick: move |_| {
+                onclick: move |e| {
+                    e.stop_propagation();
                     let move_path = move_path.clone();
                     modal_type
                         .write()
@@ -409,8 +428,9 @@ fn NoteActions(
             button {
                 class: "action-btn delete",
                 title: "Delete",
-                onclick: move |_| {
-                    let delete_path = entry_path.clone();
+                onclick: move |e| {
+                    e.stop_propagation();
+                    let delete_path = props.entry_path.clone();
                     modal_type
                         .write()
                         .set_confirm(

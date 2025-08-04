@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dioxus::{
-    logger::tracing::{debug, error, info},
+    logger::tracing::{debug, info},
     prelude::*,
 };
 use kimun_core::{
