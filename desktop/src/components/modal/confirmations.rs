@@ -79,7 +79,7 @@ pub fn DeleteConfirm(
     vault: Arc<NoteVault>,
     path: VaultPath,
 ) -> Element {
-    let pub_sub: Signal<PubSub> = use_context();
+    let pub_sub: PubSub<GlobalEvent> = use_context();
     let delete_path = path.clone();
     let buttons = vec![
         ButtonBuilder::secondary(
@@ -92,7 +92,7 @@ pub fn DeleteConfirm(
             "Delete",
             Callback::new(move |_e| {
                 // We don't want to auto save the note, so we mark it as saved
-                pub_sub.read().publish(GlobalEvent::MarkNoteClean);
+                pub_sub.publish(GlobalEvent::MarkNoteClean);
 
                 let is_note = delete_path.is_note();
                 let delete_result = if is_note {
@@ -111,9 +111,7 @@ pub fn DeleteConfirm(
                         format!("{}", e),
                     );
                 } else {
-                    pub_sub
-                        .read()
-                        .publish(GlobalEvent::Deleted(delete_path.clone()));
+                    pub_sub.publish(GlobalEvent::Deleted(delete_path.clone()));
                     modal_type.write().close();
                 }
             }),
@@ -136,7 +134,7 @@ pub fn MoveConfirm(
     vault: Arc<NoteVault>,
     from_path: VaultPath,
 ) -> Element {
-    let pub_sub: Signal<PubSub> = use_context();
+    let pub_sub: PubSub<GlobalEvent> = use_context();
     let is_note = from_path.is_note();
     let to_path = from_path.clone();
     let mut dest_path = use_signal(|| to_path);
@@ -174,7 +172,7 @@ pub fn MoveConfirm(
         ButtonBuilder::primary(
             "Move",
             Callback::new(move |_e| {
-                pub_sub.read().publish(GlobalEvent::SaveCurrentNote);
+                pub_sub.publish(GlobalEvent::SaveCurrentNote);
                 let to = dest_path.read().append(&VaultPath::new(&current_note_name));
                 let is_note = from_path.is_note();
                 let move_result = if is_note {
@@ -194,7 +192,7 @@ pub fn MoveConfirm(
                         format!("{}", e),
                     );
                 } else {
-                    pub_sub.read().publish(GlobalEvent::Moved {
+                    pub_sub.publish(GlobalEvent::Moved {
                         from: from_path.clone(),
                         to,
                     });
@@ -237,7 +235,7 @@ pub fn RenameConfirm(
     vault: Arc<NoteVault>,
     path: VaultPath,
 ) -> Element {
-    let pub_sub: Signal<PubSub> = use_context();
+    let pub_sub: PubSub<GlobalEvent> = use_context();
     let (current_path, current_name) = path.get_parent_path();
     let mut new_name = use_signal(|| current_name.clone());
     let buttons = vec![
@@ -250,7 +248,7 @@ pub fn RenameConfirm(
         ButtonBuilder::primary(
             "Rename",
             Callback::new(move |_e| {
-                pub_sub.read().publish(GlobalEvent::SaveCurrentNote);
+                pub_sub.publish(GlobalEvent::SaveCurrentNote);
                 let to = current_path.append(&VaultPath::new(&*new_name.read()));
                 let is_note = path.is_note();
                 let move_result = if is_note {
@@ -270,7 +268,7 @@ pub fn RenameConfirm(
                         format!("{}", e),
                     );
                 } else {
-                    pub_sub.read().publish(GlobalEvent::Renamed {
+                    pub_sub.publish(GlobalEvent::Renamed {
                         old_name: path.clone(),
                         new_name: to.clone(),
                     });

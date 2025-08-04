@@ -28,7 +28,7 @@ impl Display for ButtonStyle {
 pub struct ButtonBuilder {
     title: String,
     style: ButtonStyle,
-    action: Callback<MouseEvent>,
+    action: EventHandler<MouseEvent>,
 }
 
 impl ButtonBuilder {
@@ -78,7 +78,7 @@ pub struct ButtonProps {
     title: String,
     #[props(default)]
     style: ButtonStyle,
-    action: Callback<MouseEvent>,
+    action: EventHandler<MouseEvent>,
     #[props(default)]
     disabled: bool,
 }

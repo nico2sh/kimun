@@ -48,10 +48,11 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
         ModalType::None
     });
 
-    let mut pub_sub: Signal<PubSub> = use_context();
+    let pub_sub: PubSub<GlobalEvent> = use_context();
+    let pc = pub_sub.clone();
     use_effect(move || {
         let editor_path = editor_path.read().clone();
-        pub_sub.write().subscribe(
+        pc.subscribe(
             EDITOR,
             Callback::new(move |ge| match ge {
                 GlobalEvent::Deleted(vault_path) => {
@@ -94,7 +95,7 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
             }),
         );
     });
-    use_drop(move || pub_sub.write().unsubscribe(EDITOR));
+    use_drop(move || pub_sub.unsubscribe(EDITOR));
 
     let index_vault = vault.clone();
     use_effect(move || {

@@ -12,7 +12,7 @@ use crate::{
         modal::{confirmations::ConfirmationType, ModalType},
         note_select_entry::{NoteSelectEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
     },
-    global_events::PubSub,
+    global_events::{GlobalEvent, PubSub},
     utils::sparse_vector::SparseVector,
 };
 
@@ -174,9 +174,10 @@ pub fn NoteBrowser(
         }
     });
 
-    let mut pub_sub: Signal<PubSub> = use_context();
+    let pub_sub: PubSub<GlobalEvent> = use_context();
+    let pc = pub_sub.clone();
     use_effect(move || {
-        pub_sub.write().subscribe(
+        pc.subscribe(
             NOTE_BROWSER,
             Callback::new(move |g| {
                 debug!("event: {:?}", g);
@@ -185,7 +186,7 @@ pub fn NoteBrowser(
         );
     });
     use_drop(move || {
-        pub_sub.write().unsubscribe(NOTE_BROWSER);
+        pub_sub.unsubscribe(NOTE_BROWSER);
     });
 
     rsx! {
