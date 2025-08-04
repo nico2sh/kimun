@@ -1,38 +1,54 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use dioxus::prelude::Callback;
 use kimun_core::nfs::VaultPath;
 
-pub struct Subscription {
-    callback: Callback<GlobalEvent>,
+#[derive(Clone)]
+struct Subscription<E>
+where
+    E: Clone + 'static,
+{
+    callback: Callback<E>,
 }
 
-impl Subscription {
-    fn new(callback: Callback<GlobalEvent>) -> Self {
+impl<E> Subscription<E>
+where
+    E: Clone + 'static,
+{
+    fn new(callback: Callback<E>) -> Self {
         Self { callback }
     }
 }
 
-pub struct PubSub {
-    subscribers: HashMap<String, Subscription>,
+/// The publisher/subscriber channel to send events across different components
+#[derive(Clone)]
+pub struct PubSub<E>
+where
+    E: Clone + 'static,
+{
+    subscribers: Rc<RefCell<HashMap<String, Subscription<E>>>>,
 }
 
-impl PubSub {
+impl<E> PubSub<E>
+where
+    E: Clone + 'static,
+{
     pub fn new() -> Self {
         Self {
-            subscribers: HashMap::default(),
+            subscribers: Rc::new(RefCell::new(HashMap::default())),
         }
     }
 
-    pub fn subscribe<S: AsRef<str>>(&mut self, id: S, callback: Callback<GlobalEvent>) {
+    pub fn subscribe<S: AsRef<str>>(&self, id: S, callback: Callback<E>) {
         self.subscribers
+            .borrow_mut()
             .insert(id.as_ref().to_string(), Subscription::new(callback));
     }
-    pub fn unsubscribe<S: AsRef<str>>(&mut self, id: S) {
-        self.subscribers.remove(id.as_ref());
+    pub fn unsubscribe<S: AsRef<str>>(&self, id: S) {
+        self.subscribers.borrow_mut().remove(id.as_ref());
     }
-    pub fn publish(&self, event: GlobalEvent) {
-        for (_entry, subscription) in &self.subscribers {
+    pub fn publish(&self, event: E) {
+        for (_entry, subscription) in self.subscribers.borrow().iter() {
             subscription.callback.call(event.clone());
         }
     }

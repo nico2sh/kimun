@@ -342,10 +342,11 @@ pub fn TextEditor(
         }
     });
 
-    let mut pub_sub: Signal<PubSub> = use_context();
+    let pub_sub: PubSub<GlobalEvent> = use_context();
+    let pc = pub_sub.clone();
     use_effect(move || {
         let vault = vault.clone();
-        pub_sub.write().subscribe(
+        pc.subscribe(
             TEXT_EDITOR.to_string(),
             Callback::new(move |g| {
                 match g {
@@ -368,7 +369,7 @@ pub fn TextEditor(
         );
     });
     use_drop(move || {
-        pub_sub.write().unsubscribe(TEXT_EDITOR.to_string());
+        pub_sub.unsubscribe(TEXT_EDITOR.to_string());
     });
 
     // This manages the editor state
