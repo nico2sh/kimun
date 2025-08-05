@@ -12,10 +12,12 @@ pub enum VaultError {
     PathIsNotDirectory { path: VaultPath },
     #[error("DB Error: {0}")]
     DBError(#[from] DBError),
-    #[error("FS Error: {0}")]
+    #[error("File System Error: {0}")]
     FSError(#[from] FSError),
     #[error("Note already exists at: {path}")]
     NoteExists { path: VaultPath },
+    #[error("Directory already exists at: {path}")]
+    DirectoryExists { path: VaultPath },
 }
 
 #[derive(Error, Debug)]
@@ -26,8 +28,8 @@ pub enum FSError {
     EncodingError(#[from] std::string::FromUtf8Error),
     #[error("No File or Directory found at {path}")]
     NoFileOrDirectoryFound { path: String },
-    #[error("Invalid path {path}")]
-    InvalidPath { path: String },
+    #[error("Invalid path {path}, {message}")]
+    InvalidPath { path: String, message: String },
     #[error("Path doesn't exists at: {path}")]
     VaultPathNotFound { path: VaultPath },
 }

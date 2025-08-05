@@ -1,3 +1,4 @@
+#![cfg_attr(feature = "bundle", windows_subsystem = "windows")]
 // The dioxus prelude contains a ton of common items used in dioxus apps. It's a good idea to import wherever you
 // need dioxus
 use dioxus::prelude::*;
@@ -5,8 +6,11 @@ use dioxus::prelude::*;
 use route::Route;
 use settings::AppSettings;
 
+use crate::global_events::{GlobalEvent, PubSub};
+
 /// Define a components module that contains all shared components for our app.
 mod components;
+pub mod global_events;
 mod pages;
 mod route;
 mod settings;
@@ -33,6 +37,8 @@ fn main() {
 fn App() -> Element {
     let app_settings = use_signal(|| AppSettings::load_from_disk().unwrap());
     use_context_provider(move || app_settings);
+    let pub_sub = PubSub::<GlobalEvent>::new();
+    use_context_provider(move || pub_sub);
     let theme = app_settings.read().get_theme();
 
     // The `rsx!` macro lets us define HTML inside of rust. It expands to an Element with all of our HTML inside.
@@ -44,6 +50,6 @@ fn App() -> Element {
         document::Link { rel: "stylesheet", href: ICONS }
         document::Link { rel: "stylesheet", href: STYLE }
 
-        Router::<Route> {}
+        div { class: "app-container", Router::<Route> {} }
     }
 }

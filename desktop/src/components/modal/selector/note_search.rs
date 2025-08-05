@@ -10,13 +10,13 @@ use kimun_core::{
     NoteVault,
 };
 
-use crate::components::modal::selector::PreviewData;
+use crate::components::modal::{selector::PreviewData, ModalType};
 
-use super::{Modal, RowItem, SelectorFunctions, SelectorView};
+use super::{RowItem, SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SearchProps {
-    modal: Signal<Modal>,
+    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     filter_text: String,
 }
@@ -73,7 +73,7 @@ pub fn NoteSearch(props: SearchProps) -> Element {
     SelectorView(
         "Select a note, use up and down to select, <Return> selects the first result.".to_string(),
         props.filter_text,
-        props.modal,
+        props.modal_type,
         search_functions,
     )
 }
@@ -107,15 +107,13 @@ impl AsRef<str> for NoteSearchEntry {
 }
 
 impl RowItem for NoteSearchEntry {
-    fn on_select(&self) -> Box<dyn FnMut() -> bool> {
+    fn on_select(&self) -> bool {
         let path = self.note_path.to_owned();
-        Box::new(move || {
-            navigator().replace(crate::Route::Editor {
-                note_path: path.clone(),
-                create: false,
-            });
-            true
-        })
+        navigator().replace(crate::Route::Editor {
+            editor_path: path.clone(),
+            create: false,
+        });
+        true
     }
 
     fn get_view(&self) -> Element {

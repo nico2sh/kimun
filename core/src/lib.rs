@@ -12,15 +12,17 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use db::VaultDB;
 use error::{DBError, FSError, VaultError};
 use log::debug;
-use nfs::{
-    load_note, save_note, visitor::NoteListVisitorBuilder, NoteEntryData, VaultEntry, VaultPath,
-};
+use nfs::{visitor::NoteListVisitorBuilder, NoteEntryData, VaultEntry, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
 use utilities::path_to_string;
+
+use crate::nfs::DirectoryEntryData;
+
+pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
 
 pub struct IndexReport {
     pub start: SystemTime,
@@ -43,10 +45,10 @@ impl IndexReport {
     }
 }
 
-const JOURNAL_PATH: &str = "/journal";
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteVault {
     pub workspace_path: PathBuf,
+    journal_path: VaultPath,
     vault_db: VaultDB,
 }
 
@@ -56,6 +58,7 @@ impl Default for NoteVault {
         let vault_db = VaultDB::new(workspace_path.clone());
         Self {
             workspace_path,
+            journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             vault_db,
         }
     }
@@ -76,12 +79,14 @@ impl NoteVault {
         if !workspace_path.is_dir() {
             return Err(VaultError::FSError(FSError::InvalidPath {
                 path: path_to_string(workspace_path),
+                message: "Path provided is not a directory".to_string(),
             }))?;
         };
 
         let vault_db = VaultDB::new(&workspace_path);
         let note_vault = Self {
             workspace_path,
+            journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             vault_db,
         };
         Ok(note_vault)
@@ -194,13 +199,27 @@ impl NoteVault {
 
         (
             today_string.clone(),
-            VaultPath::new(JOURNAL_PATH)
+            self.journal_path
                 .append(&VaultPath::note_path_from(&today_string))
                 .absolute(),
         )
     }
 
-    // Loads a note in the specified path, if the path doesn't exist
+    // Returns a NaiveDate if the note path is a valid journal entry
+    pub fn journal_date(&self, note_path: &VaultPath) -> Option<NaiveDate> {
+        if !note_path.is_note() {
+            return None;
+        }
+
+        let (parent, _) = note_path.get_parent_path();
+        if parent.eq(&self.journal_path) {
+            let name = note_path.get_clean_name();
+            NaiveDate::parse_from_str(&name, "%Y-%m-%d").ok()
+        } else {
+            None
+        }
+    }
+
     // create a new one, a text can be specified as the initial text for the
     // note when created
     pub fn load_or_create_note(
@@ -208,7 +227,7 @@ impl NoteVault {
         path: &VaultPath,
         default_text: Option<String>,
     ) -> Result<String, VaultError> {
-        match load_note(&self.workspace_path, path) {
+        match nfs::load_note(&self.workspace_path, path) {
             Ok(text) => Ok(text),
             Err(e) => {
                 if let FSError::VaultPathNotFound { path: _ } = e {
@@ -227,7 +246,7 @@ impl NoteVault {
     // FSError::NotePathNotFound as the source, you can use that to
     // lazy create a note, or use the load_or_create_note function instead
     pub fn get_note_text(&self, path: &VaultPath) -> Result<String, VaultError> {
-        let text = load_note(&self.workspace_path, path)?;
+        let text = nfs::load_note(&self.workspace_path, path)?;
         Ok(text)
     }
 
@@ -251,11 +270,6 @@ impl NoteVault {
 
         Ok(a)
     }
-
-    // pub fn get_title<S: AsRef<str>>(text: S) -> String {
-    //     let data = extract_data(text);
-    //     data.title
-    // }
 
     // Search notes using terms
     pub fn search_notes<S: AsRef<str>>(
@@ -320,28 +334,39 @@ impl NoteVault {
         Ok(())
     }
 
-    pub fn get_notes(
+    // pub fn get_notes(
+    //     &self,
+    //     path: &VaultPath,
+    //     recursive: bool,
+    // ) -> Result<Vec<NoteContentData>, VaultError> {
+    //     let start = std::time::SystemTime::now();
+    //     debug!("> Start fetching files from cache");
+    //     let note_path = path.into();
+
+    //     let cached_notes = self.vault_db.call(move |conn| {
+    //         let notes = db::get_notes(conn, &note_path, recursive)?;
+    //         Ok(notes)
+    //     })?;
+
+    //     let result = cached_notes
+    //         .iter()
+    //         .map(|(_data, details)| details.to_owned())
+    //         .collect::<Vec<NoteContentData>>();
+    //     let time = std::time::SystemTime::now()
+    //         .duration_since(start)
+    //         .expect("Something's wrong with the time");
+    //     debug!("> Files fetched in {} milliseconds", time.as_millis());
+    //     Ok(result)
+    // }
+
+    /// Convenience method to get the directories from the filesystem
+    pub fn get_directories(
         &self,
         path: &VaultPath,
         recursive: bool,
-    ) -> Result<Vec<NoteContentData>, VaultError> {
-        let start = std::time::SystemTime::now();
-        debug!("> Start fetching files from cache");
-        let note_path = path.into();
+    ) -> Result<Vec<DirectoryDetails>, VaultError> {
+        let result = vec![];
 
-        let cached_notes = self.vault_db.call(move |conn| {
-            let notes = db::get_notes(conn, &note_path, recursive)?;
-            Ok(notes)
-        })?;
-
-        let result = cached_notes
-            .iter()
-            .map(|(_data, details)| details.to_owned())
-            .collect::<Vec<NoteContentData>>();
-        let time = std::time::SystemTime::now()
-            .duration_since(start)
-            .expect("Something's wrong with the time");
-        debug!("> Files fetched in {} milliseconds", time.as_millis());
         Ok(result)
     }
 
@@ -357,13 +382,22 @@ impl NoteVault {
         }
     }
 
+    pub fn create_directory(&self, path: &VaultPath) -> Result<DirectoryEntryData, VaultError> {
+        if self.exists(path).is_none() {
+            let ded = nfs::create_directory(&self.workspace_path, path)?;
+            Ok(ded)
+        } else {
+            Err(VaultError::DirectoryExists { path: path.clone() })
+        }
+    }
+
     pub fn save_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
         text: S,
     ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
         // Save to disk
-        let entry_data = save_note(&self.workspace_path, path, &text)?;
+        let entry_data = nfs::save_note(&self.workspace_path, path, &text)?;
         // TODO: Check if we actually need to create details twice
         let details = entry_data.load_details(&self.workspace_path, path)?;
         let result = (entry_data.clone(), details.get_content_data());
@@ -402,6 +436,96 @@ impl NoteVault {
             self.vault_db
                 .call(move |conn| db::search_note_by_path(conn, &path))
         }
+    }
+
+    pub fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
+        let path = path.flatten();
+        if !path.is_note() {
+            return Err(VaultError::FSError(FSError::InvalidPath {
+                path: path.to_string(),
+                message: "The path is not a note".to_string(),
+            }));
+        }
+
+        // We delete in DB first
+        let path_to_delete = path.clone();
+        self.vault_db.call(move |conn| {
+            let tx = conn.transaction()?;
+            db::delete_notes(&tx, &vec![path_to_delete])?;
+            tx.commit()?;
+            Ok(())
+        })?;
+
+        nfs::delete_note(&self.workspace_path, &path)?;
+
+        Ok(())
+    }
+
+    pub fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
+        let path = path.flatten();
+        if path.is_note() {
+            return Err(VaultError::FSError(FSError::InvalidPath {
+                path: path.to_string(),
+                message: "The path is not a directory".to_string(),
+            }));
+        }
+
+        // We delete in DB first
+        let path_to_delete = path.clone();
+        self.vault_db.call(move |conn| {
+            let tx = conn.transaction()?;
+            db::delete_directories(&tx, &vec![path_to_delete])?;
+            tx.commit()?;
+            Ok(())
+        })?;
+
+        nfs::delete_directory(&self.workspace_path, &path)?;
+
+        Ok(())
+    }
+
+    pub fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+        let from = from.flatten();
+        let to = to.flatten();
+
+        if self.exists(&to).is_some() {
+            return Err(VaultError::FSError(FSError::InvalidPath {
+                path: to.to_string(),
+                message: "Destination path already exists".to_string(),
+            }));
+        }
+        nfs::rename_note(&self.workspace_path, &from, &to)?;
+
+        self.vault_db.call(move |conn| {
+            let tx = conn.transaction()?;
+            db::rename_note(&tx, &from, &to)?;
+            tx.commit()?;
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    pub fn rename_directory(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+        let from = from.flatten();
+        let to = to.flatten();
+
+        if self.exists(&to).is_some() {
+            return Err(VaultError::FSError(FSError::InvalidPath {
+                path: to.to_string(),
+                message: "Destination path already exists".to_string(),
+            }));
+        }
+        nfs::rename_directory(&self.workspace_path, &from, &to)?;
+
+        self.vault_db.call(move |conn| {
+            let tx = conn.transaction()?;
+            db::rename_directory(&tx, &from, &to)?;
+            tx.commit()?;
+            Ok(())
+        })?;
+
+        Ok(())
     }
 }
 
