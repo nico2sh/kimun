@@ -13,8 +13,11 @@ use crate::pages::start::Start;
 pub enum Route {
     #[route("/")]
     Start {},
-    #[route("/edit/:note_path?:create")]
-    Editor { note_path: VaultPath, create: bool },
+    #[route("/edit/:editor_path?:create")]
+    Editor {
+        editor_path: VaultPath,
+        create: bool,
+    },
     #[route("/settings")]
     Settings {},
 }

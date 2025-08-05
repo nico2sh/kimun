@@ -8,9 +8,10 @@ use dioxus::{
     prelude::*,
 };
 
-use crate::utils::sparse_vector::SparseVector;
-
-use super::Modal;
+use crate::{
+    components::{modal::ModalType, note_select_entry::RowItem},
+    utils::sparse_vector::SparseVector,
+};
 
 trait SelectorFunctions<R>: Clone
 where
@@ -19,11 +20,6 @@ where
     fn init(&self) -> Vec<R>;
     fn filter(&self, filter_text: String, items: &Vec<R>) -> Vec<R>;
     fn preview(&self, element: &R) -> Option<PreviewData>;
-}
-
-pub trait RowItem: PartialEq + Eq + Clone {
-    fn on_select(&self) -> Box<dyn FnMut() -> bool>;
-    fn get_view(&self) -> Element;
 }
 
 pub struct PreviewData {
@@ -50,14 +46,14 @@ where
 {
     filter_text: Signal<String>,
     load_state: Signal<LoadState<R>>,
-    modal: SyncSignal<Modal>,
+    modal_type: Signal<ModalType>,
 }
 
 #[allow(non_snake_case)]
 fn SelectorView<R, F>(
     hint: String,
     filter_text: String,
-    mut modal: Signal<Modal>,
+    mut modal_type: Signal<ModalType>,
     functions: F,
 ) -> Element
 where
@@ -150,7 +146,7 @@ where
                 let key = e.data.code();
                 if key == Code::Escape {
                     load_state.set(LoadState::Closed);
-                    modal.write().close();
+                    modal_type.write().close();
                 }
                 if key == Code::ArrowDown {
                     let max_items = row_number;
@@ -199,9 +195,9 @@ where
                     let current_selected = (*selected.read()).unwrap_or(0);
                     if let Some(rows) = &*rows.value().read() {
                         if let Some(row) = rows.get(current_selected) {
-                            if row.on_select()() {
+                            if row.on_select() {
                                 load_state.set(LoadState::Closed);
-                                modal.write().close();
+                                modal_type.write().close();
                             } else {
                                 load_state.set(LoadState::Init);
                             }
@@ -259,9 +255,9 @@ where
                             onclick: move |e| {
                                 info!("Clicked element");
                                 e.stop_propagation();
-                                if row.on_select()() {
+                                if row.on_select() {
                                     load_state.set(LoadState::Closed);
-                                    modal.write().close();
+                                    modal_type.write().close();
                                 } else {
                                     load_state.set(LoadState::Init);
                                 }

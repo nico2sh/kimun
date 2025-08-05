@@ -4,18 +4,19 @@ use dioxus::{
     logger::tracing::{debug, info},
     prelude::*,
 };
-use kimun_core::{
-    nfs::VaultPath, note::NoteContentData, NoteVault, ResultType, VaultBrowseOptionsBuilder,
-};
+use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 use nucleo::Matcher;
 
-use crate::components::modal::selector::PreviewData;
+use crate::components::{
+    modal::{selector::PreviewData, ModalType},
+    note_select_entry::{NoteSelectEntry, SortCriteria},
+};
 
-use super::{Modal, RowItem, SelectorFunctions, SelectorView};
+use super::{SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SelectorProps {
-    modal: Signal<Modal>,
+    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     filter_text: String,
     note_path: VaultPath,
@@ -63,7 +64,7 @@ impl SelectFunctions {
                 _ => {}
             }
         }
-        result.sort_by_key(|b| std::cmp::Reverse(sort_string(b)));
+        result.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&SortCriteria::FileName)));
         if !current_browse_path.is_root_or_empty() {
             result.insert(
                 0,
@@ -133,25 +134,6 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
     }
 }
 
-fn sort_string(entry: &NoteSelectEntry) -> String {
-    match &entry {
-        NoteSelectEntry::Note {
-            path,
-            title: _,
-            search_str: _,
-        } => format!("2-{}", path),
-        NoteSelectEntry::Directory {
-            path,
-            name: _,
-            browse_path_signal: _,
-        } => format!("1-{}", path),
-        NoteSelectEntry::Create {
-            name: _,
-            new_note_path: _,
-        } => format!("0"),
-    }
-}
-
 fn filter_items(items: &Vec<NoteSelectEntry>, filter_text: String) -> Vec<NoteSelectEntry> {
     let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
     let filtered = nucleo::pattern::Pattern::parse(
@@ -190,169 +172,7 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
     SelectorView(
         "Use keywords to find notes, search is case insensitive and special characters are ignored.".to_string(),
         props.filter_text,
-        props.modal,
+        props.modal_type,
         select_functions
     )
-}
-
-#[derive(Clone, Eq, PartialEq)]
-pub enum NoteSelectEntry {
-    Note {
-        path: VaultPath,
-        title: String,
-        search_str: String,
-    },
-    Directory {
-        path: VaultPath,
-        name: String,
-        browse_path_signal: SyncSignal<VaultPath>,
-    },
-    Create {
-        new_note_path: VaultPath,
-        name: String,
-    },
-}
-
-impl NoteSelectEntry {
-    pub fn from_note_details(path: VaultPath, content: NoteContentData) -> Self {
-        let path_str = format!("{} {}", content.title, path.get_name());
-        let title = if content.title.is_empty() {
-            "<No title>".to_string()
-        } else {
-            content.title
-        };
-        Self::Note {
-            path: path.clone(),
-            title,
-            search_str: path_str,
-        }
-    }
-
-    pub fn from_directory_details(
-        path: VaultPath,
-        base_path_signal: SyncSignal<VaultPath>,
-    ) -> Self {
-        let name = path.get_name();
-        Self::Directory {
-            path,
-            name,
-            browse_path_signal: base_path_signal,
-        }
-    }
-    pub fn create_from_name(name: String, base_path: VaultPath) -> Self {
-        let note_path = VaultPath::note_path_from(name);
-        let new_note_path = base_path.append(&note_path);
-        let name = new_note_path.to_string();
-        Self::Create {
-            new_note_path,
-            name,
-        }
-    }
-}
-
-impl AsRef<str> for NoteSelectEntry {
-    fn as_ref(&self) -> &str {
-        match self {
-            NoteSelectEntry::Note {
-                path: _,
-                title: _,
-                search_str,
-            } => search_str.as_str(),
-            NoteSelectEntry::Directory {
-                path: _,
-                name,
-                browse_path_signal: _,
-            } => name.as_str(),
-            NoteSelectEntry::Create {
-                new_note_path: _,
-                name,
-            } => name.as_str(),
-        }
-    }
-}
-
-impl RowItem for NoteSelectEntry {
-    fn on_select(&self) -> Box<dyn FnMut() -> bool> {
-        match self {
-            NoteSelectEntry::Note {
-                path,
-                title: _,
-                search_str: _,
-            } => {
-                let path = path.to_owned();
-                Box::new(move || {
-                    navigator().replace(crate::Route::Editor {
-                        note_path: path.clone(),
-                        create: false,
-                    });
-                    true
-                })
-            }
-            NoteSelectEntry::Directory {
-                path,
-                name: _,
-                browse_path_signal: base_path_signal,
-            } => {
-                let p = path.clone();
-                let mut s = *base_path_signal;
-                info!("Selected dir: {}", p);
-                Box::new(move || {
-                    s.set(p.clone());
-                    false
-                })
-            }
-            NoteSelectEntry::Create {
-                new_note_path,
-                name: _,
-            } => {
-                let path = new_note_path.to_owned();
-                Box::new(move || {
-                    navigator().replace(crate::Route::Editor {
-                        note_path: path.clone(),
-                        create: true,
-                    });
-                    true
-                })
-            }
-        }
-    }
-
-    fn get_view(&self) -> Element {
-        match self {
-            NoteSelectEntry::Note {
-                path,
-                title,
-                search_str: _,
-            } => {
-                rsx! {
-                    div { class: "element",
-                        div { class: "icon-note note-title", "{title}" }
-                        div { class: "note-meta", "{path.get_name()}" }
-                    }
-                }
-            }
-            NoteSelectEntry::Directory {
-                path: _,
-                name,
-                browse_path_signal: _,
-            } => {
-                rsx! {
-                    div { class: "element",
-                        div { class: "icon-folder title", "{name}" }
-                    }
-                }
-            }
-            NoteSelectEntry::Create {
-                new_note_path: _,
-                name,
-            } => {
-                rsx! {
-                    div { class: "note_create",
-                        span { class: "emphasized", "Create new Note " }
-                        span { class: "strong", "`{name}`" }
-                    }
-                }
-            }
-        }
-    }
 }

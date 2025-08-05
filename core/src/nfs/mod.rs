@@ -1,7 +1,6 @@
 pub mod visitor;
 // Contains the structs to support the data types
 use std::{
-    ffi::OsStr,
     fmt::Display,
     hash::Hash,
     io::Write,
@@ -15,8 +14,6 @@ use ignore::{WalkBuilder, WalkParallel};
 use log::{info, warn};
 use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
-
-use crate::error::VaultError;
 
 use super::{error::FSError, DirectoryDetails, NoteDetails};
 
@@ -81,7 +78,7 @@ impl NoteEntryData {
             .map(|t| t.duration_since(UNIX_EPOCH).unwrap().as_secs())
             .unwrap_or_else(|_e| 0);
         Ok(NoteEntryData {
-            path: path.clone(),
+            path: path.flatten(),
             size,
             modified_secs,
         })
@@ -209,6 +206,24 @@ pub(crate) fn load_note<P: AsRef<Path>>(
     }
 }
 
+pub fn create_directory<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<DirectoryEntryData, FSError> {
+    if path.is_note() {
+        return Err(FSError::InvalidPath {
+            path: path.to_string(),
+            message: "Path provided is a note".to_string(),
+        });
+    }
+
+    let full_path = path.to_pathbuf(workspace_path);
+    std::fs::create_dir_all(full_path)?;
+    Ok(DirectoryEntryData {
+        path: path.to_owned(),
+    })
+}
+
 pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     workspace_path: P,
     path: &VaultPath,
@@ -217,6 +232,7 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     if !path.is_note() {
         return Err(FSError::InvalidPath {
             path: path.to_string(),
+            message: "Path provided is not a note".to_string(),
         });
     }
     let (parent, note) = path.get_parent_path();
@@ -235,7 +251,79 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     Ok(entry)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub fn rename_note<P: AsRef<Path>>(
+    workspace_path: P,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<(), FSError> {
+    if !from.is_note() {
+        return Err(FSError::InvalidPath {
+            path: from.to_string(),
+            message: "Path is not a note".to_string(),
+        });
+    }
+    if !to.is_note() {
+        return Err(FSError::InvalidPath {
+            path: to.to_string(),
+            message: "Path is not a note".to_string(),
+        });
+    }
+
+    let full_from_path = from.to_pathbuf(&workspace_path);
+    let full_to_path = to.to_pathbuf(&workspace_path);
+    // We create the destination directory if doesn't exist
+    if let Some(parent) = full_to_path.parent() {
+        if !std::fs::exists(parent)? || !parent.is_dir() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::rename(full_from_path, full_to_path)?;
+    Ok(())
+}
+
+pub fn rename_directory<P: AsRef<Path>>(
+    workspace_path: P,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<(), FSError> {
+    if from.is_note() {
+        return Err(FSError::InvalidPath {
+            path: from.to_string(),
+            message: "Path is not a directory".to_string(),
+        });
+    }
+    if to.is_note() {
+        return Err(FSError::InvalidPath {
+            path: to.to_string(),
+            message: "Path is not a Directory".to_string(),
+        });
+    }
+
+    let full_from_path = from.to_pathbuf(&workspace_path);
+    let full_to_path = to.to_pathbuf(&workspace_path);
+    // We create the destination directory if doesn't exist
+    if !std::fs::exists(&full_to_path)? || !full_to_path.is_dir() {
+        std::fs::create_dir_all(&full_to_path)?;
+    }
+    std::fs::rename(full_from_path, full_to_path)?;
+    Ok(())
+}
+pub fn delete_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<(), FSError> {
+    let full_path = path.to_pathbuf(workspace_path);
+    std::fs::remove_file(full_path)?;
+    Ok(())
+}
+
+pub fn delete_directory<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<(), FSError> {
+    let full_path = path.to_pathbuf(workspace_path);
+    std::fs::remove_dir_all(full_path)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VaultPath {
     absolute: bool,
     slices: Vec<VaultPathSlice>,
@@ -335,6 +423,7 @@ impl VaultPath {
         } else {
             Err(FSError::InvalidPath {
                 path: path.to_string(),
+                message: "path contains invalid characters".to_string(),
             })
         }
     }
@@ -423,6 +512,15 @@ impl VaultPath {
         }
     }
 
+    pub fn get_clean_name(&self) -> String {
+        let (_, name) = self.get_parent_path();
+        if let Some(name) = name.strip_suffix(NOTE_EXTENSION) {
+            name.to_string()
+        } else {
+            name
+        }
+    }
+
     fn increment<S: AsRef<str>>(name: S) -> String {
         let name = name.as_ref();
         let re = Regex::new(r"_(?P<number>[0-9]+)$").unwrap();
@@ -457,6 +555,8 @@ impl VaultPath {
         path
     }
 
+    /// Returns a full path without any relative slices
+    /// It will always return an absolute path, as it assumes the path is relative to the root
     pub fn flatten(&self) -> VaultPath {
         let mut slices = vec![];
         for slice in &self.slices {
@@ -471,11 +571,13 @@ impl VaultPath {
             }
         }
         VaultPath {
-            absolute: self.absolute,
+            absolute: true,
             slices,
         }
     }
 
+    /// Returns the last part of the path slices
+    /// if it is a note, will return the note filename, if it is a directory, will return the directory name
     pub fn get_name(&self) -> String {
         self.flatten().slices.last().map_or_else(String::new, |s| {
             if let VaultPathSlice::PathSlice(name) = s {
@@ -519,9 +621,13 @@ impl VaultPath {
     ) -> Result<Self, FSError> {
         let fp = full_path.as_ref();
         let relative = fp
-            .strip_prefix(workspace_path)
+            .strip_prefix(&workspace_path)
             .map_err(|_e| FSError::InvalidPath {
                 path: path_to_string(&full_path),
+                message: format!(
+                    "The path provided is not a path belonging to the workspace: {}",
+                    path_to_string(workspace_path)
+                ),
             })?;
         let mut path_list = vec![PATH_SEPARATOR.to_string()];
         relative.components().for_each(|component| {
@@ -695,9 +801,13 @@ pub fn get_file_walker<P: AsRef<Path>>(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use crate::{error::FSError, utilities::path_to_string};
+    use crate::{
+        error::FSError,
+        nfs::{delete_directory, delete_note, rename_directory, rename_note, save_note},
+        utilities::path_to_string,
+    };
 
     use super::{load_note, VaultPath, VaultPathSlice};
 
@@ -901,5 +1011,71 @@ mod tests {
         let entry = VaultPath::from_path(&workspace, &path).unwrap();
 
         assert_eq!("workspace/note.md", entry.to_string());
+    }
+
+    #[test]
+    fn create_a_note() -> Result<(), FSError> {
+        let workspace_path = Path::new("testdata");
+        let note_path = VaultPath::new("note.md");
+        let note_text = "this is an empty note".to_string();
+
+        save_note(workspace_path, &note_path, &note_text)?;
+        let note = load_note(workspace_path, &note_path)?;
+        assert_eq!(note, note_text);
+
+        delete_note(workspace_path, &note_path)?;
+        assert!(load_note(workspace_path, &note_path).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn move_a_note() -> Result<(), FSError> {
+        let workspace_path = Path::new("testdata");
+        let note_path = VaultPath::new("note.md");
+        let dest_note_path = VaultPath::new("directory/moved_note.md");
+        let note_text = "this is an empty note".to_string();
+
+        save_note(workspace_path, &note_path, &note_text)?;
+        let note = load_note(workspace_path, &note_path)?;
+        assert_eq!(note, note_text);
+
+        rename_note(workspace_path, &note_path, &dest_note_path)?;
+        let moved_note = load_note(workspace_path, &dest_note_path)?;
+        assert_eq!(note, moved_note);
+        assert!(load_note(workspace_path, &note_path).is_err());
+
+        delete_note(workspace_path, &dest_note_path)?;
+        assert!(load_note(workspace_path, &dest_note_path).is_err());
+
+        delete_directory(workspace_path, &dest_note_path.get_parent_path().0)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn move_a_directory() -> Result<(), FSError> {
+        let workspace_path = Path::new("testdata");
+        let from_note_dir = VaultPath::new("old_dir");
+        let from_note_path = from_note_dir.append(&VaultPath::new("note.md"));
+        let dest_note_dir = VaultPath::new("new_dir/two_levels");
+        let dest_note_path = dest_note_dir.append(&VaultPath::new("note.md"));
+        let note_text = "this is an empty note".to_string();
+
+        save_note(workspace_path, &from_note_path, &note_text)?;
+        let note = load_note(workspace_path, &from_note_path)?;
+        assert_eq!(note, note_text);
+
+        rename_directory(workspace_path, &from_note_dir, &dest_note_dir)?;
+        let moved_note = load_note(workspace_path, &dest_note_path)?;
+        assert_eq!(note, moved_note);
+        assert!(load_note(workspace_path, &from_note_dir).is_err());
+
+        delete_note(workspace_path, &dest_note_path)?;
+        assert!(load_note(workspace_path, &dest_note_path).is_err());
+
+        delete_directory(workspace_path, &dest_note_path.get_parent_path().0)?;
+
+        Ok(())
     }
 }

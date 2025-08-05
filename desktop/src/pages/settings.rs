@@ -4,7 +4,10 @@ use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
-    components::modal::{indexer::IndexType, Modal},
+    components::{
+        button::Button,
+        modal::{indexer::IndexType, Modal, ModalType},
+    },
     route::Route,
     settings,
 };
@@ -12,11 +15,11 @@ use crate::{
 #[component]
 pub fn Settings() -> Element {
     let mut settings: Signal<settings::AppSettings> = use_context();
-    let mut modal = use_signal(Modal::new);
+    let mut modal_type = use_signal(|| ModalType::None);
 
     rsx! {
         div { class: "settings-container",
-            {Modal::get_element(modal)}
+            Modal { modal_type }
             div { class: "settings-header",
                 h1 { "Settings" }
                 p { "Customize app settings" }
@@ -27,14 +30,13 @@ pub fn Settings() -> Element {
                     div { class: "form-group",
                         label { class: "form-label", "Workspace Location" }
                         div { class: "file-upload-container",
-                            button {
-                                class: "btn btn-primary",
-                                onclick: move |_| {
+                            Button {
+                                title: "Browse",
+                                action: move |_| {
                                     if let Ok(path) = pick_workspace() {
                                         settings.write().set_workspace(&path);
                                     }
                                 },
-                                "Browse"
                             }
                         }
                         div {
@@ -53,37 +55,34 @@ pub fn Settings() -> Element {
                     div { class: "form-group",
                         label { class: "form-label", "Vault Indexing" }
                         div { class: "file-upload-container",
-                            button {
-                                class: "btn btn-primary",
-                                onclick: move |_| {
+                            Button {
+                                title: "Fast Index",
+                                action: move |_| {
                                     if let Some(workspace_dir) = settings().workspace_dir {
                                         let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
-                                        modal.write().set_indexer(vault, IndexType::Fast);
+                                        modal_type.write().set_indexer(vault, IndexType::Fast);
                                     }
                                 },
                                 disabled: settings().workspace_dir.is_none(),
-                                "Fast Index"
                             }
                         }
                         div { class: "description", "Indexes the notes located in the directory" }
                         div { class: "file-upload-container",
-                            button {
-                                class: "btn btn-primary",
-                                onclick: move |_| {
+                            Button {
+                                title: "Full Index",
+                                action: move |_| {
                                     if let Some(workspace_dir) = settings().workspace_dir {
                                         let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
-                                        modal.write().set_indexer(vault, IndexType::Full);
+                                        modal_type.write().set_indexer(vault, IndexType::Full);
                                     }
                                 },
                                 disabled: settings().workspace_dir.is_none(),
-                                "Full Index"
                             }
                         }
                         div { class: "description",
                             "Performs a full index of the notes located in the directory, can take longer time depending on the number of notes"
                         }
                     }
-                
                 }
 
                 div { class: "settings-section",
@@ -111,29 +110,28 @@ pub fn Settings() -> Element {
                 }
 
                 div { class: "action-buttons",
-                    button {
-                        class: "btn btn-secondary",
-                        onclick: move |_| {
+                    Button {
+                        title: "Close without Saving",
+                        style: crate::components::button::ButtonStyle::Secondary,
+                        action: move |_| {
                             navigator().replace(Route::Start {});
                         },
-                        "Close without saving"
                     }
-                    button {
-                        class: "btn btn-primary",
-
-                        onclick: move |_| {
+                    Button {
+                        title: "Save and Close",
+                        action: move |_| {
                             let path = &settings.read().workspace_dir;
                             match settings.read().save_to_disk() {
                                 Ok(_) => {
                                     if let Some(_p) = path {
-                                        let note_path = settings
+                                        let editor_path = settings
                                             .read()
                                             .last_paths
                                             .last()
                                             .map_or_else(|| VaultPath::root(), |p| p.to_owned());
                                         navigator()
                                             .replace(Route::Editor {
-                                                note_path,
+                                                editor_path,
                                                 create: false,
                                             });
                                     }
@@ -141,7 +139,6 @@ pub fn Settings() -> Element {
                                 Err(_e) => todo!(),
                             };
                         },
-                        "Save and Close"
                     }
                 }
             }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use kimun_core::{NoteVault, NotesValidation};
 
-use crate::{components::modal::Modal, settings::AppSettings};
+use crate::{components::modal::ModalType, settings::AppSettings};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IndexType {
@@ -13,7 +13,11 @@ pub enum IndexType {
 }
 
 #[component]
-pub fn Indexer(modal: Signal<Modal>, vault: Arc<NoteVault>, index_type: IndexType) -> Element {
+pub fn Indexer(
+    modal_type: Signal<ModalType>,
+    vault: Arc<NoteVault>,
+    index_type: IndexType,
+) -> Element {
     let mut settings: Signal<AppSettings> = use_context();
 
     let (description, confirm_close) = match &index_type {
@@ -40,66 +44,64 @@ pub fn Indexer(modal: Signal<Modal>, vault: Arc<NoteVault>, index_type: IndexTyp
         }
     });
 
-    let index_result = match &*result.read_unchecked() {
+    let (index_result, actions_section) = match &*result.read_unchecked() {
         Some(r) => match r {
             Ok(rep) => {
                 let duration = rep.duration.as_secs();
-                rsx! {
-                    div { onmounted: move |_| { settings.write().report_indexed() },
-                        "Done in {duration} seconds"
-                    }
-                    {
+                (
+                    rsx! {
+                        div { onmounted: move |_| { settings.write().report_indexed() },
+                            "Done in {duration} seconds"
+                        }
+                    },
+                    rsx! {
                         if confirm_close {
-                            rsx! {
-                                button {
-                                    class: "btn btn-primary",
-                                    onclick: move |_| {
-                                        modal.write().close();
-                                    },
-                                    "Close"
-                                }
+                            button {
+                                class: "modal-btn secondary",
+                                onclick: move |_| {
+                                    modal_type.write().close();
+                                },
+                                "Close"
                             }
                         } else {
-                            rsx! {
-                                div {
-                                    onmounted: move |_| {
-                                        modal.write().close();
-                                    },
-                                }
+                            div {
+                                onmounted: move |_| {
+                                    modal_type.write().close();
+                                },
                             }
                         }
-                    }
-                }
-
-                // let duration = rep.duration.as_secs();
-                // if confirm_close {
-                //     rsx! {
-                //         div { "Done in {duration} seconds" }
-                //         button {
-                //             class: "btn btn-primary",
-                //             onclick: move |_| {
-                //                 modal.write().close();
-                //             },
-                //             "Close"
-                //         }
-                //     }
-                // } else {
-                //     modal.write().close();
-                //     rsx! {}
-                // }
+                    },
+                )
             }
-            Err(e) => rsx! { "Error indexing vault: {e}" },
+            Err(e) => (
+                rsx! { "Error indexing vault: {e}" },
+                rsx! {
+                    button {
+                        class: "modal-btn secondary",
+                        onclick: move |_| {
+                            modal_type.write().close();
+                        },
+                        "Close"
+                    }
+                },
+            ),
         },
-        None => rsx! {
-            progress { class: "index-progress" }
-        },
+        None => (
+            rsx! {
+                progress { class: "index-progress" }
+            },
+            rsx! {},
+        ),
     };
 
     rsx! {
-        div { class: "index-modal",
-            h3 { "Indexing" }
-            {index_result}
-            div { class: "description", "{description}" }
+        div { class: "modal",
+            div { class: "modal-header",
+                div { class: "modal-title", "Indexing" }
+                div { class: "modal-subtitle", "{description}" }
+            }
+            div { class: "modal-body", {index_result} }
+            div { class: "modal-actions", {actions_section} }
         }
     }
 }

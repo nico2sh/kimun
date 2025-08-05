@@ -25,7 +25,7 @@ impl Display for NoteDetails {
 impl NoteDetails {
     pub fn new<S: AsRef<str>>(note_path: &VaultPath, text: S) -> Self {
         Self {
-            path: note_path.to_owned(),
+            path: note_path.flatten(),
             raw_text: text.as_ref().to_owned(),
         }
     }
@@ -39,7 +39,7 @@ impl NoteDetails {
     // External URLs needs to be created as markdown links. Always including the http(s)
     // Note links can be either Markdown or Wikilinks
     pub fn get_markdown_and_links(&self) -> MarkdownNote {
-        let (text, links) = get_markdown_and_links(&self.raw_text);
+        let (text, links) = get_markdown_and_links(&self.path, &self.raw_text);
         MarkdownNote { text, links }
     }
 
@@ -118,24 +118,23 @@ pub struct Link {
 }
 
 impl Link {
-    pub fn vault_path<P: AsRef<str>, S: AsRef<str>>(path: P, text: S) -> Self {
-        let link = VaultPath::new(&path);
-        let ltype = if link.is_note() {
-            LinkType::Note(link)
+    pub fn vault_path<S: AsRef<str>>(path: &VaultPath, text: S) -> Self {
+        let ltype = if path.is_note() {
+            LinkType::Note(path.to_owned())
         } else {
-            LinkType::Attachment(link)
+            LinkType::Attachment(path.to_owned())
         };
         Self {
             ltype,
             text: text.as_ref().to_string(),
-            raw_link: path.as_ref().to_string(),
+            raw_link: path.to_string(),
         }
     }
-    pub fn note<P: AsRef<str>, S: AsRef<str>>(path: P, text: S) -> Self {
+    pub fn note<S: AsRef<str>>(path: &VaultPath, text: S) -> Self {
         Self {
-            ltype: LinkType::Note(VaultPath::note_path_from(&path)),
+            ltype: LinkType::Note(path.to_owned()),
             text: text.as_ref().to_string(),
-            raw_link: path.as_ref().to_string(),
+            raw_link: path.to_string(),
         }
     }
     pub fn url<S: AsRef<str>, T: AsRef<str>>(url: S, text: T) -> Self {
