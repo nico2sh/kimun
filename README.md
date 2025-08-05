@@ -137,6 +137,7 @@ Here are the items I want to fix immediately to consider this usable. Then will 
 * [ ] Paste images in note
 * [ ] Calendar to browse journal
 * [ ] Auto continue format lists while typing (hitting enter on a list element creates a new element)
+* [ ] Multiple Workspaces
 * [X] File Management
   * [X] Delete note
   * [X] Delete directory
