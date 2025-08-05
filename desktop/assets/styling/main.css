@@ -42,8 +42,8 @@ progress {
 }
 
 .sidebar-header {
-  background: var(--bg-head);
-  color: var(--text-head);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   padding: 16px;
   border-bottom: 1px solid var(--border-light);
   display: flex;
@@ -61,7 +61,7 @@ progress {
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 4px;
-  color: var(--text-head);
+  color: var(--text-primary);
   cursor: pointer;
   padding: 6px;
   transition: all 0.2s ease;
