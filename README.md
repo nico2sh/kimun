@@ -124,7 +124,7 @@ If I do a search, it will return:
 Here are the items I want to fix immediately to consider this usable. Then will focus on other cool features:
 
 * [X] Search under titles/sections in Markdown
-* [ ] Change sort search results
+* [X] Change sort search results
 * [X] Add title to the note editor
 * [ ] Command Palette
 * [ ] Display key shortcuts on Command Palette and help modal
@@ -137,13 +137,13 @@ Here are the items I want to fix immediately to consider this usable. Then will 
 * [ ] Paste images in note
 * [ ] Calendar to browse journal
 * [ ] Auto continue format lists while typing (hitting enter on a list element creates a new element)
-* [ ] File Management
-  * [ ] Delete note
-  * [ ] Delete directory
-  * [ ] Move note
-  * [ ] Rename note
-  * [ ] Move Directory
-  * [ ] Rename Directory
+* [X] File Management
+  * [X] Delete note
+  * [X] Delete directory
+  * [X] Move note
+  * [X] Rename note
+  * [X] Move Directory
+  * [X] Rename Directory
 
 ### Rendering
 
