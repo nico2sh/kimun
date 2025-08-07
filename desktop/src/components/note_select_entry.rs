@@ -159,7 +159,7 @@ impl NoteSelectEntry {
             NoteSelectEntry::Create {
                 name: _,
                 new_note_path: _,
-            } => format!("0"),
+            } => "0".to_string(),
         }
     }
 

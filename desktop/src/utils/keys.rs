@@ -8,6 +8,7 @@ pub enum Shortcuts {
     SearchNotes,
     OpenNote,
     NewJournal,
+    TogglePreview,
 }
 
 #[cfg(target_os = "macos")]
@@ -30,6 +31,7 @@ pub fn get_action<K: AsRef<KeyboardData>>(kd: &K) -> Shortcuts {
             Code::KeyK => Shortcuts::SearchNotes,
             Code::KeyO => Shortcuts::OpenNote,
             Code::KeyJ => Shortcuts::NewJournal,
+            Code::KeyT => Shortcuts::TogglePreview,
             _ => Shortcuts::None,
         }
     } else {

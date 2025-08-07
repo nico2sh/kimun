@@ -13,6 +13,7 @@ use crate::{
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
         note_browser::NoteBrowser,
+        preview::Markdown,
         text_editor::{EditorContent, EditorHeader, NoText, TextEditor},
     },
     global_events::{GlobalEvent, PubSub},
@@ -41,6 +42,8 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
     let vault_path: &std::path::PathBuf = settings_value.workspace_dir.as_ref().unwrap();
     let vault = NoteVault::new(vault_path).unwrap();
     let vault = Arc::new(vault);
+
+    let mut show_preview = use_signal(|| false);
 
     // Modal setup and Indexing on the first run
     let mut modal_type = use_signal(|| {
@@ -123,6 +126,7 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                 debug!("Path doesn't exist");
                 if editor_path.read().is_note() && create {
                     debug!("It's a note and we have to create it");
+                    show_preview.set(false);
                     let note_path = editor_path.read().to_owned();
                     match editor_vault.create_note(&note_path, "") {
                         Ok(_) => {
@@ -202,6 +206,10 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                     let data = event.data;
                     match get_action(&data) {
                         Shortcuts::None => {}
+                        Shortcuts::TogglePreview => {
+                            let preview = !*show_preview.read();
+                            debug!("Toggling preview to {}", preview);
+                            show_preview.set(preview)},
                         Shortcuts::OpenSettings => {
                             debug!("Open Settings");
                             navigator().replace(Route::Settings {});
@@ -246,7 +254,11 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                     match &*content_path.read() {
                         PathType::Note => {
                             rsx! {
-                                TextEditor { note_path: editor_path, vault: vault.clone(), editor_signal }
+                                if *show_preview.read() {
+                                    Markdown { src: editor_signal }
+                                } else {
+                                    TextEditor { note_path: editor_path, vault: vault.clone(), editor_signal }
+                                }
                             }
                         }
                         PathType::Directory => {
