@@ -59,7 +59,7 @@ pub fn NoteBrowser(
         }
     });
 
-    let mut sort = use_signal(|| Sort::default());
+    let mut sort = use_signal(Sort::default);
 
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);

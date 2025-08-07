@@ -65,13 +65,13 @@ impl EditorContent {
     }
 
     pub fn has_content(&self) -> bool {
-        match self {
+        matches!(
+            self,
             EditorContent::Note {
                 text: _,
                 dirty_status: _,
-            } => true,
-            _ => false,
-        }
+            }
+        )
     }
     pub fn is_dirty(&self) -> bool {
         match self {
@@ -131,6 +131,7 @@ impl Drop for EditorData {
             debug!("Saving so we don't lose data");
             let text = self.content.read().get_text();
             let _ = self.vault.save_note(&self.path, text);
+            // self.content.write().mark_clean();
         }
     }
 }
@@ -340,7 +341,7 @@ pub fn TextEditor(
     use_effect(move || {
         let vault = vault.clone();
         pc.subscribe(
-            TEXT_EDITOR.to_string(),
+            TEXT_EDITOR,
             Callback::new(move |g| {
                 match g {
                     GlobalEvent::SaveCurrentNote => {
@@ -362,7 +363,7 @@ pub fn TextEditor(
         );
     });
     use_drop(move || {
-        pub_sub.unsubscribe(TEXT_EDITOR.to_string());
+        pub_sub.unsubscribe(TEXT_EDITOR);
     });
 
     // This manages the editor state
@@ -393,11 +394,8 @@ pub fn TextEditor(
                                 editor_signal.write().update_text(e.value());
                             },
                             onkeydown: move |e| {
-                                match e.key() {
-                                    Key::Tab => {
-                                        e.prevent_default();
-                                    }
-                                    _ => {}
+                                if e.key() == Key::Tab {
+                                    e.prevent_default();
                                 }
                             },
                             spellcheck: false,

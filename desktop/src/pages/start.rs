@@ -15,7 +15,7 @@ pub fn Start() -> Element {
             .read()
             .last_paths
             .last()
-            .map_or_else(|| VaultPath::root(), |p| p.to_owned());
+            .map_or_else(VaultPath::root, |p| p.to_owned());
         navigator().replace(Route::Editor {
             editor_path,
             create: false,
