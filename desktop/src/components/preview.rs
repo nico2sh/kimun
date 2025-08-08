@@ -1,8 +1,12 @@
-use crate::utils::md::{markdown_component, CowStr, MarkdownProps};
+use std::sync::Arc;
 
-pub use crate::utils::md::{Context, ElementAttributes, HtmlElement, LinkDescription, Options};
+use crate::utils::md::{render::Renderer, CowStr};
+
+pub use crate::utils::md::{ElementAttributes, HtmlElement, LinkDescription, Options};
 
 use dioxus::{logger::tracing::debug, prelude::*};
+use kimun_core::{nfs::VaultPath, NoteVault};
+use pulldown_cmark::Parser;
 
 use super::text_editor::EditorContent;
 
@@ -10,83 +14,71 @@ pub type HtmlCallback<T> = Callback<T, Element>;
 
 const MARKDOWN: Asset = asset!("/assets/styling/markdown.css");
 
-#[derive(Clone, PartialEq, Default, Props)]
-pub struct MdProps {
-    src: Signal<EditorContent>,
+#[derive(Clone)]
+pub struct MdContext;
 
-    /// links in the markdown
-    render_links: Option<HtmlCallback<LinkDescription<Element>>>,
-
-    /// the name of the theme used for syntax highlighting.
-    /// Only the default themes of [syntect::Theme] are supported
-    theme: Option<&'static str>,
-
-    /// wether to enable wikilinks support.
-    /// Wikilinks look like [[shortcut link]] or [[url|name]]
-    #[props(default = false)]
-    wikilinks: bool,
-
-    /// wether to convert soft breaks to hard breaks.
-    #[props(default = true)]
-    hard_line_breaks: bool,
-
-    /// pulldown_cmark options.
-    /// See [`Options`][pulldown_cmark_wikilink::Options] for reference.
-    parse_options: Option<Options>,
-
-    frontmatter: Option<Signal<String>>,
-}
-
-#[derive(Clone, Copy)]
-pub struct MdContext(ReadOnlySignal<MdProps>);
-
-impl Context<'_, 'static> for MdContext {
-    type View = Element;
-
-    type Handler<T: 'static> = EventHandler<T>;
-
-    type MouseEvent = MouseEvent;
-
-    fn props(self) -> MarkdownProps {
-        let props = self.0();
-
-        MarkdownProps {
-            hard_line_breaks: props.hard_line_breaks,
-            wikilinks: props.wikilinks,
-            parse_options: props.parse_options,
-            theme: props.theme,
-        }
-    }
-
-    fn set_frontmatter(&mut self, frontmatter: String) {
-        if let Some(x) = self.0().frontmatter.as_mut() {
+impl MdContext {
+    pub fn set_frontmatter(props: &mut MdProps, frontmatter: String) {
+        if let Some(x) = props.frontmatter.as_mut() {
             x.set(frontmatter)
         }
     }
 
-    fn render_links(self, link: LinkDescription<Self::View>) -> Result<Self::View, String> {
-        // TODO: remove the unwrap call
-        Ok(self.0().render_links.as_ref().unwrap()(link))
+    /// creates a html element, with default attributes
+    pub fn el(e: HtmlElement, inside: Element) -> Element {
+        MdContext::el_with_attributes(e, inside, Default::default())
     }
 
-    fn call_handler<T: 'static>(callback: &Self::Handler<T>, input: T) {
-        callback.call(input)
+    /// renders an empty view
+    pub fn el_empty() -> Element {
+        MdContext::el_fragment(vec![])
     }
 
-    fn make_md_handler(self, stop_propagation: bool) -> Self::Handler<MouseEvent> {
-        EventHandler::new(move |e: MouseEvent| {
-            if stop_propagation {
-                e.stop_propagation()
-            }
-        })
+    pub fn render_tasklist_marker(m: bool) -> Element {
+        let attributes = ElementAttributes {
+            ..Default::default()
+        };
+        MdContext::el_input_checkbox(m, attributes)
     }
 
-    fn el_with_attributes(
-        self,
+    pub fn render_rule() -> Element {
+        let attributes = ElementAttributes {
+            ..Default::default()
+        };
+        MdContext::el_hr(attributes)
+    }
+
+    pub fn render_code(s: CowStr<'_>) -> Element {
+        let attributes = ElementAttributes {
+            ..Default::default()
+        };
+        MdContext::el_with_attributes(HtmlElement::Code, MdContext::el_text(s), attributes)
+    }
+
+    pub fn render_text(s: CowStr<'_>) -> Element {
+        let attributes = ElementAttributes {
+            ..Default::default()
+        };
+        MdContext::el_with_attributes(HtmlElement::Span, MdContext::el_text(s), attributes)
+    }
+
+    pub fn render_link(props: &MdProps, link: LinkDescription<Element>) -> Result<Element, String> {
+        if let Some(links) = props.render_links {
+            Ok(links(link))
+        } else {
+            Ok(if link.image {
+                MdContext::el_img(link.url, link.title)
+            } else {
+                MdContext::el_a(link.content, link.url)
+            })
+        }
+    }
+
+    pub fn el_with_attributes(
         e: HtmlElement,
-        inside: Self::View,
+        inside: Element,
         attributes: ElementAttributes,
-    ) -> Self::View {
+    ) -> Element {
         let class = attributes.classes.join(" ");
         let style = attributes.style.unwrap_or_default();
 
@@ -211,11 +203,7 @@ impl Context<'_, 'static> for MdContext {
         }
     }
 
-    fn el_span_with_inner_html(
-        self,
-        inner_html: String,
-        attributes: ElementAttributes,
-    ) -> Self::View {
+    pub fn el_span_with_inner_html(inner_html: String, attributes: ElementAttributes) -> Element {
         let class = attributes.classes.join(" ");
         let style = attributes.style.unwrap_or_default();
         rsx! {
@@ -227,7 +215,7 @@ impl Context<'_, 'static> for MdContext {
         }
     }
 
-    fn el_hr(self, attributes: ElementAttributes) -> Self::View {
+    pub fn el_hr(attributes: ElementAttributes) -> Element {
         let class = attributes.classes.join(" ");
         let style = attributes.style.unwrap_or_default();
         rsx!(hr {
@@ -236,36 +224,36 @@ impl Context<'_, 'static> for MdContext {
         })
     }
 
-    fn el_br(self) -> Self::View {
+    pub fn el_br() -> Element {
         rsx!(br {})
     }
 
-    fn el_fragment(self, children: Vec<Self::View>) -> Self::View {
+    pub fn el_fragment(children: Vec<Element>) -> Element {
         rsx! {
             {children.into_iter()}
         }
     }
 
-    fn el_a(self, children: Self::View, href: String) -> Self::View {
+    pub fn el_a(children: Element, href: String) -> Element {
         rsx! {
             a { href: "{href}", {children} }
         }
     }
 
-    fn el_img(self, src: String, alt: String) -> Self::View {
+    pub fn el_img(src: String, alt: String) -> Element {
         rsx!(img {
             src: "{src}",
             alt: "{alt}"
         })
     }
 
-    fn el_text(self, text: CowStr<'_>) -> Self::View {
+    pub fn el_text(text: CowStr<'_>) -> Element {
         rsx! {
             {text.as_ref()}
         }
     }
 
-    fn el_input_checkbox(self, checked: bool, attributes: ElementAttributes) -> Self::View {
+    pub fn el_input_checkbox(checked: bool, attributes: ElementAttributes) -> Element {
         let class = attributes.classes.join(" ");
         let style = attributes.style.unwrap_or_default();
         rsx!(input {
@@ -275,17 +263,63 @@ impl Context<'_, 'static> for MdContext {
             class: "{class}",
         })
     }
+}
 
-    fn has_custom_links(self) -> bool {
-        self.0().render_links.is_some()
-    }
+#[derive(Clone, PartialEq, Props)]
+pub struct MdProps {
+    src: Signal<EditorContent>,
+    note_path: ReadOnlySignal<VaultPath>,
+    vault: Arc<NoteVault>,
+
+    /// links in the markdown
+    render_links: Option<HtmlCallback<LinkDescription<Element>>>,
+
+    /// the name of the theme used for syntax highlighting.
+    /// Only the default themes of [syntect::Theme] are supported
+    #[props(default = "base16-ocean.light".to_string())]
+    pub syntax_theme: String,
+
+    /// wether to enable wikilinks support.
+    /// Wikilinks look like [[shortcut link]] or [[url|name]]
+    #[props(default = false)]
+    wikilinks: bool,
+
+    /// wether to convert soft breaks to hard breaks.
+    #[props(default = true)]
+    hard_line_breaks: bool,
+
+    /// pulldown_cmark options.
+    /// See [`Options`][pulldown_cmark_wikilink::Options] for reference.
+    parse_options: Option<Options>,
+
+    frontmatter: Option<Signal<String>>,
 }
 
 #[allow(non_snake_case)]
 pub fn Markdown(props: MdProps) -> Element {
     let src: String = props.src.read().get_text();
-    let signal: Signal<MdProps> = Signal::new(props);
-    let child = markdown_component(MdContext(signal.into()), &src);
+
+    let parse_options_default = Options::ENABLE_GFM
+        | Options::ENABLE_MATH
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_WIKILINKS
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
+    let options = props.parse_options.unwrap_or(parse_options_default);
+    let mut stream: Vec<_> = Parser::new_ext(&src, options).into_offset_iter().collect();
+
+    if props.hard_line_breaks {
+        for (r, _) in &mut stream {
+            if *r == pulldown_cmark::Event::SoftBreak {
+                *r = pulldown_cmark::Event::HardBreak
+            }
+        }
+    }
+
+    let elements = Renderer::new(props, &mut stream.into_iter()).collect::<Vec<_>>();
+    let child = MdContext::el_fragment(elements);
+
     rsx! {
         document::Link { rel: "stylesheet", href: MARKDOWN }
         div { class: "markdown",

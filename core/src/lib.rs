@@ -180,10 +180,7 @@ impl NoteVault {
     }
 
     pub fn exists(&self, path: &VaultPath) -> Option<VaultEntry> {
-        match VaultEntry::new(&self.workspace_path, path.to_owned()) {
-            Ok(entry) => Some(entry),
-            Err(_e) => None,
-        }
+        VaultEntry::new(&self.workspace_path, path.to_owned()).ok()
     }
 
     pub fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
