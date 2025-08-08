@@ -27,11 +27,11 @@ pub fn get_action<K: AsRef<KeyboardData>>(kd: &K) -> Shortcuts {
     if meta_ctrl(kd) {
         match code {
             Code::Comma => Shortcuts::OpenSettings,
-            Code::Slash => Shortcuts::ToggleNoteBrowser,
+            Code::KeyE => Shortcuts::ToggleNoteBrowser,
             Code::KeyK => Shortcuts::SearchNotes,
             Code::KeyO => Shortcuts::OpenNote,
             Code::KeyJ => Shortcuts::NewJournal,
-            Code::KeyT => Shortcuts::TogglePreview,
+            Code::KeyY => Shortcuts::TogglePreview,
             _ => Shortcuts::None,
         }
     } else {

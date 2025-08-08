@@ -255,7 +255,7 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                         PathType::Note => {
                             rsx! {
                                 if *show_preview.read() {
-                                    Markdown { src: editor_signal }
+                                    Markdown { note_path: editor_path, vault: vault.clone(), src: editor_signal }
                                 } else {
                                     TextEditor { note_path: editor_path, vault: vault.clone(), editor_signal }
                                 }
