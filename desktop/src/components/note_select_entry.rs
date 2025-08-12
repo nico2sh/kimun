@@ -225,7 +225,7 @@ impl RowItem for NoteSelectEntry {
                 search_str: _,
             } => {
                 let path = path.to_owned();
-                navigator().replace(crate::Route::Editor {
+                navigator().replace(crate::Route::MainView {
                     editor_path: path.clone(),
                     create: false,
                 });
@@ -238,7 +238,7 @@ impl RowItem for NoteSelectEntry {
                 search_str: _,
             } => {
                 let path = path.to_owned();
-                navigator().replace(crate::Route::Editor {
+                navigator().replace(crate::Route::MainView {
                     editor_path: path.clone(),
                     create: false,
                 });
@@ -260,7 +260,7 @@ impl RowItem for NoteSelectEntry {
                 name: _,
             } => {
                 let path = new_note_path.to_owned();
-                navigator().replace(crate::Route::Editor {
+                navigator().replace(crate::Route::MainView {
                     editor_path: path.clone(),
                     create: true,
                 });

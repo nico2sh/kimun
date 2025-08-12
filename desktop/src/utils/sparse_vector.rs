@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+#[derive(Debug, Clone)]
 pub struct SparseVector<T> {
     data: HashMap<usize, T>,
     size: usize,

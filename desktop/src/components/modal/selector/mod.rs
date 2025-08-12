@@ -18,7 +18,7 @@ where
     R: RowItem,
 {
     fn init(&self) -> Vec<R>;
-    fn filter(&self, filter_text: String, items: &Vec<R>) -> Vec<R>;
+    fn filter(&self, filter_text: String, items: &[R]) -> Vec<R>;
     fn preview(&self, element: &R) -> Option<PreviewData>;
 }
 
@@ -115,8 +115,8 @@ where
         async move {
             if let Some(selection) = selected {
                 info!("Preview Text for {}", selected.unwrap());
-                let r = rows.read_unchecked();
-                let entry = match &*r {
+                let r = rows.read().clone();
+                let entry = match &r {
                     Some(rows) => rows.get(selection),
                     None => None,
                 };
@@ -142,64 +142,68 @@ where
             class: "notes-modal",
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
-            onkeydown: move |e: Event<KeyboardData>| async move {
-                let key = e.data.code();
-                if key == Code::Escape {
-                    load_state.set(LoadState::Closed);
-                    modal_type.write().close();
-                }
-                if key == Code::ArrowDown {
-                    let max_items = row_number;
-                    let new_selected = if max_items == 0 {
-                        None
-                    } else if let Some(ref current_selected) = *selected.read() {
-                        let current_selected = current_selected.to_owned();
-                        if current_selected < max_items - 1 {
-                            Some(current_selected + 1)
+            onkeydown: move |e: Event<KeyboardData>| {
+                let mounts = row_mounts.read().clone();
+                async move {
+                    let key = e.data.code();
+                    if key == Code::Escape {
+                        load_state.set(LoadState::Closed);
+                        modal_type.write().close();
+                    }
+                    if key == Code::ArrowDown {
+                        let max_items = row_number;
+                        let new_selected = if max_items == 0 {
+                            None
+                        } else if let Some(ref current_selected) = *selected.read() {
+                            let current_selected = current_selected.to_owned();
+                            if current_selected < max_items - 1 {
+                                Some(current_selected + 1)
+                            } else {
+                                Some(0)
+                            }
                         } else {
                             Some(0)
+                        };
+                        if let Some(sel) = new_selected {
+
+                            if let Some(mount) = mounts.get(sel) {
+                                let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
+                                select_by_mouse.set(false);
+                            }
                         }
-                    } else {
-                        Some(0)
-                    };
-                    if let Some(sel) = new_selected {
-                        if let Some(mount) = row_mounts.read().get(sel) {
-                            let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
-                            select_by_mouse.set(false);
-                        }
+                        selected.set(new_selected);
                     }
-                    selected.set(new_selected);
-                }
-                if key == Code::ArrowUp {
-                    let max_items = row_number;
-                    let new_selected = if max_items == 0 {
-                        None
-                    } else if let Some(current_selected) = *selected.read() {
-                        if current_selected > 0 {
-                            Some(current_selected - 1)
-                        } else {
-                            Some(max_items - 1)
-                        }
-                    } else {
-                        Some(0)
-                    };
-                    if let Some(sel) = new_selected {
-                        if let Some(mount) = row_mounts.read().get(sel) {
-                            let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
-                            select_by_mouse.set(false);
-                        }
-                    }
-                    selected.set(new_selected);
-                }
-                if key == Code::Enter && row_number > 0 {
-                    let current_selected = (*selected.read()).unwrap_or(0);
-                    if let Some(rows) = &*rows.value().read() {
-                        if let Some(row) = rows.get(current_selected) {
-                            if row.on_select() {
-                                load_state.set(LoadState::Closed);
-                                modal_type.write().close();
+                    if key == Code::ArrowUp {
+                        let max_items = row_number;
+                        let new_selected = if max_items == 0 {
+                            None
+                        } else if let Some(current_selected) = *selected.read() {
+                            if current_selected > 0 {
+                                Some(current_selected - 1)
                             } else {
-                                load_state.set(LoadState::Init);
+                                Some(max_items - 1)
+                            }
+                        } else {
+                            Some(0)
+                        };
+                        if let Some(sel) = new_selected {
+                            if let Some(mount) = mounts.get(sel) {
+                                let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
+                                select_by_mouse.set(false);
+                            }
+                        }
+                        selected.set(new_selected);
+                    }
+                    if key == Code::Enter && row_number > 0 {
+                        let current_selected = (*selected.read()).unwrap_or(0);
+                        if let Some(rows) = &*rows.value().read() {
+                            if let Some(row) = rows.get(current_selected) {
+                                if row.on_select() {
+                                    load_state.set(LoadState::Closed);
+                                    modal_type.write().close();
+                                } else {
+                                    load_state.set(LoadState::Init);
+                                }
                             }
                         }
                     }

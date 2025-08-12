@@ -1,5 +1,5 @@
 .markdown {
-  margin: 12px;
+  margin: 8px;
   overflow-y: auto;
 }
 
@@ -10,6 +10,10 @@
   /* margin: 4px; */
   /* padding: 2px; */
   /* background: var(--bg-surface); */
+}
+
+.code {
+  overflow: auto;
 }
 
 .markdown h1 {

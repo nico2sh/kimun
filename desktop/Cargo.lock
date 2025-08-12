@@ -1310,6 +1310,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dioxus-radio"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "283a38a8aab64abdabc03a22f9e512c371025104cebd4c6e777f3946859fb85c"
+dependencies = [
+ "dioxus-lib",
+ "generational-box",
+ "warnings",
+]
+
+[[package]]
 name = "dioxus-router"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2772,6 +2783,7 @@ dependencies = [
  "chrono",
  "dioxus",
  "dioxus-query",
+ "dioxus-radio",
  "dirs",
  "futures",
  "kimun_core",
