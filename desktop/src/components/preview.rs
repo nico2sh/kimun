@@ -4,6 +4,7 @@ pub use crate::utils::md::{ElementAttributes, HtmlElement, LinkDescription, Opti
 
 use dioxus::prelude::*;
 use pulldown_cmark::Parser;
+use syntect::highlighting::Style;
 
 pub type HtmlCallback<T> = Callback<T, Element>;
 
@@ -205,6 +206,14 @@ impl MdContext {
                 dangerous_inner_html: "{inner_html}",
                 style: "{style}",
                 class: "{class}",
+            }
+        }
+    }
+
+    pub fn line_to_span(ranges: Vec<(Style, &str)>) -> Element {
+        rsx! {
+            for (style, text) in ranges {
+                span { style: "color:rgb({style.foreground.r},{style.foreground.g},{style.foreground.b});", "{text}" }
             }
         }
     }

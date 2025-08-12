@@ -1,10 +1,14 @@
 use core::ops::Range;
 
+use dioxus::html::em;
+use dioxus::logger::tracing::debug;
 use dioxus::prelude::Element;
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Style, ThemeSet};
+use syntect::parsing::{SyntaxSet, SyntaxSetBuilder};
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Tag, TagEnd};
+use syntect::util::LinesWithEndings;
 
 #[derive(Eq, PartialEq)]
 enum MathMode {
@@ -33,9 +37,32 @@ impl HtmlError {
     }
 }
 
-/// `highlight_code(content, ss, ts)` render the content `content`
-/// with syntax highlighting
-fn highlight_code(theme_name: &str, content: &str, kind: &CodeBlockKind) -> Option<String> {
+// fn highlight_code(theme_name: &str, content: &str, kind: &CodeBlockKind) -> Option<String> {
+//     let lang = match kind {
+//         CodeBlockKind::Fenced(x) => x,
+//         CodeBlockKind::Indented => return None,
+//     };
+//
+//     let theme = THEME_SET
+//         .themes
+//         .get(theme_name)
+//         .expect("unknown theme")
+//         .clone();
+//
+//     syntect::html::highlighted_html_for_string(
+//         content,
+//         &SYNTAX_SET,
+//         SYNTAX_SET.find_syntax_by_token(lang)?,
+//         &theme,
+//     )
+//     .ok()
+// }
+
+fn highlight_code_element(
+    theme_name: &str,
+    content: &str,
+    kind: &CodeBlockKind,
+) -> Option<Element> {
     let lang = match kind {
         CodeBlockKind::Fenced(x) => x,
         CodeBlockKind::Indented => return None,
@@ -47,14 +74,41 @@ fn highlight_code(theme_name: &str, content: &str, kind: &CodeBlockKind) -> Opti
         .expect("unknown theme")
         .clone();
 
-    // TODO: build it using Dioxus components by iterating the lines
-    syntect::html::highlighted_html_for_string(
-        content,
-        &SYNTAX_SET,
-        SYNTAX_SET.find_syntax_by_token(lang)?,
-        &theme,
-    )
-    .ok()
+    let ps = SyntaxSet::load_defaults_nonewlines();
+    debug!("Lang: {}", lang);
+    let syntax = ps
+        .find_syntax_by_token(lang)
+        .unwrap_or(ps.find_syntax_plain_text());
+    debug!("Syntax: {:?}", syntax);
+    let mut h = HighlightLines::new(syntax, &theme);
+    let mut lines = vec![];
+    let mut rgb = None;
+    for line in LinesWithEndings::from(content) {
+        let ranges: Vec<(Style, &str)> = h.highlight_line(line, &ps).unwrap();
+        if rgb.is_none() && !ranges.is_empty() {
+            let first_line = ranges.first().unwrap();
+            rgb = Some((
+                first_line.0.background.r,
+                first_line.0.background.g,
+                first_line.0.background.b,
+            ));
+        }
+        lines.push(MdContext::line_to_span(ranges));
+    }
+
+    let attributes = match rgb {
+        Some((r, g, b)) => ElementAttributes {
+            classes: vec![],
+            style: Some(format!("background:rgb({r}, {g}, {b})")),
+        },
+        None => ElementAttributes::default(),
+    };
+
+    Some(MdContext::el_with_attributes(
+        Code,
+        MdContext::el_fragment(lines),
+        attributes,
+    ))
 }
 
 /// renders a source code in a code block, with syntax highlighting if possible.
@@ -67,7 +121,7 @@ fn render_code_block(props: &MdProps, source: String, k: &CodeBlockKind) -> Elem
         ..Default::default()
     };
 
-    match highlight_code(&props.syntax_theme, &source, k) {
+    match highlight_code_element(&props.syntax_theme, &source, k) {
         None => {
             MdContext::el_with_attributes(Code, MdContext::el_text(source.into()), code_attributes)
         }
@@ -76,7 +130,7 @@ fn render_code_block(props: &MdProps, source: String, k: &CodeBlockKind) -> Elem
         //     cx.el(Code, cx.el_text(source.into())),
         //     code_attributes,
         // ),
-        Some(x) => MdContext::el_span_with_inner_html(x, code_attributes),
+        Some(x) => x,
     }
     // MdContext::el_with_attributes(Div, code, code_attributes)
 }
