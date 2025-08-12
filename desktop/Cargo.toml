@@ -10,6 +10,7 @@ edition = "2021"
 kimun_core = { path = "../core" }
 dioxus = { version = "0.6.3", features = ["router"] }
 dioxus-query = "0.8.1"
+dioxus-radio = "0.6.0"
 anyhow = "1.0.98"
 
 ## Serialization

@@ -4,7 +4,7 @@
 use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
-use crate::pages::editor::Editor;
+use crate::pages::main_view::MainView;
 use crate::pages::settings::Settings;
 use crate::pages::start::Start;
 
@@ -14,7 +14,7 @@ pub enum Route {
     #[route("/")]
     Start {},
     #[route("/edit/:editor_path?:create")]
-    Editor {
+    MainView {
         editor_path: VaultPath,
         create: bool,
     },

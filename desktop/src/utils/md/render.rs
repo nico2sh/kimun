@@ -47,6 +47,7 @@ fn highlight_code(theme_name: &str, content: &str, kind: &CodeBlockKind) -> Opti
         .expect("unknown theme")
         .clone();
 
+    // TODO: build it using Dioxus components by iterating the lines
     syntect::html::highlighted_html_for_string(
         content,
         &SYNTAX_SET,
@@ -62,6 +63,7 @@ fn highlight_code(theme_name: &str, content: &str, kind: &CodeBlockKind) -> Opti
 /// `range`: the position of the code in the original source
 fn render_code_block(props: &MdProps, source: String, k: &CodeBlockKind) -> Element {
     let code_attributes = ElementAttributes {
+        classes: vec!["code".to_string()],
         ..Default::default()
     };
 
@@ -76,6 +78,7 @@ fn render_code_block(props: &MdProps, source: String, k: &CodeBlockKind) -> Elem
         // ),
         Some(x) => MdContext::el_span_with_inner_html(x, code_attributes),
     }
+    // MdContext::el_with_attributes(Div, code, code_attributes)
 }
 
 fn render_maths(

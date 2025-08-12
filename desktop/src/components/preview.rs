@@ -1,14 +1,9 @@
-use std::sync::Arc;
-
 use crate::utils::md::{render::Renderer, CowStr};
 
 pub use crate::utils::md::{ElementAttributes, HtmlElement, LinkDescription, Options};
 
-use dioxus::{logger::tracing::debug, prelude::*};
-use kimun_core::{nfs::VaultPath, NoteVault};
+use dioxus::prelude::*;
 use pulldown_cmark::Parser;
-
-use super::text_editor::EditorContent;
 
 pub type HtmlCallback<T> = Callback<T, Element>;
 
@@ -195,7 +190,6 @@ impl MdContext {
                 }
             }
             HtmlElement::Code => {
-                debug!("Code");
                 rsx! {
                     code { style: "{style}", class: "{class}", {inside} }
                 }
@@ -267,9 +261,7 @@ impl MdContext {
 
 #[derive(Clone, PartialEq, Props)]
 pub struct MdProps {
-    src: Signal<EditorContent>,
-    note_path: ReadOnlySignal<VaultPath>,
-    vault: Arc<NoteVault>,
+    src: String,
 
     /// links in the markdown
     render_links: Option<HtmlCallback<LinkDescription<Element>>>,
@@ -297,7 +289,7 @@ pub struct MdProps {
 
 #[allow(non_snake_case)]
 pub fn Markdown(props: MdProps) -> Element {
-    let src: String = props.src.read().get_text();
+    let src: String = props.src.clone();
 
     let parse_options_default = Options::ENABLE_GFM
         | Options::ENABLE_MATH
