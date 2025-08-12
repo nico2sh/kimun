@@ -1,11 +1,10 @@
 use core::ops::Range;
 
-use dioxus::html::em;
 use dioxus::logger::tracing::debug;
 use dioxus::prelude::Element;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style, ThemeSet};
-use syntect::parsing::{SyntaxSet, SyntaxSetBuilder};
+use syntect::parsing::SyntaxSet;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Tag, TagEnd};
 use syntect::util::LinesWithEndings;
@@ -75,11 +74,9 @@ fn highlight_code_element(
         .clone();
 
     let ps = SyntaxSet::load_defaults_nonewlines();
-    debug!("Lang: {}", lang);
     let syntax = ps
         .find_syntax_by_token(lang)
         .unwrap_or(ps.find_syntax_plain_text());
-    debug!("Syntax: {:?}", syntax);
     let mut h = HighlightLines::new(syntax, &theme);
     let mut lines = vec![];
     let mut rgb = None;
@@ -123,6 +120,7 @@ fn render_code_block(props: &MdProps, source: String, k: &CodeBlockKind) -> Elem
 
     match highlight_code_element(&props.syntax_theme, &source, k) {
         None => {
+            debug!("Indented");
             MdContext::el_with_attributes(Code, MdContext::el_text(source.into()), code_attributes)
         }
         // None => cx.el_with_attributes(
@@ -271,25 +269,41 @@ where
 
     /// extract the text from the next text event
     fn children_text(&mut self, tag: Tag<'a>) -> Option<String> {
-        let text = match self.stream.next() {
-            Some((Event::Text(s), _)) => Some(s.to_string()),
-            None => None,
-            _ => panic!("expected string event, got something else"),
-        };
+        let mut text = "".to_string();
+        loop {
+            let text_stream = self.stream.next();
+            match text_stream {
+                Some((Event::Text(s), _)) => text.push_str(&s),
+                None => {}
+                Some(e) => {
+                    assert_eq!(&e.0, &Event::End(tag.to_end()));
+                    break;
+                }
+            }
+        }
+        // let text = match self.stream.next() {
+        //     Some((Event::Text(s), _)) => Some(s.to_string()),
+        //     None => None,
+        //     _ => panic!("expected string event, got something else"),
+        // };
 
-        self.assert_closing_tag(tag.to_end());
-        text
+        // self.assert_closing_tag(tag.to_end());
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
     }
 
     // check that the closing tag is what was expected
-    fn assert_closing_tag(&mut self, end: TagEnd) {
-        let end_tag = &self
-            .stream
-            .next()
-            .expect("this event should be the closing tag")
-            .0;
-        assert_eq!(end_tag, &Event::End(end));
-    }
+    // fn assert_closing_tag(&mut self, end: TagEnd) {
+    //     let end_tag = &self
+    //         .stream
+    //         .next()
+    //         .expect("this event should be the closing tag")
+    //         .0;
+    //     assert_eq!(end_tag, &Event::End(end));
+    // }
 
     fn render_tag(&mut self, tag: Tag<'a>) -> Result<Element, HtmlError> {
         Ok(match tag.clone() {
