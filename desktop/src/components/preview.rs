@@ -1,8 +1,21 @@
-use crate::utils::md::{render::Renderer, CowStr};
+use std::sync::Arc;
+
+use crate::{
+    pages::main_view::MainView,
+    utils::md::{render::Renderer, CowStr},
+};
 
 pub use crate::utils::md::{ElementAttributes, HtmlElement, LinkDescription, Options};
 
-use dioxus::prelude::*;
+use dioxus::{
+    logger::tracing::{debug, error},
+    prelude::*,
+};
+use kimun_core::{
+    nfs::VaultPath,
+    note::{LinkType, NoteLink},
+    NoteVault,
+};
 use pulldown_cmark::Parser;
 use syntect::highlighting::Style;
 
@@ -14,12 +27,6 @@ const MARKDOWN: Asset = asset!("/assets/styling/markdown.css");
 pub struct MdContext;
 
 impl MdContext {
-    pub fn set_frontmatter(props: &mut MdProps, frontmatter: String) {
-        if let Some(x) = props.frontmatter.as_mut() {
-            x.set(frontmatter)
-        }
-    }
-
     /// creates a html element, with default attributes
     pub fn el(e: HtmlElement, inside: Element) -> Element {
         MdContext::el_with_attributes(e, inside, Default::default())
@@ -58,15 +65,29 @@ impl MdContext {
         MdContext::el_with_attributes(HtmlElement::Span, MdContext::el_text(s), attributes)
     }
 
-    pub fn render_link(props: &MdProps, link: LinkDescription<Element>) -> Result<Element, String> {
-        if let Some(links) = props.render_links {
-            Ok(links(link))
+    pub fn render_link(props: &MarkdownProps, link: LinkDescription<Element>) -> Element {
+        debug!("Link: {} \nList: {:?}", link.url, props.note_links);
+        if let Some(note_link) = props
+            .note_links
+            .iter()
+            .find(|note_link| link.url.eq(&note_link.raw_link))
+        {
+            MdContext::kimun_link(props, link.content, note_link)
+        } else if link.image {
+            MdContext::el_img(link.title, link.url)
         } else {
-            Ok(if link.image {
-                MdContext::el_img(link.url, link.title)
-            } else {
-                MdContext::el_a(link.content, link.url)
-            })
+            MdContext::el_a(link.content, link.url)
+        }
+    }
+
+    fn kimun_link(props: &MarkdownProps, children: Element, note_link: &NoteLink) -> Element {
+        rsx! {
+            match &note_link.ltype {
+                LinkType::Note(vault_path) => MdContext::el_note(props, children, vault_path),
+                // TODO: Resolve the absolute path with the filesystem
+                LinkType::Attachment(vault_path) => MdContext::el_attachment(props, children, vault_path),
+                LinkType::Url => MdContext::el_a(children, note_link.raw_link.clone()),
+            }
         }
     }
 
@@ -243,7 +264,52 @@ impl MdContext {
         }
     }
 
-    pub fn el_img(src: String, alt: String) -> Element {
+    pub fn el_note(props: &MarkdownProps, children: Element, note_path: &VaultPath) -> Element {
+        let note_path = note_path.to_owned();
+        let vault = props.vault.clone();
+        rsx! {
+            span { class: "icon-note note-link",
+                onclick: move |_e| {
+                    match vault.open_or_search(&note_path) {
+                        Ok(res) => {
+                            match res.len() {
+                                0 => {
+                                    // Create new note
+                                    navigator().replace(crate::Route::MainView { editor_path: note_path.clone(), create: true });
+                                },
+                                1 => {
+                                    // Open note
+                                    navigator().replace(crate::Route::MainView { editor_path: note_path.clone(), create: false });
+                                },
+                                _ => {
+                                    // Show picker
+                                    debug!("Show picker for {note_path}");
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            error!("Error clicking on note: {}", e);
+                        },
+                    }
+                },
+                {children}
+            }
+        }
+    }
+
+    pub fn el_attachment(
+        props: &MarkdownProps,
+        children: Element,
+        note_path: &VaultPath,
+    ) -> Element {
+        let full_path = props.vault.path_to_pathbuf(note_path);
+        let fp = full_path.to_string_lossy();
+        rsx! {
+            a { class: "icon-attachment note-attachment", href: "{fp}", {children} }
+        }
+    }
+
+    pub fn el_img(alt: String, src: String) -> Element {
         rsx!(img {
             src: "{src}",
             alt: "{alt}"
@@ -269,46 +335,36 @@ impl MdContext {
 }
 
 #[derive(Clone, PartialEq, Props)]
-pub struct MdProps {
-    src: String,
+pub struct MarkdownProps {
+    vault: Arc<NoteVault>,
 
+    note_md: String,
     /// links in the markdown
-    render_links: Option<HtmlCallback<LinkDescription<Element>>>,
+    note_links: Vec<NoteLink>,
 
     /// the name of the theme used for syntax highlighting.
     /// Only the default themes of [syntect::Theme] are supported
     #[props(default = "base16-ocean.light".to_string())]
     pub syntax_theme: String,
 
-    /// wether to enable wikilinks support.
-    /// Wikilinks look like [[shortcut link]] or [[url|name]]
-    #[props(default = false)]
-    wikilinks: bool,
-
     /// wether to convert soft breaks to hard breaks.
     #[props(default = true)]
     hard_line_breaks: bool,
-
-    /// pulldown_cmark options.
-    /// See [`Options`][pulldown_cmark_wikilink::Options] for reference.
-    parse_options: Option<Options>,
-
-    frontmatter: Option<Signal<String>>,
 }
 
 #[allow(non_snake_case)]
-pub fn Markdown(props: MdProps) -> Element {
-    let src: String = props.src.clone();
+pub fn Markdown(props: MarkdownProps) -> Element {
+    let src: String = props.note_md.clone();
 
-    let parse_options_default = Options::ENABLE_GFM
-        | Options::ENABLE_MATH
+    let parse_options = Options::ENABLE_GFM
         | Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_WIKILINKS
         | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
-    let options = props.parse_options.unwrap_or(parse_options_default);
-    let mut stream: Vec<_> = Parser::new_ext(&src, options).into_offset_iter().collect();
+        | Options::ENABLE_SMART_PUNCTUATION;
+    let mut stream: Vec<_> = Parser::new_ext(&src, parse_options)
+        .into_offset_iter()
+        .collect();
 
     if props.hard_line_breaks {
         for (r, _) in &mut stream {
