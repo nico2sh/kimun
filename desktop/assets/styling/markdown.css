@@ -50,3 +50,18 @@
   margin-bottom: 10px;
 }
 
+a {
+  color: inherit;
+  text-decoration: inherit;
+  border-bottom: 1px solid;
+}
+
+.note-link {
+  cursor: pointer;
+  border-bottom: 1px dashed;
+}
+
+.attachment-link {
+  cursor: pointer;
+  border-bottom: 1px solid;
+}

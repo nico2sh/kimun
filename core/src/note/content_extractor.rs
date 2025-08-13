@@ -7,7 +7,7 @@ use crate::{
     note::{ContentChunk, NoteContentData},
 };
 
-use super::Link;
+use super::NoteLink;
 
 const _MAX_TITLE_LENGTH: usize = 40;
 const REGEX_WIKILINK: &str = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#;
@@ -63,7 +63,7 @@ fn cleanup_hashtags<S: AsRef<str>>(md_text: S) -> String {
     text
 }
 
-// Convert any wikilink into a link to a note
+// Convert any wikilink into a link to a note, only note links
 fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> String {
     let rx = Regex::new(REGEX_WIKILINK).unwrap();
     let text = rx
@@ -76,6 +76,7 @@ fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> String {
                 _ => ("", ""),
             };
             if !link.is_empty() && VaultPath::is_valid(link) {
+                let link = VaultPath::note_path_from(link);
                 format!("[{}]({})", text, link)
             } else {
                 format!("[[{}]]", items)
@@ -85,53 +86,69 @@ fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> String {
     text
 }
 
-/// Returns the converted text into Markdown (replacing wikilinks to markdown links)
+/// Returns the converted text into Markdown (replacing note wikilinks to markdown links)
+/// Normalizes the links urls when needed (lowercasing the path for vault paths)
 /// And a list of the links existing in the note, relative links are transformed to absolute links.
 pub fn get_markdown_and_links<S: AsRef<str>>(
-    note_path: &VaultPath,
+    reference_path: &VaultPath,
     md_text: S,
-) -> (String, Vec<Link>) {
+) -> (String, Vec<NoteLink>) {
     let md_text = convert_wikilinks(md_text);
     let mut links = vec![];
     let md_link_regex = r#"(?P<bang>!?)(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#;
     let url_regex = r#"^https?:\/\/[\w\d]+\.[\w\d]+(?:(?:\.[\w\d]+)|(?:[\w\d\/?=#]+))+$"#;
+
     let rx = Regex::new(md_link_regex).unwrap();
-    rx.captures_iter(md_text.as_ref()).for_each(|caps| {
+    let clean_md_text = rx.replace_all(md_text.as_ref(), |caps: &Captures| {
         let bang = &caps["bang"];
         let text = &caps["text"];
-        let link = &caps["link"];
+        let link = &caps["link"].trim();
         // We ignore links that start with a `!`, since these are images
         if bang.is_empty() {
             debug!("checking link {}", link);
-            if VaultPath::is_valid(link) {
+            // Is it a URL or a local path?
+            let rxurl = Regex::new(url_regex).unwrap();
+            let clean_link = if rxurl.is_match(link) {
+                let url_link = NoteLink::url(link, text);
+                links.push(url_link);
+                link.to_string()
+            } else if VaultPath::is_valid(link) {
+                // It is a local path
                 let path = VaultPath::new(link);
-                // If it is a relative path, and not pointing to a single note, we convert to absolute
-                let path = if path.is_relative() && !path.is_note_file() {
-                    let base_path = if note_path.is_note() {
-                        note_path.get_parent_path().0
+                if path.is_note_file() {
+                    // A single note
+                    links.push(NoteLink::note(&path, text));
+                    // We return the path as we found it
+                    path.to_string()
+                } else {
+                    // A path to content, we resolve the relative path
+                    let ref_path = if reference_path.is_note() {
+                        reference_path.get_parent_path().0
                     } else {
-                        warn!(
-                            "Note path is not a note, something's fishy here: {}",
-                            note_path
-                        );
-                        note_path.to_owned()
+                        reference_path.to_owned()
                     };
-                    base_path.append(&path).flatten()
-                } else {
-                    path
-                };
-                links.push(Link::vault_path(&path, text));
-            } else {
-                let rxurl = Regex::new(url_regex).unwrap();
-                if rxurl.is_match(link) {
-                    links.push(Link::url(link, text));
-                } else {
-                    debug!("link not counting {}", link);
+                    let abs_path = ref_path.append(&path).flatten();
+                    if abs_path.is_note() {
+                        // Note
+                        links.push(NoteLink::note(&abs_path, text));
+                    } else {
+                        // Attachment
+                        links.push(NoteLink::vault_path(&abs_path, text));
+                    }
+                    // We return the resolved absolute path
+                    abs_path.to_string()
                 }
-            }
+            } else {
+                debug!("link not counting {}", link);
+                link.to_string()
+            };
+            format!("[{}]({})", text, clean_link)
+        } else {
+            format!("![{}]({})", text, link)
         }
     });
-    (md_text, links)
+
+    (clean_md_text.to_string(), links)
 }
 
 pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {

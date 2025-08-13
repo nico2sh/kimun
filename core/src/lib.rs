@@ -285,6 +285,10 @@ impl NoteVault {
         Ok(a)
     }
 
+    pub fn path_to_pathbuf(&self, path: &VaultPath) -> PathBuf {
+        path.to_pathbuf(&self.workspace_path)
+    }
+
     pub fn browse_vault(&self, options: VaultBrowseOptions) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);

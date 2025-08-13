@@ -15,7 +15,7 @@ enum MathMode {
     Display,
 }
 
-use crate::components::preview::{MdContext, MdProps};
+use crate::components::preview::{MarkdownProps, MdContext};
 
 use super::HtmlElement::*;
 use super::{ElementAttributes, HtmlError, LinkDescription};
@@ -36,27 +36,6 @@ impl HtmlError {
     }
 }
 
-// fn highlight_code(theme_name: &str, content: &str, kind: &CodeBlockKind) -> Option<String> {
-//     let lang = match kind {
-//         CodeBlockKind::Fenced(x) => x,
-//         CodeBlockKind::Indented => return None,
-//     };
-//
-//     let theme = THEME_SET
-//         .themes
-//         .get(theme_name)
-//         .expect("unknown theme")
-//         .clone();
-//
-//     syntect::html::highlighted_html_for_string(
-//         content,
-//         &SYNTAX_SET,
-//         SYNTAX_SET.find_syntax_by_token(lang)?,
-//         &theme,
-//     )
-//     .ok()
-// }
-
 fn highlight_code_element(
     theme_name: &str,
     content: &str,
@@ -73,18 +52,18 @@ fn highlight_code_element(
         .expect("unknown theme")
         .clone();
 
-    let ps = SyntaxSet::load_defaults_nonewlines();
-    let syntax = ps
+    // let ps = SyntaxSet::load_defaults_nonewlines();
+    let syntax = SYNTAX_SET
         .find_syntax_by_token(lang)
-        .unwrap_or(ps.find_syntax_plain_text());
+        .unwrap_or(SYNTAX_SET.find_syntax_plain_text());
     let mut h = HighlightLines::new(syntax, &theme);
     let mut lines = vec![];
-    let mut rgb = None;
+    let mut background_rgb = None;
     for line in LinesWithEndings::from(content) {
-        let ranges: Vec<(Style, &str)> = h.highlight_line(line, &ps).unwrap();
-        if rgb.is_none() && !ranges.is_empty() {
+        let ranges: Vec<(Style, &str)> = h.highlight_line(line, &SYNTAX_SET).unwrap();
+        if background_rgb.is_none() && !ranges.is_empty() {
             let first_line = ranges.first().unwrap();
-            rgb = Some((
+            background_rgb = Some((
                 first_line.0.background.r,
                 first_line.0.background.g,
                 first_line.0.background.b,
@@ -93,7 +72,7 @@ fn highlight_code_element(
         lines.push(MdContext::line_to_span(ranges));
     }
 
-    let attributes = match rgb {
+    let attributes = match background_rgb {
         Some((r, g, b)) => ElementAttributes {
             classes: vec![],
             style: Some(format!("background:rgb({r}, {g}, {b})")),
@@ -112,7 +91,7 @@ fn highlight_code_element(
 /// `cx`: the current markdown context
 /// `source`: the source to render
 /// `range`: the position of the code in the original source
-fn render_code_block(props: &MdProps, source: String, k: &CodeBlockKind) -> Element {
+fn render_code_block(props: &MarkdownProps, source: String, k: &CodeBlockKind) -> Element {
     let code_attributes = ElementAttributes {
         classes: vec!["code".to_string()],
         ..Default::default()
@@ -162,7 +141,7 @@ where
     I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     /// the markdown context
-    props: MdProps,
+    props: MarkdownProps,
     /// the stream of markdown [`Event`]s
     stream: &'c mut I,
     /// the alignment settings inside the current table
@@ -242,7 +221,7 @@ where
 {
     /// creates a new renderer from a stream of events.
     /// It returns an iterator of [`F::View`]
-    pub fn new(props: MdProps, events: &'c mut I) -> Self {
+    pub fn new(props: MarkdownProps, events: &'c mut I) -> Self {
         Self {
             props,
             stream: events,
@@ -353,7 +332,7 @@ where
                     link_type,
                     image: true,
                 };
-                MdContext::render_link(&self.props, description).map_err(HtmlError::Link)?
+                MdContext::render_link(&self.props, description)
             }
             Tag::Link {
                 link_type,
@@ -368,14 +347,14 @@ where
                     link_type,
                     image: false,
                 };
-                MdContext::render_link(&self.props, description).map_err(HtmlError::Link)?
+                MdContext::render_link(&self.props, description)
             }
             Tag::FootnoteDefinition(_) => {
                 return Err(HtmlError::not_implemented("footnote not implemented"))
             }
             Tag::MetadataBlock { .. } => {
                 if let Some(text) = self.children_text(tag) {
-                    MdContext::set_frontmatter(&mut self.props, text)
+                    debug!("Metadata received: {}", text);
                 }
                 MdContext::el_empty()
             }

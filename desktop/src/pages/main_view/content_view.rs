@@ -1,4 +1,4 @@
-use std::{rc::Rc, sync::Arc};
+use std::{fmt::Display, rc::Rc, sync::Arc};
 
 use dioxus::{
     logger::tracing::{debug, error, info},
@@ -6,7 +6,7 @@ use dioxus::{
 };
 use dioxus_radio::hooks::{use_radio, Radio};
 use futures::StreamExt;
-use kimun_core::{nfs::VaultPath, NoteVault};
+use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 
 use crate::{
     components::preview::Markdown,
@@ -25,6 +25,12 @@ pub enum EditorContentState {
     Note {
         text: String,
     },
+}
+
+impl Display for EditorContentState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get_text())
+    }
 }
 
 impl EditorContentState {
@@ -211,7 +217,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
         async move {
             let exists = vault.exists(&props.note_path.read()).is_some();
             debug!("[Initial Content] Exists: {:?}", exists);
-            if exists {
+            let text = if exists {
                 debug!("[Initial Content] Loading from path at {}", props.note_path);
                 let text = vault.load_note(&props.note_path.read()).map_or_else(
                     |e| {
@@ -227,30 +233,21 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                         d.raw_text
                     },
                 );
-                debug!(
-                    "[Initial Content] Creating Editor Data for existing note with path: {}",
-                    props.note_path
-                );
-                cr.send(EditorMsg::Init { text: text.clone() });
-                debug!("[Initial Content] Init message sent");
                 text
             } else {
-                let text = "".to_string();
-                debug!(
-                    "[Initial Content] Creating new Editor Data for new note with path: {}",
-                    props.note_path
-                );
-                cr.send(EditorMsg::Init { text: text.clone() });
-                debug!("[Initial Content] Init message sent");
-                text
-            }
+                "".to_string()
+            };
+            cr.send(EditorMsg::Init { text: text.clone() });
+            debug!("[Initial Content] Init message sent");
+            text
         }
     });
 
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
+    let vault = props.vault.clone();
     use_effect(move || {
-        let vault = props.vault.clone();
+        let vault = vault.clone();
         pc.subscribe(
             TEXT_EDITOR,
             Callback::new(move |g| {
@@ -290,9 +287,15 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                             "Loading..."
                         }
                     },
-                    Some(content) => rsx! {
+                    Some(_) => rsx! {
                         if *props.preview.read() {
-                            Markdown { src: content }
+                            {
+                                let note_details = NoteDetails::new(&props.note_path.read(), content_state.read().get_text());
+                                let md_content = note_details.get_markdown_and_links();
+                                rsx!{
+                                    Markdown { vault: props.vault.clone(), note_md: md_content.text, note_links: md_content.links }
+                                }
+                            }
                         } else {
                             textarea {
                                 class: "text-editor",
@@ -317,7 +320,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                                 wrap: "hard",
                                 resize: "none",
                                 placeholder: "Start writing something!",
-                                value: "{content}",
+                                value: "{content_state.peek()}",
                             }
                         }
                     },
