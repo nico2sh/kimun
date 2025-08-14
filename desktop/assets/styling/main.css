@@ -419,11 +419,12 @@ label.error {
   background: var(--bg-main);
   border: 1px solid var(--border-light);
   border-radius: 8px;
-  padding: 24px;
+  padding: 12px;
   max-width: 400px;
+  max-height: 800px;
   width: 90%;
   box-shadow: 0 10px 40px var(--shadow-primary);
-  transform: scale(0.95);
+  /* transform: scale(1); */
   transition: transform 0.3s ease;
 }
 

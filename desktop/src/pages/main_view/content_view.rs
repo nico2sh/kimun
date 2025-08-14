@@ -9,7 +9,7 @@ use futures::StreamExt;
 use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 
 use crate::{
-    components::preview::Markdown,
+    components::{modal::ModalType, preview::Markdown},
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
     state::{AppState, ContentType, KimunChannel},
@@ -139,6 +139,7 @@ pub fn NoText(path: ReadOnlySignal<VaultPath>) -> Element {
 pub struct TextEditorProps {
     note_path: ReadOnlySignal<VaultPath>,
     vault: Arc<NoteVault>,
+    modal_type: Signal<ModalType>,
     preview: Signal<bool>,
 }
 
@@ -150,14 +151,17 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     );
     let mut app_state = use_radio::<AppState, KimunChannel>(KimunChannel::Header);
     let mut content_state = use_signal(|| EditorContentState::None);
+    let modal_type = props.modal_type;
 
     // This is for the autofocus
     let mut text_area_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     spawn(async move {
         loop {
             if let Some(e) = text_area_signal.with(|f| f.clone()) {
-                debug!("Attached main UI for focus");
-                let _ = e.set_focus(true).await;
+                if !modal_type.read().is_open() {
+                    debug!("Attached main UI for focus");
+                    let _ = e.set_focus(true).await;
+                }
                 break;
             }
         }
@@ -293,7 +297,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                                 let note_details = NoteDetails::new(&props.note_path.read(), content_state.read().get_text());
                                 let md_content = note_details.get_markdown_and_links();
                                 rsx!{
-                                    Markdown { vault: props.vault.clone(), note_md: md_content.text, note_links: md_content.links }
+                                    Markdown { vault: props.vault.clone(), note_md: md_content.text, note_links: md_content.links, modal_type }
                                 }
                             }
                         } else {

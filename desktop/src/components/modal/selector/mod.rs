@@ -1,3 +1,4 @@
+pub mod note_picker;
 pub mod note_search;
 pub mod note_select;
 

@@ -328,15 +328,12 @@ pub fn NoteBrowser(
                                         selected.set(Some(index));
                                     }
                                 },
-                                div {
-                                    class: "note-item-content",
-                                    onclick: move |e| {
-                                        info!("Clicked element");
-                                        e.stop_propagation();
-                                        let _ = entry.on_select();
-                                    },
-                                    {entry.get_view()}
-                                }
+                                onclick: move |e| {
+                                    info!("Clicked element");
+                                    e.stop_propagation();
+                                    let _ = entry.on_select();
+                                },
+                                {entry.get_view()}
                                 if !entry.is_up_dir() && slct {
                                     NoteActions {
                                         vault,
