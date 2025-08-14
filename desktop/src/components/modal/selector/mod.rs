@@ -4,13 +4,14 @@ pub mod note_select;
 
 use std::rc::Rc;
 
-use dioxus::{
-    logger::tracing::{debug, info},
-    prelude::*,
-};
+use dioxus::{logger::tracing::info, prelude::*};
 
 use crate::{
-    components::{modal::ModalType, note_select_entry::RowItem},
+    components::{
+        focus_manager::{FocusComponent, FocusManager},
+        modal::ModalType,
+        note_select_entry::RowItem,
+    },
     utils::sparse_vector::SparseVector,
 };
 
@@ -64,7 +65,8 @@ where
     let mut filter_text = use_signal(|| filter_text);
     let mut load_state: Signal<LoadState<R>, SyncStorage> = use_signal_sync(|| LoadState::Init);
     // For setting the focus in the text box
-    let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
+    // let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
+    let focus_manager = use_context::<FocusManager>();
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
     let mut select_by_mouse = use_signal(|| true);
@@ -86,13 +88,13 @@ where
                     });
 
                     // We put the focus on the text
-                    loop {
-                        if let Some(e) = dialog.with(|f| f.clone()) {
-                            debug!("Focus input");
-                            let _ = e.set_focus(true).await;
-                            break;
-                        }
-                    }
+                    // loop {
+                    //     if let Some(e) = dialog.with(|f| f.clone()) {
+                    //         debug!("Focus input");
+                    //         let _ = e.set_focus(true).await;
+                    //         break;
+                    //     }
+                    // }
                     vec![]
                 }
                 LoadState::Loaded(items) => {
@@ -136,6 +138,10 @@ where
         }
     });
 
+    let fm = focus_manager.clone();
+    use_drop(move || {
+        fm.unregister_focus(FocusComponent::ModalInput);
+    });
     let row_number = rows.value().read().clone().unwrap_or_default().len();
 
     rsx! {
@@ -220,7 +226,8 @@ where
                     value: "{filter_text}",
                     spellcheck: false,
                     onmounted: move |e| {
-                        *dialog.write() = Some(e.data());
+                        focus_manager.register_and_focus(FocusComponent::ModalInput, e.data());
+                        // *dialog.write() = Some(e.data());
                     },
                     oninput: move |e| {
                         filter_text.set(e.value().clone().to_string());

@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use content_view::{NoText, TextEditor};
-use dioxus::{
-    logger::tracing::{debug, info},
-    prelude::*,
-};
+use dioxus::{logger::tracing::debug, prelude::*};
 use header::EditorHeader;
 use kimun_core::{
     nfs::{EntryData, VaultPath},

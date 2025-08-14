@@ -16,6 +16,8 @@ use crate::components::modal::{
     indexer::IndexType,
 };
 
+use super::focus_manager::FocusManager;
+
 pub mod confirmations;
 pub mod indexer;
 mod selector;
@@ -66,6 +68,8 @@ pub enum ModalType {
 
 impl ModalType {
     pub fn close(&mut self) {
+        let focus_manager = use_context::<FocusManager>();
+        focus_manager.focus_prev();
         *self = ModalType::None;
     }
     pub fn set_error(&mut self, message: String, error: String) {
@@ -99,6 +103,16 @@ impl ModalType {
     pub fn is_open(&self) -> bool {
         !matches!(self, ModalType::None)
     }
+    pub fn should_close_on_click(&self) -> bool {
+        match self {
+            ModalType::None => true,
+            ModalType::Index {
+                vault: _,
+                index_type: _,
+            } => false,
+            _ => true,
+        }
+    }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -118,7 +132,7 @@ pub fn Modal(props: ModalProps) -> Element {
         div { class: "modal-overlay",
             // We close any modal if we click on the main UI
             onclick: move |_e| {
-                if modal_type.peek().is_open() {
+                if modal_type.peek().is_open() && modal_type.peek().should_close_on_click() {
                     modal_type.write().close();
                     info!("Close dialog");
                 }
@@ -169,7 +183,7 @@ pub fn Modal(props: ModalProps) -> Element {
                     CreateDirectory { modal_type, vault: vault.clone(), from_path: path.clone() }
                 },
                 ModalType::NotePicker { note_list } => rsx!{
-                    NotePicker { note_list }
+                    NotePicker { modal_type, note_list }
                 }
             }
         }
