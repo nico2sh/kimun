@@ -1,4 +1,5 @@
 #![cfg_attr(feature = "bundle", windows_subsystem = "windows")]
+use components::focus_manager::{self, FocusManager};
 // The dioxus prelude contains a ton of common items used in dioxus apps. It's a good idea to import wherever you
 // need dioxus
 use dioxus::prelude::*;
@@ -42,6 +43,8 @@ fn App() -> Element {
     use_context_provider(move || app_settings);
     let pub_sub = PubSub::<GlobalEvent>::new();
     use_context_provider(move || pub_sub);
+    let focus_manager = FocusManager::new();
+    use_context_provider(move || focus_manager);
     let theme = app_settings.read().get_theme();
 
     use_init_radio_station::<AppState, KimunChannel>(AppState::default);

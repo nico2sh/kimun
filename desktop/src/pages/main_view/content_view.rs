@@ -9,7 +9,11 @@ use futures::StreamExt;
 use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 
 use crate::{
-    components::{modal::ModalType, preview::Markdown},
+    components::{
+        focus_manager::{FocusComponent, FocusManager},
+        modal::ModalType,
+        preview::Markdown,
+    },
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
     state::{AppState, ContentType, KimunChannel},
@@ -153,19 +157,20 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     let mut content_state = use_signal(|| EditorContentState::None);
     let modal_type = props.modal_type;
 
+    let focus_manager = use_context::<FocusManager>();
     // This is for the autofocus
-    let mut text_area_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
-    spawn(async move {
-        loop {
-            if let Some(e) = text_area_signal.with(|f| f.clone()) {
-                if !modal_type.read().is_open() {
-                    debug!("Attached main UI for focus");
-                    let _ = e.set_focus(true).await;
-                }
-                break;
-            }
-        }
-    });
+    // let mut text_area_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
+    // spawn(async move {
+    //     loop {
+    //         if let Some(e) = text_area_signal.with(|f| f.clone()) {
+    //             if !modal_type.read().is_open() {
+    //                 debug!("Attached main UI for focus");
+    //                 let _ = e.set_focus(true).await;
+    //             }
+    //             break;
+    //         }
+    //     }
+    // });
 
     let mut settings: Signal<AppSettings> = use_context();
 
@@ -274,19 +279,22 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
             }),
         );
     });
+    let fm = focus_manager.clone();
     use_drop(move || {
         pub_sub.unsubscribe(TEXT_EDITOR);
+        fm.unregister_focus(FocusComponent::Editor);
     });
 
     // This manages the editor state
     rsx! {
         div { class: "editor-content",
             {
+                let focus = focus_manager.clone();
                 match &*note_content.read() {
                     None => rsx! {
                         div {
-                            onmounted: move |e| {
-                                *text_area_signal.write() = Some(e.data());
+                            onmounted: move |_e| {
+                                // focus_manager.register_and_focus(FocusComponent::Editor, e.data());
                             },
                             "Loading..."
                         }
@@ -305,8 +313,11 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                                 class: "text-editor",
                                 id: "textEditor",
                                 autofocus: true,
+                                onfocus: move |_e| {
+                                    focus.focus(FocusComponent::Editor);
+                                },
                                 onmounted: move |e| {
-                                    *text_area_signal.write() = Some(e.data());
+                                    focus_manager.register_and_focus(FocusComponent::Editor, e.data());
                                 },
                                 onselect: move |e| {
                                     info!("Select event {:?}", e);
