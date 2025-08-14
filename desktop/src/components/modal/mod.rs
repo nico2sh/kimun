@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use dioxus::{
-    logger::tracing::{debug, warn},
+    logger::tracing::{debug, info, warn},
     prelude::*,
 };
 use indexer::Indexer;
 use kimun_core::{nfs::VaultPath, NoteVault};
-use selector::{note_search::NoteSearch, note_select::NoteSelector};
+use selector::{note_picker::NotePicker, note_search::NoteSearch, note_select::NoteSelector};
 
 use crate::components::modal::{
     confirmations::{
@@ -59,6 +59,9 @@ pub enum ModalType {
         vault: Arc<NoteVault>,
         path: VaultPath,
     },
+    NotePicker {
+        note_list: Vec<(String, VaultPath)>,
+    },
 }
 
 impl ModalType {
@@ -105,7 +108,7 @@ pub struct ModalProps {
 
 #[component]
 pub fn Modal(props: ModalProps) -> Element {
-    let modal_type = props.modal_type;
+    let mut modal_type = props.modal_type;
     let mt = &*modal_type.read();
 
     if let ModalType::None = mt {
@@ -113,6 +116,13 @@ pub fn Modal(props: ModalProps) -> Element {
     }
     rsx! {
         div { class: "modal-overlay",
+            // We close any modal if we click on the main UI
+            onclick: move |_e| {
+                if modal_type.peek().is_open() {
+                    modal_type.write().close();
+                    info!("Close dialog");
+                }
+            },
             match modal_type.read().to_owned() {
                 ModalType::None => {
                     warn!("This shouldn't be called");
@@ -158,6 +168,9 @@ pub fn Modal(props: ModalProps) -> Element {
                 ModalType::NewDirectory { vault, path } => rsx! {
                     CreateDirectory { modal_type, vault: vault.clone(), from_path: path.clone() }
                 },
+                ModalType::NotePicker { note_list } => rsx!{
+                    NotePicker { note_list }
+                }
             }
         }
     }

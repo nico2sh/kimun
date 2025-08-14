@@ -239,20 +239,13 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
                         }
                     }
                 },
-                // We close any modal if we click on the main UI
-                onclick: move |_e| {
-                    if modal_type.read().is_open() {
-                        modal_type.write().close();
-                        info!("Close dialog");
-                    }
-                },
                 Modal { modal_type }
                 EditorHeader { path: editor_path, show_browser }
                 div { class: "editor-main",
                     match &*content_path.read() {
                         PathType::Note => {
                             rsx! {
-                                TextEditor { note_path: editor_path, vault: vault.clone(), preview: show_preview }
+                                TextEditor { note_path: editor_path, vault: vault.clone(), modal_type, preview: show_preview }
                             }
                         }
                         PathType::Directory => {

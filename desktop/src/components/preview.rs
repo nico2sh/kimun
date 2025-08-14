@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use crate::{
-    pages::main_view::MainView,
-    utils::md::{render::Renderer, CowStr},
-};
+use crate::utils::md::{render::Renderer, CowStr};
 
 pub use crate::utils::md::{ElementAttributes, HtmlElement, LinkDescription, Options};
 
@@ -19,9 +16,9 @@ use kimun_core::{
 use pulldown_cmark::Parser;
 use syntect::highlighting::Style;
 
-pub type HtmlCallback<T> = Callback<T, Element>;
+use super::modal::ModalType;
 
-const MARKDOWN: Asset = asset!("/assets/styling/markdown.css");
+const MARKDOWN_SYLE: Asset = asset!("/assets/styling/markdown.css");
 
 #[derive(Clone)]
 pub struct MdContext;
@@ -66,7 +63,6 @@ impl MdContext {
     }
 
     pub fn render_link(props: &MarkdownProps, link: LinkDescription<Element>) -> Element {
-        debug!("Link: {} \nList: {:?}", link.url, props.note_links);
         if let Some(note_link) = props
             .note_links
             .iter()
@@ -84,7 +80,6 @@ impl MdContext {
         rsx! {
             match &note_link.ltype {
                 LinkType::Note(vault_path) => MdContext::el_note(props, children, vault_path),
-                // TODO: Resolve the absolute path with the filesystem
                 LinkType::Attachment(vault_path) => MdContext::el_attachment(props, children, vault_path),
                 LinkType::Url => MdContext::el_a(children, note_link.raw_link.clone()),
             }
@@ -267,6 +262,7 @@ impl MdContext {
     pub fn el_note(props: &MarkdownProps, children: Element, note_path: &VaultPath) -> Element {
         let note_path = note_path.to_owned();
         let vault = props.vault.clone();
+        let mut modal_type = props.modal_type;
         rsx! {
             span { class: "icon-note note-link",
                 onclick: move |_e| {
@@ -284,6 +280,10 @@ impl MdContext {
                                 _ => {
                                     // Show picker
                                     debug!("Show picker for {note_path}");
+                                    let note_list = res.iter().map(|(data, details)| {
+                                        (details.title.clone(), data.path.clone())
+                                    }).collect();
+                                    modal_type.set(ModalType::NotePicker { note_list });
                                 }
                             }
                         },
@@ -341,6 +341,7 @@ pub struct MarkdownProps {
     note_md: String,
     /// links in the markdown
     note_links: Vec<NoteLink>,
+    modal_type: Signal<ModalType>,
 
     /// the name of the theme used for syntax highlighting.
     /// Only the default themes of [syntect::Theme] are supported
@@ -378,7 +379,7 @@ pub fn Markdown(props: MarkdownProps) -> Element {
     let child = MdContext::el_fragment(elements);
 
     rsx! {
-        document::Link { rel: "stylesheet", href: MARKDOWN }
+        document::Link { rel: "stylesheet", href: MARKDOWN_SYLE }
         div { class: "markdown",
             {child}
         }

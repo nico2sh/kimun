@@ -277,9 +277,9 @@ impl RowItem for NoteSelectEntry {
                 search_str: _,
             } => {
                 rsx! {
-                    div { class: "element",
+                    div { class: "note-item-content",
                         div { class: "icon-note note-title", "{title}" }
-                        div { class: "note-meta", "{path.get_name()}" }
+                        div { class: "note-meta", "{path}" }
                     }
                 }
             }
@@ -290,7 +290,7 @@ impl RowItem for NoteSelectEntry {
                 search_str: _,
             } => {
                 rsx! {
-                    div { class: "element",
+                    div { class: "note-item-content",
                         div { class: "icon-note note-title", "{title}" }
                         div { class: "note-meta", "{path.get_name()}" }
                         div { class: "note-journal", "{date_string}" }
@@ -303,7 +303,7 @@ impl RowItem for NoteSelectEntry {
                 browse_path_signal: _,
             } => {
                 rsx! {
-                    div { class: "element",
+                    div { class: "note-item-content",
                         div { class: "icon-folder note-title", "{name}" }
                     }
                 }
@@ -313,7 +313,7 @@ impl RowItem for NoteSelectEntry {
                 name,
             } => {
                 rsx! {
-                    div { class: "note_create",
+                    div { class: "note-item-content",
                         span { class: "emphasized", "Create new Note " }
                         span { class: "strong", "`{name}`" }
                     }

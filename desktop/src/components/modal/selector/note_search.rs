@@ -118,8 +118,11 @@ impl RowItem for NoteSearchEntry {
 
     fn get_view(&self) -> Element {
         rsx! {
-            div { class: "note-title", "{self.note_title}" }
-            div { class: "note-meta", "{self.note_path.to_string()}" }
+            div {
+                class: "note-item-content",
+                div { class: "note-title", "{self.note_title}" }
+                div { class: "note-meta", "{self.note_path.to_string()}" }
+            }
         }
     }
 }
