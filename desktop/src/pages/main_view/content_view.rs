@@ -305,7 +305,12 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                                 let note_details = NoteDetails::new(&props.note_path.read(), content_state.read().get_text());
                                 let md_content = note_details.get_markdown_and_links();
                                 rsx!{
-                                    Markdown { vault: props.vault.clone(), note_md: md_content.text, note_links: md_content.links, modal_type }
+                                    Markdown {
+                                        vault: props.vault.clone(),
+                                        note_md: md_content.text,
+                                        note_links: md_content.links,
+                                        modal_type,
+                                    }
                                 }
                             }
                         } else {
