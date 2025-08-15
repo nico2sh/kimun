@@ -28,10 +28,8 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
       - name: Install Dioxus-CLI
         run: cargo binstall dioxus-cli --force
-      - name: Get into the desktop dir
-        run: cd desktop
       - name: Dioxus bundle
-        run: dx bundle --package kimun_desktop --platform "${{ env.PLATFORM }}" --package-types "${{ matrix.package-type }}" --out-dir "build/${{ matrix.package-type }}"
+        run: cd desktop && dx bundle --package kimun_desktop --platform "${{ env.PLATFORM }}" --package-types "${{ matrix.package-type }}" --out-dir "build/${{ matrix.package-type }}"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         if: "${{ github.ref == 'refs/heads/main' }}"
@@ -56,10 +54,8 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
       - name: Install Dioxus-CLI
         run: cargo binstall dioxus-cli --force
-      - name: Get into the desktop dir
-        run: cd desktop
       - name: Dioxus bundle
-        run: dx bundle --package kimun_desktop --platform "${{ env.PLATFORM }}" --package-types "${{ matrix.package-type }}" --out-dir "build/${{ matrix.package-type }}"
+        run: cd desktop && dx bundle --package kimun_desktop --platform "${{ env.PLATFORM }}" --package-types "${{ matrix.package-type }}" --out-dir "build/${{ matrix.package-type }}"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         if: "${{ github.ref == 'refs/heads/main' }}"
