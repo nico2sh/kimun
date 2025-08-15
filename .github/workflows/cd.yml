@@ -1,0 +1,93 @@
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: stable
+
+name: Release
+
+jobs:
+  windows:
+    name: Package Windows
+    runs-on: windows-latest
+    env:
+      PLATFORM: windows
+      RUST_FLAGS: "-C target-cpu=native"
+    strategy:
+      matrix:
+        package-type:
+          - msi
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update rust
+        run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+      - name: Use carbo binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install Dioxus-CLI
+        run: cargo binstall dioxus-cli --force
+      - name: Dioxus bundle
+        run: cd desktop && dx bundle --package kimun_desktop --platform "${{ env.PLATFORM }}" --package-types "${{ matrix.package-type }}" --out-dir "build/${{ matrix.package-type }}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: "${{ github.ref == 'refs/heads/main' }}"
+        with:
+          name: kimun_desktop-${{ matrix.package-type }}
+          path: desktop/build/${{ matrix.package-type }}/kimun_*
+
+  macos:
+    name: Package Macos
+    runs-on: macos-latest
+    env:
+      PLATFORM: macos
+    strategy:
+      matrix:
+        package-type:
+          - dmg
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update rust
+        run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+      - name: Use carbo binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install Dioxus-CLI
+        run: cargo binstall dioxus-cli --force
+      - name: Dioxus bundle
+        run: cd desktop && dx bundle --package kimun_desktop --platform "${{ env.PLATFORM }}" --package-types "${{ matrix.package-type }}" --out-dir "build/${{ matrix.package-type }}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: "${{ github.ref == 'refs/heads/main' }}"
+        with:
+          name: kimun_desktop-${{ matrix.package-type }}
+          path: desktop/build/${{ matrix.package-type }}/kimun_*
+
+#  linux:
+#    name: Package Linux
+#    runs-on: ubuntu-latest
+#    env:
+#      PLATFORM: linux
+#    strategy:
+#      matrix:
+#        package-type:
+#          - deb
+#          - rpm
+#          - appimage
+#    steps:
+#      - uses: actions/checkout@v4
+#      - name: Update rust
+#        run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+#      - name: Use carbo binstall
+#        uses: cargo-bins/cargo-binstall@main
+#      - name: Install Dioxus-CLI
+#        run: cargo binstall dioxus-cli --force
+#      - name: Dioxus bundle
+#        run: dx bundle --package kimun_desktop --platform "${{ env.PLATFORM }}" --package-types "${{ matrix.package-type }}" --out-dir "build/${{ matrix.package-type }}"
+#      - name: Upload artifact
+#        uses: actions/upload-artifact@v4
+#        if: "${{ github.ref == 'refs/heads/main' }}"
+#        with:
+#          name: kimun_desktopr-${{ matrix.package-type }}
+#          path: build/${{ matrix.package-type }}/Kimunr_*
