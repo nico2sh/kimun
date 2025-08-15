@@ -515,7 +515,7 @@ mod test {
 
         let md = convert_wikilinks(markdown);
 
-        assert_eq!(md, "Here is a [text with link](Wikilink)");
+        assert_eq!(md, "Here is a [text with link](wikilink.md)");
     }
 
     #[test]
@@ -528,7 +528,7 @@ mod test {
 
         assert_eq!(
             md,
-            r#"Here is a [text with link](Wikilink), and another [Link](Link) this time without text.
+            r#"Here is a [text with link](wikilink.md), and another [Link](link.md) this time without text.
 
     And a [[https://example.com|url link]]"#
         );
