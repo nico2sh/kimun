@@ -40,10 +40,11 @@ fn yes() -> bool {
 }
 
 fn load_theme_list() -> Vec<Theme> {
-    let mut list = vec![];
-    list.push(Theme::default());
-    list.push(Theme::new(THEME_GRUVBOX_LIGHT.to_string(), "Gruvbox Light"));
-    list.push(Theme::new(THEME_GRUVBOX_DARK.to_string(), "Gruvbox Dark"));
+    let list = vec![
+        Theme::default(),
+        Theme::new(THEME_GRUVBOX_LIGHT.to_string(), "Gruvbox Light"),
+        Theme::new(THEME_GRUVBOX_DARK.to_string(), "Gruvbox Dark"),
+    ];
     list
 }
 

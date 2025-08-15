@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use dioxus::{
-    logger::tracing::{debug, warn},
+    logger::tracing::{debug, info, warn},
     prelude::*,
 };
 use indexer::Indexer;
 use kimun_core::{nfs::VaultPath, NoteVault};
-use selector::{note_search::NoteSearch, note_select::NoteSelector};
+use selector::{note_picker::NotePicker, note_search::NoteSearch, note_select::NoteSelector};
 
 use crate::components::modal::{
     confirmations::{
@@ -16,12 +16,15 @@ use crate::components::modal::{
     indexer::IndexType,
 };
 
+use super::focus_manager::FocusManager;
+
 pub mod confirmations;
 pub mod indexer;
 mod selector;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum ModalType {
+    #[default]
     None,
     Error {
         message: String,
@@ -58,21 +61,17 @@ pub enum ModalType {
         vault: Arc<NoteVault>,
         path: VaultPath,
     },
-}
-
-impl Default for ModalType {
-    fn default() -> Self {
-        ModalType::None
-    }
+    NotePicker {
+        note_list: Vec<(String, VaultPath)>,
+    },
 }
 
 impl ModalType {
     pub fn close(&mut self) {
+        let focus_manager = use_context::<FocusManager>();
+        focus_manager.focus_prev();
         *self = ModalType::None;
     }
-    // pub fn close_with_action(&mut self, status: GlobalEvent) {
-    //     *self = ModalType::None(Some(status));
-    // }
     pub fn set_error(&mut self, message: String, error: String) {
         *self = ModalType::Error { message, error };
     }
@@ -102,18 +101,18 @@ impl ModalType {
         }
     }
     pub fn is_open(&self) -> bool {
+        !matches!(self, ModalType::None)
+    }
+    pub fn should_close_on_click(&self) -> bool {
         match self {
-            ModalType::None => false,
+            ModalType::None => true,
+            ModalType::Index {
+                vault: _,
+                index_type: _,
+            } => false,
             _ => true,
         }
     }
-    // pub fn get_action(&self) -> Option<GlobalEvent> {
-    //     if let ModalType::None(action) = self {
-    //         action.to_owned()
-    //     } else {
-    //         None
-    //     }
-    // }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -123,7 +122,7 @@ pub struct ModalProps {
 
 #[component]
 pub fn Modal(props: ModalProps) -> Element {
-    let modal_type = props.modal_type;
+    let mut modal_type = props.modal_type;
     let mt = &*modal_type.read();
 
     if let ModalType::None = mt {
@@ -131,6 +130,13 @@ pub fn Modal(props: ModalProps) -> Element {
     }
     rsx! {
         div { class: "modal-overlay",
+            // We close any modal if we click on the main UI
+            onclick: move |_e| {
+                if modal_type.peek().is_open() && modal_type.peek().should_close_on_click() {
+                    modal_type.write().close();
+                    info!("Close dialog");
+                }
+            },
             match modal_type.read().to_owned() {
                 ModalType::None => {
                     warn!("This shouldn't be called");
@@ -176,6 +182,9 @@ pub fn Modal(props: ModalProps) -> Element {
                 ModalType::NewDirectory { vault, path } => rsx! {
                     CreateDirectory { modal_type, vault: vault.clone(), from_path: path.clone() }
                 },
+                ModalType::NotePicker { note_list } => rsx!{
+                    NotePicker { modal_type, note_list }
+                }
             }
         }
     }

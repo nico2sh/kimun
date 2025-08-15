@@ -3,7 +3,8 @@
 //! component  to be used in our app.
 
 pub mod button;
+pub mod focus_manager;
 pub mod modal;
 pub mod note_browser;
 pub mod note_select_entry;
-pub mod text_editor;
+pub mod preview;

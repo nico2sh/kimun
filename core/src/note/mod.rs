@@ -56,9 +56,10 @@ impl NoteDetails {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct MarkdownNote {
     pub text: String,
-    pub links: Vec<Link>,
+    pub links: Vec<NoteLink>,
 }
 
 /// NoteContentData contains the basic extracted data from the note
@@ -108,7 +109,7 @@ pub enum LinkType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Link {
+pub struct NoteLink {
     pub ltype: LinkType,
     pub text: String,
     // This is the link as it comes from the note, without any cleanup
@@ -117,7 +118,7 @@ pub struct Link {
     pub raw_link: String,
 }
 
-impl Link {
+impl NoteLink {
     pub fn vault_path<S: AsRef<str>>(path: &VaultPath, text: S) -> Self {
         let ltype = if path.is_note() {
             LinkType::Note(path.to_owned())

@@ -88,7 +88,7 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
         items
     }
 
-    fn filter(&self, filter_text: String, items: &Vec<NoteSelectEntry>) -> Vec<NoteSelectEntry> {
+    fn filter(&self, filter_text: String, items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry> {
         if !items.is_empty() {
             let mut result = Vec::new();
             if !filter_text.is_empty() {
@@ -108,13 +108,13 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
     }
 
     fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData> {
-        let preview = if let NoteSelectEntry::Note {
+        if let NoteSelectEntry::Note {
             path,
             title: _,
             search_str: _,
         } = element
         {
-            let p = self.vault.load_note(&path).map_or_else(
+            let p = self.vault.load_note(path).map_or_else(
                 |e| PreviewData {
                     title: "Error loading preview...".to_string(),
                     data: e.to_string(),
@@ -129,12 +129,11 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
             Some(p)
         } else {
             None
-        };
-        preview
+        }
     }
 }
 
-fn filter_items(items: &Vec<NoteSelectEntry>, filter_text: String) -> Vec<NoteSelectEntry> {
+fn filter_items(items: &[NoteSelectEntry], filter_text: String) -> Vec<NoteSelectEntry> {
     let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
     let filtered = nucleo::pattern::Pattern::parse(
         filter_text.as_ref(),

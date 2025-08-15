@@ -180,10 +180,7 @@ impl NoteVault {
     }
 
     pub fn exists(&self, path: &VaultPath) -> Option<VaultEntry> {
-        match VaultEntry::new(&self.workspace_path, path.to_owned()) {
-            Ok(entry) => Some(entry),
-            Err(_e) => None,
-        }
+        VaultEntry::new(&self.workspace_path, path.to_owned()).ok()
     }
 
     pub fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
@@ -286,6 +283,10 @@ impl NoteVault {
             .call(move |conn| db::search_terms(conn, terms))?;
 
         Ok(a)
+    }
+
+    pub fn path_to_pathbuf(&self, path: &VaultPath) -> PathBuf {
+        path.to_pathbuf(&self.workspace_path)
     }
 
     pub fn browse_vault(&self, options: VaultBrowseOptions) -> Result<(), VaultError> {
