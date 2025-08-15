@@ -353,7 +353,7 @@ pub fn CreateNote(
             "Create",
             Callback::new(move |_e| {
                 if is_valid() {
-                    navigator().replace(Route::Editor {
+                    navigator().replace(Route::MainView {
                         editor_path: new_full_path.read().to_owned(),
                         create: true,
                     });
@@ -379,7 +379,7 @@ pub fn CreateNote(
                                 new_note_base_path.set(VaultPath::new(e.value()));
                                 let (p, valid) = get_path_is_valid(
                                     vault_select.clone(),
-                                    &*new_note_base_path.read(),
+                                    &new_note_base_path.read(),
                                     &*new_note_name.read(),
                                     false,
                                 );
@@ -407,7 +407,7 @@ pub fn CreateNote(
                             new_note_name.set(e.value());
                             let (p, valid) = get_path_is_valid(
                                 vault.clone(),
-                                &*new_note_base_path.read(),
+                                &new_note_base_path.read(),
                                 &*new_note_name.read(),
                                 false,
                             );
@@ -507,7 +507,7 @@ pub fn CreateDirectory(
                                 new_directory_base_path.set(bd.clone());
                                 let (p, valid) = get_path_is_valid(
                                     vault_select.clone(),
-                                    &*new_directory_base_path.read(),
+                                    &new_directory_base_path.read(),
                                     &*new_directory_name.read(),
                                     true,
                                 );
@@ -535,7 +535,7 @@ pub fn CreateDirectory(
                             new_directory_name.set(e.value());
                             let (p, valid) = get_path_is_valid(
                                 vault.clone(),
-                                &*new_directory_base_path.read(),
+                                &new_directory_base_path.read(),
                                 &*new_directory_name.read(),
                                 true,
                             );
@@ -557,11 +557,7 @@ fn get_path_is_valid<S: AsRef<str>>(
     name: S,
     directory: bool,
 ) -> (VaultPath, bool) {
-    let valid = if name.as_ref().is_empty() {
-        false
-    } else {
-        true
-    };
+    let valid = !name.as_ref().is_empty();
 
     let path = base_path.append(&if directory {
         VaultPath::new(name)

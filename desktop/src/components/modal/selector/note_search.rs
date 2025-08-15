@@ -32,11 +32,11 @@ impl SelectorFunctions<NoteSearchEntry> for SearchFunctions {
         vec![]
     }
 
-    fn filter(&self, filter_text: String, _items: &Vec<NoteSearchEntry>) -> Vec<NoteSearchEntry> {
+    fn filter(&self, filter_text: String, _items: &[NoteSearchEntry]) -> Vec<NoteSearchEntry> {
         match self.vault.search_notes(filter_text) {
             Ok(res) => res
                 .into_iter()
-                .map(|p| NoteSearchEntry::from_note_details(p))
+                .map(NoteSearchEntry::from_note_details)
                 .collect::<Vec<NoteSearchEntry>>(),
             Err(e) => {
                 error!("Error searching notes: {}", e);
@@ -109,7 +109,7 @@ impl AsRef<str> for NoteSearchEntry {
 impl RowItem for NoteSearchEntry {
     fn on_select(&self) -> bool {
         let path = self.note_path.to_owned();
-        navigator().replace(crate::Route::Editor {
+        navigator().replace(crate::Route::MainView {
             editor_path: path.clone(),
             create: false,
         });
@@ -118,8 +118,11 @@ impl RowItem for NoteSearchEntry {
 
     fn get_view(&self) -> Element {
         rsx! {
-            div { class: "note-title", "{self.note_title}" }
-            div { class: "note-meta", "{self.note_path.to_string()}" }
+            div {
+                class: "note-item-content",
+                div { class: "note-title", "{self.note_title}" }
+                div { class: "note-meta", "{self.note_path.to_string()}" }
+            }
         }
     }
 }

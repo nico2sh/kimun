@@ -1,10 +1,13 @@
 #![cfg_attr(feature = "bundle", windows_subsystem = "windows")]
+use components::focus_manager::FocusManager;
 // The dioxus prelude contains a ton of common items used in dioxus apps. It's a good idea to import wherever you
 // need dioxus
 use dioxus::prelude::*;
 
+use dioxus_radio::hooks::use_init_radio_station;
 use route::Route;
 use settings::AppSettings;
+use state::{AppState, KimunChannel};
 
 use crate::global_events::{GlobalEvent, PubSub};
 
@@ -14,6 +17,7 @@ pub mod global_events;
 mod pages;
 mod route;
 mod settings;
+pub mod state;
 pub mod utils;
 
 // The asset macro also minifies some assets like CSS and JS to make bundled smaller
@@ -39,7 +43,11 @@ fn App() -> Element {
     use_context_provider(move || app_settings);
     let pub_sub = PubSub::<GlobalEvent>::new();
     use_context_provider(move || pub_sub);
+    let focus_manager = FocusManager::new();
+    use_context_provider(move || focus_manager);
     let theme = app_settings.read().get_theme();
+
+    use_init_radio_station::<AppState, KimunChannel>(AppState::default);
 
     // The `rsx!` macro lets us define HTML inside of rust. It expands to an Element with all of our HTML inside.
     rsx! {

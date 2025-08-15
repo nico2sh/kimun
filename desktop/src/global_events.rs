@@ -29,14 +29,23 @@ where
     subscribers: Rc<RefCell<HashMap<String, Subscription<E>>>>,
 }
 
+impl<E> Default for PubSub<E>
+where
+    E: Clone + 'static,
+{
+    fn default() -> Self {
+        Self {
+            subscribers: Rc::new(RefCell::new(HashMap::default())),
+        }
+    }
+}
+
 impl<E> PubSub<E>
 where
     E: Clone + 'static,
 {
     pub fn new() -> Self {
-        Self {
-            subscribers: Rc::new(RefCell::new(HashMap::default())),
-        }
+        Self::default()
     }
 
     pub fn subscribe<S: AsRef<str>>(&self, id: S, callback: Callback<E>) {

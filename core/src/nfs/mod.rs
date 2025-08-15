@@ -662,6 +662,10 @@ impl VaultPath {
         !self.absolute
     }
 
+    pub fn is_absolute(&self) -> bool {
+        self.absolute
+    }
+
     pub fn to_absolute(&mut self) {
         self.absolute = true;
     }
@@ -691,12 +695,17 @@ impl VaultPath {
     }
 
     pub fn append(&self, path: &VaultPath) -> VaultPath {
-        let mut slices = self.slices.clone();
-        let mut other_slices = path.slices.clone();
-        slices.append(&mut other_slices);
-        VaultPath {
-            absolute: self.absolute,
-            slices,
+        if !path.is_relative() {
+            // Absolute paths are absolute
+            path.to_owned()
+        } else {
+            let mut slices = self.slices.clone();
+            let mut other_slices = path.slices.clone();
+            slices.append(&mut other_slices);
+            VaultPath {
+                absolute: self.absolute,
+                slices,
+            }
         }
     }
 
@@ -721,13 +730,13 @@ impl Display for VaultPath {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum SliceKind {
-    Note,
-    // This can be either an attachment or a dir path
-    Other,
-}
-
+// #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+// enum SliceKind {
+//     Note,
+//     // This can be either an attachment or a dir path
+//     Other,
+// }
+//
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum VaultPathSlice {
     PathSlice(String),

@@ -9,12 +9,15 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilde
 
 use crate::{
     components::{
+        focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
         note_select_entry::{NoteSelectEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
     },
     global_events::{GlobalEvent, PubSub},
     utils::sparse_vector::SparseVector,
 };
+
+use super::focus_manager::FocusManager;
 
 const NOTE_BROWSER: &str = "note_browser";
 
@@ -58,8 +61,9 @@ pub fn NoteBrowser(
             np.to_owned()
         }
     });
+    let focus_manager = use_context::<FocusManager>();
 
-    let mut sort = use_signal(|| Sort::default());
+    let mut sort = use_signal(Sort::default);
 
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
@@ -185,11 +189,14 @@ pub fn NoteBrowser(
             }),
         );
     });
+    let fm = focus_manager.clone();
     use_drop(move || {
+        fm.unregister_focus(FocusComponent::BrowseSearch);
         pub_sub.unsubscribe(NOTE_BROWSER);
     });
 
     let new_note_vault = vault.clone();
+    let focus = focus_manager.clone();
     rsx! {
         div { class: "sidebar-header",
             div { class: "sidebar-title", "{browsing_directory}" }
@@ -242,9 +249,15 @@ pub fn NoteBrowser(
                 class: "input",
                 placeholder: "search",
                 value: "{filter_text}",
+                onfocus: move |_e| {
+                    focus.focus(FocusComponent::BrowseSearch)
+                },
                 oninput: move |e| {
                     filter_text.set(e.value().to_string());
                 },
+                onmounted: move |e| {
+                    focus_manager.register_and_focus(FocusComponent::BrowseSearch, e.data());
+                }
             }
         }
         div { class: "sidebar-controls",
@@ -328,15 +341,12 @@ pub fn NoteBrowser(
                                         selected.set(Some(index));
                                     }
                                 },
-                                div {
-                                    class: "note-item-content",
-                                    onclick: move |e| {
-                                        info!("Clicked element");
-                                        e.stop_propagation();
-                                        let _ = entry.on_select();
-                                    },
-                                    {entry.get_view()}
-                                }
+                                onclick: move |e| {
+                                    info!("Clicked element");
+                                    e.stop_propagation();
+                                    let _ = entry.on_select();
+                                },
+                                {entry.get_view()}
                                 if !entry.is_up_dir() && slct {
                                     NoteActions {
                                         vault,

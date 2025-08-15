@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
-use dioxus::{
-    logger::tracing::{debug, info},
-    prelude::*,
-};
+use content_view::{NoText, TextEditor};
+use dioxus::{logger::tracing::debug, prelude::*};
+use header::EditorHeader;
 use kimun_core::{
     nfs::{EntryData, VaultPath},
     NoteVault,
@@ -13,13 +12,15 @@ use crate::{
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
         note_browser::NoteBrowser,
-        text_editor::{EditorContent, EditorHeader, NoText, TextEditor},
     },
     global_events::{GlobalEvent, PubSub},
     route::Route,
     settings::AppSettings,
     utils::keys::{get_action, Shortcuts},
 };
+
+mod content_view;
+mod header;
 
 const EDITOR: &str = "editor";
 
@@ -31,7 +32,7 @@ enum PathType {
 }
 
 #[component]
-pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
+pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
     debug!("-== [Editor] Starting Editor at '{}' ==-", editor_path);
     let settings: Signal<AppSettings> = use_context();
     let settings_value = settings.read();
@@ -41,6 +42,8 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
     let vault_path: &std::path::PathBuf = settings_value.workspace_dir.as_ref().unwrap();
     let vault = NoteVault::new(vault_path).unwrap();
     let vault = Arc::new(vault);
+
+    let mut show_preview = use_signal(|| false);
 
     // Modal setup and Indexing on the first run
     let mut modal_type = use_signal(|| {
@@ -60,7 +63,7 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                     let is_current = editor_path.eq(&vault_path);
                     if is_current {
                         let parent = vault_path.get_parent_path().0;
-                        navigator().replace(crate::Route::Editor {
+                        navigator().replace(crate::Route::MainView {
                             editor_path: parent,
                             create: false,
                         });
@@ -74,7 +77,7 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                     let is_current = editor_path.eq(&from);
                     if is_current {
                         let parent = from.get_parent_path().0;
-                        navigator().replace(crate::Route::Editor {
+                        navigator().replace(crate::Route::MainView {
                             editor_path: parent,
                             create: false,
                         });
@@ -85,7 +88,7 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
 
                     let is_current = editor_path.eq(&old_name);
                     if is_current {
-                        navigator().replace(crate::Route::Editor {
+                        navigator().replace(crate::Route::MainView {
                             editor_path: new_name,
                             create: false,
                         });
@@ -111,11 +114,6 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
         }
     });
 
-    let editor_signal = use_signal(|| {
-        debug!("> We create new dirty status");
-        EditorContent::None
-    });
-
     let editor_vault = vault.clone();
     let content_path = use_memo(move || {
         editor_vault.exists(&editor_path.read()).map_or_else(
@@ -123,6 +121,7 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                 debug!("Path doesn't exist");
                 if editor_path.read().is_note() && create {
                     debug!("It's a note and we have to create it");
+                    show_preview.set(false);
                     let note_path = editor_path.read().to_owned();
                     match editor_vault.create_note(&note_path, "") {
                         Ok(_) => {
@@ -202,6 +201,10 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                     let data = event.data;
                     match get_action(&data) {
                         Shortcuts::None => {}
+                        Shortcuts::TogglePreview => {
+                            let preview = !*show_preview.read();
+                            debug!("Toggling preview to {}", preview);
+                            show_preview.set(preview)},
                         Shortcuts::OpenSettings => {
                             debug!("Open Settings");
                             navigator().replace(Route::Settings {});
@@ -225,7 +228,7 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                             debug!("New Journal Entry");
                             if let Ok(journal_entry) = vault.journal_entry() {
                                 navigator()
-                                    .replace(crate::Route::Editor {
+                                    .replace(crate::Route::MainView {
                                         editor_path: journal_entry.0.path,
                                         create: true,
                                     });
@@ -233,26 +236,19 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                         }
                     }
                 },
-                // We close any modal if we click on the main UI
-                onclick: move |_e| {
-                    if modal_type.read().is_open() {
-                        modal_type.write().close();
-                        info!("Close dialog");
-                    }
-                },
                 Modal { modal_type }
-                EditorHeader { path: editor_path, show_browser, editor_signal }
+                EditorHeader { path: editor_path, show_browser }
                 div { class: "editor-main",
                     match &*content_path.read() {
                         PathType::Note => {
                             rsx! {
-                                TextEditor { note_path: editor_path, vault: vault.clone(), editor_signal }
+                                TextEditor { note_path: editor_path, vault: vault.clone(), modal_type, preview: show_preview }
                             }
                         }
                         PathType::Directory => {
                             debug!("Opening Directory View");
                             rsx! {
-                                NoText { path: editor_path, editor_signal }
+                                NoText { path: editor_path }
                             }
                         }
                         PathType::Reroute(new_path) => {
@@ -262,7 +258,7 @@ pub fn Editor(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
                                     onmounted: move |_| {
                                         debug!("Rerouting to {}...", next_path);
                                         navigator()
-                                            .replace(Route::Editor {
+                                            .replace(Route::MainView {
                                                 editor_path: next_path.clone(),
                                                 create: true,
                                             });
