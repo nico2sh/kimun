@@ -571,7 +571,7 @@ impl VaultPath {
             }
         }
         VaultPath {
-            absolute: true,
+            absolute: self.absolute,
             slices,
         }
     }
@@ -640,7 +640,7 @@ impl VaultPath {
         });
         let pl = path_list.join(PATH_SEPARATOR.to_string().as_str());
 
-        Ok(VaultPath::new(pl))
+        Ok(VaultPath::new(pl).absolute())
     }
 
     // returns true if it's just a note file, no path relative to the vault
@@ -1019,7 +1019,7 @@ mod tests {
 
         let entry = VaultPath::from_path(&workspace, &path).unwrap();
 
-        assert_eq!("workspace/note.md", entry.to_string());
+        assert_eq!("/workspace/note.md", entry.to_string());
     }
 
     #[test]
