@@ -36,7 +36,7 @@ jobs:
         if: "${{ github.ref == 'refs/heads/main' }}"
         with:
           name: kimun_desktop-${{ matrix.package-type }}
-          path: build/${{ matrix.package-type }}/Kimun_*
+          path: desktop/build/${{ matrix.package-type }}/kimun_*
 
   macos:
     name: Package Macos
@@ -61,8 +61,8 @@ jobs:
         uses: actions/upload-artifact@v4
         if: "${{ github.ref == 'refs/heads/main' }}"
         with:
-          name: kimun_desktopr-${{ matrix.package-type }}
-          path: build/${{ matrix.package-type }}/Kimun_*
+          name: kimun_desktop-${{ matrix.package-type }}
+          path: desktop/build/${{ matrix.package-type }}/kimun_*
 
 #  linux:
 #    name: Package Linux
