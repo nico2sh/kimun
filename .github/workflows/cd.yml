@@ -16,6 +16,7 @@ jobs:
     runs-on: windows-latest
     env:
       PLATFORM: windows
+      RUST_FLAGS: "-C target-cpu=native"
     strategy:
       matrix:
         package-type:
