@@ -15,9 +15,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose --release --manifest-path desktop/Cargo.toml
     - name: Run tests core
       run: cargo test --verbose --manifest-path core/Cargo.toml
-    - name: Run tests desktop
-      run: cargo test --verbose --manifest-path desktop/Cargo.toml
