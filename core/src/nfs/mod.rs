@@ -556,7 +556,7 @@ impl VaultPath {
     }
 
     /// Returns a full path without any relative slices
-    /// It will always return an absolute path, as it assumes the path is relative to the root
+    /// If it tries to go up beyond the current path, drops a warning
     pub fn flatten(&self) -> VaultPath {
         let mut slices = vec![];
         for slice in &self.slices {
