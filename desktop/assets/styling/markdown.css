@@ -12,6 +12,22 @@
   /* background: var(--bg-surface); */
 }
 
+.markdown ul {
+    list-style: circle inside;
+    padding-left: 20px;
+    margin-bottom: 5px;
+}
+
+.markdown li {
+    /* margin-bottom: 5px; */
+}
+
+.markdown li ul {
+    /* margin-top: 5px; */
+    margin-bottom: 5px;
+    padding-left: 20px;
+}
+
 .code {
   overflow: auto;
 }
