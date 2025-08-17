@@ -34,6 +34,11 @@ jobs:
             artifact_suffix: ""
             target_path: "linux/app"
     runs-on: ${{ matrix.os }}
+
+    if: runner.os == 'Windows'
+    env:
+      RUSTFLAGS: "-C target-cpu=native"
+
     steps:
       - uses: actions/checkout@v4
       
@@ -142,7 +147,7 @@ jobs:
       - uses: SebRollen/toml-action@v1.2.0
         id: read_toml
         with:
-          file: "Cargo.toml"
+          file: "desktop/Cargo.toml"
           field: "package.version"
       
       - uses: actions/upload-artifact@v4
