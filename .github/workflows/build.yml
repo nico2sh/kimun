@@ -33,11 +33,10 @@ jobs:
             artifact: linux
             artifact_suffix: ""
             target_path: "linux/app"
-    runs-on: ${{ matrix.os }}
-
-    if: ${{ matrix.os }} == 'windows-latest'
+    if: ${{ runner.os }} == 'Windows'
     env:
       RUSTFLAGS: "-C target-cpu=native"
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
