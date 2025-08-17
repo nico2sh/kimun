@@ -16,13 +16,13 @@ jobs:
             artifact_suffix: ""
             target_path: "windows/app"
           - name: MacOS Build x64
-            os: macos-13
+            os: macos-latest
             target: x86_64-apple-darwin
             artifact: macos
             artifact_suffix: _intel
             target_path: "macos"
           - name: MacOS Build arm64
-            os: macos-14
+            os: macos-latest
             target: aarch64-apple-darwin
             artifact: macos
             artifact_suffix: _apple_silicon
@@ -100,6 +100,7 @@ jobs:
       
       - name: Build for desktop
         run: cd desktop && dx build --release --target ${{ matrix.target }}
+#        run: cd desktop && dx build --release --target ${{ matrix.target }}
         shell: bash
       
       - name: Create distribution directory
