@@ -1,0 +1,152 @@
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - name: Windows Build
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: windows
+            artifact_suffix: ""
+            target_path: "windows/app"
+          - name: MacOS Build x64
+            os: macos-13
+            target: x86_64-apple-darwin
+            artifact: macos
+            artifact_suffix: _intel
+            target_path: "macos"
+          - name: MacOS Build arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            artifact: macos
+            artifact_suffix: _apple_silicon
+            target_path: "macos"
+          - name: Linux Build
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: linux
+            artifact_suffix: ""
+            target_path: "linux/app"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+      
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-target-
+      
+      - name: Cache Dioxus CLI
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/dx
+          key: ${{ runner.os }}-dx-0.6.3
+          restore-keys: |
+            ${{ runner.os }}-dx-
+      
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config \
+            build-essential
+      
+      - name: Install Dioxus CLI
+        uses: taiki-e/install-action@v2
+        with:
+          tool: dioxus-cli@0.6.3
+      
+      # - name: Check formatting
+      #   run: cargo fmt --check
+      
+      # No tests are currently included
+      # - name: Run tests
+      #   run: cargo test
+      
+      - name: Build for desktop
+        run: dx build --release --target ${{ matrix.target }}
+        shell: bash
+      
+      - name: Create distribution directory
+        run: mkdir -p dist
+        shell: bash
+      
+      - name: Copy desktop artifacts
+        run: cp -r target/dx/kimun_desktop/release/${{ matrix.target_path}}/* dist/
+        shell: bash
+      
+      # - name: Copy README
+      #   run: cp README.md dist/
+      #   shell: bash
+      
+      # MacOS app isn't usable out of the box, so need to include a script to remove the quarantine attribute
+      - name: Create launch script for macOS
+        if: runner.os == 'macOS'
+        run: |
+          cat > dist/RUN_BEFORE_USE.command << 'EOF'
+          #!/bin/bash
+          # find script dir
+          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          
+          # find app bundle
+          APP_BUNDLE=$(find "$DIR" -name "*.app" -type d | head -1)
+          
+          if [ -n "$APP_BUNDLE" ]; then
+            echo "Removing quarantine attribute from $(basename "$APP_BUNDLE")..."
+            xattr -c "$APP_BUNDLE"
+            echo "Done! You can now run $(basename "$APP_BUNDLE")"
+            echo "Press any key to close this window..."
+            read -n 1
+          else
+            echo "No .app bundle found in $DIR"
+            echo "Press any key to close this window..."
+            read -n 1
+            exit 1
+          fi
+          EOF
+          chmod +x dist/RUN_BEFORE_USE.command
+        shell: bash
+      
+      - uses: SebRollen/toml-action@v1.2.0
+        id: read_toml
+        with:
+          file: "Cargo.toml"
+          field: "package.version"
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kimun ${{ steps.read_toml.outputs.value }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
+          path: dist
