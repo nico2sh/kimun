@@ -99,6 +99,8 @@ jobs:
       #   run: cargo test
       
       - name: Build for desktop
+        env:
+          RUSTFLAGS: "-C target-cpu=native"
         run: cd desktop && dx build --release --target ${{ matrix.target }}
 #        run: cd desktop && dx build --release --target ${{ matrix.target }}
         shell: bash
