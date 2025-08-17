@@ -34,6 +34,8 @@ jobs:
             artifact_suffix: ""
             target_path: "linux/app"
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: "-C target-cpu=native"
 
     steps:
       - uses: actions/checkout@v4
@@ -97,9 +99,6 @@ jobs:
       #   run: cargo test
       
       - name: Build for desktop
-        if: ${{ runner.os }} == 'Windows'
-        env:
-          RUSTFLAGS: "-C target-cpu=native"
         run: cd desktop && dx build --release --target ${{ matrix.target }}
         shell: bash
       
