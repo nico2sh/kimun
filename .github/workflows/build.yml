@@ -97,7 +97,7 @@ jobs:
       #   run: cargo test
       
       - name: Build for desktop
-        run: dx build --release --target ${{ matrix.target }}
+        run: cd desktop && dx build --release --target ${{ matrix.target }}
         shell: bash
       
       - name: Create distribution directory
@@ -105,7 +105,7 @@ jobs:
         shell: bash
       
       - name: Copy desktop artifacts
-        run: cp -r target/dx/kimun_desktop/release/${{ matrix.target_path}}/* dist/
+        run: cp -r desktop/target/dx/kimun_desktop/release/${{ matrix.target_path}}/* dist/
         shell: bash
       
       # - name: Copy README
