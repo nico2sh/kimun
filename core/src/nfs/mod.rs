@@ -1006,13 +1006,16 @@ mod tests {
 
     #[test]
     fn test_to_path_buf() {
-        let workspace_path = PathBuf::from("/usr/john/notes");
+        let workspace_path = PathBuf::from("workspace");
+        let sep = std::path::MAIN_SEPARATOR_STR;
+
         let path = "/some/subpath";
         let path = VaultPath::new(path);
         let path_buf = path.to_pathbuf(&workspace_path);
 
         let path_string = path_to_string(path_buf);
-        assert_eq!("/usr/john/notes/some/subpath", path_string);
+        let expected_path_str = format!("workspace{sep}some{sep}subpath");
+        assert_eq!(expected_path_str, path_string);
     }
 
     #[test]
@@ -1026,43 +1029,67 @@ mod tests {
     }
 
     #[test]
-    fn create_a_note() -> Result<(), FSError> {
+    fn create_a_note()  {
         let workspace_path = Path::new("testdata");
         let note_path = VaultPath::new("note.md");
         let note_text = "this is an empty note".to_string();
 
-        save_note(workspace_path, &note_path, &note_text)?;
-        let note = load_note(workspace_path, &note_path)?;
-        assert_eq!(note, note_text);
+        let res = save_note(workspace_path, &note_path, &note_text);
+        if let Err(e) = &res {
+            assert!(false, "{e}");
+        }
+        
+        let note = load_note(workspace_path, &note_path);
+        if let Err(e) = &note {
+            assert!(false, "{e}");
+        }
+        assert_eq!(note.unwrap(), note_text);
 
-        delete_note(workspace_path, &note_path)?;
+        let del_res = delete_note(workspace_path, &note_path);
+        if let Err(e) = &del_res {
+            assert!(false, "{e}");
+        }
         assert!(load_note(workspace_path, &note_path).is_err());
-
-        Ok(())
     }
 
     #[test]
-    fn move_a_note() -> Result<(), FSError> {
+    fn move_a_note() {
         let workspace_path = Path::new("testdata");
         let note_path = VaultPath::new("note.md");
         let dest_note_path = VaultPath::new("directory/moved_note.md");
         let note_text = "this is an empty note".to_string();
 
-        save_note(workspace_path, &note_path, &note_text)?;
-        let note = load_note(workspace_path, &note_path)?;
-        assert_eq!(note, note_text);
+        let res = save_note(workspace_path, &note_path, &note_text);
+        if let Err(e) = &res {
+            assert!(false, "{e}");
+        }
+        let note = load_note(workspace_path, &note_path);
+        if let Err(e) = &note {
+            assert!(false, "{e}");
+        }
+        assert_eq!(note.as_ref().unwrap().to_owned(), note_text);
 
-        rename_note(workspace_path, &note_path, &dest_note_path)?;
-        let moved_note = load_note(workspace_path, &dest_note_path)?;
-        assert_eq!(note, moved_note);
+        let ren_res = rename_note(workspace_path, &note_path, &dest_note_path);
+        if let Err(e) = &ren_res {
+            assert!(false, "{e}");
+        }
+        let moved_note = load_note(workspace_path, &dest_note_path);
+        if let Err(e) = &moved_note {
+            assert!(false, "{e}");
+        }
+        assert_eq!(note.unwrap(), moved_note.unwrap());
         assert!(load_note(workspace_path, &note_path).is_err());
 
-        delete_note(workspace_path, &dest_note_path)?;
+        let del_res = delete_note(workspace_path, &dest_note_path);
+        if let Err(e) = &del_res {
+            assert!(false, "{e}");
+        }
         assert!(load_note(workspace_path, &dest_note_path).is_err());
 
-        delete_directory(workspace_path, &dest_note_path.get_parent_path().0)?;
-
-        Ok(())
+        let del_res = delete_directory(workspace_path, &dest_note_path.get_parent_path().0);
+        if let Err(e) = &del_res {
+            assert!(false, "{e}");
+        }
     }
 
     #[test]

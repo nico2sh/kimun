@@ -4,6 +4,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: stable
+
+name: release
+
 jobs:
   build:
     strategy:
@@ -15,24 +21,28 @@ jobs:
             artifact: windows
             artifact_suffix: ""
             target_path: "windows/app"
-#          - name: MacOS Build x64
-#            os: macos-latest
-#            target: x86_64-apple-darwin
-#            artifact: macos
-#            artifact_suffix: _intel
-#            target_path: "macos"
+            package-type: msi
+          - name: MacOS Build x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: macos
+            artifact_suffix: _intel
+            target_path: "macos"
+            package-type: dmg
           - name: MacOS Build arm64
             os: macos-latest
             target: aarch64-apple-darwin
             artifact: macos
             artifact_suffix: _apple_silicon
             target_path: "macos"
+            package-type: dmg
           - name: Linux Build
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: linux
             artifact_suffix: ""
             target_path: "linux/app"
+            package-type: appimage
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: "-C target-cpu=native"
@@ -85,7 +95,13 @@ jobs:
             libssl-dev \
             pkg-config \
             build-essential
-      
+
+#      - name: Use carbo binstall
+#        uses: cargo-bins/cargo-binstall@main
+#      
+#      - name: Install Dioxus-CLI
+#        run: cargo binstall dioxus-cli --version 0.6.3 --force
+        
       - name: Install Dioxus CLI
         uses: taiki-e/install-action@v2
         with:
@@ -94,56 +110,60 @@ jobs:
       # - name: Check formatting
       #   run: cargo fmt --check
       
-      # No tests are currently included
-      # - name: Run tests
-      #   run: cargo test
-      
-      - name: Build for desktop
-        env:
-          RUSTFLAGS: "-C target-cpu=native"
-        run: cd desktop && dx build --release --target ${{ matrix.target }}
-#        run: cd desktop && dx build --release --target ${{ matrix.target }}
-        shell: bash
-      
+      - name: Run tests
+        run: cargo test --manifest-path core/Cargo.toml -- --test-threads 1
+
       - name: Create distribution directory
         run: mkdir -p dist
         shell: bash
-      
-      - name: Copy desktop artifacts
-        run: cp -r desktop/target/dx/kimun_desktop/release/${{ matrix.target_path}}/* dist/
+        
+      - name: Build for desktop
+        run: cd desktop && dx build --release --target ${{ matrix.target }}
         shell: bash
+      
+      - name: Copy desktop builds
+        run: cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* dist/
+        shell: bash
+
+#      - name: Bundle for desktop
+#        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}"
+#        shell: bash
+
+#      - name: Copy desktop bundles
+#        run: cp -r desktop/bundle/${{ matrix.target_path }}/* dist/
+#        shell: bash
       
       # - name: Copy README
       #   run: cp README.md dist/
       #   shell: bash
       
       # MacOS app isn't usable out of the box, so need to include a script to remove the quarantine attribute
-      - name: Create launch script for macOS
-        if: runner.os == 'macOS'
-        run: |
-          cat > dist/RUN_BEFORE_USE.command << 'EOF'
-          #!/bin/bash
-          # find script dir
-          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          
-          # find app bundle
-          APP_BUNDLE=$(find "$DIR" -name "*.app" -type d | head -1)
-          
-          if [ -n "$APP_BUNDLE" ]; then
-            echo "Removing quarantine attribute from $(basename "$APP_BUNDLE")..."
-            xattr -c "$APP_BUNDLE"
-            echo "Done! You can now run $(basename "$APP_BUNDLE")"
-            echo "Press any key to close this window..."
-            read -n 1
-          else
-            echo "No .app bundle found in $DIR"
-            echo "Press any key to close this window..."
-            read -n 1
-            exit 1
-          fi
-          EOF
-          chmod +x dist/RUN_BEFORE_USE.command
-        shell: bash
+#      - name: Create launch script for macOS
+#        if: runner.os == 'macOS'
+#        run: |
+#          cat > dist/RUN_BEFORE_USE.command << 'EOF'
+#          #!/bin/bash
+#          # find script dir
+#          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+#          
+#          # find app bundle
+#          APP_BUNDLE=$(find "$DIR" -name "*.app" -type d | head -1)
+#          
+#          if [ -n "$APP_BUNDLE" ]; then
+#            echo "Removing quarantine attribute from $(basename "$APP_BUNDLE")..."
+#            xattr -c "$APP_BUNDLE"
+#            echo "Done! You can now run $(basename "$APP_BUNDLE")"
+#            echo "Press any key to close this window..."
+#            read -n 1
+#          else
+#            echo "No .app bundle found in $DIR"
+#            echo "Press any key to close this window..."
+#            read -n 1
+#            exit 1
+#          fi
+#          EOF
+#          chmod +x dist/RUN_BEFORE_USE.command
+#        shell: bash
       
       - uses: SebRollen/toml-action@v1.2.0
         id: read_toml
