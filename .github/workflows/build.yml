@@ -118,7 +118,7 @@ jobs:
         shell: bash
 
       - name: Bundle for desktop
-        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-types }} --out-dir "bundle/${{ matrix.target_path }}"
+        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}"
         shell: bash
 
       - name: Create distribution directory
