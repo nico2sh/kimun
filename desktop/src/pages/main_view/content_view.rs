@@ -325,7 +325,13 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                                     focus_manager.register_and_focus(FocusComponent::Editor, e.data());
                                 },
                                 onselect: move |e| {
-                                    info!("Select event {:?}", e);
+                                    info!("Select event {:?}", e.data());
+                                },
+                                onselectstart: move |e| {
+                                    info!("Select start event {:?}", e.data());
+                                },
+                                onselectionchange: move |e| {
+                                    info!("Select change event {:?}", e.data());
                                 },
                                 oninput: move |e| {
                                     content_state.write().update_text(e.value());

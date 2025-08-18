@@ -1,4 +1,4 @@
-use log::{debug, warn};
+use log::debug;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use regex::{Captures, Regex};
 
