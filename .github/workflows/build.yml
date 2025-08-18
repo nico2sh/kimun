@@ -100,7 +100,7 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
       
       - name: Install Dioxus-CLI
-        run: cargo binstall dioxus-cli --version v0.6.3 --force
+        run: cargo binstall dioxus-cli --version 0.6.3 --force
         
 #      - name: Install Dioxus CLI
 #        uses: taiki-e/install-action@v2
