@@ -125,7 +125,7 @@ jobs:
       
       - name: Copy desktop artifacts
 #        run: cp -r desktop/build/${{ matrix.target_path }}/* dist/
-        run: cp -r desktop/target/dx/kimun_desktop/release/${{ matrix.target_path}}/* dist/
+        run: cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* dist/
         shell: bash
       
       # - name: Copy README
