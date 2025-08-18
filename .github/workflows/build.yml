@@ -112,26 +112,26 @@ jobs:
       
 #      - name: Run tests
 #        run: cargo test --manifest-path core/Cargo.toml
-      
-      - name: Build for desktop
-        run: cd desktop && dx build --release --target ${{ matrix.target }}
-        shell: bash
-
-      - name: Bundle for desktop
-        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}"
-        shell: bash
 
       - name: Create distribution directory
         run: mkdir -p dist
+        shell: bash
+        
+      - name: Build for desktop
+        run: cd desktop && dx build --release --target ${{ matrix.target }}
         shell: bash
       
       - name: Copy desktop builds
         run: cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* dist/
         shell: bash
 
-      - name: Copy desktop bundles
-        run: cp -r desktop/bundle/${{ matrix.target_path }}/* dist/
-        shell: bash
+#      - name: Bundle for desktop
+#        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}"
+#        shell: bash
+
+#      - name: Copy desktop bundles
+#        run: cp -r desktop/bundle/${{ matrix.target_path }}/* dist/
+#        shell: bash
       
       # - name: Copy README
       #   run: cp README.md dist/
