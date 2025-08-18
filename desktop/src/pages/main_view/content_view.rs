@@ -1,6 +1,7 @@
 use std::{fmt::Display, rc::Rc, sync::Arc};
 
 use dioxus::{
+    document::eval,
     logger::tracing::{debug, error, info},
     prelude::*,
 };
@@ -17,6 +18,7 @@ use crate::{
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
     state::{AppState, ContentType, KimunChannel},
+    MARKDOWN_JS,
 };
 
 const AUTOSAVE_SECS: u64 = 5;
@@ -285,6 +287,16 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
         fm.unregister_focus(FocusComponent::Editor);
     });
 
+    use_effect(|| {
+        let script = r#"
+    const textEditor = document.getElementById('textEditor');
+    const md_editor = enhanceTextareaWithMarkdown(textEditor);
+        "#;
+        spawn(async {
+            let _res = eval(script).await;
+        });
+    });
+
     // This manages the editor state
     rsx! {
         div { class: "editor-content",
@@ -337,11 +349,11 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                                     content_state.write().update_text(e.value());
                                     app_state.write().mark_content_dirty();
                                 },
-                                onkeydown: move |e| {
-                                    if e.key() == Key::Tab {
-                                        e.prevent_default();
-                                    }
-                                },
+                                // onkeydown: move |e| {
+                                //     if e.key() == Key::Tab {
+                                //         e.prevent_default();
+                                //     }
+                                // },
                                 spellcheck: false,
                                 wrap: "hard",
                                 resize: "none",

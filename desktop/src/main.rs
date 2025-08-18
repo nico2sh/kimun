@@ -26,6 +26,10 @@ pub mod utils;
 const FONTS: Asset = asset!("/assets/styling/fonts.css");
 const ICONS: Asset = asset!("/assets/styling/icons.css");
 const STYLE: Asset = asset!("/assets/styling/main.css");
+pub const MARKDOWN_JS: Asset = asset!(
+    "/assets/scripts/markdown.js",
+    JsAssetOptions::new().with_minify(false).with_preload(true)
+);
 
 fn main() {
     // The `launch` function is the main entry point for a dioxus app. It takes a component and renders it with the platform feature
@@ -57,6 +61,7 @@ fn App() -> Element {
         document::Link { rel: "stylesheet", href: FONTS }
         document::Link { rel: "stylesheet", href: ICONS }
         document::Link { rel: "stylesheet", href: STYLE }
+        document::Script { src: MARKDOWN_JS }
 
         div { class: "app-container", Router::<Route> {} }
     }
