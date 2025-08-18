@@ -117,8 +117,8 @@ jobs:
       - name: Build for desktop
         env:
           RUSTFLAGS: "-C target-cpu=native"
-        run: cd desktop && ﻿﻿﻿~/.cargo/bin/dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-types }} --out-dir "build/${{ matrix.target_path }}"
-#        run: cd desktop && dx build --release --target ${{ matrix.target }}
+#        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-types }} --out-dir "build/${{ matrix.target_path }}"
+        run: cd desktop && dx build --release --target ${{ matrix.target }} --out-dir "build/${{ matrix.target_path }}"
         shell: bash
       
       - name: Create distribution directory
