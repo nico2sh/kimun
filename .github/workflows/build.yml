@@ -110,8 +110,8 @@ jobs:
       # - name: Check formatting
       #   run: cargo fmt --check
       
-#      - name: Run tests
-#        run: cargo test --manifest-path core/Cargo.toml
+      - name: Run tests
+        run: cargo test --manifest-path core/Cargo.toml -- --test-threads 1
 
       - name: Create distribution directory
         run: mkdir -p dist
