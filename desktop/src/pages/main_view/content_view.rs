@@ -287,14 +287,16 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
         fm.unregister_focus(FocusComponent::Editor);
     });
 
-    use_effect(|| {
-        let script = r#"
-    const textEditor = document.getElementById('textEditor');
-    const md_editor = enhanceTextareaWithMarkdown(textEditor);
-        "#;
-        spawn(async {
-            let _res = eval(script).await;
-        });
+    use_effect(move || {
+        if !*props.preview.read() {
+            let script = r#"
+        const textEditor = document.getElementById('textEditor');
+        const md_editor = enhanceTextareaWithMarkdown(textEditor);
+            "#;
+            spawn(async {
+                let _res = eval(script).await;
+            });
+        }
     });
 
     // This manages the editor state
