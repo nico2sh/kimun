@@ -9,11 +9,12 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use gxhash::gxhash64;
+// use gxhash::gxhash64;
 use ignore::{WalkBuilder, WalkParallel};
 use log::{info, warn};
 use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
+use twox_hash::{XxHash3_64, XxHash64};
 
 use super::{error::FSError, DirectoryDetails, NoteDetails};
 
@@ -182,7 +183,9 @@ impl VaultEntryDetails {
 }
 
 pub(crate) fn hash_text<S: AsRef<str>>(text: S) -> u64 {
-    gxhash64(text.as_ref().as_bytes(), 0)
+    // XxHash3_64::oneshot(text.as_ref().as_bytes())
+    XxHash64::oneshot(42, text.as_ref().as_bytes())
+    // gxhash64(text.as_ref().as_bytes(), 0)
 }
 
 /// Loads a note from disk, if the file doesn't exist, returns a FSError::NotePathNotFound
@@ -1083,7 +1086,10 @@ mod tests {
         delete_note(workspace_path, &dest_note_path)?;
         assert!(load_note(workspace_path, &dest_note_path).is_err());
 
-        delete_directory(workspace_path, &dest_note_path.get_parent_path().0)?;
+        let first_level = dest_note_path.get_parent_path().0;
+        let second_level = first_level.get_parent_path().0;
+        delete_directory(workspace_path, &first_level)?;
+        delete_directory(workspace_path, &second_level)?;
 
         Ok(())
     }

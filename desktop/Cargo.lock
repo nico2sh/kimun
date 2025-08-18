@@ -2251,15 +2251,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gxhash"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3ce1bab7aa741d4e7042b2aae415b78741f267a98a7271ea226cd5ba6c43d7d"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "half"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2764,7 +2755,6 @@ dependencies = [
  "env_logger",
  "futures-channel",
  "futures-util",
- "gxhash",
  "ignore",
  "log",
  "pulldown-cmark",
@@ -2773,6 +2763,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.12",
  "toml 0.9.5",
+ "twox-hash",
 ]
 
 [[package]]
@@ -5226,6 +5217,15 @@ dependencies = [
  "sha1",
  "thiserror 1.0.69",
  "utf-8",
+]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b907da542cbced5261bd3256de1b3a1bf340a3d37f93425a07362a1d687de56"
+dependencies = [
+ "rand 0.9.1",
 ]
 
 [[package]]
