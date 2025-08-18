@@ -105,7 +105,7 @@ jobs:
       - name: Build for desktop
         env:
           RUSTFLAGS: "-C target-cpu=native"
-        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types &{{ matrix.package-types }} --out-dir "build/${{ matrix.target_path }}"
+        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-types }} --out-dir "build/${{ matrix.target_path }}"
 #        run: cd desktop && dx build --release --target ${{ matrix.target }}
         shell: bash
       
