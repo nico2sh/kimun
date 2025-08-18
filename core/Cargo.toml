@@ -21,7 +21,8 @@ rusqlite = { version = "0.36", features = ["bundled"] }
 ## Browse files
 ignore = "0.4"
 ## Hash function
-gxhash = "3.5"
+# gxhash = "3.5"
+twox-hash = "2.1.1"
 ## Regular Expressions
 regex = "1.11"
 # Markdown parsing

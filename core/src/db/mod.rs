@@ -1,4 +1,4 @@
-mod async_db;
+// mod async_db;
 mod search_terms;
 
 use std::collections::HashMap;
