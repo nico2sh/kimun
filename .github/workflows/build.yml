@@ -110,22 +110,27 @@ jobs:
       # - name: Check formatting
       #   run: cargo fmt --check
       
-      # No tests are currently included
-      # - name: Run tests
-      #   run: cargo test
+#      - name: Run tests
+#        run: cargo test --manifest-path core/Cargo.toml
       
       - name: Build for desktop
-#        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-types }} --out-dir "build/${{ matrix.target_path }}"
         run: cd desktop && dx build --release --target ${{ matrix.target }}
         shell: bash
-      
+
+      - name: Bundle for desktop
+        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-types }} --out-dir "bundle/${{ matrix.target_path }}"
+        shell: bash
+
       - name: Create distribution directory
         run: mkdir -p dist
         shell: bash
       
-      - name: Copy desktop artifacts
-#        run: cp -r desktop/build/${{ matrix.target_path }}/* dist/
+      - name: Copy desktop builds
         run: cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* dist/
+        shell: bash
+
+      - name: Copy desktop bundles
+        run: cp -r desktop/bundle/${{ matrix.target_path }}/* dist/
         shell: bash
       
       # - name: Copy README
