@@ -2747,27 +2747,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kimun_core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "crossbeam-channel",
- "env_logger",
- "futures-channel",
- "futures-util",
- "ignore",
- "log",
- "pulldown-cmark",
- "regex",
- "rusqlite",
- "serde",
- "thiserror 2.0.12",
- "toml 0.9.5",
- "twox-hash",
-]
-
-[[package]]
-name = "kimun_desktop"
+name = "kimun"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2786,6 +2766,26 @@ dependencies = [
  "syntect",
  "tokio",
  "toml 0.9.5",
+]
+
+[[package]]
+name = "kimun_core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossbeam-channel",
+ "env_logger",
+ "futures-channel",
+ "futures-util",
+ "ignore",
+ "log",
+ "pulldown-cmark",
+ "regex",
+ "rusqlite",
+ "serde",
+ "thiserror 2.0.12",
+ "toml 0.9.5",
+ "twox-hash",
 ]
 
 [[package]]
