@@ -99,12 +99,18 @@ class MarkdownEditor {
         
         this.replaceSelectedLines(unindentedLines);
         
-        // Adjust cursor position
+        // Calculate how many characters were removed
         const removedChars = lines.reduce((acc, line, i) => {
             return acc + (line.text.length - unindentedLines[i].length);
         }, 0);
-        const newStart = Math.max(selectionStart - 2, 0);
+        
+        // Adjust cursor position, ensuring it doesn't go to previous line
+        const beforeSelection = this.textarea.value.substring(0, selectionStart);
+        const currentLineStart = beforeSelection.lastIndexOf('\n') + 1;
+        
+        const newStart = Math.max(selectionStart - Math.min(removedChars, 2), currentLineStart);
         const newEnd = Math.max(selectionEnd - removedChars, newStart);
+        
         this.setSelection(newStart, newEnd);
     }
 
