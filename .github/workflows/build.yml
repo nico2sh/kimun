@@ -77,7 +77,7 @@ jobs:
       - name: Cache Dioxus CLI
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/bin/dx*
+          path: ~/.cargo/bin/dx
           key: ${{ runner.os }}-dx-0.6.3
           restore-keys: |
             ${{ runner.os }}-dx-
@@ -115,10 +115,8 @@ jobs:
       #   run: cargo test
       
       - name: Build for desktop
-        env:
-          RUSTFLAGS: "-C target-cpu=native"
 #        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-types }} --out-dir "build/${{ matrix.target_path }}"
-        run: cd desktop && dx build --release --target ${{ matrix.target }} --out-dir "build/${{ matrix.target_path }}"
+        run: cd desktop && dx build --release --target ${{ matrix.target }}
         shell: bash
       
       - name: Create distribution directory
@@ -126,8 +124,8 @@ jobs:
         shell: bash
       
       - name: Copy desktop artifacts
-        run: cp -r desktop/build/${{ matrix.target_path }}/* dist/
-#        run: cp -r desktop/target/dx/kimun_desktop/release/${{ matrix.target_path}}/* dist/
+#        run: cp -r desktop/build/${{ matrix.target_path }}/* dist/
+        run: cp -r desktop/target/dx/kimun_desktop/release/${{ matrix.target_path}}/* dist/
         shell: bash
       
       # - name: Copy README
