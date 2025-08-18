@@ -1,5 +1,5 @@
 [package]
-name = "kimun_desktop"
+name = "kimun"
 version = "0.1.0"
 authors = ["Nico Hormazábal <mail@nico2sh.com>"]
 edition = "2021"
