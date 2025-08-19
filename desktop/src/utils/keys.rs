@@ -9,6 +9,19 @@ pub enum Shortcuts {
     OpenNote,
     NewJournal,
     TogglePreview,
+    Text(TextAction),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TextAction {
+    Bold,
+    Italic,
+    Link,
+    Image,
+    ToggleHeader,
+    Header(u8),
+    Underline,
+    Strikethrough,
 }
 
 #[cfg(target_os = "macos")]
@@ -32,6 +45,15 @@ pub fn get_action<K: AsRef<KeyboardData>>(kd: &K) -> Shortcuts {
             Code::KeyO => Shortcuts::OpenNote,
             Code::KeyJ => Shortcuts::NewJournal,
             Code::KeyY => Shortcuts::TogglePreview,
+            Code::KeyB => Shortcuts::Text(TextAction::Bold),
+            Code::KeyI => Shortcuts::Text(TextAction::Italic),
+            Code::KeyU => Shortcuts::Text(TextAction::Underline),
+            Code::KeyS => Shortcuts::Text(TextAction::Strikethrough),
+            Code::KeyL => Shortcuts::Text(TextAction::Link),
+            Code::KeyH => Shortcuts::Text(TextAction::ToggleHeader),
+            Code::Digit1 => Shortcuts::Text(TextAction::Header(1)),
+            Code::Digit2 => Shortcuts::Text(TextAction::Header(2)),
+            Code::Digit3 => Shortcuts::Text(TextAction::Header(3)),
             _ => Shortcuts::None,
         }
     } else {

@@ -234,6 +234,7 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
                                     });
                             }
                         }
+                        _ => {}
                     }
                 },
                 Modal { modal_type }
