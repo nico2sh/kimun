@@ -9,6 +9,7 @@ use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::settings::theme::Theme;
+use crate::utils::keys::KeyBindings;
 
 pub mod theme;
 
@@ -31,6 +32,8 @@ pub struct AppSettings {
     pub theme: String,
     #[serde(skip, default = "yes")]
     needs_indexing: bool,
+    #[serde(skip, default)]
+    pub key_bindings: KeyBindings,
     #[serde(skip, default = "load_theme_list")]
     pub theme_list: Vec<Theme>,
 }
@@ -55,6 +58,7 @@ impl Default for AppSettings {
             workspace_dir: None,
             theme: Default::default(),
             needs_indexing: true,
+            key_bindings: KeyBindings::default(),
             theme_list: load_theme_list(),
         }
     }
