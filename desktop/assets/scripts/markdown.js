@@ -30,8 +30,6 @@ class MarkdownEditor {
             case 'Enter':
                 if (this.handleEnter(event)) {
                     event.preventDefault();
-            
-                    this.updateInput();
                 }
                 break;
         }
@@ -72,11 +70,6 @@ class MarkdownEditor {
         return false;
     }
 
-    updateInput() {
-        // We dispatch the oninput event so we update the value
-        this.textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-
     // === INDENTATION METHODS ===
     indent() {
         const { selectionStart, selectionEnd } = this.textarea;
@@ -88,8 +81,6 @@ class MarkdownEditor {
         const newStart = selectionStart + 2;
         const newEnd = selectionEnd + (indentedLines.length * 2);
         this.setSelection(newStart, newEnd);
-
-        this.updateInput();
     }
 
     unindent() {
@@ -131,8 +122,6 @@ class MarkdownEditor {
         const newStart = Math.max(selectionStart - removedBeforeCursor, 0);
         const newEnd = Math.max(selectionEnd - totalRemovedChars, newStart);
         this.setSelection(newStart, newEnd);
-
-        this.updateInput();
     }
 
     // === ENTER HANDLING ===
@@ -219,42 +208,91 @@ class MarkdownEditor {
             this.insertAtCursor(before + after);
             this.setSelection(selectionStart + before.length, selectionStart + before.length);
         }
-
-        this.updateInput();
     }
 
     // === HEADING METHODS ===
     toggleHeading() {
+        const { selectionStart, selectionEnd } = this.textarea;
         const lines = this.getSelectedLines();
-        const toggledLines = lines.map(line => {
+        let totalCharacterDifference = 0;
+        let characterDifferenceBeforeCursor = 0;
+        
+        const toggledLines = lines.map((line, index) => {
             const headingMatch = line.text.match(/^(#{1,6})\s/);
+            let newText;
+            let charDifference = 0;
+            
             if (headingMatch) {
                 // Remove heading
-                return line.text.replace(/^#{1,6}\s/, '');
+                newText = line.text.replace(/^#{1,6}\s/, '');
+                charDifference = -(headingMatch[0].length);
             } else if (line.text.trim()) {
                 // Add heading
-                return '# ' + line.text;
+                newText = '# ' + line.text;
+                charDifference = 2;
+            } else {
+                newText = line.text;
             }
-            return line.text;
+            
+            totalCharacterDifference += charDifference;
+            
+            // Calculate character difference before cursor position
+            const lineStartPos = this.getLineStartPosition(line.index);
+            if (lineStartPos < selectionStart) {
+                characterDifferenceBeforeCursor += charDifference;
+            }
+            
+            return newText;
         });
         
         this.replaceSelectedLines(toggledLines);
-
-        this.updateInput();
+        
+        // Maintain cursor position
+        const newStart = Math.max(selectionStart + characterDifferenceBeforeCursor, 0);
+        const newEnd = Math.max(selectionEnd + totalCharacterDifference, newStart);
+        this.setSelection(newStart, newEnd);
     }
 
     insertHeading(level) {
+        const { selectionStart, selectionEnd } = this.textarea;
         const lines = this.getSelectedLines();
-        const headingLines = lines.map(line => {
+        let totalCharacterDifference = 0;
+        let characterDifferenceBeforeCursor = 0;
+        
+        const headingLines = lines.map((line, index) => {
             const headingPrefix = '#'.repeat(level) + ' ';
-            // Remove existing heading if any
-            const cleanLine = line.text.replace(/^#{1,6}\s/, '');
-            return cleanLine.trim() ? headingPrefix + cleanLine : line.text;
+            let newText;
+            let charDifference = 0;
+            
+            if (line.text.trim()) {
+                // Remove existing heading if any
+                const cleanLine = line.text.replace(/^#{1,6}\s/, '');
+                const existingHeadingMatch = line.text.match(/^#{1,6}\s/);
+                const existingHeadingLength = existingHeadingMatch ? existingHeadingMatch[0].length : 0;
+                
+                newText = headingPrefix + cleanLine;
+                charDifference = headingPrefix.length - existingHeadingLength;
+            } else {
+                newText = line.text;
+            }
+            
+            totalCharacterDifference += charDifference;
+            
+            // Calculate character difference before cursor position
+            const lineStartPos = this.getLineStartPosition(line.index);
+            if (lineStartPos < selectionStart) {
+                characterDifferenceBeforeCursor += charDifference;
+            }
+            
+            return newText;
         });
         
         this.replaceSelectedLines(headingLines);
-
-        this.updateInput();
+        
+        // Maintain cursor position
+        const newStart = Math.max(selectionStart + characterDifferenceBeforeCursor, 0);
+        const newEnd = Math.max(selectionEnd + totalCharacterDifference, newStart);
+        this.setSelection(newStart, newEnd);
     }
 
     // === LINK AND IMAGE METHODS ===
@@ -273,8 +311,6 @@ class MarkdownEditor {
             // Select "text" for easy replacement
             this.setSelection(selectionStart + 1, selectionStart + 5);
         }
-
-        this.updateInput();
     }
 
     insertImage() {
@@ -292,8 +328,6 @@ class MarkdownEditor {
             // Select "alt text" for easy replacement
             this.setSelection(selectionStart + 2, selectionStart + 10);
         }
-
-        this.updateInput();
     }
 
     // === UTILITY METHODS ===
@@ -331,6 +365,7 @@ class MarkdownEditor {
         const lines = this.textarea.value.split('\n');
         lines[lineIndex] = newContent;
         this.textarea.value = lines.join('\n');
+        this.triggerInputEvent();
     }
 
     replaceSelectedLines(newLines) {
@@ -345,6 +380,7 @@ class MarkdownEditor {
         lines.splice(startIndex, endIndex - startIndex + 1, ...newLines);
         
         this.textarea.value = lines.join('\n');
+        this.triggerInputEvent();
     }
 
     replaceSelection(text) {
@@ -353,6 +389,7 @@ class MarkdownEditor {
         const after = value.substring(selectionEnd);
         
         this.textarea.value = before + text + after;
+        this.triggerInputEvent();
     }
 
     insertAtCursor(text) {
@@ -362,11 +399,21 @@ class MarkdownEditor {
         
         this.textarea.value = before + text + after;
         this.setSelection(selectionStart + text.length, selectionStart + text.length);
+        this.triggerInputEvent();
     }
 
     setSelection(start, end) {
         this.textarea.setSelectionRange(start, end);
         this.textarea.focus();
+    }
+
+    // Trigger oninput event to notify of changes
+    triggerInputEvent() {
+        const event = new Event('input', {
+            bubbles: true,
+            cancelable: true,
+        });
+        this.textarea.dispatchEvent(event);
     }
 }
 
@@ -374,3 +421,10 @@ class MarkdownEditor {
 function enhanceTextareaWithMarkdown(textareaElement) {
     return new MarkdownEditor(textareaElement);
 }
+
+// Usage examples:
+// const textEditor = document.getElementById('textEditor');
+// enhanceTextareaWithMarkdown(textEditor);
+
+// Or directly:
+// enhanceTextareaWithMarkdown(document.getElementById('textEditor'));
