@@ -1,6 +1,6 @@
 class MarkdownEditor {
-    constructor(textareaElement) {
-        this.textarea = textareaElement;
+    constructor(textareaId) {
+        this.textarea = document.getElementById(textareaId);
         this.init();
     }
 
@@ -13,20 +13,20 @@ class MarkdownEditor {
         const isCmd = metaKey || ctrlKey; // Support both Mac (cmd) and Windows/Linux (ctrl)
 
         // Handle keyboard shortcuts
-        if (this.handleShortcuts(event, key, isCmd, shiftKey)) {
-            return;
-        }
+        // if (this.handleShortcuts(event, key, isCmd, shiftKey)) {
+        //     return;
+        // }
 
         // Handle special keys
         switch (key) {
-            case 'Tab':
-                event.preventDefault();
-                if (shiftKey) {
-                    this.unindent();
-                } else {
-                    this.indent();
-                }
-                break;
+            // case 'Tab':
+            //     event.preventDefault();
+            //     if (shiftKey) {
+            //         this.unindent();
+            //     } else {
+            //         this.indent();
+            //     }
+            //     break;
             case 'Enter':
                 if (this.handleEnter(event)) {
                     event.preventDefault();
@@ -86,31 +86,41 @@ class MarkdownEditor {
     unindent() {
         const { selectionStart, selectionEnd } = this.textarea;
         const lines = this.getSelectedLines();
-        const unindentedLines = lines.map(line => {
+        
+        let totalRemovedChars = 0;
+        let removedBeforeCursor = 0;
+        
+        const unindentedLines = lines.map((line, index) => {
+            let removedFromThisLine = 0;
+            let newText = line.text;
+            
             if (line.text.startsWith('  ')) {
-                return line.text.slice(2);
+                newText = line.text.slice(2);
+                removedFromThisLine = 2;
             } else if (line.text.startsWith(' ')) {
-                return line.text.slice(1);
+                newText = line.text.slice(1);
+                removedFromThisLine = 1;
             } else if (line.text.startsWith('\t')) {
-                return line.text.slice(1);
+                newText = line.text.slice(1);
+                removedFromThisLine = 1;
             }
-            return line.text;
+            
+            totalRemovedChars += removedFromThisLine;
+            
+            // Calculate how many characters were removed before the cursor position
+            const lineStartPos = this.getLineStartPosition(line.index);
+            if (lineStartPos < selectionStart) {
+                removedBeforeCursor += removedFromThisLine;
+            }
+            
+            return newText;
         });
         
         this.replaceSelectedLines(unindentedLines);
         
-        // Calculate how many characters were removed
-        const removedChars = lines.reduce((acc, line, i) => {
-            return acc + (line.text.length - unindentedLines[i].length);
-        }, 0);
-        
-        // Adjust cursor position, ensuring it doesn't go to previous line
-        const beforeSelection = this.textarea.value.substring(0, selectionStart);
-        const currentLineStart = beforeSelection.lastIndexOf('\n') + 1;
-        
-        const newStart = Math.max(selectionStart - Math.min(removedChars, 2), currentLineStart);
-        const newEnd = Math.max(selectionEnd - removedChars, newStart);
-        
+        // Adjust cursor position more accurately
+        const newStart = Math.max(selectionStart - removedBeforeCursor, 0);
+        const newEnd = Math.max(selectionEnd - totalRemovedChars, newStart);
         this.setSelection(newStart, newEnd);
     }
 
@@ -124,6 +134,17 @@ class MarkdownEditor {
         // Get indentation of current line
         const indentMatch = currentLine.match(/^(\s*)/);
         const indent = indentMatch ? indentMatch[1] : '';
+        
+        // Check if the line is empty but indented
+        if (currentLine.trim() === '' && indent.length > 0) {
+            // Empty indented line - reduce indentation
+            const newIndent = indent.length >= 2 ? indent.slice(2) : '';
+            this.replaceCurrentLine(currentLineIndex, newIndent);
+            // Position cursor at the end of the new indentation
+            const lineStartPos = this.getLineStartPosition(currentLineIndex);
+            this.setSelection(lineStartPos + newIndent.length, lineStartPos + newIndent.length);
+            return true;
+        }
         
         // Check if current line is a list item
         const listMatch = currentLine.match(/^(\s*)([-*+]|\d+\.)\s(.*)$/);
@@ -166,7 +187,8 @@ class MarkdownEditor {
             return true;
         }
         
-        // Not a list item - just preserve indentation
+        // Regular line (not a list item)
+        // If the line has content or no indentation, preserve/add indentation normally
         const newLineContent = '\n' + indent;
         this.insertAtCursor(newLineContent);
         return true;
@@ -254,6 +276,15 @@ class MarkdownEditor {
     }
 
     // === UTILITY METHODS ===
+    getLineStartPosition(lineIndex) {
+        const lines = this.textarea.value.split('\n');
+        let position = 0;
+        for (let i = 0; i < lineIndex; i++) {
+            position += lines[i].length + 1; // +1 for the newline character
+        }
+        return position;
+    }
+
     getSelectedLines() {
         const { selectionStart, selectionEnd, value } = this.textarea;
         const beforeSelection = value.substring(0, selectionStart);
@@ -316,9 +347,4 @@ class MarkdownEditor {
         this.textarea.setSelectionRange(start, end);
         this.textarea.focus();
     }
-}
-
-// Function to enhance any textarea with markdown editing capabilities
-function enhanceTextareaWithMarkdown(textareaElement) {
-    return new MarkdownEditor(textareaElement);
 }

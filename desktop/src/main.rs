@@ -61,7 +61,6 @@ fn App() -> Element {
         document::Link { rel: "stylesheet", href: FONTS }
         document::Link { rel: "stylesheet", href: ICONS }
         document::Link { rel: "stylesheet", href: STYLE }
-        document::Script { src: MARKDOWN_JS }
 
         div { class: "app-container", Router::<Route> {} }
     }
