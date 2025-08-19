@@ -1,4 +1,4 @@
-use std::{fmt::Display, rc::Rc, sync::Arc};
+use std::{fmt::Display, rc::Rc, sync::Arc, time::Duration};
 
 use dioxus::{
     logger::tracing::{debug, error, info},
@@ -85,7 +85,7 @@ impl EditorSaveManager {
         let dirty_status = self.app_state.read().has_dirty_content();
         if dirty_status {
             let path = self.path.clone();
-            let text = self.content.read().get_text();
+            let text = self.content.peek().get_text();
             let vault = self.vault.clone();
             tokio::spawn(async move {
                 debug!("Saving at {}", path);
@@ -104,7 +104,7 @@ impl Drop for EditorSaveManager {
         let dirty_status = self.app_state.read().has_dirty_content();
         if dirty_status {
             debug!("Saving so we don't lose data");
-            let text = self.content.read().get_text();
+            let text = self.content.peek().get_text();
             let _ = self.vault.save_note(&self.path, text);
             // self.content.write().mark_clean();
         }
@@ -294,9 +294,14 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     use_effect(move || {
         if !*props.preview.read() {
             let init_script = r#"
-window.md_editor = new MarkdownEditor('textEditor');
+const textEditor = document.getElementById('textEditor');
+if (textEditor) {
+    window.md_editor = enhanceTextareaWithMarkdown(textEditor);
+}
 "#;
             spawn(async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                debug!("Initializing Markdown Editor");
                 if let Err(e) = document::eval(init_script).await {
                     error!("Error initializing editor: {}", e);
                 }
@@ -322,7 +327,7 @@ window.md_editor = new MarkdownEditor('textEditor');
                     Some(_) => rsx! {
                         if *props.preview.read() {
                             {
-                                let note_details = NoteDetails::new(&props.note_path.read(), content_state.read().get_text());
+                                let note_details = NoteDetails::new(&props.note_path.read(), content_state.peek().get_text());
                                 let md_content = note_details.get_markdown_and_links();
                                 rsx!{
                                     Markdown {

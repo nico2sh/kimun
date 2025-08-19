@@ -1,6 +1,4 @@
-console.log('received event');
 let msg = await dioxus.recv();
-console.log('received event ' + msg);
 switch (msg) {
   case 'indent':
     window.md_editor.indent();

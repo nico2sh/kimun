@@ -1,6 +1,6 @@
 class MarkdownEditor {
-    constructor(textareaId) {
-        this.textarea = document.getElementById(textareaId);
+    constructor(textareaElement) {
+        this.textarea = textareaElement;
         this.init();
     }
 
@@ -30,6 +30,8 @@ class MarkdownEditor {
             case 'Enter':
                 if (this.handleEnter(event)) {
                     event.preventDefault();
+            
+                    this.updateInput();
                 }
                 break;
         }
@@ -70,6 +72,11 @@ class MarkdownEditor {
         return false;
     }
 
+    updateInput() {
+        // We dispatch the oninput event so we update the value
+        this.textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
     // === INDENTATION METHODS ===
     indent() {
         const { selectionStart, selectionEnd } = this.textarea;
@@ -81,6 +88,8 @@ class MarkdownEditor {
         const newStart = selectionStart + 2;
         const newEnd = selectionEnd + (indentedLines.length * 2);
         this.setSelection(newStart, newEnd);
+
+        this.updateInput();
     }
 
     unindent() {
@@ -122,6 +131,8 @@ class MarkdownEditor {
         const newStart = Math.max(selectionStart - removedBeforeCursor, 0);
         const newEnd = Math.max(selectionEnd - totalRemovedChars, newStart);
         this.setSelection(newStart, newEnd);
+
+        this.updateInput();
     }
 
     // === ENTER HANDLING ===
@@ -208,6 +219,8 @@ class MarkdownEditor {
             this.insertAtCursor(before + after);
             this.setSelection(selectionStart + before.length, selectionStart + before.length);
         }
+
+        this.updateInput();
     }
 
     // === HEADING METHODS ===
@@ -226,6 +239,8 @@ class MarkdownEditor {
         });
         
         this.replaceSelectedLines(toggledLines);
+
+        this.updateInput();
     }
 
     insertHeading(level) {
@@ -238,6 +253,8 @@ class MarkdownEditor {
         });
         
         this.replaceSelectedLines(headingLines);
+
+        this.updateInput();
     }
 
     // === LINK AND IMAGE METHODS ===
@@ -256,6 +273,8 @@ class MarkdownEditor {
             // Select "text" for easy replacement
             this.setSelection(selectionStart + 1, selectionStart + 5);
         }
+
+        this.updateInput();
     }
 
     insertImage() {
@@ -273,6 +292,8 @@ class MarkdownEditor {
             // Select "alt text" for easy replacement
             this.setSelection(selectionStart + 2, selectionStart + 10);
         }
+
+        this.updateInput();
     }
 
     // === UTILITY METHODS ===
@@ -347,4 +368,9 @@ class MarkdownEditor {
         this.textarea.setSelectionRange(start, end);
         this.textarea.focus();
     }
+}
+
+// Function to enhance any textarea with markdown editing capabilities
+function enhanceTextareaWithMarkdown(textareaElement) {
+    return new MarkdownEditor(textareaElement);
 }
