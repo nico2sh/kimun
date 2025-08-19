@@ -1,7 +1,7 @@
 use std::{fmt::Display, rc::Rc, sync::Arc, time::Duration};
 
 use dioxus::{
-    logger::tracing::{debug, error, info},
+    logger::tracing::{debug, error},
     prelude::*,
 };
 use dioxus_radio::hooks::{use_radio, Radio};
@@ -17,7 +17,7 @@ use crate::{
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
     state::{AppState, ContentType, KimunChannel},
-    utils::keys::{get_action, Shortcuts, TextAction},
+    utils::keys::{ActionShortcuts, TextAction},
     MARKDOWN_JS,
 };
 
@@ -371,7 +371,7 @@ if (textEditor) {
                                             eval_action("indent");
                                         }
                                     }
-                                    if let Shortcuts::Text(action) = get_action(&data) {
+                                    if let Some(ActionShortcuts::Text(action)) = settings.read().key_bindings.get_action(&data.into()) {
                                         match action {
                                             TextAction::Bold => eval_action("bold"),
                                             TextAction::Italic => eval_action("italic"),

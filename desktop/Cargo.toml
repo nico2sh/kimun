@@ -29,6 +29,8 @@ pulldown-cmark = "0.13.0"
 syntect = "5.2.0"
 lazy_static = "1.5.0"
 
+bitflags = "2.9.2"
+
 [features]
 bundle = []
 default = ["desktop"]
