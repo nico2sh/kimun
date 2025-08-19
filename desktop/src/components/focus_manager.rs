@@ -151,5 +151,6 @@ fn register_focus(
     comp: FocusComponent,
     data: Rc<MountedData>,
 ) {
+    debug!("Registering component {}", comp);
     registered_components.insert(comp, data);
 }
