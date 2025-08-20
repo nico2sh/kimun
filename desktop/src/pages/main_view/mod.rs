@@ -16,7 +16,7 @@ use crate::{
     global_events::{GlobalEvent, PubSub},
     route::Route,
     settings::AppSettings,
-    utils::keys::ActionShortcuts,
+    utils::keys::action_shortcuts::ActionShortcuts,
 };
 
 mod content_view;
