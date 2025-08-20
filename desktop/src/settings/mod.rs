@@ -32,7 +32,7 @@ pub struct AppSettings {
     pub theme: String,
     #[serde(skip, default = "yes")]
     needs_indexing: bool,
-    #[serde(skip, default)]
+    #[serde(default)]
     pub key_bindings: KeyBindings,
     #[serde(skip, default = "load_theme_list")]
     pub theme_list: Vec<Theme>,

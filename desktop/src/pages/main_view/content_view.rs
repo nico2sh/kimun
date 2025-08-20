@@ -17,7 +17,7 @@ use crate::{
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
     state::{AppState, ContentType, KimunChannel},
-    utils::keys::{ActionShortcuts, TextAction},
+    utils::keys::action_shortcuts::{ActionShortcuts, TextAction},
     MARKDOWN_JS,
 };
 
