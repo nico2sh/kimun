@@ -131,7 +131,8 @@ pub fn Modal(props: ModalProps) -> Element {
     rsx! {
         div { class: "modal-overlay",
             // We close any modal if we click on the main UI
-            onclick: move |_e| {
+            onclick: move |e| {
+                e.prevent_default();
                 if modal_type.peek().is_open() && modal_type.peek().should_close_on_click() {
                     modal_type.write().close();
                     info!("Close dialog");

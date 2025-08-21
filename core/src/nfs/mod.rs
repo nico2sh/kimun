@@ -14,7 +14,7 @@ use ignore::{WalkBuilder, WalkParallel};
 use log::{info, warn};
 use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
-use twox_hash::{XxHash3_64, XxHash64};
+use twox_hash::XxHash64;
 
 use super::{error::FSError, DirectoryDetails, NoteDetails};
 

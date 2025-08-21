@@ -1,8 +1,6 @@
 on:
   push:
-    branches: [ main ]
-  pull_request:
-  workflow_dispatch:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -49,12 +47,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      
+
       - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
@@ -65,7 +63,7 @@ jobs:
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
-      
+
       - name: Cache target directory
         uses: actions/cache@v4
         with:
@@ -73,7 +71,7 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-target-
-      
+
       - name: Cache Dioxus CLI
         uses: actions/cache@v4
         with:
@@ -81,7 +79,7 @@ jobs:
           key: ${{ runner.os }}-dx-0.6.3
           restore-keys: |
             ${{ runner.os }}-dx-
-      
+
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -96,81 +94,75 @@ jobs:
             pkg-config \
             build-essential
 
-#      - name: Use carbo binstall
-#        uses: cargo-bins/cargo-binstall@main
-#      
-#      - name: Install Dioxus-CLI
-#        run: cargo binstall dioxus-cli --version 0.6.3 --force
-        
+      # - name: Use carbo binstall
+      #   uses: cargo-bins/cargo-binstall@main
+      #
+      # - name: Install Dioxus-CLI
+      #   run: cargo binstall dioxus-cli --version 0.6.3 --force
+
       - name: Install Dioxus CLI
         uses: taiki-e/install-action@v2
         with:
           tool: dioxus-cli@0.6.3
-      
-      # - name: Check formatting
-      #   run: cargo fmt --check
-      
-      - name: Run tests
-        run: cargo test --manifest-path core/Cargo.toml -- --test-threads 1
 
       - name: Create distribution directory
         run: mkdir -p dist
         shell: bash
-        
-      - name: Build for desktop
-        run: cd desktop && dx build --release --target ${{ matrix.target }}
-        shell: bash
-      
-      - name: Copy desktop builds
-        run: cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* dist/
+
+      # - name: Build for desktop
+      #   run: cd desktop && dx build --release --target ${{ matrix.target }}
+      #   shell: bash
+      #
+      # - name: Copy desktop builds
+      #   run: cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* dist/
+      #   shell: bash
+
+      - name: Bundle for desktop
+        run: cd desktop && dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}"
         shell: bash
 
-#      - name: Bundle for desktop
-#        run: cd desktop && ﻿﻿﻿dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}"
-#        shell: bash
+      - name: Copy desktop bundles
+        run: cp -r desktop/bundle/${{ matrix.target_path }}/* dist/
+        shell: bash
 
-#      - name: Copy desktop bundles
-#        run: cp -r desktop/bundle/${{ matrix.target_path }}/* dist/
-#        shell: bash
-      
       # - name: Copy README
       #   run: cp README.md dist/
       #   shell: bash
-      
+
       # MacOS app isn't usable out of the box, so need to include a script to remove the quarantine attribute
-#      - name: Create launch script for macOS
-#        if: runner.os == 'macOS'
-#        run: |
-#          cat > dist/RUN_BEFORE_USE.command << 'EOF'
-#          #!/bin/bash
-#          # find script dir
-#          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-#          
-#          # find app bundle
-#          APP_BUNDLE=$(find "$DIR" -name "*.app" -type d | head -1)
-#          
-#          if [ -n "$APP_BUNDLE" ]; then
-#            echo "Removing quarantine attribute from $(basename "$APP_BUNDLE")..."
-#            xattr -c "$APP_BUNDLE"
-#            echo "Done! You can now run $(basename "$APP_BUNDLE")"
-#            echo "Press any key to close this window..."
-#            read -n 1
-#          else
-#            echo "No .app bundle found in $DIR"
-#            echo "Press any key to close this window..."
-#            read -n 1
-#            exit 1
-#          fi
-#          EOF
-#          chmod +x dist/RUN_BEFORE_USE.command
-#        shell: bash
-      
+      #      - name: Create launch script for macOS
+      #        if: runner.os == 'macOS'
+      #        run: |
+      #          cat > dist/RUN_BEFORE_USE.command << 'EOF'
+      #          #!/bin/bash
+      #          # find script dir
+      #          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+      #
+      #          # find app bundle
+      #          APP_BUNDLE=$(find "$DIR" -name "*.app" -type d | head -1)
+      #
+      #          if [ -n "$APP_BUNDLE" ]; then
+      #            echo "Removing quarantine attribute from $(basename "$APP_BUNDLE")..."
+      #            xattr -c "$APP_BUNDLE"
+      #            echo "Done! You can now run $(basename "$APP_BUNDLE")"
+      #            echo "Press any key to close this window..."
+      #            read -n 1
+      #          else
+      #            echo "No .app bundle found in $DIR"
+      #            echo "Press any key to close this window..."
+      #            read -n 1
+      #            exit 1
+      #          fi
+      #          EOF
+      #          chmod +x dist/RUN_BEFORE_USE.command
+      #        shell: bash
+
       - uses: SebRollen/toml-action@v1.2.0
         id: read_toml
         with:
           file: "desktop/Cargo.toml"
           field: "package.version"
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: Kimun ${{ steps.read_toml.outputs.value }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})

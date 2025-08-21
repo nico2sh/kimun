@@ -133,7 +133,7 @@ async fn focus_prev(
     prev_component: &mut Option<FocusComponent>,
 ) {
     if let Some(prev) = prev_component {
-        debug!("Found previous comopnent {}", prev);
+        debug!("Found previous component {}", prev);
         focus(
             registered_components,
             prev.to_owned(),
@@ -151,5 +151,6 @@ fn register_focus(
     comp: FocusComponent,
     data: Rc<MountedData>,
 ) {
+    debug!("Registering component {}", comp);
     registered_components.insert(comp, data);
 }

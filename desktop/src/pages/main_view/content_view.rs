@@ -1,7 +1,7 @@
-use std::{fmt::Display, rc::Rc, sync::Arc};
+use std::{fmt::Display, rc::Rc, sync::Arc, time::Duration};
 
 use dioxus::{
-    logger::tracing::{debug, error, info},
+    logger::tracing::{debug, error},
     prelude::*,
 };
 use dioxus_radio::hooks::{use_radio, Radio};
@@ -17,10 +17,16 @@ use crate::{
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
     state::{AppState, ContentType, KimunChannel},
+    utils::keys::action_shortcuts::{ActionShortcuts, TextAction},
+    MARKDOWN_JS,
 };
 
 const AUTOSAVE_SECS: u64 = 5;
 const TEXT_EDITOR: &str = "text_editor";
+const EVAL_JS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/scripts/md_shortcuts.js"
+));
 
 #[derive(Debug, Clone, Default)]
 pub enum EditorContentState {
@@ -79,7 +85,7 @@ impl EditorSaveManager {
         let dirty_status = self.app_state.read().has_dirty_content();
         if dirty_status {
             let path = self.path.clone();
-            let text = self.content.read().get_text();
+            let text = self.content.peek().get_text();
             let vault = self.vault.clone();
             tokio::spawn(async move {
                 debug!("Saving at {}", path);
@@ -98,7 +104,7 @@ impl Drop for EditorSaveManager {
         let dirty_status = self.app_state.read().has_dirty_content();
         if dirty_status {
             debug!("Saving so we don't lose data");
-            let text = self.content.read().get_text();
+            let text = self.content.peek().get_text();
             let _ = self.vault.save_note(&self.path, text);
             // self.content.write().mark_clean();
         }
@@ -285,8 +291,27 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
         fm.unregister_focus(FocusComponent::Editor);
     });
 
+    use_effect(move || {
+        if !*props.preview.read() {
+            let init_script = r#"
+const textEditor = document.getElementById('textEditor');
+if (textEditor) {
+    window.md_editor = enhanceTextareaWithMarkdown(textEditor);
+}
+"#;
+            spawn(async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                debug!("Initializing Markdown Editor");
+                if let Err(e) = document::eval(init_script).await {
+                    error!("Error initializing editor: {}", e);
+                }
+            });
+        }
+    });
+
     // This manages the editor state
     rsx! {
+        document::Script { src: MARKDOWN_JS }
         div { class: "editor-content",
             {
                 let focus = focus_manager.clone();
@@ -302,7 +327,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                     Some(_) => rsx! {
                         if *props.preview.read() {
                             {
-                                let note_details = NoteDetails::new(&props.note_path.read(), content_state.read().get_text());
+                                let note_details = NoteDetails::new(&props.note_path.read(), content_state.peek().get_text());
                                 let md_content = note_details.get_markdown_and_links();
                                 rsx!{
                                     Markdown {
@@ -324,19 +349,42 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                                 onmounted: move |e| {
                                     focus_manager.register_and_focus(FocusComponent::Editor, e.data());
                                 },
-                                onselect: move |e| {
-                                    info!("Select event {:?}", e);
-                                },
+                                // onselect: move |e| {
+                                //     info!("Select event {:?}", e.data());
+                                // },
+                                // onselectstart: move |e| {
+                                //     info!("Select start event {:?}", e.data());
+                                // },
+                                // onselectionchange: move |e| {
+                                //     info!("Select change event {:?}", e.data());
+                                // },
                                 oninput: move |e| {
                                     content_state.write().update_text(e.value());
                                     app_state.write().mark_content_dirty();
                                 },
-                                onkeydown: move |e| {
-                                    if e.key() == Key::Tab {
-                                        e.prevent_default();
+                                onkeydown: move |event: Event<KeyboardData>| {
+                                    let data = event.data();
+                                    if event.key() == Key::Tab {
+                                        if data.modifiers().shift() {
+                                            eval_action("unindent");
+                                        } else {
+                                            eval_action("indent");
+                                        }
+                                    }
+                                    if let Some(ActionShortcuts::Text(action)) = settings.read().key_bindings.get_action(&data.into()) {
+                                        match action {
+                                            TextAction::Bold => eval_action("bold"),
+                                            TextAction::Italic => eval_action("italic"),
+                                            TextAction::Link => eval_action("link"),
+                                            TextAction::Image => eval_action("image"),
+                                            TextAction::ToggleHeader => eval_action("toggle_header"),
+                                            TextAction::Header(n) => eval_action(&format!("heading{}", n)),
+                                            TextAction::Underline => eval_action("underline"),
+                                            TextAction::Strikethrough => eval_action("strike"),
+                                        }
                                     }
                                 },
-                                spellcheck: false,
+                                spellcheck: true,
                                 wrap: "hard",
                                 resize: "none",
                                 placeholder: "Start writing something!",
@@ -347,5 +395,12 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                 }
             }
         }
+    }
+}
+
+fn eval_action(action: &str) {
+    let eval = document::eval(EVAL_JS);
+    if let Err(e) = eval.send(action) {
+        error!("Error sending value {}: {}", action, e);
     }
 }
