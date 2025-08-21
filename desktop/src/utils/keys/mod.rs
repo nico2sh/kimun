@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
-use action_shortcuts::{ActionShortcuts, TextAction};
+use action_shortcuts::ActionShortcuts;
 use dioxus::logger::tracing::debug;
 use itertools::Itertools;
 use key_combo::{KeyCombo, KeyModifiers};
@@ -96,74 +96,15 @@ impl Display for KeyBindings {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindingBuilder {
-    key_bindings.batch_add().with_meta()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindingBuilder {
-    key_bindings.new_keybinding().with_ctrl()
-}
-
-impl Default for KeyBindings {
-    fn default() -> Self {
-        let mut kb = KeyBindings {
-            bindings: HashMap::default(),
-        };
-        // We use meta on macOS, ctrl on Windows
-        get_kb_buildr_ctrl_meta(&mut kb)
-            .add(KeyStrike::Comma, ActionShortcuts::OpenSettings)
-            .add(KeyStrike::Slash, ActionShortcuts::ToggleNoteBrowser)
-            .add(KeyStrike::KeyE, ActionShortcuts::SearchNotes)
-            .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
-            .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
-            .add(KeyStrike::KeyY, ActionShortcuts::TogglePreview)
-            .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
-            .add(KeyStrike::KeyI, ActionShortcuts::Text(TextAction::Italic))
-            .add(
-                KeyStrike::KeyU,
-                ActionShortcuts::Text(TextAction::Underline),
-            )
-            .add(
-                KeyStrike::KeyS,
-                ActionShortcuts::Text(TextAction::Strikethrough),
-            )
-            .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Link))
-            .add(
-                KeyStrike::KeyT,
-                ActionShortcuts::Text(TextAction::ToggleHeader),
-            )
-            .add(
-                KeyStrike::Digit1,
-                ActionShortcuts::Text(TextAction::Header(1)),
-            )
-            .add(
-                KeyStrike::Digit2,
-                ActionShortcuts::Text(TextAction::Header(2)),
-            )
-            .add(
-                KeyStrike::Digit3,
-                ActionShortcuts::Text(TextAction::Header(3)),
-            )
-            // =============================
-            // We add shift to the modifiers
-            // =============================
-            .with_shift()
-            .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Image));
-        kb
-    }
-}
-
 impl KeyBindings {
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         KeyBindings {
             bindings: HashMap::default(),
         }
     }
 
-    pub fn batch_add(&mut self) -> KeyBindingBuilder {
-        KeyBindingBuilder {
+    pub fn batch_add(&mut self) -> KeyBindBatch {
+        KeyBindBatch {
             bindings: self,
             modifiers: KeyModifiers::default(),
         }
@@ -197,34 +138,34 @@ impl KeyBindings {
     }
 }
 
-pub struct KeyBindingBuilder<'k> {
+pub struct KeyBindBatch<'k> {
     bindings: &'k mut KeyBindings,
     modifiers: KeyModifiers,
 }
 
-impl<'k> KeyBindingBuilder<'k> {
+impl<'k> KeyBindBatch<'k> {
     pub fn with_shift(mut self) -> Self {
-        self.modifiers.add_shift();
+        self.modifiers.with_shift();
         self
     }
     pub fn with_ctrl(mut self) -> Self {
-        self.modifiers.add_ctrl();
+        self.modifiers.with_ctrl();
         self
     }
     pub fn with_alt(mut self) -> Self {
-        self.modifiers.add_alt();
+        self.modifiers.with_alt();
         self
     }
     /// Same as with_cmd, used for non-macOS
     pub fn with_meta(mut self) -> Self {
-        self.modifiers.add_meta_cmd();
+        self.modifiers.with_meta_cmd();
         self
     }
     pub fn with_cmd(mut self) -> Self {
-        self.modifiers.add_meta_cmd();
+        self.modifiers.with_meta_cmd();
         self
     }
-    pub fn add(self, key: KeyStrike, action: ActionShortcuts) -> KeyBindingBuilder<'k> {
+    pub fn add(self, key: KeyStrike, action: ActionShortcuts) -> KeyBindBatch<'k> {
         self.bindings
             .bindings
             .insert(KeyCombo::new(self.modifiers, key), action);
@@ -234,7 +175,11 @@ impl<'k> KeyBindingBuilder<'k> {
 
 #[cfg(test)]
 mod tests {
-    use super::{key_strike::KeyStrike, ActionShortcuts, KeyBindings, TextAction};
+    use super::{
+        action_shortcuts::{ActionShortcuts, TextAction},
+        key_strike::KeyStrike,
+        KeyBindings,
+    };
 
     #[test]
     fn serialize_key_binding() {

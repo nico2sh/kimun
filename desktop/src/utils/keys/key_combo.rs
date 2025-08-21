@@ -135,11 +135,11 @@ impl TryFrom<String> for KeyModifiers {
         let mut modifiers = KeyModifiers::default();
         for modif in splits {
             match modif {
-                CONTROL => modifiers.add_ctrl(),
-                SHIFT => modifiers.add_shift(),
-                ALT => modifiers.add_alt(),
-                META => modifiers.add_meta_cmd(),
-                CMD => modifiers.add_meta_cmd(),
+                CONTROL => modifiers.with_ctrl(),
+                SHIFT => modifiers.with_shift(),
+                ALT => modifiers.with_alt(),
+                META => modifiers.with_meta_cmd(),
+                CMD => modifiers.with_meta_cmd(),
                 _ => return Err(format!("Non valid modifier value: {}", modif)),
             }
         }
@@ -157,16 +157,16 @@ impl From<Modifiers> for KeyModifiers {
     fn from(value: Modifiers) -> Self {
         let mut km = KeyModifiers::default();
         if value.shift() {
-            km.add_shift();
+            km.with_shift();
         }
         if value.ctrl() {
-            km.add_ctrl();
+            km.with_ctrl();
         }
         if value.alt() {
-            km.add_alt();
+            km.with_alt();
         }
         if value.meta() {
-            km.add_meta_cmd();
+            km.with_meta_cmd();
         }
         km
     }
@@ -201,36 +201,33 @@ impl KeyModifiers {
         !(self.alt || self.ctrl || self.cmd || !self.shift)
     }
 
-    pub fn add_shift(&mut self) {
+    pub fn with_shift(&mut self) {
         self.shift = true;
     }
-
-    pub fn add_ctrl(&mut self) {
+    pub fn with_ctrl(&mut self) {
         self.ctrl = true;
     }
-
-    pub fn add_alt(&mut self) {
+    pub fn with_alt(&mut self) {
         self.alt = true;
     }
-
-    pub fn add_meta_cmd(&mut self) {
+    pub fn with_meta_cmd(&mut self) {
         self.cmd = true;
     }
 
     pub fn and_shift(mut self) -> Self {
-        self.add_shift();
+        self.with_shift();
         self
     }
     pub fn and_ctrl(mut self) -> Self {
-        self.add_ctrl();
+        self.with_ctrl();
         self
     }
     pub fn and_alt(mut self) -> Self {
-        self.add_alt();
+        self.with_alt();
         self
     }
     pub fn and_meta_cmd(mut self) -> Self {
-        self.add_meta_cmd();
+        self.with_meta_cmd();
         self
     }
     /// Return `true` if a shift key is pressed.
@@ -263,12 +260,12 @@ mod tests {
     #[test]
     fn serialize_keymodifier() -> anyhow::Result<()> {
         let mut km = KeyModifiers::default();
-        km.add_shift();
+        km.with_shift();
 
         let km_ser = km.to_string();
         assert_eq!("shift", km_ser);
 
-        km.add_ctrl();
+        km.with_ctrl();
         let km_ser = km.to_string();
         assert_eq!("ctrl+shift", km_ser);
         Ok(())
