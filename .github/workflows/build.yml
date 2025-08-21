@@ -58,6 +58,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
+            ~/.cargo/bin/
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
@@ -95,7 +96,7 @@ jobs:
             pkg-config \
             build-essential
 
-      # - name: Use carbo binstall
+      # - name: Use cargo binstall
       #   uses: cargo-bins/cargo-binstall@main
       #
       # - name: Install Dioxus-CLI
@@ -116,7 +117,7 @@ jobs:
         run: |
           cd desktop && \
           dx build --release --target ${{ matrix.target }} && \
-          cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* ../dist/
+          cp -r target/dx/kimun/release/${{ matrix.target_path}}/* ../dist/
         shell: bash
 
       - name: Bundle for desktop
@@ -124,7 +125,7 @@ jobs:
         run: |
           cd desktop && \
           dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}" && \
-          cp -r desktop/bundle/${{ matrix.target_path }}/* ../dist/
+          cp -r bundle/${{ matrix.target_path }}/* ../dist/
         shell: bash
 
       # - name: Copy README
