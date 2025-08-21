@@ -2,6 +2,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 env:
@@ -18,31 +19,15 @@ jobs:
           - name: Windows Build
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: windows
-            artifact_suffix: ""
-            target_path: "windows/app"
-            package-type: msi
           - name: MacOS Build x64
             os: macos-latest
             target: x86_64-apple-darwin
-            artifact: macos
-            artifact_suffix: _intel
-            target_path: "macos"
-            package-type: dmg
           - name: MacOS Build arm64
             os: macos-latest
             target: aarch64-apple-darwin
-            artifact: macos
-            artifact_suffix: _apple_silicon
-            target_path: "macos"
-            package-type: dmg
           - name: Linux Build
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: linux
-            artifact_suffix: ""
-            target_path: "linux/app"
-            package-type: appimage
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -94,22 +79,11 @@ jobs:
             pkg-config \
             build-essential
 
-      #      - name: Use carbo binstall
-      #        uses: cargo-bins/cargo-binstall@main
-      #
-      #      - name: Install Dioxus-CLI
-      #        run: cargo binstall dioxus-cli --version 0.6.3 --force
-
-      - name: Install Dioxus CLI
-        uses: taiki-e/install-action@v2
-        with:
-          tool: dioxus-cli@0.6.3
-
       # - name: Check formatting
       #   run: cargo fmt --check
 
       - name: Run core tests
-        run: cargo test --manifest-path core/Cargo.toml -- --test-threads 1
+        run: cargo test --verbose --manifest-path core/Cargo.toml -- --test-threads 1
 
       - name: Run desk tests
-        run: cargo test --manifest-path desktop/Cargo.toml -- --test-threads 1
+        run: cargo test --verbose --manifest-path desktop/Cargo.toml -- --test-threads 1
