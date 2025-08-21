@@ -16,7 +16,7 @@ use crate::{
     global_events::{GlobalEvent, PubSub},
     route::Route,
     settings::AppSettings,
-    utils::keys::{get_action, Shortcuts},
+    utils::keys::action_shortcuts::ActionShortcuts,
 };
 
 mod content_view;
@@ -199,40 +199,42 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
                 tabindex: 0,
                 onkeydown: move |event: Event<KeyboardData>| {
                     let data = event.data;
-                    match get_action(&data) {
-                        Shortcuts::None => {}
-                        Shortcuts::TogglePreview => {
-                            let preview = !*show_preview.read();
-                            debug!("Toggling preview to {}", preview);
-                            show_preview.set(preview)},
-                        Shortcuts::OpenSettings => {
-                            debug!("Open Settings");
-                            navigator().replace(Route::Settings {});
-                        }
-                        Shortcuts::ToggleNoteBrowser => {
-                            debug!("Toggle note browser");
-                            let shown = *show_browser.read();
-                            show_browser.set(!shown);
-                        }
-                        Shortcuts::SearchNotes => {
-                            debug!("Trigger Open Note Search");
-                            modal_type.write().set_note_search(vault.clone());
-                        }
-                        Shortcuts::OpenNote => {
-                            debug!("Trigger Open Note Select");
-                            modal_type
-                                .write()
-                                .set_note_select(vault.clone(), editor_path.read().clone());
-                        }
-                        Shortcuts::NewJournal => {
-                            debug!("New Journal Entry");
-                            if let Ok(journal_entry) = vault.journal_entry() {
-                                navigator()
-                                    .replace(crate::Route::MainView {
-                                        editor_path: journal_entry.0.path,
-                                        create: true,
-                                    });
+                    if let Some(action) = settings.read().key_bindings.get_action(&data.into()) {
+                        match action {
+                            ActionShortcuts::TogglePreview => {
+                                let preview = !*show_preview.read();
+                                debug!("Toggling preview to {}", preview);
+                                show_preview.set(preview)},
+                            ActionShortcuts::OpenSettings => {
+                                debug!("Open Settings");
+                                navigator().replace(Route::Settings {});
                             }
+                            ActionShortcuts::ToggleNoteBrowser => {
+                                debug!("Toggle note browser");
+                                let shown = *show_browser.read();
+                                show_browser.set(!shown);
+                            }
+                            ActionShortcuts::SearchNotes => {
+                                debug!("Trigger Open Note Search");
+                                modal_type.write().set_note_search(vault.clone());
+                            }
+                            ActionShortcuts::OpenNote => {
+                                debug!("Trigger Open Note Select");
+                                modal_type
+                                    .write()
+                                    .set_note_select(vault.clone(), editor_path.read().clone());
+                            }
+                            ActionShortcuts::NewJournal => {
+                                debug!("New Journal Entry");
+                                if let Ok(journal_entry) = vault.journal_entry() {
+                                    navigator()
+                                        .replace(crate::Route::MainView {
+                                            editor_path: journal_entry.0.path,
+                                            create: true,
+                                        });
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 },
