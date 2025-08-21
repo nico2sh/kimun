@@ -108,5 +108,8 @@ jobs:
       # - name: Check formatting
       #   run: cargo fmt --check
 
-      - name: Run tests
+      - name: Run core tests
         run: cargo test --manifest-path core/Cargo.toml -- --test-threads 1
+
+      - name: Run desk tests
+        run: cargo test --manifest-path desktop/Cargo.toml -- --test-threads 1

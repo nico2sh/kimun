@@ -46,6 +46,7 @@ impl<'de> Visitor<'de> for DeserializeKeyBindingsVisitor {
     {
         let mut bindings: HashMap<ActionShortcuts, Vec<KeyCombo>> =
             HashMap::with_capacity(map.size_hint().unwrap_or(0));
+        // TODO: If an entry fails, ignore
         while let Some((key, value)) = map.next_entry()? {
             bindings.insert(key, value);
         }
