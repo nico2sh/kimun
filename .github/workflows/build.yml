@@ -57,6 +57,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
+            ~/.cargo/bin/
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
@@ -94,7 +95,7 @@ jobs:
             pkg-config \
             build-essential
 
-      # - name: Use carbo binstall
+      # - name: Use cargo binstall
       #   uses: cargo-bins/cargo-binstall@main
       #
       # - name: Install Dioxus-CLI
@@ -109,20 +110,21 @@ jobs:
         run: mkdir -p dist
         shell: bash
 
-      # - name: Build for desktop
-      #   run: cd desktop && dx build --release --target ${{ matrix.target }}
-      #   shell: bash
-      #
-      # - name: Copy desktop builds
-      #   run: cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* dist/
-      #   shell: bash
-
-      - name: Bundle for desktop
-        run: cd desktop && dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}"
+        # On windows the bundle is failing so we build the binary
+      - name: Build for desktop
+        if: runner.os == 'Windows'
+        run: |
+          cd desktop && \
+          dx build --release --target ${{ matrix.target }} && \
+          cp -r target/dx/kimun/release/${{ matrix.target_path}}/* ../dist/
         shell: bash
 
-      - name: Copy desktop bundles
-        run: cp -r desktop/bundle/${{ matrix.target_path }}/* dist/
+      - name: Bundle for desktop
+        if: runner.os != 'Windows'
+        run: |
+          cd desktop && \
+          dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}" && \
+          cp -r bundle/${{ matrix.target_path }}/* ../dist/
         shell: bash
 
       # - name: Copy README

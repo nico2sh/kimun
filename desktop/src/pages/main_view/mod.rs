@@ -193,85 +193,83 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
         } else {
             div { class: "sidebar collapsed" }
         }
-        div { class: "editor-area",
-            div {
-                class: "editor-container",
-                tabindex: 0,
-                onkeydown: move |event: Event<KeyboardData>| {
-                    let data = event.data;
-                    if let Some(action) = settings.read().key_bindings.get_action(&data.into()) {
-                        match action {
-                            ActionShortcuts::TogglePreview => {
-                                let preview = !*show_preview.read();
-                                debug!("Toggling preview to {}", preview);
-                                show_preview.set(preview)},
-                            ActionShortcuts::OpenSettings => {
-                                debug!("Open Settings");
-                                navigator().replace(Route::Settings {});
+        div {
+            class: "editor-container",
+            tabindex: 0,
+            onkeydown: move |event: Event<KeyboardData>| {
+                let data = event.data;
+                if let Some(action) = settings.read().key_bindings.get_action(&data.into()) {
+                    match action {
+                        ActionShortcuts::TogglePreview => {
+                            let preview = !*show_preview.read();
+                            debug!("Toggling preview to {}", preview);
+                            show_preview.set(preview)},
+                        ActionShortcuts::OpenSettings => {
+                            debug!("Open Settings");
+                            navigator().replace(Route::Settings {});
+                        }
+                        ActionShortcuts::ToggleNoteBrowser => {
+                            debug!("Toggle note browser");
+                            let shown = *show_browser.read();
+                            show_browser.set(!shown);
+                        }
+                        ActionShortcuts::SearchNotes => {
+                            debug!("Trigger Open Note Search");
+                            modal_type.write().set_note_search(vault.clone());
+                        }
+                        ActionShortcuts::OpenNote => {
+                            debug!("Trigger Open Note Select");
+                            modal_type
+                                .write()
+                                .set_note_select(vault.clone(), editor_path.read().clone());
+                        }
+                        ActionShortcuts::NewJournal => {
+                            debug!("New Journal Entry");
+                            if let Ok(journal_entry) = vault.journal_entry() {
+                                navigator()
+                                    .replace(crate::Route::MainView {
+                                        editor_path: journal_entry.0.path,
+                                        create: true,
+                                    });
                             }
-                            ActionShortcuts::ToggleNoteBrowser => {
-                                debug!("Toggle note browser");
-                                let shown = *show_browser.read();
-                                show_browser.set(!shown);
-                            }
-                            ActionShortcuts::SearchNotes => {
-                                debug!("Trigger Open Note Search");
-                                modal_type.write().set_note_search(vault.clone());
-                            }
-                            ActionShortcuts::OpenNote => {
-                                debug!("Trigger Open Note Select");
-                                modal_type
-                                    .write()
-                                    .set_note_select(vault.clone(), editor_path.read().clone());
-                            }
-                            ActionShortcuts::NewJournal => {
-                                debug!("New Journal Entry");
-                                if let Ok(journal_entry) = vault.journal_entry() {
-                                    navigator()
-                                        .replace(crate::Route::MainView {
-                                            editor_path: journal_entry.0.path,
-                                            create: true,
-                                        });
-                                }
-                            }
-                            _ => {}
+                        }
+                        _ => {}
+                    }
+                }
+            },
+            Modal { modal_type }
+            EditorHeader { path: editor_path, show_browser }
+            div { class: "editor-main",
+                match &*content_path.read() {
+                    PathType::Note => {
+                        rsx! {
+                            TextEditor { note_path: editor_path, vault: vault.clone(), modal_type, preview: show_preview }
                         }
                     }
-                },
-                Modal { modal_type }
-                EditorHeader { path: editor_path, show_browser }
-                div { class: "editor-main",
-                    match &*content_path.read() {
-                        PathType::Note => {
-                            rsx! {
-                                TextEditor { note_path: editor_path, vault: vault.clone(), modal_type, preview: show_preview }
-                            }
+                    PathType::Directory => {
+                        debug!("Opening Directory View");
+                        rsx! {
+                            NoText { path: editor_path }
                         }
-                        PathType::Directory => {
-                            debug!("Opening Directory View");
-                            rsx! {
-                                NoText { path: editor_path }
-                            }
-                        }
-                        PathType::Reroute(new_path) => {
-                            let next_path = new_path.clone();
-                            rsx! {
-                                div {
-                                    onmounted: move |_| {
-                                        debug!("Rerouting to {}...", next_path);
-                                        navigator()
-                                            .replace(Route::MainView {
-                                                editor_path: next_path.clone(),
-                                                create: true,
-                                            });
-                                    },
-                                }
+                    }
+                    PathType::Reroute(new_path) => {
+                        let next_path = new_path.clone();
+                        rsx! {
+                            div {
+                                onmounted: move |_| {
+                                    debug!("Rerouting to {}...", next_path);
+                                    navigator()
+                                        .replace(Route::MainView {
+                                            editor_path: next_path.clone(),
+                                            create: true,
+                                        });
+                                },
                             }
                         }
                     }
                 }
-                div { class: "editor-footer" }
             }
+            div { class: "editor-footer" }
         }
     }
 }

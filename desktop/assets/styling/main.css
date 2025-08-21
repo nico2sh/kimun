@@ -247,12 +247,6 @@ label.error {
 }
 
 /* Editor */
-.editor-area {
-  flex: 1;
-  display: flex;
-  position: relative;
-}
-
 .editor-container {
   display: flex;
   flex-direction: column;
@@ -260,7 +254,7 @@ label.error {
   height: 100%;
   margin: 0 auto;
   background: var(--bg-main);
-  /* box-shadow: 0 0 40px var(--shadow-primary); */
+  box-shadow: 0 0 40px var(--shadow-primary);
   transition: flex 0.3s ease;
 }
 
@@ -787,10 +781,11 @@ label.error {
 
 /* Settings */
 .settings-container {
-  /* max-width: 900px; */
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   margin: 0 auto;
   background: var(--bg-main);
-  /* box-shadow: 0 10px 40px var(--shadow-primary); */
   overflow-y: auto;
 }
 
