@@ -1,3 +1,6 @@
+use crate::utils::keys::action_shortcuts::{ActionShortcuts, TextAction};
+use crate::utils::keys::key_strike::KeyStrike;
+use crate::utils::keys::KeyBindBatch;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -32,10 +35,65 @@ pub struct AppSettings {
     pub theme: String,
     #[serde(skip, default = "yes")]
     needs_indexing: bool,
-    #[serde(default)]
+    #[serde(default = "default_keybindings")]
     pub key_bindings: KeyBindings,
     #[serde(skip, default = "load_theme_list")]
     pub theme_list: Vec<Theme>,
+}
+
+#[cfg(target_os = "macos")]
+fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch {
+    key_bindings.batch_add().with_meta()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch {
+    key_bindings.batch_add().with_ctrl()
+}
+
+fn default_keybindings() -> KeyBindings {
+    let mut kb = KeyBindings::empty();
+    // We use meta on macOS, ctrl on Windows
+    get_kb_buildr_ctrl_meta(&mut kb)
+        .add(KeyStrike::Comma, ActionShortcuts::OpenSettings)
+        .add(KeyStrike::Slash, ActionShortcuts::ToggleNoteBrowser)
+        .add(KeyStrike::KeyE, ActionShortcuts::SearchNotes)
+        .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
+        .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
+        .add(KeyStrike::KeyY, ActionShortcuts::TogglePreview)
+        .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
+        .add(KeyStrike::KeyI, ActionShortcuts::Text(TextAction::Italic))
+        .add(
+            KeyStrike::KeyU,
+            ActionShortcuts::Text(TextAction::Underline),
+        )
+        .add(
+            KeyStrike::KeyS,
+            ActionShortcuts::Text(TextAction::Strikethrough),
+        )
+        .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Link))
+        .add(
+            KeyStrike::KeyT,
+            ActionShortcuts::Text(TextAction::ToggleHeader),
+        )
+        .add(
+            KeyStrike::Digit1,
+            ActionShortcuts::Text(TextAction::Header(1)),
+        )
+        .add(
+            KeyStrike::Digit2,
+            ActionShortcuts::Text(TextAction::Header(2)),
+        )
+        .add(
+            KeyStrike::Digit3,
+            ActionShortcuts::Text(TextAction::Header(3)),
+        )
+        // =============================
+        // We add shift to the modifiers
+        // =============================
+        .with_shift()
+        .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Image));
+    kb
 }
 
 fn yes() -> bool {
@@ -58,7 +116,7 @@ impl Default for AppSettings {
             workspace_dir: None,
             theme: Default::default(),
             needs_indexing: true,
-            key_bindings: KeyBindings::default(),
+            key_bindings: default_keybindings(),
             theme_list: load_theme_list(),
         }
     }
