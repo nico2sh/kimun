@@ -116,7 +116,7 @@ jobs:
         run: |
           cd desktop && \
           dx build --release --target ${{ matrix.target }} && \
-          cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* dist/
+          cp -r desktop/target/dx/kimun/release/${{ matrix.target_path}}/* ../dist/
         shell: bash
 
       - name: Bundle for desktop
@@ -124,7 +124,7 @@ jobs:
         run: |
           cd desktop && \
           dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}" && \
-          cp -r desktop/bundle/${{ matrix.target_path }}/* dist/
+          cp -r desktop/bundle/${{ matrix.target_path }}/* ../dist/
         shell: bash
 
       # - name: Copy README
