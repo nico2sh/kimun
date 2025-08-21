@@ -295,7 +295,11 @@ mod tests {
         );
 
         let kc_ser = kc.to_string();
+
+        #[cfg(target_os = "macos")]
         assert_eq!("ctrl+cmd & N", kc_ser);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!("ctrl+meta & N", kc_ser);
     }
 
     #[test]
