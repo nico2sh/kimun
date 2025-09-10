@@ -111,9 +111,9 @@ impl KeyBindings {
     }
 
     pub fn get_action(&self, combo: &KeyCombo) -> Option<ActionShortcuts> {
-        debug!("Combo: {:?}", combo);
+        // debug!("Combo: {:?}", combo);
         let bind = self.bindings.get(combo).map(|a| a.to_owned());
-        debug!("Binding: {:?}", bind);
+        // debug!("Binding: {:?}", bind);
         bind
     }
 
