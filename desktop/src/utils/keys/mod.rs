@@ -1,7 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
 use action_shortcuts::ActionShortcuts;
-use dioxus::logger::tracing::debug;
 use itertools::Itertools;
 use key_combo::{KeyCombo, KeyModifiers};
 use key_strike::KeyStrike;
@@ -111,9 +110,7 @@ impl KeyBindings {
     }
 
     pub fn get_action(&self, combo: &KeyCombo) -> Option<ActionShortcuts> {
-        // debug!("Combo: {:?}", combo);
         let bind = self.bindings.get(combo).map(|a| a.to_owned());
-        // debug!("Binding: {:?}", bind);
         bind
     }
 
