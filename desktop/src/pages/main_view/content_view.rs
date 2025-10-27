@@ -122,15 +122,6 @@ pub fn NoText(path: ReadOnlySignal<VaultPath>) -> Element {
 
     let mut app_state = use_radio::<AppState, KimunChannel>(KimunChannel::Header);
     use_effect(move || app_state.write().set_content_type(ContentType::Directory));
-    // spawn(async move {
-    //     loop {
-    //         if let Some(e) = text_area_signal.with(|f| f.clone()) {
-    //             debug!("Attached main UI for focus");
-    //             let _ = e.set_focus(true).await;
-    //             break;
-    //         }
-    //     }
-    // });
 
     rsx! {
         div {
@@ -164,20 +155,6 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     let modal_type = props.modal_type;
 
     let focus_manager = use_context::<FocusManager>();
-    // This is for the autofocus
-    // let mut text_area_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
-    // spawn(async move {
-    //     loop {
-    //         if let Some(e) = text_area_signal.with(|f| f.clone()) {
-    //             if !modal_type.read().is_open() {
-    //                 debug!("Attached main UI for focus");
-    //                 let _ = e.set_focus(true).await;
-    //             }
-    //             break;
-    //         }
-    //     }
-    // });
-
     let mut settings: Signal<AppSettings> = use_context();
 
     let editor_vault = props.vault.clone();
@@ -308,6 +285,9 @@ if (textEditor) {
             });
         }
     });
+    // let _ = use_global_shortcut("cmd+L", move || {
+    //     info!("Command L");
+    // });
 
     // This manages the editor state
     rsx! {
@@ -335,6 +315,7 @@ if (textEditor) {
                                         note_md: md_content.text,
                                         note_links: md_content.links,
                                         modal_type,
+                                        focus_manager
                                     }
                                 }
                             }
