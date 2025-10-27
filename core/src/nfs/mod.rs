@@ -817,7 +817,10 @@ mod tests {
 
     use crate::{
         error::FSError,
-        nfs::{delete_directory, delete_note, rename_directory, rename_note, save_note, create_directory, VaultEntry, EntryData, DirectoryEntryData, VaultEntryDetails},
+        nfs::{
+            create_directory, delete_directory, delete_note, rename_directory, rename_note,
+            save_note, DirectoryEntryData, EntryData, VaultEntry, VaultEntryDetails,
+        },
         utilities::path_to_string,
         DirectoryDetails, NoteDetails,
     };
@@ -1030,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn create_a_note()  {
+    fn create_a_note() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -1040,18 +1043,18 @@ mod tests {
 
         let res = save_note(workspace_path, &note_path, &note_text);
         if let Err(e) = &res {
-            assert!(false, "{e}");
+            panic!("Error saving note: {e}")
         }
 
         let note = load_note(workspace_path, &note_path);
         if let Err(e) = &note {
-            assert!(false, "{e}");
+            panic!("Error loading note: {e}")
         }
         assert_eq!(note.unwrap(), note_text);
 
         let del_res = delete_note(workspace_path, &note_path);
         if let Err(e) = &del_res {
-            assert!(false, "{e}");
+            panic!("Error deleting note: {e}")
         }
         assert!(load_note(workspace_path, &note_path).is_err());
     }
@@ -1068,34 +1071,34 @@ mod tests {
 
         let res = save_note(workspace_path, &note_path, &note_text);
         if let Err(e) = &res {
-            assert!(false, "{e}");
+            panic!("Error saving note: {e}")
         }
         let note = load_note(workspace_path, &note_path);
         if let Err(e) = &note {
-            assert!(false, "{e}");
+            panic!("Error loading note: {e}")
         }
         assert_eq!(note.as_ref().unwrap().to_owned(), note_text);
 
         let ren_res = rename_note(workspace_path, &note_path, &dest_note_path);
         if let Err(e) = &ren_res {
-            assert!(false, "{e}");
+            panic!("Error renaming note: {e}")
         }
         let moved_note = load_note(workspace_path, &dest_note_path);
         if let Err(e) = &moved_note {
-            assert!(false, "{e}");
+            panic!("Error loading note: {e}")
         }
         assert_eq!(note.unwrap(), moved_note.unwrap());
         assert!(load_note(workspace_path, &note_path).is_err());
 
         let del_res = delete_note(workspace_path, &dest_note_path);
         if let Err(e) = &del_res {
-            assert!(false, "{e}");
+            panic!("Error deleting note: {e}")
         }
         assert!(load_note(workspace_path, &dest_note_path).is_err());
 
         let del_res = delete_directory(workspace_path, &dest_note_path.get_parent_path().0);
         if let Err(e) = &del_res {
-            assert!(false, "{e}");
+            panic!("Error deleting directory: {e}")
         }
     }
 
@@ -1316,7 +1319,6 @@ mod tests {
 
     #[test]
     fn test_vault_entry_details_get_title() {
-
         let note_path = VaultPath::new("test.md");
         let note_content = "# My Title\n\nContent";
         let note_details = NoteDetails::new(&note_path, note_content);
@@ -1536,23 +1538,6 @@ mod tests {
         // Test parent directory slice
         let path_with_parent = VaultPath::new("../test");
         assert_eq!(path_with_parent.to_string(), "../test");
-    }
-
-    #[test]
-    fn test_filter_files() {
-        use std::path::PathBuf;
-
-        // Create a mock DirEntry-like structure for testing
-        // Note: This is a simplified test since ignore::DirEntry is hard to mock
-        // In real scenarios, this would be tested through integration tests
-
-        let visible_path = PathBuf::from("visible_file.md");
-        let hidden_path = PathBuf::from(".hidden_file.md");
-
-        // The filter_files function should return true for non-hidden files
-        // and false for hidden files (those starting with ".")
-        assert!(!hidden_path.starts_with("."));  // This tests our understanding
-        assert!(!visible_path.starts_with("."));
     }
 
     #[test]

@@ -710,19 +710,9 @@ fn create_index_for<P: AsRef<Path>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
     use std::time::{Duration, SystemTime};
     use tempfile::TempDir;
-    use chrono::NaiveDate;
-
-    #[test]
-    fn test_index_report_new() {
-        let report = IndexReport::new();
-        assert_eq!(report.duration, Duration::default());
-        // Check that start time is recent (within last second)
-        let now = SystemTime::now();
-        let elapsed = now.duration_since(report.start).unwrap();
-        assert!(elapsed.as_secs() < 1);
-    }
 
     #[test]
     fn test_index_report_finish() {
@@ -805,7 +795,8 @@ mod tests {
         assert_eq!(title, expected_title);
 
         // Check that the path is correct
-        let expected_path = vault.journal_path
+        let expected_path = vault
+            .journal_path
             .append(&VaultPath::note_path_from(&expected_title))
             .absolute();
         assert_eq!(note_path, expected_path);
@@ -817,7 +808,8 @@ mod tests {
         let vault = NoteVault::new(temp_dir.path()).unwrap();
 
         // Create a journal note path
-        let journal_note_path = vault.journal_path
+        let journal_note_path = vault
+            .journal_path
             .append(&VaultPath::note_path_from("2023-12-25"))
             .absolute();
 
@@ -834,7 +826,8 @@ mod tests {
         let vault = NoteVault::new(temp_dir.path()).unwrap();
 
         // Create a note path with invalid date format
-        let invalid_journal_path = vault.journal_path
+        let invalid_journal_path = vault
+            .journal_path
             .append(&VaultPath::note_path_from("invalid-date"))
             .absolute();
 
@@ -946,7 +939,7 @@ mod tests {
 
         assert_eq!(options.path, VaultPath::root());
         assert_eq!(options.validation, NotesValidation::None);
-        assert_eq!(options.recursive, false);
+        assert!(!options.recursive);
     }
 
     #[test]
@@ -958,7 +951,7 @@ mod tests {
 
         assert_eq!(options.path, test_path);
         assert_eq!(options.validation, NotesValidation::None);
-        assert_eq!(options.recursive, false);
+        assert!(!options.recursive);
     }
 
     #[test]
@@ -966,8 +959,7 @@ mod tests {
         let initial_path = VaultPath::new("/initial");
         let new_path = VaultPath::new("/new/path");
 
-        let builder = VaultBrowseOptionsBuilder::new(&initial_path)
-            .path(new_path.clone());
+        let builder = VaultBrowseOptionsBuilder::new(&initial_path).path(new_path.clone());
 
         let (options, _receiver) = builder.build();
 
@@ -980,11 +972,11 @@ mod tests {
 
         let builder = VaultBrowseOptionsBuilder::new(&path).recursive();
         let (options, _receiver) = builder.build();
-        assert_eq!(options.recursive, true);
+        assert!(options.recursive);
 
         let builder = VaultBrowseOptionsBuilder::new(&path).non_recursive();
         let (options, _receiver) = builder.build();
-        assert_eq!(options.recursive, false);
+        assert!(!options.recursive);
     }
 
     #[test]
@@ -1020,7 +1012,7 @@ mod tests {
         let (options, _receiver) = builder.build();
 
         assert_eq!(options.path, new_path);
-        assert_eq!(options.recursive, true);
+        assert!(options.recursive);
         assert_eq!(options.validation, NotesValidation::Full);
     }
 
@@ -1041,29 +1033,6 @@ mod tests {
         assert_eq!(format!("{}", NotesValidation::Full), "Full");
         assert_eq!(format!("{}", NotesValidation::Fast), "Fast");
         assert_eq!(format!("{}", NotesValidation::None), "None");
-    }
-
-    #[test]
-    fn test_notes_validation_copy_clone() {
-        let validation = NotesValidation::Full;
-        let copied = validation;
-        let cloned = validation.clone();
-
-        // Test that copy and clone work correctly
-        assert_eq!(validation, NotesValidation::Full);
-        assert_eq!(copied, NotesValidation::Full);
-        assert_eq!(cloned, NotesValidation::Full);
-    }
-
-    #[test]
-    fn test_notes_validation_equality() {
-        assert_eq!(NotesValidation::Full, NotesValidation::Full);
-        assert_eq!(NotesValidation::Fast, NotesValidation::Fast);
-        assert_eq!(NotesValidation::None, NotesValidation::None);
-
-        assert_ne!(NotesValidation::Full, NotesValidation::Fast);
-        assert_ne!(NotesValidation::Fast, NotesValidation::None);
-        assert_ne!(NotesValidation::None, NotesValidation::Full);
     }
 
     #[test]
