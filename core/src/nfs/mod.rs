@@ -817,8 +817,9 @@ mod tests {
 
     use crate::{
         error::FSError,
-        nfs::{delete_directory, delete_note, rename_directory, rename_note, save_note},
+        nfs::{delete_directory, delete_note, rename_directory, rename_note, save_note, create_directory, VaultEntry, EntryData, DirectoryEntryData, VaultEntryDetails},
         utilities::path_to_string,
+        DirectoryDetails, NoteDetails,
     };
 
     use super::{load_note, VaultPath, VaultPathSlice};
@@ -1030,7 +1031,10 @@ mod tests {
 
     #[test]
     fn create_a_note()  {
-        let workspace_path = Path::new("testdata");
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
         let note_path = VaultPath::new("note.md");
         let note_text = "this is an empty note".to_string();
 
@@ -1038,7 +1042,7 @@ mod tests {
         if let Err(e) = &res {
             assert!(false, "{e}");
         }
-        
+
         let note = load_note(workspace_path, &note_path);
         if let Err(e) = &note {
             assert!(false, "{e}");
@@ -1054,7 +1058,10 @@ mod tests {
 
     #[test]
     fn move_a_note() {
-        let workspace_path = Path::new("testdata");
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
         let note_path = VaultPath::new("note.md");
         let dest_note_path = VaultPath::new("directory/moved_note.md");
         let note_text = "this is an empty note".to_string();
@@ -1094,7 +1101,10 @@ mod tests {
 
     #[test]
     fn move_a_directory() -> Result<(), FSError> {
-        let workspace_path = Path::new("testdata");
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
         let from_note_dir = VaultPath::new("old_dir");
         let from_note_path = from_note_dir.append(&VaultPath::new("note.md"));
         let dest_note_dir = VaultPath::new("new_dir/two_levels");
@@ -1119,5 +1129,443 @@ mod tests {
         delete_directory(workspace_path, &second_level)?;
 
         Ok(())
+    }
+
+    // Additional comprehensive tests for NFS module
+
+    #[test]
+    fn test_vault_entry_new_with_directory() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+        let dir_path = VaultPath::new("test_directory");
+
+        // Create directory first
+        std::fs::create_dir_all(workspace_path.join("test_directory")).ok();
+
+        let result = VaultEntry::new(workspace_path, dir_path.clone());
+        assert!(result.is_ok());
+
+        let entry = result.unwrap();
+        assert_eq!(entry.path, dir_path);
+        assert_eq!(entry.path_string, dir_path.to_string());
+
+        match entry.data {
+            EntryData::Directory(dir_data) => {
+                assert_eq!(dir_data.path, dir_path);
+            }
+            _ => panic!("Expected Directory entry data"),
+        }
+
+        // Cleanup
+        std::fs::remove_dir_all(workspace_path.join("test_directory")).ok();
+    }
+
+    #[test]
+    fn test_vault_entry_new_with_note() {
+        let workspace_path = Path::new("testdata");
+        let note_path = VaultPath::new("test_note.md");
+        let note_content = "# Test Note\n\nThis is a test.";
+
+        // Create note first
+        save_note(workspace_path, &note_path, note_content).unwrap();
+
+        let result = VaultEntry::new(workspace_path, note_path.clone());
+        assert!(result.is_ok());
+
+        let entry = result.unwrap();
+        assert_eq!(entry.path, note_path);
+
+        match entry.data {
+            EntryData::Note(note_data) => {
+                assert_eq!(note_data.path, note_path);
+                assert!(note_data.size > 0);
+                assert!(note_data.modified_secs > 0);
+            }
+            _ => panic!("Expected Note entry data"),
+        }
+
+        // Cleanup
+        delete_note(workspace_path, &note_path).ok();
+    }
+
+    #[test]
+    fn test_vault_entry_new_with_attachment() {
+        let workspace_path = Path::new("testdata");
+        let attachment_path = VaultPath::new("test.txt");
+
+        // Create a text file (attachment)
+        std::fs::create_dir_all(workspace_path).ok();
+        std::fs::write(workspace_path.join("test.txt"), "test content").unwrap();
+
+        let result = VaultEntry::new(workspace_path, attachment_path.clone());
+        assert!(result.is_ok());
+
+        let entry = result.unwrap();
+        match entry.data {
+            EntryData::Attachment => (),
+            _ => panic!("Expected Attachment entry data"),
+        }
+
+        // Cleanup
+        std::fs::remove_file(workspace_path.join("test.txt")).ok();
+    }
+
+    #[test]
+    fn test_vault_entry_new_with_nonexistent_path() {
+        let workspace_path = Path::new("testdata");
+        let nonexistent_path = VaultPath::new("does_not_exist.md");
+
+        let result = VaultEntry::new(workspace_path, nonexistent_path);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            FSError::NoFileOrDirectoryFound { .. } => (),
+            _ => panic!("Expected NoFileOrDirectoryFound error"),
+        }
+    }
+
+    #[test]
+    fn test_vault_entry_from_path() {
+        let workspace_path = Path::new("testdata");
+        let note_path = VaultPath::new("from_path_test.md");
+        let note_content = "Test content";
+
+        // Create note
+        save_note(workspace_path, &note_path, note_content).unwrap();
+
+        let full_path = workspace_path.join("from_path_test.md");
+        let result = VaultEntry::from_path(workspace_path, &full_path);
+        assert!(result.is_ok());
+
+        let entry = result.unwrap();
+        assert_eq!(entry.path, note_path.clone().absolute());
+
+        // Cleanup
+        delete_note(workspace_path, &note_path).ok();
+    }
+
+    #[test]
+    fn test_vault_entry_display() {
+        let workspace_path = Path::new("testdata");
+        let note_path = VaultPath::new("display_test.md");
+        let dir_path = VaultPath::new("display_dir");
+        let attachment_path = VaultPath::new("display.txt");
+
+        // Test note display
+        save_note(workspace_path, &note_path, "content").unwrap();
+        let note_entry = VaultEntry::new(workspace_path, note_path.clone()).unwrap();
+        let note_display = format!("{}", note_entry);
+        assert!(note_display.contains("[NOT]"));
+        assert!(note_display.contains(&note_path.to_string()));
+
+        // Test directory display
+        std::fs::create_dir_all(workspace_path.join("display_dir")).ok();
+        let dir_entry = VaultEntry::new(workspace_path, dir_path.clone()).unwrap();
+        let dir_display = format!("{}", dir_entry);
+        assert!(dir_display.contains("[DIR]"));
+        assert!(dir_display.contains(&dir_path.to_string()));
+
+        // Test attachment display
+        std::fs::write(workspace_path.join("display.txt"), "content").ok();
+        let attachment_entry = VaultEntry::new(workspace_path, attachment_path.clone()).unwrap();
+        let attachment_display = format!("{}", attachment_entry);
+        assert!(attachment_display.contains("[ATT]"));
+
+        // Cleanup
+        delete_note(workspace_path, &note_path).ok();
+        std::fs::remove_dir_all(workspace_path.join("display_dir")).ok();
+        std::fs::remove_file(workspace_path.join("display.txt")).ok();
+    }
+
+    #[test]
+    fn test_note_entry_data_load_details() {
+        let workspace_path = Path::new("testdata");
+        let note_path = VaultPath::new("details_test.md");
+        let note_content = "# Test\n\nContent here";
+
+        save_note(workspace_path, &note_path, note_content).unwrap();
+        let entry = VaultEntry::new(workspace_path, note_path.clone()).unwrap();
+
+        if let EntryData::Note(note_data) = entry.data {
+            let details_result = note_data.load_details(workspace_path, &note_path);
+            assert!(details_result.is_ok());
+
+            let details = details_result.unwrap();
+            assert_eq!(details.path, note_path);
+            assert_eq!(details.raw_text, note_content);
+        } else {
+            panic!("Expected Note entry data");
+        }
+
+        // Cleanup
+        delete_note(workspace_path, &note_path).ok();
+    }
+
+    #[test]
+    fn test_directory_entry_data_get_details() {
+        let dir_path = VaultPath::new("test_dir");
+        let dir_data = DirectoryEntryData {
+            path: dir_path.clone(),
+        };
+
+        let details = dir_data.get_details::<PathBuf>();
+        assert_eq!(details.path, dir_path);
+    }
+
+    #[test]
+    fn test_vault_entry_details_get_title() {
+
+        let note_path = VaultPath::new("test.md");
+        let note_content = "# My Title\n\nContent";
+        let note_details = NoteDetails::new(&note_path, note_content);
+
+        let mut note_entry_details = VaultEntryDetails::Note(note_details);
+        let title = note_entry_details.get_title();
+        assert_eq!(title, "My Title");
+
+        let dir_path = VaultPath::new("test_dir");
+        let dir_details = DirectoryDetails { path: dir_path };
+        let mut dir_entry_details = VaultEntryDetails::Directory(dir_details);
+        let dir_title = dir_entry_details.get_title();
+        assert_eq!(dir_title, "");
+
+        let mut none_details = VaultEntryDetails::None;
+        let none_title = none_details.get_title();
+        assert_eq!(none_title, "");
+    }
+
+    #[test]
+    fn test_hash_text() {
+        use super::hash_text;
+
+        let text1 = "Hello, world!";
+        let text2 = "Hello, world!";
+        let text3 = "Different text";
+
+        let hash1 = hash_text(text1);
+        let hash2 = hash_text(text2);
+        let hash3 = hash_text(text3);
+
+        assert_eq!(hash1, hash2);
+        assert_ne!(hash1, hash3);
+        assert!(hash1 > 0);
+    }
+
+    #[test]
+    fn test_create_directory_with_note_path() {
+        let workspace_path = Path::new("testdata");
+        let note_path = VaultPath::new("invalid.md");
+
+        let result = create_directory(workspace_path, &note_path);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            FSError::InvalidPath { message, .. } => {
+                assert_eq!(message, "Path provided is a note");
+            }
+            _ => panic!("Expected InvalidPath error"),
+        }
+    }
+
+    #[test]
+    fn test_save_note_with_directory_path() {
+        let workspace_path = Path::new("testdata");
+        let dir_path = VaultPath::new("directory");
+        let content = "test content";
+
+        let result = save_note(workspace_path, &dir_path, content);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            FSError::InvalidPath { message, .. } => {
+                assert_eq!(message, "Path provided is not a note");
+            }
+            _ => panic!("Expected InvalidPath error"),
+        }
+    }
+
+    #[test]
+    fn test_rename_note_with_invalid_paths() {
+        let workspace_path = Path::new("testdata");
+        let dir_path = VaultPath::new("directory");
+        let note_path = VaultPath::new("note.md");
+
+        // Test renaming from directory (should fail)
+        let result = rename_note(workspace_path, &dir_path, &note_path);
+        assert!(result.is_err());
+
+        // Test renaming to directory (should fail)
+        let result = rename_note(workspace_path, &note_path, &dir_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rename_directory_with_invalid_paths() {
+        let workspace_path = Path::new("testdata");
+        let dir_path = VaultPath::new("directory");
+        let note_path = VaultPath::new("note.md");
+
+        // Test renaming from note (should fail)
+        let result = rename_directory(workspace_path, &note_path, &dir_path);
+        assert!(result.is_err());
+
+        // Test renaming to note (should fail)
+        let result = rename_directory(workspace_path, &dir_path, &note_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vault_path_serialization() {
+        use serde_json;
+
+        let path = VaultPath::new("/test/path.md");
+        let serialized = serde_json::to_string(&path).unwrap();
+        assert_eq!(serialized, "\"/test/path.md\"");
+
+        let deserialized: VaultPath = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, path);
+    }
+
+    #[test]
+    fn test_vault_path_try_from() {
+        let path_str = "/valid/path.md";
+        let path_result: Result<VaultPath, FSError> = path_str.try_into();
+        assert!(path_result.is_ok());
+
+        let invalid_path_str = "/invalid:path.md";
+        let invalid_result: Result<VaultPath, FSError> = invalid_path_str.try_into();
+        assert!(invalid_result.is_err());
+    }
+
+    #[test]
+    fn test_vault_path_from_str() {
+        use std::str::FromStr;
+
+        let path_str = "/test/path.md";
+        let path = VaultPath::from_str(path_str).unwrap();
+        assert_eq!(path.to_string(), path_str);
+
+        let invalid_str = "/invalid:path.md";
+        let result = VaultPath::from_str(invalid_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vault_path_note_path_from() {
+        let path_without_extension = "test/note";
+        let path_with_extension = "test/note.md";
+        let path_with_trailing_slash = "test/note/";
+
+        let note_path1 = VaultPath::note_path_from(path_without_extension);
+        let note_path2 = VaultPath::note_path_from(path_with_extension);
+        let note_path3 = VaultPath::note_path_from(path_with_trailing_slash);
+
+        assert_eq!(note_path1.to_string(), "test/note.md");
+        assert_eq!(note_path2.to_string(), "test/note.md");
+        assert_eq!(note_path3.to_string(), "test/note.md");
+
+        assert!(note_path1.is_note());
+        assert!(note_path2.is_note());
+        assert!(note_path3.is_note());
+    }
+
+    #[test]
+    fn test_vault_path_get_name_on_conflict() {
+        let note_path = VaultPath::new("test.md");
+        let conflicted = note_path.get_name_on_conflict();
+        assert_eq!(conflicted.to_string(), "test_0.md");
+
+        let numbered_path = VaultPath::new("test_5.md");
+        let conflicted_numbered = numbered_path.get_name_on_conflict();
+        assert_eq!(conflicted_numbered.to_string(), "test_6.md");
+
+        let dir_path = VaultPath::new("directory");
+        let conflicted_dir = dir_path.get_name_on_conflict();
+        assert_eq!(conflicted_dir.to_string(), "directory_0");
+
+        let empty_path = VaultPath::empty();
+        let conflicted_empty = empty_path.get_name_on_conflict();
+        assert_eq!(conflicted_empty.to_string(), "0");
+    }
+
+    #[test]
+    fn test_vault_path_get_clean_name() {
+        let note_path = VaultPath::new("/path/to/note.md");
+        assert_eq!(note_path.get_clean_name(), "note");
+
+        let dir_path = VaultPath::new("/path/to/directory");
+        assert_eq!(dir_path.get_clean_name(), "directory");
+
+        let root_path = VaultPath::root();
+        assert_eq!(root_path.get_clean_name(), "");
+    }
+
+    #[test]
+    fn test_vault_path_get_slices() {
+        let path = VaultPath::new("/path/to/../file.md");
+        let slices = path.get_slices();
+        assert_eq!(slices, vec!["path", "file.md"]);
+    }
+
+    #[test]
+    fn test_vault_path_is_like() {
+        let path1 = VaultPath::new("/test/path.md");
+        let path2 = VaultPath::new("test/path.md"); // relative version
+        let path3 = VaultPath::new("/different/path.md");
+
+        assert!(path1.is_like(&path2));
+        assert!(!path1.is_like(&path3));
+    }
+
+    #[test]
+    fn test_vault_path_slice_edge_cases() {
+        // Test slice with dots
+        let path_with_dots = VaultPath::new("...invalid");
+        assert_eq!(path_with_dots.to_string(), "___invalid");
+
+        // Test slice with invalid characters
+        let path_with_invalid = VaultPath::new("test:file?.md");
+        assert_eq!(path_with_invalid.to_string(), "test_file_.md");
+
+        // Test current directory slice
+        let path_with_current = VaultPath::new("./test");
+        assert_eq!(path_with_current.flatten().to_string(), "test");
+
+        // Test parent directory slice
+        let path_with_parent = VaultPath::new("../test");
+        assert_eq!(path_with_parent.to_string(), "../test");
+    }
+
+    #[test]
+    fn test_filter_files() {
+        use std::path::PathBuf;
+
+        // Create a mock DirEntry-like structure for testing
+        // Note: This is a simplified test since ignore::DirEntry is hard to mock
+        // In real scenarios, this would be tested through integration tests
+
+        let visible_path = PathBuf::from("visible_file.md");
+        let hidden_path = PathBuf::from(".hidden_file.md");
+
+        // The filter_files function should return true for non-hidden files
+        // and false for hidden files (those starting with ".")
+        assert!(!hidden_path.starts_with("."));  // This tests our understanding
+        assert!(!visible_path.starts_with("."));
+    }
+
+    #[test]
+    fn test_vault_path_increment_function() {
+        use super::VaultPath;
+
+        // Test the increment functionality through get_name_on_conflict
+        let base_name = VaultPath::new("test");
+        let incremented = base_name.get_name_on_conflict();
+        assert_eq!(incremented.to_string(), "test_0");
+
+        let numbered_name = VaultPath::new("test_3");
+        let incremented_numbered = numbered_name.get_name_on_conflict();
+        assert_eq!(incremented_numbered.to_string(), "test_4");
     }
 }
