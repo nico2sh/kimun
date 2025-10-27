@@ -4,7 +4,7 @@
 }
 
 .markdown code {
-  display: block;
+  /* display: block; */
   white-space: pre-wrap;
   border: 1px solid var(--border-light);
   /* margin: 4px; */
@@ -28,7 +28,8 @@
     padding-left: 20px;
 }
 
-.code {
+.code-block {
+  display: block;
   overflow: auto;
 }
 

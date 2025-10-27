@@ -48,7 +48,7 @@ impl MdContext {
         MdContext::el_hr(attributes)
     }
 
-    pub fn render_code(s: CowStr<'_>) -> Element {
+    pub fn render_inline_code(s: CowStr<'_>) -> Element {
         let attributes = ElementAttributes {
             ..Default::default()
         };
