@@ -74,7 +74,7 @@ fn highlight_code_element(
 
     let attributes = match background_rgb {
         Some((r, g, b)) => ElementAttributes {
-            classes: vec![],
+            classes: vec!["code-block".to_string()],
             style: Some(format!("background:rgb({r}, {g}, {b})")),
         },
         None => ElementAttributes::default(),
@@ -93,7 +93,7 @@ fn highlight_code_element(
 /// `range`: the position of the code in the original source
 fn render_code_block(props: &MarkdownProps, source: String, k: &CodeBlockKind) -> Element {
     let code_attributes = ElementAttributes {
-        classes: vec!["code".to_string()],
+        classes: vec!["code-block".to_string()],
         ..Default::default()
     };
 
@@ -181,7 +181,10 @@ where
                 }
             }
             Text(s) => Ok(MdContext::render_text(s)),
-            Code(s) => Ok(MdContext::render_code(s)),
+            Code(s) => {
+                // debug!("render code");
+                Ok(MdContext::render_inline_code(s))
+            }
             InlineHtml(s) => Ok(MdContext::el_span_with_inner_html(
                 s.to_string(),
                 Default::default(),
