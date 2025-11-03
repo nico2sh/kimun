@@ -33,8 +33,8 @@ enum PathType {
 
 #[component]
 pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
-    debug!("-== [Editor] Starting Editor at '{}' ==-", encoded_path);
     let editor_path = use_memo(move || decode_path(&*encoded_path.read()).unwrap());
+    debug!("-== [Editor] Starting Editor at '{}' ==-", editor_path);
     let settings: Signal<AppSettings> = use_context();
     let settings_value = settings.read();
 
