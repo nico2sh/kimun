@@ -10,6 +10,7 @@ use crate::{
     },
     route::Route,
     settings,
+    utils::encode_path,
 };
 
 #[component]
@@ -129,9 +130,10 @@ pub fn Settings() -> Element {
                                             .last_paths
                                             .last()
                                             .map_or_else(VaultPath::root, |p| p.to_owned());
+                                        let encoded_path = encode_path(&editor_path);
                                         navigator()
                                             .replace(Route::MainView {
-                                                editor_path,
+                                                encoded_path,
                                                 create: false,
                                             });
                                     }

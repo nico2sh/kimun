@@ -1,10 +1,7 @@
 use std::{fmt::Display, hash::Hash, rc::Rc};
 
-use dioxus::{
-    events::{Modifiers, ModifiersInteraction},
-    html::KeyboardData,
-    logger::tracing::error,
-};
+use dioxus::prelude::*;
+use dioxus::{html::KeyboardData, logger::tracing::error};
 use serde::{Deserialize, Serialize};
 
 use super::key_strike::KeyStrike;

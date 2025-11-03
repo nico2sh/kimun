@@ -1,7 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
 use action_shortcuts::ActionShortcuts;
-use dioxus::logger::tracing::debug;
 use itertools::Itertools;
 use key_combo::{KeyCombo, KeyModifiers};
 use key_strike::KeyStrike;

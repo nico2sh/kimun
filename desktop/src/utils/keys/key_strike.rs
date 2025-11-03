@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
-use dioxus::{events::Key, logger::tracing::error};
+use dioxus::logger::tracing::error;
+use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(
