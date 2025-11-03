@@ -82,15 +82,16 @@ pub struct EditorSaveManager {
 
 impl EditorSaveManager {
     async fn save(&mut self) -> anyhow::Result<()> {
-        debug!("Triggered save");
+        // debug!("Triggered save");
         let dirty_status = self.app_state.read().has_dirty_content();
         if dirty_status {
+            debug!("Saving content");
             let path = self.path.clone();
             let text = self.content.peek().get_text();
             let vault = self.vault.clone();
             tokio::spawn(async move {
-                debug!("Saving at {}", path);
                 let _ = vault.save_note(&path, text);
+                debug!("Saved at {}", path);
             })
             .await?;
             self.app_state.write().mark_content_clean();
@@ -156,10 +157,10 @@ pub struct TextEditorProps {
 
 #[component]
 pub fn TextEditor(props: TextEditorProps) -> Element {
-    debug!(
-        "-==== [Text Editor] Starting Editor at '{}' ====-",
-        props.note_path
-    );
+    // debug!(
+    //     "-==== [Text Editor] Starting Editor at '{}' ====-",
+    //     props.note_path
+    // );
     let mut app_state: Signal<AppState> = use_context();
     let mut content_state = use_signal(|| EditorContentState::None);
     let modal_type = props.modal_type;
@@ -190,6 +191,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
             while let Some(msg) = rx.next().await {
                 match msg {
                     EditorMsg::Init { text } => {
+                        debug!("We init with text {text}");
                         // We check if we already have an editor_data and we save
                         if let Some(editor_data) = ed.as_mut() {
                             let _ = editor_data.save().await;
@@ -208,7 +210,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                         ed = Some(editor_data);
                     }
                     EditorMsg::Save => {
-                        debug!("Received save signal");
+                        // debug!("Received save signal");
                         if let Some(editor_data) = ed.as_mut() {
                             let _ = editor_data.save().await;
                         }
@@ -389,7 +391,7 @@ if (textEditor) {
                                 wrap: "hard",
                                 resize: "none",
                                 placeholder: "Start writing something!",
-                                value: "{content_state.peek()}",
+                                value: "{content_state}",
                             }
                         }
                     },
