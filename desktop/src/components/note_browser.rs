@@ -1,6 +1,7 @@
 use std::{rc::Rc, sync::Arc};
 
 use dioxus::{
+    core::use_drop,
     hooks::use_signal,
     logger::tracing::{debug, info},
     prelude::*,
@@ -49,7 +50,7 @@ impl Default for Sort {
 #[component]
 pub fn NoteBrowser(
     vault: Arc<NoteVault>,
-    editor_path: ReadOnlySignal<VaultPath>,
+    editor_path: ReadSignal<VaultPath>,
     modal_type: Signal<ModalType>,
     show_browser: Signal<bool>,
 ) -> Element {

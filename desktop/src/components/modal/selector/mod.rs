@@ -4,7 +4,7 @@ pub mod note_select;
 
 use std::rc::Rc;
 
-use dioxus::{logger::tracing::info, prelude::*};
+use dioxus::{core::use_drop, logger::tracing::info, prelude::*};
 
 use crate::{
     components::{

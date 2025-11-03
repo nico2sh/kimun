@@ -1,5 +1,3 @@
-use dioxus_radio::hooks::RadioChannel;
-
 #[derive(PartialEq, Eq, Clone, Debug, Copy, Hash)]
 pub enum KimunChannel {
     Global,
@@ -48,4 +46,4 @@ impl AppState {
     }
 }
 
-impl RadioChannel<AppState> for KimunChannel {}
+// impl RadioChannel<AppState> for KimunChannel {}

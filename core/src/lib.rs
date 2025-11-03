@@ -711,7 +711,7 @@ fn create_index_for<P: AsRef<Path>>(
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use std::time::{Duration, SystemTime};
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[test]

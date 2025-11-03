@@ -2,6 +2,8 @@ use chrono::NaiveDate;
 use dioxus::{logger::tracing::info, prelude::*, signals::SyncSignal};
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
+use crate::utils::encode_path;
+
 #[derive(Clone, Eq, PartialEq)]
 pub enum SortCriteria {
     Title,
@@ -224,9 +226,9 @@ impl RowItem for NoteSelectEntry {
                 title: _,
                 search_str: _,
             } => {
-                let path = path.to_owned();
+                let encoded_path = encode_path(path);
                 navigator().replace(crate::Route::MainView {
-                    editor_path: path.clone(),
+                    encoded_path,
                     create: false,
                 });
                 true
@@ -237,9 +239,9 @@ impl RowItem for NoteSelectEntry {
                 date_string: _,
                 search_str: _,
             } => {
-                let path = path.to_owned();
+                let encoded_path = encode_path(path);
                 navigator().replace(crate::Route::MainView {
-                    editor_path: path.clone(),
+                    encoded_path,
                     create: false,
                 });
                 true
@@ -259,9 +261,9 @@ impl RowItem for NoteSelectEntry {
                 new_note_path,
                 name: _,
             } => {
-                let path = new_note_path.to_owned();
+                let encoded_path = encode_path(new_note_path);
                 navigator().replace(crate::Route::MainView {
-                    editor_path: path.clone(),
+                    encoded_path,
                     create: true,
                 });
                 true
