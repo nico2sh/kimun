@@ -2,7 +2,9 @@
 # Triggered on pushes to main branch
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -143,3 +145,48 @@ jobs:
         with:
           name: Kimun ${{ steps.read_toml.outputs.value }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
           path: dist
+
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R release-artifacts
+
+      - name: Create compressed archives
+        run: |
+          cd release-artifacts
+          for dir in */; do
+            dirname="${dir%/}"
+            if [[ "$dirname" == *"windows"* ]]; then
+              cd "$dirname" && zip -r "../${dirname}.zip" . && cd ..
+            else
+              tar -czf "${dirname}.tar.gz" -C "$dirname" .
+            fi
+          done
+          ls -lh
+        shell: bash
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            release-artifacts/*.zip
+            release-artifacts/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
