@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
-use crate::utils::{
-    encode_path,
-    md::{render::Renderer, CowStr},
 use crate::{
     components::focus_manager::FocusComponent,
+    utils::{
+        encode_path,
+        md::{render::Renderer, CowStr},
+    },
 };
 
 pub use crate::utils::md::{ElementAttributes, HtmlElement, LinkDescription, Options};
 
 use dioxus::{
+    core::use_drop,
     logger::tracing::{debug, error},
     prelude::*,
 };
