@@ -1,8 +1,10 @@
+# Test workflow: Run tests across all platforms
+# Triggered on pushes to main, pull requests, and manual dispatch
 on:
   push:
     branches: [main]
   pull_request:
-    branches: ["main"]
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -31,17 +33,21 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
+      # Setup Rust toolchain
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
+      # Cache dependencies to speed up builds
       - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
           path: |
+            ~/.cargo/bin/
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
@@ -61,10 +67,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/dx
-          key: ${{ runner.os }}-dx-0.6.3
+          key: ${{ runner.os }}-dx-0.7.0
           restore-keys: |
             ${{ runner.os }}-dx-
 
+      # Install platform-specific dependencies
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -79,11 +86,9 @@ jobs:
             pkg-config \
             build-essential
 
-      # - name: Check formatting
-      #   run: cargo fmt --check
-
+      # Run test suite for core and desktop packages
       - name: Run core tests
         run: cargo test --verbose --manifest-path core/Cargo.toml -- --test-threads 1
 
-      - name: Run desk tests
+      - name: Run desktop tests
         run: cargo test --verbose --manifest-path desktop/Cargo.toml -- --test-threads 1

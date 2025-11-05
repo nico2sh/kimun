@@ -3,6 +3,8 @@ use std::sync::Arc;
 use crate::utils::{
     encode_path,
     md::{render::Renderer, CowStr},
+use crate::{
+    components::focus_manager::FocusComponent,
 };
 
 pub use crate::utils::md::{ElementAttributes, HtmlElement, LinkDescription, Options};
@@ -19,7 +21,7 @@ use kimun_core::{
 use pulldown_cmark::Parser;
 use syntect::highlighting::Style;
 
-use super::modal::ModalType;
+use super::{focus_manager::FocusManager, modal::ModalType};
 
 const MARKDOWN_SYLE: Asset = asset!("/assets/styling/markdown.css");
 
@@ -348,6 +350,8 @@ pub struct MarkdownProps {
     note_links: Vec<NoteLink>,
     modal_type: Signal<ModalType>,
 
+    focus_manager: FocusManager,
+
     /// the name of the theme used for syntax highlighting.
     /// Only the default themes of [syntect::Theme] are supported
     #[props(default = "base16-ocean.light".to_string())]
@@ -372,6 +376,11 @@ pub fn Markdown(props: MarkdownProps) -> Element {
         .into_offset_iter()
         .collect();
 
+    let fm = props.focus_manager.clone();
+    use_drop(move || {
+        fm.unregister_focus(FocusComponent::Preview);
+    });
+
     if props.hard_line_breaks {
         for (r, _) in &mut stream {
             if *r == pulldown_cmark::Event::SoftBreak {
@@ -380,12 +389,16 @@ pub fn Markdown(props: MarkdownProps) -> Element {
         }
     }
 
+    let focus_manager = props.focus_manager.clone();
     let elements = Renderer::new(props, &mut stream.into_iter()).collect::<Vec<_>>();
     let child = MdContext::el_fragment(elements);
 
     rsx! {
         document::Link { rel: "stylesheet", href: MARKDOWN_SYLE }
         div { class: "markdown",
+            onmounted: move |e| {
+                focus_manager.register_and_focus(FocusComponent::Preview, e.data());
+            },
             {child}
         }
     }
