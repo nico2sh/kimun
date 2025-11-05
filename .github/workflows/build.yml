@@ -169,3 +169,55 @@ jobs:
         with:
           name: Kimun ${{ steps.read_toml.outputs.value }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
           path: dist
+
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        uses: SebRollen/toml-action@v1.2.0
+        id: read_version
+        with:
+          file: "desktop/Cargo.toml"
+          field: "package.version"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R release-artifacts
+
+      - name: Create compressed archives
+        run: |
+          cd release-artifacts
+          for dir in */; do
+            dirname="${dir%/}"
+            if [[ "$dirname" == *"windows"* ]]; then
+              cd "$dirname" && zip -r "../${dirname}.zip" . && cd ..
+            else
+              tar -czf "${dirname}.tar.gz" -C "$dirname" .
+            fi
+          done
+          ls -lh
+        shell: bash
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.read_version.outputs.value }}
+          name: Release v${{ steps.read_version.outputs.value }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-artifacts/*.zip
+            release-artifacts/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
