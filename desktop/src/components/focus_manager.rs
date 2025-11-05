@@ -6,6 +6,7 @@ use futures::StreamExt;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FocusComponent {
     Editor,
+    Preview,
     ModalInput,
     BrowseSearch,
 }
@@ -24,7 +25,7 @@ impl Display for FocusComponent {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct FocusManager {
     sender: Coroutine<Action>,
 }

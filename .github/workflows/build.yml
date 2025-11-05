@@ -1,6 +1,10 @@
+# Release workflow: Build and bundle Kimun for all platforms
+# Triggered on pushes to main branch
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-.*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -46,13 +50,16 @@ jobs:
       RUSTFLAGS: "-C target-cpu=native"
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
+      # Setup Rust toolchain
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
+      # Cache dependencies to speed up builds
       - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
@@ -77,10 +84,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/dx
-          key: ${{ runner.os }}-dx-0.6.3
+          key: ${{ runner.os }}-dx-0.7.0
           restore-keys: |
             ${{ runner.os }}-dx-
 
+      # Install platform-specific dependencies
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -95,23 +103,19 @@ jobs:
             pkg-config \
             build-essential
 
-      # - name: Use cargo binstall
-      #   uses: cargo-bins/cargo-binstall@main
-      #
-      # - name: Install Dioxus-CLI
-      #   run: cargo binstall dioxus-cli --version 0.6.3 --force
-
+      # Install Dioxus CLI for building/bundling
       - name: Install Dioxus CLI
         uses: taiki-e/install-action@v2
         with:
-          tool: dioxus-cli@0.6.3
+          tool: dioxus-cli@0.7.0
 
+      # Build and package application
       - name: Create distribution directory
         run: mkdir -p dist
         shell: bash
 
-        # On windows the bundle is failing so we build the binary
-      - name: Build for desktop
+      # Windows: Build binary only (bundling not fully supported)
+      - name: Build for Windows
         if: runner.os == 'Windows'
         run: |
           cd desktop && \
@@ -119,7 +123,8 @@ jobs:
           cp -r target/dx/kimun/release/${{ matrix.target_path}}/* ../dist/
         shell: bash
 
-      - name: Bundle for desktop
+      # macOS and Linux: Create platform-specific bundles
+      - name: Bundle for macOS/Linux
         if: runner.os != 'Windows'
         run: |
           cd desktop && \
@@ -127,45 +132,61 @@ jobs:
           cp -r bundle/${{ matrix.target_path }}/* ../dist/
         shell: bash
 
-      # - name: Copy README
-      #   run: cp README.md dist/
-      #   shell: bash
-
-      # MacOS app isn't usable out of the box, so need to include a script to remove the quarantine attribute
-      #      - name: Create launch script for macOS
-      #        if: runner.os == 'macOS'
-      #        run: |
-      #          cat > dist/RUN_BEFORE_USE.command << 'EOF'
-      #          #!/bin/bash
-      #          # find script dir
-      #          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-      #
-      #          # find app bundle
-      #          APP_BUNDLE=$(find "$DIR" -name "*.app" -type d | head -1)
-      #
-      #          if [ -n "$APP_BUNDLE" ]; then
-      #            echo "Removing quarantine attribute from $(basename "$APP_BUNDLE")..."
-      #            xattr -c "$APP_BUNDLE"
-      #            echo "Done! You can now run $(basename "$APP_BUNDLE")"
-      #            echo "Press any key to close this window..."
-      #            read -n 1
-      #          else
-      #            echo "No .app bundle found in $DIR"
-      #            echo "Press any key to close this window..."
-      #            read -n 1
-      #            exit 1
-      #          fi
-      #          EOF
-      #          chmod +x dist/RUN_BEFORE_USE.command
-      #        shell: bash
-
-      - uses: SebRollen/toml-action@v1.2.0
+      # Extract version and upload build artifacts
+      - name: Read version from Cargo.toml
+        uses: SebRollen/toml-action@v1.2.0
         id: read_toml
         with:
           file: "desktop/Cargo.toml"
           field: "package.version"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: Kimun ${{ steps.read_toml.outputs.value }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
           path: dist
+
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R release-artifacts
+
+      - name: Create compressed archives
+        run: |
+          cd release-artifacts
+          for dir in */; do
+            dirname="${dir%/}"
+            if [[ "$dirname" == *"windows"* ]]; then
+              cd "$dirname" && zip -r "../${dirname}.zip" . && cd ..
+            else
+              tar -czf "${dirname}.tar.gz" -C "$dirname" .
+            fi
+          done
+          ls -lh
+        shell: bash
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            release-artifacts/*.zip
+            release-artifacts/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
