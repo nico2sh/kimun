@@ -16,4 +16,6 @@ pub enum Route {
     MainView { encoded_path: String, create: bool },
     #[route("/settings")]
     Settings {},
+    // #[route("/:..route")]
+    // MainView { encoded_path }
 }

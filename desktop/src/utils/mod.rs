@@ -10,7 +10,8 @@ pub fn encode_path(path: &VaultPath) -> String {
 }
 
 pub fn decode_path<S: AsRef<str>>(encoded: S) -> anyhow::Result<VaultPath> {
-    let decoded = general_purpose::URL_SAFE_NO_PAD.decode(encoded.as_ref())?;
+    let input = encoded.as_ref();
+    let decoded = general_purpose::URL_SAFE_NO_PAD.decode(input)?;
     let decoded_string = String::from_utf8(decoded)?;
     let path = VaultPath::try_from(decoded_string)?;
     Ok(path)
@@ -27,6 +28,14 @@ mod tests {
         let encoded = encode_path(&original_path);
         let decoded = decode_path(&encoded).unwrap();
         assert_eq!(original_path, decoded);
+    }
+
+    #[test]
+    fn test_empty_string() {
+        // Empty String should default to empty path
+        let encoded = "";
+        let decoded = decode_path(encoded).unwrap();
+        assert_eq!(VaultPath::try_from("").unwrap(), decoded);
     }
 
     #[test]
