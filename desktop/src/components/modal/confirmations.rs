@@ -7,6 +7,7 @@ use crate::{
     components::{button::ButtonBuilder, modal::ModalType},
     global_events::{GlobalEvent, PubSub},
     route::Route,
+    utils::encode_path,
 };
 
 pub enum ConfirmationType {
@@ -353,8 +354,9 @@ pub fn CreateNote(
             "Create",
             Callback::new(move |_e| {
                 if is_valid() {
+                    let encoded_path = encode_path(&new_full_path.read());
                     navigator().replace(Route::MainView {
-                        editor_path: new_full_path.read().to_owned(),
+                        encoded_path,
                         create: true,
                     });
                     modal_type.write().close();

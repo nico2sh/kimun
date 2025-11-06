@@ -1,0 +1,860 @@
+#!/usr/bin/env bash
+
+# Enable strict error handling
+set -euo pipefail
+
+PROG=semtag
+PROG_VERSION="v0.1.2"
+
+# Error handling function
+error_exit() {
+    local error_message="$1"
+    local exit_code="${2:-1}"
+    echo "ERROR: $error_message" >&2
+    exit "$exit_code"
+}
+
+# Check if we're in a git repository
+check_git_repo() {
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        error_exit "Not in a git repository. Please run this script from within a git repository."
+    fi
+}
+
+SEMVER_REGEX="^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$"
+IDENTIFIER_REGEX="^\-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$"
+NUMERIC_REGEX='^[0-9]+$'
+
+# Length limit for the branch name in build metadata.
+MAX_BRANCH_LENGTH=50
+
+# Global variables
+FIRST_VERSION="v0.0.0"
+finalversion=$FIRST_VERSION
+lastversion=$FIRST_VERSION
+hasversiontag="false"
+scope="patch"
+displayonly="false"
+forcetag="false"
+prefix="v"
+forcedversion=
+versionname=
+identifier=
+
+HELP="\
+Usage:
+  $PROG
+  $PROG getlast
+  $PROG getfinal
+  $PROG (final|alpha|beta|candidate) [-s <scope> (major|minor|patch|auto) | -o]
+  $PROG --help
+  $PROG --version
+Options:
+  -s         The scope that must be increased, can be major, minor or patch.
+               The resulting version will match X.Y.Z(-PRERELEASE)(+BUILD)
+               where X, Y and Z are positive integers, PRERELEASE is an optionnal
+               string composed of alphanumeric characters describing if the build is
+               a release candidate, alpha or beta version, with a number.
+               BUILD is also an optional string composed of alphanumeric
+               characters and hyphens.
+               Setting the scope as 'auto', the script will chose the scope between
+               'minor' and 'patch', depending on the amount of lines added (<10% will
+               choose patch).
+  -v         Specifies manually the version to be tagged, must be a valid semantic version
+               in the format X.Y.Z where X, Y and Z are positive integers.
+  -o         Output the version only, shows the bumped version, but doesn't tag.
+  -f         Forces to tag, even if there are unstaged or uncommited changes.
+  -p         Use a plain version, ie. do not prefix with 'v'.
+Commands:
+  --help     Print this help message.
+  --version  Prints the program's version.
+  get        Returns both current final version and last tagged version.
+  getlast    Returns the latest tagged version.
+  getfinal   Returns the latest tagged final version.
+  getcurrent Returns the current version, based on the latest one, if there are uncommited or
+               unstaged changes, they will be reflected in the version, adding the number of
+               pending commits, current branch and commit hash.
+  final      Tags the current build as a final version, this only can be done on the default branch.
+  candidate  Tags the current build as a release candidate, the tag will contain all
+               the commits from the last final version.
+  alpha      Tags the current build as an alpha version, the tag will contain all
+               the commits from the last final version.
+  beta       Tags the current build as a beta version, the tag will contain all
+               the commits from the last final version."
+
+# Validate input arguments
+validate_scope() {
+    local scope="$1"
+    case "$scope" in
+        major|minor|patch|auto) ;;
+        *) error_exit "Invalid scope '$scope'. Valid scopes are: major, minor, patch, auto" ;;
+    esac
+}
+
+validate_version() {
+    local version="$1"
+    if [[ ! "$version" =~ $SEMVER_REGEX ]]; then
+        error_exit "Invalid version format '$version'. Must follow semantic versioning (e.g., 1.2.3)"
+    fi
+}
+
+# Commands and options
+ACTION="${1:-getlast}"
+if [[ $# -gt 0 ]]; then
+    shift
+fi
+
+# We get the parameters
+while getopts "v:s:ofp" opt; do
+  case $opt in
+    v)
+      forcedversion="$OPTARG"
+      validate_version "$forcedversion"
+      ;;
+    s)
+      scope="$OPTARG"
+      validate_scope "$scope"
+      ;;
+    o)
+      displayonly="true"
+      ;;
+    f)
+      forcetag="true"
+      ;;
+    p)
+      prefix=""
+      ;;
+    \?)
+      error_exit "Invalid option: -$OPTARG"
+      ;;
+    :)
+      error_exit "Option -$OPTARG requires an argument."
+      ;;
+  esac
+done
+
+# Try to programmatically fetch the default branch. Go by the first remote HEAD found, otherwise default to `master`.
+# $1 The variable to store the result
+function get_default_branch {
+  local __result="$1"
+  local __default_branch=""
+
+  local __remotes
+  if ! __remotes=$(git remote 2>/dev/null); then
+    error_exit "Failed to get git remotes"
+  fi
+
+  if [[ -n "$__remotes" ]]; then
+    while IFS= read -r __remote; do
+      local __default_branch_ref
+      if __default_branch_ref=$(git symbolic-ref --quiet "refs/remotes/${__remote}/HEAD" 2>/dev/null); then
+        __default_branch="${__default_branch_ref#refs/remotes/${__remote}/}"
+        if [[ -n "$__default_branch" ]]; then
+          break
+        fi
+      fi
+    done <<< "$__remotes"
+  fi
+
+  printf -v "$__result" '%s' "${__default_branch:-master}"
+}
+
+# Gets a string with the version and returns an array of maximum size of 5 with all the parts of the sematinc version
+# $1 The string containing the version in semantic format
+# $2 The variable to store the result array:
+#      position 0: major number
+#      position 1: minor number
+#      position 2: patch number
+#      position 3: identifier (or prerelease identifier)
+#      position 4: build info
+function explode_version {
+  local __version="$1"
+  local __result="$2"
+
+  if [[ "$__version" =~ $SEMVER_REGEX ]] ; then
+    local __major="${BASH_REMATCH[1]}"
+    local __minor="${BASH_REMATCH[2]}"
+    local __patch="${BASH_REMATCH[3]}"
+    local __prere="${BASH_REMATCH[4]}"
+    local __build="${BASH_REMATCH[5]}"
+    # Use eval for compatibility with older bash versions
+    eval "$__result=(\"\$__major\" \"\$__minor\" \"\$__patch\" \"\$__prere\" \"\$__build\")"
+  else
+    # Clear the array
+    eval "$__result=()"
+  fi
+}
+
+# Compare two versions and returns -1, 0 or 1
+# $1 The first version to compare
+# $2 The second version to compare
+# $3 The variable where to store the result
+function compare_versions {
+  local __first __second
+  explode_version "$1" __first
+  explode_version "$2" __second
+  local lv="$3"
+
+  # Compares MAJOR, MINOR and PATCH
+  for i in 0 1 2; do
+    local __numberfirst="${__first[$i]:-0}"
+    local __numbersecond="${__second[$i]:-0}"
+    local __diff=$(((__numberfirst) - (__numbersecond)))
+    case "$__diff" in
+      0)
+        ;;
+      -*)
+        printf -v "$lv" '%s' "-1"
+        return 0
+        ;;
+      *)
+        printf -v "$lv" '%s' "1"
+        return 0
+        ;;
+    esac
+  done
+
+  # Identifiers should compare with the ASCII order.
+  local compareresult
+  compare_identifiers "${__first[3]:-}" "${__second[3]:-}" compareresult
+  printf -v "$lv" '%s' "$compareresult"
+}
+
+
+# Returns the number comparison
+# $1 The first number to compare
+# $2 The second number to compare
+# $3 The variable where to store the result
+function compare_numeric {
+  local __first="$1"
+  local __second="$2"
+  local __result="$3"
+
+  if (( __first < __second )) ; then
+    printf -v "$__result" '%s' "-1"
+  elif (( __first > __second )) ; then
+    printf -v "$__result" '%s' "1"
+  else
+    printf -v "$__result" '%s' "0"
+  fi
+}
+
+# Returns the alpanumeric comparison
+# $1 The first alpanumeric to compare
+# $2 The second alpanumeric to compare
+# $3 The variable where to store the result
+function compare_alphanumeric {
+  local __first="$1"
+  local __second="$2"
+  local __result="$3"
+
+  if [[ "$__first" < "$__second" ]] ; then
+    printf -v "$__result" '%s' "-1"
+  elif [[ "$__first" > "$__second" ]] ; then
+    printf -v "$__result" '%s' "1"
+  else
+    printf -v "$__result" '%s' "0"
+  fi
+}
+
+# Returns the last version of two
+# $1 The first version to compare
+# $2 The second version to compare
+# $3 The variable where to store the last one
+function get_latest_of_two {
+  local __first="$1"
+  local __second="$2"
+  local __result
+  local __latest="$3"
+
+  compare_versions "$__first" "$__second" __result
+  case "$__result" in
+    0)
+      printf -v "$__latest" '%s' "$__second"
+      ;;
+    -1)
+      printf -v "$__latest" '%s' "$__second"
+      ;;
+    1)
+      printf -v "$__latest" '%s' "$__first"
+      ;;
+  esac
+}
+
+# Returns comparison of two identifier parts
+# $1 The first part to compare
+# $2 The second part to compare
+# $3 The variable where to store the compare result
+function compare_identifier_part {
+  local __first=$1
+  local __second=$2
+  local __result=$3
+  local compareresult
+
+  if [[ "$__first" =~ $NUMERIC_REGEX ]] && [[ "$__second" =~ $NUMERIC_REGEX ]] ; then
+    compare_numeric "$__first" "$__second" compareresult
+    eval "$__result=$compareresult"
+    return 0
+  fi
+
+
+  compare_alphanumeric "$__first" "$__second" compareresult
+  eval "$__result=$compareresult"
+}
+
+# Returns comparison of two identifiers
+# $1 The first identifier to compare
+# $2 The second identifier to compare
+# $3 The variable where to store the compare result
+function compare_identifiers {
+  local __first=$1
+  local __second=$2
+  local __result=$3
+  local partresult
+  local arraylengths
+  if [[ -n "$__first" ]] && [[ -n "$__second" ]]; then
+    explode_identifier "${__first}" explodedidentifierfirst
+    explode_identifier "${__second}" explodedidentifiersecond
+
+    firstsize=${#explodedidentifierfirst[@]}
+    secondsize=${#explodedidentifiersecond[@]}
+    minlength=$(( $firstsize<$secondsize ? $firstsize : $secondsize ))
+    for (( i = 0 ; i < $minlength ; i++ )); do
+      compare_identifier_part "${explodedidentifierfirst[$i]}" "${explodedidentifiersecond[$i]}" partresult
+      case $partresult in
+        0)
+          ;;
+        *)
+          eval "$__result=$partresult"
+          return 0
+          ;;
+      esac
+    done
+    compare_numeric $firstsize $secondsize arraylengths
+    eval "$__result=$arraylengths"
+    return 0
+  elif [[ -z "$__first" ]] && [[ -n "$__second" ]]; then
+    eval "$__result=1"
+    return 0
+  elif [[ -n "$__first" ]] && [[ -z "$__second" ]]; then
+    eval "$__result=-1"
+    return 0
+  fi
+
+  eval "$__result=0"
+}
+
+# Assigns a 2 size array with the identifier, having the identifier at pos 0, and the number in pos 1
+# $1 The identifier in the format -id.#
+# $2 The vferiable where to store the 2 size array
+function explode_identifier {
+  local __identifier="$1"
+  local __result="$2"
+  if [[ "$__identifier" =~ $IDENTIFIER_REGEX ]] ; then
+    local identifierparts
+    IFS='-.' read -ra identifierparts <<< "$__identifier"
+    eval "$__result=( \"\${identifierparts[@]}\" )"
+  else
+    eval "$__result=()"
+  fi
+}
+
+# Gets a list of tags and assigns the base and latest versions
+# Receives an array with the tags containing the versions
+# Assigns to the global variables finalversion and lastversion the final version and the latest version
+function get_latest {
+  local __taglist=("$@")
+  local __tagsnumber=${#__taglist[@]}
+  local __current
+  case $__tagsnumber in
+    0)
+      finalversion="$FIRST_VERSION"
+      lastversion="$FIRST_VERSION"
+      ;;
+    1)
+      __current="${__taglist[0]}"
+      local ver
+      explode_version "$__current" ver
+      if [ ${#ver[@]} -gt 0 ]; then
+        if [ -n "${ver[3]:-}" ]; then
+          finalversion="$FIRST_VERSION"
+        else
+          finalversion="$__current"
+        fi
+        lastversion="$__current"
+      else
+        finalversion="$FIRST_VERSION"
+        lastversion="$FIRST_VERSION"
+      fi
+      ;;
+    *)
+      local __lastpos=$((__tagsnumber-1))
+      for i in $(seq 0 "$__lastpos")
+      do
+        __current="${__taglist[i]}"
+        local ver
+        explode_version "$__current" ver
+        if [ ${#ver[@]} -gt 0 ]; then
+          if [ -z "${ver[3]:-}" ]; then
+            get_latest_of_two "$finalversion" "$__current" finalversion
+            get_latest_of_two "$lastversion" "$finalversion" lastversion
+          else
+            get_latest_of_two "$lastversion" "$__current" lastversion
+          fi
+        fi
+      done
+      ;;
+  esac
+
+  if git rev-parse -q --verify "refs/tags/$lastversion" >/dev/null 2>&1; then
+    hasversiontag="true"
+  else
+    hasversiontag="false"
+  fi
+}
+
+# Gets the next version given the provided scope
+# $1 The version that is going to be bumped
+# $2 The scope to bump
+# $3 The variable where to stoer the result
+function get_next_version {
+  local __exploded
+  local __fromversion="$1"
+  local __scope="$2"
+  local __result="$3"
+  explode_version "$__fromversion" __exploded
+  case "$__scope" in
+    major)
+      __exploded[0]=$((${__exploded[0]}+1))
+      __exploded[1]=0
+      __exploded[2]=0
+    ;;
+    minor)
+      __exploded[1]=$((${__exploded[1]}+1))
+      __exploded[2]=0
+    ;;
+    patch)
+      __exploded[2]=$((${__exploded[2]}+1))
+    ;;
+  esac
+
+  printf -v "$__result" '%s' "${prefix}${__exploded[0]}.${__exploded[1]}.${__exploded[2]}"
+}
+
+function bump_version {
+  ## First we try to get the next version based on the existing last one
+  if [ "$scope" == "auto" ]; then
+    get_scope_auto scope
+  fi
+
+  local __candidatefromlast=$FIRST_VERSION
+  local __explodedlast
+  explode_version $lastversion __explodedlast
+  if [[ -n "${__explodedlast[3]}" ]]; then
+    # Last version is not final
+    local __idlast
+    explode_identifier ${__explodedlast[3]} __idlast
+
+    # We get the last, given the desired id based on the scope
+    __candidatefromlast="${prefix}${__explodedlast[0]}.${__explodedlast[1]}.${__explodedlast[2]}"
+    if [[ -n "$identifier" ]]; then
+      local __nextid="$identifier.1"
+      if [ "$identifier" == "${__idlast[0]}" ]; then
+        # We target the same identifier as the last so we increase one
+        __nextid="$identifier.$(( ${__idlast[1]}+1 ))"
+        __candidatefromlast="$__candidatefromlast-$__nextid"
+      else
+        # Different identifiers, we make sure we are assigning a higher identifier, if not, we increase the version
+        __candidatefromlast="$__candidatefromlast-$__nextid"
+        local __comparedwithlast
+        compare_versions $__candidatefromlast $lastversion __comparedwithlast
+        if [ "$__comparedwithlast" == -1 ]; then
+          get_next_version $__candidatefromlast $scope __candidatefromlast
+          __candidatefromlast="$__candidatefromlast-$__nextid"
+        fi
+      fi
+    fi
+  fi
+
+  # Then we try to get the version based on the latest final one
+  local __candidatefromfinal=$FIRST_VERSION
+  get_next_version $finalversion $scope __candidatefromfinal
+  if [[ -n "$identifier" ]]; then
+    __candidatefromfinal="$__candidatefromfinal-$identifier.1"
+  fi
+
+  # Finally we compare both candidates
+  local __resultversion
+  local __result
+  compare_versions $__candidatefromlast $__candidatefromfinal __result
+  case $__result in
+    0)
+      __resultversion=$__candidatefromlast
+      ;;
+    -1)
+      __resultversion="$__candidatefromfinal"
+      ;;
+    1)
+      __resultversion=$__candidatefromlast
+      ;;
+  esac
+
+  printf -v "$1" '%s' "$__resultversion"
+}
+
+function increase_version {
+  local __version=""
+
+  if [ -z "${forcedversion:-}" ]; then
+    bump_version __version
+  else
+    if [[ "$forcedversion" =~ $SEMVER_REGEX ]] ; then
+      local __result
+      compare_versions "$forcedversion" "$lastversion" __result
+      if [ "$__result" -le 0 ]; then
+        error_exit "Version '$forcedversion' can't be lower than or equal to last version: $lastversion"
+      fi
+    else
+      error_exit "Invalid version format: $forcedversion"
+    fi
+    __version="$forcedversion"
+  fi
+
+  if [ "$displayonly" == "true" ]; then
+    echo "$__version"
+  else
+    if [ "$forcetag" == "false" ]; then
+      check_git_dirty_status
+    fi
+    local __commitlist
+    if [ "$finalversion" == "$FIRST_VERSION" ] || [ "$hasversiontag" != "true" ]; then
+      if ! __commitlist=$(git log --pretty=oneline 2>/dev/null); then
+        error_exit "Failed to get git commit log"
+      fi
+    else
+      if ! __commitlist=$(git log --pretty=oneline "$finalversion"... 2>/dev/null); then
+        error_exit "Failed to get git commit log from $finalversion"
+      fi
+    fi
+
+    # If we are forcing a bump, we add bump to the commit list
+    if [[ -z "$__commitlist" && "$forcetag" == "true" ]]; then
+      __commitlist="bump"
+    fi
+
+    if [[ -z "$__commitlist" ]]; then
+      echo "No commits since the last final version, not bumping version"
+    else
+      if [[ -z "${versionname:-}" ]]; then
+        if ! versionname=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null); then
+          error_exit "Failed to generate timestamp for version name"
+        fi
+      fi
+      local __message="$versionname
+$__commitlist"
+
+      # We check we have info on the user
+      local __username
+      if ! __username=$(git config user.name 2>/dev/null); then
+        if ! __username=$(id -u -n 2>/dev/null); then
+          error_exit "Failed to get username"
+        fi
+        if ! git config user.name "$__username" 2>/dev/null; then
+          error_exit "Failed to set git user.name"
+        fi
+      fi
+      local __useremail
+      if ! __useremail=$(git config user.email 2>/dev/null); then
+        if ! __useremail=$(hostname 2>/dev/null); then
+          error_exit "Failed to get hostname for email"
+        fi
+        if ! git config user.email "$__username@$__useremail" 2>/dev/null; then
+          error_exit "Failed to set git user.email"
+        fi
+      fi
+
+      if ! git tag -a "$__version" -m "$__message" 2>/dev/null; then
+        error_exit "Failed to create git tag: $__version"
+      fi
+
+      # If we have a remote, we push there
+      local __remotes
+      if __remotes=$(git remote 2>/dev/null) && [[ -n "$__remotes" ]]; then
+        while IFS= read -r __remote; do
+          if git push "$__remote" "$__version" >/dev/null 2>&1; then
+            echo "$__version pushed to $__remote"
+          else
+            error_exit "Failed to push tag $__version to remote $__remote"
+          fi
+        done <<< "$__remotes"
+      else
+        echo "$__version"
+      fi
+    fi
+  fi
+}
+
+function check_git_dirty_status {
+  local __repostatus=""
+  get_work_tree_status __repostatus
+
+  if [ "$__repostatus" == "uncommitted" ]; then
+    echo "ERROR: You have uncommitted changes" >&2
+    if git status --porcelain 2>/dev/null; then
+      :  # status displayed successfully
+    else
+      echo "Unable to display git status" >&2
+    fi
+    exit 1
+  fi
+
+  if [ "$__repostatus" == "unstaged" ]; then
+    echo "ERROR: You have unstaged changes" >&2
+    if git status --porcelain 2>/dev/null; then
+      :  # status displayed successfully
+    else
+      echo "Unable to display git status" >&2
+    fi
+    exit 1
+  fi
+}
+
+# Get the total amount of lines of code in the repo
+function get_total_lines {
+  local __empty_id
+  if ! __empty_id=$(git hash-object -t tree /dev/null 2>/dev/null); then
+    error_exit "Failed to get empty tree hash"
+  fi
+  local __changes
+  if ! __changes=$(git diff --numstat "$__empty_id" 2>/dev/null); then
+    error_exit "Failed to get git diff numstat"
+  fi
+  local __added_deleted="$1"
+  get_changed_lines "$__changes" "$__added_deleted"
+}
+
+# Get the total amount of lines of code since the provided tag
+function get_sincetag_lines {
+  local __sincetag="$1"
+  local __changes
+  if ! __changes=$(git diff --numstat "$__sincetag" 2>/dev/null); then
+    error_exit "Failed to get git diff numstat since $__sincetag"
+  fi
+  local __added_deleted="$2"
+  get_changed_lines "$__changes" "$__added_deleted"
+}
+
+function get_changed_lines {
+  local __changes_numstat="$1"
+  local __result="$2"
+  local __changes_array
+  if [[ -n "$__changes_numstat" ]]; then
+    IFS=$'\n' read -rd '' -a __changes_array <<<"$__changes_numstat" || true
+  else
+    __changes_array=()
+  fi
+  local __diff_regex="^([0-9]+)[[:space:]]+([0-9]+)[[:space:]]+.+$"
+
+  local __total_added=0
+  local __total_deleted=0
+  for i in "${__changes_array[@]}"
+  do
+    if [[ "$i" =~ $__diff_regex ]] ; then
+      local __added="${BASH_REMATCH[1]}"
+      local __deleted="${BASH_REMATCH[2]}"
+      __total_added=$(( __total_added + __added ))
+      __total_deleted=$(( __total_deleted + __deleted ))
+    fi
+  done
+  eval "$__result=( $__total_added $__total_deleted )"
+}
+
+function get_scope_auto {
+  local __result="$1"
+  local __verbose="$2"
+  local __total=()
+  local __since=()
+  local __scope=""
+
+  get_total_lines __total
+  get_sincetag_lines "$finalversion" __since
+
+  local __percentage=0
+  if [ "${__total[0]}" != "0" ]; then
+    __percentage=$(( 100 * ${__since[0]} / ${__total[0]} ))
+    if [ "$__percentage" -gt "10" ]; then
+      __scope="minor"
+    else
+      __scope="patch"
+    fi
+  else
+    __scope="patch"
+  fi
+
+  printf -v "$__result" '%s' "$__scope"
+  if [[ -n "$__verbose" ]]; then
+    echo "[Auto Scope] Percentage of lines changed: $__percentage"
+    echo "[Auto Scope] : $__scope"
+  fi
+}
+
+function get_work_tree_status {
+  local __result="$1"
+  # Update the index
+  if ! git update-index -q --ignore-submodules --refresh >/dev/null 2>&1; then
+    error_exit "Failed to update git index"
+  fi
+
+  printf -v "$__result" '%s' ""
+
+  if ! git diff-files --quiet --ignore-submodules -- >/dev/null 2>&1; then
+    printf -v "$__result" '%s' "unstaged"
+  fi
+
+  if ! git diff-index --cached --quiet HEAD --ignore-submodules -- >/dev/null 2>&1; then
+    printf -v "$__result" '%s' "uncommitted"
+  fi
+}
+
+function get_current {
+  local __result="$1"
+  local __commitcount
+
+  if [ "$hasversiontag" == "true" ]; then
+    if ! __commitcount=$(git rev-list "$lastversion".. --count 2>/dev/null); then
+      error_exit "Failed to get commit count from $lastversion"
+    fi
+  else
+    if ! __commitcount=$(git rev-list --count HEAD 2>/dev/null); then
+      error_exit "Failed to get total commit count"
+    fi
+  fi
+
+  local __status=""
+  get_work_tree_status __status
+
+  if [ "$__commitcount" == "0" ] && [ -z "$__status" ]; then
+    printf -v "$__result" '%s' "$lastversion"
+  else
+    local __buildinfo
+    if ! __buildinfo=$(git rev-parse --short HEAD 2>/dev/null); then
+      error_exit "Failed to get short commit hash"
+    fi
+
+    local __currentbranch
+    if ! __currentbranch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); then
+      error_exit "Failed to get current branch name"
+    fi
+    # Safely truncate branch name
+    __currentbranch="${__currentbranch:0:$MAX_BRANCH_LENGTH}"
+
+    local default_branch
+    get_default_branch default_branch
+    if [ "$__currentbranch" != "$default_branch" ]; then
+      __buildinfo="$__currentbranch.$__buildinfo"
+    fi
+
+    local __suffix=""
+    if [ "$__commitcount" != "0" ]; then
+      if [ -n "$__suffix" ]; then
+        __suffix="$__suffix."
+      fi
+      __suffix="$__suffix$__commitcount"
+    fi
+    if [ -n "$__status" ]; then
+      if [ -n "$__suffix" ]; then
+        __suffix="$__suffix."
+      fi
+      __suffix="$__suffix$__status"
+    fi
+
+    __suffix="$__suffix+$__buildinfo"
+    if [ "$lastversion" == "$finalversion" ]; then
+      scope="patch"
+      identifier=""
+      local __bumped=""
+      bump_version __bumped
+      printf -v "$__result" '%s' "$__bumped-dev.$__suffix"
+    else
+      printf -v "$__result" '%s' "$lastversion.$__suffix"
+    fi
+  fi
+}
+
+function init {
+  check_git_repo
+
+  local TAGS
+  if ! TAGS=$(git tag --merged 2>/dev/null); then
+    error_exit "Failed to get git tags"
+  fi
+
+  local TAG_ARRAY
+  if [[ -n "$TAGS" ]]; then
+    IFS=$'\n' read -rd '' -a TAG_ARRAY <<<"$TAGS" || true
+  else
+    TAG_ARRAY=()
+  fi
+
+  get_latest "${TAG_ARRAY[@]}"
+
+  if ! currentbranch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); then
+    error_exit "Failed to get current git branch"
+  fi
+}
+
+case "$ACTION" in
+  --help)
+    echo -e "$HELP"
+    ;;
+  --version)
+    echo -e "${PROG}: $PROG_VERSION"
+    ;;
+  final)
+    init
+    default_branch=""
+    get_default_branch default_branch
+    diff=""
+    if ! diff=$(git diff "$default_branch" 2>/dev/null); then
+      error_exit "Failed to compare with default branch: $default_branch"
+    fi
+    if [ "$forcetag" == "false" ]; then
+      if [ -n "$diff" ]; then
+        error_exit "Branch must be updated with $default_branch for final versions"
+      fi
+    fi
+    increase_version
+    ;;
+  alpha|beta)
+    init
+    identifier="$ACTION"
+    increase_version
+    ;;
+  candidate)
+    init
+    identifier="rc"
+    increase_version
+    ;;
+  getlast)
+    init
+    echo "$lastversion"
+    ;;
+  getfinal)
+    init
+    echo "$finalversion"
+    ;;
+  getcurrent)
+    init
+    current=""
+    get_current current
+    echo "$current"
+    ;;
+  get)
+    init
+    echo "Current final version: $finalversion"
+    echo "Last tagged version:   $lastversion"
+    ;;
+  *)
+    error_exit "'$ACTION' is not a valid command, see --help for available commands."
+    ;;
+esac

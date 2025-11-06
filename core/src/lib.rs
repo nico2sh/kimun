@@ -654,7 +654,7 @@ impl Display for VaultBrowseOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NotesValidation {
     Full,
     Fast,
@@ -705,4 +705,353 @@ fn create_index_for<P: AsRef<Path>>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_index_report_finish() {
+        let mut report = IndexReport::new();
+
+        // Sleep for a small amount to ensure duration is non-zero
+        std::thread::sleep(Duration::from_millis(10));
+
+        report.finish();
+
+        // Check that duration is now set and non-zero
+        assert!(report.duration > Duration::default());
+        assert!(report.duration.as_millis() >= 10);
+    }
+
+    #[test]
+    fn test_note_vault_default() {
+        let vault = NoteVault::default();
+
+        assert_eq!(vault.workspace_path, PathBuf::default());
+        assert_eq!(vault.journal_path, VaultPath::new(DEFAULT_JOURNAL_PATH));
+        // VaultDB doesn't implement PartialEq, so we can't directly compare it
+        // but we can verify the vault was created successfully
+    }
+
+    #[test]
+    fn test_note_vault_new_with_nonexistent_path() {
+        let nonexistent_path = "/this/path/does/not/exist";
+        let result = NoteVault::new(nonexistent_path);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            VaultError::VaultPathNotFound { path } => {
+                assert_eq!(path, nonexistent_path);
+            }
+            _ => panic!("Expected VaultPathNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_note_vault_new_with_file_instead_of_directory() {
+        // Create a temporary file
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let file_path = temp_file.path();
+
+        let result = NoteVault::new(file_path);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            VaultError::FSError(FSError::InvalidPath { message, .. }) => {
+                assert_eq!(message, "Path provided is not a directory");
+            }
+            _ => panic!("Expected FSError::InvalidPath"),
+        }
+    }
+
+    #[test]
+    fn test_note_vault_new_with_valid_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        let result = NoteVault::new(dir_path);
+
+        assert!(result.is_ok());
+        let vault = result.unwrap();
+        assert_eq!(vault.workspace_path, dir_path);
+        assert_eq!(vault.journal_path, VaultPath::new(DEFAULT_JOURNAL_PATH));
+    }
+
+    #[test]
+    fn test_get_todays_journal() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(temp_dir.path()).unwrap();
+
+        let (title, note_path) = vault.get_todays_journal();
+
+        // Check that title matches today's date format
+        let today = Utc::now();
+        let expected_title = today.format("%Y-%m-%d").to_string();
+        assert_eq!(title, expected_title);
+
+        // Check that the path is correct
+        let expected_path = vault
+            .journal_path
+            .append(&VaultPath::note_path_from(&expected_title))
+            .absolute();
+        assert_eq!(note_path, expected_path);
+    }
+
+    #[test]
+    fn test_journal_date_with_valid_journal_note() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(temp_dir.path()).unwrap();
+
+        // Create a journal note path
+        let journal_note_path = vault
+            .journal_path
+            .append(&VaultPath::note_path_from("2023-12-25"))
+            .absolute();
+
+        let result = vault.journal_date(&journal_note_path);
+
+        assert!(result.is_some());
+        let date = result.unwrap();
+        assert_eq!(date, NaiveDate::from_ymd_opt(2023, 12, 25).unwrap());
+    }
+
+    #[test]
+    fn test_journal_date_with_invalid_date_format() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(temp_dir.path()).unwrap();
+
+        // Create a note path with invalid date format
+        let invalid_journal_path = vault
+            .journal_path
+            .append(&VaultPath::note_path_from("invalid-date"))
+            .absolute();
+
+        let result = vault.journal_date(&invalid_journal_path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_journal_date_with_non_journal_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(temp_dir.path()).unwrap();
+
+        // Create a note path outside of journal directory
+        let non_journal_path = VaultPath::new("/other/2023-12-25.md");
+
+        let result = vault.journal_date(&non_journal_path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_journal_date_with_non_note_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(temp_dir.path()).unwrap();
+
+        // Create a directory path (not a note)
+        let directory_path = vault.journal_path.append(&VaultPath::new("2023-12-25"));
+
+        let result = vault.journal_date(&directory_path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_path_to_pathbuf() {
+        let temp_dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(temp_dir.path()).unwrap();
+
+        let vault_path = VaultPath::new("/test/note.md");
+        let result = vault.path_to_pathbuf(&vault_path);
+
+        let expected = vault_path.to_pathbuf(&vault.workspace_path);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_directory_details() {
+        let path = VaultPath::new("/test/directory");
+        let details = DirectoryDetails { path: path.clone() };
+
+        assert_eq!(details.path, path);
+    }
+
+    #[test]
+    fn test_search_result_note() {
+        let path = VaultPath::new("/test/note.md");
+        let content_data = NoteContentData::new("Test Note".to_string(), 12345);
+        let result = SearchResult::note(&path, &content_data);
+
+        assert_eq!(result.path, path);
+        match result.rtype {
+            ResultType::Note(data) => assert_eq!(data, content_data),
+            _ => panic!("Expected Note result type"),
+        }
+    }
+
+    #[test]
+    fn test_search_result_directory() {
+        let path = VaultPath::new("/test/directory");
+        let result = SearchResult::directory(&path);
+
+        assert_eq!(result.path, path);
+        match result.rtype {
+            ResultType::Directory => (),
+            _ => panic!("Expected Directory result type"),
+        }
+    }
+
+    #[test]
+    fn test_search_result_attachment() {
+        let path = VaultPath::new("/test/image.png");
+        let result = SearchResult::attachment(&path);
+
+        assert_eq!(result.path, path);
+        match result.rtype {
+            ResultType::Attachment => (),
+            _ => panic!("Expected Attachment result type"),
+        }
+    }
+
+    #[test]
+    fn test_result_type_equality() {
+        let content_data = NoteContentData::new("Test Note".to_string(), 12345);
+        let note_type1 = ResultType::Note(content_data.clone());
+        let note_type2 = ResultType::Note(content_data);
+        let directory_type = ResultType::Directory;
+        let attachment_type = ResultType::Attachment;
+
+        assert_eq!(note_type1, note_type2);
+        assert_eq!(directory_type, ResultType::Directory);
+        assert_eq!(attachment_type, ResultType::Attachment);
+        assert_ne!(directory_type, attachment_type);
+    }
+
+    #[test]
+    fn test_vault_browse_options_builder_default() {
+        let builder = VaultBrowseOptionsBuilder::default();
+
+        // We can't directly inspect private fields, but we can test the build result
+        let (options, _receiver) = builder.build();
+
+        assert_eq!(options.path, VaultPath::root());
+        assert_eq!(options.validation, NotesValidation::None);
+        assert!(!options.recursive);
+    }
+
+    #[test]
+    fn test_vault_browse_options_builder_new() {
+        let test_path = VaultPath::new("/test/path");
+        let builder = VaultBrowseOptionsBuilder::new(&test_path);
+
+        let (options, _receiver) = builder.build();
+
+        assert_eq!(options.path, test_path);
+        assert_eq!(options.validation, NotesValidation::None);
+        assert!(!options.recursive);
+    }
+
+    #[test]
+    fn test_vault_browse_options_builder_path() {
+        let initial_path = VaultPath::new("/initial");
+        let new_path = VaultPath::new("/new/path");
+
+        let builder = VaultBrowseOptionsBuilder::new(&initial_path).path(new_path.clone());
+
+        let (options, _receiver) = builder.build();
+
+        assert_eq!(options.path, new_path);
+    }
+
+    #[test]
+    fn test_vault_browse_options_builder_recursive() {
+        let path = VaultPath::new("/test");
+
+        let builder = VaultBrowseOptionsBuilder::new(&path).recursive();
+        let (options, _receiver) = builder.build();
+        assert!(options.recursive);
+
+        let builder = VaultBrowseOptionsBuilder::new(&path).non_recursive();
+        let (options, _receiver) = builder.build();
+        assert!(!options.recursive);
+    }
+
+    #[test]
+    fn test_vault_browse_options_builder_validation_modes() {
+        let path = VaultPath::new("/test");
+
+        // Test full validation
+        let builder = VaultBrowseOptionsBuilder::new(&path).full_validation();
+        let (options, _receiver) = builder.build();
+        assert_eq!(options.validation, NotesValidation::Full);
+
+        // Test fast validation
+        let builder = VaultBrowseOptionsBuilder::new(&path).fast_validation();
+        let (options, _receiver) = builder.build();
+        assert_eq!(options.validation, NotesValidation::Fast);
+
+        // Test no validation
+        let builder = VaultBrowseOptionsBuilder::new(&path).no_validation();
+        let (options, _receiver) = builder.build();
+        assert_eq!(options.validation, NotesValidation::None);
+    }
+
+    #[test]
+    fn test_vault_browse_options_builder_chaining() {
+        let path = VaultPath::new("/test");
+        let new_path = VaultPath::new("/new");
+
+        let builder = VaultBrowseOptionsBuilder::new(&path)
+            .path(new_path.clone())
+            .recursive()
+            .full_validation();
+
+        let (options, _receiver) = builder.build();
+
+        assert_eq!(options.path, new_path);
+        assert!(options.recursive);
+        assert_eq!(options.validation, NotesValidation::Full);
+    }
+
+    #[test]
+    fn test_vault_browse_options_build_returns_channel() {
+        let path = VaultPath::new("/test");
+        let builder = VaultBrowseOptionsBuilder::new(&path);
+
+        let (_options, receiver) = builder.build();
+
+        // Test that the receiver is valid by checking if it's ready to receive
+        // (it should be empty initially)
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_notes_validation_display() {
+        assert_eq!(format!("{}", NotesValidation::Full), "Full");
+        assert_eq!(format!("{}", NotesValidation::Fast), "Fast");
+        assert_eq!(format!("{}", NotesValidation::None), "None");
+    }
+
+    #[test]
+    fn test_vault_browse_options_display() {
+        let path = VaultPath::new("/test/path");
+        let builder = VaultBrowseOptionsBuilder::new(&path)
+            .recursive()
+            .full_validation();
+
+        let (options, _receiver) = builder.build();
+        let display_string = format!("{}", options);
+
+        assert!(display_string.contains("Path: `/test/path`"));
+        assert!(display_string.contains("Validation Type: `Full`"));
+        assert!(display_string.contains("Recursive: `true`"));
+    }
+
+    #[test]
+    fn test_default_journal_path_constant() {
+        assert_eq!(DEFAULT_JOURNAL_PATH, "/journal");
+    }
 }
