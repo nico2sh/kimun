@@ -405,6 +405,7 @@ class MarkdownEditor {
     setSelection(start, end) {
         this.textarea.setSelectionRange(start, end);
         this.textarea.focus();
+        // this.scrollToCursor();
     }
 
     // Trigger oninput event to notify of changes
@@ -414,6 +415,30 @@ class MarkdownEditor {
             cancelable: true,
         });
         this.textarea.dispatchEvent(event);
+    }
+
+    scrollToCursor() {
+        setTimeout(() => {
+            const { selectionStart } = this.textarea;
+            const textBeforeCursor = this.textarea.value.substring(0, selectionStart);
+            const lines = textBeforeCursor.split('\n');
+            const currentLine = lines.length - 1;
+            
+            const style = window.getComputedStyle(this.textarea);
+            const lineHeight = parseFloat(style.lineHeight);
+            const fontSize = parseFloat(style.fontSize);
+            const effectiveLineHeight = lineHeight || fontSize * 1.6;
+            
+            const cursorTop = currentLine * effectiveLineHeight;
+            const viewportHeight = this.textarea.clientHeight;
+            const scrollTop = this.textarea.scrollTop;
+            
+            if (cursorTop < scrollTop) {
+                this.textarea.scrollTop = cursorTop;
+            } else if (cursorTop > scrollTop + viewportHeight - effectiveLineHeight) {
+                this.textarea.scrollTop = cursorTop - viewportHeight + effectiveLineHeight * 2;
+            }
+        }, 0);
     }
 }
 
