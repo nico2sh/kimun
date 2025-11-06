@@ -405,7 +405,7 @@ class MarkdownEditor {
     setSelection(start, end) {
         this.textarea.setSelectionRange(start, end);
         this.textarea.focus();
-        // this.scrollToCursor();
+        this.scrollToCursor();
     }
 
     // Trigger oninput event to notify of changes

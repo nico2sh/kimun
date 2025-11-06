@@ -1,4 +1,4 @@
-use std::{fmt::Display, rc::Rc, sync::Arc, time::Duration};
+use std::{rc::Rc, sync::Arc, time::Duration};
 
 use dioxus::{
     core::use_drop,
@@ -29,54 +29,11 @@ const EVAL_JS: &str = include_str!(concat!(
     "/assets/scripts/md_shortcuts.js"
 ));
 
-#[derive(Debug, Clone, Default)]
-pub enum EditorContentState {
-    #[default]
-    None,
-    Note {
-        text: String,
-    },
-}
-
-impl Display for EditorContentState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.get_text())
-    }
-}
-
-impl EditorContentState {
-    pub fn init(&mut self, new_text: String) {
-        // Make sure you saved the content before
-        match self {
-            EditorContentState::None => *self = EditorContentState::Note { text: new_text },
-            EditorContentState::Note { text } => {
-                *text = new_text;
-            }
-        }
-    }
-
-    pub fn update_text(&mut self, new_text: String) {
-        match self {
-            EditorContentState::None => *self = EditorContentState::Note { text: new_text },
-            EditorContentState::Note { text } => {
-                *text = new_text;
-            }
-        }
-    }
-
-    pub fn get_text(&self) -> String {
-        match self {
-            EditorContentState::Note { text } => text.to_owned(),
-            _ => "".to_string(),
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct EditorSaveManager {
     path: VaultPath,
     vault: Arc<NoteVault>,
-    content: Signal<EditorContentState>,
+    content: Signal<String>,
     app_state: Signal<AppState>,
 }
 
@@ -87,7 +44,7 @@ impl EditorSaveManager {
         if dirty_status {
             debug!("Saving content");
             let path = self.path.clone();
-            let text = self.content.peek().get_text();
+            let text = self.content.peek().clone();
             let vault = self.vault.clone();
             tokio::spawn(async move {
                 let _ = vault.save_note(&path, text);
@@ -106,7 +63,7 @@ impl Drop for EditorSaveManager {
         let dirty_status = self.app_state.read().has_dirty_content();
         if dirty_status {
             debug!("Saving so we don't lose data");
-            let text = self.content.peek().get_text();
+            let text = self.content.peek().clone();
             let _ = self.vault.save_note(&self.path, text);
             // self.content.write().mark_clean();
         }
@@ -148,12 +105,12 @@ pub struct TextEditorProps {
 
 #[component]
 pub fn TextEditor(props: TextEditorProps) -> Element {
-    // debug!(
-    //     "-==== [Text Editor] Starting Editor at '{}' ====-",
-    //     props.note_path
-    // );
+    debug!(
+        "-==== [Text Editor] Starting Editor at '{}' ====-",
+        props.note_path
+    );
     let mut app_state: Signal<AppState> = use_context();
-    let mut content_state = use_signal(|| EditorContentState::None);
+    let mut content = use_signal(|| "".to_string());
     let modal_type = props.modal_type;
 
     let focus_manager = use_context::<FocusManager>();
@@ -174,12 +131,12 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                             let _ = editor_data.save().await;
                         }
                         // We create a new instance of the editor data
-                        content_state.write().init(text.clone());
+                        *content.write() = text.clone();
                         app_state
                             .write()
                             .set_content_type(crate::state::ContentType::Note { dirty: false });
                         let editor_data = EditorSaveManager {
-                            content: content_state,
+                            content,
                             path: props.note_path.read().to_owned(),
                             vault: editor_vault.clone(),
                             app_state,
@@ -251,7 +208,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                         let dirty_status = app_state.read().has_dirty_content();
                         if dirty_status {
                             debug!("Saving so we don't lose data");
-                            let text = content_state.peek().get_text();
+                            let text = content.peek().clone();
                             let _ = vault.save_note(&props.note_path.read(), text);
                             app_state.write().mark_content_clean();
                         }
@@ -307,10 +264,10 @@ if (textEditor) {
                             "Loading..."
                         }
                     },
-                    Some(_) => rsx! {
+                    Some(text) => rsx! {
                         if *props.preview.read() {
                             {
-                                let note_details = NoteDetails::new(&props.note_path.read(), content_state.peek().get_text());
+                                let note_details = NoteDetails::new(&props.note_path.read(), content.peek().clone());
                                 let md_content = note_details.get_markdown_and_links();
                                 rsx!{
                                     Markdown {
@@ -343,7 +300,7 @@ if (textEditor) {
                                 //     info!("Select change event {:?}", e.data());
                                 // },
                                 oninput: move |e| {
-                                    content_state.write().update_text(e.value());
+                                    *content.write() = e.value();
                                     app_state.write().mark_content_dirty();
                                 },
                                 onkeydown: move |event: Event<KeyboardData>| {
@@ -372,7 +329,7 @@ if (textEditor) {
                                 wrap: "hard",
                                 resize: "none",
                                 placeholder: "Start writing something!",
-                                value: "{content_state}",
+                                value: "{text}",
                             }
                         }
                     },
