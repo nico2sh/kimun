@@ -1,10 +1,11 @@
 use std::{fmt::Display, rc::Rc, sync::Arc, time::Duration};
 
 use dioxus::{
+    core::use_drop,
     logger::tracing::{debug, error},
     prelude::*,
 };
-use dioxus_radio::hooks::{use_radio, Radio};
+// use dioxus_radio::hooks::{use_radio, Radio};
 use futures::StreamExt;
 use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 
@@ -16,7 +17,7 @@ use crate::{
     },
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
-    state::{AppState, ContentType, KimunChannel},
+    state::{AppState, ContentType},
     utils::keys::action_shortcuts::{ActionShortcuts, TextAction},
     MARKDOWN_JS,
 };
@@ -76,20 +77,21 @@ pub struct EditorSaveManager {
     path: VaultPath,
     vault: Arc<NoteVault>,
     content: Signal<EditorContentState>,
-    app_state: Radio<AppState, KimunChannel>,
+    app_state: Signal<AppState>,
 }
 
 impl EditorSaveManager {
     async fn save(&mut self) -> anyhow::Result<()> {
-        debug!("Triggered save");
+        // debug!("Triggered save");
         let dirty_status = self.app_state.read().has_dirty_content();
         if dirty_status {
+            debug!("Saving content");
             let path = self.path.clone();
             let text = self.content.peek().get_text();
             let vault = self.vault.clone();
             tokio::spawn(async move {
-                debug!("Saving at {}", path);
                 let _ = vault.save_note(&path, text);
+                debug!("Saved at {}", path);
             })
             .await?;
             self.app_state.write().mark_content_clean();
@@ -117,10 +119,10 @@ pub enum EditorMsg {
 }
 
 #[component]
-pub fn NoText(path: ReadOnlySignal<VaultPath>) -> Element {
+pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
     let mut text_area_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
 
-    let mut app_state = use_radio::<AppState, KimunChannel>(KimunChannel::Header);
+    let mut app_state: Signal<AppState> = use_context();
     use_effect(move || app_state.write().set_content_type(ContentType::Directory));
 
     rsx! {
@@ -138,7 +140,7 @@ pub fn NoText(path: ReadOnlySignal<VaultPath>) -> Element {
 
 #[derive(Clone, Debug, PartialEq, Props)]
 pub struct TextEditorProps {
-    note_path: ReadOnlySignal<VaultPath>,
+    note_path: ReadSignal<VaultPath>,
     vault: Arc<NoteVault>,
     modal_type: Signal<ModalType>,
     preview: Signal<bool>,
@@ -146,11 +148,11 @@ pub struct TextEditorProps {
 
 #[component]
 pub fn TextEditor(props: TextEditorProps) -> Element {
-    debug!(
-        "-==== [Text Editor] Starting Editor at '{}' ====-",
-        props.note_path
-    );
-    let mut app_state = use_radio::<AppState, KimunChannel>(KimunChannel::Header);
+    // debug!(
+    //     "-==== [Text Editor] Starting Editor at '{}' ====-",
+    //     props.note_path
+    // );
+    let mut app_state: Signal<AppState> = use_context();
     let mut content_state = use_signal(|| EditorContentState::None);
     let modal_type = props.modal_type;
 
@@ -166,6 +168,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
             while let Some(msg) = rx.next().await {
                 match msg {
                     EditorMsg::Init { text } => {
+                        debug!("We init with text {text}");
                         // We check if we already have an editor_data and we save
                         if let Some(editor_data) = ed.as_mut() {
                             let _ = editor_data.save().await;
@@ -184,7 +187,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                         ed = Some(editor_data);
                     }
                     EditorMsg::Save => {
-                        debug!("Received save signal");
+                        // debug!("Received save signal");
                         if let Some(editor_data) = ed.as_mut() {
                             let _ = editor_data.save().await;
                         }
@@ -369,7 +372,7 @@ if (textEditor) {
                                 wrap: "hard",
                                 resize: "none",
                                 placeholder: "Start writing something!",
-                                value: "{content_state.peek()}",
+                                value: "{content_state}",
                             }
                         }
                     },

@@ -10,7 +10,10 @@ use kimun_core::{
     NoteVault,
 };
 
-use crate::components::modal::{selector::PreviewData, ModalType};
+use crate::{
+    components::modal::{selector::PreviewData, ModalType},
+    utils::encode_path,
+};
 
 use super::{RowItem, SelectorFunctions, SelectorView};
 
@@ -108,9 +111,9 @@ impl AsRef<str> for NoteSearchEntry {
 
 impl RowItem for NoteSearchEntry {
     fn on_select(&self) -> bool {
-        let path = self.note_path.to_owned();
+        let encoded_path = encode_path(&self.note_path);
         navigator().replace(crate::Route::MainView {
-            editor_path: path.clone(),
+            encoded_path,
             create: false,
         });
         true

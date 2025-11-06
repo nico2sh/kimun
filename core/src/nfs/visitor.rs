@@ -212,3 +212,215 @@ impl<'s> ParallelVisitorBuilder<'s> for NoteListVisitorBuilder {
         Box::new(dbv)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use tempfile::TempDir;
+    use crate::nfs::{save_note, create_directory};
+
+    #[test]
+    fn test_note_list_visitor_builder_new() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+        let validation = NotesValidation::None;
+        let cached_notes = vec![];
+        let (sender, _receiver) = mpsc::channel();
+
+        let builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            validation,
+            cached_notes,
+            Some(sender),
+        );
+
+        assert_eq!(builder.workspace_path, workspace_path);
+        assert_eq!(builder.validation, validation);
+        assert!(builder.sender.is_some());
+    }
+
+    #[test]
+    fn test_note_list_visitor_builder_without_sender() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+        let validation = NotesValidation::Fast;
+        let cached_notes = vec![];
+
+        let builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            validation,
+            cached_notes,
+            None,
+        );
+
+        assert_eq!(builder.workspace_path, workspace_path);
+        assert_eq!(builder.validation, validation);
+        assert!(builder.sender.is_none());
+    }
+
+    #[test]
+    fn test_note_list_visitor_builder_with_cached_notes() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+        let validation = NotesValidation::Full;
+
+        // Create some cached notes
+        let note_path = VaultPath::new("cached_note.md");
+        let note_content = crate::note::NoteContentData::new("Test Note".to_string(), 12345);
+        let note_entry = crate::nfs::NoteEntryData {
+            path: note_path.clone(),
+            size: 100,
+            modified_secs: 1234567890,
+        };
+        let cached_notes = vec![(note_entry, note_content)];
+
+        let builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            validation,
+            cached_notes,
+            None,
+        );
+
+        // Test that notes are initially in the "to delete" list
+        let notes_to_delete = builder.get_notes_to_delete();
+        assert_eq!(notes_to_delete.len(), 1);
+        assert_eq!(notes_to_delete[0], note_path);
+
+        // Initially, no notes to add or modify
+        assert_eq!(builder.get_notes_to_add().len(), 0);
+        assert_eq!(builder.get_notes_to_modify().len(), 0);
+        assert_eq!(builder.get_directories_found().len(), 0);
+    }
+
+    #[test]
+    fn test_note_list_visitor_builder_getters() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+        let validation = NotesValidation::None;
+        let cached_notes = vec![];
+
+        let builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            validation,
+            cached_notes,
+            None,
+        );
+
+        // Test all getter methods return empty collections initially
+        assert_eq!(builder.get_notes_to_delete().len(), 0);
+        assert_eq!(builder.get_notes_to_add().len(), 0);
+        assert_eq!(builder.get_notes_to_modify().len(), 0);
+        assert_eq!(builder.get_directories_found().len(), 0);
+    }
+
+    #[test]
+    fn test_note_list_visitor_builder_parallel_visitor_trait() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+        let validation = NotesValidation::None;
+        let cached_notes = vec![];
+
+        let mut builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            validation,
+            cached_notes,
+            None,
+        );
+
+        // Test that we can build a parallel visitor
+        let _visitor = builder.build();
+        // If this compiles and runs, the trait is implemented correctly
+    }
+
+    #[test]
+    fn test_visitor_with_real_file_operations() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+        let validation = NotesValidation::None;
+
+        // Create a test note and directory
+        let note_path = VaultPath::new("test_note.md");
+        let dir_path = VaultPath::new("test_directory");
+        let note_content = "# Test Note\n\nThis is a test note.";
+
+        save_note(workspace_path, &note_path, note_content).unwrap();
+        create_directory(workspace_path, &dir_path).unwrap();
+
+        let cached_notes = vec![];
+        let (sender, _receiver) = mpsc::channel();
+
+        let mut builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            validation,
+            cached_notes,
+            Some(sender),
+        );
+
+        // Create a visitor and simulate file discovery
+        let _visitor = builder.build();
+
+        // After building, we should have notes to add
+        let _notes_to_add = builder.get_notes_to_add();
+        // Note: The actual file walking would happen when the visitor is used with ignore::WalkParallel
+        // This test verifies the builder setup works correctly
+
+        // Cleanup
+        std::fs::remove_file(workspace_path.join("test_note.md")).ok();
+        std::fs::remove_dir_all(workspace_path.join("test_directory")).ok();
+    }
+
+    #[test]
+    fn test_note_list_visitor_different_validation_modes() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+        let cached_notes = vec![];
+
+        // Test each validation mode
+        let validation_modes = [
+            NotesValidation::None,
+            NotesValidation::Fast,
+            NotesValidation::Full,
+        ];
+
+        for validation in validation_modes {
+            let builder = NoteListVisitorBuilder::new(
+                workspace_path,
+                validation,
+                cached_notes.clone(),
+                None,
+            );
+
+            assert_eq!(builder.validation, validation);
+
+            // Ensure builder can create visitor for each validation mode
+            let mut builder_mut = builder;
+            let _visitor = builder_mut.build();
+        }
+    }
+
+    #[test]
+    fn test_channel_communication() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+        let validation = NotesValidation::None;
+        let cached_notes = vec![];
+        let (sender, receiver) = mpsc::channel();
+
+        let _builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            validation,
+            cached_notes,
+            Some(sender.clone()),
+        );
+
+        // Test that we can send a search result through the channel
+        let test_path = VaultPath::new("test.md");
+        let test_result = SearchResult::directory(&test_path);
+
+        sender.send(test_result.clone()).unwrap();
+        let received = receiver.recv().unwrap();
+
+        assert_eq!(received.path, test_result.path);
+    }
+}

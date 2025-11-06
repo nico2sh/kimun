@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use content_view::{NoText, TextEditor};
-use dioxus::{logger::tracing::debug, prelude::*};
+use dioxus::{core::use_drop, logger::tracing::debug, prelude::*};
 use header::EditorHeader;
 use kimun_core::{
     nfs::{EntryData, VaultPath},
@@ -16,7 +16,7 @@ use crate::{
     global_events::{GlobalEvent, PubSub},
     route::Route,
     settings::AppSettings,
-    utils::keys::action_shortcuts::ActionShortcuts,
+    utils::{decode_path, encode_path, keys::action_shortcuts::ActionShortcuts},
 };
 
 mod content_view;
@@ -32,7 +32,9 @@ enum PathType {
 }
 
 #[component]
-pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element {
+pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
+    let editor_path =
+        use_memo(move || decode_path(&*encoded_path.read()).unwrap_or(VaultPath::root()));
     debug!("-== [Editor] Starting Editor at '{}' ==-", editor_path);
     let settings: Signal<AppSettings> = use_context();
     let settings_value = settings.read();
@@ -54,7 +56,6 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
     use_effect(move || {
-        let editor_path = editor_path.read().clone();
         pc.subscribe(
             EDITOR,
             Callback::new(move |ge| match ge {
@@ -63,8 +64,9 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
                     let is_current = editor_path.eq(&vault_path);
                     if is_current {
                         let parent = vault_path.get_parent_path().0;
+                        let encoded_path = encode_path(&parent);
                         navigator().replace(crate::Route::MainView {
-                            editor_path: parent,
+                            encoded_path,
                             create: false,
                         });
                     } else {
@@ -77,8 +79,9 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
                     let is_current = editor_path.eq(&from);
                     if is_current {
                         let parent = from.get_parent_path().0;
+                        let encoded_path = encode_path(&parent);
                         navigator().replace(crate::Route::MainView {
-                            editor_path: parent,
+                            encoded_path,
                             create: false,
                         });
                     }
@@ -88,8 +91,9 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
 
                     let is_current = editor_path.eq(&old_name);
                     if is_current {
+                        let encoded_path = encode_path(&new_name);
                         navigator().replace(crate::Route::MainView {
-                            editor_path: new_name,
+                            encoded_path,
                             create: false,
                         });
                     }
@@ -226,9 +230,10 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
                         ActionShortcuts::NewJournal => {
                             debug!("New Journal Entry");
                             if let Ok(journal_entry) = vault.journal_entry() {
+                                let encoded_path = encode_path(&journal_entry.0.path);
                                 navigator()
                                     .replace(crate::Route::MainView {
-                                        editor_path: journal_entry.0.path,
+                                        encoded_path,
                                         create: true,
                                     });
                             }
@@ -258,9 +263,10 @@ pub fn MainView(editor_path: ReadOnlySignal<VaultPath>, create: bool) -> Element
                             div {
                                 onmounted: move |_| {
                                     debug!("Rerouting to {}...", next_path);
+                                    let encoded_path = encode_path(&next_path);
                                     navigator()
                                         .replace(Route::MainView {
-                                            editor_path: next_path.clone(),
+                                            encoded_path,
                                             create: true,
                                         });
                                 },

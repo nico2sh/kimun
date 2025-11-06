@@ -2,12 +2,16 @@ use std::sync::Arc;
 
 use crate::{
     components::focus_manager::FocusComponent,
-    utils::md::{render::Renderer, CowStr},
+    utils::{
+        encode_path,
+        md::{render::Renderer, CowStr},
+    },
 };
 
 pub use crate::utils::md::{ElementAttributes, HtmlElement, LinkDescription, Options};
 
 use dioxus::{
+    core::use_drop,
     logger::tracing::{debug, error},
     prelude::*,
 };
@@ -274,11 +278,13 @@ impl MdContext {
                             match res.len() {
                                 0 => {
                                     // Create new note
-                                    navigator().replace(crate::Route::MainView { editor_path: note_path.clone(), create: true });
+                                    let encoded_path = encode_path(&note_path);
+                                    navigator().replace(crate::Route::MainView { encoded_path, create: true });
                                 },
                                 1 => {
                                     // Open note
-                                    navigator().replace(crate::Route::MainView { editor_path: note_path.clone(), create: false });
+                                    let encoded_path = encode_path(&note_path);
+                                    navigator().replace(crate::Route::MainView { encoded_path, create: false });
                                 },
                                 _ => {
                                     // Show picker

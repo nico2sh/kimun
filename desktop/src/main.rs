@@ -2,10 +2,10 @@
 use components::focus_manager::FocusManager;
 use dioxus::prelude::*;
 
-use dioxus_radio::hooks::use_init_radio_station;
+// use dioxus_radio::hooks::use_init_radio_station;
 use route::Route;
 use settings::AppSettings;
-use state::{AppState, KimunChannel};
+use state::AppState;
 
 use crate::global_events::{GlobalEvent, PubSub};
 
@@ -42,7 +42,8 @@ fn App() -> Element {
     use_context_provider(move || focus_manager);
     let theme = app_settings.read().get_theme();
 
-    use_init_radio_station::<AppState, KimunChannel>(AppState::default);
+    use_context_provider(|| Signal::new(AppState::default()));
+    // use_init_radio_station::<AppState, KimunChannel>(AppState::default);
 
     rsx! {
         document::Link { rel: "stylesheet", href: theme.css }
