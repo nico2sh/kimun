@@ -10,23 +10,17 @@ class MarkdownEditor {
 
     handleKeydown(event) {
         const { key, metaKey, ctrlKey, shiftKey } = event;
-        const isCmd = metaKey || ctrlKey; // Support both Mac (cmd) and Windows/Linux (ctrl)
+        const isCmd = metaKey || ctrlKey;
 
-        // Handle keyboard shortcuts
-        // if (this.handleShortcuts(event, key, isCmd, shiftKey)) {
-        //     return;
-        // }
-
-        // Handle special keys
         switch (key) {
-            // case 'Tab':
-            //     event.preventDefault();
-            //     if (shiftKey) {
-            //         this.unindent();
-            //     } else {
-            //         this.indent();
-            //     }
-            //     break;
+            case 'Tab':
+                event.preventDefault();
+                if (shiftKey) {
+                    this.unindent();
+                } else {
+                    this.indent();
+                }
+                break;
             case 'Enter':
                 if (this.handleEnter(event)) {
                     event.preventDefault();
@@ -35,49 +29,12 @@ class MarkdownEditor {
         }
     }
 
-    handleShortcuts(event, key, isCmd, shiftKey) {
-        if (!isCmd) return false;
-
-        const shortcuts = {
-            'b': () => this.wrapSelection('**', '**'), // Bold
-            'i': () => this.wrapSelection('_', '_'),   // Italic
-            'k': () => this.insertLink(),             // Link
-            'd': () => this.wrapSelection('`', '`'),  // Inline code
-            'e': () => this.wrapSelection('```\n', '\n```'), // Code block
-            'h': () => this.toggleHeading(),         // Heading
-            'u': () => this.wrapSelection('<u>', '</u>'), // Underline
-            's': () => this.wrapSelection('~~', '~~'), // Strikethrough
-            '1': () => this.insertHeading(1),        // H1
-            '2': () => this.insertHeading(2),        // H2
-            '3': () => this.insertHeading(3),        // H3
-        };
-
-        // Special cases with shift modifier
-        if (shiftKey) {
-            if (key === 'k') {
-                event.preventDefault();
-                this.insertImage();
-                return true;
-            }
-        }
-
-        if (shortcuts[key]) {
-            event.preventDefault();
-            shortcuts[key]();
-            return true;
-        }
-
-        return false;
-    }
-
-    // === INDENTATION METHODS ===
     indent() {
         const { selectionStart, selectionEnd } = this.textarea;
         const lines = this.getSelectedLines();
         const indentedLines = lines.map(line => '  ' + line.text);
         this.replaceSelectedLines(indentedLines);
         
-        // Adjust cursor position
         const newStart = selectionStart + 2;
         const newEnd = selectionEnd + (indentedLines.length * 2);
         this.setSelection(newStart, newEnd);
@@ -107,7 +64,6 @@ class MarkdownEditor {
             
             totalRemovedChars += removedFromThisLine;
             
-            // Calculate how many characters were removed before the cursor position
             const lineStartPos = this.getLineStartPosition(line.index);
             if (lineStartPos < selectionStart) {
                 removedBeforeCursor += removedFromThisLine;
@@ -118,35 +74,28 @@ class MarkdownEditor {
         
         this.replaceSelectedLines(unindentedLines);
         
-        // Adjust cursor position more accurately
         const newStart = Math.max(selectionStart - removedBeforeCursor, 0);
         const newEnd = Math.max(selectionEnd - totalRemovedChars, newStart);
         this.setSelection(newStart, newEnd);
     }
 
-    // === ENTER HANDLING ===
     handleEnter(event) {
         const cursorPos = this.textarea.selectionStart;
         const lines = this.textarea.value.split('\n');
         const currentLineIndex = this.textarea.value.substring(0, cursorPos).split('\n').length - 1;
         const currentLine = lines[currentLineIndex];
         
-        // Get indentation of current line
         const indentMatch = currentLine.match(/^(\s*)/);
         const indent = indentMatch ? indentMatch[1] : '';
         
-        // Check if the line is empty but indented
         if (currentLine.trim() === '' && indent.length > 0) {
-            // Empty indented line - reduce indentation
             const newIndent = indent.length >= 2 ? indent.slice(2) : '';
             this.replaceCurrentLine(currentLineIndex, newIndent);
-            // Position cursor at the end of the new indentation
             const lineStartPos = this.getLineStartPosition(currentLineIndex);
-            this.setSelection(lineStartPos + newIndent.length, lineStartPos + newIndent.length);
+            this.setSelection(lineStartPos + newIndent.length, lineStartPos + newIndent.length, true);
             return true;
         }
         
-        // Check if current line is a list item
         const listMatch = currentLine.match(/^(\s*)([-*+]|\d+\.)\s(.*)$/);
         const numberedListMatch = currentLine.match(/^(\s*)(\d+)\.\s(.*)$/);
         
@@ -155,46 +104,48 @@ class MarkdownEditor {
             const listMarker = listMatch[2];
             const listContent = listMatch[3];
             
-            // Check if the list item is empty (no content after the marker)
             if (listContent.trim() === '') {
-                // Empty list item - handle unindentation or removal
                 if (listIndent.length >= 2) {
-                    // Reduce indentation by one level (2 spaces)
                     const newIndent = listIndent.slice(2);
                     const newLine = newIndent + listMarker + ' ';
                     this.replaceCurrentLine(currentLineIndex, newLine);
-                    this.setSelection(cursorPos - 2, cursorPos - 2);
+                    this.setSelection(cursorPos - 2, cursorPos - 2, true);
                 } else {
-                    // At top level - remove list marker entirely
-                    this.replaceCurrentLine(currentLineIndex, '');
-                    this.setSelection(cursorPos - listMatch[0].length, cursorPos - listMatch[0].length);
+                    // At top level - remove list marker and insert newline
+                    const lineStartPos = this.getLineStartPosition(currentLineIndex);
+                    const lineEndPos = lineStartPos + currentLine.length;
+                    
+                    this.textarea.focus();
+                    this.textarea.setSelectionRange(lineStartPos, lineEndPos);
+                    document.execCommand('insertText', false, '');
+                    
+                    // Now insert a newline to create an empty line below
+                    this.textarea.focus();
+                    document.execCommand('insertText', false, '\n');
+                    
+                    // Move cursor to the new empty line
+                    this.setSelection(lineStartPos + 1, lineStartPos + 1, true);
                 }
                 return true;
             }
             
-            // Non-empty list item - continue the list
             let newLineContent;
             if (numberedListMatch) {
-                // Handle numbered lists
                 const currentNumber = parseInt(numberedListMatch[2]);
                 newLineContent = '\n' + listIndent + (currentNumber + 1) + '. ';
             } else {
-                // Handle bullet lists
                 newLineContent = '\n' + listIndent + listMarker + ' ';
             }
             
-            this.insertAtCursor(newLineContent);
+            this.insertAtCursor(newLineContent, true);
             return true;
         }
         
-        // Regular line (not a list item)
-        // If the line has content or no indentation, preserve/add indentation normally
         const newLineContent = '\n' + indent;
-        this.insertAtCursor(newLineContent);
+        this.insertAtCursor(newLineContent, true);
         return true;
     }
 
-    // === TEXT WRAPPING METHODS ===
     wrapSelection(before, after) {
         const { selectionStart, selectionEnd } = this.textarea;
         const selectedText = this.textarea.value.substring(selectionStart, selectionEnd);
@@ -204,13 +155,11 @@ class MarkdownEditor {
             this.replaceSelection(wrappedText);
             this.setSelection(selectionStart + before.length, selectionEnd + before.length);
         } else {
-            // No selection, insert markers and place cursor between them
             this.insertAtCursor(before + after);
             this.setSelection(selectionStart + before.length, selectionStart + before.length);
         }
     }
 
-    // === HEADING METHODS ===
     toggleHeading() {
         const { selectionStart, selectionEnd } = this.textarea;
         const lines = this.getSelectedLines();
@@ -223,11 +172,9 @@ class MarkdownEditor {
             let charDifference = 0;
             
             if (headingMatch) {
-                // Remove heading
                 newText = line.text.replace(/^#{1,6}\s/, '');
                 charDifference = -(headingMatch[0].length);
             } else if (line.text.trim()) {
-                // Add heading
                 newText = '# ' + line.text;
                 charDifference = 2;
             } else {
@@ -236,7 +183,6 @@ class MarkdownEditor {
             
             totalCharacterDifference += charDifference;
             
-            // Calculate character difference before cursor position
             const lineStartPos = this.getLineStartPosition(line.index);
             if (lineStartPos < selectionStart) {
                 characterDifferenceBeforeCursor += charDifference;
@@ -247,7 +193,6 @@ class MarkdownEditor {
         
         this.replaceSelectedLines(toggledLines);
         
-        // Maintain cursor position
         const newStart = Math.max(selectionStart + characterDifferenceBeforeCursor, 0);
         const newEnd = Math.max(selectionEnd + totalCharacterDifference, newStart);
         this.setSelection(newStart, newEnd);
@@ -265,7 +210,6 @@ class MarkdownEditor {
             let charDifference = 0;
             
             if (line.text.trim()) {
-                // Remove existing heading if any
                 const cleanLine = line.text.replace(/^#{1,6}\s/, '');
                 const existingHeadingMatch = line.text.match(/^#{1,6}\s/);
                 const existingHeadingLength = existingHeadingMatch ? existingHeadingMatch[0].length : 0;
@@ -278,7 +222,6 @@ class MarkdownEditor {
             
             totalCharacterDifference += charDifference;
             
-            // Calculate character difference before cursor position
             const lineStartPos = this.getLineStartPosition(line.index);
             if (lineStartPos < selectionStart) {
                 characterDifferenceBeforeCursor += charDifference;
@@ -289,13 +232,11 @@ class MarkdownEditor {
         
         this.replaceSelectedLines(headingLines);
         
-        // Maintain cursor position
         const newStart = Math.max(selectionStart + characterDifferenceBeforeCursor, 0);
         const newEnd = Math.max(selectionEnd + totalCharacterDifference, newStart);
         this.setSelection(newStart, newEnd);
     }
 
-    // === LINK AND IMAGE METHODS ===
     insertLink() {
         const { selectionStart, selectionEnd } = this.textarea;
         const selectedText = this.textarea.value.substring(selectionStart, selectionEnd);
@@ -303,12 +244,10 @@ class MarkdownEditor {
         if (selectedText) {
             const linkText = `[${selectedText}](url)`;
             this.replaceSelection(linkText);
-            // Select the "url" part for easy replacement
             this.setSelection(selectionStart + selectedText.length + 3, selectionStart + selectedText.length + 6);
         } else {
             const linkText = '[text](url)';
             this.insertAtCursor(linkText);
-            // Select "text" for easy replacement
             this.setSelection(selectionStart + 1, selectionStart + 5);
         }
     }
@@ -320,22 +259,19 @@ class MarkdownEditor {
         if (selectedText) {
             const imageText = `![${selectedText}](url)`;
             this.replaceSelection(imageText);
-            // Select the "url" part for easy replacement
             this.setSelection(selectionStart + selectedText.length + 4, selectionStart + selectedText.length + 7);
         } else {
             const imageText = '![alt text](url)';
             this.insertAtCursor(imageText);
-            // Select "alt text" for easy replacement
             this.setSelection(selectionStart + 2, selectionStart + 10);
         }
     }
 
-    // === UTILITY METHODS ===
     getLineStartPosition(lineIndex) {
         const lines = this.textarea.value.split('\n');
         let position = 0;
         for (let i = 0; i < lineIndex; i++) {
-            position += lines[i].length + 1; // +1 for the newline character
+            position += lines[i].length + 1;
         }
         return position;
     }
@@ -343,7 +279,6 @@ class MarkdownEditor {
     getSelectedLines() {
         const { selectionStart, selectionEnd, value } = this.textarea;
         const beforeSelection = value.substring(0, selectionStart);
-        const afterSelection = value.substring(selectionEnd);
         
         const startLineIndex = beforeSelection.split('\n').length - 1;
         const endLineIndex = value.substring(0, selectionEnd).split('\n').length - 1;
@@ -363,62 +298,59 @@ class MarkdownEditor {
 
     replaceCurrentLine(lineIndex, newContent) {
         const lines = this.textarea.value.split('\n');
+        const oldLine = lines[lineIndex];
         lines[lineIndex] = newContent;
-        this.textarea.value = lines.join('\n');
-        this.triggerInputEvent();
+        
+        const lineStartPos = this.getLineStartPosition(lineIndex);
+        const lineEndPos = lineStartPos + oldLine.length;
+        
+        this.textarea.focus();
+        this.textarea.setSelectionRange(lineStartPos, lineEndPos);
+        document.execCommand('insertText', false, newContent);
     }
 
     replaceSelectedLines(newLines) {
-        const { selectionStart, selectionEnd, value } = this.textarea;
+        const { value } = this.textarea;
         const lines = value.split('\n');
         const selectedLines = this.getSelectedLines();
         
-        // Replace the selected lines with new content
         const startIndex = selectedLines[0].index;
         const endIndex = selectedLines[selectedLines.length - 1].index;
         
-        lines.splice(startIndex, endIndex - startIndex + 1, ...newLines);
+        const startPos = this.getLineStartPosition(startIndex);
+        const endPos = this.getLineStartPosition(endIndex) + lines[endIndex].length;
         
-        this.textarea.value = lines.join('\n');
-        this.triggerInputEvent();
+        const newText = newLines.join('\n');
+        
+        this.textarea.focus();
+        this.textarea.setSelectionRange(startPos, endPos);
+        document.execCommand('insertText', false, newText);
     }
 
     replaceSelection(text) {
-        const { selectionStart, selectionEnd, value } = this.textarea;
-        const before = value.substring(0, selectionStart);
-        const after = value.substring(selectionEnd);
+        const { selectionStart, selectionEnd } = this.textarea;
         
-        this.textarea.value = before + text + after;
-        this.triggerInputEvent();
+        this.textarea.focus();
+        this.textarea.setSelectionRange(selectionStart, selectionEnd);
+        document.execCommand('insertText', false, text);
     }
 
-    insertAtCursor(text) {
-        const { selectionStart, value } = this.textarea;
-        const before = value.substring(0, selectionStart);
-        const after = value.substring(selectionStart);
+    insertAtCursor(text, immediate = false) {
+        const { selectionStart } = this.textarea;
         
-        this.textarea.value = before + text + after;
-        this.setSelection(selectionStart + text.length, selectionStart + text.length);
-        this.triggerInputEvent();
+        this.textarea.focus();
+        document.execCommand('insertText', false, text);
+        this.setSelection(selectionStart + text.length, selectionStart + text.length, immediate);
     }
 
-    setSelection(start, end) {
+    setSelection(start, end, immediate = false) {
         this.textarea.setSelectionRange(start, end);
         this.textarea.focus();
-        this.scrollToCursor();
+        this.scrollToCursor(immediate);
     }
 
-    // Trigger oninput event to notify of changes
-    triggerInputEvent() {
-        const event = new Event('input', {
-            bubbles: true,
-            cancelable: true,
-        });
-        this.textarea.dispatchEvent(event);
-    }
-
-    scrollToCursor() {
-        setTimeout(() => {
+    scrollToCursor(immediate = false) {
+        const doScroll = () => {
             const { selectionStart } = this.textarea;
             const textBeforeCursor = this.textarea.value.substring(0, selectionStart);
             const lines = textBeforeCursor.split('\n');
@@ -438,18 +370,17 @@ class MarkdownEditor {
             } else if (cursorTop > scrollTop + viewportHeight - effectiveLineHeight) {
                 this.textarea.scrollTop = cursorTop - viewportHeight + effectiveLineHeight * 2;
             }
-        }, 0);
+        };
+
+        if (immediate) {
+            doScroll();
+        } else {
+            setTimeout(doScroll, 0);
+        }
     }
 }
 
-// Function to enhance any textarea with markdown editing capabilities
 function enhanceTextareaWithMarkdown(textareaElement) {
     return new MarkdownEditor(textareaElement);
 }
 
-// Usage examples:
-// const textEditor = document.getElementById('textEditor');
-// enhanceTextareaWithMarkdown(textEditor);
-
-// Or directly:
-// enhanceTextareaWithMarkdown(document.getElementById('textEditor'));

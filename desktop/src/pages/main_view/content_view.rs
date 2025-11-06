@@ -305,13 +305,13 @@ if (textEditor) {
                                 },
                                 onkeydown: move |event: Event<KeyboardData>| {
                                     let data = event.data();
-                                    if event.key() == Key::Tab {
-                                        if data.modifiers().shift() {
-                                            eval_action("unindent");
-                                        } else {
-                                            eval_action("indent");
-                                        }
-                                    }
+                                    // if event.key() == Key::Tab {
+                                    //     if data.modifiers().shift() {
+                                    //         eval_action("unindent");
+                                    //     } else {
+                                    //         eval_action("indent");
+                                    //     }
+                                    // }
                                     if let Some(ActionShortcuts::Text(action)) = settings.read().key_bindings.get_action(&data.into()) {
                                         match action {
                                             TextAction::Bold => eval_action("bold"),
