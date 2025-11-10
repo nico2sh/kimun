@@ -67,7 +67,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/dx
-          key: ${{ runner.os }}-dx-0.7.0
+          key: ${{ runner.os }}-dx-0.7.1
           restore-keys: |
             ${{ runner.os }}-dx-
 
