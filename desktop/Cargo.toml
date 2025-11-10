@@ -8,29 +8,29 @@ edition = "2021"
 
 [dependencies]
 kimun_core = { path = "../core" }
-dioxus = { version = "0.7.0", features = ["router"] }
+dioxus = { version = "0.7.1", features = ["router"] }
 # dioxus-query = "0.8.1"
 # dioxus-radio = "0.6.0"
-anyhow = "1.0.98"
+anyhow = "1.0"
 
 ## Serialization
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.9.5"
+toml = "0.9"
 serde_json = "1.0"
-base64 = "0.22.1"
+base64 = "0.22"
 
 dirs = "6.0"
 nucleo = "0.5"
-rfd = "0.15.4"
+rfd = "0.15"
 
-tokio = { version = "1.47.1", features = ["full"] }
-futures = "0.3.31"
+tokio = { version = "1.48", features = ["full"] }
+futures = "0.3"
 
 chrono = "0.4"
-pulldown-cmark = "0.13.0"
-syntect = "5.2.0"
-lazy_static = "1.5.0"
-itertools = "0.14.0"
+pulldown-cmark = "0.13"
+syntect = "5.3"
+lazy_static = "1.5"
+itertools = "0.14"
 
 [features]
 bundle = []
