@@ -163,7 +163,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     });
 
     let vault_content = props.vault.clone();
-    let note_content = use_resource(move || {
+    let mut note_content = use_resource(move || {
         debug!("[Initial Content] Loading text content");
         let vault = vault_content.clone();
         async move {
@@ -248,6 +248,13 @@ if (textEditor) {
     // let _ = use_global_shortcut("cmd+L", move || {
     //     info!("Command L");
     // });
+    use_effect(move || {
+        // If we set the preview, we update the content with the current value
+        if *props.preview.read() {
+            note_content.set(Some(content.peek().clone()));
+        }
+    });
+    let cont = note_content.read().clone();
 
     // This manages the editor state
     rsx! {
