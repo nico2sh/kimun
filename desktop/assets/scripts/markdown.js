@@ -84,10 +84,12 @@ class MarkdownEditor {
         const lines = this.textarea.value.split('\n');
         const currentLineIndex = this.textarea.value.substring(0, cursorPos).split('\n').length - 1;
         const currentLine = lines[currentLineIndex];
+        const isLastLine = currentLineIndex == lines.length - 1;
         
         const indentMatch = currentLine.match(/^(\s*)/);
         const indent = indentMatch ? indentMatch[1] : '';
         
+        // No text, and it is indented, so we remove one indentation level
         if (currentLine.trim() === '' && indent.length > 0) {
             const newIndent = indent.length >= 2 ? indent.slice(2) : '';
             this.replaceCurrentLine(currentLineIndex, newIndent);
@@ -99,32 +101,29 @@ class MarkdownEditor {
         const listMatch = currentLine.match(/^(\s*)([-*+]|\d+\.)\s(.*)$/);
         const numberedListMatch = currentLine.match(/^(\s*)(\d+)\.\s(.*)$/);
         
+        // We check if it is a list, either a bullet or a numbered list
         if (listMatch) {
+            // Indentation
             const listIndent = listMatch[1];
+            // Type of list (number of bullet character)
             const listMarker = listMatch[2];
+            // Content of the list
             const listContent = listMatch[3];
             
             if (listContent.trim() === '') {
+                // No content, so we remove an indentation level
                 if (listIndent.length >= 2) {
+                    // We have one or more indentation levels
                     const newIndent = listIndent.slice(2);
                     const newLine = newIndent + listMarker + ' ';
                     this.replaceCurrentLine(currentLineIndex, newLine);
                     this.setSelection(cursorPos - 2, cursorPos - 2, true);
                 } else {
                     // At top level - remove list marker and insert newline
-                    const lineStartPos = this.getLineStartPosition(currentLineIndex);
-                    const lineEndPos = lineStartPos + currentLine.length;
-                    
-                    this.textarea.focus();
-                    this.textarea.setSelectionRange(lineStartPos, lineEndPos);
-                    document.execCommand('insertText', false, '');
-                    
-                    // Now insert a newline to create an empty line below
-                    this.textarea.focus();
-                    document.execCommand('insertText', false, '\n');
-                    
-                    // Move cursor to the new empty line
-                    this.setSelection(lineStartPos + 1, lineStartPos + 1, true);
+                    this.replaceCurrentLine(currentLineIndex, '');
+                    if (isLastLine) {
+                        this.insertAtCursor('\n', true);
+                    }
                 }
                 return true;
             }
@@ -299,6 +298,7 @@ class MarkdownEditor {
     replaceCurrentLine(lineIndex, newContent) {
         const lines = this.textarea.value.split('\n');
         const oldLine = lines[lineIndex];
+
         lines[lineIndex] = newContent;
         
         const lineStartPos = this.getLineStartPosition(lineIndex);
