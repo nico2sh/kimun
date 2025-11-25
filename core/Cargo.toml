@@ -21,21 +21,20 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 ## Browse files
 ignore = "0.4"
 ## Hash function
-# gxhash = "3.5"
-twox-hash = "2.1.1"
+twox-hash = "2.1"
 ## Regular Expressions
-regex = "1.11"
+regex = "1.12"
 # Markdown parsing
 pulldown-cmark = "0.13"
 chrono = "0.4"
-crossbeam-channel = "0.5.15"
-futures-channel = "0.3.31"
-futures-util = "0.3.31"
+crossbeam-channel = "0.5"
+futures-channel = "0.3"
+futures-util = "0.3"
 ## Async stuff
 # tokio = { version = "1.42", features = ["full"] }
 # crossbeam-channel = "0.5"
 # futures = "0.3"
 
 [dev-dependencies]
-tempfile = "3.0"
+tempfile = "3.23"
 serde_json = "1.0"
