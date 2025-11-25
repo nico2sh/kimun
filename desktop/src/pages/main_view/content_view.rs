@@ -254,7 +254,6 @@ if (textEditor) {
             note_content.set(Some(content.peek().clone()));
         }
     });
-    let cont = note_content.read().clone();
 
     // This manages the editor state
     rsx! {
