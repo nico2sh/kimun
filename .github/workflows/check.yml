@@ -63,14 +63,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-target-
 
-      - name: Cache Dioxus CLI
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/dx
-          key: ${{ runner.os }}-dx-0.7.0
-          restore-keys: |
-            ${{ runner.os }}-dx-
-
       # Install platform-specific dependencies
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
