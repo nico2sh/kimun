@@ -277,20 +277,23 @@ impl MdContext {
                         Ok(res) => {
                             match res.len() {
                                 0 => {
+                                    info!("No Result");
                                     // Create new note
                                     let encoded_path = encode_path(&note_path);
                                     navigator().replace(crate::Route::MainView { encoded_path, create: true });
                                 },
                                 1 => {
+                                    info!("One result");
+                                    let (details, _data) = res.first().unwrap();
+                                    let encoded_path = encode_path(&details.path);
                                     // Open note
-                                    let encoded_path = encode_path(&note_path);
                                     navigator().replace(crate::Route::MainView { encoded_path, create: false });
                                 },
                                 _ => {
                                     // Show picker
                                     debug!("Show picker for {note_path}");
-                                    let note_list = res.iter().map(|(data, details)| {
-                                        (details.title.clone(), data.path.clone())
+                                    let note_list = res.iter().map(|(details, data)| {
+                                        (data.title.clone(), details.path.clone())
                                     }).collect();
                                     modal_type.set(ModalType::NotePicker { note_list });
                                 }
