@@ -974,7 +974,7 @@ dependencies = [
  "objc_id",
  "percent-encoding",
  "rand 0.9.1",
- "rfd",
+ "rfd 0.15.4",
  "rustc-hash 2.1.1",
  "serde",
  "serde_json",
@@ -2438,7 +2438,7 @@ dependencies = [
  "lazy_static",
  "nucleo",
  "pulldown-cmark",
- "rfd",
+ "rfd 0.16.0",
  "serde",
  "serde_json",
  "syntect",
@@ -3816,6 +3816,30 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rfd"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a15ad77d9e70a92437d8f74c35d99b4e4691128df018833e99f90bcd36152672"
+dependencies = [
+ "ashpd",
+ "block2",
+ "dispatch2",
+ "js-sys",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "pollster",
+ "raw-window-handle 0.6.2",
+ "urlencoding",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
