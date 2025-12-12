@@ -136,13 +136,7 @@ progress {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  /* align-items: center;
-  justify-content: center; */
 }
-
-/* .dialog-controls .select {
-  width: 100%;
-} */
 
 .dialog-controls label {
   display: block;
