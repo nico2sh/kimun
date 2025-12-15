@@ -12,6 +12,7 @@ use crate::{
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
         note_browser::NoteBrowser,
+        preview_pane::PreviewPane,
     },
     global_events::{GlobalEvent, PubSub},
     route::Route,
@@ -207,7 +208,8 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                         ActionShortcuts::TogglePreview => {
                             let preview = !*show_preview.read();
                             debug!("Toggling preview to {}", preview);
-                            show_preview.set(preview)},
+                            show_preview.set(preview)
+                        }
                         ActionShortcuts::OpenSettings => {
                             debug!("Open Settings");
                             navigator().replace(Route::Settings {});
@@ -248,7 +250,12 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                 match &*content_path.read() {
                     PathType::Note => {
                         rsx! {
-                            TextEditor { note_path: editor_path, vault: vault.clone(), modal_type, preview: show_preview }
+                            TextEditor {
+                                note_path: editor_path,
+                                vault: vault.clone(),
+                                modal_type,
+                                preview: show_preview,
+                            }
                         }
                     }
                     PathType::Directory => {
@@ -274,6 +281,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                         }
                     }
                 }
+                div { class: "rightbar", PreviewPane {} }
             }
             div { class: "editor-footer" }
         }

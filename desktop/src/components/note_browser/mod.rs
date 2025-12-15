@@ -1,3 +1,5 @@
+pub mod note_list;
+
 use std::{rc::Rc, sync::Arc};
 
 use dioxus::{
@@ -12,6 +14,7 @@ use crate::{
     components::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
+        note_browser::note_list::{HoverElement, NoteList},
         note_select_entry::{NoteSelectEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
     },
     global_events::{GlobalEvent, PubSub},
@@ -250,15 +253,13 @@ pub fn NoteBrowser(
                 class: "input",
                 placeholder: "search",
                 value: "{filter_text}",
-                onfocus: move |_e| {
-                    focus.focus(FocusComponent::BrowseSearch)
-                },
+                onfocus: move |_e| { focus.focus(FocusComponent::BrowseSearch) },
                 oninput: move |e| {
                     filter_text.set(e.value().to_string());
                 },
                 onmounted: move |e| {
                     focus_manager.register_and_focus(FocusComponent::BrowseSearch, e.data());
-                }
+                },
             }
         }
         div { class: "sidebar-controls",
@@ -323,49 +324,49 @@ pub fn NoteBrowser(
                 .read()
                 .clone()
             {
-                for (index , entry) in entries.into_iter().enumerate() {
-                    {
-                        let entry_path = entry.get_path().to_owned();
-                        let slct = selected() == Some(index);
-                        let active = entry_path.eq(&*editor_path.read());
-                        let vault = vault.clone();
-                        let entry_action = entry.clone();
-                        rsx! {
-                            div {
-                                class: if slct { "note-item selected" } else { if active { "note-item active" } else { "note-item" } },
-                                id: "element-{index}",
-                                onmounted: move |e| {
-                                    row_mounts.write().insert(index, e.data());
-                                },
-                                onmouseenter: move |_e| {
-                                    if select_by_mouse() {
-                                        selected.set(Some(index));
-                                    }
-                                },
-                                onclick: move |e| {
-                                    info!("Clicked element");
-                                    e.stop_propagation();
-                                    let _ = entry.on_select();
-                                },
-                                {entry.get_view()}
-                                if !entry.is_up_dir() && slct {
-                                    NoteActions {
-                                        vault,
-                                        modal_type,
-                                        entry_path,
-                                        onclick: move |_e| {
-                                            info!("Clicked element");
-                                            let _ = entry_action.on_select();
-                                        },
-                                    }
-                                }
-                            }
+                {
+                    let vault = vault.clone();
+                    rsx! {
+                        NoteList {
+                            entries,
+                            active_path: editor_path.read().to_owned(),
+                            hover_action: NoteBrowserHover {
+                                vault,
+                                modal_type,
+                            },
                         }
                     }
                 }
             } else {
                 div { class: "controls",
                     div { class: "info-text", "Loading..." }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct NoteBrowserHover {
+    vault: Arc<NoteVault>,
+    modal_type: Signal<ModalType>,
+}
+
+impl HoverElement for NoteBrowserHover {
+    fn on_hover(&self, entry: NoteSelectEntry) -> Element {
+        let vault = self.vault.clone();
+        let modal_type = self.modal_type;
+        let entry_path = entry.get_path().to_owned();
+        rsx! {
+            if !entry.is_up_dir() {
+                NoteActions {
+                    vault,
+                    modal_type,
+                    entry_path,
+                    onclick: move |_e| {
+                        info!("Clicked element");
+                        let _ = entry.on_select();
+                    },
                 }
             }
         }

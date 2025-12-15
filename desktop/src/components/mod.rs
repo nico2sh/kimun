@@ -8,3 +8,4 @@ pub mod modal;
 pub mod note_browser;
 pub mod note_select_entry;
 pub mod preview;
+pub mod preview_pane;
