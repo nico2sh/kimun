@@ -11,26 +11,26 @@ use crate::{
 #[derive(Clone, PartialEq, Props)]
 pub struct NoteListProps<H>
 where
-    H: HoverElement + Clone + PartialEq + 'static,
+    H: NoteElementActions + Clone + PartialEq + 'static,
 {
     entries: Vec<NoteSelectEntry>,
     active_path: VaultPath,
-    hover_action: H,
+    element_action: H,
 }
 
-pub trait HoverElement {
+pub trait NoteElementActions {
     fn on_hover(&self, entry: NoteSelectEntry) -> Element;
 }
 
 #[component]
 pub fn NoteList<H>(props: NoteListProps<H>) -> Element
 where
-    H: HoverElement + Clone + PartialEq + 'static,
+    H: NoteElementActions + Clone + PartialEq + 'static,
 {
     let entries = props.entries;
     let num_entries = entries.len();
     let active_path = props.active_path;
-    let hover_action = props.hover_action;
+    let element_action = props.element_action;
 
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut select_by_mouse = use_signal(|| true);
@@ -74,9 +74,9 @@ where
                                 let _ = entry_action.on_select();
                             },
                             {entry.get_view()}
-
+                        
                             if slct {
-                                {hover_action.on_hover(entry)}
+                                {element_action.on_hover(entry)}
                             }
                         }
                     }

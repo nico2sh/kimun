@@ -12,7 +12,7 @@ use crate::{
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
         note_browser::NoteBrowser,
-        preview_pane::PreviewPane,
+        preview_pane::{PreviewList, PreviewPane},
     },
     global_events::{GlobalEvent, PubSub},
     route::Route,
@@ -26,7 +26,7 @@ mod header;
 const EDITOR: &str = "editor";
 
 #[derive(Debug, PartialEq, Eq)]
-enum PathType {
+enum ContentType {
     Note,
     Directory,
     Reroute(VaultPath),
@@ -131,7 +131,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                     match editor_vault.create_note(&note_path, "") {
                         Ok(_) => {
                             pub_sub.publish(GlobalEvent::NewNoteCreated(note_path));
-                            PathType::Note
+                            ContentType::Note
                         }
                         Err(e) => {
                             let parent = note_path.get_parent_path().0;
@@ -139,12 +139,12 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                                 message: "Error Creating new Note".to_string(),
                                 error: e.to_string(),
                             });
-                            PathType::Reroute(parent)
+                            ContentType::Reroute(parent)
                         }
                     }
                 } else {
                     debug!("We reroute to the root");
-                    PathType::Reroute(VaultPath::root())
+                    ContentType::Reroute(VaultPath::root())
                 }
             },
             // Exists, so we see if it's a directory or a note
@@ -152,15 +152,15 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                 // If it's an attachment, we look for the parent
                 EntryData::Note(_nt) => {
                     debug!("Path is a note");
-                    PathType::Note
+                    ContentType::Note
                 }
                 EntryData::Directory(_dt) => {
                     debug!("Path is a directory");
-                    PathType::Directory
+                    ContentType::Directory
                 }
                 EntryData::Attachment => {
                     debug!("Path is an attachment");
-                    PathType::Reroute(e.path.get_parent_path().0)
+                    ContentType::Reroute(e.path.get_parent_path().0)
                 }
             },
         )
@@ -248,7 +248,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
             EditorHeader { path: editor_path, show_browser }
             div { class: "editor-main",
                 match &*content_path.read() {
-                    PathType::Note => {
+                    ContentType::Note => {
                         rsx! {
                             TextEditor {
                                 note_path: editor_path,
@@ -258,13 +258,13 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                             }
                         }
                     }
-                    PathType::Directory => {
+                    ContentType::Directory => {
                         debug!("Opening Directory View");
                         rsx! {
                             NoText { path: editor_path }
                         }
                     }
-                    PathType::Reroute(new_path) => {
+                    ContentType::Reroute(new_path) => {
                         let next_path = new_path.clone();
                         rsx! {
                             div {
@@ -281,7 +281,12 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                         }
                     }
                 }
-                div { class: "rightbar", PreviewPane {} }
+                div { class: "rightbar",
+                    PreviewPane {
+                        vault: vault.clone(),
+                        source: PreviewList::FromPath(VaultPath::root()),
+                    }
+                }
             }
             div { class: "editor-footer" }
         }

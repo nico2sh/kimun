@@ -14,7 +14,7 @@ use crate::{
     components::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
-        note_browser::note_list::{HoverElement, NoteList},
+        note_browser::note_list::{NoteElementActions, NoteList},
         note_select_entry::{NoteSelectEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
     },
     global_events::{GlobalEvent, PubSub},
@@ -330,7 +330,7 @@ pub fn NoteBrowser(
                         NoteList {
                             entries,
                             active_path: editor_path.read().to_owned(),
-                            hover_action: NoteBrowserHover {
+                            element_action: NoteBrowserHover {
                                 vault,
                                 modal_type,
                             },
@@ -352,7 +352,7 @@ struct NoteBrowserHover {
     modal_type: Signal<ModalType>,
 }
 
-impl HoverElement for NoteBrowserHover {
+impl NoteElementActions for NoteBrowserHover {
     fn on_hover(&self, entry: NoteSelectEntry) -> Element {
         let vault = self.vault.clone();
         let modal_type = self.modal_type;

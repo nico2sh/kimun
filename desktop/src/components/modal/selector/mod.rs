@@ -43,7 +43,6 @@ where
 #[derive(Props, Clone, PartialEq)]
 struct SelectorViewProps<R>
 where
-    Resource<Vec<R>>: PartialEq,
     R: RowItem + 'static,
 {
     filter_text: Signal<String>,
@@ -172,7 +171,6 @@ where
                             Some(0)
                         };
                         if let Some(sel) = new_selected {
-
                             if let Some(mount) = mounts.get(sel) {
                                 let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
                                 select_by_mouse.set(false);
@@ -227,7 +225,6 @@ where
                     spellcheck: false,
                     onmounted: move |e| {
                         focus_manager.register_and_focus(FocusComponent::ModalInput, e.data());
-                        // *dialog.write() = Some(e.data());
                     },
                     oninput: move |e| {
                         filter_text.set(e.value().clone().to_string());
