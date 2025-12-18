@@ -44,10 +44,7 @@ pub fn MainView() -> Element {
     let mut show_browser = use_signal(|| false);
 
     let vault_path: &std::path::PathBuf = settings_value.workspace_dir.as_ref().unwrap();
-    let vault = NoteVault::new(vault_path).unwrap();
-    let vault = Arc::new(vault);
-
-    let mut show_preview = use_signal(|| false);
+    let vault = Arc::new(NoteVault::new(vault_path)?);
 
     // Modal setup and Indexing on the first run
     let mut modal_type = use_signal(|| {
@@ -116,7 +113,7 @@ pub fn MainView() -> Element {
                 debug!("Path doesn't exist");
                 if editor_path.read().is_note() && app_state.read().create_if_not_exists {
                     debug!("It's a note and we have to create it");
-                    show_preview.set(false);
+                    app_state.write().preview_mode = false;
                     let note_path = editor_path.read().to_owned();
                     match editor_vault.create_note(&note_path, "") {
                         Ok(_) => {
@@ -196,9 +193,9 @@ pub fn MainView() -> Element {
                 if let Some(action) = settings.read().key_bindings.get_action(&data.into()) {
                     match action {
                         ActionShortcuts::TogglePreview => {
-                            let preview = !*show_preview.read();
+                            let preview = !app_state.read().preview_mode;
                             debug!("Toggling preview to {}", preview);
-                            show_preview.set(preview)
+                            app_state.write().preview_mode = preview;
                         }
                         ActionShortcuts::OpenSettings => {
                             debug!("Open Settings");
@@ -239,7 +236,7 @@ pub fn MainView() -> Element {
                                 note_path: editor_path,
                                 vault: vault.clone(),
                                 modal_type,
-                                preview: show_preview,
+                                preview: app_state.read().preview_mode,
                             }
                         }
                     }

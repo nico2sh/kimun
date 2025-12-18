@@ -100,7 +100,7 @@ pub struct TextEditorProps {
     note_path: ReadSignal<VaultPath>,
     vault: Arc<NoteVault>,
     modal_type: Signal<ModalType>,
-    preview: Signal<bool>,
+    preview: bool,
 }
 
 #[component]
@@ -229,7 +229,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     });
 
     use_effect(move || {
-        if !*props.preview.read() {
+        if !props.preview {
             let init_script = r#"
 const textEditor = document.getElementById('textEditor');
 if (textEditor) {
@@ -250,7 +250,7 @@ if (textEditor) {
     // });
     use_effect(move || {
         // If we set the preview, we update the content with the current value
-        if *props.preview.read() {
+        if props.preview {
             note_content.set(Some(content.peek().clone()));
         }
     });
@@ -263,25 +263,23 @@ if (textEditor) {
                 let focus = focus_manager.clone();
                 match &*note_content.read() {
                     None => rsx! {
-                        div {
-                            onmounted: move |_e| {
-                                // focus_manager.register_and_focus(FocusComponent::Editor, e.data());
-                            },
-                            "Loading..."
-                        }
+                        div { onmounted: move |_e| {}, "Loading..." }
                     },
                     Some(text) => rsx! {
-                        if *props.preview.read() {
+                        if props.preview {
                             {
-                                let note_details = NoteDetails::new(&props.note_path.read(), content.peek().clone());
+                                let note_details = NoteDetails::new(
+                                    &props.note_path.read(),
+                                    content.peek().clone(),
+                                );
                                 let md_content = note_details.get_markdown_and_links();
-                                rsx!{
+                                rsx! {
                                     Markdown {
                                         vault: props.vault.clone(),
                                         note_md: md_content.text,
                                         note_links: md_content.links,
                                         modal_type,
-                                        focus_manager
+                                        focus_manager,
                                     }
                                 }
                             }
@@ -311,14 +309,11 @@ if (textEditor) {
                                 },
                                 onkeydown: move |event: Event<KeyboardData>| {
                                     let data = event.data();
-                                    // if event.key() == Key::Tab {
-                                    //     if data.modifiers().shift() {
-                                    //         eval_action("unindent");
-                                    //     } else {
-                                    //         eval_action("indent");
-                                    //     }
-                                    // }
-                                    if let Some(ActionShortcuts::Text(action)) = settings.read().key_bindings.get_action(&data.into()) {
+                                    if let Some(ActionShortcuts::Text(action)) = settings
+                                        .read()
+                                        .key_bindings
+                                        .get_action(&data.into())
+                                    {
                                         match action {
                                             TextAction::Bold => eval_action("bold"),
                                             TextAction::Italic => eval_action("italic"),
