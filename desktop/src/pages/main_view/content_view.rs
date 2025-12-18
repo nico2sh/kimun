@@ -34,13 +34,13 @@ pub struct EditorSaveManager {
     path: VaultPath,
     vault: Arc<NoteVault>,
     content: Signal<String>,
-    app_state: Signal<EditorState>,
+    editor_state: Signal<EditorState>,
 }
 
 impl EditorSaveManager {
     async fn save(&mut self) -> anyhow::Result<()> {
         // debug!("Triggered save");
-        let dirty_status = self.app_state.read().has_dirty_content();
+        let dirty_status = self.editor_state.read().has_dirty_content();
         if dirty_status {
             debug!("Saving content");
             let path = self.path.clone();
@@ -51,7 +51,7 @@ impl EditorSaveManager {
                 debug!("Saved at {}", path);
             })
             .await?;
-            self.app_state.write().mark_content_clean();
+            self.editor_state.write().mark_content_clean();
         }
         Ok(())
     }
@@ -60,7 +60,7 @@ impl EditorSaveManager {
 impl Drop for EditorSaveManager {
     fn drop(&mut self) {
         debug!("Dropping Editor Data at path {}", self.path);
-        let dirty_status = self.app_state.read().has_dirty_content();
+        let dirty_status = self.editor_state.read().has_dirty_content();
         if dirty_status {
             debug!("Saving so we don't lose data");
             let text = self.content.peek().clone();
@@ -109,7 +109,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
         "-==== [Text Editor] Starting Editor at '{}' ====-",
         props.note_path
     );
-    let mut app_state: Signal<EditorState> = use_context();
+    let mut editor_state: Signal<EditorState> = use_context();
     let mut content = use_signal(|| "".to_string());
     let modal_type = props.modal_type;
 
@@ -132,14 +132,14 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                         }
                         // We create a new instance of the editor data
                         *content.write() = text.clone();
-                        app_state.write().set_content_type(
+                        editor_state.write().set_content_type(
                             crate::editor_state::ContentType::Note { dirty: false },
                         );
                         let editor_data = EditorSaveManager {
                             content,
                             path: props.note_path.read().to_owned(),
                             vault: editor_vault.clone(),
-                            app_state,
+                            editor_state,
                         };
                         ed = Some(editor_data);
                     }
@@ -205,16 +205,16 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
             Callback::new(move |g| {
                 match g {
                     GlobalEvent::SaveCurrentNote => {
-                        let dirty_status = app_state.read().has_dirty_content();
+                        let dirty_status = editor_state.read().has_dirty_content();
                         if dirty_status {
                             debug!("Saving so we don't lose data");
                             let text = content.peek().clone();
                             let _ = vault.save_note(&props.note_path.read(), text);
-                            app_state.write().mark_content_clean();
+                            editor_state.write().mark_content_clean();
                         }
                     }
                     GlobalEvent::MarkNoteClean => {
-                        app_state.write().mark_content_clean();
+                        editor_state.write().mark_content_clean();
                     }
                     _ => {}
                 }
@@ -305,7 +305,7 @@ if (textEditor) {
                                 // },
                                 oninput: move |e| {
                                     *content.write() = e.value();
-                                    app_state.write().mark_content_dirty();
+                                    editor_state.write().mark_content_dirty();
                                 },
                                 onkeydown: move |event: Event<KeyboardData>| {
                                     let data = event.data();
