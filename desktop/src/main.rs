@@ -3,18 +3,22 @@ use components::focus_manager::FocusManager;
 use dioxus::prelude::*;
 
 // use dioxus_radio::hooks::use_init_radio_station;
+use editor_state::EditorState;
 use route::Route;
 use settings::AppSettings;
-use state::AppState;
 
-use crate::global_events::{GlobalEvent, PubSub};
+use crate::{
+    app_state::AppState,
+    global_events::{GlobalEvent, PubSub},
+};
 
+pub mod app_state;
 mod components;
+pub mod editor_state;
 pub mod global_events;
 mod pages;
 mod route;
 mod settings;
-pub mod state;
 pub mod utils;
 
 // The asset macro also minifies some assets like CSS and JS to make bundled smaller
@@ -36,13 +40,15 @@ fn main() {
 fn App() -> Element {
     let app_settings = use_signal(|| AppSettings::load_from_disk().unwrap());
     use_context_provider(move || app_settings);
+    let app_state = use_signal(|| AppState::new(&app_settings.read()));
+    use_context_provider(move || app_state);
     let pub_sub = PubSub::<GlobalEvent>::new();
     use_context_provider(move || pub_sub);
     let focus_manager = FocusManager::new();
     use_context_provider(move || focus_manager);
     let theme = app_settings.read().get_theme();
 
-    use_context_provider(|| Signal::new(AppState::default()));
+    use_context_provider(|| Signal::new(EditorState::default()));
     // use_init_radio_station::<AppState, KimunChannel>(AppState::default);
 
     rsx! {

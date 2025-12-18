@@ -2,7 +2,7 @@ use chrono::NaiveDate;
 use dioxus::{logger::tracing::info, prelude::*, signals::SyncSignal};
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
-use crate::utils::encode_path;
+use crate::{app_state::AppState, utils::encode_path};
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum SortCriteria {
@@ -220,17 +220,14 @@ impl AsRef<str> for NoteSelectEntry {
 
 impl RowItem for NoteSelectEntry {
     fn on_select(&self) -> bool {
+        let mut app_state: Signal<AppState> = use_context();
         match self {
             NoteSelectEntry::Note {
                 path,
                 title: _,
                 search_str: _,
             } => {
-                let encoded_path = encode_path(path);
-                navigator().replace(crate::Route::MainView {
-                    encoded_path,
-                    create: false,
-                });
+                app_state.write().set_path(&path, false);
                 true
             }
             NoteSelectEntry::Journal {
@@ -239,11 +236,7 @@ impl RowItem for NoteSelectEntry {
                 date_string: _,
                 search_str: _,
             } => {
-                let encoded_path = encode_path(path);
-                navigator().replace(crate::Route::MainView {
-                    encoded_path,
-                    create: false,
-                });
+                app_state.write().set_path(&path, false);
                 true
             }
             NoteSelectEntry::Directory {
@@ -262,10 +255,7 @@ impl RowItem for NoteSelectEntry {
                 name: _,
             } => {
                 let encoded_path = encode_path(new_note_path);
-                navigator().replace(crate::Route::MainView {
-                    encoded_path,
-                    create: true,
-                });
+                app_state.write().set_path(&new_note_path, true);
                 true
             }
         }
