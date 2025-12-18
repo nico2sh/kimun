@@ -6,6 +6,7 @@ use crate::settings::AppSettings;
 pub struct AppState {
     pub current_path: VaultPath,
     pub create_if_not_exists: bool,
+    pub preview_mode: bool,
 }
 
 impl AppState {
@@ -18,6 +19,7 @@ impl AppState {
 
         Self {
             current_path: starting_path,
+            preview_mode: false,
             create_if_not_exists: false,
         }
     }
