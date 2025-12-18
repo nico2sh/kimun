@@ -7,6 +7,7 @@ pub struct AppState {
     pub current_path: VaultPath,
     pub create_if_not_exists: bool,
     pub preview_mode: bool,
+    pub show_browser: bool,
 }
 
 impl AppState {
@@ -19,13 +20,18 @@ impl AppState {
 
         Self {
             current_path: starting_path,
-            preview_mode: false,
             create_if_not_exists: false,
+            preview_mode: false,
+            show_browser: false,
         }
     }
 
     pub fn set_path(&mut self, path: &VaultPath, create_if_not_exists: bool) {
         self.current_path = path.to_owned();
         self.create_if_not_exists = create_if_not_exists;
+    }
+
+    pub fn toggle_browser(&mut self) {
+        self.show_browser = !self.show_browser;
     }
 }

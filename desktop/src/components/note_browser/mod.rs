@@ -11,6 +11,7 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
 use crate::{
+    app_state::AppState,
     components::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
@@ -55,8 +56,9 @@ pub fn NoteBrowser(
     vault: Arc<NoteVault>,
     editor_path: ReadSignal<VaultPath>,
     modal_type: Signal<ModalType>,
-    show_browser: Signal<bool>,
 ) -> Element {
+    // let mut app_state: Signal<AppState> = use_context();
+
     let browsing_directory = use_signal_sync(move || {
         let np = editor_path.read();
         if np.is_note() {

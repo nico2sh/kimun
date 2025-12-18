@@ -41,8 +41,6 @@ pub fn MainView() -> Element {
     let settings: Signal<AppSettings> = use_context();
     let settings_value = settings.read();
 
-    let mut show_browser = use_signal(|| false);
-
     let vault_path: &std::path::PathBuf = settings_value.workspace_dir.as_ref().unwrap();
     let vault = Arc::new(NoteVault::new(vault_path)?);
 
@@ -173,13 +171,12 @@ pub fn MainView() -> Element {
     // });
 
     rsx! {
-        if *show_browser.read() {
+        if app_state.read().show_browser {
             div { class: "sidebar",
                 NoteBrowser {
                     vault: vault.clone(),
                     editor_path,
                     modal_type,
-                    show_browser,
                 }
             }
         } else {
@@ -203,8 +200,7 @@ pub fn MainView() -> Element {
                         }
                         ActionShortcuts::ToggleNoteBrowser => {
                             debug!("Toggle note browser");
-                            let shown = *show_browser.read();
-                            show_browser.set(!shown);
+                            app_state.write().toggle_browser();
                         }
                         ActionShortcuts::SearchNotes => {
                             debug!("Trigger Open Note Search");
@@ -227,7 +223,7 @@ pub fn MainView() -> Element {
                 }
             },
             Modal { modal_type }
-            EditorHeader { path: editor_path, show_browser }
+            EditorHeader { path: editor_path }
             div { class: "editor-main",
                 match &*content_path.read() {
                     ContentType::Note => {
