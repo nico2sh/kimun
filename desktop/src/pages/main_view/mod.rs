@@ -9,6 +9,7 @@ use kimun_core::{
 };
 
 use crate::{
+    app_state::AppState,
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
         note_browser::NoteBrowser,
@@ -17,7 +18,7 @@ use crate::{
     global_events::{GlobalEvent, PubSub},
     route::Route,
     settings::AppSettings,
-    utils::{decode_path, encode_path, keys::action_shortcuts::ActionShortcuts},
+    utils::keys::action_shortcuts::ActionShortcuts,
 };
 
 mod content_view;
@@ -33,9 +34,9 @@ enum ContentType {
 }
 
 #[component]
-pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
-    let editor_path =
-        use_memo(move || decode_path(&*encoded_path.read()).unwrap_or(VaultPath::root()));
+pub fn MainView() -> Element {
+    let app_state: Signal<AppState> = use_context();
+    let editor_path = use_memo(move || app_state.read().current_path.to_owned());
     debug!("-== [Editor] Starting Editor at '{}' ==-", editor_path);
     let settings: Signal<AppSettings> = use_context();
     let settings_value = settings.read();
@@ -56,6 +57,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
 
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
+    let mut app_state: Signal<AppState> = use_context();
     use_effect(move || {
         pc.subscribe(
             EDITOR,
@@ -65,11 +67,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                     let is_current = editor_path.eq(&vault_path);
                     if is_current {
                         let parent = vault_path.get_parent_path().0;
-                        let encoded_path = encode_path(&parent);
-                        navigator().replace(crate::Route::MainView {
-                            encoded_path,
-                            create: false,
-                        });
+                        app_state.write().set_path(&parent, false);
                     } else {
                         debug!("Not current {}, {}", editor_path, vault_path);
                     }
@@ -80,11 +78,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                     let is_current = editor_path.eq(&from);
                     if is_current {
                         let parent = from.get_parent_path().0;
-                        let encoded_path = encode_path(&parent);
-                        navigator().replace(crate::Route::MainView {
-                            encoded_path,
-                            create: false,
-                        });
+                        app_state.write().set_path(&parent, false);
                     }
                 }
                 GlobalEvent::Renamed { old_name, new_name } => {
@@ -92,11 +86,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
 
                     let is_current = editor_path.eq(&old_name);
                     if is_current {
-                        let encoded_path = encode_path(&new_name);
-                        navigator().replace(crate::Route::MainView {
-                            encoded_path,
-                            create: false,
-                        });
+                        app_state.write().set_path(&new_name, false);
                     }
                 }
                 _ => {}
@@ -124,7 +114,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
         editor_vault.exists(&editor_path.read()).map_or_else(
             || {
                 debug!("Path doesn't exist");
-                if editor_path.read().is_note() && create {
+                if editor_path.read().is_note() && app_state.read().create_if_not_exists {
                     debug!("It's a note and we have to create it");
                     show_preview.set(false);
                     let note_path = editor_path.read().to_owned();
@@ -232,12 +222,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                         ActionShortcuts::NewJournal => {
                             debug!("New Journal Entry");
                             if let Ok(journal_entry) = vault.journal_entry() {
-                                let encoded_path = encode_path(&journal_entry.0.path);
-                                navigator()
-                                    .replace(crate::Route::MainView {
-                                        encoded_path,
-                                        create: true,
-                                    });
+                                app_state.write().set_path(&journal_entry.0.path, true);
                             }
                         }
                         _ => {}
@@ -270,12 +255,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                             div {
                                 onmounted: move |_| {
                                     debug!("Rerouting to {}...", next_path);
-                                    let encoded_path = encode_path(&next_path);
-                                    navigator()
-                                        .replace(Route::MainView {
-                                            encoded_path,
-                                            create: true,
-                                        });
+                                    app_state.write().set_path(&next_path, true);
                                 },
                             }
                         }

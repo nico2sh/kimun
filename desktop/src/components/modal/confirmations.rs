@@ -4,6 +4,7 @@ use dioxus::{logger::tracing::error, prelude::*};
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
 use crate::{
+    app_state::AppState,
     components::{button::ButtonBuilder, modal::ModalType},
     global_events::{GlobalEvent, PubSub},
     route::Route,
@@ -343,6 +344,7 @@ pub fn CreateNote(
             entries
         }
     });
+    let mut app_state: Signal<AppState> = use_context();
     let buttons = vec![
         ButtonBuilder::secondary(
             "Cancel",
@@ -354,11 +356,7 @@ pub fn CreateNote(
             "Create",
             Callback::new(move |_e| {
                 if is_valid() {
-                    let encoded_path = encode_path(&new_full_path.read());
-                    navigator().replace(Route::MainView {
-                        encoded_path,
-                        create: true,
-                    });
+                    app_state.write().set_path(&new_full_path.read(), true);
                     modal_type.write().close();
                 }
             }),

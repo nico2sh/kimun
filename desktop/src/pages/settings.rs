@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
+    app_state::AppState,
     components::{
         button::Button,
         modal::{indexer::IndexType, Modal, ModalType},
@@ -124,18 +125,14 @@ pub fn Settings() -> Element {
                             let path = &settings.read().workspace_dir;
                             match settings.read().save_to_disk() {
                                 Ok(_) => {
+                                    let mut app_state: Signal<AppState> = use_context();
                                     if let Some(_p) = path {
                                         let editor_path = settings
                                             .read()
                                             .last_paths
                                             .last()
                                             .map_or_else(VaultPath::root, |p| p.to_owned());
-                                        let encoded_path = encode_path(&editor_path);
-                                        navigator()
-                                            .replace(Route::MainView {
-                                                encoded_path,
-                                                create: false,
-                                            });
+                                        app_state.write().current_path = editor_path;
                                     }
                                 }
                                 Err(_e) => todo!(),

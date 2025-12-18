@@ -15,9 +15,9 @@ use crate::{
         modal::ModalType,
         preview::Markdown,
     },
+    editor_state::{ContentType, EditorState},
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
-    state::{AppState, ContentType},
     utils::keys::action_shortcuts::{ActionShortcuts, TextAction},
     MARKDOWN_JS,
 };
@@ -34,7 +34,7 @@ pub struct EditorSaveManager {
     path: VaultPath,
     vault: Arc<NoteVault>,
     content: Signal<String>,
-    app_state: Signal<AppState>,
+    app_state: Signal<EditorState>,
 }
 
 impl EditorSaveManager {
@@ -79,7 +79,7 @@ pub enum EditorMsg {
 pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
     let mut text_area_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
 
-    let mut app_state: Signal<AppState> = use_context();
+    let mut app_state: Signal<EditorState> = use_context();
     use_effect(move || app_state.write().set_content_type(ContentType::Directory));
 
     rsx! {
@@ -109,7 +109,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
         "-==== [Text Editor] Starting Editor at '{}' ====-",
         props.note_path
     );
-    let mut app_state: Signal<AppState> = use_context();
+    let mut app_state: Signal<EditorState> = use_context();
     let mut content = use_signal(|| "".to_string());
     let modal_type = props.modal_type;
 
@@ -132,9 +132,9 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                         }
                         // We create a new instance of the editor data
                         *content.write() = text.clone();
-                        app_state
-                            .write()
-                            .set_content_type(crate::state::ContentType::Note { dirty: false });
+                        app_state.write().set_content_type(
+                            crate::editor_state::ContentType::Note { dirty: false },
+                        );
                         let editor_data = EditorSaveManager {
                             content,
                             path: props.note_path.read().to_owned(),

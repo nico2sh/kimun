@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 // use dioxus_radio::hooks::use_radio;
 use kimun_core::nfs::VaultPath;
 
-use crate::state::{AppState, ContentType};
+use crate::editor_state::{ContentType, EditorState};
 
 #[derive(Clone, PartialEq, Props)]
 pub struct EditorHeaderProps {
@@ -15,7 +15,7 @@ pub fn EditorHeader(props: EditorHeaderProps) -> Element {
     let note_path_display = props.path.read().to_string();
     let mut show_browser = props.show_browser;
     // let app_state = use_radio::<AppState, KimunChannel>(KimunChannel::Header);
-    let app_state: Signal<AppState> = use_context();
+    let app_state: Signal<EditorState> = use_context();
     rsx! {
         div { class: "editor-header",
             div { class: "header-left",

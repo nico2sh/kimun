@@ -12,8 +12,8 @@ use crate::pages::start::Start;
 pub enum Route {
     #[route("/")]
     Start {},
-    #[route("/edit/:encoded_path?:create")]
-    MainView { encoded_path: String, create: bool },
+    #[route("/note")]
+    MainView {},
     #[route("/settings")]
     Settings {},
     // #[route("/:..route")]

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    app_state::AppState,
     components::focus_manager::FocusComponent,
     utils::{
         encode_path,
@@ -87,7 +88,9 @@ impl MdContext {
         rsx! {
             match &note_link.ltype {
                 LinkType::Note(vault_path) => MdContext::el_note(props, children, vault_path),
-                LinkType::Attachment(vault_path) => MdContext::el_attachment(props, children, vault_path),
+                LinkType::Attachment(vault_path) => {
+                    MdContext::el_attachment(props, children, vault_path)
+                }
                 LinkType::Url => MdContext::el_a(children, note_link.raw_link.clone()),
             }
         }
@@ -119,22 +122,17 @@ impl MdContext {
             }
             HtmlElement::BlockQuote => {
                 rsx! {
-                    blockquote {  style: "{style}", class: "{class}", {inside} }
+                    blockquote { style: "{style}", class: "{class}", {inside} }
                 }
             }
             HtmlElement::Ul => {
                 rsx! {
-                    ul {  style: "{style}", class: "{class}", {inside} }
+                    ul { style: "{style}", class: "{class}", {inside} }
                 }
             }
             HtmlElement::Ol(x) => {
                 rsx! {
-                    ol {
-                        style: "{style}",
-                        class: "{class}",
-                        start: x as i64,
-                        {inside}
-                    }
+                    ol { style: "{style}", class: "{class}", start: x as i64, {inside} }
                 }
             }
             HtmlElement::Li => {
@@ -235,8 +233,10 @@ impl MdContext {
 
     pub fn line_to_span(ranges: Vec<(Style, &str)>) -> Element {
         rsx! {
-            for (style, text) in ranges {
-                span { style: "color:rgb({style.foreground.r},{style.foreground.g},{style.foreground.b});", "{text}" }
+            for (style , text) in ranges {
+                span { style: "color:rgb({style.foreground.r},{style.foreground.g},{style.foreground.b});",
+                    "{text}"
+                }
             }
         }
     }
@@ -244,14 +244,15 @@ impl MdContext {
     pub fn el_hr(attributes: ElementAttributes) -> Element {
         let class = attributes.classes.join(" ");
         let style = attributes.style.unwrap_or_default();
-        rsx!(hr {
-            style: "{style}",
-            class: "{class}"
-        })
+        rsx!(
+            hr { style: "{style}", class: "{class}" }
+        )
     }
 
     pub fn el_br() -> Element {
-        rsx!(br {})
+        rsx!(
+            br {}
+        )
     }
 
     pub fn el_fragment(children: Vec<Element>) -> Element {
@@ -270,38 +271,38 @@ impl MdContext {
         let note_path = note_path.to_owned();
         let vault = props.vault.clone();
         let mut modal_type = props.modal_type;
+        let mut app_state: Signal<AppState> = use_context();
         rsx! {
-            span { class: "icon-note note-link",
+            span {
+                class: "icon-note note-link",
                 onclick: move |_e| {
                     match vault.open_or_search(&note_path) {
                         Ok(res) => {
                             match res.len() {
                                 0 => {
                                     info!("No Result");
-                                    // Create new note
-                                    let encoded_path = encode_path(&note_path);
-                                    navigator().replace(crate::Route::MainView { encoded_path, create: true });
-                                },
+                                    app_state.write().set_path(&note_path, true);
+                                }
                                 1 => {
                                     info!("One result");
                                     let (details, _data) = res.first().unwrap();
-                                    let encoded_path = encode_path(&details.path);
-                                    // Open note
-                                    navigator().replace(crate::Route::MainView { encoded_path, create: false });
-                                },
+                                    app_state.write().set_path(&details.path, false);
+                                }
                                 _ => {
-                                    // Show picker
                                     debug!("Show picker for {note_path}");
-                                    let note_list = res.iter().map(|(details, data)| {
-                                        (data.title.clone(), details.path.clone())
-                                    }).collect();
+                                    let note_list = res
+                                        .iter()
+                                        .map(|(details, data)| {
+                                            (data.title.clone(), details.path.clone())
+                                        })
+                                        .collect();
                                     modal_type.set(ModalType::NotePicker { note_list });
                                 }
                             }
-                        },
+                        }
                         Err(e) => {
                             error!("Error clicking on note: {}", e);
-                        },
+                        }
                     }
                 },
                 {children}
@@ -322,10 +323,9 @@ impl MdContext {
     }
 
     pub fn el_img(alt: String, src: String) -> Element {
-        rsx!(img {
-            src: "{src}",
-            alt: "{alt}"
-        })
+        rsx!(
+            img { src: "{src}", alt: "{alt}" }
+        )
     }
 
     pub fn el_text(text: CowStr<'_>) -> Element {
@@ -337,12 +337,14 @@ impl MdContext {
     pub fn el_input_checkbox(checked: bool, attributes: ElementAttributes) -> Element {
         let class = attributes.classes.join(" ");
         let style = attributes.style.unwrap_or_default();
-        rsx!(input {
-            r#type: "checkbox",
-            checked,
-            style: "{style}",
-            class: "{class}",
-        })
+        rsx!(
+            input {
+                r#type: "checkbox",
+                checked,
+                style: "{style}",
+                class: "{class}",
+            }
+        )
     }
 }
 
@@ -400,7 +402,8 @@ pub fn Markdown(props: MarkdownProps) -> Element {
 
     rsx! {
         document::Link { rel: "stylesheet", href: MARKDOWN_SYLE }
-        div { class: "markdown",
+        div {
+            class: "markdown",
             onmounted: move |e| {
                 focus_manager.register_and_focus(FocusComponent::Preview, e.data());
             },
