@@ -282,7 +282,6 @@ window.editor = new TextareaMarkdown(
                                         note_md: md_content.text,
                                         note_links: md_content.links,
                                         modal_type,
-                                        focus_manager,
                                     }
                                 }
                             }

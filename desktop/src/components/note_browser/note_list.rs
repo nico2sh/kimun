@@ -4,7 +4,6 @@ use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::{
-    app_state::AppState,
     components::note_select_entry::{NoteBrowseEntry, RowItem},
     utils::sparse_vector::SparseVector,
 };
@@ -21,6 +20,7 @@ where
 
 pub trait NoteElementActions {
     fn on_hover(&self, entry: NoteBrowseEntry) -> Element;
+    fn on_select(&mut self, entry: NoteBrowseEntry);
 }
 
 #[component]
@@ -57,6 +57,7 @@ where
                     let slct = selected() == Some(index);
                     let active = entry_path.eq(&active_path);
                     let entry_action = entry.clone();
+                    let mut element_click = element_action.clone();
                     rsx! {
                         div {
                             class: if slct { "note-item selected" } else { if active { "note-item active" } else { "note-item" } },
@@ -72,8 +73,7 @@ where
                             onclick: move |e| {
                                 info!("Clicked element");
                                 e.stop_propagation();
-                                let mut app_state: Signal<AppState> = use_context();
-                                app_state.write().current_path = entry_action.get_path().to_owned();
+                                element_click.on_select(entry_action.clone());
                             },
                             {entry.get_view()}
                         

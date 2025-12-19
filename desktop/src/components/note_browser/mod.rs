@@ -367,12 +367,15 @@ impl NoteElementActions for NoteBrowserHover {
                     entry_path,
                     onclick: move |_e| {
                         info!("Clicked element");
-                        let mut app_state: Signal<AppState> = use_context();
-                        app_state.write().current_path = entry.get_path().to_owned();
                     },
                 }
             }
         }
+    }
+
+    fn on_select(&mut self, entry: NoteBrowseEntry) {
+        let mut app_state: Signal<AppState> = use_context();
+        app_state.write().current_path = entry.get_path().to_owned();
     }
 }
 

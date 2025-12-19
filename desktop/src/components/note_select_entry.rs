@@ -1,8 +1,6 @@
 use chrono::NaiveDate;
-use dioxus::{logger::tracing::info, prelude::*, signals::SyncSignal};
+use dioxus::{prelude::*, signals::SyncSignal};
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
-
-use crate::app_state::AppState;
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum SortCriteria {

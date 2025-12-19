@@ -173,11 +173,7 @@ pub fn MainView() -> Element {
     rsx! {
         if app_state.read().show_browser {
             div { class: "sidebar",
-                NoteBrowser {
-                    vault: vault.clone(),
-                    editor_path,
-                    modal_type,
-                }
+                NoteBrowser { vault: vault.clone(), editor_path, modal_type }
             }
         } else {
             div { class: "sidebar collapsed" }
@@ -258,6 +254,7 @@ pub fn MainView() -> Element {
                     PreviewPane {
                         vault: vault.clone(),
                         source: PreviewList::FromPath(VaultPath::root()),
+                        modal_type,
                     }
                 }
             }
