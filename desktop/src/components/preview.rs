@@ -354,8 +354,6 @@ pub struct MarkdownProps {
     note_links: Vec<NoteLink>,
     modal_type: Signal<ModalType>,
 
-    focus_manager: FocusManager,
-
     /// the name of the theme used for syntax highlighting.
     /// Only the default themes of [syntect::Theme] are supported
     #[props(default = "base16-ocean.light".to_string())]
@@ -369,6 +367,7 @@ pub struct MarkdownProps {
 #[allow(non_snake_case)]
 pub fn Markdown(props: MarkdownProps) -> Element {
     let src: String = props.note_md.clone();
+    let focus_manager = use_context::<FocusManager>();
 
     let parse_options = Options::ENABLE_GFM
         | Options::ENABLE_TABLES
@@ -380,7 +379,7 @@ pub fn Markdown(props: MarkdownProps) -> Element {
         .into_offset_iter()
         .collect();
 
-    let fm = props.focus_manager.clone();
+    let fm = focus_manager.clone();
     use_drop(move || {
         fm.unregister_focus(FocusComponent::Preview);
     });
@@ -393,7 +392,7 @@ pub fn Markdown(props: MarkdownProps) -> Element {
         }
     }
 
-    let focus_manager = props.focus_manager.clone();
+    let focus_manager = focus_manager.clone();
     let elements = Renderer::new(props, &mut stream.into_iter()).collect::<Vec<_>>();
     let child = MdContext::el_fragment(elements);
 
