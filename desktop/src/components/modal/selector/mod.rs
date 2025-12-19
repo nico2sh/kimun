@@ -22,6 +22,7 @@ where
     fn init(&self) -> Vec<R>;
     fn filter(&self, filter_text: String, items: &[R]) -> Vec<R>;
     fn preview(&self, element: &R) -> Option<PreviewData>;
+    fn on_select(&self, element: &R) -> bool;
 }
 
 pub struct PreviewData {
@@ -110,8 +111,9 @@ where
         }
     });
 
+    let functions_preview = functions.clone();
     let preview_text = use_resource(move || {
-        let functions = functions.clone();
+        let functions_preview = functions_preview.clone();
         // We get a copy of the selected one so we don't have borrow issues
         let selected = selected.read().to_owned();
         async move {
@@ -124,7 +126,7 @@ where
                 };
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
-                    tokio::spawn(async move { functions.preview(&value_copy) })
+                    tokio::spawn(async move { functions_preview.preview(&value_copy) })
                         .await
                         .unwrap()
                 } else {
@@ -143,12 +145,15 @@ where
     });
     let row_number = rows.value().read().clone().unwrap_or_default().len();
 
+    let functions_enter = functions.clone();
+    let functions_click = functions.clone();
     rsx! {
         div {
             class: "notes-modal",
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
+                let functions_enter = functions_enter.clone();
                 let mounts = row_mounts.read().clone();
                 async move {
                     let key = e.data.code();
@@ -203,7 +208,7 @@ where
                         let current_selected = (*selected.read()).unwrap_or(0);
                         if let Some(rows) = &*rows.value().read() {
                             if let Some(row) = rows.get(current_selected) {
-                                if row.on_select() {
+                                if functions_enter.on_select(&row) {
                                     load_state.set(LoadState::Closed);
                                     modal_type.write().close();
                                 } else {
@@ -249,29 +254,34 @@ where
                 },
                 if let Some(rs) = rows.value().read().clone() {
                     for (index , row) in rs.into_iter().enumerate() {
-                        div {
-                            class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
-                            id: "element-{index}",
-                            onmounted: move |e| {
-                                info!("Adding mount at {} position", index);
-                                row_mounts.write().insert(index, e.data());
-                            },
-                            onmouseenter: move |_e| {
-                                if *select_by_mouse.read() {
-                                    selected.set(Some(index));
+                        {
+                            let functions_click = functions_click.clone();
+                            rsx! {
+                                div {
+                                    class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
+                                    id: "element-{index}",
+                                    onmounted: move |e| {
+                                        info!("Adding mount at {} position", index);
+                                        row_mounts.write().insert(index, e.data());
+                                    },
+                                    onmouseenter: move |_e| {
+                                        if *select_by_mouse.read() {
+                                            selected.set(Some(index));
+                                        }
+                                    },
+                                    onclick: move |e| {
+                                        info!("Clicked element");
+                                        e.stop_propagation();
+                                        if functions_click.on_select(&row) {
+                                            load_state.set(LoadState::Closed);
+                                            modal_type.write().close();
+                                        } else {
+                                            load_state.set(LoadState::Init);
+                                        }
+                                    },
+                                    {row.get_view()}
                                 }
-                            },
-                            onclick: move |e| {
-                                info!("Clicked element");
-                                e.stop_propagation();
-                                if row.on_select() {
-                                    load_state.set(LoadState::Closed);
-                                    modal_type.write().close();
-                                } else {
-                                    load_state.set(LoadState::Init);
-                                }
-                            },
-                            {row.get_view()}
+                            }
                         }
                     }
                 } else {

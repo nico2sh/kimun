@@ -7,9 +7,12 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 use nucleo::Matcher;
 
-use crate::components::{
-    modal::{selector::PreviewData, ModalType},
-    note_select_entry::{NoteBrowseEntry, SortCriteria},
+use crate::{
+    app_state::AppState,
+    components::{
+        modal::{selector::PreviewData, ModalType},
+        note_select_entry::{NoteBrowseEntry, SortCriteria},
+    },
 };
 
 use super::{SelectorFunctions, SelectorView};
@@ -129,6 +132,47 @@ impl SelectorFunctions<NoteBrowseEntry> for SelectFunctions {
             Some(p)
         } else {
             None
+        }
+    }
+
+    fn on_select(&self, element: &NoteBrowseEntry) -> bool {
+        let mut app_state: Signal<AppState> = use_context();
+        match element {
+            NoteBrowseEntry::Note {
+                path,
+                title: _,
+                search_str: _,
+            } => {
+                app_state.write().set_path(&path, false);
+                true
+            }
+            NoteBrowseEntry::Journal {
+                path,
+                title: _,
+                date_string: _,
+                search_str: _,
+            } => {
+                app_state.write().set_path(&path, false);
+                true
+            }
+            NoteBrowseEntry::Directory {
+                path,
+                name: _,
+                browse_path_signal: base_path_signal,
+            } => {
+                let p = path.clone();
+                let mut s = *base_path_signal;
+                info!("Selected dir: {}", p);
+                s.set(p.clone());
+                false
+            }
+            NoteBrowseEntry::Create {
+                new_note_path,
+                name: _,
+            } => {
+                app_state.write().set_path(&new_note_path, true);
+                true
+            }
         }
     }
 }

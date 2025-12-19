@@ -11,6 +11,7 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
 use crate::{
+    app_state::AppState,
     components::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
@@ -366,7 +367,8 @@ impl NoteElementActions for NoteBrowserHover {
                     entry_path,
                     onclick: move |_e| {
                         info!("Clicked element");
-                        let _ = entry.on_select();
+                        let mut app_state: Signal<AppState> = use_context();
+                        app_state.write().current_path = entry.get_path().to_owned();
                     },
                 }
             }

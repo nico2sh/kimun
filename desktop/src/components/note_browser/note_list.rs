@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::{
+    app_state::AppState,
     components::note_select_entry::{NoteBrowseEntry, RowItem},
     utils::sparse_vector::SparseVector,
 };
@@ -71,10 +72,11 @@ where
                             onclick: move |e| {
                                 info!("Clicked element");
                                 e.stop_propagation();
-                                let _ = entry_action.on_select();
+                                let mut app_state: Signal<AppState> = use_context();
+                                app_state.write().current_path = entry_action.get_path().to_owned();
                             },
                             {entry.get_view()}
-
+                        
                             if slct {
                                 {element_action.on_hover(entry)}
                             }
