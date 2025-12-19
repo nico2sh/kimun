@@ -2,7 +2,7 @@ use chrono::NaiveDate;
 use dioxus::{logger::tracing::info, prelude::*, signals::SyncSignal};
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
-use crate::{app_state::AppState, utils::encode_path};
+use crate::app_state::AppState;
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum SortCriteria {
@@ -18,7 +18,7 @@ pub trait RowItem: PartialEq + Eq + Clone {
 #[derive(Clone, Eq, PartialEq)]
 pub enum NoteSelectEntryListStatus {
     Loading,
-    Loaded(Vec<NoteSelectEntry>),
+    Loaded(Vec<NoteBrowseEntry>),
 }
 
 impl NoteSelectEntryListStatus {
@@ -31,7 +31,7 @@ impl NoteSelectEntryListStatus {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub enum NoteSelectEntry {
+pub enum NoteBrowseEntry {
     Note {
         path: VaultPath,
         title: String,
@@ -54,7 +54,7 @@ pub enum NoteSelectEntry {
     },
 }
 
-impl NoteSelectEntry {
+impl NoteBrowseEntry {
     pub fn from_note_details(path: VaultPath, content: NoteContentData) -> Self {
         let path_str = format!("{} {}", content.title, path.get_name());
         let title = if content.title.trim().is_empty() {
@@ -71,7 +71,7 @@ impl NoteSelectEntry {
 
     pub fn is_up_dir(&self) -> bool {
         match self {
-            NoteSelectEntry::Directory {
+            NoteBrowseEntry::Directory {
                 path: _,
                 name,
                 browse_path_signal: _,
@@ -130,7 +130,7 @@ impl NoteSelectEntry {
 
     pub fn sort_string_for(&self, criteria: &SortCriteria) -> String {
         match &self {
-            NoteSelectEntry::Note {
+            NoteBrowseEntry::Note {
                 path,
                 title,
                 search_str: _,
@@ -141,7 +141,7 @@ impl NoteSelectEntry {
                     SortCriteria::FileName => path.to_string(),
                 }
             ),
-            NoteSelectEntry::Journal {
+            NoteBrowseEntry::Journal {
                 path,
                 title,
                 date_string: _,
@@ -153,12 +153,12 @@ impl NoteSelectEntry {
                     SortCriteria::FileName => path.to_string(),
                 }
             ),
-            NoteSelectEntry::Directory {
+            NoteBrowseEntry::Directory {
                 path,
                 name: _,
                 browse_path_signal: _,
             } => format!("1-{}", path),
-            NoteSelectEntry::Create {
+            NoteBrowseEntry::Create {
                 name: _,
                 new_note_path: _,
             } => "0".to_string(),
@@ -167,23 +167,23 @@ impl NoteSelectEntry {
 
     pub fn get_path(&self) -> &VaultPath {
         match self {
-            NoteSelectEntry::Note {
+            NoteBrowseEntry::Note {
                 path,
                 title: _,
                 search_str: _,
             } => path,
-            NoteSelectEntry::Journal {
+            NoteBrowseEntry::Journal {
                 path,
                 title: _,
                 date_string: _,
                 search_str: _,
             } => path,
-            NoteSelectEntry::Directory {
+            NoteBrowseEntry::Directory {
                 path,
                 name: _,
                 browse_path_signal: _,
             } => path,
-            NoteSelectEntry::Create {
+            NoteBrowseEntry::Create {
                 new_note_path,
                 name: _,
             } => new_note_path,
@@ -191,26 +191,26 @@ impl NoteSelectEntry {
     }
 }
 
-impl AsRef<str> for NoteSelectEntry {
+impl AsRef<str> for NoteBrowseEntry {
     fn as_ref(&self) -> &str {
         match self {
-            NoteSelectEntry::Note {
+            NoteBrowseEntry::Note {
                 path: _,
                 title: _,
                 search_str,
             } => search_str.as_str(),
-            NoteSelectEntry::Journal {
+            NoteBrowseEntry::Journal {
                 path: _,
                 title: _,
                 date_string: _,
                 search_str,
             } => search_str.as_str(),
-            NoteSelectEntry::Directory {
+            NoteBrowseEntry::Directory {
                 path: _,
                 name,
                 browse_path_signal: _,
             } => name.as_str(),
-            NoteSelectEntry::Create {
+            NoteBrowseEntry::Create {
                 new_note_path: _,
                 name,
             } => name.as_str(),
@@ -218,11 +218,11 @@ impl AsRef<str> for NoteSelectEntry {
     }
 }
 
-impl RowItem for NoteSelectEntry {
+impl RowItem for NoteBrowseEntry {
     fn on_select(&self) -> bool {
         let mut app_state: Signal<AppState> = use_context();
         match self {
-            NoteSelectEntry::Note {
+            NoteBrowseEntry::Note {
                 path,
                 title: _,
                 search_str: _,
@@ -230,7 +230,7 @@ impl RowItem for NoteSelectEntry {
                 app_state.write().set_path(&path, false);
                 true
             }
-            NoteSelectEntry::Journal {
+            NoteBrowseEntry::Journal {
                 path,
                 title: _,
                 date_string: _,
@@ -239,7 +239,7 @@ impl RowItem for NoteSelectEntry {
                 app_state.write().set_path(&path, false);
                 true
             }
-            NoteSelectEntry::Directory {
+            NoteBrowseEntry::Directory {
                 path,
                 name: _,
                 browse_path_signal: base_path_signal,
@@ -250,11 +250,10 @@ impl RowItem for NoteSelectEntry {
                 s.set(p.clone());
                 false
             }
-            NoteSelectEntry::Create {
+            NoteBrowseEntry::Create {
                 new_note_path,
                 name: _,
             } => {
-                let encoded_path = encode_path(new_note_path);
                 app_state.write().set_path(&new_note_path, true);
                 true
             }
@@ -263,7 +262,7 @@ impl RowItem for NoteSelectEntry {
 
     fn get_view(&self) -> Element {
         match self {
-            NoteSelectEntry::Note {
+            NoteBrowseEntry::Note {
                 path,
                 title,
                 search_str: _,
@@ -275,7 +274,7 @@ impl RowItem for NoteSelectEntry {
                     }
                 }
             }
-            NoteSelectEntry::Journal {
+            NoteBrowseEntry::Journal {
                 path,
                 title,
                 date_string,
@@ -289,7 +288,7 @@ impl RowItem for NoteSelectEntry {
                     }
                 }
             }
-            NoteSelectEntry::Directory {
+            NoteBrowseEntry::Directory {
                 path: _,
                 name,
                 browse_path_signal: _,
@@ -300,7 +299,7 @@ impl RowItem for NoteSelectEntry {
                     }
                 }
             }
-            NoteSelectEntry::Create {
+            NoteBrowseEntry::Create {
                 new_note_path: _,
                 name,
             } => {

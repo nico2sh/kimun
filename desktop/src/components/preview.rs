@@ -3,10 +3,7 @@ use std::sync::Arc;
 use crate::{
     app_state::AppState,
     components::focus_manager::FocusComponent,
-    utils::{
-        encode_path,
-        md::{render::Renderer, CowStr},
-    },
+    utils::md::{render::Renderer, CowStr},
 };
 
 pub use crate::utils::md::{ElementAttributes, HtmlElement, LinkDescription, Options};

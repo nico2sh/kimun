@@ -11,7 +11,6 @@ use crate::{
     },
     route::Route,
     settings,
-    utils::encode_path,
 };
 
 #[component]

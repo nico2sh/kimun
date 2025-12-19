@@ -5,13 +5,13 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilde
 
 use crate::components::{
     note_browser::note_list::{NoteElementActions, NoteList},
-    note_select_entry::NoteSelectEntry,
+    note_select_entry::NoteBrowseEntry,
 };
 
 #[derive(Clone, PartialEq)]
 pub enum PreviewList {
     FromPath(VaultPath),
-    FromList(Vec<NoteSelectEntry>),
+    FromList(Vec<NoteBrowseEntry>),
 }
 
 #[derive(Clone, PartialEq, Props)]
@@ -52,13 +52,13 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                         match &entry.rtype {
                             ResultType::Note(note_details) => {
                                 let e = if let Some(date) = vault.journal_date(&entry.path) {
-                                    NoteSelectEntry::from_note_journal(
+                                    NoteBrowseEntry::from_note_journal(
                                         entry.path,
                                         note_details.to_owned(),
                                         date,
                                     )
                                 } else {
-                                    NoteSelectEntry::from_note_details(
+                                    NoteBrowseEntry::from_note_details(
                                         entry.path,
                                         note_details.to_owned(),
                                     )
@@ -78,7 +78,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                 PreviewList::FromList(items) => items
                     .into_iter()
                     .filter(|e| match e {
-                        NoteSelectEntry::Note {
+                        NoteBrowseEntry::Note {
                             path: _,
                             title: _,
                             search_str: _,
@@ -113,7 +113,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
 struct NoHoverAction {}
 
 impl NoteElementActions for NoHoverAction {
-    fn on_hover(&self, _entry: NoteSelectEntry) -> Element {
+    fn on_hover(&self, _entry: NoteBrowseEntry) -> Element {
         rsx! {}
     }
 }

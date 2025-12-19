@@ -6,7 +6,7 @@ use kimun_core::nfs::VaultPath;
 use crate::{
     components::{
         modal::ModalType,
-        note_select_entry::{NoteSelectEntry, RowItem},
+        note_select_entry::{NoteBrowseEntry, RowItem},
     },
     utils::sparse_vector::SparseVector,
 };
@@ -27,12 +27,12 @@ pub fn NotePicker(props: NotePickerProps) -> Element {
     let entries = props
         .note_list
         .iter()
-        .map(|(title, path)| NoteSelectEntry::Note {
+        .map(|(title, path)| NoteBrowseEntry::Note {
             path: path.clone(),
             title: title.clone(),
             search_str: title.clone(),
         })
-        .collect::<Vec<NoteSelectEntry>>();
+        .collect::<Vec<NoteBrowseEntry>>();
     rsx! {
         div { class: "modal note-picker",
             onclick: move |e| e.stop_propagation(),
