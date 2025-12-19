@@ -18,7 +18,11 @@ use crate::{
     editor_state::{ContentType, EditorState},
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
-    utils::keys::action_shortcuts::{ActionShortcuts, TextAction},
+    utils::keys::{
+        action_shortcuts::{ActionShortcuts, TextAction},
+        key_combo::KeyCombo,
+        key_strike::KeyStrike,
+    },
     MARKDOWN_JS,
 };
 
@@ -231,10 +235,9 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     use_effect(move || {
         if !props.preview {
             let init_script = r#"
-const textEditor = document.getElementById('textEditor');
-if (textEditor) {
-    window.md_editor = enhanceTextareaWithMarkdown(textEditor);
-}
+window.editor = new TextareaMarkdown(
+    document.getElementById('textEditor')
+);
 "#;
             spawn(async {
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -309,10 +312,18 @@ if (textEditor) {
                                 },
                                 onkeydown: move |event: Event<KeyboardData>| {
                                     let data = event.data();
-                                    if let Some(ActionShortcuts::Text(action)) = settings
+                                    let key_combo: KeyCombo = data.into();
+                                    if key_combo.key == KeyStrike::Tab {
+                                        if key_combo.modifiers.is_shift() {
+                                            eval_action("unindent");
+                                        } else {
+                                            eval_action("indent");
+                                        }
+                                        event.prevent_default();
+                                    } else if let Some(ActionShortcuts::Text(action)) = settings
                                         .read()
                                         .key_bindings
-                                        .get_action(&data.into())
+                                        .get_action(&key_combo)
                                     {
                                         match action {
                                             TextAction::Bold => eval_action("bold"),
