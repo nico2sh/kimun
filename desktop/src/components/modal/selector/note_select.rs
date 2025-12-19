@@ -9,7 +9,7 @@ use nucleo::Matcher;
 
 use crate::components::{
     modal::{selector::PreviewData, ModalType},
-    note_select_entry::{NoteSelectEntry, SortCriteria},
+    note_select_entry::{NoteBrowseEntry, SortCriteria},
 };
 
 use super::{SelectorFunctions, SelectorView};
@@ -29,7 +29,7 @@ struct SelectFunctions {
 }
 
 impl SelectFunctions {
-    fn open(&self) -> Vec<NoteSelectEntry> {
+    fn open(&self) -> Vec<NoteBrowseEntry> {
         let current_browse_path = self.current_browse_path.read().to_owned();
         let (search_options, rx) = VaultBrowseOptionsBuilder::new(&current_browse_path)
             .no_validation()
@@ -44,7 +44,7 @@ impl SelectFunctions {
         while let Ok(sr) = rx.recv() {
             match sr.rtype {
                 ResultType::Note(note_content_data) => {
-                    result.push(NoteSelectEntry::from_note_details(
+                    result.push(NoteBrowseEntry::from_note_details(
                         sr.path,
                         note_content_data,
                     ));
@@ -55,7 +55,7 @@ impl SelectFunctions {
                         sr.path, current_browse_path
                     );
                     if !sr.path.is_like(&current_browse_path) {
-                        result.push(NoteSelectEntry::from_directory_details(
+                        result.push(NoteBrowseEntry::from_directory_details(
                             sr.path,
                             self.current_browse_path,
                         ));
@@ -68,7 +68,7 @@ impl SelectFunctions {
         if !current_browse_path.is_root_or_empty() {
             result.insert(
                 0,
-                NoteSelectEntry::Directory {
+                NoteBrowseEntry::Directory {
                     path: current_browse_path.get_parent_path().0,
                     name: "..".to_string(),
                     browse_path_signal: self.current_browse_path,
@@ -79,20 +79,20 @@ impl SelectFunctions {
     }
 }
 
-impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
-    fn init(&self) -> Vec<NoteSelectEntry> {
+impl SelectorFunctions<NoteBrowseEntry> for SelectFunctions {
+    fn init(&self) -> Vec<NoteBrowseEntry> {
         debug!("Opening Note Selector");
 
-        let items = self.open().into_iter().collect::<Vec<NoteSelectEntry>>();
+        let items = self.open().into_iter().collect::<Vec<NoteBrowseEntry>>();
         debug!("Loaded {} items", items.len());
         items
     }
 
-    fn filter(&self, filter_text: String, items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry> {
+    fn filter(&self, filter_text: String, items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
         if !items.is_empty() {
             let mut result = Vec::new();
             if !filter_text.is_empty() {
-                result.push(NoteSelectEntry::create_from_name(
+                result.push(NoteBrowseEntry::create_from_name(
                     filter_text.to_owned(),
                     self.current_browse_path.read().to_owned(),
                 ));
@@ -107,8 +107,8 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
         }
     }
 
-    fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData> {
-        if let NoteSelectEntry::Note {
+    fn preview(&self, element: &NoteBrowseEntry) -> Option<PreviewData> {
+        if let NoteBrowseEntry::Note {
             path,
             title: _,
             search_str: _,
@@ -133,7 +133,7 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
     }
 }
 
-fn filter_items(items: &[NoteSelectEntry], filter_text: String) -> Vec<NoteSelectEntry> {
+fn filter_items(items: &[NoteBrowseEntry], filter_text: String) -> Vec<NoteBrowseEntry> {
     let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
     let filtered = nucleo::pattern::Pattern::parse(
         filter_text.as_ref(),
@@ -143,7 +143,7 @@ fn filter_items(items: &[NoteSelectEntry], filter_text: String) -> Vec<NoteSelec
     .match_list(items, &mut matcher)
     .iter()
     .map(|e| e.0.to_owned())
-    .collect::<Vec<NoteSelectEntry>>();
+    .collect::<Vec<NoteBrowseEntry>>();
     filtered
 }
 

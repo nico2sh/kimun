@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::{
-    components::note_select_entry::{NoteSelectEntry, RowItem},
+    components::note_select_entry::{NoteBrowseEntry, RowItem},
     utils::sparse_vector::SparseVector,
 };
 
@@ -13,13 +13,13 @@ pub struct NoteListProps<H>
 where
     H: NoteElementActions + Clone + PartialEq + 'static,
 {
-    entries: Vec<NoteSelectEntry>,
+    entries: Vec<NoteBrowseEntry>,
     active_path: VaultPath,
     element_action: H,
 }
 
 pub trait NoteElementActions {
-    fn on_hover(&self, entry: NoteSelectEntry) -> Element;
+    fn on_hover(&self, entry: NoteBrowseEntry) -> Element;
 }
 
 #[component]
@@ -74,7 +74,7 @@ where
                                 let _ = entry_action.on_select();
                             },
                             {entry.get_view()}
-                        
+
                             if slct {
                                 {element_action.on_hover(entry)}
                             }

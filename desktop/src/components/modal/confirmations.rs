@@ -7,8 +7,6 @@ use crate::{
     app_state::AppState,
     components::{button::ButtonBuilder, modal::ModalType},
     global_events::{GlobalEvent, PubSub},
-    route::Route,
-    utils::encode_path,
 };
 
 pub enum ConfirmationType {

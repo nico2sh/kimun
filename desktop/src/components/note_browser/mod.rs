@@ -11,12 +11,11 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
 
 use crate::{
-    app_state::AppState,
     components::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
         note_browser::note_list::{NoteElementActions, NoteList},
-        note_select_entry::{NoteSelectEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
+        note_select_entry::{NoteBrowseEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
     },
     global_events::{GlobalEvent, PubSub},
     utils::sparse_vector::SparseVector,
@@ -101,19 +100,19 @@ pub fn NoteBrowser(
                 match &entry.rtype {
                     ResultType::Note(note_details) => {
                         let e = if let Some(date) = vault.journal_date(&entry.path) {
-                            NoteSelectEntry::from_note_journal(
+                            NoteBrowseEntry::from_note_journal(
                                 entry.path,
                                 note_details.to_owned(),
                                 date,
                             )
                         } else {
-                            NoteSelectEntry::from_note_details(entry.path, note_details.to_owned())
+                            NoteBrowseEntry::from_note_details(entry.path, note_details.to_owned())
                         };
                         entries.push(e)
                     }
                     ResultType::Directory => {
                         if entry.path != browsing_directory() {
-                            let e = NoteSelectEntry::from_directory_details(
+                            let e = NoteBrowseEntry::from_directory_details(
                                 entry.path,
                                 browsing_directory,
                             );
@@ -145,7 +144,7 @@ pub fn NoteBrowser(
                             None
                         }
                     })
-                    .collect::<Vec<NoteSelectEntry>>();
+                    .collect::<Vec<NoteBrowseEntry>>();
 
                 NoteSelectEntryListStatus::Loaded(filtered)
             } else {
@@ -171,7 +170,7 @@ pub fn NoteBrowser(
             if !browsing_directory.read().is_root_or_empty() {
                 result.insert(
                     0,
-                    NoteSelectEntry::Directory {
+                    NoteBrowseEntry::Directory {
                         path: browsing_directory.read().get_parent_path().0,
                         name: "..".to_string(),
                         browse_path_signal: browsing_directory,
@@ -355,7 +354,7 @@ struct NoteBrowserHover {
 }
 
 impl NoteElementActions for NoteBrowserHover {
-    fn on_hover(&self, entry: NoteSelectEntry) -> Element {
+    fn on_hover(&self, entry: NoteBrowseEntry) -> Element {
         let vault = self.vault.clone();
         let modal_type = self.modal_type;
         let entry_path = entry.get_path().to_owned();

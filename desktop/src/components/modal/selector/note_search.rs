@@ -8,7 +8,7 @@ use kimun_core::NoteVault;
 
 use crate::components::{
     modal::{selector::PreviewData, ModalType},
-    note_select_entry::NoteSelectEntry,
+    note_select_entry::NoteBrowseEntry,
 };
 
 use super::{SelectorFunctions, SelectorView};
@@ -25,18 +25,18 @@ struct SearchFunctions {
     vault: Arc<NoteVault>,
 }
 
-impl SelectorFunctions<NoteSelectEntry> for SearchFunctions {
-    fn init(&self) -> Vec<NoteSelectEntry> {
+impl SelectorFunctions<NoteBrowseEntry> for SearchFunctions {
+    fn init(&self) -> Vec<NoteBrowseEntry> {
         debug!("Opening Note Search");
         vec![]
     }
 
-    fn filter(&self, filter_text: String, _items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry> {
+    fn filter(&self, filter_text: String, _items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
         match self.vault.search_notes(filter_text) {
             Ok(res) => res
                 .into_iter()
-                .map(|(entry, content)| NoteSelectEntry::from_note_details(entry.path, content))
-                .collect::<Vec<NoteSelectEntry>>(),
+                .map(|(entry, content)| NoteBrowseEntry::from_note_details(entry.path, content))
+                .collect::<Vec<NoteBrowseEntry>>(),
             Err(e) => {
                 error!("Error searching notes: {}", e);
                 vec![]
@@ -44,7 +44,7 @@ impl SelectorFunctions<NoteSelectEntry> for SearchFunctions {
         }
     }
 
-    fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData> {
+    fn preview(&self, element: &NoteBrowseEntry) -> Option<PreviewData> {
         let preview = self.vault.load_note(&element.get_path()).map_or_else(
             |e| PreviewData {
                 title: "Error loading preview...".to_string(),
