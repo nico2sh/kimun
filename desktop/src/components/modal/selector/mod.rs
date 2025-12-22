@@ -22,7 +22,7 @@ where
     fn init(&self) -> Vec<R>;
     fn filter(&self, filter_text: String, items: &[R]) -> Vec<R>;
     fn preview(&self, element: &R) -> Option<PreviewData>;
-    fn on_select(&self, element: &R) -> bool;
+    fn on_select(&mut self, element: &R) -> bool;
 }
 
 pub struct PreviewData {
@@ -153,7 +153,7 @@ where
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
-                let functions_enter = functions_enter.clone();
+                let mut functions_enter = functions_enter.clone();
                 let mounts = row_mounts.read().clone();
                 async move {
                     let key = e.data.code();
@@ -255,7 +255,7 @@ where
                 if let Some(rs) = rows.value().read().clone() {
                     for (index , row) in rs.into_iter().enumerate() {
                         {
-                            let functions_click = functions_click.clone();
+                            let mut functions_click = functions_click.clone();
                             rsx! {
                                 div {
                                     class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
