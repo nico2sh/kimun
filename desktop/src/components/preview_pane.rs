@@ -16,6 +16,7 @@ use crate::components::{
 pub enum PreviewList {
     FromPath(VaultPath),
     FromList(Vec<NoteBrowseEntry>),
+    FromQuery(String),
 }
 
 enum PreviewContent {
@@ -101,6 +102,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                         _ => false,
                     })
                     .collect(),
+                PreviewList::FromQuery(query) => todo!(),
             }
         }
     });
@@ -123,7 +125,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
     rsx! {
         div { class: "bar-preview-header",
             button { class: "bar-preview-toggle",
-                span { "Preview" }
+                span { "Quick Browser" }
                 span { "▼" }
             }
         }
@@ -133,6 +135,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                     entries: entries.clone(),
                     active_path: active_path.read().to_owned(),
                     element_action: NoHoverAction { active_path },
+                    compact: true,
                 }
             }
         }

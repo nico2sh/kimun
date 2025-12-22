@@ -28,7 +28,7 @@ impl NoteSelectEntryListStatus {
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum NoteBrowseEntry {
     Note {
         path: VaultPath,
@@ -44,7 +44,6 @@ pub enum NoteBrowseEntry {
     Directory {
         path: VaultPath,
         name: String,
-        browse_path_signal: SyncSignal<VaultPath>,
     },
     Create {
         new_note_path: VaultPath,
@@ -69,11 +68,7 @@ impl NoteBrowseEntry {
 
     pub fn is_up_dir(&self) -> bool {
         match self {
-            NoteBrowseEntry::Directory {
-                path: _,
-                name,
-                browse_path_signal: _,
-            } => name.eq(".."),
+            NoteBrowseEntry::Directory { path: _, name } => name.eq(".."),
             _ => false,
         }
     }
@@ -105,16 +100,9 @@ impl NoteBrowseEntry {
         }
     }
 
-    pub fn from_directory_details(
-        path: VaultPath,
-        base_path_signal: SyncSignal<VaultPath>,
-    ) -> Self {
+    pub fn from_directory_details(path: VaultPath) -> Self {
         let name = path.get_name();
-        Self::Directory {
-            path,
-            name,
-            browse_path_signal: base_path_signal,
-        }
+        Self::Directory { path, name }
     }
     pub fn create_from_name(name: String, base_path: VaultPath) -> Self {
         let note_path = VaultPath::note_path_from(name);
@@ -151,11 +139,7 @@ impl NoteBrowseEntry {
                     SortCriteria::FileName => path.to_string(),
                 }
             ),
-            NoteBrowseEntry::Directory {
-                path,
-                name: _,
-                browse_path_signal: _,
-            } => format!("1-{}", path),
+            NoteBrowseEntry::Directory { path, name: _ } => format!("1-{}", path),
             NoteBrowseEntry::Create {
                 name: _,
                 new_note_path: _,
@@ -176,11 +160,7 @@ impl NoteBrowseEntry {
                 date_string: _,
                 search_str: _,
             } => path,
-            NoteBrowseEntry::Directory {
-                path,
-                name: _,
-                browse_path_signal: _,
-            } => path,
+            NoteBrowseEntry::Directory { path, name: _ } => path,
             NoteBrowseEntry::Create {
                 new_note_path,
                 name: _,
@@ -203,11 +183,7 @@ impl AsRef<str> for NoteBrowseEntry {
                 date_string: _,
                 search_str,
             } => search_str.as_str(),
-            NoteBrowseEntry::Directory {
-                path: _,
-                name,
-                browse_path_signal: _,
-            } => name.as_str(),
+            NoteBrowseEntry::Directory { path: _, name } => name.as_str(),
             NoteBrowseEntry::Create {
                 new_note_path: _,
                 name,
@@ -286,11 +262,7 @@ impl RowItem for NoteBrowseEntry {
                     }
                 }
             }
-            NoteBrowseEntry::Directory {
-                path: _,
-                name,
-                browse_path_signal: _,
-            } => {
+            NoteBrowseEntry::Directory { path: _, name } => {
                 rsx! {
                     div { class: "note-item-content",
                         div { class: "icon-folder note-title", "{name}" }

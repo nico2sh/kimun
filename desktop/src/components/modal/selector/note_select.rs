@@ -58,10 +58,7 @@ impl SelectFunctions {
                         sr.path, current_browse_path
                     );
                     if !sr.path.is_like(&current_browse_path) {
-                        result.push(NoteBrowseEntry::from_directory_details(
-                            sr.path,
-                            self.current_browse_path,
-                        ));
+                        result.push(NoteBrowseEntry::from_directory_details(sr.path));
                     }
                 }
                 _ => {}
@@ -74,7 +71,6 @@ impl SelectFunctions {
                 NoteBrowseEntry::Directory {
                     path: current_browse_path.get_parent_path().0,
                     name: "..".to_string(),
-                    browse_path_signal: self.current_browse_path,
                 },
             );
         }
@@ -135,7 +131,7 @@ impl SelectorFunctions<NoteBrowseEntry> for SelectFunctions {
         }
     }
 
-    fn on_select(&self, element: &NoteBrowseEntry) -> bool {
+    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool {
         let mut app_state: Signal<AppState> = use_context();
         match element {
             NoteBrowseEntry::Note {
@@ -155,15 +151,8 @@ impl SelectorFunctions<NoteBrowseEntry> for SelectFunctions {
                 app_state.write().set_path(&path, false);
                 true
             }
-            NoteBrowseEntry::Directory {
-                path,
-                name: _,
-                browse_path_signal: base_path_signal,
-            } => {
-                let p = path.clone();
-                let mut s = *base_path_signal;
-                info!("Selected dir: {}", p);
-                s.set(p.clone());
+            NoteBrowseEntry::Directory { path, name: _ } => {
+                self.current_browse_path.set(path.clone());
                 false
             }
             NoteBrowseEntry::Create {

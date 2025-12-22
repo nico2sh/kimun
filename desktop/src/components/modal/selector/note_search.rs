@@ -63,7 +63,7 @@ impl SelectorFunctions<NoteBrowseEntry> for SearchFunctions {
         Some(preview)
     }
 
-    fn on_select(&self, element: &NoteBrowseEntry) -> bool {
+    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool {
         let mut app_state: Signal<AppState> = use_context();
         match element {
             NoteBrowseEntry::Note {
@@ -83,15 +83,8 @@ impl SelectorFunctions<NoteBrowseEntry> for SearchFunctions {
                 app_state.write().set_path(&path, false);
                 true
             }
-            NoteBrowseEntry::Directory {
-                path,
-                name: _,
-                browse_path_signal: base_path_signal,
-            } => {
-                let p = path.clone();
-                let mut s = *base_path_signal;
-                info!("Selected dir: {}", p);
-                s.set(p.clone());
+            NoteBrowseEntry::Directory { path: _, name: _ } => {
+                warn!("I'n not going to have directory browse here");
                 false
             }
             NoteBrowseEntry::Create {

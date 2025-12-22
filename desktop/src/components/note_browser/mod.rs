@@ -113,10 +113,7 @@ pub fn NoteBrowser(
                     }
                     ResultType::Directory => {
                         if entry.path != browsing_directory() {
-                            let e = NoteBrowseEntry::from_directory_details(
-                                entry.path,
-                                browsing_directory,
-                            );
+                            let e = NoteBrowseEntry::from_directory_details(entry.path);
                             entries.push(e)
                         }
                     }
@@ -174,7 +171,6 @@ pub fn NoteBrowser(
                     NoteBrowseEntry::Directory {
                         path: browsing_directory.read().get_parent_path().0,
                         name: "..".to_string(),
-                        browse_path_signal: browsing_directory,
                     },
                 );
             }
@@ -335,6 +331,7 @@ pub fn NoteBrowser(
                             element_action: NoteBrowserHover {
                                 vault,
                                 modal_type,
+                                current_browse_path: browsing_directory,
                             },
                         }
                     }
@@ -352,6 +349,7 @@ pub fn NoteBrowser(
 struct NoteBrowserHover {
     vault: Arc<NoteVault>,
     modal_type: Signal<ModalType>,
+    current_browse_path: SyncSignal<VaultPath>,
 }
 
 impl NoteElementActions for NoteBrowserHover {
@@ -375,7 +373,28 @@ impl NoteElementActions for NoteBrowserHover {
 
     fn on_select(&mut self, entry: NoteBrowseEntry) {
         let mut app_state: Signal<AppState> = use_context();
-        app_state.write().current_path = entry.get_path().to_owned();
+        match &entry {
+            NoteBrowseEntry::Note {
+                path: _,
+                title: _,
+                search_str: _,
+            }
+            | NoteBrowseEntry::Journal {
+                path: _,
+                title: _,
+                date_string: _,
+                search_str: _,
+            } => app_state.write().current_path = entry.get_path().to_owned(),
+            NoteBrowseEntry::Directory { path, name: _ } => {
+                self.current_browse_path.set(path.to_owned())
+            }
+            NoteBrowseEntry::Create {
+                new_note_path: _,
+                name: _,
+            } => {
+                warn!("No Create should happen here");
+            }
+        }
     }
 }
 

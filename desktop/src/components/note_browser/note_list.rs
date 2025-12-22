@@ -16,6 +16,8 @@ where
     entries: Vec<NoteBrowseEntry>,
     active_path: VaultPath,
     element_action: H,
+    #[props(default = false)]
+    compact: bool,
 }
 
 pub trait NoteElementActions {
@@ -37,6 +39,11 @@ where
     let mut select_by_mouse = use_signal(|| true);
     let mut row_mounts = use_signal(|| SparseVector::<Rc<MountedData>>::with_capacity(num_entries));
 
+    let item_class = if props.compact {
+        "note-item-compact"
+    } else {
+        "note-item"
+    };
     rsx! {
         div {
             class: "entry-list",
@@ -58,9 +65,13 @@ where
                     let active = entry_path.eq(&active_path);
                     let entry_action = entry.clone();
                     let mut element_click = element_action.clone();
+                    let cls = format!(
+                        "{item_class}{}",
+                        if slct { " selected" } else { if active { " active" } else { "" } },
+                    );
                     rsx! {
                         div {
-                            class: if slct { "note-item selected" } else { if active { "note-item active" } else { "note-item" } },
+                            class: "{cls}",
                             id: "element-{index}",
                             onmounted: move |e| {
                                 row_mounts.write().insert(index, e.data());
