@@ -1,15 +1,20 @@
+use std::vec;
+
 use log::debug;
 
 const IN_CHAR: &str = ">";
 const IN_LETTER: &str = "in";
 const AT_CHAR: &str = "@";
 const AT_LETTER: &str = "at";
+const ORDER_CHAR: &str = "^";
+const ORDER_LETTER: &str = "or";
 
 enum ElementType {
     Invalid,
     Term,
     In,
     At,
+    OrderBy { asc: bool },
 }
 
 struct QueryTermExtractor {
@@ -23,6 +28,7 @@ impl QueryTermExtractor {
         let query = query.as_ref().trim();
         let in_prefix = format!("{}:", IN_LETTER);
         let at_prefix = format!("{}:", AT_LETTER);
+        let order_prefix = format!("{}:", ORDER_LETTER);
 
         let (element_type, remaining) = if query.starts_with(&in_prefix) {
             (
@@ -51,6 +57,30 @@ impl QueryTermExtractor {
                 query
                     .strip_prefix(AT_CHAR)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&order_prefix) {
+            let desc_prefix = format!("{order_prefix}-");
+            let (asc, prefix) = if query.starts_with(&desc_prefix) {
+                (false, desc_prefix)
+            } else {
+                (true, order_prefix)
+            };
+
+            (
+                ElementType::OrderBy { asc },
+                query.strip_prefix(&prefix).unwrap_or(query).to_string(),
+            )
+        } else if query.starts_with(ORDER_CHAR) {
+            let desc_prefix = format!("{ORDER_CHAR}-");
+            let (asc, prefix) = if query.starts_with(&desc_prefix) {
+                (false, desc_prefix.as_str())
+            } else {
+                (true, ORDER_CHAR)
+            };
+
+            (
+                ElementType::OrderBy { asc },
+                query.strip_prefix(prefix).unwrap_or(query).to_string(),
             )
         } else {
             (ElementType::Term, query.to_string())
@@ -100,10 +130,37 @@ impl QueryTermExtractor {
     }
 }
 
+#[derive(Debug)]
+pub enum OrderBy {
+    Title { asc: bool },
+    FileName { asc: bool },
+}
+
+impl OrderBy {
+    fn from_term(term: &str, asc: bool) -> Option<Self> {
+        match term {
+            "f" => Some(OrderBy::FileName { asc }),
+            "file" => Some(OrderBy::FileName { asc }),
+            "filename" => Some(OrderBy::FileName { asc }),
+            "t" => Some(OrderBy::Title { asc }),
+            "title" => Some(OrderBy::Title { asc }),
+            _ => None,
+        }
+    }
+
+    pub fn to_query_param(&self) -> String {
+        match self {
+            OrderBy::Title { asc } => format!("title {}", if *asc { "ASC" } else { "DESC" }),
+            OrderBy::FileName { asc } => format!("path {}", if *asc { "ASC" } else { "DESC" }),
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct SearchTerms {
     pub terms: Vec<String>,
     pub breadcrumb: Vec<String>,
+    pub order_by: Vec<OrderBy>,
     pub path: Vec<String>,
 }
 
@@ -113,6 +170,7 @@ impl SearchTerms {
         let mut breadcrumb = vec![];
         let mut terms = vec![];
         let mut path = vec![];
+        let mut order_by = vec![];
         while !query.is_empty() {
             let qp = QueryTermExtractor::extract_and_consume(query);
             query = qp.remainder;
@@ -120,6 +178,11 @@ impl SearchTerms {
                 ElementType::Term => terms.push(qp.term),
                 ElementType::In => breadcrumb.push(qp.term),
                 ElementType::At => path.push(qp.term),
+                ElementType::OrderBy { asc } => {
+                    if let Some(o) = OrderBy::from_term(&qp.term, asc) {
+                        order_by.push(o);
+                    }
+                }
                 ElementType::Invalid => {}
             }
         }
@@ -127,6 +190,7 @@ impl SearchTerms {
         Self {
             breadcrumb,
             path,
+            order_by,
             terms,
         }
     }
