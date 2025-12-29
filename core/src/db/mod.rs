@@ -207,13 +207,10 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
     Ok(())
 }
 
-pub fn search_terms<S: AsRef<str>>(
-    connection: &mut Connection,
-    query: S,
-) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+pub fn search_terms_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
     let search_terms = SearchTerms::from_query_string(query);
     let mut var_num = 1;
-    let base_sql = "SELECT DISTINCT notes.path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
+    let base_sql = "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
     let mut params = vec![];
     let mut queries = vec![];
     if !search_terms.terms.is_empty() {
@@ -235,18 +232,47 @@ pub fn search_terms<S: AsRef<str>>(
         let terms_sql = format!("{} WHERE notesContent.path MATCH ?{}", base_sql, var_num);
         queries.push(terms_sql);
         params.push(search_terms.path.join(" "));
+        var_num += 1;
     }
 
     if queries.is_empty() {
         debug!("No query provided");
+        return (String::new(), vec![]);
+    }
+
+    let mut sql = queries.join(" INTERSECT ");
+
+    // We add at the end the order by clause
+    if !search_terms.order_by.is_empty() {
+        sql = format!("{} ORDER BY ?{}", sql, var_num);
+        params.push(
+            search_terms
+                .order_by
+                .iter()
+                .map(|o| o.to_query_param())
+                .collect::<Vec<String>>()
+                .join(", "),
+        );
+    }
+
+    (sql, params)
+}
+
+pub fn search_terms<S: AsRef<str>>(
+    connection: &mut Connection,
+    query: S,
+) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    let (query, params) = search_terms_query(query);
+
+    if query.is_empty() {
+        debug!("No query provided");
         return Ok(vec![]);
     }
 
-    let sql = queries.join(" INTERSECT ");
-    debug!("QUERY: {}", sql);
+    debug!("QUERY: {}", query);
 
     let params = params_from_iter(params);
-    let mut stmt = connection.prepare(&sql)?;
+    let mut stmt = connection.prepare(&query)?;
     let res = stmt
         .query_map(params, |row| {
             let path: String = row.get(0)?;
@@ -648,5 +674,281 @@ impl ConnectionBuilder {
         let connection = Connection::open(&db_path)?;
         let _c = connection.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FTS3_TOKENIZER, true)?;
         Ok(connection)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_search_terms_query_empty() {
+        let (sql, params) = search_terms_query("");
+        assert_eq!(sql, "");
+        assert_eq!(params.len(), 0);
+    }
+
+    #[test]
+    fn test_search_terms_query_simple_terms() {
+        let (sql, params) = search_terms_query("foo bar");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "foo bar");
+    }
+
+    #[test]
+    fn test_search_terms_query_single_term() {
+        let (sql, params) = search_terms_query("keyword");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "keyword");
+    }
+
+    #[test]
+    fn test_search_terms_query_breadcrumb_only() {
+        let (sql, params) = search_terms_query(">heading");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "heading");
+    }
+
+    #[test]
+    fn test_search_terms_query_breadcrumb_with_in() {
+        let (sql, params) = search_terms_query("in:section");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "section");
+    }
+
+    #[test]
+    fn test_search_terms_query_multiple_breadcrumbs() {
+        let (sql, params) = search_terms_query(">heading1 in:heading2");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "heading1 heading2");
+    }
+
+    #[test]
+    fn test_search_terms_query_path_only() {
+        let (sql, params) = search_terms_query("@filename");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "filename");
+    }
+
+    #[test]
+    fn test_search_terms_query_path_with_at() {
+        let (sql, params) = search_terms_query("at:directory");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "directory");
+    }
+
+    #[test]
+    fn test_search_terms_query_multiple_paths() {
+        let (sql, params) = search_terms_query("@file1 at:file2");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "file1 file2");
+    }
+
+    #[test]
+    fn test_search_terms_query_terms_and_breadcrumb() {
+        let (sql, params) = search_terms_query("keyword >section");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "section");
+    }
+
+    #[test]
+    fn test_search_terms_query_terms_and_path() {
+        let (sql, params) = search_terms_query("keyword @file");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "file");
+    }
+
+    #[test]
+    fn test_search_terms_query_breadcrumb_and_path() {
+        let (sql, params) = search_terms_query(">heading @file");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "heading");
+        assert_eq!(params[1], "file");
+    }
+
+    #[test]
+    fn test_search_terms_query_all_combined() {
+        let (sql, params) = search_terms_query("keyword >heading @file");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?3"
+        );
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "heading");
+        assert_eq!(params[2], "file");
+    }
+
+    #[test]
+    fn test_search_terms_query_quoted_terms() {
+        let (sql, params) = search_terms_query("\"exact phrase\" keyword");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "exact phrase keyword");
+    }
+
+    #[test]
+    fn test_search_terms_query_order_by_title_asc() {
+        let (sql, params) = search_terms_query("keyword or:title");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "title ASC");
+    }
+
+    #[test]
+    fn test_search_terms_query_order_by_title_desc() {
+        let (sql, params) = search_terms_query("keyword or:-title");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "title DESC");
+    }
+
+    #[test]
+    fn test_search_terms_query_order_by_filename_asc() {
+        let (sql, params) = search_terms_query("keyword or:filename");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "path ASC");
+    }
+
+    #[test]
+    fn test_search_terms_query_order_by_file_shorthand() {
+        let (sql, params) = search_terms_query("keyword or:f");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "path ASC");
+    }
+
+    #[test]
+    fn test_search_terms_query_order_by_title_shorthand() {
+        let (sql, params) = search_terms_query("keyword or:t");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "title ASC");
+    }
+
+    #[test]
+    fn test_search_terms_query_multiple_order_by() {
+        let (sql, params) = search_terms_query("keyword ^title ^-filename");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "title ASC, path DESC");
+    }
+
+    #[test]
+    fn test_search_terms_query_complex_with_order() {
+        let (sql, params) = search_terms_query("keyword >section @file ^title");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?3 ORDER BY ?4"
+        );
+        assert_eq!(params.len(), 4);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "section");
+        assert_eq!(params[2], "file");
+        assert_eq!(params[3], "title ASC");
+    }
+
+    #[test]
+    fn test_search_terms_query_only_order_by() {
+        let (sql, params) = search_terms_query("^title");
+        assert_eq!(sql, "");
+        assert_eq!(params.len(), 0);
+    }
+
+    #[test]
+    fn test_search_terms_query_invalid_order_by_field() {
+        let (sql, params) = search_terms_query("keyword ^invalid");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "keyword");
+    }
+
+    #[test]
+    fn test_search_terms_query_whitespace_handling() {
+        let (sql, params) = search_terms_query("  keyword   >section  ");
+        assert_eq!(
+            sql,
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "keyword");
+        assert_eq!(params[1], "section");
     }
 }
