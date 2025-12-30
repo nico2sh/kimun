@@ -682,6 +682,7 @@ label.error {
   border: 2px solid var(--border-light);
   border-radius: 8px;
   transition: all 0.3s ease;
+  padding-right: 8px;
 }
 
 .search-input-wrapper:focus-within {

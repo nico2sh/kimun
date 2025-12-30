@@ -1,6 +1,7 @@
 pub mod note_picker;
 pub mod note_search;
 pub mod note_select;
+mod note_select_entry;
 
 use std::rc::Rc;
 
@@ -9,20 +10,17 @@ use dioxus::{core::use_drop, logger::tracing::info, prelude::*};
 use crate::{
     components::{
         focus_manager::{FocusComponent, FocusManager},
-        modal::ModalType,
-        note_select_entry::RowItem,
+        modal::{selector::note_select_entry::NoteSelectEntry, ModalType},
+        note_select_entry::SortCriteria,
     },
     utils::sparse_vector::SparseVector,
 };
 
-trait SelectorFunctions<R>: Clone
-where
-    R: RowItem,
-{
-    fn init(&self) -> Vec<R>;
-    fn filter(&self, filter_text: String, items: &[R]) -> Vec<R>;
-    fn preview(&self, element: &R) -> Option<PreviewData>;
-    fn on_select(&mut self, element: &R) -> bool;
+trait SelectorFunctions: Clone {
+    fn init(&self) -> Vec<NoteSelectEntry>;
+    fn filter(&self, filter_text: String, items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry>;
+    fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData>;
+    fn on_select(&mut self, element: &NoteSelectEntry) -> bool;
 }
 
 pub struct PreviewData {
@@ -32,38 +30,31 @@ pub struct PreviewData {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum LoadState<R>
-where
-    R: RowItem + 'static,
-{
+pub enum LoadState {
     Closed,
     Init,
-    Loaded(Vec<R>),
+    Loaded(Vec<NoteSelectEntry>),
 }
 
 #[derive(Props, Clone, PartialEq)]
-struct SelectorViewProps<R>
-where
-    R: RowItem + 'static,
-{
+struct SelectorViewProps {
     filter_text: Signal<String>,
-    load_state: Signal<LoadState<R>>,
+    load_state: Signal<LoadState>,
     modal_type: Signal<ModalType>,
 }
 
 #[allow(non_snake_case)]
-fn SelectorView<R, F>(
+fn SelectorView<F>(
     hint: String,
     filter_text: String,
     mut modal_type: Signal<ModalType>,
     functions: F,
 ) -> Element
 where
-    R: RowItem + Send + Clone + Sync + 'static,
-    F: SelectorFunctions<R> + Clone + Send + 'static,
+    F: SelectorFunctions + Clone + Send + 'static,
 {
     let mut filter_text = use_signal(|| filter_text);
-    let mut load_state: Signal<LoadState<R>, SyncStorage> = use_signal_sync(|| LoadState::Init);
+    let mut load_state: Signal<LoadState, SyncStorage> = use_signal_sync(|| LoadState::Init);
     // For setting the focus in the text box
     // let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let focus_manager = use_context::<FocusManager>();
@@ -71,9 +62,14 @@ where
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
     let mut select_by_mouse = use_signal(|| true);
 
+    let mut sort_criteria: Signal<Option<SortCriteria>> = use_signal(|| None);
+    let mut sort_ascending = use_signal(|| true);
+
+    let mut show_sort_options = use_signal(|| false);
+
     let functions_load = functions.clone();
 
-    let rows = use_resource(move || {
+    let filtered_rows = use_resource(move || {
         let filter_text = filter_text.read().clone();
         let current_state = load_state.read().clone();
         let functions = functions_load.clone();
@@ -111,6 +107,21 @@ where
         }
     });
 
+    let rows = use_memo(move || match filtered_rows() {
+        Some(mut r) => match sort_criteria() {
+            Some(sort) => {
+                if sort_ascending() {
+                    r.sort_by_key(|b| b.sort_string_for(&sort));
+                } else {
+                    r.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort)));
+                };
+                Some(r)
+            }
+            None => Some(r),
+        },
+        None => None,
+    });
+
     let functions_preview = functions.clone();
     let preview_text = use_resource(move || {
         let functions_preview = functions_preview.clone();
@@ -143,10 +154,12 @@ where
     use_drop(move || {
         fm.unregister_focus(FocusComponent::ModalInput);
     });
-    let row_number = rows.value().read().clone().unwrap_or_default().len();
+    let row_number = rows.read().clone().unwrap_or_default().len();
 
     let functions_enter = functions.clone();
     let functions_click = functions.clone();
+    let focus_after_sort = focus_manager.clone();
+
     rsx! {
         div {
             class: "notes-modal",
@@ -206,7 +219,7 @@ where
                     }
                     if key == Code::Enter && row_number > 0 {
                         let current_selected = (*selected.read()).unwrap_or(0);
-                        if let Some(rows) = &*rows.value().read() {
+                        if let Some(rows) = &*rows.read() {
                             if let Some(row) = rows.get(current_selected) {
                                 if functions_enter.on_select(&row) {
                                     load_state.set(LoadState::Closed);
@@ -252,6 +265,7 @@ where
                                     class: "icon-button",
                                     title: "Sort Options",
                                     aria_label: "Sort Options",
+                                    onclick: move |_e| show_sort_options.set(!show_sort_options()),
                                     svg { view_box: "0 0 24 24",
                                         line {
                                             x1: "4",
@@ -273,39 +287,64 @@ where
                                         }
                                     }
                                 }
-                                div { class: "sort-menu",
-                                    div { class: "sort-option selected",
-                                        svg { view_box: "0 0 24 24",
-                                            circle { cx: "12", cy: "12", r: "10" }
-                                            circle {
-                                                cx: "12",
-                                                cy: "12",
-                                                r: "3",
-                                                fill: "currentColor",
+                                if show_sort_options() {
+                                    div {
+                                        class: "sort-menu show",
+                                        onclick: move |_e| {
+                                            show_sort_options.set(false);
+                                            focus_after_sort.focus(FocusComponent::ModalInput);
+                                        },
+                                        div {
+                                            class: if sort_criteria.read().is_none() { "sort-option selected" } else { "sort-option" },
+                                            onclick: move |_e| {
+                                                sort_criteria.set(None);
+                                            },
+                                            svg { view_box: "0 0 24 24",
+                                                circle {
+                                                    cx: "12",
+                                                    cy: "12",
+                                                    r: "10",
+                                                }
+                                                circle {
+                                                    cx: "12",
+                                                    cy: "12",
+                                                    r: "3",
+                                                    fill: "currentColor",
+                                                }
                                             }
+                                            "Default"
                                         }
-                                        "Default"
-                                    }
-                                    div { class: "sort-option",
-                                        svg { view_box: "0 0 24 24",
-                                            path { d: "M4 7V4h16v3M9 20h6M12 4v16" }
+                                        div {
+                                            class: if Some(SortCriteria::Title) == *sort_criteria.read() { "sort-option selected" } else { "sort-option" },
+                                            onclick: move |_e| {
+                                                sort_criteria.set(Some(SortCriteria::Title));
+                                            },
+                                            svg { view_box: "0 0 24 24",
+                                                path { d: "M4 7V4h16v3M9 20h6M12 4v16" }
+                                            }
+                                            "Title"
                                         }
-                                        "Title"
-                                    }
-                                    div { class: "sort-option",
-                                        svg { view_box: "0 0 24 24",
-                                            path { d: "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" }
-                                            polyline { points: "13 2 13 9 20 9" }
+                                        div {
+                                            class: if Some(SortCriteria::FileName) == *sort_criteria.read() { "sort-option selected" } else { "sort-option" },
+                                            onclick: move |_e| {
+                                                sort_criteria.set(Some(SortCriteria::FileName));
+                                            },
+                                            svg { view_box: "0 0 24 24",
+                                                path { d: "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" }
+                                                polyline { points: "13 2 13 9 20 9" }
+                                            }
+                                            "FileName"
                                         }
-                                        "FileName"
                                     }
                                 }
                             }
                         }
                         button {
-                            class: "icon-button",
+                            class: if sort_ascending() { "icon-button sort-order ascending" } else { "icon-button sort-order" },
                             title: "Sort order: descending",
+                            disabled: sort_criteria().is_none(),
                             aria_label: "Toggle sort order",
+                            onclick: move |_e| sort_ascending.set(!sort_ascending()),
                             svg { view_box: "0 0 24 24",
                                 line {
                                     x1: "12",
@@ -339,7 +378,7 @@ where
                         select_by_mouse.set(true);
                     }
                 },
-                if let Some(rs) = rows.value().read().clone() {
+                if let Some(rs) = rows.read().clone() {
                     for (index , row) in rs.into_iter().enumerate() {
                         {
                             let mut functions_click = functions_click.clone();
