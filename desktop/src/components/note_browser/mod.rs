@@ -17,6 +17,7 @@ use crate::{
         modal::{confirmations::ConfirmationType, ModalType},
         note_browser::note_list::{NoteElementActions, NoteList},
         note_select_entry::{NoteBrowseEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
+        search_box::SearchBox,
     },
     global_events::{GlobalEvent, PubSub},
     utils::sparse_vector::SparseVector,
@@ -222,62 +223,12 @@ pub fn NoteBrowser(
             }
         }
         div { class: "sidebar-search",
-            input {
-                r#type: "text",
-                class: "input",
-                placeholder: "search",
-                value: "{filter_text}",
-                onfocus: move |_e| { focus.focus(FocusComponent::BrowseSearch) },
-                oninput: move |e| {
-                    filter_text.set(e.value().to_string());
-                },
-                onmounted: move |e| {
-                    focus_manager.register_and_focus(FocusComponent::BrowseSearch, e.data());
-                },
-            }
-        }
-        div { class: "sidebar-controls",
-            div { class: "sort-controls",
-                select {
-                    class: "select",
-                    id: "sortBy",
-                    onchange: move |e| {
-                        let val = e.value();
-                        if val.eq("title") {
-                            sort_criteria.set(SortCriteria::Title);
-                        }
-                        if val.eq("filename") {
-                            sort_criteria.set(SortCriteria::FileName);
-                        }
-                    },
-                    option {
-                        value: "filename",
-                        selected: if sort_criteria() == SortCriteria::FileName { true },
-                        "File Name"
-                    }
-                    option {
-                        value: "title",
-                        selected: if sort_criteria() == SortCriteria::Title { true },
-                        "Title"
-                    }
-                }
-                button {
-                    class: if sort_ascending() { "sort-order ascending" } else { "sort-order" },
-                    id: "sortOrder",
-                    onclick: move |_e| {
-                        sort_ascending.set(!sort_ascending());
-                    },
-                    title { "Toggle sort Order" }
-                    svg {
-                        width: 14,
-                        height: 14,
-                        view_box: "0 0 24 24",
-                        fill: "none",
-                        stroke: "currentColor",
-                        stroke_width: "2",
-                        path { d: "M3 6h18M7 12h10M11 18h2" }
-                    }
-                }
+            SearchBox {
+                search_text: filter_text,
+                sort_criteria,
+                sort_ascending,
+                input_focus: FocusComponent::BrowseSearch,
+                no_default: true,
             }
         }
         div {
