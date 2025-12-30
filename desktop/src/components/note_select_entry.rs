@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use dioxus::{prelude::*, signals::SyncSignal};
+use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
 #[derive(Clone, Eq, PartialEq)]

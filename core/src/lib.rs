@@ -268,23 +268,29 @@ impl NoteVault {
         Ok(a)
     }
 
-    // Search notes using terms
+    // Search notes using a search syntax
     pub fn search_notes<S: AsRef<str>>(
         &self,
-        terms: S,
+        search_query: S,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         // let mut connection = ConnectionBuilder::new(&self.workspace_path)
         //     .build()
         //     .unwrap();
-        let terms = terms.as_ref().to_owned();
+        let search_query = search_query.as_ref().to_owned();
 
         let a = self
             .vault_db
-            .call(move |conn| db::search_terms(conn, terms))?;
+            .call(move |conn| db::search_terms(conn, search_query))?;
 
         Ok(a)
     }
 
+    // Get all notes
+    pub fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
+        let a = self.vault_db.call(move |conn| db::get_all_notes(conn))?;
+
+        Ok(a)
+    }
     pub fn path_to_pathbuf(&self, path: &VaultPath) -> PathBuf {
         path.to_pathbuf(&self.workspace_path)
     }

@@ -8,9 +8,9 @@ use kimun_core::NoteVault;
 
 use crate::{
     app_state::AppState,
-    components::{
-        modal::{selector::PreviewData, ModalType},
-        note_select_entry::NoteBrowseEntry,
+    components::modal::{
+        selector::{note_select_entry::NoteSelectEntry, PreviewData},
+        ModalType,
     },
 };
 
@@ -28,18 +28,18 @@ struct SearchFunctions {
     vault: Arc<NoteVault>,
 }
 
-impl SelectorFunctions<NoteBrowseEntry> for SearchFunctions {
-    fn init(&self) -> Vec<NoteBrowseEntry> {
+impl SelectorFunctions for SearchFunctions {
+    fn init(&self) -> Vec<NoteSelectEntry> {
         debug!("Opening Note Search");
         vec![]
     }
 
-    fn filter(&self, filter_text: String, _items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
+    fn filter(&self, filter_text: String, _items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry> {
         match self.vault.search_notes(filter_text) {
             Ok(res) => res
                 .into_iter()
-                .map(|(entry, content)| NoteBrowseEntry::from_note_details(entry.path, content))
-                .collect::<Vec<NoteBrowseEntry>>(),
+                .map(|(entry, content)| NoteSelectEntry::from_note_details(entry.path, content))
+                .collect::<Vec<NoteSelectEntry>>(),
             Err(e) => {
                 error!("Error searching notes: {}", e);
                 vec![]
@@ -47,7 +47,7 @@ impl SelectorFunctions<NoteBrowseEntry> for SearchFunctions {
         }
     }
 
-    fn preview(&self, element: &NoteBrowseEntry) -> Option<PreviewData> {
+    fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData> {
         let preview = self.vault.load_note(&element.get_path()).map_or_else(
             |e| PreviewData {
                 title: "Error loading preview...".to_string(),
@@ -63,10 +63,10 @@ impl SelectorFunctions<NoteBrowseEntry> for SearchFunctions {
         Some(preview)
     }
 
-    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool {
+    fn on_select(&mut self, element: &NoteSelectEntry) -> bool {
         let mut app_state: Signal<AppState> = use_context();
         match element {
-            NoteBrowseEntry::Note {
+            NoteSelectEntry::Note {
                 path,
                 title: _,
                 search_str: _,
@@ -74,7 +74,7 @@ impl SelectorFunctions<NoteBrowseEntry> for SearchFunctions {
                 app_state.write().set_path(&path, false);
                 true
             }
-            NoteBrowseEntry::Journal {
+            NoteSelectEntry::Journal {
                 path,
                 title: _,
                 date_string: _,
@@ -83,11 +83,7 @@ impl SelectorFunctions<NoteBrowseEntry> for SearchFunctions {
                 app_state.write().set_path(&path, false);
                 true
             }
-            NoteBrowseEntry::Directory { path: _, name: _ } => {
-                warn!("I'n not going to have directory browse here");
-                false
-            }
-            NoteBrowseEntry::Create {
+            NoteSelectEntry::Create {
                 new_note_path,
                 name: _,
             } => {

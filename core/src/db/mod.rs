@@ -207,7 +207,7 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
     Ok(())
 }
 
-pub fn search_terms_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
+pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
     let search_terms = SearchTerms::from_query_string(query);
     let mut var_num = 1;
     let base_sql = "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
@@ -258,11 +258,38 @@ pub fn search_terms_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
     (sql, params)
 }
 
+pub fn get_all_notes(
+    connection: &mut Connection,
+) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    let query = "SELECT DISTINCT path, title, size, modified, hash, noteName FROM notes";
+    let mut stmt = connection.prepare(&query)?;
+
+    let res = stmt
+        .query_map([], |row| {
+            let path: String = row.get(0)?;
+            let title = row.get(1)?;
+            let size = row.get(2)?;
+            let modified = row.get(3)?;
+            let hash: String = row.get(4)?;
+            let note_path = VaultPath::new(&path);
+            let data = NoteEntryData {
+                path: note_path.clone(),
+                size,
+                modified_secs: modified,
+            };
+            let det = NoteContentData::new(title, hash.parse().unwrap());
+            Ok((data, det))
+        })?
+        .map(|el| el.map_err(DBError::DBError))
+        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
+    Ok(res)
+}
+
 pub fn search_terms<S: AsRef<str>>(
     connection: &mut Connection,
-    query: S,
+    search_query: S,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let (query, params) = search_terms_query(query);
+    let (query, params) = build_search_sql_query(search_query);
 
     if query.is_empty() {
         debug!("No query provided");
@@ -683,14 +710,14 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_empty() {
-        let (sql, params) = search_terms_query("");
+        let (sql, params) = build_search_sql_query("");
         assert_eq!(sql, "");
         assert_eq!(params.len(), 0);
     }
 
     #[test]
     fn test_search_terms_query_simple_terms() {
-        let (sql, params) = search_terms_query("foo bar");
+        let (sql, params) = build_search_sql_query("foo bar");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
@@ -701,7 +728,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_single_term() {
-        let (sql, params) = search_terms_query("keyword");
+        let (sql, params) = build_search_sql_query("keyword");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
@@ -712,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_breadcrumb_only() {
-        let (sql, params) = search_terms_query(">heading");
+        let (sql, params) = build_search_sql_query(">heading");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
@@ -723,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_breadcrumb_with_in() {
-        let (sql, params) = search_terms_query("in:section");
+        let (sql, params) = build_search_sql_query("in:section");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
@@ -734,7 +761,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_multiple_breadcrumbs() {
-        let (sql, params) = search_terms_query(">heading1 in:heading2");
+        let (sql, params) = build_search_sql_query(">heading1 in:heading2");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
@@ -745,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_path_only() {
-        let (sql, params) = search_terms_query("@filename");
+        let (sql, params) = build_search_sql_query("@filename");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?1"
@@ -756,7 +783,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_path_with_at() {
-        let (sql, params) = search_terms_query("at:directory");
+        let (sql, params) = build_search_sql_query("at:directory");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?1"
@@ -767,7 +794,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_multiple_paths() {
-        let (sql, params) = search_terms_query("@file1 at:file2");
+        let (sql, params) = build_search_sql_query("@file1 at:file2");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?1"
@@ -778,7 +805,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_terms_and_breadcrumb() {
-        let (sql, params) = search_terms_query("keyword >section");
+        let (sql, params) = build_search_sql_query("keyword >section");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
@@ -790,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_terms_and_path() {
-        let (sql, params) = search_terms_query("keyword @file");
+        let (sql, params) = build_search_sql_query("keyword @file");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?2"
@@ -802,7 +829,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_breadcrumb_and_path() {
-        let (sql, params) = search_terms_query(">heading @file");
+        let (sql, params) = build_search_sql_query(">heading @file");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?2"
@@ -814,7 +841,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_all_combined() {
-        let (sql, params) = search_terms_query("keyword >heading @file");
+        let (sql, params) = build_search_sql_query("keyword >heading @file");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?3"
@@ -827,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_quoted_terms() {
-        let (sql, params) = search_terms_query("\"exact phrase\" keyword");
+        let (sql, params) = build_search_sql_query("\"exact phrase\" keyword");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
@@ -838,7 +865,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_order_by_title_asc() {
-        let (sql, params) = search_terms_query("keyword or:title");
+        let (sql, params) = build_search_sql_query("keyword or:title");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
@@ -850,7 +877,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_order_by_title_desc() {
-        let (sql, params) = search_terms_query("keyword or:-title");
+        let (sql, params) = build_search_sql_query("keyword or:-title");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
@@ -862,7 +889,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_order_by_filename_asc() {
-        let (sql, params) = search_terms_query("keyword or:filename");
+        let (sql, params) = build_search_sql_query("keyword or:filename");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
@@ -874,7 +901,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_order_by_file_shorthand() {
-        let (sql, params) = search_terms_query("keyword or:f");
+        let (sql, params) = build_search_sql_query("keyword or:f");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
@@ -886,7 +913,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_order_by_title_shorthand() {
-        let (sql, params) = search_terms_query("keyword or:t");
+        let (sql, params) = build_search_sql_query("keyword or:t");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
@@ -898,7 +925,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_multiple_order_by() {
-        let (sql, params) = search_terms_query("keyword ^title ^-filename");
+        let (sql, params) = build_search_sql_query("keyword ^title ^-filename");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
@@ -910,7 +937,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_complex_with_order() {
-        let (sql, params) = search_terms_query("keyword >section @file ^title");
+        let (sql, params) = build_search_sql_query("keyword >section @file ^title");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?3 ORDER BY ?4"
@@ -924,14 +951,14 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_only_order_by() {
-        let (sql, params) = search_terms_query("^title");
+        let (sql, params) = build_search_sql_query("^title");
         assert_eq!(sql, "");
         assert_eq!(params.len(), 0);
     }
 
     #[test]
     fn test_search_terms_query_invalid_order_by_field() {
-        let (sql, params) = search_terms_query("keyword ^invalid");
+        let (sql, params) = build_search_sql_query("keyword ^invalid");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
@@ -942,7 +969,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_whitespace_handling() {
-        let (sql, params) = search_terms_query("  keyword   >section  ");
+        let (sql, params) = build_search_sql_query("  keyword   >section  ");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
