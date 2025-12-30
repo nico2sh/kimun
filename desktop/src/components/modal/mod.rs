@@ -129,7 +129,8 @@ pub fn Modal(props: ModalProps) -> Element {
         return rsx! {};
     }
     rsx! {
-        div { class: "modal-overlay",
+        div {
+            class: "modal-overlay",
             // We close any modal if we click on the main UI
             onclick: move |e| {
                 e.prevent_default();
@@ -183,9 +184,9 @@ pub fn Modal(props: ModalProps) -> Element {
                 ModalType::NewDirectory { vault, path } => rsx! {
                     CreateDirectory { modal_type, vault: vault.clone(), from_path: path.clone() }
                 },
-                ModalType::NotePicker { note_list } => rsx!{
+                ModalType::NotePicker { note_list } => rsx! {
                     NotePicker { modal_type, note_list }
-                }
+                },
             }
         }
     }

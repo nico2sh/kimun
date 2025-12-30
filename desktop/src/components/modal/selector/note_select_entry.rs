@@ -74,7 +74,7 @@ impl NoteSelectEntry {
             } => {
                 rsx! {
                     div { class: "note-item-content",
-                        div { class: "icon-note note-title", "{title}" }
+                        div { class: "note-title", "» {title}" }
                         div { class: "note-meta", "{path}" }
                     }
                 }
@@ -87,7 +87,7 @@ impl NoteSelectEntry {
             } => {
                 rsx! {
                     div { class: "note-item-content",
-                        div { class: "icon-note note-title", "{title}" }
+                        div { class: "note-title", "» {title}" }
                         div { class: "note-meta", "{path.get_name()}" }
                         div { class: "note-journal", "{date_string}" }
                     }
