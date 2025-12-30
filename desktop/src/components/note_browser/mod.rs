@@ -26,31 +26,6 @@ use super::focus_manager::FocusManager;
 
 const NOTE_BROWSER: &str = "note_browser";
 
-#[derive(Clone, Eq, PartialEq)]
-pub struct Sort {
-    criteria: SortCriteria,
-    ascending: bool,
-}
-
-impl Sort {
-    fn set_criteria(&mut self, criteria: SortCriteria) {
-        self.criteria = criteria;
-    }
-
-    fn toggle_order(&mut self) {
-        self.ascending = !self.ascending;
-    }
-}
-
-impl Default for Sort {
-    fn default() -> Self {
-        Self {
-            criteria: SortCriteria::FileName,
-            ascending: false,
-        }
-    }
-}
-
 #[component]
 pub fn NoteBrowser(
     vault: Arc<NoteVault>,
@@ -69,7 +44,8 @@ pub fn NoteBrowser(
     });
     let focus_manager = use_context::<FocusManager>();
 
-    let mut sort = use_signal(Sort::default);
+    let mut sort_criteria = use_signal(|| SortCriteria::FileName);
+    let mut sort_ascending = use_signal(|| false);
 
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
@@ -160,10 +136,10 @@ pub fn NoteBrowser(
         info!("Sorting entries");
         let mut filtered_entries = filtered_entries.read().to_owned();
         if let Some(NoteSelectEntryListStatus::Loaded(result)) = filtered_entries.as_mut() {
-            if sort.read().ascending {
-                result.sort_by_key(|b| b.sort_string_for(&sort.read().criteria));
+            if sort_ascending() {
+                result.sort_by_key(|b| b.sort_string_for(&sort_criteria()));
             } else {
-                result.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort.read().criteria)));
+                result.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort_criteria())));
             };
             if !browsing_directory.read().is_root_or_empty() {
                 result.insert(
@@ -268,28 +244,28 @@ pub fn NoteBrowser(
                     onchange: move |e| {
                         let val = e.value();
                         if val.eq("title") {
-                            sort.write().set_criteria(SortCriteria::Title);
+                            sort_criteria.set(SortCriteria::Title);
                         }
                         if val.eq("filename") {
-                            sort.write().set_criteria(SortCriteria::FileName);
+                            sort_criteria.set(SortCriteria::FileName);
                         }
                     },
                     option {
                         value: "filename",
-                        selected: if sort.read().criteria == SortCriteria::FileName { true },
+                        selected: if sort_criteria() == SortCriteria::FileName { true },
                         "File Name"
                     }
                     option {
                         value: "title",
-                        selected: if sort.read().criteria == SortCriteria::Title { true },
+                        selected: if sort_criteria() == SortCriteria::Title { true },
                         "Title"
                     }
                 }
                 button {
-                    class: if sort.read().ascending { "sort-order ascending" } else { "sort-order" },
+                    class: if sort_ascending() { "sort-order ascending" } else { "sort-order" },
                     id: "sortOrder",
                     onclick: move |_e| {
-                        sort.write().toggle_order();
+                        sort_ascending.set(!sort_ascending());
                     },
                     title { "Toggle sort Order" }
                     svg {
