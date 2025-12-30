@@ -4,8 +4,10 @@
 
 pub mod button;
 pub mod focus_manager;
+pub mod icons;
 pub mod modal;
 pub mod note_browser;
 pub mod note_select_entry;
 pub mod preview;
 pub mod preview_pane;
+pub mod search_box;
