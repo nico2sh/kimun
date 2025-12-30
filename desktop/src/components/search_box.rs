@@ -13,7 +13,7 @@ pub struct SearchBoxProps {
     sort_ascending: Signal<bool>,
     input_focus: FocusComponent,
 
-    #[props(default = true)]
+    #[props(default = false)]
     no_default: bool,
 }
 
@@ -47,6 +47,7 @@ pub fn SearchBox(props: SearchBoxProps) -> Element {
                 placeholder: "Search...",
                 value: "{search_text}",
                 spellcheck: false,
+                onfocus: move |_e| show_sort_options.set(false),
                 onmounted: move |e| {
                     focus_manager.register_and_focus(mount_focus.clone(), e.data());
                 },
@@ -114,21 +115,21 @@ pub fn SearchBox(props: SearchBoxProps) -> Element {
                         }
                     }
                 }
-            }
-            button {
-                class: if sort_ascending() { "icon-button sort-order ascending" } else { "icon-button sort-order" },
-                title: "Sort order: descending",
-                disabled: sort_criteria() == SortCriteria::None,
-                aria_label: "Toggle sort order",
-                onclick: move |_e| sort_ascending.set(!sort_ascending()),
-                svg { view_box: "0 0 24 24",
-                    line {
-                        x1: "12",
-                        y1: "5",
-                        x2: "12",
-                        y2: "19",
+                button {
+                    class: if sort_ascending() { "icon-button ascending" } else { "icon-button" },
+                    title: if sort_ascending() { "Sort Direction: Ascending" } else { "Sort Direction: Descending" },
+                    disabled: sort_criteria() == SortCriteria::None,
+                    aria_label: "Toggle sort order",
+                    onclick: move |_e| sort_ascending.set(!sort_ascending()),
+                    svg { view_box: "0 0 24 24",
+                        line {
+                            x1: "12",
+                            y1: "5",
+                            x2: "12",
+                            y2: "19",
+                        }
+                        polyline { points: "19 12 12 19 5 12" }
                     }
-                    polyline { points: "19 12 12 19 5 12" }
                 }
             }
         }
