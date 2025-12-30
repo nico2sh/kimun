@@ -222,27 +222,114 @@ where
             div { class: "search-header",
                 div { class: "search-title", "Browse Notes" }
                 div { class: "header-description", "{hint}" }
-                input {
-                    class: "search-box",
-                    r#type: "search",
-                    placeholder: "Search...",
-                    value: "{filter_text}",
-                    spellcheck: false,
-                    onmounted: move |e| {
-                        focus_manager.register_and_focus(FocusComponent::ModalInput, e.data());
-                    },
-                    oninput: move |e| {
-                        filter_text.set(e.value().clone().to_string());
-                    },
-                    onkeydown: move |e: Event<KeyboardData>| {
-                        let key = e.data.code();
-                        match key {
-                            Code::ArrowDown | Code::ArrowUp | Code::Tab => {
-                                e.prevent_default();
-                            }
-                            _ => {}
+                div { class: "search-container",
+                    div { class: "search-input-wrapper",
+                        input {
+                            class: "search-box",
+                            r#type: "search",
+                            placeholder: "Search...",
+                            value: "{filter_text}",
+                            spellcheck: false,
+                            onmounted: move |e| {
+                                focus_manager.register_and_focus(FocusComponent::ModalInput, e.data());
+                            },
+                            oninput: move |e| {
+                                filter_text.set(e.value().clone().to_string());
+                            },
+                            onkeydown: move |e: Event<KeyboardData>| {
+                                let key = e.data.code();
+                                match key {
+                                    Code::ArrowDown | Code::ArrowUp | Code::Tab => {
+                                        e.prevent_default();
+                                    }
+                                    _ => {}
+                                }
+                            },
                         }
-                    },
+                        div { class: "search-controls",
+                            div { class: "sort-dropdown",
+                                button {
+                                    class: "icon-button",
+                                    title: "Sort Options",
+                                    aria_label: "Sort Options",
+                                    svg { view_box: "0 0 24 24",
+                                        line {
+                                            x1: "4",
+                                            y1: "6",
+                                            x2: "20",
+                                            y2: "6",
+                                        }
+                                        line {
+                                            x1: "4",
+                                            y1: "12",
+                                            x2: "20",
+                                            y2: "12",
+                                        }
+                                        line {
+                                            x1: "4",
+                                            y1: "18",
+                                            x2: "20",
+                                            y2: "18",
+                                        }
+                                    }
+                                }
+                                div { class: "sort-menu",
+                                    div { class: "sort-option selected",
+                                        svg { view_box: "0 0 24 24",
+                                            circle { cx: "12", cy: "12", r: "10" }
+                                            circle {
+                                                cx: "12",
+                                                cy: "12",
+                                                r: "3",
+                                                fill: "currentColor",
+                                            }
+                                        }
+                                        "Default"
+                                    }
+                                    div { class: "sort-option",
+                                        svg { view_box: "0 0 24 24",
+                                            path { d: "M4 7V4h16v3M9 20h6M12 4v16" }
+                                        }
+                                        "Title"
+                                    }
+                                    div { class: "sort-option",
+                                        svg { view_box: "0 0 24 24",
+                                            path { d: "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" }
+                                            polyline { points: "13 2 13 9 20 9" }
+                                        }
+                                        "FileName"
+                                    }
+                                }
+                            }
+                        }
+                        button {
+                            class: "icon-button",
+                            title: "Sort order: descending",
+                            aria_label: "Toggle sort order",
+                            svg { view_box: "0 0 24 24",
+                                line {
+                                    x1: "12",
+                                    y1: "5",
+                                    x2: "12",
+                                    y2: "19",
+                                }
+                                polyline { points: "19 12 12 19 5 12" }
+                            }
+                        }
+                    }
+                    button { class: "send-button",
+                        svg { view_box: "0 0 24 24",
+                            polygon {
+                                points: "4,10 4,14 20,12",
+                                fill: "currentColor",
+                            }
+                            polygon {
+                                points: "12,7 20,12 12,17",
+                                fill: "currentColor",
+                            }
+                        }
+                        span { class: "send-button-text", "To Sidebar" }
+                    }
                 }
             }
             div {
