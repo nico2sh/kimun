@@ -63,7 +63,7 @@ where
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
     let mut select_by_mouse = use_signal(|| true);
 
-    let sort_criteria: Signal<Option<SortCriteria>> = use_signal(|| None);
+    let sort_criteria: Signal<SortCriteria> = use_signal(|| SortCriteria::None);
     let sort_ascending = use_signal(|| true);
 
     let functions_load = functions.clone();
@@ -107,17 +107,16 @@ where
     });
 
     let rows = use_memo(move || match filtered_rows() {
-        Some(mut r) => match sort_criteria() {
-            Some(sort) => {
+        Some(mut r) => {
+            if SortCriteria::None != sort_criteria() {
                 if sort_ascending() {
-                    r.sort_by_key(|b| b.sort_string_for(&sort));
+                    r.sort_by_key(|b| b.sort_string_for(&sort_criteria()));
                 } else {
-                    r.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort)));
+                    r.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort_criteria())));
                 };
-                Some(r)
             }
-            None => Some(r),
-        },
+            Some(r)
+        }
         None => None,
     });
 

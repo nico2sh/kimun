@@ -9,7 +9,7 @@ use crate::components::{
 #[derive(Clone, PartialEq, Props)]
 pub struct SearchBoxProps {
     search_text: Signal<String>,
-    sort_criteria: Signal<Option<SortCriteria>>,
+    sort_criteria: Signal<SortCriteria>,
     sort_ascending: Signal<bool>,
     input_focus: FocusComponent,
 
@@ -70,13 +70,11 @@ pub fn SearchBox(props: SearchBoxProps) -> Element {
                         title: "Sort Options",
                         aria_label: "Sort Options",
                         onclick: move |_e| show_sort_options.set(!show_sort_options()),
-                        if let Some(criteria) = sort_criteria() {
-                            if criteria == SortCriteria::Title {
-                                icons::SortTitle {}
-                            } else if criteria == SortCriteria::FileName {
-                                icons::SortFileName {}
-                            }
-                        } else {
+                        if sort_criteria() == SortCriteria::Title {
+                            icons::SortTitle {}
+                        } else if sort_criteria() == SortCriteria::FileName {
+                            icons::SortFileName {}
+                        } else if sort_criteria() == SortCriteria::None {
                             icons::DoubleCircle {}
                         }
                     }
@@ -89,26 +87,26 @@ pub fn SearchBox(props: SearchBoxProps) -> Element {
                             },
                             if !no_default {
                                 div {
-                                    class: if sort_criteria().is_none() { "sort-option selected" } else { "sort-option" },
+                                    class: if SortCriteria::None == sort_criteria() { "sort-option selected" } else { "sort-option" },
                                     onclick: move |_e| {
-                                        sort_criteria.set(None);
+                                        sort_criteria.set(SortCriteria::None);
                                     },
                                     icons::DoubleCircle {}
                                     "Default"
                                 }
                             }
                             div {
-                                class: if Some(SortCriteria::Title) == sort_criteria() { "sort-option selected" } else { "sort-option" },
+                                class: if SortCriteria::Title == sort_criteria() { "sort-option selected" } else { "sort-option" },
                                 onclick: move |_e| {
-                                    sort_criteria.set(Some(SortCriteria::Title));
+                                    sort_criteria.set(SortCriteria::Title);
                                 },
                                 icons::SortTitle {}
                                 "Title"
                             }
                             div {
-                                class: if Some(SortCriteria::FileName) == sort_criteria() { "sort-option selected" } else { "sort-option" },
+                                class: if SortCriteria::FileName == sort_criteria() { "sort-option selected" } else { "sort-option" },
                                 onclick: move |_e| {
-                                    sort_criteria.set(Some(SortCriteria::FileName));
+                                    sort_criteria.set(SortCriteria::FileName);
                                 },
                                 icons::SortFileName {}
                                 "FileName"
@@ -120,7 +118,7 @@ pub fn SearchBox(props: SearchBoxProps) -> Element {
             button {
                 class: if sort_ascending() { "icon-button sort-order ascending" } else { "icon-button sort-order" },
                 title: "Sort order: descending",
-                disabled: sort_criteria().is_none(),
+                disabled: sort_criteria() == SortCriteria::None,
                 aria_label: "Toggle sort order",
                 onclick: move |_e| sort_ascending.set(!sort_ascending()),
                 svg { view_box: "0 0 24 24",

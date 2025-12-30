@@ -128,6 +128,7 @@ impl NoteSelectEntry {
                 match criteria {
                     SortCriteria::Title => title.to_owned(),
                     SortCriteria::FileName => path.get_name(),
+                    SortCriteria::None => "".to_string(),
                 }
             ),
             NoteSelectEntry::Journal {
@@ -140,6 +141,7 @@ impl NoteSelectEntry {
                 match criteria {
                     SortCriteria::Title => title.to_owned(),
                     SortCriteria::FileName => path.get_name(),
+                    SortCriteria::None => "".to_string(),
                 }
             ),
             NoteSelectEntry::Create {

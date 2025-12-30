@@ -4,6 +4,7 @@ use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum SortCriteria {
+    None,
     Title,
     FileName,
 }
@@ -125,6 +126,7 @@ impl NoteBrowseEntry {
                 match criteria {
                     SortCriteria::Title => title.to_owned(),
                     SortCriteria::FileName => path.to_string(),
+                    SortCriteria::None => "".to_string(),
                 }
             ),
             NoteBrowseEntry::Journal {
@@ -137,6 +139,7 @@ impl NoteBrowseEntry {
                 match criteria {
                     SortCriteria::Title => title.to_owned(),
                     SortCriteria::FileName => path.to_string(),
+                    SortCriteria::None => "".to_string(),
                 }
             ),
             NoteBrowseEntry::Directory { path, name: _ } => format!("1-{}", path),
