@@ -33,48 +33,16 @@ struct SelectFunctions {
 
 impl SelectFunctions {
     fn open(&self) -> Vec<NoteBrowseEntry> {
-        let current_browse_path = self.current_browse_path.read().to_owned();
-        let (search_options, rx) = VaultBrowseOptionsBuilder::new(&current_browse_path)
-            .no_validation()
-            .non_recursive()
-            .build();
-        let _res = self.vault.browse_vault(search_options);
-
-        info!("Base path: {}", current_browse_path);
-
-        let mut result = vec![];
-
-        while let Ok(sr) = rx.recv() {
-            match sr.rtype {
-                ResultType::Note(note_content_data) => {
-                    result.push(NoteBrowseEntry::from_note_details(
-                        sr.path,
-                        note_content_data,
-                    ));
-                }
-                ResultType::Directory => {
-                    info!(
-                        "result path: {}, base path: {}",
-                        sr.path, current_browse_path
-                    );
-                    if !sr.path.is_like(&current_browse_path) {
-                        result.push(NoteBrowseEntry::from_directory_details(sr.path));
-                    }
-                }
-                _ => {}
+        match self.vault.get_all_notes() {
+            Ok(res) => res
+                .into_iter()
+                .map(|(entry, content)| NoteBrowseEntry::from_note_details(entry.path, content))
+                .collect::<Vec<NoteBrowseEntry>>(),
+            Err(e) => {
+                error!("Error searching notes: {}", e);
+                vec![]
             }
         }
-        result.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&SortCriteria::FileName)));
-        if !current_browse_path.is_root_or_empty() {
-            result.insert(
-                0,
-                NoteBrowseEntry::Directory {
-                    path: current_browse_path.get_parent_path().0,
-                    name: "..".to_string(),
-                },
-            );
-        }
-        result
     }
 }
 

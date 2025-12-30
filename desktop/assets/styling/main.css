@@ -667,27 +667,188 @@ label.error {
   margin-bottom: 12px;
 }
 
-.search-box {
-  width: 100%;
-  padding: 12px 16px;
+.search-container {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.search-input-wrapper {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--bg-main);
   border: 2px solid var(--border-light);
   border-radius: 8px;
-  background: var(--bg-main);
-  color: var(--text-primary);
-  font-size: 14px;
-  outline: none;
   transition: all 0.3s ease;
 }
 
-.search-box:focus {
+.search-input-wrapper:focus-within {
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px var(--shadow-focus);
+}
+
+.search-box {
+  flex: 1;
+  padding: 12px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
 }
 
 .search-box::placeholder {
   color: var(--text-light);
   font-style: italic;
 }
+
+.search-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 8px;
+  border-left: 1px solid var(--border-light);
+  margin-left: 8px;
+  padding-left: 8px;
+}
+
+.icon-button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-button svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.icon-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.icon-button.active {
+  color: var(--accent-blue);
+}
+
+.sort-dropdown {
+  position: relative;
+}
+
+.sort-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--bg-main);
+  border: 2px solid var(--border-light);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px var(--shadow-primary);
+  min-width: 140px;
+  z-index: 1000;
+  display: none;
+}
+
+.sort-menu.show {
+  display: block;
+}
+
+.sort-option {
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sort-option:first-child {
+  border-radius: 4px 4px 0 0;
+}
+
+.sort-option:last-child {
+  border-radius: 0 0 4px 4px;
+}
+
+.sort-option:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sort-option.selected {
+  color: var(--accent-blue);
+  font-weight: 500;
+}
+
+.sort-option svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.send-button {
+  padding: 12px 20px;
+  border: 2px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.send-button:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  transform: translateY(-1px);
+}
+
+.send-button:active {
+  transform: translateY(0);
+}
+
+.send-button svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 
 /* Notes List */
 .notes-list {
