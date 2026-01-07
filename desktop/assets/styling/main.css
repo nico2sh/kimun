@@ -175,6 +175,17 @@ progress {
   background: var(--bg-hover);
 }
 
+.bar-preview-search-popup-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  display: flex;
+  z-index: 1000;
+}
+
 .bar-preview-search-popup {
   position: absolute;
   top: 64px;
@@ -186,10 +197,6 @@ progress {
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
   padding: 8px;
   z-index: 10;
-}
-
-.bar-preview-search-popup-input-wrapper {
-  position: relative;
 }
 
 .bar-preview-search-icon {

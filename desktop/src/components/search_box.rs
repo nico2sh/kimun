@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use dioxus::prelude::*;
 
 use crate::components::{
@@ -7,8 +9,11 @@ use crate::components::{
 };
 
 #[derive(Clone, PartialEq, Props)]
-pub struct SearchBoxProps {
-    search_text: Signal<String>,
+pub struct SearchBoxProps<S>
+where
+    S: StringSearch + Clone + 'static,
+{
+    search_text: Signal<S>,
     sort_criteria: Signal<SortCriteria>,
     sort_ascending: Signal<bool>,
     input_focus: FocusComponent,
@@ -17,8 +22,21 @@ pub struct SearchBoxProps {
     no_default: bool,
 }
 
+pub trait StringSearch: Display + PartialEq {
+    fn on_string_change(&mut self, value: String);
+}
+
+impl StringSearch for String {
+    fn on_string_change(&mut self, value: String) {
+        *self = value;
+    }
+}
+
 #[component]
-pub fn SearchBox(props: SearchBoxProps) -> Element {
+pub fn SearchBox<S>(props: SearchBoxProps<S>) -> Element
+where
+    S: StringSearch + Clone,
+{
     let SearchBoxProps {
         mut search_text,
         mut sort_criteria,
@@ -52,7 +70,7 @@ pub fn SearchBox(props: SearchBoxProps) -> Element {
                     focus_manager.register_and_focus(mount_focus.clone(), e.data());
                 },
                 oninput: move |e| {
-                    search_text.set(e.value().clone().to_string());
+                    search_text.write().on_string_change(e.value().clone().to_string());
                 },
                 onkeydown: move |e: Event<KeyboardData>| {
                     let key = e.data.code();

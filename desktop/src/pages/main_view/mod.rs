@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use content_view::{NoText, TextEditor};
 use dioxus::{core::use_drop, logger::tracing::debug, prelude::*};
@@ -13,6 +13,7 @@ use crate::{
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
         note_browser::NoteBrowser,
+        note_select_entry::NoteBrowseEntry,
         preview_pane::{PreviewList, PreviewPane},
     },
     global_events::{GlobalEvent, PubSub},
@@ -253,7 +254,16 @@ pub fn MainView() -> Element {
                 div { class: "rightbar",
                     PreviewPane {
                         vault: vault.clone(),
-                        source: PreviewList::FromPath(VaultPath::root()),
+                        source: PreviewList::FromList(
+                            "".to_string(),
+                            vec![
+                                NoteBrowseEntry::Note {
+                                    path: VaultPath::from_str("journal/2025-11-03.md").unwrap(),
+                                    title: "journal entry".to_string(),
+                                    search_str: "search".to_string(),
+                                },
+                            ],
+                        ),
                         modal_type,
                     }
                 }
