@@ -228,11 +228,38 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
         params.push(search_terms.breadcrumb.join(" "));
         var_num += 1;
     }
-    if !search_terms.path.is_empty() {
-        let terms_sql = format!("{} WHERE notesContent.path MATCH ?{}", base_sql, var_num);
+    if !search_terms.filename.is_empty() {
+        let mut conditions = vec![];
+        for filename in search_terms.filename {
+            if !filename.is_empty() {
+                conditions.push(format!("notes.noteName LIKE ('%' || ?{} || '%')", var_num));
+                params.push(filename);
+                var_num += 1;
+            }
+        }
+        let terms_sql = format!("{} WHERE {}", base_sql, conditions.join(" OR "));
         queries.push(terms_sql);
-        params.push(search_terms.path.join(" "));
-        var_num += 1;
+    }
+    if !search_terms.path.is_empty() {
+        let mut conditions = vec![];
+        for path in search_terms.path {
+            if !path.is_empty() {
+                match path.strip_suffix("/") {
+                    Some(absolute) => {
+                        conditions.push(format!("notes.basePath = ('/' || ?{})", var_num));
+                        params.push(absolute.to_string());
+                    }
+                    None => {
+                        conditions
+                            .push(format!("notes.basePath LIKE ('/' || ?{} || '%')", var_num));
+                        params.push(path.to_string());
+                    }
+                }
+                var_num += 1;
+            }
+        }
+        let terms_sql = format!("{} WHERE {}", base_sql, conditions.join(" OR "));
+        queries.push(terms_sql);
     }
 
     if queries.is_empty() {
