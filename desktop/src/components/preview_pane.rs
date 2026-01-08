@@ -19,7 +19,7 @@ pub enum PreviewList {
 }
 
 impl StringSearch for PreviewList {
-    fn on_string_change(&mut self, value: String) {
+    fn change_value(&mut self, value: String) {
         *self = PreviewList::FromQuery(value);
     }
 }
