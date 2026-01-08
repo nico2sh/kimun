@@ -23,11 +23,11 @@ where
 }
 
 pub trait StringSearch: Display + PartialEq {
-    fn on_string_change(&mut self, value: String);
+    fn change_value(&mut self, value: String);
 }
 
 impl StringSearch for String {
-    fn on_string_change(&mut self, value: String) {
+    fn change_value(&mut self, value: String) {
         *self = value;
     }
 }
@@ -70,7 +70,7 @@ where
                     focus_manager.register_and_focus(mount_focus.clone(), e.data());
                 },
                 oninput: move |e| {
-                    search_text.write().on_string_change(e.value().clone().to_string());
+                    search_text.write().change_value(e.value());
                 },
                 onkeydown: move |e: Event<KeyboardData>| {
                     let key = e.data.code();
