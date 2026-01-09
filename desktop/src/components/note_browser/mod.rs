@@ -16,7 +16,7 @@ use crate::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
         note_browser::note_list::{NoteElementActions, NoteList},
-        note_select_entry::{NoteBrowseEntry, NoteSelectEntryListStatus, RowItem, SortCriteria},
+        note_select_entry::{NoteBrowseEntry, NoteSelectEntryListStatus, SortCriteria},
         search_box::SearchBox,
     },
     global_events::{GlobalEvent, PubSub},
@@ -45,14 +45,13 @@ pub fn NoteBrowser(
     });
     let focus_manager = use_context::<FocusManager>();
 
-    let mut sort_criteria = use_signal(|| SortCriteria::FileName);
-    let mut sort_ascending = use_signal(|| false);
+    let filter_text = use_signal(|| "".to_string());
+    let sort_criteria = use_signal(|| SortCriteria::FileName);
+    let sort_ascending = use_signal(|| false);
 
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
     let mut select_by_mouse = use_signal(|| true);
-
-    let mut filter_text = use_signal(|| "".to_string());
 
     // Since this is a resource that depends on the current_path
     // the entries change every time the current_path is changed
@@ -175,7 +174,6 @@ pub fn NoteBrowser(
     });
 
     let new_note_vault = vault.clone();
-    let focus = focus_manager.clone();
     rsx! {
         div { class: "sidebar-header",
             div { class: "sidebar-title", "{browsing_directory}" }

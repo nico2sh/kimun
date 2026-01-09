@@ -32,17 +32,21 @@ pub struct PreviewData {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum LoadState {
-    Closed,
-    Init,
-    Loaded(Vec<NoteSelectEntry>),
+enum LoadState {
+    Initializing,
+    Ready,
+    Filtering,
+    Sorting,
 }
 
-#[derive(Props, Clone, PartialEq)]
-struct SelectorViewProps {
-    filter_text: Signal<String>,
-    load_state: Signal<LoadState>,
-    modal_type: Signal<ModalType>,
+#[derive(Clone, Debug, PartialEq, Default)]
+struct StateData {
+    raw_data: Vec<NoteSelectEntry>,
+    filter_value: String,
+    filtered_data: Vec<NoteSelectEntry>,
+    display_data: Vec<NoteSelectEntry>,
+    sort_criteria: SortCriteria,
+    sort_ascending: bool,
 }
 
 #[allow(non_snake_case)]
@@ -55,69 +59,87 @@ fn SelectorView<F>(
 where
     F: SelectorFunctions + Clone + Send + 'static,
 {
-    let filter_text = use_signal(|| filter_text);
-    let mut load_state: Signal<LoadState, SyncStorage> = use_signal_sync(|| LoadState::Init);
+    let mut load_state: Signal<LoadState, SyncStorage> =
+        use_signal_sync(|| LoadState::Initializing);
+
+    let filter_text_value = use_signal(|| filter_text);
+    let sort_criteria_value = use_signal(|| SortCriteria::None);
+    let sort_ascending_value = use_signal(|| true);
+
     // For setting the focus in the text box
     // let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
     let mut select_by_mouse = use_signal(|| true);
 
-    let sort_criteria: Signal<SortCriteria> = use_signal(|| SortCriteria::None);
-    let sort_ascending = use_signal(|| true);
-
     let functions_load = functions.clone();
+    let mut state_data = use_signal(|| StateData::default());
 
-    let filtered_rows = use_resource(move || {
-        let filter_text = filter_text.read().clone();
+    _ = use_resource(move || {
         let current_state = load_state.read().clone();
         let functions = functions_load.clone();
         async move {
             match current_state {
-                LoadState::Init => {
-                    // row_mounts.write().clear();
+                LoadState::Initializing => {
                     info!("---=== Initializing");
-                    tokio::task::spawn(async move {
-                        let items = functions.init();
-                        load_state.set(LoadState::Loaded(items.clone()));
-                    });
-
-                    // We put the focus on the text
-                    // loop {
-                    //     if let Some(e) = dialog.with(|f| f.clone()) {
-                    //         debug!("Focus input");
-                    //         let _ = e.set_focus(true).await;
-                    //         break;
-                    //     }
-                    // }
-                    vec![]
-                }
-                LoadState::Loaded(items) => {
                     selected.set(None);
-                    let rows = tokio::spawn(async move { functions.filter(filter_text, &items) })
+                    let result = tokio::task::spawn(async move { functions.init() })
                         .await
-                        .unwrap();
+                        .unwrap_or_default();
+                    state_data.write().raw_data = result;
+                    load_state.set(LoadState::Filtering);
+                }
+                LoadState::Ready => {
+                    debug!("Ready");
+                    if filter_text_value() != state_data.peek().filter_value {
+                        load_state.set(LoadState::Filtering);
+                    } else if sort_criteria_value() != state_data.peek().sort_criteria
+                        || sort_ascending_value() != state_data.peek().sort_ascending
+                    {
+                        load_state.set(LoadState::Sorting);
+                    }
+                }
+                LoadState::Filtering => {
+                    debug!("Filtering");
+                    selected.set(None);
+                    let filter_text = filter_text_value.peek().clone();
+                    let raw_data = state_data.peek().raw_data.clone();
+                    state_data.write().filter_value = filter_text.clone();
+                    let rows =
+                        tokio::spawn(async move { functions.filter(filter_text, &raw_data) })
+                            .await
+                            .unwrap_or_default();
                     info!("We truncate the row mounts with {} values", rows.len());
                     row_mounts.write().truncate(rows.len());
-                    rows
+                    state_data.write().filtered_data = rows;
+                    load_state.set(LoadState::Sorting);
                 }
-                LoadState::Closed => vec![],
+                LoadState::Sorting => {
+                    debug!("Sorting");
+                    let sort_criteria = sort_criteria_value();
+                    let sort_ascending = sort_ascending_value();
+                    state_data.write().sort_criteria = sort_criteria.clone();
+                    state_data.write().sort_ascending = sort_ascending;
+                    let mut r = state_data.peek().filtered_data.clone();
+                    if SortCriteria::None != state_data.peek().sort_criteria {
+                        r = tokio::spawn(async move {
+                            if sort_ascending {
+                                r.sort_by_key(|b| b.sort_string_for(&sort_criteria));
+                            } else {
+                                r.sort_by_key(|b| {
+                                    std::cmp::Reverse(b.sort_string_for(&sort_criteria))
+                                });
+                            };
+                            r
+                        })
+                        .await
+                        .unwrap_or_default();
+                    }
+                    state_data.write().display_data = r;
+                    load_state.set(LoadState::Ready);
+                }
             }
         }
-    });
-
-    let rows = use_memo(move || match filtered_rows() {
-        Some(mut r) => {
-            if SortCriteria::None != sort_criteria() {
-                if sort_ascending() {
-                    r.sort_by_key(|b| b.sort_string_for(&sort_criteria()));
-                } else {
-                    r.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort_criteria())));
-                };
-            }
-            Some(r)
-        }
-        None => None,
     });
 
     let functions_preview = functions.clone();
@@ -128,11 +150,8 @@ where
         async move {
             if let Some(selection) = selected {
                 info!("Preview Text for {}", selected.unwrap());
-                let r = rows.read().clone();
-                let entry = match &r {
-                    Some(rows) => rows.get(selection),
-                    None => None,
-                };
+                let r = state_data().display_data;
+                let entry = r.get(selection);
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
                     tokio::spawn(async move { functions_preview.preview(&value_copy) })
@@ -148,7 +167,7 @@ where
         }
     });
 
-    let row_number = rows.read().clone().unwrap_or_default().len();
+    let row_number = state_data().display_data.len();
 
     let functions_enter = functions.clone();
     let functions_click = functions.clone();
@@ -164,7 +183,6 @@ where
                 async move {
                     let key = e.data.code();
                     if key == Code::Escape {
-                        load_state.set(LoadState::Closed);
                         modal_type.write().close();
                     }
                     if key == Code::ArrowDown {
@@ -212,14 +230,11 @@ where
                     }
                     if key == Code::Enter && row_number > 0 {
                         let current_selected = (*selected.read()).unwrap_or(0);
-                        if let Some(rows) = &*rows.read() {
-                            if let Some(row) = rows.get(current_selected) {
-                                if functions_enter.on_select(&row) {
-                                    load_state.set(LoadState::Closed);
-                                    modal_type.write().close();
-                                } else {
-                                    load_state.set(LoadState::Init);
-                                }
+                        if let Some(row) = state_data().display_data.get(current_selected) {
+                            if functions_enter.on_select(&row) {
+                                modal_type.write().close();
+                            } else {
+                                load_state.set(LoadState::Initializing);
                             }
                         }
                     }
@@ -230,9 +245,9 @@ where
                 div { class: "header-description", "{hint}" }
                 div { class: "search-container",
                     SearchBox {
-                        search_text: filter_text,
-                        sort_criteria,
-                        sort_ascending,
+                        search_text: filter_text_value,
+                        sort_criteria: sort_criteria_value,
+                        sort_ascending: sort_ascending_value,
                         input_focus: FocusComponent::ModalInput,
                     }
                     button { class: "send-button",
@@ -248,40 +263,35 @@ where
                         select_by_mouse.set(true);
                     }
                 },
-                if let Some(rs) = rows.read().clone() {
-                    for (index , row) in rs.into_iter().enumerate() {
-                        {
-                            let mut functions_click = functions_click.clone();
-                            rsx! {
-                                div {
-                                    class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
-                                    id: "element-{index}",
-                                    onmounted: move |e| {
-                                        info!("Adding mount at {} position", index);
-                                        row_mounts.write().insert(index, e.data());
-                                    },
-                                    onmouseenter: move |_e| {
-                                        if *select_by_mouse.read() {
-                                            selected.set(Some(index));
-                                        }
-                                    },
-                                    onclick: move |e| {
-                                        info!("Clicked element");
-                                        e.stop_propagation();
-                                        if functions_click.on_select(&row) {
-                                            load_state.set(LoadState::Closed);
-                                            modal_type.write().close();
-                                        } else {
-                                            load_state.set(LoadState::Init);
-                                        }
-                                    },
-                                    {row.get_view()}
-                                }
+                for (index , row) in state_data().display_data.into_iter().enumerate() {
+                    {
+                        let mut functions_click = functions_click.clone();
+                        rsx! {
+                            div {
+                                class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
+                                id: "element-{index}",
+                                onmounted: move |e| {
+                                    info!("Adding mount at {} position", index);
+                                    row_mounts.write().insert(index, e.data());
+                                },
+                                onmouseenter: move |_e| {
+                                    if *select_by_mouse.read() {
+                                        selected.set(Some(index));
+                                    }
+                                },
+                                onclick: move |e| {
+                                    info!("Clicked element");
+                                    e.stop_propagation();
+                                    if functions_click.on_select(&row) {
+                                        modal_type.write().close();
+                                    } else {
+                                        load_state.set(LoadState::Initializing);
+                                    }
+                                },
+                                {row.get_view()}
                             }
                         }
                     }
-                } else {
-                    div { "Loading..." }
                 }
             }
             div { class: "preview-pane",
