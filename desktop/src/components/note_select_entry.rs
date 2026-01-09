@@ -2,8 +2,9 @@ use chrono::NaiveDate;
 use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Default, Debug, Clone, Eq, PartialEq)]
 pub enum SortCriteria {
+    #[default]
     None,
     Title,
     FileName,

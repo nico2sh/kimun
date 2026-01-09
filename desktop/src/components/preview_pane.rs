@@ -95,6 +95,22 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
         }
     });
 
+    // let ordered_list = use_resource(move || async move {
+    //     let list = list().unwrap_or_default();
+    //     tokio::spawn(async move {
+    //         let mut l = list.clone();
+    //         if SortCriteria::None != sort_criteria() {
+    //             if sort_ascending() {
+    //                 l.sort_by_key(|b| b.sort_string_for(&sort_criteria()));
+    //             } else {
+    //                 l.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort_criteria())));
+    //             };
+    //         }
+    //         Some(l)
+    //     })
+    //     .await
+    // });
+
     let preview_vault = vault.clone();
     let preview_content = use_resource(move || {
         let vault_content = preview_vault.clone();
@@ -163,7 +179,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                 rsx! {
                     div {
                         class: "bar-preview-search-popup-overlay",
-                        onclick: move |e| show_search.set(false),
+                        onclick: move |_e| show_search.set(false),
                         div { class: "bar-preview-search-popup", onclick: |e| e.stop_propagation(),
                             SearchBox {
                                 search_text: source,

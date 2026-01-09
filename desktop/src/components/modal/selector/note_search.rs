@@ -35,6 +35,7 @@ impl SelectorFunctions for SearchFunctions {
     }
 
     fn filter(&self, filter_text: String, _items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry> {
+        debug!("Searching {}", filter_text);
         match self.vault.search_notes(filter_text) {
             Ok(res) => res
                 .into_iter()
