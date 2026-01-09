@@ -8,9 +8,9 @@ use kimun_core::NoteVault;
 
 use crate::{
     app_state::AppState,
-    components::modal::{
-        selector::{note_select_entry::NoteSelectEntry, PreviewData},
-        ModalType,
+    components::{
+        modal::{selector::PreviewData, ModalType},
+        note_list_data::note_select_entry::NoteSelectEntry,
     },
 };
 

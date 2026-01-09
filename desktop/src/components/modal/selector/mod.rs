@@ -1,7 +1,6 @@
 pub mod note_picker;
 pub mod note_search;
 pub mod note_select;
-mod note_select_entry;
 
 use std::rc::Rc;
 
@@ -11,7 +10,11 @@ use crate::{
     components::{
         focus_manager::FocusComponent,
         icons,
-        modal::{selector::note_select_entry::NoteSelectEntry, ModalType},
+        modal::ModalType,
+        note_list_data::{
+            note_list_loader::{LoadState, StateData},
+            note_select_entry::NoteSelectEntry,
+        },
         note_select_entry::SortCriteria,
         search_box::SearchBox,
     },
@@ -31,24 +34,6 @@ pub struct PreviewData {
     content: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum LoadState {
-    Initializing,
-    Ready,
-    Filtering,
-    Sorting,
-}
-
-#[derive(Clone, Debug, PartialEq, Default)]
-struct StateData {
-    raw_data: Vec<NoteSelectEntry>,
-    filter_value: String,
-    filtered_data: Vec<NoteSelectEntry>,
-    display_data: Vec<NoteSelectEntry>,
-    sort_criteria: SortCriteria,
-    sort_ascending: bool,
-}
-
 #[allow(non_snake_case)]
 fn SelectorView<F>(
     hint: String,
@@ -66,8 +51,6 @@ where
     let sort_criteria_value = use_signal(|| SortCriteria::None);
     let sort_ascending_value = use_signal(|| true);
 
-    // For setting the focus in the text box
-    // let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
     let mut select_by_mouse = use_signal(|| true);
@@ -88,16 +71,6 @@ where
                         .unwrap_or_default();
                     state_data.write().raw_data = result;
                     load_state.set(LoadState::Filtering);
-                }
-                LoadState::Ready => {
-                    debug!("Ready");
-                    if filter_text_value() != state_data.peek().filter_value {
-                        load_state.set(LoadState::Filtering);
-                    } else if sort_criteria_value() != state_data.peek().sort_criteria
-                        || sort_ascending_value() != state_data.peek().sort_ascending
-                    {
-                        load_state.set(LoadState::Sorting);
-                    }
                 }
                 LoadState::Filtering => {
                     debug!("Filtering");
@@ -137,6 +110,16 @@ where
                     }
                     state_data.write().display_data = r;
                     load_state.set(LoadState::Ready);
+                }
+                LoadState::Ready => {
+                    debug!("Ready");
+                    if filter_text_value() != state_data.peek().filter_value {
+                        load_state.set(LoadState::Filtering);
+                    } else if sort_criteria_value() != state_data.peek().sort_criteria
+                        || sort_ascending_value() != state_data.peek().sort_ascending
+                    {
+                        load_state.set(LoadState::Sorting);
+                    }
                 }
             }
         }
