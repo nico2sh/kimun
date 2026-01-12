@@ -106,6 +106,7 @@ impl NoteBrowseEntry {
         let name = path.get_name();
         Self::Directory { path, name }
     }
+
     pub fn create_from_name(name: String, base_path: VaultPath) -> Self {
         let note_path = VaultPath::note_path_from(name);
         let new_note_path = base_path.append(&note_path);

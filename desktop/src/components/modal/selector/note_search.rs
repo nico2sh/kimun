@@ -8,10 +8,7 @@ use kimun_core::NoteVault;
 
 use crate::{
     app_state::AppState,
-    components::{
-        modal::{selector::PreviewData, ModalType},
-        note_list_data::note_select_entry::NoteSelectEntry,
-    },
+    components::{modal::ModalType, note_list_data::note_select_entry::NoteSelectEntry},
 };
 
 use super::{SelectorFunctions, SelectorView};
@@ -46,22 +43,6 @@ impl SelectorFunctions for SearchFunctions {
                 vec![]
             }
         }
-    }
-
-    fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData> {
-        let preview = self.vault.load_note(&element.get_path()).map_or_else(
-            |e| PreviewData {
-                title: "Error loading preview...".to_string(),
-                data: e.to_string(),
-                content: "".to_string(),
-            },
-            |d| PreviewData {
-                title: d.get_title(),
-                data: d.path.to_string(),
-                content: d.raw_text,
-            },
-        );
-        Some(preview)
     }
 
     fn on_select(&mut self, element: &NoteSelectEntry) -> bool {
@@ -107,6 +88,7 @@ pub fn NoteSearch(props: SearchProps) -> Element {
         "Select a note, use up and down to select, <Return> selects the first result.".to_string(),
         props.filter_text,
         props.modal_type,
+        vault,
         search_functions,
     )
 }
