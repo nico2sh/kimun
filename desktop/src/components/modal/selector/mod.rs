@@ -2,31 +2,22 @@ pub mod note_picker;
 pub mod note_search;
 pub mod note_select;
 
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 use dioxus::{logger::tracing::info, prelude::*};
+use kimun_core::NoteVault;
 
 use crate::{
     components::{
         focus_manager::FocusComponent,
         icons,
         modal::ModalType,
-        note_list_data::{
-            note_list_loader::{LoadState, StateData},
-            note_select_entry::NoteSelectEntry,
-        },
+        note_list_data::note_list_loader::{use_note_list, SelectorFunctions},
         note_select_entry::SortCriteria,
         search_box::SearchBox,
     },
     utils::sparse_vector::SparseVector,
 };
-
-trait SelectorFunctions: Clone {
-    fn init(&self) -> Vec<NoteSelectEntry>;
-    fn filter(&self, filter_text: String, items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry>;
-    fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData>;
-    fn on_select(&mut self, element: &NoteSelectEntry) -> bool;
-}
 
 pub struct PreviewData {
     title: String,
@@ -39,14 +30,12 @@ fn SelectorView<F>(
     hint: String,
     filter_text: String,
     mut modal_type: Signal<ModalType>,
+    vault: Arc<NoteVault>,
     functions: F,
 ) -> Element
 where
     F: SelectorFunctions + Clone + Send + 'static,
 {
-    let mut load_state: Signal<LoadState, SyncStorage> =
-        use_signal_sync(|| LoadState::Initializing);
-
     let filter_text_value = use_signal(|| filter_text);
     let sort_criteria_value = use_signal(|| SortCriteria::None);
     let sort_ascending_value = use_signal(|| true);
@@ -56,80 +45,23 @@ where
     let mut select_by_mouse = use_signal(|| true);
 
     let functions_load = functions.clone();
-    let mut state_data = use_signal(|| StateData::default());
 
-    _ = use_resource(move || {
-        let current_state = load_state.read().clone();
-        let functions = functions_load.clone();
-        async move {
-            match current_state {
-                LoadState::Initializing => {
-                    info!("---=== Initializing");
-                    selected.set(None);
-                    let result = tokio::task::spawn(async move { functions.init() })
-                        .await
-                        .unwrap_or_default();
-                    state_data.write().raw_data = result;
-                    load_state.set(LoadState::Filtering);
-                }
-                LoadState::Filtering => {
-                    debug!("Filtering");
-                    selected.set(None);
-                    let filter_text = filter_text_value.peek().clone();
-                    let raw_data = state_data.peek().raw_data.clone();
-                    state_data.write().filter_value = filter_text.clone();
-                    let rows =
-                        tokio::spawn(async move { functions.filter(filter_text, &raw_data) })
-                            .await
-                            .unwrap_or_default();
-                    info!("We truncate the row mounts with {} values", rows.len());
-                    row_mounts.write().truncate(rows.len());
-                    state_data.write().filtered_data = rows;
-                    load_state.set(LoadState::Sorting);
-                }
-                LoadState::Sorting => {
-                    debug!("Sorting");
-                    let sort_criteria = sort_criteria_value();
-                    let sort_ascending = sort_ascending_value();
-                    state_data.write().sort_criteria = sort_criteria.clone();
-                    state_data.write().sort_ascending = sort_ascending;
-                    let mut r = state_data.peek().filtered_data.clone();
-                    if SortCriteria::None != state_data.peek().sort_criteria {
-                        r = tokio::spawn(async move {
-                            if sort_ascending {
-                                r.sort_by_key(|b| b.sort_string_for(&sort_criteria));
-                            } else {
-                                r.sort_by_key(|b| {
-                                    std::cmp::Reverse(b.sort_string_for(&sort_criteria))
-                                });
-                            };
-                            r
-                        })
-                        .await
-                        .unwrap_or_default();
-                    }
-                    state_data.write().display_data = r;
-                    load_state.set(LoadState::Ready);
-                }
-                LoadState::Ready => {
-                    debug!("Ready");
-                    if filter_text_value() != state_data.peek().filter_value {
-                        load_state.set(LoadState::Filtering);
-                    } else if sort_criteria_value() != state_data.peek().sort_criteria
-                        || sort_ascending_value() != state_data.peek().sort_ascending
-                    {
-                        load_state.set(LoadState::Sorting);
-                    }
-                }
-            }
-        }
-    });
+    let note_list_loaded = use_note_list(
+        filter_text_value,
+        sort_criteria_value,
+        sort_ascending_value,
+        functions_load,
+        move |r| {
+            debug!("Truncating at {} rows", r.len());
+            row_mounts.write().truncate(r.len());
+        },
+    );
+    let state_data = note_list_loaded.inner.clone();
 
-    let functions_preview = functions.clone();
     let preview_text = use_resource(move || {
-        let functions_preview = functions_preview.clone();
         // We get a copy of the selected one so we don't have borrow issues
         let selected = selected.read().to_owned();
+        let vault = vault.clone();
         async move {
             if let Some(selection) = selected {
                 info!("Preview Text for {}", selected.unwrap());
@@ -137,9 +69,23 @@ where
                 let entry = r.get(selection);
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
-                    tokio::spawn(async move { functions_preview.preview(&value_copy) })
-                        .await
-                        .unwrap()
+                    tokio::spawn(async move {
+                        let preview = vault.load_note(&value_copy.get_path()).map_or_else(
+                            |e| PreviewData {
+                                title: "Error loading preview...".to_string(),
+                                data: e.to_string(),
+                                content: "".to_string(),
+                            },
+                            |d| PreviewData {
+                                title: d.get_title(),
+                                data: d.path.to_string(),
+                                content: d.raw_text,
+                            },
+                        );
+                        Some(preview)
+                    })
+                    .await
+                    .unwrap()
                 } else {
                     None
                 }
@@ -163,6 +109,7 @@ where
             onkeydown: move |e: Event<KeyboardData>| {
                 let mut functions_enter = functions_enter.clone();
                 let mounts = row_mounts.read().clone();
+                let mut note_list_loaded = note_list_loaded.clone();
                 async move {
                     let key = e.data.code();
                     if key == Code::Escape {
@@ -217,7 +164,7 @@ where
                             if functions_enter.on_select(&row) {
                                 modal_type.write().close();
                             } else {
-                                load_state.set(LoadState::Initializing);
+                                note_list_loaded.reset();
                             }
                         }
                     }
@@ -248,6 +195,7 @@ where
                 },
                 for (index , row) in state_data().display_data.into_iter().enumerate() {
                     {
+                        let mut note_list_loaded = note_list_loaded.clone();
                         let mut functions_click = functions_click.clone();
                         rsx! {
                             div {
@@ -268,7 +216,7 @@ where
                                     if functions_click.on_select(&row) {
                                         modal_type.write().close();
                                     } else {
-                                        load_state.set(LoadState::Initializing);
+                                        note_list_loaded.reset();
                                     }
                                 },
                                 {row.get_view()}

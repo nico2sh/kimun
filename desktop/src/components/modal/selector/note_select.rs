@@ -9,10 +9,7 @@ use nucleo::Matcher;
 
 use crate::{
     app_state::AppState,
-    components::{
-        modal::{selector::PreviewData, ModalType},
-        note_list_data::note_select_entry::NoteSelectEntry,
-    },
+    components::{modal::ModalType, note_list_data::note_select_entry::NoteSelectEntry},
 };
 
 use super::{SelectorFunctions, SelectorView};
@@ -71,31 +68,6 @@ impl SelectorFunctions for SelectFunctions {
             result
         } else {
             vec![]
-        }
-    }
-
-    fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData> {
-        if let NoteSelectEntry::Note {
-            path,
-            title: _,
-            search_str: _,
-        } = element
-        {
-            let p = self.vault.load_note(path).map_or_else(
-                |e| PreviewData {
-                    title: "Error loading preview...".to_string(),
-                    data: e.to_string(),
-                    content: "".to_string(),
-                },
-                |d| PreviewData {
-                    title: d.get_title(),
-                    data: d.path.to_string(),
-                    content: d.raw_text,
-                },
-            );
-            Some(p)
-        } else {
-            None
         }
     }
 
@@ -169,6 +141,7 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
         "Use keywords to find notes, search is case insensitive and special characters are ignored.".to_string(),
         props.filter_text,
         props.modal_type,
+        vault,
         select_functions
     )
 }
