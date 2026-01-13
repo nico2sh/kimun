@@ -10,7 +10,6 @@ where
 {
     fn init(&self) -> Vec<NoteBrowseEntry>;
     fn filter(&self, filter_text: S, initial_items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry>;
-    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,12 +51,16 @@ where
     }
 }
 
+pub fn no_op(e: Vec<NoteBrowseEntry>) -> Vec<NoteBrowseEntry> {
+    e
+}
+
 pub fn use_note_list<S, F>(
     search_text: Signal<S>,
     sort_criteria: Signal<SortCriteria>,
     sort_ascending: Signal<bool>,
     functions: F,
-    on_updated: impl FnOnce(Vec<NoteBrowseEntry>) -> () + Clone + 'static,
+    on_ready: impl FnOnce(Vec<NoteBrowseEntry>) -> Vec<NoteBrowseEntry> + Clone + 'static,
 ) -> UseNoteList<S>
 where
     F: SelectorFunctions<S> + Clone + Send + 'static,
@@ -74,7 +77,7 @@ where
     _ = use_resource(move || {
         let current_state = load_state.read().clone();
         let functions = functions_load.clone();
-        let on_updated = on_updated.clone();
+        let on_ready = on_ready.clone();
         async move {
             match current_state {
                 LoadState::Initializing => {
@@ -122,12 +125,13 @@ where
                         .await
                         .unwrap_or_default();
                     }
+
+                    let r = on_ready(r);
                     display_data.set(r);
                     load_state.set(LoadState::Ready);
                 }
                 LoadState::Ready => {
                     debug!("Ready");
-                    on_updated(display_data());
                     if search_text() != state_data.peek().filter_value {
                         load_state.set(LoadState::Filtering);
                     } else if sort_criteria() != state_data.peek().sort_criteria

@@ -7,10 +7,7 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault};
 use nucleo::Matcher;
 
-use crate::{
-    app_state::AppState,
-    components::{modal::ModalType, note_browse_entry::NoteBrowseEntry},
-};
+use crate::components::{modal::ModalType, note_browse_entry::NoteBrowseEntry};
 
 use super::{SelectorFunctions, SelectorView};
 
@@ -68,40 +65,6 @@ impl SelectorFunctions<String> for SelectFunctions {
             result
         } else {
             vec![]
-        }
-    }
-
-    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool {
-        let mut app_state: Signal<AppState> = use_context();
-        match element {
-            NoteBrowseEntry::Note {
-                path,
-                title: _,
-                search_str: _,
-            } => {
-                app_state.write().set_path(&path, false);
-                true
-            }
-            NoteBrowseEntry::Journal {
-                path,
-                title: _,
-                date_string: _,
-                search_str: _,
-            } => {
-                app_state.write().set_path(&path, false);
-                true
-            }
-            NoteBrowseEntry::Create {
-                new_note_path,
-                name: _,
-            } => {
-                app_state.write().set_path(&new_note_path, true);
-                true
-            }
-            NoteBrowseEntry::Directory { path: _, name: _ } => {
-                // Do nothing
-                false
-            }
         }
     }
 }
