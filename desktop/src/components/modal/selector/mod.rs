@@ -8,13 +8,15 @@ use dioxus::{logger::tracing::info, prelude::*};
 use kimun_core::NoteVault;
 
 use crate::{
+    app_state::AppState,
     components::{
         focus_manager::FocusComponent,
         icons,
         modal::ModalType,
+        note_browse_entry::{NoteBrowseEntry, SortCriteria},
+        note_browser::note_list::NoteElementActions,
         note_list_data::note_list_loader::{use_note_list, SelectorFunctions},
-        note_select_entry::SortCriteria,
-        search_box::SearchBox,
+        search_box::{SearchBox, StringSearch},
     },
     utils::sparse_vector::SparseVector,
 };
@@ -26,15 +28,16 @@ pub struct PreviewData {
 }
 
 #[allow(non_snake_case)]
-fn SelectorView<F>(
+fn SelectorView<F, S>(
     hint: String,
-    filter_text: String,
+    filter_text: S,
     mut modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     functions: F,
 ) -> Element
 where
-    F: SelectorFunctions + Clone + Send + 'static,
+    F: SelectorFunctions<S> + Clone + Send + 'static,
+    S: StringSearch + Clone + 'static,
 {
     let filter_text_value = use_signal(|| filter_text);
     let sort_criteria_value = use_signal(|| SortCriteria::None);
@@ -244,6 +247,44 @@ where
                     }
                     None => rsx! { "Loading..." },
                 }
+            }
+        }
+    }
+}
+
+pub struct ModalNoteListAction {}
+
+impl NoteElementActions for ModalNoteListAction {
+    fn on_hover(&self, _entry: NoteBrowseEntry) -> Element {
+        rsx! {}
+    }
+
+    fn on_select(&mut self, entry: NoteBrowseEntry) {
+        let mut app_state: Signal<AppState> = use_context();
+        match entry {
+            NoteBrowseEntry::Note {
+                path,
+                title: _,
+                search_str: _,
+            } => {
+                app_state.write().set_path(&path, false);
+            }
+            NoteBrowseEntry::Journal {
+                path,
+                title: _,
+                date_string: _,
+                search_str: _,
+            } => {
+                app_state.write().set_path(&path, false);
+            }
+            NoteBrowseEntry::Create {
+                new_note_path,
+                name: _,
+            } => {
+                app_state.write().set_path(&new_note_path, true);
+            }
+            NoteBrowseEntry::Directory { path: _, name: _ } => {
+                // Do nothing
             }
         }
     }

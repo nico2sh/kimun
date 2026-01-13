@@ -5,10 +5,7 @@ use kimun_core::nfs::VaultPath;
 
 use crate::{
     app_state::AppState,
-    components::{
-        modal::ModalType,
-        note_select_entry::{NoteBrowseEntry, RowItem},
-    },
+    components::{modal::ModalType, note_browse_entry::NoteBrowseEntry},
     utils::sparse_vector::SparseVector,
 };
 

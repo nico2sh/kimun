@@ -15,8 +15,8 @@ use crate::{
     components::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
+        note_browse_entry::{NoteBrowseEntry, NoteSelectEntryListStatus, SortCriteria},
         note_browser::note_list::{NoteElementActions, NoteList},
-        note_select_entry::{NoteBrowseEntry, NoteSelectEntryListStatus, SortCriteria},
         search_box::SearchBox,
     },
     global_events::{GlobalEvent, PubSub},

@@ -10,11 +10,6 @@ pub enum SortCriteria {
     FileName,
 }
 
-pub trait RowItem: PartialEq + Eq + Clone {
-    // fn on_select(&self) -> bool;
-    fn get_view(&self) -> Element;
-}
-
 #[derive(Clone, Eq, PartialEq)]
 pub enum NoteSelectEntryListStatus {
     Loading,
@@ -83,15 +78,6 @@ impl NoteBrowseEntry {
             content.title
         };
 
-        // let weekday = match date.weekday() {
-        //     chrono::Weekday::Mon => "Monday",
-        //     chrono::Weekday::Tue => "Tuesday",
-        //     chrono::Weekday::Wed => "Wednesday",
-        //     chrono::Weekday::Thu => "Thursday",
-        //     chrono::Weekday::Fri => "Friday",
-        //     chrono::Weekday::Sat => "Saturday",
-        //     chrono::Weekday::Sun => "Sunday",
-        // };
         let date_string = format!("{}", date.format("%a, %b %e %Y"));
 
         Self::Journal {
@@ -172,74 +158,8 @@ impl NoteBrowseEntry {
             } => new_note_path,
         }
     }
-}
 
-impl AsRef<str> for NoteBrowseEntry {
-    fn as_ref(&self) -> &str {
-        match self {
-            NoteBrowseEntry::Note {
-                path: _,
-                title: _,
-                search_str,
-            } => search_str.as_str(),
-            NoteBrowseEntry::Journal {
-                path: _,
-                title: _,
-                date_string: _,
-                search_str,
-            } => search_str.as_str(),
-            NoteBrowseEntry::Directory { path: _, name } => name.as_str(),
-            NoteBrowseEntry::Create {
-                new_note_path: _,
-                name,
-            } => name.as_str(),
-        }
-    }
-}
-
-impl RowItem for NoteBrowseEntry {
-    // fn on_select(&self) -> bool {
-    //     let mut app_state: Signal<AppState> = use_context();
-    //     match self {
-    //         NoteBrowseEntry::Note {
-    //             path,
-    //             title: _,
-    //             search_str: _,
-    //         } => {
-    //             app_state.write().set_path(&path, false);
-    //             true
-    //         }
-    //         NoteBrowseEntry::Journal {
-    //             path,
-    //             title: _,
-    //             date_string: _,
-    //             search_str: _,
-    //         } => {
-    //             app_state.write().set_path(&path, false);
-    //             true
-    //         }
-    //         NoteBrowseEntry::Directory {
-    //             path,
-    //             name: _,
-    //             browse_path_signal: base_path_signal,
-    //         } => {
-    //             let p = path.clone();
-    //             let mut s = *base_path_signal;
-    //             info!("Selected dir: {}", p);
-    //             s.set(p.clone());
-    //             false
-    //         }
-    //         NoteBrowseEntry::Create {
-    //             new_note_path,
-    //             name: _,
-    //         } => {
-    //             app_state.write().set_path(&new_note_path, true);
-    //             true
-    //         }
-    //     }
-    // }
-
-    fn get_view(&self) -> Element {
+    pub fn get_view(&self) -> Element {
         match self {
             NoteBrowseEntry::Note {
                 path,
@@ -285,6 +205,29 @@ impl RowItem for NoteBrowseEntry {
                     }
                 }
             }
+        }
+    }
+}
+
+impl AsRef<str> for NoteBrowseEntry {
+    fn as_ref(&self) -> &str {
+        match self {
+            NoteBrowseEntry::Note {
+                path: _,
+                title: _,
+                search_str,
+            } => search_str.as_str(),
+            NoteBrowseEntry::Journal {
+                path: _,
+                title: _,
+                date_string: _,
+                search_str,
+            } => search_str.as_str(),
+            NoteBrowseEntry::Directory { path: _, name } => name.as_str(),
+            NoteBrowseEntry::Create {
+                new_note_path: _,
+                name,
+            } => name.as_str(),
         }
     }
 }

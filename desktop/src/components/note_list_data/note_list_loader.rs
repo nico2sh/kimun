@@ -1,12 +1,16 @@
 use crate::components::{
-    note_list_data::note_select_entry::NoteSelectEntry, note_select_entry::SortCriteria,
+    note_browse_entry::{NoteBrowseEntry, SortCriteria},
+    search_box::StringSearch,
 };
 use dioxus::prelude::*;
 
-pub trait SelectorFunctions: Clone {
-    fn init(&self) -> Vec<NoteSelectEntry>;
-    fn filter(&self, filter_text: String, items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry>;
-    fn on_select(&mut self, element: &NoteSelectEntry) -> bool;
+pub trait SelectorFunctions<S>: Clone
+where
+    S: StringSearch,
+{
+    fn init(&self) -> Vec<NoteBrowseEntry>;
+    fn filter(&self, filter_text: S, initial_items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry>;
+    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -18,36 +22,46 @@ pub enum LoadState {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
-pub struct StateData {
-    raw_data: Vec<NoteSelectEntry>,
-    filter_value: String,
-    filtered_data: Vec<NoteSelectEntry>,
-    pub display_data: Vec<NoteSelectEntry>,
+pub struct StateData<S>
+where
+    S: StringSearch,
+{
+    raw_data: Vec<NoteBrowseEntry>,
+    filter_value: S,
+    filtered_data: Vec<NoteBrowseEntry>,
+    pub display_data: Vec<NoteBrowseEntry>,
     sort_criteria: SortCriteria,
     sort_ascending: bool,
 }
 
 #[derive(Clone)]
-pub struct UseNoteList {
-    pub inner: Signal<StateData>,
+pub struct UseNoteList<S>
+where
+    S: StringSearch,
+{
+    pub inner: Signal<StateData<S>>,
     state: Signal<LoadState>,
 }
 
-impl UseNoteList {
+impl<S> UseNoteList<S>
+where
+    S: StringSearch,
+{
     pub fn reset(&mut self) {
         *self.state.write() = LoadState::Initializing;
     }
 }
 
-pub fn use_note_list<F>(
-    search_text: Signal<String>,
+pub fn use_note_list<S, F>(
+    search_text: Signal<S>,
     sort_criteria: Signal<SortCriteria>,
     sort_ascending: Signal<bool>,
     functions: F,
-    on_updated: impl FnOnce(Vec<NoteSelectEntry>) -> () + Clone + 'static,
-) -> UseNoteList
+    on_updated: impl FnOnce(Vec<NoteBrowseEntry>) -> () + Clone + 'static,
+) -> UseNoteList<S>
 where
-    F: SelectorFunctions + Clone + Send + 'static,
+    F: SelectorFunctions<S> + Clone + Send + 'static,
+    S: StringSearch + Clone + 'static,
 {
     let mut load_state: Signal<LoadState> = use_signal(|| LoadState::Initializing);
 
@@ -77,6 +91,7 @@ where
                     let filter_text = search_text.peek().clone();
                     let raw_data = state_data.peek().raw_data.clone();
                     state_data.write().filter_value = filter_text.clone();
+                    let filter_text = filter_text.clone();
                     let rows =
                         tokio::spawn(async move { functions.filter(filter_text, &raw_data) })
                             .await

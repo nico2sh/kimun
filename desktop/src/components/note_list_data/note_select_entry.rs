@@ -2,7 +2,7 @@ use chrono::NaiveDate;
 use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
-use crate::components::note_select_entry::SortCriteria;
+use crate::components::note_browse_entry::SortCriteria;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum NoteSelectEntry {
@@ -46,15 +46,6 @@ impl NoteSelectEntry {
             content.title
         };
 
-        // let weekday = match date.weekday() {
-        //     chrono::Weekday::Mon => "Monday",
-        //     chrono::Weekday::Tue => "Tuesday",
-        //     chrono::Weekday::Wed => "Wednesday",
-        //     chrono::Weekday::Thu => "Thursday",
-        //     chrono::Weekday::Fri => "Friday",
-        //     chrono::Weekday::Sat => "Saturday",
-        //     chrono::Weekday::Sun => "Sunday",
-        // };
         let date_string = format!("{}", date.format("%a, %b %e %Y"));
 
         Self::Journal {
@@ -62,48 +53,6 @@ impl NoteSelectEntry {
             title,
             date_string,
             search_str: path_str,
-        }
-    }
-
-    pub fn get_view(&self) -> Element {
-        match self {
-            NoteSelectEntry::Note {
-                path,
-                title,
-                search_str: _,
-            } => {
-                rsx! {
-                    div { class: "note-item-content",
-                        div { class: "note-title", "» {title}" }
-                        div { class: "note-meta", "{path}" }
-                    }
-                }
-            }
-            NoteSelectEntry::Journal {
-                path,
-                title,
-                date_string,
-                search_str: _,
-            } => {
-                rsx! {
-                    div { class: "note-item-content",
-                        div { class: "note-title", "» {title}" }
-                        div { class: "note-meta", "{path.get_name()}" }
-                        div { class: "note-journal", "{date_string}" }
-                    }
-                }
-            }
-            NoteSelectEntry::Create {
-                new_note_path: _,
-                name,
-            } => {
-                rsx! {
-                    div { class: "note-item-content",
-                        span { class: "emphasized", "Create new Note " }
-                        span { class: "strong", "`{name}`" }
-                    }
-                }
-            }
         }
     }
 
@@ -168,6 +117,48 @@ impl NoteSelectEntry {
                 new_note_path,
                 name: _,
             } => new_note_path,
+        }
+    }
+
+    pub fn get_view(&self) -> Element {
+        match self {
+            NoteSelectEntry::Note {
+                path,
+                title,
+                search_str: _,
+            } => {
+                rsx! {
+                    div { class: "note-item-content",
+                        div { class: "note-title", "» {title}" }
+                        div { class: "note-meta", "{path}" }
+                    }
+                }
+            }
+            NoteSelectEntry::Journal {
+                path,
+                title,
+                date_string,
+                search_str: _,
+            } => {
+                rsx! {
+                    div { class: "note-item-content",
+                        div { class: "note-title", "» {title}" }
+                        div { class: "note-meta", "{path.get_name()}" }
+                        div { class: "note-journal", "{date_string}" }
+                    }
+                }
+            }
+            NoteSelectEntry::Create {
+                new_note_path: _,
+                name,
+            } => {
+                rsx! {
+                    div { class: "note-item-content",
+                        span { class: "emphasized", "Create new Note " }
+                        span { class: "strong", "`{name}`" }
+                    }
+                }
+            }
         }
     }
 }
