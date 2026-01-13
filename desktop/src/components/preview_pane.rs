@@ -6,16 +6,23 @@ use kimun_core::{nfs::VaultPath, note::MarkdownNote, NoteVault};
 use crate::components::{
     focus_manager::FocusComponent,
     modal::ModalType,
+    note_browse_entry::{NoteBrowseEntry, SortCriteria},
     note_browser::note_list::{NoteElementActions, NoteList},
-    note_select_entry::{NoteBrowseEntry, SortCriteria},
+    note_list_data::note_list_loader::{use_note_list, SelectorFunctions},
     preview::Markdown,
     search_box::{SearchBox, StringSearch},
 };
 
 #[derive(Clone, PartialEq)]
 pub enum PreviewList {
-    FromList(String, Vec<NoteBrowseEntry>),
     FromQuery(String),
+    FromList(String, Vec<NoteBrowseEntry>),
+}
+
+impl Default for PreviewList {
+    fn default() -> Self {
+        Self::FromQuery("".to_string())
+    }
 }
 
 impl StringSearch for PreviewList {
@@ -55,6 +62,46 @@ pub struct PreviewPaneProps {
     sort_ascending: bool,
 }
 
+#[derive(Clone)]
+struct PreviewListFunctions {
+    vault: Arc<NoteVault>,
+}
+
+impl SelectorFunctions<PreviewList> for PreviewListFunctions {
+    fn init(&self) -> Vec<NoteBrowseEntry> {
+        vec![]
+    }
+
+    fn filter(
+        &self,
+        filter_text: PreviewList,
+        _initial_items: &[NoteBrowseEntry],
+    ) -> Vec<NoteBrowseEntry> {
+        match &filter_text {
+            PreviewList::FromQuery(_query) => {
+                let filter_text = filter_text.to_owned();
+                match self.vault.search_notes(filter_text.to_string()) {
+                    Ok(res) => res
+                        .into_iter()
+                        .map(|(entry, content)| {
+                            NoteBrowseEntry::from_note_details(entry.path, content)
+                        })
+                        .collect::<Vec<NoteBrowseEntry>>(),
+                    Err(e) => {
+                        error!("Error searching notes: {}", e);
+                        vec![]
+                    }
+                }
+            }
+            PreviewList::FromList(_query, items) => items.to_owned(),
+        }
+    }
+
+    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool {
+        todo!()
+    }
+}
+
 #[component]
 pub fn PreviewPane(props: PreviewPaneProps) -> Element {
     let vault = props.vault;
@@ -67,49 +114,17 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
     let sort_criteria = use_signal(|| props.sort_criteria);
     let sort_ascending = use_signal(|| props.sort_ascending);
 
-    let vault_list = vault.clone();
-    let list = use_resource(move || {
-        let vault = vault_list.clone();
-        async move {
-            match source() {
-                PreviewList::FromList(_query, items) => items,
-                PreviewList::FromQuery(query) => {
-                    let result = tokio::spawn(async move {
-                        match vault.search_notes(query) {
-                            Ok(res) => res
-                                .into_iter()
-                                .map(|(entry, content)| {
-                                    NoteBrowseEntry::from_note_details(entry.path, content)
-                                })
-                                .collect::<Vec<NoteBrowseEntry>>(),
-                            Err(e) => {
-                                error!("Error searching notes: {}", e);
-                                vec![]
-                            }
-                        }
-                    })
-                    .await;
-                    result.unwrap_or_default()
-                }
-            }
-        }
-    });
+    let functions = PreviewListFunctions {
+        vault: vault.clone(),
+    };
 
-    // let ordered_list = use_resource(move || async move {
-    //     let list = list().unwrap_or_default();
-    //     tokio::spawn(async move {
-    //         let mut l = list.clone();
-    //         if SortCriteria::None != sort_criteria() {
-    //             if sort_ascending() {
-    //                 l.sort_by_key(|b| b.sort_string_for(&sort_criteria()));
-    //             } else {
-    //                 l.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort_criteria())));
-    //             };
-    //         }
-    //         Some(l)
-    //     })
-    //     .await
-    // });
+    let loaded_note_list = use_note_list(
+        source,
+        sort_criteria,
+        sort_ascending,
+        functions,
+        move |r| {},
+    );
 
     let preview_vault = vault.clone();
     let preview_content = use_resource(move || {
@@ -165,14 +180,18 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
             }
         }
         div { class: "bar-preview-browser",
-            if let Some(entries) = &*list.read() {
-                NoteList {
-                    entries: entries.clone(),
-                    active_path: active_path.read().to_owned(),
-                    element_action: NoHoverAction { active_path },
-                    compact: true,
+            {
+                let entries = loaded_note_list.inner.read().display_data.clone();
+                rsx! {
+                    NoteList {
+                        entries,
+                        active_path: active_path.read().to_owned(),
+                        element_action: NoHoverAction { active_path },
+                        compact: true,
+                    }
                 }
             }
+        
         }
         if show_search() {
             {

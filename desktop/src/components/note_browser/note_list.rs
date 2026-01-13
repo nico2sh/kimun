@@ -3,10 +3,7 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
-use crate::{
-    components::note_select_entry::{NoteBrowseEntry, RowItem},
-    utils::sparse_vector::SparseVector,
-};
+use crate::{components::note_browse_entry::NoteBrowseEntry, utils::sparse_vector::SparseVector};
 
 #[derive(Clone, PartialEq, Props)]
 pub struct NoteListProps<H>
@@ -87,7 +84,8 @@ where
                                 element_click.on_select(entry_action.clone());
                             },
                             {entry.get_view()}
-                        
+
+        
                             if slct {
                                 {element_action.on_hover(entry)}
                             }

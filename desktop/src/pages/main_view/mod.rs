@@ -12,8 +12,8 @@ use crate::{
     app_state::AppState,
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
+        note_browse_entry::NoteBrowseEntry,
         note_browser::NoteBrowser,
-        note_select_entry::NoteBrowseEntry,
         preview_pane::{PreviewList, PreviewPane},
     },
     global_events::{GlobalEvent, PubSub},

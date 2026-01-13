@@ -8,7 +8,7 @@ use kimun_core::NoteVault;
 
 use crate::{
     app_state::AppState,
-    components::{modal::ModalType, note_list_data::note_select_entry::NoteSelectEntry},
+    components::{modal::ModalType, note_browse_entry::NoteBrowseEntry},
 };
 
 use super::{SelectorFunctions, SelectorView};
@@ -25,19 +25,19 @@ struct SearchFunctions {
     vault: Arc<NoteVault>,
 }
 
-impl SelectorFunctions for SearchFunctions {
-    fn init(&self) -> Vec<NoteSelectEntry> {
+impl SelectorFunctions<String> for SearchFunctions {
+    fn init(&self) -> Vec<NoteBrowseEntry> {
         debug!("Opening Note Search");
         vec![]
     }
 
-    fn filter(&self, filter_text: String, _items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry> {
+    fn filter(&self, filter_text: String, _items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
         debug!("Searching {}", filter_text);
         match self.vault.search_notes(filter_text) {
             Ok(res) => res
                 .into_iter()
-                .map(|(entry, content)| NoteSelectEntry::from_note_details(entry.path, content))
-                .collect::<Vec<NoteSelectEntry>>(),
+                .map(|(entry, content)| NoteBrowseEntry::from_note_details(entry.path, content))
+                .collect::<Vec<NoteBrowseEntry>>(),
             Err(e) => {
                 error!("Error searching notes: {}", e);
                 vec![]
@@ -45,10 +45,10 @@ impl SelectorFunctions for SearchFunctions {
         }
     }
 
-    fn on_select(&mut self, element: &NoteSelectEntry) -> bool {
+    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool {
         let mut app_state: Signal<AppState> = use_context();
         match element {
-            NoteSelectEntry::Note {
+            NoteBrowseEntry::Note {
                 path,
                 title: _,
                 search_str: _,
@@ -56,7 +56,7 @@ impl SelectorFunctions for SearchFunctions {
                 app_state.write().set_path(&path, false);
                 true
             }
-            NoteSelectEntry::Journal {
+            NoteBrowseEntry::Journal {
                 path,
                 title: _,
                 date_string: _,
@@ -65,12 +65,16 @@ impl SelectorFunctions for SearchFunctions {
                 app_state.write().set_path(&path, false);
                 true
             }
-            NoteSelectEntry::Create {
+            NoteBrowseEntry::Create {
                 new_note_path,
                 name: _,
             } => {
                 app_state.write().set_path(&new_note_path, true);
                 true
+            }
+            NoteBrowseEntry::Directory { path: _, name: _ } => {
+                // Do nothing
+                false
             }
         }
     }

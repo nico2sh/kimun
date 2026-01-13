@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use crate::components::{
     focus_manager::{FocusComponent, FocusManager},
     icons,
-    note_select_entry::SortCriteria,
+    note_browse_entry::SortCriteria,
 };
 
 #[derive(Clone, PartialEq, Props)]
@@ -22,7 +22,7 @@ where
     no_default: bool,
 }
 
-pub trait StringSearch: Display + PartialEq {
+pub trait StringSearch: Display + PartialEq + Clone + Send + Default {
     fn change_value(&mut self, value: String);
 }
 
