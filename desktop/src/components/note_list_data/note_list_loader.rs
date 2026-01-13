@@ -24,22 +24,22 @@ pub enum LoadState {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct StateData<S>
 where
-    S: StringSearch,
+    S: StringSearch + 'static,
 {
     raw_data: Vec<NoteBrowseEntry>,
     filter_value: S,
     filtered_data: Vec<NoteBrowseEntry>,
-    pub display_data: Vec<NoteBrowseEntry>,
     sort_criteria: SortCriteria,
     sort_ascending: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UseNoteList<S>
 where
-    S: StringSearch,
+    S: StringSearch + 'static,
 {
-    pub inner: Signal<StateData<S>>,
+    inner: Signal<StateData<S>>,
+    pub display_data: Signal<Vec<NoteBrowseEntry>>,
     state: Signal<LoadState>,
 }
 
@@ -69,6 +69,7 @@ where
 
     let functions_load = functions.clone();
     let mut state_data = use_signal(|| StateData::default());
+    let mut display_data = use_signal(|| vec![]);
 
     _ = use_resource(move || {
         let current_state = load_state.read().clone();
@@ -121,12 +122,12 @@ where
                         .await
                         .unwrap_or_default();
                     }
-                    state_data.write().display_data = r;
+                    display_data.set(r);
                     load_state.set(LoadState::Ready);
                 }
                 LoadState::Ready => {
                     debug!("Ready");
-                    on_updated(state_data().display_data.clone());
+                    on_updated(display_data());
                     if search_text() != state_data.peek().filter_value {
                         load_state.set(LoadState::Filtering);
                     } else if sort_criteria() != state_data.peek().sort_criteria
@@ -141,6 +142,7 @@ where
 
     UseNoteList {
         inner: state_data,
+        display_data,
         state: load_state,
     }
 }

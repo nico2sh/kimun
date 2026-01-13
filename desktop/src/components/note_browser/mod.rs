@@ -1,6 +1,6 @@
 pub mod note_list;
 
-use std::{rc::Rc, sync::Arc};
+use std::sync::Arc;
 
 use dioxus::{
     core::use_drop,
@@ -8,19 +8,19 @@ use dioxus::{
     logger::tracing::{debug, info},
     prelude::*,
 };
-use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
+use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
     app_state::AppState,
     components::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
-        note_browse_entry::{NoteBrowseEntry, NoteSelectEntryListStatus, SortCriteria},
-        note_browser::note_list::{NoteElementActions, NoteList},
+        note_browse_entry::{NoteBrowseEntry, SortCriteria},
+        note_browser::note_list::{NoteElementActions, NoteList, SelectorHandler},
+        note_list_data::note_list_loader::{use_note_list, SelectorFunctions},
         search_box::SearchBox,
     },
     global_events::{GlobalEvent, PubSub},
-    utils::sparse_vector::SparseVector,
 };
 
 use super::focus_manager::FocusManager;
@@ -50,111 +50,121 @@ pub fn NoteBrowser(
     let sort_ascending = use_signal(|| false);
 
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
-    let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
     let mut select_by_mouse = use_signal(|| true);
 
-    // Since this is a resource that depends on the current_path
-    // the entries change every time the current_path is changed
-    let vault_fetch = vault.clone();
-    let mut all_entries = use_resource(move || {
-        let vault = vault_fetch.clone();
-        async move {
-            info!("Load all entries");
-            let mut entries = vec![];
-            let (search_options, rx) = VaultBrowseOptionsBuilder::new(&browsing_directory())
-                .full_validation()
-                .non_recursive()
-                .build();
-            let browsing_vault = vault.clone();
-            let _ = tokio::spawn(async move {
-                browsing_vault
-                    .browse_vault(search_options)
-                    .expect("Error fetching Entries");
-            })
-            .await;
+    let use_note_list = use_note_list(
+        filter_text,
+        sort_criteria,
+        sort_ascending,
+        BrowseFuncions {
+            vault: vault.clone(),
+        },
+        move |_r| {},
+    );
+    let selector_handler = SelectorHandler::build(use_note_list.display_data.clone());
 
-            while let Ok(entry) = rx.recv() {
-                match &entry.rtype {
-                    ResultType::Note(note_details) => {
-                        let e = if let Some(date) = vault.journal_date(&entry.path) {
-                            NoteBrowseEntry::from_note_journal(
-                                entry.path,
-                                note_details.to_owned(),
-                                date,
-                            )
-                        } else {
-                            NoteBrowseEntry::from_note_details(entry.path, note_details.to_owned())
-                        };
-                        entries.push(e)
-                    }
-                    ResultType::Directory => {
-                        if entry.path != browsing_directory() {
-                            let e = NoteBrowseEntry::from_directory_details(entry.path);
-                            entries.push(e)
-                        }
-                    }
-                    ResultType::Attachment => {
-                        // Do nothing
-                    }
-                };
-            }
-            entries
-        }
-    });
+    // // Since this is a resource that depends on the current_path
+    // // the entries change every time the current_path is changed
+    // let vault_fetch = vault.clone();
+    // let mut all_entries = use_resource(move || {
+    //     let vault = vault_fetch.clone();
+    //     async move {
+    //         info!("Load all entries");
+    //         let mut entries = vec![];
+    //         let (search_options, rx) = VaultBrowseOptionsBuilder::new(&browsing_directory())
+    //             .full_validation()
+    //             .non_recursive()
+    //             .build();
+    //         let browsing_vault = vault.clone();
+    //         let _ = tokio::spawn(async move {
+    //             browsing_vault
+    //                 .browse_vault(search_options)
+    //                 .expect("Error fetching Entries");
+    //         })
+    //         .await;
 
-    // Filter Entries
-    let filtered_entries = use_resource(move || async move {
-        info!("Filtering entries");
-        let res = if let Some(entries) = &*all_entries.read() {
-            if !entries.is_empty() {
-                debug!("Filtering {}", filter_text);
-                let filtered = entries
-                    .iter()
-                    .filter_map(|entry| {
-                        let entry_text = entry.as_ref().to_lowercase();
-                        if entry_text.contains(&filter_text.read().to_lowercase()) {
-                            Some(entry.to_owned())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<NoteBrowseEntry>>();
+    //         while let Ok(entry) = rx.recv() {
+    //             match &entry.rtype {
+    //                 ResultType::Note(note_details) => {
+    //                     let e = if let Some(date) = vault.journal_date(&entry.path) {
+    //                         NoteBrowseEntry::from_note_journal(
+    //                             entry.path,
+    //                             note_details.to_owned(),
+    //                             date,
+    //                         )
+    //                     } else {
+    //                         NoteBrowseEntry::from_note_details(entry.path, note_details.to_owned())
+    //                     };
+    //                     entries.push(e)
+    //                 }
+    //                 ResultType::Directory => {
+    //                     if entry.path != browsing_directory() {
+    //                         let e = NoteBrowseEntry::from_directory_details(entry.path);
+    //                         entries.push(e)
+    //                     }
+    //                 }
+    //                 ResultType::Attachment => {
+    //                     // Do nothing
+    //                 }
+    //             };
+    //         }
+    //         entries
+    //     }
+    // });
 
-                NoteSelectEntryListStatus::Loaded(filtered)
-            } else {
-                NoteSelectEntryListStatus::Loaded(vec![])
-            }
-        } else {
-            NoteSelectEntryListStatus::Loading
-        };
-        row_mounts.write().truncate(res.len());
-        res
-    });
+    // // Filter Entries
+    // let filtered_entries = use_resource(move || async move {
+    //     info!("Filtering entries");
+    //     let res = if let Some(entries) = &*all_entries.read() {
+    //         if !entries.is_empty() {
+    //             debug!("Filtering {}", filter_text);
+    //             let filtered = entries
+    //                 .iter()
+    //                 .filter_map(|entry| {
+    //                     let entry_text = entry.as_ref().to_lowercase();
+    //                     if entry_text.contains(&filter_text.read().to_lowercase()) {
+    //                         Some(entry.to_owned())
+    //                     } else {
+    //                         None
+    //                     }
+    //                 })
+    //                 .collect::<Vec<NoteBrowseEntry>>();
 
-    // Sort Entries
-    let sorted_entries = use_resource(move || async move {
-        info!("Sorting entries");
-        let mut filtered_entries = filtered_entries.read().to_owned();
-        if let Some(NoteSelectEntryListStatus::Loaded(result)) = filtered_entries.as_mut() {
-            if sort_ascending() {
-                result.sort_by_key(|b| b.sort_string_for(&sort_criteria()));
-            } else {
-                result.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort_criteria())));
-            };
-            if !browsing_directory.read().is_root_or_empty() {
-                result.insert(
-                    0,
-                    NoteBrowseEntry::Directory {
-                        path: browsing_directory.read().get_parent_path().0,
-                        name: "..".to_string(),
-                    },
-                );
-            }
-            NoteSelectEntryListStatus::Loaded(result.to_owned())
-        } else {
-            NoteSelectEntryListStatus::Loading
-        }
-    });
+    //             NoteSelectEntryListStatus::Loaded(filtered)
+    //         } else {
+    //             NoteSelectEntryListStatus::Loaded(vec![])
+    //         }
+    //     } else {
+    //         NoteSelectEntryListStatus::Loading
+    //     };
+    //     row_mounts.write().truncate(res.len());
+    //     res
+    // });
+
+    // // Sort Entries
+    // let sorted_entries = use_resource(move || async move {
+    //     info!("Sorting entries");
+    //     let mut filtered_entries = filtered_entries.read().to_owned();
+    //     if let Some(NoteSelectEntryListStatus::Loaded(result)) = filtered_entries.as_mut() {
+    //         if sort_ascending() {
+    //             result.sort_by_key(|b| b.sort_string_for(&sort_criteria()));
+    //         } else {
+    //             result.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&sort_criteria())));
+    //         };
+    //         if !browsing_directory.read().is_root_or_empty() {
+    //             result.insert(
+    //                 0,
+    //                 NoteBrowseEntry::Directory {
+    //                     path: browsing_directory.read().get_parent_path().0,
+    //                     name: "..".to_string(),
+    //                 },
+    //             );
+    //         }
+    //         NoteSelectEntryListStatus::Loaded(result.to_owned())
+    //     } else {
+    //         NoteSelectEntryListStatus::Loading
+    //     }
+    // });
 
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
@@ -163,7 +173,7 @@ pub fn NoteBrowser(
             NOTE_BROWSER,
             Callback::new(move |g| {
                 debug!("event: {:?}", g);
-                all_entries.restart();
+                // all_entries.restart();
             }),
         );
     });
@@ -174,6 +184,7 @@ pub fn NoteBrowser(
     });
 
     let new_note_vault = vault.clone();
+    let entries = use_note_list.display_data;
     rsx! {
         div { class: "sidebar-header",
             div { class: "sidebar-title", "{browsing_directory}" }
@@ -242,28 +253,19 @@ pub fn NoteBrowser(
                     selected.set(None);
                 }
             },
-            if let Some(NoteSelectEntryListStatus::Loaded(entries)) = sorted_entries
-                .value()
-                .read()
-                .clone()
             {
-                {
-                    let vault = vault.clone();
-                    rsx! {
-                        NoteList {
-                            entries,
-                            active_path: editor_path.read().to_owned(),
-                            element_action: NoteBrowserHover {
-                                vault,
-                                modal_type,
-                                current_browse_path: browsing_directory,
-                            },
-                        }
+                let vault = vault.clone();
+                rsx! {
+                    NoteList {
+                        entries,
+                        active_path: editor_path.read().to_owned(),
+                        element_action: NoteBrowserHover {
+                            vault,
+                            modal_type,
+                            current_browse_path: browsing_directory,
+                        },
+                        selector_handler,
                     }
-                }
-            } else {
-                div { class: "controls",
-                    div { class: "info-text", "Loading..." }
                 }
             }
         }
@@ -278,7 +280,7 @@ struct NoteBrowserHover {
 }
 
 impl NoteElementActions for NoteBrowserHover {
-    fn on_hover(&self, entry: NoteBrowseEntry) -> Element {
+    fn on_hover(&self, entry: &NoteBrowseEntry) -> Element {
         let vault = self.vault.clone();
         let modal_type = self.modal_type;
         let entry_path = entry.get_path().to_owned();
@@ -296,7 +298,7 @@ impl NoteElementActions for NoteBrowserHover {
         }
     }
 
-    fn on_select(&mut self, entry: NoteBrowseEntry) {
+    fn on_select(&mut self, entry: &NoteBrowseEntry) {
         let mut app_state: Signal<AppState> = use_context();
         match &entry {
             NoteBrowseEntry::Note {
@@ -411,5 +413,28 @@ fn NoteActions(props: NoteActionsProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[derive(Clone)]
+struct BrowseFuncions {
+    vault: Arc<NoteVault>,
+}
+
+impl SelectorFunctions<String> for BrowseFuncions {
+    fn init(&self) -> Vec<NoteBrowseEntry> {
+        todo!()
+    }
+
+    fn filter(
+        &self,
+        filter_text: String,
+        initial_items: &[NoteBrowseEntry],
+    ) -> Vec<NoteBrowseEntry> {
+        todo!()
+    }
+
+    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool {
+        todo!()
     }
 }
