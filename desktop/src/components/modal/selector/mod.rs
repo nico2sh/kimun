@@ -2,10 +2,10 @@ pub mod note_picker;
 pub mod note_search;
 pub mod note_select;
 
-use std::{rc::Rc, sync::Arc};
+use std::sync::Arc;
 
 use dioxus::{logger::tracing::info, prelude::*};
-use kimun_core::NoteVault;
+use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
     app_state::AppState,
@@ -14,11 +14,10 @@ use crate::{
         icons,
         modal::ModalType,
         note_browse_entry::{NoteBrowseEntry, SortCriteria},
-        note_browser::note_list::NoteElementActions,
+        note_browser::note_list::{NoteElementActions, NoteList, SelectorHandler},
         note_list_data::note_list_loader::{use_note_list, SelectorFunctions},
         search_box::{SearchBox, StringSearch},
     },
-    utils::sparse_vector::SparseVector,
 };
 
 pub struct PreviewData {
@@ -43,10 +42,6 @@ where
     let sort_criteria_value = use_signal(|| SortCriteria::None);
     let sort_ascending_value = use_signal(|| true);
 
-    let mut selected: Signal<Option<usize>> = use_signal(|| None);
-    let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
-    let mut select_by_mouse = use_signal(|| true);
-
     let functions_load = functions.clone();
 
     let note_list_loaded = use_note_list(
@@ -54,21 +49,20 @@ where
         sort_criteria_value,
         sort_ascending_value,
         functions_load,
-        move |r| {
-            debug!("Truncating at {} rows", r.len());
-            row_mounts.write().truncate(r.len());
-        },
+        move |_r| {},
     );
-    let state_data = note_list_loaded.inner.clone();
+    let selector_handler = SelectorHandler::build(note_list_loaded.display_data.clone());
+    let entries = note_list_loaded.display_data.clone();
 
+    let selector_preview = selector_handler.clone();
     let preview_text = use_resource(move || {
         // We get a copy of the selected one so we don't have borrow issues
-        let selected = selected.read().to_owned();
+        let selected = selector_preview.get_selected();
         let vault = vault.clone();
         async move {
             if let Some(selection) = selected {
                 info!("Preview Text for {}", selected.unwrap());
-                let r = state_data().display_data;
+                let r = entries();
                 let entry = r.get(selection);
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
@@ -99,10 +93,11 @@ where
         }
     });
 
-    let row_number = state_data().display_data.len();
+    let row_number = entries().len();
 
-    let functions_enter = functions.clone();
-    let functions_click = functions.clone();
+    let selector_loaded = selector_handler.clone();
+    let element_action = ModalNoteListAction { modal_type };
+    let action_enter = element_action.clone();
 
     rsx! {
         div {
@@ -110,65 +105,23 @@ where
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
-                let mut functions_enter = functions_enter.clone();
-                let mounts = row_mounts.read().clone();
-                let mut note_list_loaded = note_list_loaded.clone();
+                let selector_loaded = selector_loaded.clone();
+                let mut element_action = action_enter.clone();
                 async move {
                     let key = e.data.code();
                     if key == Code::Escape {
                         modal_type.write().close();
                     }
                     if key == Code::ArrowDown {
-                        let max_items = row_number;
-                        let new_selected = if max_items == 0 {
-                            None
-                        } else if let Some(ref current_selected) = *selected.read() {
-                            let current_selected = current_selected.to_owned();
-                            if current_selected < max_items - 1 {
-                                Some(current_selected + 1)
-                            } else {
-                                Some(0)
-                            }
-                        } else {
-                            Some(0)
-                        };
-                        if let Some(sel) = new_selected {
-                            if let Some(mount) = mounts.get(sel) {
-                                let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
-                                select_by_mouse.set(false);
-                            }
-                        }
-                        selected.set(new_selected);
+                        selector_loaded.select_next();
                     }
                     if key == Code::ArrowUp {
-                        let max_items = row_number;
-                        let new_selected = if max_items == 0 {
-                            None
-                        } else if let Some(current_selected) = *selected.read() {
-                            if current_selected > 0 {
-                                Some(current_selected - 1)
-                            } else {
-                                Some(max_items - 1)
-                            }
-                        } else {
-                            Some(0)
-                        };
-                        if let Some(sel) = new_selected {
-                            if let Some(mount) = mounts.get(sel) {
-                                let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
-                                select_by_mouse.set(false);
-                            }
-                        }
-                        selected.set(new_selected);
+                        selector_loaded.select_prev();
                     }
                     if key == Code::Enter && row_number > 0 {
-                        let current_selected = (*selected.read()).unwrap_or(0);
-                        if let Some(row) = state_data().display_data.get(current_selected) {
-                            if functions_enter.on_select(&row) {
-                                modal_type.write().close();
-                            } else {
-                                note_list_loaded.reset();
-                            }
+                        let current_selected = (selector_loaded.get_selected()).unwrap_or(0);
+                        if let Some(row) = entries().get(current_selected) {
+                            element_action.on_select(row);
                         }
                     }
                 }
@@ -189,44 +142,11 @@ where
                     }
                 }
             }
-            div {
-                class: "notes-list",
-                onmousemove: move |_e| {
-                    if !*select_by_mouse.read() {
-                        select_by_mouse.set(true);
-                    }
-                },
-                for (index , row) in state_data().display_data.into_iter().enumerate() {
-                    {
-                        let mut note_list_loaded = note_list_loaded.clone();
-                        let mut functions_click = functions_click.clone();
-                        rsx! {
-                            div {
-                                class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
-                                id: "element-{index}",
-                                onmounted: move |e| {
-                                    info!("Adding mount at {} position", index);
-                                    row_mounts.write().insert(index, e.data());
-                                },
-                                onmouseenter: move |_e| {
-                                    if *select_by_mouse.read() {
-                                        selected.set(Some(index));
-                                    }
-                                },
-                                onclick: move |e| {
-                                    info!("Clicked element");
-                                    e.stop_propagation();
-                                    if functions_click.on_select(&row) {
-                                        modal_type.write().close();
-                                    } else {
-                                        note_list_loaded.reset();
-                                    }
-                                },
-                                {row.get_view()}
-                            }
-                        }
-                    }
-                }
+            NoteList {
+                entries,
+                active_path: VaultPath::root(),
+                element_action,
+                selector_handler,
             }
             div { class: "preview-pane",
                 match &*preview_text.read_unchecked() {
@@ -252,14 +172,17 @@ where
     }
 }
 
-pub struct ModalNoteListAction {}
+#[derive(Clone, PartialEq)]
+pub struct ModalNoteListAction {
+    modal_type: Signal<ModalType>,
+}
 
 impl NoteElementActions for ModalNoteListAction {
-    fn on_hover(&self, _entry: NoteBrowseEntry) -> Element {
+    fn on_hover(&self, _entry: &NoteBrowseEntry) -> Element {
         rsx! {}
     }
 
-    fn on_select(&mut self, entry: NoteBrowseEntry) {
+    fn on_select(&mut self, entry: &NoteBrowseEntry) {
         let mut app_state: Signal<AppState> = use_context();
         match entry {
             NoteBrowseEntry::Note {
@@ -268,6 +191,7 @@ impl NoteElementActions for ModalNoteListAction {
                 search_str: _,
             } => {
                 app_state.write().set_path(&path, false);
+                self.modal_type.write().close();
             }
             NoteBrowseEntry::Journal {
                 path,
@@ -276,12 +200,14 @@ impl NoteElementActions for ModalNoteListAction {
                 search_str: _,
             } => {
                 app_state.write().set_path(&path, false);
+                self.modal_type.write().close();
             }
             NoteBrowseEntry::Create {
                 new_note_path,
                 name: _,
             } => {
                 app_state.write().set_path(&new_note_path, true);
+                self.modal_type.write().close();
             }
             NoteBrowseEntry::Directory { path: _, name: _ } => {
                 // Do nothing

@@ -7,7 +7,7 @@ use crate::components::{
     focus_manager::FocusComponent,
     modal::ModalType,
     note_browse_entry::{NoteBrowseEntry, SortCriteria},
-    note_browser::note_list::{NoteElementActions, NoteList},
+    note_browser::note_list::{NoteElementActions, NoteList, SelectorHandler},
     note_list_data::note_list_loader::{use_note_list, SelectorFunctions},
     preview::Markdown,
     search_box::{SearchBox, StringSearch},
@@ -63,8 +63,8 @@ pub struct PreviewPaneProps {
 }
 
 #[derive(Clone)]
-struct PreviewListFunctions {
-    vault: Arc<NoteVault>,
+pub struct PreviewListFunctions {
+    pub vault: Arc<NoteVault>,
 }
 
 impl SelectorFunctions<PreviewList> for PreviewListFunctions {
@@ -125,6 +125,8 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
         functions,
         move |r| {},
     );
+    let selector_handler = SelectorHandler::build(loaded_note_list.display_data.clone());
+    let entries = loaded_note_list.display_data;
 
     let preview_vault = vault.clone();
     let preview_content = use_resource(move || {
@@ -181,12 +183,12 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
         }
         div { class: "bar-preview-browser",
             {
-                let entries = loaded_note_list.inner.read().display_data.clone();
                 rsx! {
                     NoteList {
                         entries,
                         active_path: active_path.read().to_owned(),
                         element_action: NoHoverAction { active_path },
+                        selector_handler,
                         compact: true,
                     }
                 }
@@ -245,11 +247,11 @@ struct NoHoverAction {
 }
 
 impl NoteElementActions for NoHoverAction {
-    fn on_hover(&self, _entry: NoteBrowseEntry) -> Element {
+    fn on_hover(&self, _entry: &NoteBrowseEntry) -> Element {
         rsx! {}
     }
 
-    fn on_select(&mut self, entry: NoteBrowseEntry) {
+    fn on_select(&mut self, entry: &NoteBrowseEntry) {
         self.active_path.set(entry.get_path().to_owned());
     }
 }
