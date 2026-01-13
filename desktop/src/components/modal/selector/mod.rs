@@ -14,8 +14,10 @@ use crate::{
         icons,
         modal::ModalType,
         note_browse_entry::{NoteBrowseEntry, SortCriteria},
-        note_browser::note_list::{NoteElementActions, NoteList, SelectorHandler},
-        note_list_data::note_list_loader::{use_note_list, SelectorFunctions},
+        note_list::{
+            note_list_loader::{no_op, use_note_list, SelectorFunctions},
+            NoteElementActions, NoteList, SelectorHandler,
+        },
         search_box::{SearchBox, StringSearch},
     },
 };
@@ -49,7 +51,7 @@ where
         sort_criteria_value,
         sort_ascending_value,
         functions_load,
-        move |_r| {},
+        no_op,
     );
     let selector_handler = SelectorHandler::build(note_list_loaded.display_data.clone());
     let entries = note_list_loaded.display_data.clone();

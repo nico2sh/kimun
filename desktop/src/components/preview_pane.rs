@@ -7,8 +7,10 @@ use crate::components::{
     focus_manager::FocusComponent,
     modal::ModalType,
     note_browse_entry::{NoteBrowseEntry, SortCriteria},
-    note_browser::note_list::{NoteElementActions, NoteList, SelectorHandler},
-    note_list_data::note_list_loader::{use_note_list, SelectorFunctions},
+    note_list::{
+        note_list_loader::{no_op, use_note_list, SelectorFunctions},
+        NoteElementActions, NoteList, SelectorHandler,
+    },
     preview::Markdown,
     search_box::{SearchBox, StringSearch},
 };
@@ -96,10 +98,6 @@ impl SelectorFunctions<PreviewList> for PreviewListFunctions {
             PreviewList::FromList(_query, items) => items.to_owned(),
         }
     }
-
-    fn on_select(&mut self, element: &NoteBrowseEntry) -> bool {
-        todo!()
-    }
 }
 
 #[component]
@@ -118,13 +116,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
         vault: vault.clone(),
     };
 
-    let loaded_note_list = use_note_list(
-        source,
-        sort_criteria,
-        sort_ascending,
-        functions,
-        move |r| {},
-    );
+    let loaded_note_list = use_note_list(source, sort_criteria, sort_ascending, functions, no_op);
     let selector_handler = SelectorHandler::build(loaded_note_list.display_data.clone());
     let entries = loaded_note_list.display_data;
 

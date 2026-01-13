@@ -10,21 +10,6 @@ pub enum SortCriteria {
     FileName,
 }
 
-#[derive(Clone, Eq, PartialEq)]
-pub enum NoteSelectEntryListStatus {
-    Loading,
-    Loaded(Vec<NoteBrowseEntry>),
-}
-
-impl NoteSelectEntryListStatus {
-    pub fn len(&self) -> usize {
-        match self {
-            NoteSelectEntryListStatus::Loading => 0,
-            NoteSelectEntryListStatus::Loaded(items) => items.len(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum NoteBrowseEntry {
     Note {

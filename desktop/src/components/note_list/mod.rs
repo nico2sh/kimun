@@ -1,3 +1,6 @@
+pub mod note_list_loader;
+pub mod note_select_entry;
+
 use std::rc::Rc;
 
 use dioxus::prelude::*;
