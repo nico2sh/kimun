@@ -7,7 +7,7 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault};
 use nucleo::Matcher;
 
-use crate::components::{modal::ModalType, note_browse_entry::NoteBrowseEntry};
+use crate::components::{modal::ModalType, note_list::note_browse_entry::NoteBrowseEntry};
 
 use super::{SelectorFunctions, SelectorView};
 

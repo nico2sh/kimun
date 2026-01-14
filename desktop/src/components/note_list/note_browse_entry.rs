@@ -3,6 +3,13 @@ use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
 #[derive(Default, Debug, Clone, Eq, PartialEq)]
+enum EntryStyle {
+    #[default]
+    NoIcon,
+    WithIcon,
+}
+
+#[derive(Default, Debug, Clone, Eq, PartialEq)]
 pub enum SortCriteria {
     #[default]
     None,
@@ -11,29 +18,37 @@ pub enum SortCriteria {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum NoteBrowseEntry {
+pub struct NoteBrowseEntry {
+    pub path: VaultPath,
+    pub e_type: NoteEntryType,
+    style: EntryStyle,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum NoteEntryType {
     Note {
-        path: VaultPath,
         title: String,
         search_str: String,
     },
     Journal {
-        path: VaultPath,
         title: String,
         date_string: String,
         search_str: String,
     },
     Directory {
-        path: VaultPath,
         name: String,
     },
     Create {
-        new_note_path: VaultPath,
         name: String,
     },
 }
 
 impl NoteBrowseEntry {
+    pub fn with_style_icon(mut self) -> Self {
+        self.style = EntryStyle::WithIcon;
+        self
+    }
+
     pub fn from_note_details(path: VaultPath, content: NoteContentData) -> Self {
         let path_str = format!("{} {}", content.title, path.get_name());
         let title = if content.title.trim().is_empty() {
@@ -41,16 +56,29 @@ impl NoteBrowseEntry {
         } else {
             content.title
         };
-        Self::Note {
+
+        Self {
             path: path.clone(),
-            title,
-            search_str: path_str,
+            e_type: NoteEntryType::Note {
+                title,
+                search_str: path_str,
+            },
+            style: EntryStyle::default(),
+        }
+    }
+
+    pub fn new_note(path: VaultPath, title: String) -> Self {
+        let search_str = format!("{} {}", title, path.get_name());
+        Self {
+            path,
+            e_type: NoteEntryType::Note { title, search_str },
+            style: EntryStyle::default(),
         }
     }
 
     pub fn is_up_dir(&self) -> bool {
-        match self {
-            NoteBrowseEntry::Directory { path: _, name } => name.eq(".."),
+        match &self.e_type {
+            NoteEntryType::Directory { name } => name.eq(".."),
             _ => false,
         }
     }
@@ -65,45 +93,62 @@ impl NoteBrowseEntry {
 
         let date_string = format!("{}", date.format("%a, %b %e %Y"));
 
-        Self::Journal {
+        Self {
             path: path.clone(),
-            title,
-            date_string,
-            search_str: path_str,
+            e_type: NoteEntryType::Journal {
+                title,
+                date_string,
+                search_str: path_str,
+            },
+            style: EntryStyle::default(),
         }
     }
 
     pub fn from_directory_details(path: VaultPath) -> Self {
         let name = path.get_name();
-        Self::Directory { path, name }
+        Self {
+            path,
+            e_type: NoteEntryType::Directory { name },
+            style: EntryStyle::default(),
+        }
     }
 
     pub fn create_from_name(name: String, base_path: VaultPath) -> Self {
         let note_path = VaultPath::note_path_from(name);
         let new_note_path = base_path.append(&note_path);
         let name = new_note_path.to_string();
-        Self::Create {
-            new_note_path,
-            name,
+
+        Self {
+            path: note_path,
+            e_type: NoteEntryType::Create { name },
+            style: EntryStyle::default(),
+        }
+    }
+
+    pub fn up_dir_from(from_path: VaultPath) -> Self {
+        Self {
+            path: from_path.get_parent_path().0,
+            e_type: NoteEntryType::Directory {
+                name: "..".to_string(),
+            },
+            style: EntryStyle::default(),
         }
     }
 
     pub fn sort_string_for(&self, criteria: &SortCriteria) -> String {
-        match &self {
-            NoteBrowseEntry::Note {
-                path,
+        match &self.e_type {
+            NoteEntryType::Note {
                 title,
                 search_str: _,
             } => format!(
                 "2-{}",
                 match criteria {
                     SortCriteria::Title => title.to_owned(),
-                    SortCriteria::FileName => path.to_string(),
+                    SortCriteria::FileName => self.path.to_string(),
                     SortCriteria::None => "".to_string(),
                 }
             ),
-            NoteBrowseEntry::Journal {
-                path,
+            NoteEntryType::Journal {
                 title,
                 date_string: _,
                 search_str: _,
@@ -111,78 +156,65 @@ impl NoteBrowseEntry {
                 "2-{}",
                 match criteria {
                     SortCriteria::Title => title.to_owned(),
-                    SortCriteria::FileName => path.to_string(),
+                    SortCriteria::FileName => self.path.to_string(),
                     SortCriteria::None => "".to_string(),
                 }
             ),
-            NoteBrowseEntry::Directory { path, name: _ } => format!("1-{}", path),
-            NoteBrowseEntry::Create {
-                name: _,
-                new_note_path: _,
-            } => "0".to_string(),
+            NoteEntryType::Directory { name: _ } => format!("1-{}", self.path),
+            NoteEntryType::Create { name: _ } => "0".to_string(),
         }
     }
 
     pub fn get_path(&self) -> &VaultPath {
-        match self {
-            NoteBrowseEntry::Note {
-                path,
-                title: _,
-                search_str: _,
-            } => path,
-            NoteBrowseEntry::Journal {
-                path,
-                title: _,
-                date_string: _,
-                search_str: _,
-            } => path,
-            NoteBrowseEntry::Directory { path, name: _ } => path,
-            NoteBrowseEntry::Create {
-                new_note_path,
-                name: _,
-            } => new_note_path,
-        }
+        &self.path
     }
 
     pub fn get_view(&self) -> Element {
-        match self {
-            NoteBrowseEntry::Note {
-                path,
+        match &self.e_type {
+            NoteEntryType::Note {
                 title,
                 search_str: _,
             } => {
                 rsx! {
                     div { class: "note-item-content",
-                        div { class: "icon-note note-title", "{title}" }
-                        div { class: "note-meta", "{path}" }
+                        if self.style == EntryStyle::WithIcon {
+                            div { class: "icon-note note-title", "{title}" }
+                        } else {
+                            div { class: "note-title", "» {title}" }
+                        }
+                        div { class: "note-meta", "{self.path}" }
                     }
                 }
             }
-            NoteBrowseEntry::Journal {
-                path,
+            NoteEntryType::Journal {
                 title,
                 date_string,
                 search_str: _,
             } => {
                 rsx! {
                     div { class: "note-item-content",
-                        div { class: "icon-note note-title", "{title}" }
-                        div { class: "note-meta", "{path.get_name()}" }
+                        if self.style == EntryStyle::WithIcon {
+                            div { class: "icon-note note-title", "{title}" }
+                        } else {
+                            div { class: "note-title", "» {title}" }
+                        }
+                        div { class: "note-meta", "{self.path.get_name()}" }
                         div { class: "note-journal", "{date_string}" }
                     }
                 }
             }
-            NoteBrowseEntry::Directory { path: _, name } => {
+            NoteEntryType::Directory { name } => {
                 rsx! {
                     div { class: "note-item-content",
-                        div { class: "icon-folder note-title", "{name}" }
+                        if self.style == EntryStyle::WithIcon {
+                            div { class: "icon-folder note-title", "{name}" }
+                        } else {
+                            div { class: "note-title", "⌄ {name}" }
+                        }
                     }
                 }
             }
-            NoteBrowseEntry::Create {
-                new_note_path: _,
-                name,
-            } => {
+            NoteEntryType::Create { name } => {
                 rsx! {
                     div { class: "note-item-content",
                         span { class: "emphasized", "Create new Note " }
@@ -196,23 +228,18 @@ impl NoteBrowseEntry {
 
 impl AsRef<str> for NoteBrowseEntry {
     fn as_ref(&self) -> &str {
-        match self {
-            NoteBrowseEntry::Note {
-                path: _,
+        match &self.e_type {
+            NoteEntryType::Note {
                 title: _,
                 search_str,
             } => search_str.as_str(),
-            NoteBrowseEntry::Journal {
-                path: _,
+            NoteEntryType::Journal {
                 title: _,
                 date_string: _,
                 search_str,
             } => search_str.as_str(),
-            NoteBrowseEntry::Directory { path: _, name } => name.as_str(),
-            NoteBrowseEntry::Create {
-                new_note_path: _,
-                name,
-            } => name.as_str(),
+            NoteEntryType::Directory { name } => name.as_str(),
+            NoteEntryType::Create { name } => name.as_str(),
         }
     }
 }

@@ -6,7 +6,6 @@ pub mod button;
 pub mod focus_manager;
 pub mod icons;
 pub mod modal;
-pub mod note_browse_entry;
 pub mod note_browser;
 pub mod note_list;
 pub mod preview;

@@ -6,10 +6,7 @@ use dioxus::{
 };
 use kimun_core::NoteVault;
 
-use crate::{
-    app_state::AppState,
-    components::{modal::ModalType, note_browse_entry::NoteBrowseEntry},
-};
+use crate::components::{modal::ModalType, note_list::note_browse_entry::NoteBrowseEntry};
 
 use super::{SelectorFunctions, SelectorView};
 

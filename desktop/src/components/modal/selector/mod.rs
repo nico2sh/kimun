@@ -13,11 +13,12 @@ use crate::{
         focus_manager::FocusComponent,
         icons,
         modal::ModalType,
-        note_browse_entry::{NoteBrowseEntry, SortCriteria},
         note_list::{
+            note_browse_entry::{NoteBrowseEntry, NoteEntryType, SortCriteria},
             note_list_loader::{no_op, use_note_list, SelectorFunctions},
             NoteElementActions, NoteList, SelectorHandler,
         },
+        preview_pane::PreviewList,
         search_box::{SearchBox, StringSearch},
     },
 };
@@ -40,6 +41,8 @@ where
     F: SelectorFunctions<S> + Clone + Send + 'static,
     S: StringSearch + Clone + 'static,
 {
+    let mut app_state: Signal<AppState> = use_context();
+
     let filter_text_value = use_signal(|| filter_text);
     let sort_criteria_value = use_signal(|| SortCriteria::None);
     let sort_ascending_value = use_signal(|| true);
@@ -138,7 +141,12 @@ where
                         sort_ascending: sort_ascending_value,
                         input_focus: FocusComponent::ModalInput,
                     }
-                    button { class: "send-button",
+                    button {
+                        class: "send-button",
+                        onclick: move |_e| {
+                            app_state.write().show_preview_pane(PreviewList::FromQuery("test".to_string()));
+                            modal_type.write().close();
+                        },
                         icons::FatArrowRight {}
                         span { class: "send-button-text", "To Sidebar" }
                     }
@@ -186,32 +194,27 @@ impl NoteElementActions for ModalNoteListAction {
 
     fn on_select(&mut self, entry: &NoteBrowseEntry) {
         let mut app_state: Signal<AppState> = use_context();
-        match entry {
-            NoteBrowseEntry::Note {
-                path,
+        match &entry.e_type {
+            NoteEntryType::Note {
                 title: _,
                 search_str: _,
             } => {
-                app_state.write().set_path(&path, false);
+                app_state.write().set_path(&entry.path, false);
                 self.modal_type.write().close();
             }
-            NoteBrowseEntry::Journal {
-                path,
+            NoteEntryType::Journal {
                 title: _,
                 date_string: _,
                 search_str: _,
             } => {
-                app_state.write().set_path(&path, false);
+                app_state.write().set_path(&entry.path, false);
                 self.modal_type.write().close();
             }
-            NoteBrowseEntry::Create {
-                new_note_path,
-                name: _,
-            } => {
-                app_state.write().set_path(&new_note_path, true);
+            NoteEntryType::Create { name: _ } => {
+                app_state.write().set_path(&entry.path, true);
                 self.modal_type.write().close();
             }
-            NoteBrowseEntry::Directory { path: _, name: _ } => {
+            NoteEntryType::Directory { name: _ } => {
                 // Do nothing
             }
         }

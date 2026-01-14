@@ -13,7 +13,7 @@ use crate::{
     components::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
-        note_browse_entry::{NoteBrowseEntry, SortCriteria},
+        note_list::note_browse_entry::{NoteBrowseEntry, NoteEntryType, SortCriteria},
         note_list::{
             note_list_loader::{use_note_list, SelectorFunctions, UseNoteList},
             NoteElementActions, NoteList, SelectorHandler,
@@ -64,10 +64,7 @@ pub fn NoteBrowser(
             if !browsing_directory.read().is_root_or_empty() {
                 r.insert(
                     0,
-                    NoteBrowseEntry::Directory {
-                        path: browsing_directory.read().get_parent_path().0,
-                        name: "..".to_string(),
-                    },
+                    NoteBrowseEntry::up_dir_from(browsing_directory()).with_style_icon(),
                 );
             }
             r
@@ -211,26 +208,21 @@ impl NoteElementActions for NoteBrowserHover {
 
     fn on_select(&mut self, entry: &NoteBrowseEntry) {
         let mut app_state: Signal<AppState> = use_context();
-        match &entry {
-            NoteBrowseEntry::Note {
-                path: _,
+        match &entry.e_type {
+            NoteEntryType::Note {
                 title: _,
                 search_str: _,
             }
-            | NoteBrowseEntry::Journal {
-                path: _,
+            | NoteEntryType::Journal {
                 title: _,
                 date_string: _,
                 search_str: _,
-            } => app_state.write().current_path = entry.get_path().to_owned(),
-            NoteBrowseEntry::Directory { path, name: _ } => {
-                self.current_browse_path.set(path.to_owned());
+            } => app_state.write().current_path = entry.path.to_owned(),
+            NoteEntryType::Directory { name: _ } => {
+                self.current_browse_path.set(entry.path.to_owned());
                 self.use_note_list.reset();
             }
-            NoteBrowseEntry::Create {
-                new_note_path: _,
-                name: _,
-            } => {
+            NoteEntryType::Create { name: _ } => {
                 warn!("No Create should happen here");
             }
         }
@@ -356,14 +348,17 @@ impl SelectorFunctions<String> for BrowseFuncions {
                             note_details.to_owned(),
                             date,
                         )
+                        .with_style_icon()
                     } else {
                         NoteBrowseEntry::from_note_details(entry.path, note_details.to_owned())
+                            .with_style_icon()
                     };
                     entries.push(e)
                 }
                 ResultType::Directory => {
                     if entry.path != *self.browsing_directory.read() {
-                        let e = NoteBrowseEntry::from_directory_details(entry.path);
+                        let e =
+                            NoteBrowseEntry::from_directory_details(entry.path).with_style_icon();
                         entries.push(e)
                     }
                 }

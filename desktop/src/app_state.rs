@@ -1,13 +1,14 @@
 use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
-use crate::settings::AppSettings;
+use crate::{components::preview_pane::PreviewList, settings::AppSettings};
 
 pub struct AppState {
     pub current_path: VaultPath,
     pub create_if_not_exists: bool,
     pub preview_mode: bool,
     pub show_browser: bool,
+    pub show_preview_pane: Option<PreviewList>,
 }
 
 impl AppState {
@@ -23,6 +24,7 @@ impl AppState {
             create_if_not_exists: false,
             preview_mode: false,
             show_browser: false,
+            show_preview_pane: None,
         }
     }
 
@@ -33,5 +35,13 @@ impl AppState {
 
     pub fn toggle_browser(&mut self) {
         self.show_browser = !self.show_browser;
+    }
+
+    pub fn show_preview_pane(&mut self, source: PreviewList) {
+        self.show_preview_pane = Some(source);
+    }
+
+    pub fn hide_preview_pane(&mut self) {
+        self.show_preview_pane = None;
     }
 }

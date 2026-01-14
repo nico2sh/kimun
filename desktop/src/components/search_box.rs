@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use crate::components::{
     focus_manager::{FocusComponent, FocusManager},
     icons,
-    note_browse_entry::SortCriteria,
+    note_list::note_browse_entry::SortCriteria,
 };
 
 #[derive(Clone, PartialEq, Props)]
