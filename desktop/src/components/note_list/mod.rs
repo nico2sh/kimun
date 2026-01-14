@@ -1,12 +1,13 @@
+pub mod note_browse_entry;
 pub mod note_list_loader;
-pub mod note_select_entry;
 
 use std::rc::Rc;
 
 use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
-use crate::{components::note_browse_entry::NoteBrowseEntry, utils::sparse_vector::SparseVector};
+use crate::components::note_list::note_browse_entry::NoteBrowseEntry;
+use crate::utils::sparse_vector::SparseVector;
 
 #[derive(Clone, PartialEq, Props)]
 pub struct NoteListProps<H>

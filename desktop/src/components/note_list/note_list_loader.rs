@@ -1,5 +1,5 @@
 use crate::components::{
-    note_browse_entry::{NoteBrowseEntry, SortCriteria},
+    note_list::note_browse_entry::{NoteBrowseEntry, SortCriteria},
     search_box::StringSearch,
 };
 use dioxus::prelude::*;

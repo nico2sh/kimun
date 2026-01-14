@@ -6,7 +6,7 @@ use kimun_core::{nfs::VaultPath, note::MarkdownNote, NoteVault};
 use crate::components::{
     focus_manager::FocusComponent,
     modal::ModalType,
-    note_browse_entry::{NoteBrowseEntry, SortCriteria},
+    note_list::note_browse_entry::{NoteBrowseEntry, SortCriteria},
     note_list::{
         note_list_loader::{no_op, use_note_list, SelectorFunctions},
         NoteElementActions, NoteList, SelectorHandler,
@@ -15,7 +15,7 @@ use crate::components::{
     search_box::{SearchBox, StringSearch},
 };
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum PreviewList {
     FromQuery(String),
     FromList(String, Vec<NoteBrowseEntry>),

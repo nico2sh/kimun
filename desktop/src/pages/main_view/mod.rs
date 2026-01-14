@@ -12,8 +12,8 @@ use crate::{
     app_state::AppState,
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
-        note_browse_entry::NoteBrowseEntry,
         note_browser::NoteBrowser,
+        note_list::note_browse_entry::NoteBrowseEntry,
         preview_pane::{PreviewList, PreviewPane},
     },
     global_events::{GlobalEvent, PubSub},
@@ -84,6 +84,9 @@ pub fn MainView() -> Element {
                     if is_current {
                         app_state.write().set_path(&new_name, false);
                     }
+                }
+                GlobalEvent::OpenPreviewPane(source) => {
+                    debug!("Preview pane, with source: {}", source);
                 }
                 _ => {}
             }),
@@ -251,20 +254,13 @@ pub fn MainView() -> Element {
                         }
                     }
                 }
-                div { class: "rightbar",
-                    PreviewPane {
-                        vault: vault.clone(),
-                        source: PreviewList::FromList(
-                            "".to_string(),
-                            vec![
-                                NoteBrowseEntry::Note {
-                                    path: VaultPath::from_str("journal/2025-11-03.md").unwrap(),
-                                    title: "journal entry".to_string(),
-                                    search_str: "search".to_string(),
-                                },
-                            ],
-                        ),
-                        modal_type,
+                if let Some(source) = &app_state.read().show_preview_pane {
+                    div { class: "rightbar",
+                        PreviewPane {
+                            vault: vault.clone(),
+                            source: source.to_owned(),
+                            modal_type,
+                        }
                     }
                 }
             }
