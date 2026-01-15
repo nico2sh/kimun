@@ -19,31 +19,31 @@ use crate::{
 };
 
 #[derive(Clone, PartialEq, Debug)]
-pub enum PreviewList {
+pub enum PreviewListSource {
     FromQuery(String),
     FromList(String, Vec<NoteBrowseEntry>),
 }
 
-impl Default for PreviewList {
+impl Default for PreviewListSource {
     fn default() -> Self {
         Self::FromQuery("".to_string())
     }
 }
 
-impl StringSearch for PreviewList {
+impl StringSearch for PreviewListSource {
     fn change_value(&mut self, value: String) {
-        *self = PreviewList::FromQuery(value);
+        *self = PreviewListSource::FromQuery(value);
     }
 }
 
-impl Display for PreviewList {
+impl Display for PreviewListSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                PreviewList::FromList(query, _items) => query,
-                PreviewList::FromQuery(query) => query,
+                PreviewListSource::FromList(query, _items) => query,
+                PreviewListSource::FromQuery(query) => query,
             }
         )
     }
@@ -68,18 +68,18 @@ pub struct PreviewListFunctions {
     pub vault: Arc<NoteVault>,
 }
 
-impl SelectorFunctions<PreviewList> for PreviewListFunctions {
+impl SelectorFunctions<PreviewListSource> for PreviewListFunctions {
     fn init(&self) -> Vec<NoteBrowseEntry> {
         vec![]
     }
 
     fn filter(
         &self,
-        filter_text: PreviewList,
+        filter_text: PreviewListSource,
         _initial_items: &[NoteBrowseEntry],
     ) -> Vec<NoteBrowseEntry> {
         match &filter_text {
-            PreviewList::FromQuery(_query) => {
+            PreviewListSource::FromQuery(_query) => {
                 let filter_text = filter_text.to_owned();
                 match self.vault.search_notes(filter_text.to_string()) {
                     Ok(res) => res
@@ -94,7 +94,7 @@ impl SelectorFunctions<PreviewList> for PreviewListFunctions {
                     }
                 }
             }
-            PreviewList::FromList(_query, items) => items.to_owned(),
+            PreviewListSource::FromList(_query, items) => items.to_owned(),
         }
     }
 }

@@ -4,7 +4,6 @@ use kimun_core::nfs::VaultPath;
 
 use crate::{
     app_state::AppState,
-    components::preview_pane::PreviewList,
     editor_state::{ContentType, EditorState},
 };
 
