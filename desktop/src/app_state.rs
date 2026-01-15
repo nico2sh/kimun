@@ -1,14 +1,53 @@
 use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
-use crate::{components::preview_pane::PreviewList, settings::AppSettings};
+use crate::{
+    components::{note_list::note_browse_entry::SortCriteria, preview_pane::PreviewList},
+    settings::AppSettings,
+};
+
+#[derive(Clone, PartialEq)]
+pub struct PreviewListState {
+    pub source: PreviewList,
+    pub sort_criteria: SortCriteria,
+    pub sort_ascending: bool,
+}
+
+impl PreviewListState {
+    pub fn new(source: PreviewList, sort_criteria: SortCriteria, sort_ascending: bool) -> Self {
+        Self {
+            source,
+            sort_criteria,
+            sort_ascending,
+        }
+    }
+
+    pub fn from_source(source: PreviewList) -> Self {
+        Self {
+            source,
+            sort_criteria: SortCriteria::None,
+            sort_ascending: true,
+        }
+    }
+}
+
+impl Default for PreviewListState {
+    fn default() -> Self {
+        Self {
+            source: Default::default(),
+            sort_criteria: Default::default(),
+            sort_ascending: Default::default(),
+        }
+    }
+}
 
 pub struct AppState {
     pub current_path: VaultPath,
     pub create_if_not_exists: bool,
     pub preview_mode: bool,
     pub show_browser: bool,
-    pub show_preview_pane: Option<PreviewList>,
+    pub show_preview_pane: Option<PreviewListState>,
+    last_preview_list_state: PreviewListState,
 }
 
 impl AppState {
@@ -25,6 +64,7 @@ impl AppState {
             preview_mode: false,
             show_browser: false,
             show_preview_pane: None,
+            last_preview_list_state: PreviewListState::default(),
         }
     }
 
@@ -37,11 +77,19 @@ impl AppState {
         self.show_browser = !self.show_browser;
     }
 
-    pub fn show_preview_pane(&mut self, source: PreviewList) {
-        self.show_preview_pane = Some(source);
+    pub fn show_preview_pane(&mut self, state: Option<PreviewListState>) {
+        if let Some(state) = state {
+            self.set_preview_pane_state(state);
+        } else {
+            self.show_preview_pane = Some(self.last_preview_list_state.clone());
+        }
     }
 
     pub fn hide_preview_pane(&mut self) {
         self.show_preview_pane = None;
+    }
+
+    pub fn set_preview_pane_state(&mut self, state: PreviewListState) {
+        self.last_preview_list_state = state;
     }
 }

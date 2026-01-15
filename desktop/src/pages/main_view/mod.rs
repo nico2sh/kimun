@@ -258,7 +258,7 @@ pub fn MainView() -> Element {
                     div { class: "rightbar",
                         PreviewPane {
                             vault: vault.clone(),
-                            source: source.to_owned(),
+                            initial_state: source.to_owned(),
                             modal_type,
                         }
                     }

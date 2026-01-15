@@ -57,6 +57,7 @@ pub fn NoteSearch(props: SearchProps) -> Element {
         props.modal_type,
         vault,
         search_functions,
+        true,
     )
 }
 

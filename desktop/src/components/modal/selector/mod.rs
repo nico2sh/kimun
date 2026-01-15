@@ -8,7 +8,7 @@ use dioxus::{logger::tracing::info, prelude::*};
 use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
-    app_state::AppState,
+    app_state::{AppState, PreviewListState},
     components::{
         focus_manager::FocusComponent,
         icons,
@@ -36,6 +36,7 @@ fn SelectorView<F, S>(
     mut modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     functions: F,
+    send_to_preview: bool,
 ) -> Element
 where
     F: SelectorFunctions<S> + Clone + Send + 'static,
@@ -141,14 +142,29 @@ where
                         sort_ascending: sort_ascending_value,
                         input_focus: FocusComponent::ModalInput,
                     }
-                    button {
-                        class: "send-button",
-                        onclick: move |_e| {
-                            app_state.write().show_preview_pane(PreviewList::FromQuery("test".to_string()));
-                            modal_type.write().close();
-                        },
-                        icons::FatArrowRight {}
-                        span { class: "send-button-text", "To Sidebar" }
+                    if send_to_preview {
+                        button {
+                            class: "send-button",
+                            onclick: move |_e| {
+                                app_state
+                                    .write()
+                                    .show_preview_pane(
+                                        Some(
+                                            PreviewListState::new(
+                                                PreviewList::FromList(
+                                                    filter_text_value.read().to_string(),
+                                                    note_list_loaded.display_data.read().to_owned(),
+                                                ),
+                                                sort_criteria_value(),
+                                                sort_ascending_value(),
+                                            ),
+                                        ),
+                                    );
+                                modal_type.write().close();
+                            },
+                            icons::FatArrowRight {}
+                            span { class: "send-button-text", "To Sidebar" }
+                        }
                     }
                 }
             }
