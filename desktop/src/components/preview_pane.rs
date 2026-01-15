@@ -85,7 +85,11 @@ impl SelectorFunctions<PreviewListSource> for PreviewListFunctions {
                     Ok(res) => res
                         .into_iter()
                         .map(|(entry, content)| {
-                            NoteBrowseEntry::from_note_details(entry.path, content)
+                            if let Some(date) = self.vault.journal_date(&entry.path) {
+                                NoteBrowseEntry::from_note_journal(entry.path, content, date)
+                            } else {
+                                NoteBrowseEntry::from_note_details(entry.path, content)
+                            }
                         })
                         .collect::<Vec<NoteBrowseEntry>>(),
                     Err(e) => {
