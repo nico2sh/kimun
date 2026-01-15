@@ -18,7 +18,7 @@ use crate::{
             note_list_loader::{no_op, use_note_list, SelectorFunctions},
             NoteElementActions, NoteList, SelectorHandler,
         },
-        preview_pane::PreviewList,
+        preview_pane::PreviewListSource,
         search_box::{SearchBox, StringSearch},
     },
 };
@@ -151,7 +151,7 @@ where
                                     .show_preview_pane(
                                         Some(
                                             PreviewListState::new(
-                                                PreviewList::FromList(
+                                                PreviewListSource::FromList(
                                                     filter_text_value.read().to_string(),
                                                     note_list_loaded.display_data.read().to_owned(),
                                                 ),

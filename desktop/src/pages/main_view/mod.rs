@@ -13,8 +13,7 @@ use crate::{
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
         note_browser::NoteBrowser,
-        note_list::note_browse_entry::NoteBrowseEntry,
-        preview_pane::{PreviewList, PreviewPane},
+        preview_pane::PreviewPane,
     },
     global_events::{GlobalEvent, PubSub},
     route::Route,

@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use dioxus::prelude::Callback;
 use kimun_core::nfs::VaultPath;
 
-use crate::components::preview_pane::PreviewList;
+use crate::components::preview_pane::PreviewListSource;
 
 #[derive(Clone)]
 struct Subscription<E>
@@ -81,5 +81,5 @@ pub enum GlobalEvent {
     },
     NewNoteCreated(VaultPath),
     NewDirectoryCreated(VaultPath),
-    OpenPreviewPane(PreviewList),
+    OpenPreviewPane(PreviewListSource),
 }

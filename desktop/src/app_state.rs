@@ -2,19 +2,23 @@ use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::{
-    components::{note_list::note_browse_entry::SortCriteria, preview_pane::PreviewList},
+    components::{note_list::note_browse_entry::SortCriteria, preview_pane::PreviewListSource},
     settings::AppSettings,
 };
 
 #[derive(Clone, PartialEq)]
 pub struct PreviewListState {
-    pub source: PreviewList,
+    pub source: PreviewListSource,
     pub sort_criteria: SortCriteria,
     pub sort_ascending: bool,
 }
 
 impl PreviewListState {
-    pub fn new(source: PreviewList, sort_criteria: SortCriteria, sort_ascending: bool) -> Self {
+    pub fn new(
+        source: PreviewListSource,
+        sort_criteria: SortCriteria,
+        sort_ascending: bool,
+    ) -> Self {
         Self {
             source,
             sort_criteria,
@@ -22,7 +26,7 @@ impl PreviewListState {
         }
     }
 
-    pub fn from_source(source: PreviewList) -> Self {
+    pub fn from_source(source: PreviewListSource) -> Self {
         Self {
             source,
             sort_criteria: SortCriteria::None,
