@@ -4,6 +4,7 @@ use kimun_core::nfs::VaultPath;
 
 use crate::{
     app_state::AppState,
+    components::preview_pane::PreviewList,
     editor_state::{ContentType, EditorState},
 };
 
@@ -23,14 +24,13 @@ pub fn EditorHeader(props: EditorHeaderProps) -> Element {
         div { class: "editor-header",
             div { class: "header-left",
                 button {
-                    class: "sidebar-toggle-main",
+                    class: "header-button",
                     onclick: move |_| {
                         app_state.write().toggle_browser();
                     },
 
                     svg {
-                        width: 20,
-                        height: 20,
+                        class: "icon-header",
                         view_box: "0 0 24 24",
                         fill: "none",
                         stroke: "currentColor",
@@ -62,6 +62,27 @@ pub fn EditorHeader(props: EditorHeaderProps) -> Element {
                     div {
                         class: if !dirty { "status-indicator" } else { "status-indicator unsaved" },
                         id: "saveStatus",
+                    }
+                }
+                button { class: if app_state.read().show_preview_pane.is_none() { "header-button" } else { "header-button active" },
+                    svg {
+                        class: "icon-header",
+                        onclick: move |_| {
+                            if app_state.read().show_preview_pane.is_some() {
+                                app_state.write().hide_preview_pane();
+                            } else {
+                                app_state.write().show_preview_pane(None);
+                            }
+                        },
+                        fill: "none",
+                        stroke: "currentColor",
+                        view_box: "0 0 24 24",
+                        path {
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            stroke_width: "2",
+                            d: "M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253",
+                        }
                     }
                 }
             }

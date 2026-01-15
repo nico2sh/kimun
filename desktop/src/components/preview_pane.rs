@@ -3,16 +3,19 @@ use std::{fmt::Display, sync::Arc};
 use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, note::MarkdownNote, NoteVault};
 
-use crate::components::{
-    focus_manager::FocusComponent,
-    modal::ModalType,
-    note_list::note_browse_entry::{NoteBrowseEntry, SortCriteria},
-    note_list::{
-        note_list_loader::{no_op, use_note_list, SelectorFunctions},
-        NoteElementActions, NoteList, SelectorHandler,
+use crate::{
+    app_state::{AppState, PreviewListState},
+    components::{
+        focus_manager::FocusComponent,
+        modal::ModalType,
+        note_list::{
+            note_browse_entry::NoteBrowseEntry,
+            note_list_loader::{no_op, use_note_list, SelectorFunctions},
+            NoteElementActions, NoteList, SelectorHandler,
+        },
+        preview::Markdown,
+        search_box::{SearchBox, StringSearch},
     },
-    preview::Markdown,
-    search_box::{SearchBox, StringSearch},
 };
 
 #[derive(Clone, PartialEq, Debug)]
@@ -55,13 +58,9 @@ enum PreviewContent {
 #[derive(Clone, PartialEq, Props)]
 pub struct PreviewPaneProps {
     vault: Arc<NoteVault>,
-    #[props(default = PreviewList::FromQuery(String::new()))]
-    source: PreviewList,
+    #[props(default = PreviewListState::default())]
+    initial_state: PreviewListState,
     modal_type: Signal<ModalType>,
-    #[props(default = SortCriteria::None)]
-    sort_criteria: SortCriteria,
-    #[props(default = true)]
-    sort_ascending: bool,
 }
 
 #[derive(Clone)]
@@ -102,15 +101,25 @@ impl SelectorFunctions<PreviewList> for PreviewListFunctions {
 
 #[component]
 pub fn PreviewPane(props: PreviewPaneProps) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
+
+    let mut show_browser = use_signal(|| true);
+
     let vault = props.vault;
     let active_path = use_signal(|| VaultPath::root());
     let modal_type = props.modal_type;
     let mut show_search = use_signal(|| false);
 
-    let source = use_signal(|| props.source);
+    let PreviewListState {
+        source: state_source,
+        sort_criteria: state_criteria,
+        sort_ascending: state_ascending,
+    } = props.initial_state;
 
-    let sort_criteria = use_signal(|| props.sort_criteria);
-    let sort_ascending = use_signal(|| props.sort_ascending);
+    let source = use_signal(|| state_source);
+
+    let sort_criteria = use_signal(|| state_criteria);
+    let sort_ascending = use_signal(|| state_ascending);
 
     let functions = PreviewListFunctions {
         vault: vault.clone(),
@@ -119,6 +128,29 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
     let loaded_note_list = use_note_list(source, sort_criteria, sort_ascending, functions, no_op);
     let selector_handler = SelectorHandler::build(loaded_note_list.display_data.clone());
     let entries = loaded_note_list.display_data;
+
+    use_drop(move || {
+        debug!("We close the pane");
+        app_state
+            .write()
+            .set_preview_pane_state(PreviewListState::new(
+                source(),
+                sort_criteria(),
+                sort_ascending(),
+            ));
+
+        // We cache the results
+        // app_state
+        //     .write()
+        //     .set_preview_pane_state(PreviewListState::new(
+        //         PreviewList::FromList(
+        //             source().to_string(),
+        //             loaded_note_list.display_data.read().to_owned(),
+        //         ),
+        //         sort_criteria(),
+        //         sort_ascending(),
+        //     ));
+    });
 
     let preview_vault = vault.clone();
     let preview_content = use_resource(move || {
@@ -138,10 +170,12 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
     rsx! {
         div { class: "bar-preview-header",
             div { class: "bar-preview-header-top",
-                button { class: "bar-preview-title-btn",
+                button {
+                    class: "bar-preview-title-btn",
+                    onclick: move |_e| show_browser.set(!show_browser()),
                     span { class: "bar-preview-title", "Quick Browser" }
                     svg {
-                        class: "icon",
+                        class: if show_browser() { "icon" } else { "icon collapsed" },
                         fill: "none",
                         stroke: "currentColor",
                         view_box: "0 0 24 24",
@@ -173,26 +207,30 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                 }
             }
         }
-        div { class: "bar-preview-browser",
-            {
-                rsx! {
-                    NoteList {
-                        entries,
-                        active_path: active_path.read().to_owned(),
-                        element_action: NoHoverAction { active_path },
-                        selector_handler,
-                        compact: true,
+        if show_browser() {
+            div { class: "bar-preview-browser",
+                {
+                    rsx! {
+                        NoteList {
+                            entries,
+                            active_path: active_path.read().to_owned(),
+                            element_action: NoHoverAction { active_path },
+                            selector_handler,
+                            compact: true,
+                        }
                     }
                 }
+            
             }
-        
         }
         if show_search() {
             {
                 rsx! {
                     div {
                         class: "bar-preview-search-popup-overlay",
-                        onclick: move |_e| show_search.set(false),
+                        onclick: move |_e| {
+                            show_search.set(false);
+                        },
                         div { class: "bar-preview-search-popup", onclick: |e| e.stop_propagation(),
                             SearchBox {
                                 search_text: source,

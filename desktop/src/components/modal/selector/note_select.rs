@@ -109,6 +109,7 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
         props.filter_text,
         props.modal_type,
         vault,
-        select_functions
+        select_functions,
+        false
     )
 }
