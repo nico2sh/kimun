@@ -21,12 +21,19 @@ mod route;
 mod settings;
 pub mod utils;
 
-// The asset macro also minifies some assets like CSS and JS to make bundled smaller
-// const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 // Urls are relative to your Cargo.toml file
-const FONTS: Asset = asset!("/assets/styling/fonts.css");
-const ICONS: Asset = asset!("/assets/styling/icons.css");
-const STYLE: Asset = asset!("/assets/styling/main.css");
+#[used]
+static ICON_FONT: Asset = asset!("/assets/fonts/fontello.woff2");
+#[used]
+static APP_FONT: Asset = asset!("/assets/fonts/InterVariable.woff2");
+#[used]
+static APP_FONT_ITALIC: Asset = asset!("/assets/fonts/InterVariable-Italic.woff2");
+#[used]
+static APP_LOGO: Asset = asset!("/assets/images/kimun.png");
+
+const FONTS_STYLE: Asset = asset!("/assets/styling/fonts.css");
+const ICONS_STYLE: Asset = asset!("/assets/styling/fontello.css");
+const MAIN_STYLE: Asset = asset!("/assets/styling/main.css");
 pub const MARKDOWN_JS: Asset = asset!(
     "/assets/scripts/markdown.js",
     JsAssetOptions::new().with_minify(false).with_preload(true)
@@ -53,9 +60,9 @@ fn App() -> Element {
 
     rsx! {
         document::Link { rel: "stylesheet", href: theme.css }
-        document::Link { rel: "stylesheet", href: FONTS }
-        document::Link { rel: "stylesheet", href: ICONS }
-        document::Link { rel: "stylesheet", href: STYLE }
+        document::Link { rel: "stylesheet", href: FONTS_STYLE }
+        document::Link { rel: "stylesheet", href: ICONS_STYLE }
+        document::Link { rel: "stylesheet", href: MAIN_STYLE }
 
         div { class: "app-container", Router::<Route> {} }
     }

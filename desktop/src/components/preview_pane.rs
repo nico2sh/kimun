@@ -241,6 +241,15 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                                 sort_criteria,
                                 sort_ascending,
                                 input_focus: FocusComponent::PreviewPane,
+                                on_keystroke: move |e: Event<KeyboardData>| {
+                                    let key = e.data.code();
+                                    match key {
+                                        Code::Escape | Code::Enter => {
+                                            show_search.set(!show_search());
+                                        }
+                                        _ => {}
+                                    }
+                                },
                             }
                         }
                     }

@@ -18,6 +18,9 @@ where
     sort_ascending: Signal<bool>,
     input_focus: FocusComponent,
 
+    #[props(default)]
+    on_keystroke: Callback<Event<KeyboardData>>,
+
     #[props(default = false)]
     no_default: bool,
 }
@@ -42,6 +45,7 @@ where
         mut sort_criteria,
         mut sort_ascending,
         input_focus,
+        on_keystroke,
         no_default,
     } = props;
     let focus_manager = use_context::<FocusManager>();
@@ -80,6 +84,7 @@ where
                         }
                         _ => {}
                     }
+                    on_keystroke.call(e);
                 },
             }
             div { class: "search-controls",
