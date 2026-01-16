@@ -1,6 +1,6 @@
 @font-face {
-  font-family: 'icons';
-  src: url('/assets/fonts/icons.woff2?34544533') format('woff2');
+  font-family: 'fontello';
+  src: url('/assets/fonts/fontello.woff2?34544533') format('woff2');
   font-weight: normal;
   font-style: normal;
 }
@@ -10,14 +10,14 @@
 /*
 @media screen and (-webkit-min-device-pixel-ratio:0) {
   @font-face {
-    font-family: 'icons';
-    src: url('../font/icons.svg?34544533#icons') format('svg');
+    font-family: 'fontello';
+    src: url('../font/fontello.svg?24594419#fontello') format('svg');
   }
 }
 */
 [class^="icon-"]:before,
 [class*=" icon-"]:before {
-  font-family: "icons";
+  font-family: "fontello";
   font-style: normal;
   font-weight: normal;
   speak: never;
@@ -56,6 +56,11 @@
 }
 
 /* '' */
+.icon-journal:before {
+  content: '\e801';
+}
+
+/* '' */
 .icon-folder:before {
   content: '\e802';
 }

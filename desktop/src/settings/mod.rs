@@ -42,12 +42,12 @@ pub struct AppSettings {
 }
 
 #[cfg(target_os = "macos")]
-fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch {
+fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch<'_> {
     key_bindings.batch_add().with_meta()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch {
+fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch<'_> {
     key_bindings.batch_add().with_ctrl()
 }
 

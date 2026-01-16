@@ -5,7 +5,7 @@ pub enum KimunChannel {
 }
 
 #[derive(Debug)]
-pub struct AppState {
+pub struct EditorState {
     pub content_type: ContentType,
 }
 
@@ -16,7 +16,7 @@ pub enum ContentType {
     Directory,
 }
 
-impl Default for AppState {
+impl Default for EditorState {
     fn default() -> Self {
         Self {
             content_type: ContentType::None,
@@ -24,7 +24,7 @@ impl Default for AppState {
     }
 }
 
-impl AppState {
+impl EditorState {
     pub fn has_dirty_content(&self) -> bool {
         match self.content_type {
             ContentType::Note { dirty } => dirty,
@@ -45,5 +45,3 @@ impl AppState {
         self.content_type = content_type;
     }
 }
-
-// impl RadioChannel<AppState> for KimunChannel {}

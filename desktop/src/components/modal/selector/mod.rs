@@ -2,27 +2,26 @@ pub mod note_picker;
 pub mod note_search;
 pub mod note_select;
 
-use std::rc::Rc;
+use std::sync::Arc;
 
-use dioxus::{core::use_drop, logger::tracing::info, prelude::*};
+use dioxus::{logger::tracing::info, prelude::*};
+use kimun_core::{nfs::VaultPath, NoteVault};
 
 use crate::{
+    app_state::{AppState, PreviewListState},
     components::{
-        focus_manager::{FocusComponent, FocusManager},
+        focus_manager::FocusComponent,
+        icons,
         modal::ModalType,
-        note_select_entry::RowItem,
+        note_list::{
+            note_browse_entry::{NoteBrowseEntry, NoteEntryType, SortCriteria},
+            note_list_loader::{no_op, use_note_list, SelectorFunctions},
+            NoteElementActions, NoteList, SelectorHandler,
+        },
+        preview_pane::PreviewListSource,
+        search_box::{SearchBox, StringSearch},
     },
-    utils::sparse_vector::SparseVector,
 };
-
-trait SelectorFunctions<R>: Clone
-where
-    R: RowItem,
-{
-    fn init(&self) -> Vec<R>;
-    fn filter(&self, filter_text: String, items: &[R]) -> Vec<R>;
-    fn preview(&self, element: &R) -> Option<PreviewData>;
-}
 
 pub struct PreviewData {
     title: String,
@@ -30,104 +29,66 @@ pub struct PreviewData {
     content: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum LoadState<R>
-where
-    R: RowItem + 'static,
-{
-    Closed,
-    Init,
-    Loaded(Vec<R>),
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct SelectorViewProps<R>
-where
-    Resource<Vec<R>>: PartialEq,
-    R: RowItem + 'static,
-{
-    filter_text: Signal<String>,
-    load_state: Signal<LoadState<R>>,
-    modal_type: Signal<ModalType>,
-}
-
 #[allow(non_snake_case)]
-fn SelectorView<R, F>(
+fn SelectorView<F, S>(
     hint: String,
-    filter_text: String,
+    filter_text: S,
     mut modal_type: Signal<ModalType>,
+    vault: Arc<NoteVault>,
     functions: F,
+    send_to_preview: bool,
 ) -> Element
 where
-    R: RowItem + Send + Clone + Sync + 'static,
-    F: SelectorFunctions<R> + Clone + Send + 'static,
+    F: SelectorFunctions<S> + Clone + Send + 'static,
+    S: StringSearch + Clone + 'static,
 {
-    let mut filter_text = use_signal(|| filter_text);
-    let mut load_state: Signal<LoadState<R>, SyncStorage> = use_signal_sync(|| LoadState::Init);
-    // For setting the focus in the text box
-    // let mut dialog: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
-    let focus_manager = use_context::<FocusManager>();
-    let mut selected: Signal<Option<usize>> = use_signal(|| None);
-    let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
-    let mut select_by_mouse = use_signal(|| true);
+    let mut app_state: Signal<AppState> = use_context();
+
+    let filter_text_value = use_signal(|| filter_text);
+    let sort_criteria_value = use_signal(|| SortCriteria::None);
+    let sort_ascending_value = use_signal(|| true);
 
     let functions_load = functions.clone();
 
-    let rows = use_resource(move || {
-        let filter_text = filter_text.read().clone();
-        let current_state = load_state.read().clone();
-        let functions = functions_load.clone();
-        async move {
-            match current_state {
-                LoadState::Init => {
-                    // row_mounts.write().clear();
-                    info!("---=== Initializing");
-                    tokio::task::spawn(async move {
-                        let items = functions.init();
-                        load_state.set(LoadState::Loaded(items.clone()));
-                    });
+    let note_list_loaded = use_note_list(
+        filter_text_value,
+        sort_criteria_value,
+        sort_ascending_value,
+        functions_load,
+        no_op,
+    );
+    let selector_handler = SelectorHandler::build(note_list_loaded.display_data.clone());
+    let entries = note_list_loaded.display_data.clone();
 
-                    // We put the focus on the text
-                    // loop {
-                    //     if let Some(e) = dialog.with(|f| f.clone()) {
-                    //         debug!("Focus input");
-                    //         let _ = e.set_focus(true).await;
-                    //         break;
-                    //     }
-                    // }
-                    vec![]
-                }
-                LoadState::Loaded(items) => {
-                    selected.set(None);
-                    let rows = tokio::spawn(async move { functions.filter(filter_text, &items) })
-                        .await
-                        .unwrap();
-                    info!("We truncate the row mounts with {} values", rows.len());
-                    row_mounts.write().truncate(rows.len());
-                    rows
-                }
-                LoadState::Closed => vec![],
-            }
-        }
-    });
-
+    let selector_preview = selector_handler.clone();
     let preview_text = use_resource(move || {
-        let functions = functions.clone();
         // We get a copy of the selected one so we don't have borrow issues
-        let selected = selected.read().to_owned();
+        let selected = selector_preview.get_selected();
+        let vault = vault.clone();
         async move {
             if let Some(selection) = selected {
                 info!("Preview Text for {}", selected.unwrap());
-                let r = rows.read().clone();
-                let entry = match &r {
-                    Some(rows) => rows.get(selection),
-                    None => None,
-                };
+                let r = entries();
+                let entry = r.get(selection);
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
-                    tokio::spawn(async move { functions.preview(&value_copy) })
-                        .await
-                        .unwrap()
+                    tokio::spawn(async move {
+                        let preview = vault.load_note(&value_copy.get_path()).map_or_else(
+                            |e| PreviewData {
+                                title: "Error loading preview...".to_string(),
+                                data: e.to_string(),
+                                content: "".to_string(),
+                            },
+                            |d| PreviewData {
+                                title: d.get_title(),
+                                data: d.path.to_string(),
+                                content: d.raw_text,
+                            },
+                        );
+                        Some(preview)
+                    })
+                    .await
+                    .unwrap()
                 } else {
                     None
                 }
@@ -138,11 +99,11 @@ where
         }
     });
 
-    let fm = focus_manager.clone();
-    use_drop(move || {
-        fm.unregister_focus(FocusComponent::ModalInput);
-    });
-    let row_number = rows.value().read().clone().unwrap_or_default().len();
+    let row_number = entries().len();
+
+    let selector_loaded = selector_handler.clone();
+    let element_action = ModalNoteListAction { modal_type };
+    let action_enter = element_action.clone();
 
     rsx! {
         div {
@@ -150,68 +111,23 @@ where
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
-                let mounts = row_mounts.read().clone();
+                let selector_loaded = selector_loaded.clone();
+                let mut element_action = action_enter.clone();
                 async move {
                     let key = e.data.code();
                     if key == Code::Escape {
-                        load_state.set(LoadState::Closed);
                         modal_type.write().close();
                     }
                     if key == Code::ArrowDown {
-                        let max_items = row_number;
-                        let new_selected = if max_items == 0 {
-                            None
-                        } else if let Some(ref current_selected) = *selected.read() {
-                            let current_selected = current_selected.to_owned();
-                            if current_selected < max_items - 1 {
-                                Some(current_selected + 1)
-                            } else {
-                                Some(0)
-                            }
-                        } else {
-                            Some(0)
-                        };
-                        if let Some(sel) = new_selected {
-
-                            if let Some(mount) = mounts.get(sel) {
-                                let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
-                                select_by_mouse.set(false);
-                            }
-                        }
-                        selected.set(new_selected);
+                        selector_loaded.select_next();
                     }
                     if key == Code::ArrowUp {
-                        let max_items = row_number;
-                        let new_selected = if max_items == 0 {
-                            None
-                        } else if let Some(current_selected) = *selected.read() {
-                            if current_selected > 0 {
-                                Some(current_selected - 1)
-                            } else {
-                                Some(max_items - 1)
-                            }
-                        } else {
-                            Some(0)
-                        };
-                        if let Some(sel) = new_selected {
-                            if let Some(mount) = mounts.get(sel) {
-                                let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
-                                select_by_mouse.set(false);
-                            }
-                        }
-                        selected.set(new_selected);
+                        selector_loaded.select_prev();
                     }
                     if key == Code::Enter && row_number > 0 {
-                        let current_selected = (*selected.read()).unwrap_or(0);
-                        if let Some(rows) = &*rows.value().read() {
-                            if let Some(row) = rows.get(current_selected) {
-                                if row.on_select() {
-                                    load_state.set(LoadState::Closed);
-                                    modal_type.write().close();
-                                } else {
-                                    load_state.set(LoadState::Init);
-                                }
-                            }
+                        let current_selected = (selector_loaded.get_selected()).unwrap_or(0);
+                        if let Some(row) = entries().get(current_selected) {
+                            element_action.on_select(row);
                         }
                     }
                 }
@@ -219,67 +135,44 @@ where
             div { class: "search-header",
                 div { class: "search-title", "Browse Notes" }
                 div { class: "header-description", "{hint}" }
-                input {
-                    class: "search-box",
-                    r#type: "search",
-                    placeholder: "Search...",
-                    value: "{filter_text}",
-                    spellcheck: false,
-                    onmounted: move |e| {
-                        focus_manager.register_and_focus(FocusComponent::ModalInput, e.data());
-                        // *dialog.write() = Some(e.data());
-                    },
-                    oninput: move |e| {
-                        filter_text.set(e.value().clone().to_string());
-                    },
-                    onkeydown: move |e: Event<KeyboardData>| {
-                        let key = e.data.code();
-                        match key {
-                            Code::ArrowDown | Code::ArrowUp | Code::Tab => {
-                                e.prevent_default();
-                            }
-                            _ => {}
+                div { class: "search-container",
+                    SearchBox {
+                        search_text: filter_text_value,
+                        sort_criteria: sort_criteria_value,
+                        sort_ascending: sort_ascending_value,
+                        input_focus: FocusComponent::ModalInput,
+                    }
+                    if send_to_preview {
+                        button {
+                            class: "send-button",
+                            onclick: move |_e| {
+                                app_state
+                                    .write()
+                                    .show_preview_pane(
+                                        Some(
+                                            PreviewListState::new(
+                                                PreviewListSource::FromList(
+                                                    filter_text_value.read().to_string(),
+                                                    note_list_loaded.display_data.read().to_owned(),
+                                                ),
+                                                sort_criteria_value(),
+                                                sort_ascending_value(),
+                                            ),
+                                        ),
+                                    );
+                                modal_type.write().close();
+                            },
+                            icons::FatArrowRight {}
+                            span { class: "send-button-text", "To Sidebar" }
                         }
-                    },
+                    }
                 }
             }
-            div {
-                class: "notes-list",
-                onmousemove: move |_e| {
-                    if !*select_by_mouse.read() {
-                        select_by_mouse.set(true);
-                    }
-                },
-                if let Some(rs) = rows.value().read().clone() {
-                    for (index , row) in rs.into_iter().enumerate() {
-                        div {
-                            class: if *selected.read() == Some(index) { "note-item selected" } else { "note-item" },
-                            id: "element-{index}",
-                            onmounted: move |e| {
-                                info!("Adding mount at {} position", index);
-                                row_mounts.write().insert(index, e.data());
-                            },
-                            onmouseenter: move |_e| {
-                                if *select_by_mouse.read() {
-                                    selected.set(Some(index));
-                                }
-                            },
-                            onclick: move |e| {
-                                info!("Clicked element");
-                                e.stop_propagation();
-                                if row.on_select() {
-                                    load_state.set(LoadState::Closed);
-                                    modal_type.write().close();
-                                } else {
-                                    load_state.set(LoadState::Init);
-                                }
-                            },
-                            {row.get_view()}
-                        }
-                    }
-                } else {
-                    div { "Loading..." }
-                }
+            NoteList {
+                entries,
+                active_path: VaultPath::root(),
+                element_action,
+                selector_handler,
             }
             div { class: "preview-pane",
                 match &*preview_text.read_unchecked() {
@@ -300,6 +193,45 @@ where
                     }
                     None => rsx! { "Loading..." },
                 }
+            }
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct ModalNoteListAction {
+    modal_type: Signal<ModalType>,
+}
+
+impl NoteElementActions for ModalNoteListAction {
+    fn on_hover(&self, _entry: &NoteBrowseEntry) -> Element {
+        rsx! {}
+    }
+
+    fn on_select(&mut self, entry: &NoteBrowseEntry) {
+        let mut app_state: Signal<AppState> = use_context();
+        match &entry.e_type {
+            NoteEntryType::Note {
+                title: _,
+                search_str: _,
+            } => {
+                app_state.write().set_path(&entry.path, false);
+                self.modal_type.write().close();
+            }
+            NoteEntryType::Journal {
+                title: _,
+                date_string: _,
+                search_str: _,
+            } => {
+                app_state.write().set_path(&entry.path, false);
+                self.modal_type.write().close();
+            }
+            NoteEntryType::Create { name: _ } => {
+                app_state.write().set_path(&entry.path, true);
+                self.modal_type.write().close();
+            }
+            NoteEntryType::Directory { name: _ } => {
+                // Do nothing
             }
         }
     }

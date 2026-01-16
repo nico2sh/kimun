@@ -102,7 +102,7 @@ impl KeyBindings {
         }
     }
 
-    pub fn batch_add(&mut self) -> KeyBindBatch {
+    pub fn batch_add(&mut self) -> KeyBindBatch<'_> {
         KeyBindBatch {
             bindings: self,
             modifiers: KeyModifiers::default(),

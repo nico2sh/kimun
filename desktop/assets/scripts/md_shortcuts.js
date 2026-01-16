@@ -1,45 +1,48 @@
 let msg = await dioxus.recv();
 switch (msg) {
   case 'indent':
-    window.md_editor.indent();
+    window.editor.indent();
     break;
   case 'unindent':
-    window.md_editor.unindent();
+    window.editor.unindent();
     break;
   case 'bold':
-    window.md_editor.wrapSelection('**', '**');
+    window.editor.bold();
     break;
   case 'italic':
-    window.md_editor.wrapSelection('_', '_');
+    window.editor.italic();
     break;
   case 'code':
-    window.md_editor.wrapSelection('`', '`');
+    window.editor.codeInline();
     break;
   case 'codeblock':
-    window.md_editor.wrapSelection('```\n', '\n```');
+    window.editor.codeBlock();
     break;
-  case 'underline':
-    window.md_editor.wrapSelection('<u>', '<\\u>');
+  case 'quote':
+    window.editor.blockQuotes();
     break;
+  // case 'underline':
+  //   window.md_editor.wrapSelection('<u>', '<\\u>');
+  //   break;
   case 'strike':
-    window.md_editor.wrapSelection('~~', '~~');
+    window.editor.strikeThrough();
     break;
   case 'toggle_header':
-    window.md_editor.toggleHeading();
+    window.editor.heading(1);
     break;
   case 'heading1':
-    window.md_editor.insertHeading(1);
+    window.editor.heading(1);
     break;
   case 'heading2':
-    window.md_editor.insertHeading(2);
+    window.editor.heading(2);
     break;
   case 'heading3':
-    window.md_editor.insertHeading(3);
+    window.editor.heading(3);
     break;
   case 'link':
-    window.md_editor.insertLink();
+    window.editor.link();
     break;
   case 'image':
-    window.md_editor.insertImage();
+    window.editor.image();
     break;
 }

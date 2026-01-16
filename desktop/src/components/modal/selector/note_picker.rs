@@ -4,10 +4,8 @@ use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::{
-    components::{
-        modal::ModalType,
-        note_select_entry::{NoteSelectEntry, RowItem},
-    },
+    app_state::AppState,
+    components::{modal::ModalType, note_list::note_browse_entry::NoteBrowseEntry},
     utils::sparse_vector::SparseVector,
 };
 
@@ -27,14 +25,11 @@ pub fn NotePicker(props: NotePickerProps) -> Element {
     let entries = props
         .note_list
         .iter()
-        .map(|(title, path)| NoteSelectEntry::Note {
-            path: path.clone(),
-            title: title.clone(),
-            search_str: title.clone(),
-        })
-        .collect::<Vec<NoteSelectEntry>>();
+        .map(|(title, path)| NoteBrowseEntry::new_note(path.to_owned(), title.to_owned()))
+        .collect::<Vec<NoteBrowseEntry>>();
     rsx! {
-        div { class: "modal note-picker",
+        div {
+            class: "modal note-picker",
             onclick: move |e| e.stop_propagation(),
             div {
                 class: "entry-list",
@@ -66,7 +61,8 @@ pub fn NotePicker(props: NotePickerProps) -> Element {
                                 },
                                 onclick: move |e| {
                                     e.stop_propagation();
-                                    let _ = entry.on_select();
+                                    let mut app_state: Signal<AppState> = use_context();
+                                    app_state.write().current_path = entry.get_path().to_owned();
                                     modal_type.write().close();
                                 },
                                 {entry.get_view()}

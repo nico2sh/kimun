@@ -11,8 +11,8 @@ use super::key_strike::KeyStrike;
 )]
 #[serde(try_from = "String", into = "String")]
 pub struct KeyCombo {
-    modifiers: KeyModifiers,
-    key: KeyStrike,
+    pub modifiers: KeyModifiers,
+    pub key: KeyStrike,
 }
 
 impl Display for KeyCombo {

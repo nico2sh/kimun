@@ -15,10 +15,14 @@ use crate::{
         modal::ModalType,
         preview::Markdown,
     },
+    editor_state::{ContentType, EditorState},
     global_events::{GlobalEvent, PubSub},
     settings::AppSettings,
-    state::{AppState, ContentType},
-    utils::keys::action_shortcuts::{ActionShortcuts, TextAction},
+    utils::keys::{
+        action_shortcuts::{ActionShortcuts, TextAction},
+        key_combo::KeyCombo,
+        key_strike::KeyStrike,
+    },
     MARKDOWN_JS,
 };
 
@@ -34,13 +38,13 @@ pub struct EditorSaveManager {
     path: VaultPath,
     vault: Arc<NoteVault>,
     content: Signal<String>,
-    app_state: Signal<AppState>,
+    editor_state: Signal<EditorState>,
 }
 
 impl EditorSaveManager {
     async fn save(&mut self) -> anyhow::Result<()> {
         // debug!("Triggered save");
-        let dirty_status = self.app_state.read().has_dirty_content();
+        let dirty_status = self.editor_state.read().has_dirty_content();
         if dirty_status {
             debug!("Saving content");
             let path = self.path.clone();
@@ -51,7 +55,7 @@ impl EditorSaveManager {
                 debug!("Saved at {}", path);
             })
             .await?;
-            self.app_state.write().mark_content_clean();
+            self.editor_state.write().mark_content_clean();
         }
         Ok(())
     }
@@ -60,7 +64,7 @@ impl EditorSaveManager {
 impl Drop for EditorSaveManager {
     fn drop(&mut self) {
         debug!("Dropping Editor Data at path {}", self.path);
-        let dirty_status = self.app_state.read().has_dirty_content();
+        let dirty_status = self.editor_state.read().has_dirty_content();
         if dirty_status {
             debug!("Saving so we don't lose data");
             let text = self.content.peek().clone();
@@ -79,7 +83,7 @@ pub enum EditorMsg {
 pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
     let mut text_area_signal: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
 
-    let mut app_state: Signal<AppState> = use_context();
+    let mut app_state: Signal<EditorState> = use_context();
     use_effect(move || app_state.write().set_content_type(ContentType::Directory));
 
     rsx! {
@@ -100,7 +104,7 @@ pub struct TextEditorProps {
     note_path: ReadSignal<VaultPath>,
     vault: Arc<NoteVault>,
     modal_type: Signal<ModalType>,
-    preview: Signal<bool>,
+    preview: bool,
 }
 
 #[component]
@@ -109,7 +113,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
         "-==== [Text Editor] Starting Editor at '{}' ====-",
         props.note_path
     );
-    let mut app_state: Signal<AppState> = use_context();
+    let mut editor_state: Signal<EditorState> = use_context();
     let mut content = use_signal(|| "".to_string());
     let modal_type = props.modal_type;
 
@@ -132,14 +136,14 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
                         }
                         // We create a new instance of the editor data
                         *content.write() = text.clone();
-                        app_state
-                            .write()
-                            .set_content_type(crate::state::ContentType::Note { dirty: false });
+                        editor_state.write().set_content_type(
+                            crate::editor_state::ContentType::Note { dirty: false },
+                        );
                         let editor_data = EditorSaveManager {
                             content,
                             path: props.note_path.read().to_owned(),
                             vault: editor_vault.clone(),
-                            app_state,
+                            editor_state,
                         };
                         ed = Some(editor_data);
                     }
@@ -205,16 +209,16 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
             Callback::new(move |g| {
                 match g {
                     GlobalEvent::SaveCurrentNote => {
-                        let dirty_status = app_state.read().has_dirty_content();
+                        let dirty_status = editor_state.read().has_dirty_content();
                         if dirty_status {
                             debug!("Saving so we don't lose data");
                             let text = content.peek().clone();
                             let _ = vault.save_note(&props.note_path.read(), text);
-                            app_state.write().mark_content_clean();
+                            editor_state.write().mark_content_clean();
                         }
                     }
                     GlobalEvent::MarkNoteClean => {
-                        app_state.write().mark_content_clean();
+                        editor_state.write().mark_content_clean();
                     }
                     _ => {}
                 }
@@ -229,12 +233,11 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     });
 
     use_effect(move || {
-        if !*props.preview.read() {
+        if !props.preview {
             let init_script = r#"
-const textEditor = document.getElementById('textEditor');
-if (textEditor) {
-    window.md_editor = enhanceTextareaWithMarkdown(textEditor);
-}
+window.editor = new TextareaMarkdown(
+    document.getElementById('textEditor')
+);
 "#;
             spawn(async {
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -250,7 +253,7 @@ if (textEditor) {
     // });
     use_effect(move || {
         // If we set the preview, we update the content with the current value
-        if *props.preview.read() {
+        if props.preview {
             note_content.set(Some(content.peek().clone()));
         }
     });
@@ -263,25 +266,22 @@ if (textEditor) {
                 let focus = focus_manager.clone();
                 match &*note_content.read() {
                     None => rsx! {
-                        div {
-                            onmounted: move |_e| {
-                                // focus_manager.register_and_focus(FocusComponent::Editor, e.data());
-                            },
-                            "Loading..."
-                        }
+                        div { onmounted: move |_e| {}, "Loading..." }
                     },
                     Some(text) => rsx! {
-                        if *props.preview.read() {
+                        if props.preview {
                             {
-                                let note_details = NoteDetails::new(&props.note_path.read(), content.peek().clone());
+                                let note_details = NoteDetails::new(
+                                    &props.note_path.read(),
+                                    content.peek().clone(),
+                                );
                                 let md_content = note_details.get_markdown_and_links();
-                                rsx!{
+                                rsx! {
                                     Markdown {
                                         vault: props.vault.clone(),
                                         note_md: md_content.text,
                                         note_links: md_content.links,
                                         modal_type,
-                                        focus_manager
                                     }
                                 }
                             }
@@ -307,18 +307,23 @@ if (textEditor) {
                                 // },
                                 oninput: move |e| {
                                     *content.write() = e.value();
-                                    app_state.write().mark_content_dirty();
+                                    editor_state.write().mark_content_dirty();
                                 },
                                 onkeydown: move |event: Event<KeyboardData>| {
                                     let data = event.data();
-                                    // if event.key() == Key::Tab {
-                                    //     if data.modifiers().shift() {
-                                    //         eval_action("unindent");
-                                    //     } else {
-                                    //         eval_action("indent");
-                                    //     }
-                                    // }
-                                    if let Some(ActionShortcuts::Text(action)) = settings.read().key_bindings.get_action(&data.into()) {
+                                    let key_combo: KeyCombo = data.into();
+                                    if key_combo.key == KeyStrike::Tab {
+                                        if key_combo.modifiers.is_shift() {
+                                            eval_action("unindent");
+                                        } else {
+                                            eval_action("indent");
+                                        }
+                                        event.prevent_default();
+                                    } else if let Some(ActionShortcuts::Text(action)) = settings
+                                        .read()
+                                        .key_bindings
+                                        .get_action(&key_combo)
+                                    {
                                         match action {
                                             TextAction::Bold => eval_action("bold"),
                                             TextAction::Italic => eval_action("italic"),

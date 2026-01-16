@@ -3,6 +3,8 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use dioxus::prelude::Callback;
 use kimun_core::nfs::VaultPath;
 
+use crate::components::preview_pane::PreviewListSource;
+
 #[derive(Clone)]
 struct Subscription<E>
 where
@@ -64,7 +66,7 @@ where
 }
 
 /// Broadcast info when something happens
-#[derive(Debug, Clone, PartialEq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GlobalEvent {
     SaveCurrentNote,
     MarkNoteClean,
@@ -79,4 +81,5 @@ pub enum GlobalEvent {
     },
     NewNoteCreated(VaultPath),
     NewDirectoryCreated(VaultPath),
+    OpenPreviewPane(PreviewListSource),
 }

@@ -1,15 +1,23 @@
+use std::vec;
+
 use log::debug;
 
 const IN_CHAR: &str = ">";
 const IN_LETTER: &str = "in";
 const AT_CHAR: &str = "@";
 const AT_LETTER: &str = "at";
+const ORDER_CHAR: &str = "^";
+const ORDER_LETTER: &str = "or";
+const PATH_CHAR: &str = "/";
+const PATH_LETTER: &str = "pt";
 
 enum ElementType {
     Invalid,
     Term,
     In,
     At,
+    Path,
+    OrderBy { asc: bool },
 }
 
 struct QueryTermExtractor {
@@ -23,6 +31,8 @@ impl QueryTermExtractor {
         let query = query.as_ref().trim();
         let in_prefix = format!("{}:", IN_LETTER);
         let at_prefix = format!("{}:", AT_LETTER);
+        let order_prefix = format!("{}:", ORDER_LETTER);
+        let path_prefix = format!("{}:", PATH_LETTER);
 
         let (element_type, remaining) = if query.starts_with(&in_prefix) {
             (
@@ -50,6 +60,44 @@ impl QueryTermExtractor {
                 ElementType::At,
                 query
                     .strip_prefix(AT_CHAR)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&order_prefix) {
+            let desc_prefix = format!("{order_prefix}-");
+            let (asc, prefix) = if query.starts_with(&desc_prefix) {
+                (false, desc_prefix)
+            } else {
+                (true, order_prefix)
+            };
+
+            (
+                ElementType::OrderBy { asc },
+                query.strip_prefix(&prefix).unwrap_or(query).to_string(),
+            )
+        } else if query.starts_with(ORDER_CHAR) {
+            let desc_prefix = format!("{ORDER_CHAR}-");
+            let (asc, prefix) = if query.starts_with(&desc_prefix) {
+                (false, desc_prefix.as_str())
+            } else {
+                (true, ORDER_CHAR)
+            };
+
+            (
+                ElementType::OrderBy { asc },
+                query.strip_prefix(prefix).unwrap_or(query).to_string(),
+            )
+        } else if query.starts_with(&path_prefix) {
+            (
+                ElementType::Path,
+                query
+                    .strip_prefix(&path_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(PATH_CHAR) {
+            (
+                ElementType::Path,
+                query
+                    .strip_prefix(PATH_CHAR)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
         } else {
@@ -100,10 +148,38 @@ impl QueryTermExtractor {
     }
 }
 
+#[derive(Debug)]
+pub enum OrderBy {
+    Title { asc: bool },
+    FileName { asc: bool },
+}
+
+impl OrderBy {
+    fn from_term(term: &str, asc: bool) -> Option<Self> {
+        match term {
+            "f" => Some(OrderBy::FileName { asc }),
+            "file" => Some(OrderBy::FileName { asc }),
+            "filename" => Some(OrderBy::FileName { asc }),
+            "t" => Some(OrderBy::Title { asc }),
+            "title" => Some(OrderBy::Title { asc }),
+            _ => None,
+        }
+    }
+
+    pub fn to_query_param(&self) -> String {
+        match self {
+            OrderBy::Title { asc } => format!("title {}", if *asc { "ASC" } else { "DESC" }),
+            OrderBy::FileName { asc } => format!("path {}", if *asc { "ASC" } else { "DESC" }),
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct SearchTerms {
     pub terms: Vec<String>,
     pub breadcrumb: Vec<String>,
+    pub order_by: Vec<OrderBy>,
+    pub filename: Vec<String>,
     pub path: Vec<String>,
 }
 
@@ -112,6 +188,8 @@ impl SearchTerms {
         let mut query = query.as_ref().to_string();
         let mut breadcrumb = vec![];
         let mut terms = vec![];
+        let mut filename = vec![];
+        let mut order_by = vec![];
         let mut path = vec![];
         while !query.is_empty() {
             let qp = QueryTermExtractor::extract_and_consume(query);
@@ -119,15 +197,23 @@ impl SearchTerms {
             match qp.el_type {
                 ElementType::Term => terms.push(qp.term),
                 ElementType::In => breadcrumb.push(qp.term),
-                ElementType::At => path.push(qp.term),
+                ElementType::At => filename.push(qp.term),
+                ElementType::OrderBy { asc } => {
+                    if let Some(o) = OrderBy::from_term(&qp.term, asc) {
+                        order_by.push(o);
+                    }
+                }
                 ElementType::Invalid => {}
+                ElementType::Path => path.push(qp.term),
             }
         }
 
         Self {
             breadcrumb,
-            path,
+            filename,
+            order_by,
             terms,
+            path,
         }
     }
 }
@@ -143,10 +229,12 @@ mod tests {
         println!("{:?}", &search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
+        let filename = search_terms.filename;
         let path = search_terms.path;
         let terms = search_terms.terms;
 
         assert!(breadcrumb.is_empty());
+        assert!(filename.is_empty());
         assert!(path.is_empty());
         assert!(!terms.is_empty());
         assert_eq!(4, terms.len());
@@ -163,11 +251,11 @@ mod tests {
         println!("{:?}", &search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
-        let path = search_terms.path;
+        let filename = search_terms.filename;
         let terms = search_terms.terms;
 
         assert!(!breadcrumb.is_empty());
-        assert!(path.is_empty());
+        assert!(filename.is_empty());
         assert!(terms.is_empty());
         assert_eq!(2, breadcrumb.len());
         assert!(breadcrumb.contains(&"title".to_string()));
@@ -181,15 +269,15 @@ mod tests {
         println!("{:?}", &search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
-        let path = search_terms.path;
+        let filename = search_terms.filename;
         let terms = search_terms.terms;
 
         assert!(breadcrumb.is_empty());
-        assert!(!path.is_empty());
+        assert!(!filename.is_empty());
         assert!(terms.is_empty());
-        assert_eq!(2, path.len());
-        assert!(path.contains(&"file".to_string()));
-        assert!(path.contains(&"directory".to_string()));
+        assert_eq!(2, filename.len());
+        assert!(filename.contains(&"file".to_string()));
+        assert!(filename.contains(&"directory".to_string()));
     }
 
     #[test]
@@ -199,15 +287,15 @@ mod tests {
         println!("{:?}", &search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
-        let path = search_terms.path;
+        let filename = search_terms.filename;
         let terms = search_terms.terms;
 
         assert!(breadcrumb.is_empty());
-        assert!(!path.is_empty());
+        assert!(!filename.is_empty());
         assert!(terms.is_empty());
-        assert_eq!(2, path.len());
-        assert!(path.contains(&"file name".to_string()));
-        assert!(path.contains(&"directory path".to_string()));
+        assert_eq!(2, filename.len());
+        assert!(filename.contains(&"file name".to_string()));
+        assert!(filename.contains(&"directory path".to_string()));
     }
 
     #[test]
@@ -217,29 +305,33 @@ mod tests {
         println!("{:?}", &search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
+        let filename = search_terms.filename;
         let path = search_terms.path;
         let terms = search_terms.terms;
 
         assert!(breadcrumb.is_empty());
-        assert!(!path.is_empty());
+        assert!(!filename.is_empty());
         assert!(terms.is_empty());
-        assert_eq!(1, path.len());
-        assert!(path.contains(&"file name".to_string()));
+        assert!(path.is_empty());
+        assert_eq!(1, filename.len());
+        assert!(filename.contains(&"file name".to_string()));
     }
 
     #[test]
     fn search_combined() {
-        let query = "searchterm    @file otherterm at:directory in:title >text      \"some text\"";
+        let query = "searchterm    @file otherterm at:directory in:title >text      \"some text\" /basedirectory";
         let search_terms = SearchTerms::from_query_string(query);
         println!("{:?}", &search_terms);
 
         let breadcrumb = search_terms.breadcrumb;
-        let path = search_terms.path;
+        let filename = search_terms.filename;
         let terms = search_terms.terms;
+        let path = search_terms.path;
 
         assert!(!breadcrumb.is_empty());
-        assert!(!path.is_empty());
+        assert!(!filename.is_empty());
         assert!(!terms.is_empty());
+        assert!(!path.is_empty());
         assert_eq!(3, terms.len());
         assert!(terms.contains(&"searchterm".to_string()));
         assert!(terms.contains(&"otherterm".to_string()));
@@ -247,8 +339,10 @@ mod tests {
         assert_eq!(2, breadcrumb.len());
         assert!(breadcrumb.contains(&"title".to_string()));
         assert!(breadcrumb.contains(&"text".to_string()));
-        assert_eq!(2, path.len());
-        assert!(path.contains(&"file".to_string()));
-        assert!(path.contains(&"directory".to_string()));
+        assert_eq!(2, filename.len());
+        assert!(filename.contains(&"file".to_string()));
+        assert!(filename.contains(&"directory".to_string()));
+        assert_eq!(1, path.len());
+        assert!(path.contains(&"basedirectory".to_string()));
     }
 }
