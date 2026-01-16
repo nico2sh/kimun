@@ -802,7 +802,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("@filename");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?1"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%')"
         );
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], "filename");
@@ -813,7 +813,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("at:directory");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?1"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%')"
         );
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], "directory");
@@ -824,10 +824,11 @@ mod tests {
         let (sql, params) = build_search_sql_query("@file1 at:file2");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?1"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') OR notes.noteName LIKE ('%' || ?2 || '%')"
         );
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "file1 file2");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], "file1");
+        assert_eq!(params[1], "file2");
     }
 
     #[test]
@@ -847,7 +848,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword @file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?2"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%')"
         );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "keyword");
@@ -859,7 +860,7 @@ mod tests {
         let (sql, params) = build_search_sql_query(">heading @file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?2"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%')"
         );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "heading");
@@ -871,7 +872,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword >heading @file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?3"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%')"
         );
         assert_eq!(params.len(), 3);
         assert_eq!(params[0], "keyword");
@@ -967,7 +968,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword >section @file ^title");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.path MATCH ?3 ORDER BY ?4"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ORDER BY ?4"
         );
         assert_eq!(params.len(), 4);
         assert_eq!(params[0], "keyword");
