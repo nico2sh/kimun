@@ -194,9 +194,9 @@ impl NoteBrowseEntry {
                 rsx! {
                     div { class: "note-item-content",
                         if self.style == EntryStyle::WithIcon {
-                            div { class: "icon-note note-title", "{title}" }
+                            div { class: "icon-journal note-title", "{title}" }
                         } else {
-                            div { class: "note-title", "» {title}" }
+                            div { class: "note-title", "◦ {title}" }
                         }
                         div { class: "note-meta", "{self.path.get_name()}" }
                         div { class: "note-journal", "{date_string}" }
@@ -209,7 +209,7 @@ impl NoteBrowseEntry {
                         if self.style == EntryStyle::WithIcon {
                             div { class: "icon-folder note-title", "{name}" }
                         } else {
-                            div { class: "note-title", "⌄ {name}" }
+                            div { class: "note-title", "■ {name}" }
                         }
                     }
                 }
