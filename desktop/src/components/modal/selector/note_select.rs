@@ -4,13 +4,10 @@ use dioxus::{
     logger::tracing::{debug, info},
     prelude::*,
 };
-use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilder};
+use kimun_core::{nfs::VaultPath, NoteVault};
 use nucleo::Matcher;
 
-use crate::components::{
-    modal::{selector::PreviewData, ModalType},
-    note_select_entry::{NoteSelectEntry, SortCriteria},
-};
+use crate::components::{modal::ModalType, note_list::note_browse_entry::NoteBrowseEntry};
 
 use super::{SelectorFunctions, SelectorView};
 
@@ -29,70 +26,34 @@ struct SelectFunctions {
 }
 
 impl SelectFunctions {
-    fn open(&self) -> Vec<NoteSelectEntry> {
-        let current_browse_path = self.current_browse_path.read().to_owned();
-        let (search_options, rx) = VaultBrowseOptionsBuilder::new(&current_browse_path)
-            .no_validation()
-            .non_recursive()
-            .build();
-        let _res = self.vault.browse_vault(search_options);
-
-        info!("Base path: {}", current_browse_path);
-
-        let mut result = vec![];
-
-        while let Ok(sr) = rx.recv() {
-            match sr.rtype {
-                ResultType::Note(note_content_data) => {
-                    result.push(NoteSelectEntry::from_note_details(
-                        sr.path,
-                        note_content_data,
-                    ));
-                }
-                ResultType::Directory => {
-                    info!(
-                        "result path: {}, base path: {}",
-                        sr.path, current_browse_path
-                    );
-                    if !sr.path.is_like(&current_browse_path) {
-                        result.push(NoteSelectEntry::from_directory_details(
-                            sr.path,
-                            self.current_browse_path,
-                        ));
-                    }
-                }
-                _ => {}
+    fn open(&self) -> Vec<NoteBrowseEntry> {
+        match self.vault.get_all_notes() {
+            Ok(res) => res
+                .into_iter()
+                .map(|(entry, content)| NoteBrowseEntry::from_note_details(entry.path, content))
+                .collect::<Vec<NoteBrowseEntry>>(),
+            Err(e) => {
+                error!("Error searching notes: {}", e);
+                vec![]
             }
         }
-        result.sort_by_key(|b| std::cmp::Reverse(b.sort_string_for(&SortCriteria::FileName)));
-        if !current_browse_path.is_root_or_empty() {
-            result.insert(
-                0,
-                NoteSelectEntry::Directory {
-                    path: current_browse_path.get_parent_path().0,
-                    name: "..".to_string(),
-                    browse_path_signal: self.current_browse_path,
-                },
-            );
-        }
-        result
     }
 }
 
-impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
-    fn init(&self) -> Vec<NoteSelectEntry> {
+impl SelectorFunctions<String> for SelectFunctions {
+    fn init(&self) -> Vec<NoteBrowseEntry> {
         debug!("Opening Note Selector");
 
-        let items = self.open().into_iter().collect::<Vec<NoteSelectEntry>>();
+        let items = self.open().into_iter().collect::<Vec<NoteBrowseEntry>>();
         debug!("Loaded {} items", items.len());
         items
     }
 
-    fn filter(&self, filter_text: String, items: &[NoteSelectEntry]) -> Vec<NoteSelectEntry> {
+    fn filter(&self, filter_text: String, items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
         if !items.is_empty() {
             let mut result = Vec::new();
             if !filter_text.is_empty() {
-                result.push(NoteSelectEntry::create_from_name(
+                result.push(NoteBrowseEntry::create_from_name(
                     filter_text.to_owned(),
                     self.current_browse_path.read().to_owned(),
                 ));
@@ -106,34 +67,9 @@ impl SelectorFunctions<NoteSelectEntry> for SelectFunctions {
             vec![]
         }
     }
-
-    fn preview(&self, element: &NoteSelectEntry) -> Option<PreviewData> {
-        if let NoteSelectEntry::Note {
-            path,
-            title: _,
-            search_str: _,
-        } = element
-        {
-            let p = self.vault.load_note(path).map_or_else(
-                |e| PreviewData {
-                    title: "Error loading preview...".to_string(),
-                    data: e.to_string(),
-                    content: "".to_string(),
-                },
-                |d| PreviewData {
-                    title: d.get_title(),
-                    data: d.path.to_string(),
-                    content: d.raw_text,
-                },
-            );
-            Some(p)
-        } else {
-            None
-        }
-    }
 }
 
-fn filter_items(items: &[NoteSelectEntry], filter_text: String) -> Vec<NoteSelectEntry> {
+fn filter_items(items: &[NoteBrowseEntry], filter_text: String) -> Vec<NoteBrowseEntry> {
     let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
     let filtered = nucleo::pattern::Pattern::parse(
         filter_text.as_ref(),
@@ -143,7 +79,7 @@ fn filter_items(items: &[NoteSelectEntry], filter_text: String) -> Vec<NoteSelec
     .match_list(items, &mut matcher)
     .iter()
     .map(|e| e.0.to_owned())
-    .collect::<Vec<NoteSelectEntry>>();
+    .collect::<Vec<NoteBrowseEntry>>();
     filtered
 }
 
@@ -172,6 +108,8 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
         "Use keywords to find notes, search is case insensitive and special characters are ignored.".to_string(),
         props.filter_text,
         props.modal_type,
-        select_functions
+        vault,
+        select_functions,
+        false
     )
 }

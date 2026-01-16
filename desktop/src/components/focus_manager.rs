@@ -9,6 +9,7 @@ pub enum FocusComponent {
     Preview,
     ModalInput,
     BrowseSearch,
+    PreviewPane,
 }
 
 enum Action {

@@ -516,7 +516,7 @@ impl VaultPath {
     }
 
     pub fn get_clean_name(&self) -> String {
-        let (_, name) = self.get_parent_path();
+        let name = self.get_name();
         if let Some(name) = name.strip_suffix(NOTE_EXTENSION) {
             name.to_string()
         } else {

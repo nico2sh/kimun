@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use content_view::{NoText, TextEditor};
 use dioxus::{core::use_drop, logger::tracing::debug, prelude::*};
@@ -9,14 +9,16 @@ use kimun_core::{
 };
 
 use crate::{
+    app_state::AppState,
     components::{
         modal::{indexer::IndexType, Modal, ModalType},
         note_browser::NoteBrowser,
+        preview_pane::PreviewPane,
     },
     global_events::{GlobalEvent, PubSub},
     route::Route,
     settings::AppSettings,
-    utils::{decode_path, encode_path, keys::action_shortcuts::ActionShortcuts},
+    utils::keys::action_shortcuts::ActionShortcuts,
 };
 
 mod content_view;
@@ -25,27 +27,22 @@ mod header;
 const EDITOR: &str = "editor";
 
 #[derive(Debug, PartialEq, Eq)]
-enum PathType {
+enum ContentType {
     Note,
     Directory,
     Reroute(VaultPath),
 }
 
 #[component]
-pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
-    let editor_path =
-        use_memo(move || decode_path(&*encoded_path.read()).unwrap_or(VaultPath::root()));
+pub fn MainView() -> Element {
+    let app_state: Signal<AppState> = use_context();
+    let editor_path = use_memo(move || app_state.read().current_path.to_owned());
     debug!("-== [Editor] Starting Editor at '{}' ==-", editor_path);
     let settings: Signal<AppSettings> = use_context();
     let settings_value = settings.read();
 
-    let mut show_browser = use_signal(|| false);
-
     let vault_path: &std::path::PathBuf = settings_value.workspace_dir.as_ref().unwrap();
-    let vault = NoteVault::new(vault_path).unwrap();
-    let vault = Arc::new(vault);
-
-    let mut show_preview = use_signal(|| false);
+    let vault = Arc::new(NoteVault::new(vault_path)?);
 
     // Modal setup and Indexing on the first run
     let mut modal_type = use_signal(|| {
@@ -55,6 +52,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
 
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
+    let mut app_state: Signal<AppState> = use_context();
     use_effect(move || {
         pc.subscribe(
             EDITOR,
@@ -64,11 +62,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                     let is_current = editor_path.eq(&vault_path);
                     if is_current {
                         let parent = vault_path.get_parent_path().0;
-                        let encoded_path = encode_path(&parent);
-                        navigator().replace(crate::Route::MainView {
-                            encoded_path,
-                            create: false,
-                        });
+                        app_state.write().set_path(&parent, false);
                     } else {
                         debug!("Not current {}, {}", editor_path, vault_path);
                     }
@@ -79,11 +73,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                     let is_current = editor_path.eq(&from);
                     if is_current {
                         let parent = from.get_parent_path().0;
-                        let encoded_path = encode_path(&parent);
-                        navigator().replace(crate::Route::MainView {
-                            encoded_path,
-                            create: false,
-                        });
+                        app_state.write().set_path(&parent, false);
                     }
                 }
                 GlobalEvent::Renamed { old_name, new_name } => {
@@ -91,12 +81,11 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
 
                     let is_current = editor_path.eq(&old_name);
                     if is_current {
-                        let encoded_path = encode_path(&new_name);
-                        navigator().replace(crate::Route::MainView {
-                            encoded_path,
-                            create: false,
-                        });
+                        app_state.write().set_path(&new_name, false);
                     }
+                }
+                GlobalEvent::OpenPreviewPane(source) => {
+                    debug!("Preview pane, with source: {}", source);
                 }
                 _ => {}
             }),
@@ -123,14 +112,14 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
         editor_vault.exists(&editor_path.read()).map_or_else(
             || {
                 debug!("Path doesn't exist");
-                if editor_path.read().is_note() && create {
+                if editor_path.read().is_note() && app_state.read().create_if_not_exists {
                     debug!("It's a note and we have to create it");
-                    show_preview.set(false);
+                    app_state.write().preview_mode = false;
                     let note_path = editor_path.read().to_owned();
                     match editor_vault.create_note(&note_path, "") {
                         Ok(_) => {
                             pub_sub.publish(GlobalEvent::NewNoteCreated(note_path));
-                            PathType::Note
+                            ContentType::Note
                         }
                         Err(e) => {
                             let parent = note_path.get_parent_path().0;
@@ -138,12 +127,12 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                                 message: "Error Creating new Note".to_string(),
                                 error: e.to_string(),
                             });
-                            PathType::Reroute(parent)
+                            ContentType::Reroute(parent)
                         }
                     }
                 } else {
                     debug!("We reroute to the root");
-                    PathType::Reroute(VaultPath::root())
+                    ContentType::Reroute(VaultPath::root())
                 }
             },
             // Exists, so we see if it's a directory or a note
@@ -151,15 +140,15 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                 // If it's an attachment, we look for the parent
                 EntryData::Note(_nt) => {
                     debug!("Path is a note");
-                    PathType::Note
+                    ContentType::Note
                 }
                 EntryData::Directory(_dt) => {
                     debug!("Path is a directory");
-                    PathType::Directory
+                    ContentType::Directory
                 }
                 EntryData::Attachment => {
                     debug!("Path is an attachment");
-                    PathType::Reroute(e.path.get_parent_path().0)
+                    ContentType::Reroute(e.path.get_parent_path().0)
                 }
             },
         )
@@ -185,14 +174,9 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
     // });
 
     rsx! {
-        if *show_browser.read() {
+        if app_state.read().show_browser {
             div { class: "sidebar",
-                NoteBrowser {
-                    vault: vault.clone(),
-                    editor_path,
-                    modal_type,
-                    show_browser,
-                }
+                NoteBrowser { vault: vault.clone(), editor_path, modal_type }
             }
         } else {
             div { class: "sidebar collapsed" }
@@ -205,17 +189,17 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                 if let Some(action) = settings.read().key_bindings.get_action(&data.into()) {
                     match action {
                         ActionShortcuts::TogglePreview => {
-                            let preview = !*show_preview.read();
+                            let preview = !app_state.read().preview_mode;
                             debug!("Toggling preview to {}", preview);
-                            show_preview.set(preview)},
+                            app_state.write().preview_mode = preview;
+                        }
                         ActionShortcuts::OpenSettings => {
                             debug!("Open Settings");
                             navigator().replace(Route::Settings {});
                         }
                         ActionShortcuts::ToggleNoteBrowser => {
                             debug!("Toggle note browser");
-                            let shown = *show_browser.read();
-                            show_browser.set(!shown);
+                            app_state.write().toggle_browser();
                         }
                         ActionShortcuts::SearchNotes => {
                             debug!("Trigger Open Note Search");
@@ -230,12 +214,7 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                         ActionShortcuts::NewJournal => {
                             debug!("New Journal Entry");
                             if let Ok(journal_entry) = vault.journal_entry() {
-                                let encoded_path = encode_path(&journal_entry.0.path);
-                                navigator()
-                                    .replace(crate::Route::MainView {
-                                        encoded_path,
-                                        create: true,
-                                    });
+                                app_state.write().set_path(&journal_entry.0.path, true);
                             }
                         }
                         _ => {}
@@ -243,34 +222,43 @@ pub fn MainView(encoded_path: ReadSignal<String>, create: bool) -> Element {
                 }
             },
             Modal { modal_type }
-            EditorHeader { path: editor_path, show_browser }
+            EditorHeader { path: editor_path }
             div { class: "editor-main",
                 match &*content_path.read() {
-                    PathType::Note => {
+                    ContentType::Note => {
                         rsx! {
-                            TextEditor { note_path: editor_path, vault: vault.clone(), modal_type, preview: show_preview }
+                            TextEditor {
+                                note_path: editor_path,
+                                vault: vault.clone(),
+                                modal_type,
+                                preview: app_state.read().preview_mode,
+                            }
                         }
                     }
-                    PathType::Directory => {
+                    ContentType::Directory => {
                         debug!("Opening Directory View");
                         rsx! {
                             NoText { path: editor_path }
                         }
                     }
-                    PathType::Reroute(new_path) => {
+                    ContentType::Reroute(new_path) => {
                         let next_path = new_path.clone();
                         rsx! {
                             div {
                                 onmounted: move |_| {
                                     debug!("Rerouting to {}...", next_path);
-                                    let encoded_path = encode_path(&next_path);
-                                    navigator()
-                                        .replace(Route::MainView {
-                                            encoded_path,
-                                            create: true,
-                                        });
+                                    app_state.write().set_path(&next_path, true);
                                 },
                             }
+                        }
+                    }
+                }
+                if let Some(source) = &app_state.read().show_preview_pane {
+                    div { class: "rightbar",
+                        PreviewPane {
+                            vault: vault.clone(),
+                            initial_state: source.to_owned(),
+                            modal_type,
                         }
                     }
                 }
