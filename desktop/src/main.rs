@@ -21,15 +21,10 @@ mod route;
 mod settings;
 pub mod utils;
 
-// Urls are relative to your Cargo.toml file
 #[used]
-static ICON_FONT: Asset = asset!("/assets/fonts/fontello.woff2");
+static FONTS: Asset = asset!("/assets/fonts", AssetOptions::folder());
 #[used]
-static APP_FONT: Asset = asset!("/assets/fonts/InterVariable.woff2");
-#[used]
-static APP_FONT_ITALIC: Asset = asset!("/assets/fonts/InterVariable-Italic.woff2");
-#[used]
-static APP_LOGO: Asset = asset!("/assets/images/kimun.png");
+static IMAGES: Asset = asset!("/assets/images", AssetOptions::folder());
 
 const FONTS_STYLE: Asset = asset!("/assets/styling/fonts.css");
 const ICONS_STYLE: Asset = asset!("/assets/styling/fontello.css");
