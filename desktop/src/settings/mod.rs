@@ -112,12 +112,13 @@ impl Default for AppSettings {
 
 impl AppSettings {
     pub fn theme_list(&self) -> Vec<Theme> {
-        let list = vec![
-            Self::load_default_theme().unwrap_or_default(),
-            Theme::dark(),
-            Theme::gruvbox_light(),
-            Theme::gruvbox_dark(),
-        ];
+        let mut custom = Self::load_custom_themes();
+        custom.push(Theme::dark());
+        custom.push(Theme::gruvbox_light());
+        custom.push(Theme::gruvbox_dark());
+        custom.sort_by_key(|t| t.name.clone());
+        let mut list = vec![Self::load_default_theme().unwrap_or_default()];
+        list.append(&mut custom);
         list
     }
 
@@ -172,6 +173,53 @@ impl AppSettings {
                 Self::create_and_save_default_theme(&theme_path)
             }
         }
+    }
+
+    fn load_custom_themes() -> Vec<Theme> {
+        let mut themes = Vec::new();
+
+        // Get themes directory, return empty vec if it fails
+        let themes_path = match Self::get_themes_path() {
+            Ok(path) => path,
+            Err(_) => return themes,
+        };
+
+        // Read directory entries, return empty vec if it fails
+        let entries = match fs::read_dir(&themes_path) {
+            Ok(entries) => entries,
+            Err(_) => return themes,
+        };
+
+        // Iterate through all entries in the themes directory
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            // Skip if not a file
+            if !path.is_file() {
+                continue;
+            }
+
+            // Skip if not a .toml file
+            if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+                continue;
+            }
+
+            // Skip default.toml
+            if path.file_name().and_then(|s| s.to_str()) == Some("default.toml") {
+                continue;
+            }
+
+            // Try to read and deserialize the theme file
+            if let Ok(theme_string) = fs::read_to_string(&path) {
+                if let Ok(theme) = toml::from_str::<Theme>(&theme_string) {
+                    themes.push(theme);
+                } else {
+                    debug!("Failed to deserialize theme file: {:?}", path);
+                }
+            }
+        }
+
+        themes
     }
 
     pub fn save_to_disk(&self) -> anyhow::Result<()> {

@@ -623,6 +623,14 @@ body {
   padding: 1em;
 } */
 
+progress {
+  border-radius: 7px;
+  width: 80%;
+  height: 22px;
+  /* margin-left: -11.5%; */
+  box-shadow: 1px 1px 4px rgba(0, 0, 0, 0.2);
+}
+
 .index-progress {
   margin-top: 8px;
   width: 100%;

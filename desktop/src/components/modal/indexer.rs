@@ -91,7 +91,7 @@ pub fn Indexer(
             rsx! {
                 progress {
                     class: "index-progress",
-                    style: "background:{theme.accent_yellow}",
+                    background_color: "{theme.accent_yellow}",
                 }
             },
             rsx! {},
