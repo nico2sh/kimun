@@ -7,6 +7,7 @@ use crate::{
     app_state::AppState,
     components::{button::ButtonBuilder, modal::ModalType},
     global_events::{GlobalEvent, PubSub},
+    settings::AppSettings,
 };
 
 pub enum ConfirmationType {
@@ -30,9 +31,14 @@ pub struct ConfirmationModalProps {
 #[component]
 pub fn ConfirmationModal(props: ConfirmationModalProps) -> Element {
     let mut modal = props.modal_type;
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
+
     rsx! {
         div {
             class: "modal",
+            background_color: "{theme.bg_main}",
+            border_color: "{theme.border_light}",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| async move {
                 let key = e.data.code();
@@ -41,13 +47,13 @@ pub fn ConfirmationModal(props: ConfirmationModalProps) -> Element {
                 }
             },
             div { class: "modal-header",
-                div { class: "modal-title", {props.title} }
-                div { class: "modal-subtitle", {props.subtitle} }
+                div { class: "modal-title", color: "{theme.text_primary}", {props.title} }
+                div { class: "modal-subtitle", color: "{theme.text_light}", {props.subtitle} }
             }
             div { class: "modal-body", {props.body} }
             div { class: "modal-actions",
                 for button in props.buttons {
-                    {button.build()}
+                    {button.build(&theme)}
                 }
             }
         }
@@ -61,9 +67,7 @@ pub fn Error(modal_type: Signal<ModalType>, message: String, error: String) -> E
             modal_type,
             title: "Error",
             subtitle: "{message}",
-            body: rsx! {
-            "{error}"
-            },
+            body: rsx! { "{error}" },
             buttons: vec![
                 ButtonBuilder::secondary(
                     "Ok",
@@ -205,6 +209,10 @@ pub fn MoveConfirm(
             }),
         ),
     ];
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
+    let mut select_focused = use_signal(|| false);
+
     rsx! {
         ConfirmationModal {
             modal_type,
@@ -215,6 +223,11 @@ pub fn MoveConfirm(
                     if let Some(paths) = &*list_of_paths.read() {
                         select {
                             class: "select",
+                            border_color: if select_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                            onfocusin: move |_e| select_focused.set(true),
+                            onfocusout: move |_e| select_focused.set(false),
+                            background_color: "{theme.bg_section}",
+                            color: "{theme.text_primary}",
                             onchange: move |e| {
                                 dest_path.set(VaultPath::new(e.value()));
                             },
@@ -223,7 +236,7 @@ pub fn MoveConfirm(
                             }
                         }
                     } else {
-                        div { class: "info-text", "<Loading...>" }
+                        div { class: "info-text", color: "{theme.text_light}", "<Loading...>" }
                     }
                 }
             },
@@ -282,6 +295,10 @@ pub fn RenameConfirm(
             }),
         ),
     ];
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
+    let mut input_focused = use_signal(|| false);
+
     rsx! {
         ConfirmationModal {
             modal_type,
@@ -291,6 +308,11 @@ pub fn RenameConfirm(
                 input {
                     r#type: "text",
                     class: "input",
+                    border_color: if input_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                    onfocusin: move |_e| input_focused.set(true),
+                    onfocusout: move |_e| input_focused.set(false),
+                    background_color: "{theme.bg_main}",
+                    color: "{theme.text_primary}",
                     value: "{new_name}",
                     placeholder: "Enter new file name",
                     oninput: move |e| {
@@ -362,6 +384,11 @@ pub fn CreateNote(
     ];
 
     let vault_select = vault.clone();
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
+    let mut select_focused = use_signal(|| false);
+    let mut input_focused = use_signal(|| false);
+
     rsx! {
         ConfirmationModal {
             modal_type,
@@ -369,10 +396,15 @@ pub fn CreateNote(
             subtitle: "Enter a filename and select a directory for your new note",
             body: rsx! {
                 div { class: "dialog-controls",
-                    label { "Directory" }
+                    label { color: "{theme.text_light}", "Directory" }
                     if let Some(paths) = &*list_of_paths.read() {
                         select {
                             class: "select",
+                            background_color: "{theme.bg_section}",
+                            color: "{theme.text_primary}",
+                            border_color: if select_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                            onfocusin: move |_e| select_focused.set(true),
+                            onfocusout: move |_e| select_focused.set(false),
                             onchange: move |e| {
                                 new_note_base_path.set(VaultPath::new(e.value()));
                                 let (p, valid) = get_path_is_valid(
@@ -393,12 +425,17 @@ pub fn CreateNote(
                             }
                         }
                     } else {
-                        div { class: "info-text", "<Loading...>" }
+                        div { class: "info-text", color: "{theme.text_light}", "<Loading...>" }
                     }
-                    label { "File Name" }
+                    label { color: "{theme.text_light}", "File Name" }
                     input {
                         r#type: "text",
                         class: "input",
+                        border_color: if input_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                        onfocusin: move |_e| input_focused.set(true),
+                        onfocusout: move |_e| input_focused.set(false),
+                        background_color: "{theme.bg_main}",
+                        color: "{theme.text_primary}",
                         value: "{new_note_name}",
                         placeholder: "Enter new file name",
                         oninput: move |e| {
@@ -413,7 +450,9 @@ pub fn CreateNote(
                             is_valid.set(valid);
                         },
                     }
-                    label { class: if !&is_valid() { "error" } else { "" }, "New note at: {new_full_path}" }
+                    label { color: if !&is_valid() { "{theme.accent_red}" } else { "{theme.text_light}" },
+                        "New note at: {new_full_path}"
+                    }
                 }
             },
             buttons,
@@ -489,6 +528,11 @@ pub fn CreateDirectory(
     ];
 
     let vault_select = vault.clone();
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
+
+    let mut select_focused = use_signal(|| false);
+    let mut input_focused = use_signal(|| false);
     rsx! {
         ConfirmationModal {
             modal_type,
@@ -496,10 +540,15 @@ pub fn CreateDirectory(
             subtitle: "Enter a directory name and optionally select the base directory",
             body: rsx! {
                 div { class: "dialog-controls",
-                    label { "Base Directory" }
+                    label { color: "{theme.text_light}", "Base Directory" }
                     if let Some(paths) = &*list_of_paths.read() {
                         select {
                             class: "select",
+                            background_color: "{theme.bg_section}",
+                            color: "{theme.text_primary}",
+                            border_color: if select_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                            onfocusin: move |_e| select_focused.set(true),
+                            onfocusout: move |_e| select_focused.set(false),
                             onchange: move |e| {
                                 let bd = VaultPath::new(e.value());
                                 new_directory_base_path.set(bd.clone());
@@ -521,12 +570,17 @@ pub fn CreateDirectory(
                             }
                         }
                     } else {
-                        div { class: "info-text", "<Loading...>" }
+                        div { class: "info-text", color: "{theme.text_light}", "<Loading...>" }
                     }
-                    label { "Directory Name" }
+                    label { color: "{theme.text_light}", "Directory Name" }
                     input {
                         r#type: "text",
                         class: "input",
+                        border_color: if input_focused() { "{theme.text_primary}" } else { "transparent" },
+                        onfocusin: move |_e| input_focused.set(true),
+                        onfocusout: move |_e| input_focused.set(false),
+                        background_color: "{theme.bg_main}",
+                        color: "{theme.text_primary}",
                         value: "{new_directory_name}",
                         placeholder: "Enter new directory name",
                         oninput: move |e| {
@@ -541,7 +595,9 @@ pub fn CreateDirectory(
                             is_valid.set(valid);
                         },
                     }
-                    label { class: if !&is_valid() { "error" } else { "" }, "New directory at: {new_full_path}" }
+                    label { color: if !&is_valid() { "{theme.accent_red}" } else { "{theme.text_light}" },
+                        "New directory at: {new_full_path}"
+                    }
                 }
             },
             buttons,

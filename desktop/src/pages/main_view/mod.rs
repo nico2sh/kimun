@@ -39,6 +39,7 @@ pub fn MainView() -> Element {
     let editor_path = use_memo(move || app_state.read().current_path.to_owned());
     debug!("-== [Editor] Starting Editor at '{}' ==-", editor_path);
     let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
     let settings_value = settings.read();
 
     let vault_path: &std::path::PathBuf = settings_value.workspace_dir.as_ref().unwrap();
@@ -175,7 +176,10 @@ pub fn MainView() -> Element {
 
     rsx! {
         if app_state.read().show_browser {
-            div { class: "sidebar",
+            div {
+                class: "sidebar",
+                background: "{theme.bg_section}",
+                border_right: "{theme.border_light}",
                 NoteBrowser { vault: vault.clone(), editor_path, modal_type }
             }
         } else {
@@ -183,6 +187,7 @@ pub fn MainView() -> Element {
         }
         div {
             class: "editor-container",
+            background_color: "{theme.bg_main}",
             tabindex: 0,
             onkeydown: move |event: Event<KeyboardData>| {
                 let data = event.data;
@@ -254,7 +259,10 @@ pub fn MainView() -> Element {
                     }
                 }
                 if let Some(source) = &app_state.read().show_preview_pane {
-                    div { class: "rightbar",
+                    div {
+                        class: "rightbar",
+                        background_color: "{theme.bg_section}",
+                        border_left_color: "{theme.border_light}",
                         PreviewPane {
                             vault: vault.clone(),
                             initial_state: source.to_owned(),
@@ -263,7 +271,11 @@ pub fn MainView() -> Element {
                     }
                 }
             }
-            div { class: "editor-footer" }
+            div {
+                class: "editor-footer",
+                background_color: "{theme.bg_section}",
+                border_top_color: "{theme.border_light}",
+            }
         }
     }
 }

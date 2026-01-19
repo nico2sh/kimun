@@ -85,6 +85,8 @@ pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
 
     let mut app_state: Signal<EditorState> = use_context();
     use_effect(move || app_state.write().set_content_type(ContentType::Directory));
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     rsx! {
         div {
@@ -92,8 +94,8 @@ pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
             onmounted: move |e| {
                 text_area_signal.set(Some(e.data()));
             },
-            div { class: "title", "Current path: {path}" }
-            div { class: "message", "Open or create a new note." }
+            div { class: "title", color: "{theme.text_primary}", "Current path: {path}" }
+            div { class: "message", color: "{theme.text_secondary}", "Open or create a new note." }
             img { class: "logo", src: "assets/images/kimun.png" }
         }
     }
@@ -257,6 +259,8 @@ window.editor = new TextareaMarkdown(
             note_content.set(Some(content.peek().clone()));
         }
     });
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     // This manages the editor state
     rsx! {
@@ -288,6 +292,7 @@ window.editor = new TextareaMarkdown(
                         } else {
                             textarea {
                                 class: "text-editor",
+                                color: "{theme.text_primary}",
                                 id: "textEditor",
                                 autofocus: true,
                                 onfocus: move |_e| {
