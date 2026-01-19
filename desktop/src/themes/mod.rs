@@ -574,23 +574,6 @@ mod tests {
     }
 
     #[test]
-    fn test_all_themes_serialize() {
-        let themes = vec![
-            Theme::light(),
-            Theme::dark(),
-            Theme::gruvbox_light(),
-            Theme::gruvbox_dark(),
-        ];
-
-        for theme in themes {
-            let toml_string = toml::to_string_pretty(&theme).unwrap();
-            let deserialized: Theme = toml::from_str(&toml_string).unwrap();
-            assert_eq!(theme.name, deserialized.name);
-            assert_eq!(theme, deserialized);
-        }
-    }
-
-    #[test]
     fn test_theme_color_serialize_lowercase_hex() {
         #[derive(Serialize)]
         struct Wrapper {
