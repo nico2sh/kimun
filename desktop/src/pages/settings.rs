@@ -133,7 +133,7 @@ pub fn Settings() -> Element {
                                 onchange: move |e| {
                                     settings.write().set_theme(e.data().value());
                                 },
-                                for theme in settings().theme_list {
+                                for theme in settings().theme_list() {
                                     option {
                                         value: "{theme.name}",
                                         selected: settings().theme == theme.name,
@@ -179,6 +179,7 @@ pub fn Settings() -> Element {
                                 }
                                 Err(_e) => todo!(),
                             };
+                            navigator().replace(Route::Start {});
                         },
                     }
                 }

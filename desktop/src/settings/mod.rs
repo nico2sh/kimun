@@ -1,3 +1,4 @@
+use crate::settings::config_dir::get_or_create_config_dir;
 use crate::themes::Theme;
 use crate::utils::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::utils::keys::key_strike::KeyStrike;
@@ -5,26 +6,25 @@ use crate::utils::keys::KeyBindBatch;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use std::fs::File;
+use std::fs::{self, File};
 
-use anyhow::bail;
 use dioxus::logger::tracing::debug;
-use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::utils::keys::KeyBindings;
+mod config_dir;
 
 // pub mod theme;
 
 #[cfg(debug_assertions)]
-const BASE_CONFIG_FILE: &str = ".kimun_debug.toml";
+const CONFIG_DIR: &str = "kimun_debug";
 #[cfg(not(debug_assertions))]
-const BASE_CONFIG_FILE: &str = ".kimun.toml";
+const CONFIG_DIR: &str = "kimun";
+
+const BASE_CONFIG_FILE: &str = "config.toml";
+const THEMES_DIR: &str = "themes";
 
 const LAST_PATH_HISTORY_SIZE: usize = 10;
-
-const THEME_GRUVBOX_DARK: Asset = asset!("/assets/styling/gruvbox_dark.css");
-const THEME_GRUVBOX_LIGHT: Asset = asset!("/assets/styling/gruvbox_light.css");
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct AppSettings {
@@ -37,8 +37,6 @@ pub struct AppSettings {
     needs_indexing: bool,
     #[serde(default = "default_keybindings")]
     pub key_bindings: KeyBindings,
-    #[serde(skip, default = "load_theme_list")]
-    pub theme_list: Vec<Theme>,
 }
 
 #[cfg(target_os = "macos")]
@@ -100,16 +98,6 @@ fn yes() -> bool {
     true
 }
 
-fn load_theme_list() -> Vec<Theme> {
-    let list = vec![
-        Theme::default(),
-        Theme::dark(),
-        Theme::gruvbox_light(),
-        Theme::gruvbox_dark(),
-    ];
-    list
-}
-
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -118,17 +106,71 @@ impl Default for AppSettings {
             theme: Default::default(),
             needs_indexing: true,
             key_bindings: default_keybindings(),
-            theme_list: load_theme_list(),
         }
     }
 }
 
 impl AppSettings {
+    pub fn theme_list(&self) -> Vec<Theme> {
+        let list = vec![
+            Self::load_default_theme().unwrap_or_default(),
+            Theme::dark(),
+            Theme::gruvbox_light(),
+            Theme::gruvbox_dark(),
+        ];
+        list
+    }
+
     fn get_config_file_path() -> anyhow::Result<PathBuf> {
-        let home = dirs::home_dir();
-        match home {
-            Some(directory) => Ok(directory.join(BASE_CONFIG_FILE)),
-            None => bail!("Home path not found"),
+        let config_home = get_or_create_config_dir(CONFIG_DIR)?;
+        Ok(config_home.join(BASE_CONFIG_FILE))
+    }
+
+    fn get_themes_path() -> anyhow::Result<PathBuf> {
+        let config_home = get_or_create_config_dir(CONFIG_DIR)?;
+        Ok(config_home.join(THEMES_DIR))
+    }
+
+    fn create_and_save_default_theme(theme_path: &PathBuf) -> anyhow::Result<Theme> {
+        let default_theme = Theme::default();
+        let toml = toml::to_string_pretty(&default_theme)?;
+
+        // Ensure the themes directory exists
+        if let Some(parent) = theme_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        fs::write(theme_path, toml)?;
+        Ok(default_theme)
+    }
+
+    fn load_default_theme() -> anyhow::Result<Theme> {
+        let theme_path = AppSettings::get_themes_path()?.join("default.toml");
+
+        // Try to read and deserialize the theme file
+        match fs::read_to_string(&theme_path) {
+            Ok(theme_string) => {
+                // Try to deserialize the TOML content
+                match toml::from_str::<Theme>(&theme_string) {
+                    Ok(theme) => Ok(theme),
+                    Err(e) => {
+                        // Deserialization failed, remove the corrupted file
+                        debug!(
+                            "Failed to deserialize theme file: {}. Removing and creating default.",
+                            e
+                        );
+                        let _ = fs::remove_file(&theme_path);
+
+                        // Create and save default theme
+                        Self::create_and_save_default_theme(&theme_path)
+                    }
+                }
+            }
+            Err(_) => {
+                // File doesn't exist or can't be read, create default theme
+                debug!("Theme file not found. Creating default theme.");
+                Self::create_and_save_default_theme(&theme_path)
+            }
         }
     }
 
@@ -207,7 +249,7 @@ impl AppSettings {
     }
 
     pub fn get_theme(&self) -> Theme {
-        self.theme_list
+        self.theme_list()
             .iter()
             .find_map(|t| {
                 if t.name == self.theme {
