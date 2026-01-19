@@ -19,6 +19,7 @@ pub fn Indexer(
     index_type: IndexType,
 ) -> Element {
     let mut settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     let (description, confirm_close) = match &index_type {
         IndexType::Validate => ("Validating the Vault", false),
@@ -88,17 +89,25 @@ pub fn Indexer(
         },
         None => (
             rsx! {
-                progress { class: "index-progress" }
+                progress {
+                    class: "index-progress",
+                    style: "background:{theme.accent_yellow}",
+                }
             },
             rsx! {},
         ),
     };
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     rsx! {
-        div { class: "modal",
+        div {
+            class: "modal",
+            background_color: "{theme.bg_main}",
+            border_color: "{theme.border_light}",
             div { class: "modal-header",
-                div { class: "modal-title", "Indexing" }
-                div { class: "modal-subtitle", "{description}" }
+                div { class: "modal-title", color: "{theme.text_primary}", "Indexing" }
+                div { class: "modal-subtitle", color: "{theme.text_light}", "{description}" }
             }
             div { class: "modal-body", {index_result} }
             div { class: "modal-actions", {actions_section} }

@@ -2,10 +2,13 @@ use std::fmt::Display;
 
 use dioxus::prelude::*;
 
-use crate::components::{
-    focus_manager::{FocusComponent, FocusManager},
-    icons,
-    note_list::note_browse_entry::SortCriteria,
+use crate::{
+    components::{
+        focus_manager::{FocusComponent, FocusManager},
+        icons,
+        note_list::note_browse_entry::SortCriteria,
+    },
+    settings::AppSettings,
 };
 
 #[derive(Clone, PartialEq, Props)]
@@ -48,6 +51,7 @@ where
         on_keystroke,
         no_default,
     } = props;
+    let settings: Signal<AppSettings> = use_context();
     let focus_manager = use_context::<FocusManager>();
     let mut show_sort_options = use_signal(|| false);
     let focus_after_sort = focus_manager.clone();
@@ -60,11 +64,18 @@ where
 
     let mount_focus = input_focus.clone();
     let return_focus = input_focus.clone();
+    let theme = settings().get_theme();
+    let mut icon_button_hover = use_signal(|| false);
+    let mut sort_hover: Signal<Option<SortCriteria>> = use_signal(|| None);
 
     rsx! {
-        div { class: "search-input-wrapper",
+        div {
+            class: "search-input-wrapper",
+            background_color: "{theme.bg_main}",
+            border_color: "{theme.border_light}",
             input {
                 class: "search-box",
+                color: "{theme.text_primary}",
                 r#type: "search",
                 placeholder: "Search...",
                 value: "{search_text}",
@@ -87,10 +98,16 @@ where
                     on_keystroke.call(e);
                 },
             }
-            div { class: "search-controls",
+            div {
+                class: "search-controls",
+                border_left_color: "{theme.border_light}",
                 div { class: "sort-dropdown",
                     button {
                         class: "icon-button",
+                        color: "{theme.text_muted}",
+                        background_color: if icon_button_hover() { "{theme.bg_hover}" } else { "transparent" },
+                        onfocusin: move |_e| icon_button_hover.set(true),
+                        onfocusout: move |_e| icon_button_hover.set(false),
                         title: "Sort Options",
                         aria_label: "Sort Options",
                         onclick: move |_e| show_sort_options.set(!show_sort_options()),
@@ -104,7 +121,12 @@ where
                     }
                     if show_sort_options() {
                         div {
-                            class: "sort-menu show",
+                            class: "sort-menu",
+                            background_color: "{theme.bg_main}",
+                            border_color: "{theme.border_light}",
+                            onmouseleave: move |_e| {
+                                sort_hover.set(None);
+                            },
                             onclick: move |_e| {
                                 show_sort_options.set(false);
                                 focus_after_sort.focus(return_focus.clone());
@@ -112,6 +134,9 @@ where
                             if !no_default {
                                 div {
                                     class: if SortCriteria::None == sort_criteria() { "sort-option selected" } else { "sort-option" },
+                                    color: if SortCriteria::None == sort_criteria() { "{theme.accent_blue}" } else { "{theme.text_secondary}" },
+                                    background_color: if let Some(SortCriteria::None) = sort_hover() { "{theme.bg_hover}" } else { "transparent" },
+                                    onmouseenter: move |_e| sort_hover.set(Some(SortCriteria::None)),
                                     onclick: move |_e| {
                                         sort_criteria.set(SortCriteria::None);
                                     },
@@ -121,6 +146,11 @@ where
                             }
                             div {
                                 class: if SortCriteria::Title == sort_criteria() { "sort-option selected" } else { "sort-option" },
+                                color: if SortCriteria::Title == sort_criteria() { "{theme.accent_blue}" } else { "{theme.text_secondary}" },
+                                background_color: if let Some(SortCriteria::Title) = sort_hover() { "{theme.bg_hover}" } else { "transparent" },
+                                onmouseenter: move |_e| {
+                                    sort_hover.set(Some(SortCriteria::Title));
+                                },
                                 onclick: move |_e| {
                                     sort_criteria.set(SortCriteria::Title);
                                 },
@@ -129,6 +159,9 @@ where
                             }
                             div {
                                 class: if SortCriteria::FileName == sort_criteria() { "sort-option selected" } else { "sort-option" },
+                                color: if SortCriteria::FileName == sort_criteria() { "{theme.accent_blue}" } else { "{theme.text_secondary}" },
+                                background_color: if let Some(SortCriteria::FileName) = sort_hover() { "{theme.bg_hover}" } else { "transparent" },
+                                onmouseenter: move |_e| sort_hover.set(Some(SortCriteria::FileName)),
                                 onclick: move |_e| {
                                     sort_criteria.set(SortCriteria::FileName);
                                 },
@@ -141,6 +174,7 @@ where
                 button {
                     class: if sort_ascending() { "icon-button ascending" } else { "icon-button" },
                     title: if sort_ascending() { "Sort Direction: Ascending" } else { "Sort Direction: Descending" },
+                    color: "{theme.text_muted}",
                     disabled: sort_criteria() == SortCriteria::None,
                     aria_label: "Toggle sort order",
                     onclick: move |_e| sort_ascending.set(!sort_ascending()),

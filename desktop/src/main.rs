@@ -19,6 +19,7 @@ pub mod global_events;
 mod pages;
 mod route;
 mod settings;
+pub mod themes;
 pub mod utils;
 
 #[used]
@@ -48,17 +49,22 @@ fn App() -> Element {
     use_context_provider(move || pub_sub);
     let focus_manager = FocusManager::new();
     use_context_provider(move || focus_manager);
-    let theme = app_settings.read().get_theme();
+    let theme = app_settings().get_theme();
 
     use_context_provider(|| Signal::new(EditorState::default()));
     // use_init_radio_station::<AppState, KimunChannel>(AppState::default);
 
     rsx! {
-        document::Link { rel: "stylesheet", href: theme.css }
+        // document::Link { rel: "stylesheet", href: theme.css }
         document::Link { rel: "stylesheet", href: FONTS_STYLE }
         document::Link { rel: "stylesheet", href: ICONS_STYLE }
         document::Link { rel: "stylesheet", href: MAIN_STYLE }
 
-        div { class: "app-container", Router::<Route> {} }
+        div {
+            class: "app-container",
+            background: "{theme.bg_main}",
+            color: "{theme.text_primary}",
+            Router::<Route> {}
+        }
     }
 }

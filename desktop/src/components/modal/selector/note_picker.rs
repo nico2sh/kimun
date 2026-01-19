@@ -6,6 +6,7 @@ use kimun_core::nfs::VaultPath;
 use crate::{
     app_state::AppState,
     components::{modal::ModalType, note_list::note_browse_entry::NoteBrowseEntry},
+    settings::AppSettings,
     utils::sparse_vector::SparseVector,
 };
 
@@ -17,6 +18,7 @@ pub struct NotePickerProps {
 
 #[component]
 pub fn NotePicker(props: NotePickerProps) -> Element {
+    let settings: Signal<AppSettings> = use_context();
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
     let mut select_by_mouse = use_signal(|| true);
     let mut row_mounts = use_signal(SparseVector::<Rc<MountedData>>::new);
@@ -27,6 +29,8 @@ pub fn NotePicker(props: NotePickerProps) -> Element {
         .iter()
         .map(|(title, path)| NoteBrowseEntry::new_note(path.to_owned(), title.to_owned()))
         .collect::<Vec<NoteBrowseEntry>>();
+
+    let theme = settings().get_theme();
     rsx! {
         div {
             class: "modal note-picker",
@@ -50,6 +54,9 @@ pub fn NotePicker(props: NotePickerProps) -> Element {
                         rsx! {
                             div {
                                 class: if slct { "note-item selected" } else { "note-item" },
+                                border_bottom_color: "{theme.border_light}",
+                                border_left_color: if slct { "{theme.accent_yellow}" } else { "transparent" },
+                                background_color: if slct { "{theme.bg_hover}" } else { "transparent" },
                                 id: "element-{index}",
                                 onmounted: move |e| {
                                     row_mounts.write().insert(index, e.data());
@@ -65,7 +72,7 @@ pub fn NotePicker(props: NotePickerProps) -> Element {
                                     app_state.write().current_path = entry.get_path().to_owned();
                                     modal_type.write().close();
                                 },
-                                {entry.get_view()}
+                                {entry.get_view(&theme)}
                             }
                         }
                     }

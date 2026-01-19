@@ -1,3 +1,4 @@
+use crate::themes::Theme;
 use crate::utils::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::utils::keys::key_strike::KeyStrike;
 use crate::utils::keys::KeyBindBatch;
@@ -11,10 +12,9 @@ use dioxus::logger::tracing::debug;
 use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
-use crate::settings::theme::Theme;
 use crate::utils::keys::KeyBindings;
 
-pub mod theme;
+// pub mod theme;
 
 #[cfg(debug_assertions)]
 const BASE_CONFIG_FILE: &str = ".kimun_debug.toml";
@@ -103,8 +103,9 @@ fn yes() -> bool {
 fn load_theme_list() -> Vec<Theme> {
     let list = vec![
         Theme::default(),
-        Theme::new(THEME_GRUVBOX_LIGHT.to_string(), "Gruvbox Light"),
-        Theme::new(THEME_GRUVBOX_DARK.to_string(), "Gruvbox Dark"),
+        Theme::dark(),
+        Theme::gruvbox_light(),
+        Theme::gruvbox_dark(),
     ];
     list
 }

@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::components::note_list::note_browse_entry::NoteBrowseEntry;
+use crate::settings::AppSettings;
 use crate::utils::sparse_vector::SparseVector;
 
 #[derive(Clone, PartialEq, Props)]
@@ -99,6 +100,7 @@ pub fn NoteList<H>(props: NoteListProps<H>) -> Element
 where
     H: NoteElementActions + Clone + PartialEq + 'static,
 {
+    let settings: Signal<AppSettings> = use_context();
     let selector_handler = props.selector_handler;
     let entries = props.entries;
 
@@ -123,6 +125,7 @@ where
         "note-item"
     };
 
+    let theme = settings().get_theme();
     let selector_mouse = selector_handler.clone();
     rsx! {
         div {
@@ -149,15 +152,27 @@ where
                         "{item_class}{}",
                         if slct { " selected" } else { if active { " active" } else { "" } },
                     );
+                    let border_color = if slct {
+                        theme.accent_yellow.to_string()
+                    } else {
+                        if active {
+                            theme.accent_green.to_string()
+                        } else {
+                            "transparent".to_string()
+                        }
+                    };
                     let selector_handler = selector_handler.clone();
                     rsx! {
                         div {
                             class: "{cls}",
+                            border_bottom_color: "{theme.border_light}",
+                            border_left_color: "{border_color}",
+                            background_color: if slct { "{theme.bg_hover}" } else { "transparent" },
                             id: "element-{index}",
                             onmounted: move |e| {
                                 row_mounts.write().insert(index, e.data());
                             },
-                            onmouseenter: move |_e| {
+                            onmouseover: move |_e| {
                                 if select_by_mouse() {
                                     selector_handler.set_selected(Some(index));
                                 }
@@ -167,9 +182,9 @@ where
                                 e.stop_propagation();
                                 element_click.on_select(&entry_action);
                             },
-                            {entry.get_view()}
+                            {entry.get_view(&theme)}
 
-        
+
                             if slct {
                                 {element_action.on_hover(entry)}
                             }

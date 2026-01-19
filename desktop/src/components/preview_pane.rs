@@ -16,6 +16,7 @@ use crate::{
         preview::Markdown,
         search_box::{SearchBox, StringSearch},
     },
+    settings::AppSettings,
 };
 
 #[derive(Clone, PartialEq, Debug)]
@@ -106,6 +107,8 @@ impl SelectorFunctions<PreviewListSource> for PreviewListFunctions {
 #[component]
 pub fn PreviewPane(props: PreviewPaneProps) -> Element {
     let mut app_state: Signal<AppState> = use_context();
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     let mut show_browser = use_signal(|| true);
 
@@ -171,11 +174,20 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
         }
     });
 
+    let mut is_title_hovered = use_signal(|| false);
+    let mut is_search_hovered = use_signal(|| false);
     rsx! {
         div { class: "bar-preview-header",
-            div { class: "bar-preview-header-top",
+            div {
+                class: "bar-preview-header-top",
+                background_color: "{theme.bg_surface}",
+                border_bottom_color: "{theme.border_light}",
                 button {
                     class: "bar-preview-title-btn",
+                    color: "{theme.text_secondary}",
+                    onmouseenter: move |_e| is_title_hovered.set(true),
+                    onmouseleave: move |_e| is_title_hovered.set(false),
+                    background_color: if is_title_hovered() { "{theme.bg_hover}" } else { "transparent" },
                     onclick: move |_e| show_browser.set(!show_browser()),
                     span { class: "bar-preview-title", "Quick Browser" }
                     svg {
@@ -193,6 +205,10 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                 }
                 button {
                     class: "bar-preview-search-btn",
+                    color: "{theme.text_secondary}",
+                    onmouseenter: move |_e| is_search_hovered.set(true),
+                    onmouseleave: move |_e| is_search_hovered.set(false),
+                    background_color: if is_search_hovered() { "{theme.bg_hover}" } else { "transparent" },
                     onclick: move |_e| {
                         show_search.set(!show_search());
                     },
@@ -212,7 +228,10 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
             }
         }
         if show_browser() {
-            div { class: "bar-preview-browser",
+            div {
+                class: "bar-preview-browser",
+                border_top_color: "{theme.border_light}",
+                border_bottom_color: "{theme.border_light}",
                 {
                     rsx! {
                         NoteList {
@@ -224,7 +243,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                         }
                     }
                 }
-            
+
             }
         }
         if show_search() {
@@ -235,7 +254,11 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                         onclick: move |_e| {
                             show_search.set(false);
                         },
-                        div { class: "bar-preview-search-popup", onclick: |e| e.stop_propagation(),
+                        div {
+                            class: "bar-preview-search-popup",
+                            onclick: |e| e.stop_propagation(),
+                            background_color: "{theme.bg_head}",
+                            border_color: "{theme.border_light}",
                             SearchBox {
                                 search_text: source,
                                 sort_criteria,
@@ -256,7 +279,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                 }
             }
         }
-        div { class: "bar-preview-content",
+        div { class: "bar-preview-content", background_color: "{theme.bg_main}",
             match &*preview_content.read() {
                 Some(content) => {
                     match content {

@@ -13,14 +13,16 @@ use crate::{
     components::{
         focus_manager::FocusComponent,
         modal::{confirmations::ConfirmationType, ModalType},
-        note_list::note_browse_entry::{NoteBrowseEntry, NoteEntryType, SortCriteria},
         note_list::{
+            note_browse_entry::{NoteBrowseEntry, NoteEntryType, SortCriteria},
             note_list_loader::{use_note_list, SelectorFunctions, UseNoteList},
             NoteElementActions, NoteList, SelectorHandler,
         },
         search_box::SearchBox,
     },
     global_events::{GlobalEvent, PubSub},
+    pages::settings::Settings,
+    settings::AppSettings,
 };
 
 use super::focus_manager::FocusManager;
@@ -33,7 +35,8 @@ pub fn NoteBrowser(
     editor_path: ReadSignal<VaultPath>,
     modal_type: Signal<ModalType>,
 ) -> Element {
-    // let mut app_state: Signal<AppState> = use_context();
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     let browsing_directory = use_signal_sync(move || {
         let np = editor_path.read();
@@ -92,11 +95,16 @@ pub fn NoteBrowser(
     let new_note_vault = vault.clone();
     let entries = use_note_list.display_data;
     rsx! {
-        div { class: "sidebar-header",
+        div {
+            class: "sidebar-header",
+            background: "{theme.bg_surface}",
+            color: "{theme.text_primary}",
+            border_bottom: "{theme.border_light}",
             div { class: "sidebar-title", "{browsing_directory}" }
             div { class: "sidebar-header-actions",
                 button {
                     class: "sidebar-btn",
+                    color: "{theme.text_primary}",
                     title: "Create new note",
                     onclick: move |_e| {
                         modal_type
@@ -117,6 +125,7 @@ pub fn NoteBrowser(
                 }
                 button {
                     class: "sidebar-btn",
+                    color: "{theme.text_primary}",
                     title: "Create new directory",
                     onclick: move |_e| {
                         modal_type
@@ -137,7 +146,10 @@ pub fn NoteBrowser(
                 }
             }
         }
-        div { class: "sidebar-search",
+        div {
+            class: "sidebar-search",
+            background_color: "{theme.bg_surface}",
+            border_bottom_color: "{theme.border_light}",
             SearchBox {
                 search_text: filter_text,
                 sort_criteria,
@@ -239,6 +251,7 @@ struct NoteActionsProps {
 
 #[component]
 fn NoteActions(props: NoteActionsProps) -> Element {
+    let settings: Signal<AppSettings> = use_context();
     let rename_vault = props.vault.clone();
     let rename_path = props.entry_path.clone();
     let move_vault = props.vault.clone();
@@ -246,6 +259,9 @@ fn NoteActions(props: NoteActionsProps) -> Element {
     let delete_vault = props.vault.clone();
 
     let mut modal_type = props.modal_type;
+    let theme = settings().get_theme();
+
+    let mut hover_button_num = use_signal(|| 0);
 
     rsx! {
         div {
@@ -255,7 +271,12 @@ fn NoteActions(props: NoteActionsProps) -> Element {
             },
             button {
                 class: "action-btn rename",
+                color: "{theme.text_light}",
                 title: "Rename",
+                background_color: if hover_button_num() == 1 { "{theme.accent_blue}" } else { "{theme.bg_section}" },
+                border_color: if hover_button_num() == 1 { "{theme.border_hover}" } else { "{theme.border_light}" },
+                onmouseover: move |_e| hover_button_num.set(1),
+                onmouseleave: move |_e| hover_button_num.set(0),
                 onclick: move |e| {
                     e.stop_propagation();
                     let rename_path = rename_path.clone();
@@ -275,7 +296,13 @@ fn NoteActions(props: NoteActionsProps) -> Element {
             }
             button {
                 class: "action-btn move",
+                border_color: "{theme.border_light}",
+                color: "{theme.text_light}",
                 title: "Move",
+                background_color: if hover_button_num() == 2 { "{theme.accent_yellow}" } else { "{theme.bg_section}" },
+                border_color: if hover_button_num() == 2 { "{theme.border_hover}" } else { "{theme.border_light}" },
+                onmouseover: move |_e| hover_button_num.set(2),
+                onmouseleave: move |_e| hover_button_num.set(0),
                 onclick: move |e| {
                     e.stop_propagation();
                     let move_path = move_path.clone();
@@ -295,7 +322,13 @@ fn NoteActions(props: NoteActionsProps) -> Element {
             }
             button {
                 class: "action-btn delete",
+                border_color: "{theme.border_light}",
+                color: "{theme.text_light}",
                 title: "Delete",
+                background_color: if hover_button_num() == 3 { "{theme.accent_red}" } else { "{theme.bg_section}" },
+                border_color: if hover_button_num() == 3 { "{theme.border_hover}" } else { "{theme.border_light}" },
+                onmouseover: move |_e| hover_button_num.set(3),
+                onmouseleave: move |_e| hover_button_num.set(0),
                 onclick: move |e| {
                     e.stop_propagation();
                     let delete_path = props.entry_path.clone();
