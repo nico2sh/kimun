@@ -7,7 +7,7 @@ use crate::{
     app_state::AppState,
     components::{
         button::Button,
-        modal::{indexer::IndexType, Modal, ModalType},
+        modal::{indexer::IndexType, Modal},
     },
     route::Route,
     settings,
@@ -15,14 +15,14 @@ use crate::{
 
 #[component]
 pub fn Settings() -> Element {
+    let mut app_state: Signal<AppState> = use_context();
     let mut settings: Signal<settings::AppSettings> = use_context();
-    let mut modal_type = use_signal(|| ModalType::None);
 
     let theme = settings().get_theme();
 
     rsx! {
         div { class: "settings-container", background_color: "{theme.bg_main}",
-            Modal { modal_type }
+            Modal {}
             div {
                 class: "settings-header",
                 background_color: "{theme.bg_head}",
@@ -84,7 +84,7 @@ pub fn Settings() -> Element {
                                 action: move |_| {
                                     if let Some(workspace_dir) = settings().workspace_dir {
                                         let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
-                                        modal_type.write().set_indexer(vault, IndexType::Fast);
+                                        app_state.write().get_modal_mut().set_indexer(vault, IndexType::Fast);
                                     }
                                 },
                                 disabled: settings().workspace_dir.is_none(),
@@ -100,7 +100,7 @@ pub fn Settings() -> Element {
                                 action: move |_| {
                                     if let Some(workspace_dir) = settings().workspace_dir {
                                         let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
-                                        modal_type.write().set_indexer(vault, IndexType::Full);
+                                        app_state.write().get_modal_mut().set_indexer(vault, IndexType::Full);
                                     }
                                 },
                                 disabled: settings().workspace_dir.is_none(),

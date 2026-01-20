@@ -10,6 +10,7 @@ use futures::StreamExt;
 use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 
 use crate::{
+    app_state::AppState,
     components::{
         focus_manager::{FocusComponent, FocusManager},
         modal::ModalType,
@@ -105,22 +106,22 @@ pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
 pub struct TextEditorProps {
     note_path: ReadSignal<VaultPath>,
     vault: Arc<NoteVault>,
-    modal_type: Signal<ModalType>,
     preview: bool,
 }
 
 #[component]
 pub fn TextEditor(props: TextEditorProps) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
+    let mut settings: Signal<AppSettings> = use_context();
+
     debug!(
         "-==== [Text Editor] Starting Editor at '{}' ====-",
         props.note_path
     );
     let mut editor_state: Signal<EditorState> = use_context();
     let mut content = use_signal(|| "".to_string());
-    let modal_type = props.modal_type;
 
     let focus_manager = use_context::<FocusManager>();
-    let mut settings: Signal<AppSettings> = use_context();
 
     let editor_vault = props.vault.clone();
     let cr = use_coroutine(move |mut rx: UnboundedReceiver<EditorMsg>| {
@@ -285,7 +286,6 @@ window.editor = new TextareaMarkdown(
                                         vault: props.vault.clone(),
                                         note_md: md_content.text,
                                         note_links: md_content.links,
-                                        modal_type,
                                     }
                                 }
                             }
