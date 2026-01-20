@@ -278,6 +278,8 @@ body {
   max-height: 200px;
   /* border-top: 1px solid var(--border-light);
   border-bottom: 1px solid var(--border-light); */
+  border-top: 1px solid;
+  border-bottom: 1px solid;
   overflow-y: auto;
 }
 
@@ -497,14 +499,12 @@ body {
 .editor-main {
   flex: 1;
   display: flex;
-  /* overflow: hidden; */
   overflow-y: auto;
 }
 
 .editor-content {
   flex: 1;
-  padding: 12px 12px 12px 12px;
-  /* overflow: none; */
+  padding: 12px 6px 12px 12px;
 }
 
 .text-editor {
@@ -1090,30 +1090,6 @@ body {
   font-style: italic;
   text-align: center;
 } */
-
-/* Scrollbar Styling */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0, 0, 0, 0.3) transparent;
-}
-
-*::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-*::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-*::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 4px;
-}
-
-*::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.5);
-}
 
 /* Responsive Design */
 @media (max-width: 768px) {

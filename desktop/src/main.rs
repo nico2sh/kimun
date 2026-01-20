@@ -53,6 +53,14 @@ fn App() -> Element {
 
     use_context_provider(|| Signal::new(EditorState::default()));
     // use_init_radio_station::<AppState, KimunChannel>(AppState::default);
+    let scrollbar_css = format!(
+        r#"* {{ scrollbar-width: auto; scrollbar-color: {0} transparent; }}
+        *::-webkit-scrollbar {{ width: 8px; height: 8px; }}
+        *::-webkit-scrollbar-track {{ display: none; }}
+        *::-webkit-scrollbar-thumb {{ background: {0}; border-radius: 4px; }}
+        *::-webkit-scrollbar-thumb:hover {{ background: {1}; }}"#,
+        theme.accent_gray, theme.accent_gray_dark
+    );
 
     rsx! {
         // document::Link { rel: "stylesheet", href: theme.css }
@@ -64,6 +72,7 @@ fn App() -> Element {
             class: "app-container",
             background: "{theme.bg_main}",
             color: "{theme.text_primary}",
+            style { {scrollbar_css} }
             Router::<Route> {}
         }
     }
