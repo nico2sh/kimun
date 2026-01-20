@@ -12,7 +12,6 @@ use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 use crate::{
     components::{
         focus_manager::{FocusComponent, FocusManager},
-        modal::ModalType,
         preview::Markdown,
     },
     editor_state::{ContentType, EditorState},
@@ -85,6 +84,8 @@ pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
 
     let mut app_state: Signal<EditorState> = use_context();
     use_effect(move || app_state.write().set_content_type(ContentType::Directory));
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     rsx! {
         div {
@@ -92,8 +93,8 @@ pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
             onmounted: move |e| {
                 text_area_signal.set(Some(e.data()));
             },
-            div { class: "title", "Current path: {path}" }
-            div { class: "message", "Open or create a new note." }
+            div { class: "title", color: "{theme.text_primary}", "Current path: {path}" }
+            div { class: "message", color: "{theme.text_secondary}", "Open or create a new note." }
             img { class: "logo", src: "assets/images/kimun.png" }
         }
     }
@@ -103,22 +104,21 @@ pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
 pub struct TextEditorProps {
     note_path: ReadSignal<VaultPath>,
     vault: Arc<NoteVault>,
-    modal_type: Signal<ModalType>,
     preview: bool,
 }
 
 #[component]
 pub fn TextEditor(props: TextEditorProps) -> Element {
+    let mut settings: Signal<AppSettings> = use_context();
+
     debug!(
         "-==== [Text Editor] Starting Editor at '{}' ====-",
         props.note_path
     );
     let mut editor_state: Signal<EditorState> = use_context();
     let mut content = use_signal(|| "".to_string());
-    let modal_type = props.modal_type;
 
     let focus_manager = use_context::<FocusManager>();
-    let mut settings: Signal<AppSettings> = use_context();
 
     let editor_vault = props.vault.clone();
     let cr = use_coroutine(move |mut rx: UnboundedReceiver<EditorMsg>| {
@@ -257,6 +257,8 @@ window.editor = new TextareaMarkdown(
             note_content.set(Some(content.peek().clone()));
         }
     });
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     // This manages the editor state
     rsx! {
@@ -281,13 +283,13 @@ window.editor = new TextareaMarkdown(
                                         vault: props.vault.clone(),
                                         note_md: md_content.text,
                                         note_links: md_content.links,
-                                        modal_type,
                                     }
                                 }
                             }
                         } else {
                             textarea {
                                 class: "text-editor",
+                                color: "{theme.text_primary}",
                                 id: "textEditor",
                                 autofocus: true,
                                 onfocus: move |_e| {

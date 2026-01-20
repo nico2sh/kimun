@@ -6,13 +6,12 @@ use dioxus::{
 };
 use kimun_core::NoteVault;
 
-use crate::components::{modal::ModalType, note_list::note_browse_entry::NoteBrowseEntry};
+use crate::components::note_list::note_browse_entry::NoteBrowseEntry;
 
 use super::{SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SearchProps {
-    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     filter_text: String,
 }
@@ -54,7 +53,6 @@ pub fn NoteSearch(props: SearchProps) -> Element {
     SelectorView(
         "Select a note, use up and down to select, <Return> selects the first result.".to_string(),
         props.filter_text,
-        props.modal_type,
         vault,
         search_functions,
         true,

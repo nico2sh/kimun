@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/dx
-          key: ${{ runner.os }}-dx-0.7.1
+          key: ${{ runner.os }}-dx-0.7.3
           restore-keys: |
             ${{ runner.os }}-dx-
 
@@ -107,7 +107,7 @@ jobs:
       - name: Install Dioxus CLI
         uses: taiki-e/install-action@v2
         with:
-          tool: dioxus-cli@0.7.1
+          tool: dioxus-cli@0.7.3
 
       # Build and package application
       - name: Create distribution directory

@@ -241,15 +241,14 @@ impl MdContext {
     pub fn el_hr(attributes: ElementAttributes) -> Element {
         let class = attributes.classes.join(" ");
         let style = attributes.style.unwrap_or_default();
-        rsx!(
-            hr { style: "{style}", class: "{class}" }
-        )
+        rsx!(hr {
+            style: "{style}",
+            class: "{class}"
+        })
     }
 
     pub fn el_br() -> Element {
-        rsx!(
-            br {}
-        )
+        rsx!(br {})
     }
 
     pub fn el_fragment(children: Vec<Element>) -> Element {
@@ -267,7 +266,6 @@ impl MdContext {
     pub fn el_note(props: &MarkdownProps, children: Element, note_path: &VaultPath) -> Element {
         let note_path = note_path.to_owned();
         let vault = props.vault.clone();
-        let mut modal_type = props.modal_type;
         let mut app_state: Signal<AppState> = use_context();
         rsx! {
             span {
@@ -293,7 +291,7 @@ impl MdContext {
                                             (data.title.clone(), details.path.clone())
                                         })
                                         .collect();
-                                    modal_type.set(ModalType::NotePicker { note_list });
+                                    app_state.write().set_modal(ModalType::NotePicker { note_list });
                                 }
                             }
                         }
@@ -320,9 +318,10 @@ impl MdContext {
     }
 
     pub fn el_img(alt: String, src: String) -> Element {
-        rsx!(
-            img { src: "{src}", alt: "{alt}" }
-        )
+        rsx!(img {
+            src: "{src}",
+            alt: "{alt}"
+        })
     }
 
     pub fn el_text(text: CowStr<'_>) -> Element {
@@ -334,14 +333,12 @@ impl MdContext {
     pub fn el_input_checkbox(checked: bool, attributes: ElementAttributes) -> Element {
         let class = attributes.classes.join(" ");
         let style = attributes.style.unwrap_or_default();
-        rsx!(
-            input {
-                r#type: "checkbox",
-                checked,
-                style: "{style}",
-                class: "{class}",
-            }
-        )
+        rsx!(input {
+            r#type: "checkbox",
+            checked,
+            style: "{style}",
+            class: "{class}",
+        })
     }
 }
 
@@ -352,7 +349,6 @@ pub struct MarkdownProps {
     note_md: String,
     /// links in the markdown
     note_links: Vec<NoteLink>,
-    modal_type: Signal<ModalType>,
 
     /// the name of the theme used for syntax highlighting.
     /// Only the default themes of [syntect::Theme] are supported

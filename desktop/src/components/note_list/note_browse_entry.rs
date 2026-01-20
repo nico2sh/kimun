@@ -2,6 +2,8 @@ use chrono::NaiveDate;
 use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, note::NoteContentData};
 
+use crate::themes::Theme;
+
 #[derive(Default, Debug, Clone, Eq, PartialEq)]
 enum EntryStyle {
     #[default]
@@ -169,7 +171,7 @@ impl NoteBrowseEntry {
         &self.path
     }
 
-    pub fn get_view(&self) -> Element {
+    pub fn get_view(&self, theme: &Theme) -> Element {
         match &self.e_type {
             NoteEntryType::Note {
                 title,
@@ -180,9 +182,13 @@ impl NoteBrowseEntry {
                         if self.style == EntryStyle::WithIcon {
                             div { class: "icon-note note-title", "{title}" }
                         } else {
-                            div { class: "note-title", "» {title}" }
+                            div {
+                                class: "note-title",
+                                color: "{theme.text_primary}",
+                                "» {title}"
+                            }
                         }
-                        div { class: "note-meta", "{self.path}" }
+                        div { class: "note-meta", color: "{theme.text_light}", "{self.path}" }
                     }
                 }
             }
@@ -196,10 +202,20 @@ impl NoteBrowseEntry {
                         if self.style == EntryStyle::WithIcon {
                             div { class: "icon-journal note-title", "{title}" }
                         } else {
-                            div { class: "note-title", "◦ {title}" }
+                            div {
+                                class: "note-title",
+                                color: "{theme.text_primary}",
+                                "◦ {title}"
+                            }
                         }
-                        div { class: "note-meta", "{self.path.get_name()}" }
-                        div { class: "note-journal", "{date_string}" }
+                        div { class: "note-meta", color: "{theme.text_light}",
+                            "{self.path.get_name()}"
+                        }
+                        div {
+                            class: "note-journal",
+                            color: "{theme.text_muted}",
+                            "{date_string}"
+                        }
                     }
                 }
             }
@@ -209,7 +225,11 @@ impl NoteBrowseEntry {
                         if self.style == EntryStyle::WithIcon {
                             div { class: "icon-folder note-title", "{name}" }
                         } else {
-                            div { class: "note-title", "■ {name}" }
+                            div {
+                                class: "note-title",
+                                color: "{theme.text_primary}",
+                                "■ {name}"
+                            }
                         }
                     }
                 }

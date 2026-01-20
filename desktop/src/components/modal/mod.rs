@@ -8,12 +8,15 @@ use indexer::Indexer;
 use kimun_core::{nfs::VaultPath, NoteVault};
 use selector::{note_picker::NotePicker, note_search::NoteSearch, note_select::NoteSelector};
 
-use crate::components::modal::{
-    confirmations::{
-        ConfirmationType, CreateDirectory, CreateNote, DeleteConfirm, Error, MoveConfirm,
-        RenameConfirm,
+use crate::{
+    app_state::AppState,
+    components::modal::{
+        confirmations::{
+            ConfirmationType, CreateDirectory, CreateNote, DeleteConfirm, Error, MoveConfirm,
+            RenameConfirm,
+        },
+        indexer::IndexType,
     },
-    indexer::IndexType,
 };
 
 use super::focus_manager::FocusManager;
@@ -115,17 +118,11 @@ impl ModalType {
     }
 }
 
-#[derive(Props, Clone, PartialEq)]
-pub struct ModalProps {
-    modal_type: Signal<ModalType>,
-}
-
 #[component]
-pub fn Modal(props: ModalProps) -> Element {
-    let mut modal_type = props.modal_type;
-    let mt = &*modal_type.read();
+pub fn Modal() -> Element {
+    let mut app_state: Signal<AppState> = use_context();
 
-    if let ModalType::None = mt {
+    if let ModalType::None = app_state.read().get_modal() {
         return rsx! {};
     }
     rsx! {
@@ -134,23 +131,24 @@ pub fn Modal(props: ModalProps) -> Element {
             // We close any modal if we click on the main UI
             onclick: move |e| {
                 e.prevent_default();
-                if modal_type.peek().is_open() && modal_type.peek().should_close_on_click() {
-                    modal_type.write().close();
+                if app_state.read().get_modal().is_open()
+                    && app_state.read().get_modal().should_close_on_click()
+                {
+                    app_state.write().close_modal();
                     info!("Close dialog");
                 }
             },
-            match modal_type.read().to_owned() {
+            match app_state.read().get_modal() {
                 ModalType::None => {
                     warn!("This shouldn't be called");
                     rsx! {}
                 }
                 ModalType::Error { message, error } => rsx! {
-                    Error { modal_type, message, error }
+                    Error { message, error }
                 },
                 ModalType::NoteSelector { vault, from_path } => {
                     rsx! {
                         NoteSelector {
-                            modal_type,
                             vault: vault.clone(),
                             note_path: from_path.clone(),
                             filter_text: "".to_string(),
@@ -158,34 +156,34 @@ pub fn Modal(props: ModalProps) -> Element {
                     }
                 }
                 ModalType::NoteSearch { vault } => rsx! {
-                    NoteSearch { modal_type, vault: vault.clone(), filter_text: "".to_string() }
+                    NoteSearch { vault: vault.clone(), filter_text: "".to_string() }
                 },
                 ModalType::Index { vault, index_type } => rsx! {
-                    Indexer { modal_type, vault: vault.clone(), index_type: index_type.clone() }
+                    Indexer { vault: vault.clone(), index_type: index_type.clone() }
                 },
                 ModalType::DeleteNote { vault, path } => {
                     rsx! {
-                        DeleteConfirm { modal_type, vault: vault.clone(), path: path.clone() }
+                        DeleteConfirm { vault: vault.clone(), path: path.clone() }
                     }
                 }
                 ModalType::MoveNote { vault, from_path } => {
                     rsx! {
-                        MoveConfirm { modal_type, vault: vault.clone(), from_path: from_path.clone() }
+                        MoveConfirm { vault: vault.clone(), from_path: from_path.clone() }
                     }
                 }
                 ModalType::RenameNote { vault, path } => {
                     rsx! {
-                        RenameConfirm { modal_type, vault: vault.clone(), path: path.clone() }
+                        RenameConfirm { vault: vault.clone(), path: path.clone() }
                     }
                 }
                 ModalType::NewNote { vault, path } => rsx! {
-                    CreateNote { modal_type, vault: vault.clone(), from_path: path.clone() }
+                    CreateNote { vault: vault.clone(), from_path: path.clone() }
                 },
                 ModalType::NewDirectory { vault, path } => rsx! {
-                    CreateDirectory { modal_type, vault: vault.clone(), from_path: path.clone() }
+                    CreateDirectory { vault: vault.clone(), from_path: path.clone() }
                 },
                 ModalType::NotePicker { note_list } => rsx! {
-                    NotePicker { modal_type, note_list }
+                    NotePicker { note_list: note_list.to_owned() }
                 },
             }
         }

@@ -12,7 +12,6 @@ use crate::{
     components::{
         focus_manager::FocusComponent,
         icons,
-        modal::ModalType,
         note_list::{
             note_browse_entry::{NoteBrowseEntry, NoteEntryType, SortCriteria},
             note_list_loader::{no_op, use_note_list, SelectorFunctions},
@@ -21,6 +20,7 @@ use crate::{
         preview_pane::PreviewListSource,
         search_box::{SearchBox, StringSearch},
     },
+    settings::AppSettings,
 };
 
 pub struct PreviewData {
@@ -33,7 +33,6 @@ pub struct PreviewData {
 fn SelectorView<F, S>(
     hint: String,
     filter_text: S,
-    mut modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     functions: F,
     send_to_preview: bool,
@@ -43,6 +42,7 @@ where
     S: StringSearch + Clone + 'static,
 {
     let mut app_state: Signal<AppState> = use_context();
+    let settings: Signal<AppSettings> = use_context();
 
     let filter_text_value = use_signal(|| filter_text);
     let sort_criteria_value = use_signal(|| SortCriteria::None);
@@ -102,12 +102,16 @@ where
     let row_number = entries().len();
 
     let selector_loaded = selector_handler.clone();
-    let element_action = ModalNoteListAction { modal_type };
+    let element_action = ModalNoteListAction {};
     let action_enter = element_action.clone();
+    let theme = settings().get_theme();
+    let mut send_hover = use_signal(|| false);
 
     rsx! {
         div {
             class: "notes-modal",
+            background_color: "{theme.bg_section}",
+            border_color: "{theme.border_light}",
             autofocus: "true",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| {
@@ -116,7 +120,7 @@ where
                 async move {
                     let key = e.data.code();
                     if key == Code::Escape {
-                        modal_type.write().close();
+                        app_state.write().close_modal();
                     }
                     if key == Code::ArrowDown {
                         selector_loaded.select_next();
@@ -132,9 +136,13 @@ where
                     }
                 }
             },
-            div { class: "search-header",
+            div {
+                class: "search-header",
+                background_color: "{theme.bg_head}",
+                color: "{theme.text_head}",
+                border_bottom_color: "{theme.border_light}",
                 div { class: "search-title", "Browse Notes" }
-                div { class: "header-description", "{hint}" }
+                div { class: "header-description", color: "{theme.text_head}", "{hint}" }
                 div { class: "search-container",
                     SearchBox {
                         search_text: filter_text_value,
@@ -145,6 +153,11 @@ where
                     if send_to_preview {
                         button {
                             class: "send-button",
+                            border_color: if send_hover() { "{theme.accent_blue}" } else { "{theme.border_light}" },
+                            color: if send_hover() { "{theme.accent_blue}" } else { "{theme.text_primary}" },
+                            background_color: if send_hover() { "{theme.bg_hover}" } else { "{theme.bg_main}" },
+                            onmouseenter: move |_e| send_hover.set(true),
+                            onmouseleave: move |_e| send_hover.set(false),
                             onclick: move |_e| {
                                 app_state
                                     .write()
@@ -160,7 +173,7 @@ where
                                             ),
                                         ),
                                     );
-                                modal_type.write().close();
+                                app_state.write().close_modal();
                             },
                             icons::FatArrowRight {}
                             span { class: "send-button-text", "To Sidebar" }
@@ -174,16 +187,16 @@ where
                 element_action,
                 selector_handler,
             }
-            div { class: "preview-pane",
+            div { class: "preview-pane", background_color: "{theme.bg_main}",
                 match &*preview_text.read_unchecked() {
                     Some(text) => {
                         if let Some(p) = text {
                             rsx! {
-                                div { class: "preview-header",
-                                    div { class: "preview-title", "{p.title}" }
-                                    div { class: "preview-meta", "{p.data}" }
+                                div { class: "preview-header", border_bottom_color: "{theme.border_light}",
+                                    div { class: "preview-title", color: "{theme.text_primary}", "{p.title}" }
+                                    div { class: "preview-meta", color: "{theme.text_light}", "{p.data}" }
                                 }
-                                div { class: "preview-content", "{p.content}" }
+                                div { class: "preview-content", color: "{theme.text_secondary}", "{p.content}" }
                             }
                         } else {
                             rsx! {
@@ -199,9 +212,7 @@ where
 }
 
 #[derive(Clone, PartialEq)]
-pub struct ModalNoteListAction {
-    modal_type: Signal<ModalType>,
-}
+pub struct ModalNoteListAction {}
 
 impl NoteElementActions for ModalNoteListAction {
     fn on_hover(&self, _entry: &NoteBrowseEntry) -> Element {
@@ -216,7 +227,7 @@ impl NoteElementActions for ModalNoteListAction {
                 search_str: _,
             } => {
                 app_state.write().set_path(&entry.path, false);
-                self.modal_type.write().close();
+                app_state.write().close_modal();
             }
             NoteEntryType::Journal {
                 title: _,
@@ -224,11 +235,11 @@ impl NoteElementActions for ModalNoteListAction {
                 search_str: _,
             } => {
                 app_state.write().set_path(&entry.path, false);
-                self.modal_type.write().close();
+                app_state.write().close_modal();
             }
             NoteEntryType::Create { name: _ } => {
                 app_state.write().set_path(&entry.path, true);
-                self.modal_type.write().close();
+                app_state.write().close_modal();
             }
             NoteEntryType::Directory { name: _ } => {
                 // Do nothing
