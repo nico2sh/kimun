@@ -112,13 +112,14 @@ impl Default for AppSettings {
 
 impl AppSettings {
     pub fn theme_list(&self) -> Vec<Theme> {
-        let mut custom = Self::load_custom_themes();
-        custom.push(Theme::dark());
-        custom.push(Theme::gruvbox_light());
-        custom.push(Theme::gruvbox_dark());
-        custom.sort_by_key(|t| t.name.clone());
-        let mut list = vec![Self::load_default_theme().unwrap_or_default()];
-        list.append(&mut custom);
+        let mut list = vec![
+            Self::load_default_theme().unwrap_or_default(),
+            Theme::dark(),
+            Theme::gruvbox_dark(),
+            Theme::gruvbox_light(),
+        ];
+        list.append(&mut Self::load_custom_themes());
+        list.sort_by_key(|t| t.name.clone());
         list
     }
 
