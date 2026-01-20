@@ -1092,21 +1092,27 @@ body {
 } */
 
 /* Scrollbar Styling */
-::-webkit-scrollbar {
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.3) transparent;
+}
+
+*::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
-::-webkit-scrollbar-track {
-  background: var(--bg-section);
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-::-webkit-scrollbar-thumb {
-  background: var(--bg-hover);
+*::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.3);
   border-radius: 4px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--border-hover);
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.5);
 }
 
 /* Responsive Design */
