@@ -3,7 +3,7 @@ use kimun_core::nfs::VaultPath;
 
 use crate::{
     components::{
-        modal::ModalType, note_list::note_browse_entry::SortCriteria,
+        focus_manager::FocusManager, modal::ModalType, note_list::note_browse_entry::SortCriteria,
         preview_pane::PreviewListSource,
     },
     settings::AppSettings,
@@ -111,7 +111,9 @@ impl AppState {
     }
 
     pub fn close_modal(&mut self) {
+        let focus_manager = use_context::<FocusManager>();
         self.modal_manager = ModalType::None;
+        focus_manager.focus_prev();
     }
 
     pub fn set_modal(&mut self, modal: ModalType) {

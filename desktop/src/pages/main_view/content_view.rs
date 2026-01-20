@@ -10,10 +10,8 @@ use futures::StreamExt;
 use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 
 use crate::{
-    app_state::AppState,
     components::{
         focus_manager::{FocusComponent, FocusManager},
-        modal::ModalType,
         preview::Markdown,
     },
     editor_state::{ContentType, EditorState},
@@ -111,7 +109,6 @@ pub struct TextEditorProps {
 
 #[component]
 pub fn TextEditor(props: TextEditorProps) -> Element {
-    let mut app_state: Signal<AppState> = use_context();
     let mut settings: Signal<AppSettings> = use_context();
 
     debug!(
