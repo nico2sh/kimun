@@ -2,6 +2,8 @@ use std::fmt::Display;
 
 use dioxus::prelude::*;
 
+use crate::themes::Theme;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum ButtonStyle {
     #[default]
@@ -62,10 +64,11 @@ impl ButtonBuilder {
         }
     }
 
-    pub fn build(&self) -> Element {
+    pub fn build(&self, theme: &Theme) -> Element {
         rsx! {
             Button {
                 title: self.title.clone(),
+                theme: theme.clone(),
                 style: self.style.clone(),
                 action: self.action,
             }
@@ -76,6 +79,7 @@ impl ButtonBuilder {
 #[derive(Props, Clone, PartialEq)]
 pub struct ButtonProps {
     title: String,
+    theme: Theme,
     #[props(default)]
     style: ButtonStyle,
     action: EventHandler<MouseEvent>,
@@ -85,9 +89,19 @@ pub struct ButtonProps {
 
 #[component]
 pub fn Button(props: ButtonProps) -> Element {
+    let color = match props.style {
+        ButtonStyle::Primary => (props.theme.accent_blue, props.theme.accent_blue_dark),
+        ButtonStyle::Secondary => (props.theme.bg_section, props.theme.bg_hover),
+        ButtonStyle::Danger => (props.theme.accent_red, props.theme.accent_red_dark),
+    };
+    let mut hover = use_signal(|| false);
     rsx! {
         button {
             class: "btn {props.style}",
+            border_color: "{props.theme.border_light}",
+            onmouseover: move |_e| hover.set(true),
+            onmouseleave: move |_e| hover.set(false),
+            background_color: if hover() { "{color.1}" } else { "{color.0}" },
             onclick: move |e| {
                 props.action.call(e);
             },

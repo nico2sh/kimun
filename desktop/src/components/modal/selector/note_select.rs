@@ -7,13 +7,12 @@ use dioxus::{
 use kimun_core::{nfs::VaultPath, NoteVault};
 use nucleo::Matcher;
 
-use crate::components::{modal::ModalType, note_list::note_browse_entry::NoteBrowseEntry};
+use crate::components::note_list::note_browse_entry::NoteBrowseEntry;
 
 use super::{SelectorFunctions, SelectorView};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SelectorProps {
-    modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     filter_text: String,
     note_path: VaultPath,
@@ -107,7 +106,6 @@ pub fn NoteSelector(props: SelectorProps) -> Element {
     SelectorView(
         "Use keywords to find notes, search is case insensitive and special characters are ignored.".to_string(),
         props.filter_text,
-        props.modal_type,
         vault,
         select_functions,
         false

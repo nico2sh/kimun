@@ -3,7 +3,11 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use kimun_core::{NoteVault, NotesValidation};
 
-use crate::{components::modal::ModalType, settings::AppSettings};
+use crate::{
+    app_state::AppState,
+    components::button::{Button, ButtonBuilder, ButtonStyle},
+    settings::AppSettings,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IndexType {
@@ -13,12 +17,10 @@ pub enum IndexType {
 }
 
 #[component]
-pub fn Indexer(
-    modal_type: Signal<ModalType>,
-    vault: Arc<NoteVault>,
-    index_type: IndexType,
-) -> Element {
+pub fn Indexer(vault: Arc<NoteVault>, index_type: IndexType) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
     let mut settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     let (description, confirm_close) = match &index_type {
         IndexType::Validate => ("Validating the Vault", false),
@@ -56,17 +58,18 @@ pub fn Indexer(
                     },
                     rsx! {
                         if confirm_close {
-                            button {
-                                class: "modal-btn secondary",
-                                onclick: move |_| {
-                                    modal_type.write().close();
+                            Button {
+                                action: move |_| {
+                                    app_state.write().close_modal();
                                 },
-                                "Close"
+                                title: "Close",
+                                style: ButtonStyle::Secondary {},
+                                theme: theme.clone(),
                             }
                         } else {
                             div {
                                 onmounted: move |_| {
-                                    modal_type.write().close();
+                                    app_state.write().close_modal();
                                 },
                             }
                         }
@@ -76,29 +79,38 @@ pub fn Indexer(
             Err(e) => (
                 rsx! { "Error indexing vault: {e}" },
                 rsx! {
-                    button {
-                        class: "modal-btn secondary",
-                        onclick: move |_| {
-                            modal_type.write().close();
+                    Button {
+                        action: move |_| {
+                            app_state.write().close_modal();
                         },
-                        "Close"
+                        title: "Close",
+                        style: ButtonStyle::Secondary {},
+                        theme: theme.clone(),
                     }
                 },
             ),
         },
         None => (
             rsx! {
-                progress { class: "index-progress" }
+                div {
+                    class: "loader",
+                    background: "radial-gradient(farthest-side, {theme.accent_yellow} 94%, #0000) left/20px 20px no-repeat {theme.bg_surface}",
+                }
             },
             rsx! {},
         ),
     };
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     rsx! {
-        div { class: "modal",
+        div {
+            class: "modal",
+            background_color: "{theme.bg_main}",
+            border_color: "{theme.border_light}",
             div { class: "modal-header",
-                div { class: "modal-title", "Indexing" }
-                div { class: "modal-subtitle", "{description}" }
+                div { class: "modal-title", color: "{theme.text_primary}", "Indexing" }
+                div { class: "modal-subtitle", color: "{theme.text_light}", "{description}" }
             }
             div { class: "modal-body", {index_result} }
             div { class: "modal-actions", {actions_section} }

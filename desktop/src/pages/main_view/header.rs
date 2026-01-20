@@ -5,6 +5,7 @@ use kimun_core::nfs::VaultPath;
 use crate::{
     app_state::AppState,
     editor_state::{ContentType, EditorState},
+    settings::AppSettings,
 };
 
 #[derive(Clone, PartialEq, Props)]
@@ -15,15 +16,22 @@ pub struct EditorHeaderProps {
 #[component]
 pub fn EditorHeader(props: EditorHeaderProps) -> Element {
     let mut app_state: Signal<AppState> = use_context();
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
 
     let note_path_display = props.path.read().to_string();
     // let app_state = use_radio::<AppState, KimunChannel>(KimunChannel::Header);
     let editor_state: Signal<EditorState> = use_context();
     rsx! {
-        div { class: "editor-header",
+        div {
+            class: "editor-header",
+            background_color: "{theme.bg_head}",
+            color: "{theme.text_head}",
+            border_bottom_color: "{theme.border_light}",
             div { class: "header-left",
                 button {
                     class: "header-button",
+                    color: "{theme.text_contrast}",
                     onclick: move |_| {
                         app_state.write().toggle_browser();
                     },
@@ -59,11 +67,14 @@ pub fn EditorHeader(props: EditorHeaderProps) -> Element {
                 div { class: "title-text", "{note_path_display}" }
                 if let ContentType::Note { dirty } = editor_state.read().content_type {
                     div {
-                        class: if !dirty { "status-indicator" } else { "status-indicator unsaved" },
+                        class: "status-indicator",
+                        background: if !dirty { "{theme.accent_green}" } else { "{theme.accent_yellow}" },
                         id: "saveStatus",
                     }
                 }
-                button { class: if app_state.read().show_preview_pane.is_none() { "header-button" } else { "header-button active" },
+                button {
+                    class: if app_state.read().show_preview_pane.is_none() { "header-button" } else { "header-button active" },
+                    color: "{theme.text_contrast}",
                     svg {
                         class: "icon-header",
                         onclick: move |_| {

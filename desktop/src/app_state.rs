@@ -2,7 +2,10 @@ use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::{
-    components::{note_list::note_browse_entry::SortCriteria, preview_pane::PreviewListSource},
+    components::{
+        focus_manager::FocusManager, modal::ModalType, note_list::note_browse_entry::SortCriteria,
+        preview_pane::PreviewListSource,
+    },
     settings::AppSettings,
 };
 
@@ -51,6 +54,7 @@ pub struct AppState {
     pub preview_mode: bool,
     pub show_browser: bool,
     pub show_preview_pane: Option<PreviewListState>,
+    modal_manager: ModalType,
     last_preview_list_state: PreviewListState,
 }
 
@@ -68,6 +72,7 @@ impl AppState {
             preview_mode: false,
             show_browser: false,
             show_preview_pane: None,
+            modal_manager: ModalType::None,
             last_preview_list_state: PreviewListState::default(),
         }
     }
@@ -95,5 +100,23 @@ impl AppState {
 
     pub fn set_preview_pane_state(&mut self, state: PreviewListState) {
         self.last_preview_list_state = state;
+    }
+
+    pub fn get_modal_mut(&mut self) -> &mut ModalType {
+        &mut self.modal_manager
+    }
+
+    pub fn get_modal(&self) -> &ModalType {
+        &self.modal_manager
+    }
+
+    pub fn close_modal(&mut self) {
+        let focus_manager = use_context::<FocusManager>();
+        self.modal_manager = ModalType::None;
+        focus_manager.focus_prev();
+    }
+
+    pub fn set_modal(&mut self, modal: ModalType) {
+        self.modal_manager = modal;
     }
 }

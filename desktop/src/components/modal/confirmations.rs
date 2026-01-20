@@ -5,8 +5,9 @@ use kimun_core::{nfs::VaultPath, NoteVault, ResultType, VaultBrowseOptionsBuilde
 
 use crate::{
     app_state::AppState,
-    components::{button::ButtonBuilder, modal::ModalType},
+    components::button::ButtonBuilder,
     global_events::{GlobalEvent, PubSub},
+    settings::AppSettings,
 };
 
 pub enum ConfirmationType {
@@ -19,7 +20,6 @@ pub enum ConfirmationType {
 
 #[derive(Props, Clone, PartialEq)]
 pub struct ConfirmationModalProps {
-    modal_type: Signal<ModalType>,
     title: String,
     subtitle: String,
     body: Element,
@@ -29,25 +29,31 @@ pub struct ConfirmationModalProps {
 // General Confirmation Modal
 #[component]
 pub fn ConfirmationModal(props: ConfirmationModalProps) -> Element {
-    let mut modal = props.modal_type;
+    let mut app_state: Signal<AppState> = use_context();
+    let settings: Signal<AppSettings> = use_context();
+
+    let theme = settings().get_theme();
+
     rsx! {
         div {
             class: "modal",
+            background_color: "{theme.bg_main}",
+            border_color: "{theme.border_light}",
             onclick: move |e| e.stop_propagation(),
             onkeydown: move |e: Event<KeyboardData>| async move {
                 let key = e.data.code();
                 if key == Code::Escape {
-                    modal.write().close();
+                    app_state.write().close_modal();
                 }
             },
             div { class: "modal-header",
-                div { class: "modal-title", {props.title} }
-                div { class: "modal-subtitle", {props.subtitle} }
+                div { class: "modal-title", color: "{theme.text_primary}", {props.title} }
+                div { class: "modal-subtitle", color: "{theme.text_light}", {props.subtitle} }
             }
             div { class: "modal-body", {props.body} }
             div { class: "modal-actions",
                 for button in props.buttons {
-                    {button.build()}
+                    {button.build(&theme)}
                 }
             }
         }
@@ -55,20 +61,19 @@ pub fn ConfirmationModal(props: ConfirmationModalProps) -> Element {
 }
 
 #[component]
-pub fn Error(modal_type: Signal<ModalType>, message: String, error: String) -> Element {
+pub fn Error(message: String, error: String) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
+
     rsx! {
         ConfirmationModal {
-            modal_type,
             title: "Error",
             subtitle: "{message}",
-            body: rsx! {
-            "{error}"
-            },
+            body: rsx! { "{error}" },
             buttons: vec![
                 ButtonBuilder::secondary(
                     "Ok",
                     Callback::new(move |_e| {
-                        modal_type.write().close();
+                        app_state.write().close_modal();
                     }),
                 ),
             ],
@@ -77,18 +82,16 @@ pub fn Error(modal_type: Signal<ModalType>, message: String, error: String) -> E
 }
 
 #[component]
-pub fn DeleteConfirm(
-    modal_type: Signal<ModalType>,
-    vault: Arc<NoteVault>,
-    path: VaultPath,
-) -> Element {
+pub fn DeleteConfirm(vault: Arc<NoteVault>, path: VaultPath) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
+
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let delete_path = path.clone();
     let buttons = vec![
         ButtonBuilder::secondary(
             "Cancel",
             Callback::new(move |_e| {
-                modal_type.write().close();
+                app_state.write().close_modal();
             }),
         ),
         ButtonBuilder::danger(
@@ -105,7 +108,7 @@ pub fn DeleteConfirm(
                 };
                 if let Err(e) = delete_result {
                     error!("Error: {}", e);
-                    modal_type.write().set_error(
+                    app_state.write().get_modal_mut().set_error(
                         format!(
                             "Error deleting {}: {}",
                             if is_note { "note" } else { "directory" },
@@ -115,14 +118,13 @@ pub fn DeleteConfirm(
                     );
                 } else {
                     pub_sub.publish(GlobalEvent::Deleted(delete_path.clone()));
-                    modal_type.write().close();
+                    app_state.write().close_modal();
                 }
             }),
         ),
     ];
     rsx! {
         ConfirmationModal {
-            modal_type,
             title: "Delete Note",
             subtitle: "Are you sure you want to delete \"{path}\"?",
             body: rsx! { "This action cannot be undone." },
@@ -132,11 +134,9 @@ pub fn DeleteConfirm(
 }
 
 #[component]
-pub fn MoveConfirm(
-    modal_type: Signal<ModalType>,
-    vault: Arc<NoteVault>,
-    from_path: VaultPath,
-) -> Element {
+pub fn MoveConfirm(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
+
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let is_note = from_path.is_note();
     let to_path = from_path.clone();
@@ -169,7 +169,7 @@ pub fn MoveConfirm(
         ButtonBuilder::secondary(
             "Cancel",
             Callback::new(move |_e| {
-                modal_type.write().close();
+                app_state.write().close_modal();
             }),
         ),
         ButtonBuilder::primary(
@@ -186,7 +186,7 @@ pub fn MoveConfirm(
 
                 if let Err(e) = move_result {
                     error!("Error: {}", e);
-                    modal_type.write().set_error(
+                    app_state.write().get_modal_mut().set_error(
                         format!(
                             "Error moving {}: {}",
                             if is_note { "note" } else { "directory" },
@@ -200,14 +200,17 @@ pub fn MoveConfirm(
                         to,
                     });
 
-                    modal_type.write().close();
+                    app_state.write().close_modal();
                 }
             }),
         ),
     ];
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
+    let mut select_focused = use_signal(|| false);
+
     rsx! {
         ConfirmationModal {
-            modal_type,
             title: if is_note { "Move Note" } else { "Move Directory" },
             subtitle: "Moving: \"{from}\"",
             body: rsx! {
@@ -215,6 +218,11 @@ pub fn MoveConfirm(
                     if let Some(paths) = &*list_of_paths.read() {
                         select {
                             class: "select",
+                            border_color: if select_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                            onfocusin: move |_e| select_focused.set(true),
+                            onfocusout: move |_e| select_focused.set(false),
+                            background_color: "{theme.bg_section}",
+                            color: "{theme.text_primary}",
                             onchange: move |e| {
                                 dest_path.set(VaultPath::new(e.value()));
                             },
@@ -223,7 +231,7 @@ pub fn MoveConfirm(
                             }
                         }
                     } else {
-                        div { class: "info-text", "<Loading...>" }
+                        div { class: "info-text", color: "{theme.text_light}", "<Loading...>" }
                     }
                 }
             },
@@ -233,12 +241,10 @@ pub fn MoveConfirm(
 }
 
 #[component]
-pub fn RenameConfirm(
-    modal_type: Signal<ModalType>,
-    vault: Arc<NoteVault>,
-    path: VaultPath,
-) -> Element {
+pub fn RenameConfirm(vault: Arc<NoteVault>, path: VaultPath) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
     let pub_sub: PubSub<GlobalEvent> = use_context();
+
     let (current_path, current_name) = path.get_parent_path();
     let mut new_name = use_signal(|| current_name.clone());
 
@@ -246,7 +252,7 @@ pub fn RenameConfirm(
         ButtonBuilder::secondary(
             "Cancel",
             Callback::new(move |_e| {
-                modal_type.write().close();
+                app_state.write().close_modal();
             }),
         ),
         ButtonBuilder::primary(
@@ -263,7 +269,7 @@ pub fn RenameConfirm(
 
                 if let Err(e) = move_result {
                     error!("Error: {}", e);
-                    modal_type.write().set_error(
+                    app_state.write().get_modal_mut().set_error(
                         format!(
                             "Error renaming {}: {}",
                             if is_note { "note" } else { "directory" },
@@ -277,20 +283,28 @@ pub fn RenameConfirm(
                         new_name: to.clone(),
                     });
 
-                    modal_type.write().close();
+                    app_state.write().close_modal();
                 }
             }),
         ),
     ];
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
+    let mut input_focused = use_signal(|| false);
+
     rsx! {
         ConfirmationModal {
-            modal_type,
             title: "Rename Note",
             subtitle: "Current name: \"{current_name}\"",
             body: rsx! {
                 input {
                     r#type: "text",
                     class: "input",
+                    border_color: if input_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                    onfocusin: move |_e| input_focused.set(true),
+                    onfocusout: move |_e| input_focused.set(false),
+                    background_color: "{theme.bg_main}",
+                    color: "{theme.text_primary}",
                     value: "{new_name}",
                     placeholder: "Enter new file name",
                     oninput: move |e| {
@@ -304,11 +318,9 @@ pub fn RenameConfirm(
 }
 
 #[component]
-pub fn CreateNote(
-    modal_type: Signal<ModalType>,
-    vault: Arc<NoteVault>,
-    from_path: VaultPath,
-) -> Element {
+pub fn CreateNote(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
+
     let from_path = if from_path.is_note() {
         from_path.get_parent_path().0
     } else {
@@ -342,12 +354,11 @@ pub fn CreateNote(
             entries
         }
     });
-    let mut app_state: Signal<AppState> = use_context();
     let buttons = vec![
         ButtonBuilder::secondary(
             "Cancel",
             Callback::new(move |_e| {
-                modal_type.write().close();
+                app_state.write().close_modal();
             }),
         ),
         ButtonBuilder::primary(
@@ -355,24 +366,33 @@ pub fn CreateNote(
             Callback::new(move |_e| {
                 if is_valid() {
                     app_state.write().set_path(&new_full_path.read(), true);
-                    modal_type.write().close();
+                    app_state.write().close_modal();
                 }
             }),
         ),
     ];
 
     let vault_select = vault.clone();
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
+    let mut select_focused = use_signal(|| false);
+    let mut input_focused = use_signal(|| false);
+
     rsx! {
         ConfirmationModal {
-            modal_type,
             title: "Create Note",
             subtitle: "Enter a filename and select a directory for your new note",
             body: rsx! {
                 div { class: "dialog-controls",
-                    label { "Directory" }
+                    label { color: "{theme.text_light}", "Directory" }
                     if let Some(paths) = &*list_of_paths.read() {
                         select {
                             class: "select",
+                            background_color: "{theme.bg_section}",
+                            color: "{theme.text_primary}",
+                            border_color: if select_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                            onfocusin: move |_e| select_focused.set(true),
+                            onfocusout: move |_e| select_focused.set(false),
                             onchange: move |e| {
                                 new_note_base_path.set(VaultPath::new(e.value()));
                                 let (p, valid) = get_path_is_valid(
@@ -393,12 +413,17 @@ pub fn CreateNote(
                             }
                         }
                     } else {
-                        div { class: "info-text", "<Loading...>" }
+                        div { class: "info-text", color: "{theme.text_light}", "<Loading...>" }
                     }
-                    label { "File Name" }
+                    label { color: "{theme.text_light}", "File Name" }
                     input {
                         r#type: "text",
                         class: "input",
+                        border_color: if input_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                        onfocusin: move |_e| input_focused.set(true),
+                        onfocusout: move |_e| input_focused.set(false),
+                        background_color: "{theme.bg_main}",
+                        color: "{theme.text_primary}",
                         value: "{new_note_name}",
                         placeholder: "Enter new file name",
                         oninput: move |e| {
@@ -413,7 +438,9 @@ pub fn CreateNote(
                             is_valid.set(valid);
                         },
                     }
-                    label { class: if !&is_valid() { "error" } else { "" }, "New note at: {new_full_path}" }
+                    label { color: if !&is_valid() { "{theme.accent_red}" } else { "{theme.text_light}" },
+                        "New note at: {new_full_path}"
+                    }
                 }
             },
             buttons,
@@ -422,11 +449,9 @@ pub fn CreateNote(
 }
 
 #[component]
-pub fn CreateDirectory(
-    modal_type: Signal<ModalType>,
-    vault: Arc<NoteVault>,
-    from_path: VaultPath,
-) -> Element {
+pub fn CreateDirectory(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
+
     let from_path = if from_path.is_note() {
         from_path.get_parent_path().0
     } else {
@@ -468,7 +493,7 @@ pub fn CreateDirectory(
         ButtonBuilder::secondary(
             "Cancel",
             Callback::new(move |_e| {
-                modal_type.write().close();
+                app_state.write().close_modal();
             }),
         ),
         ButtonBuilder::primary(
@@ -476,12 +501,13 @@ pub fn CreateDirectory(
             Callback::new(move |_e| {
                 if is_valid() {
                     if let Err(e) = create_vault.create_directory(&new_full_path()) {
-                        modal_type
+                        app_state
                             .write()
+                            .get_modal_mut()
                             .set_error("Error creating new Directory".to_string(), e.to_string());
                     } else {
                         pub_sub.publish(GlobalEvent::NewDirectoryCreated(new_full_path()));
-                        modal_type.write().close();
+                        app_state.write().close_modal();
                     }
                 }
             }),
@@ -489,17 +515,26 @@ pub fn CreateDirectory(
     ];
 
     let vault_select = vault.clone();
+    let settings: Signal<AppSettings> = use_context();
+    let theme = settings().get_theme();
+
+    let mut select_focused = use_signal(|| false);
+    let mut input_focused = use_signal(|| false);
     rsx! {
         ConfirmationModal {
-            modal_type,
             title: "Create Directory",
             subtitle: "Enter a directory name and optionally select the base directory",
             body: rsx! {
                 div { class: "dialog-controls",
-                    label { "Base Directory" }
+                    label { color: "{theme.text_light}", "Base Directory" }
                     if let Some(paths) = &*list_of_paths.read() {
                         select {
                             class: "select",
+                            background_color: "{theme.bg_section}",
+                            color: "{theme.text_primary}",
+                            border_color: if select_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
+                            onfocusin: move |_e| select_focused.set(true),
+                            onfocusout: move |_e| select_focused.set(false),
                             onchange: move |e| {
                                 let bd = VaultPath::new(e.value());
                                 new_directory_base_path.set(bd.clone());
@@ -521,12 +556,17 @@ pub fn CreateDirectory(
                             }
                         }
                     } else {
-                        div { class: "info-text", "<Loading...>" }
+                        div { class: "info-text", color: "{theme.text_light}", "<Loading...>" }
                     }
-                    label { "Directory Name" }
+                    label { color: "{theme.text_light}", "Directory Name" }
                     input {
                         r#type: "text",
                         class: "input",
+                        border_color: if input_focused() { "{theme.text_primary}" } else { "transparent" },
+                        onfocusin: move |_e| input_focused.set(true),
+                        onfocusout: move |_e| input_focused.set(false),
+                        background_color: "{theme.bg_main}",
+                        color: "{theme.text_primary}",
                         value: "{new_directory_name}",
                         placeholder: "Enter new directory name",
                         oninput: move |e| {
@@ -541,7 +581,9 @@ pub fn CreateDirectory(
                             is_valid.set(valid);
                         },
                     }
-                    label { class: if !&is_valid() { "error" } else { "" }, "New directory at: {new_full_path}" }
+                    label { color: if !&is_valid() { "{theme.accent_red}" } else { "{theme.text_light}" },
+                        "New directory at: {new_full_path}"
+                    }
                 }
             },
             buttons,
