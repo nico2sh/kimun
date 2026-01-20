@@ -3,7 +3,11 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use kimun_core::{NoteVault, NotesValidation};
 
-use crate::{app_state::AppState, settings::AppSettings};
+use crate::{
+    app_state::AppState,
+    components::button::{Button, ButtonBuilder, ButtonStyle},
+    settings::AppSettings,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IndexType {
@@ -54,12 +58,13 @@ pub fn Indexer(vault: Arc<NoteVault>, index_type: IndexType) -> Element {
                     },
                     rsx! {
                         if confirm_close {
-                            button {
-                                class: "modal-btn secondary",
-                                onclick: move |_| {
+                            Button {
+                                action: move |_| {
                                     app_state.write().close_modal();
                                 },
-                                "Close"
+                                title: "Close",
+                                style: ButtonStyle::Secondary {},
+                                theme: theme.clone(),
                             }
                         } else {
                             div {
@@ -74,19 +79,23 @@ pub fn Indexer(vault: Arc<NoteVault>, index_type: IndexType) -> Element {
             Err(e) => (
                 rsx! { "Error indexing vault: {e}" },
                 rsx! {
-                    button {
-                        class: "modal-btn secondary",
-                        onclick: move |_| {
+                    Button {
+                        action: move |_| {
                             app_state.write().close_modal();
                         },
-                        "Close"
+                        title: "Close",
+                        style: ButtonStyle::Secondary {},
+                        theme: theme.clone(),
                     }
                 },
             ),
         },
         None => (
             rsx! {
-                progress { class: "index-progress", color: "{theme.accent_yellow}" }
+                div {
+                    class: "loader",
+                    background: "radial-gradient(farthest-side, {theme.accent_yellow} 94%, #0000) left/20px 20px no-repeat {theme.bg_surface}",
+                }
             },
             rsx! {},
         ),
