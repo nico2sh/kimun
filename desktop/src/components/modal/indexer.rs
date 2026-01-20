@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use kimun_core::{NoteVault, NotesValidation};
 
-use crate::{components::modal::ModalType, settings::AppSettings};
+use crate::{app_state::AppState, settings::AppSettings};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IndexType {
@@ -13,11 +13,8 @@ pub enum IndexType {
 }
 
 #[component]
-pub fn Indexer(
-    modal_type: Signal<ModalType>,
-    vault: Arc<NoteVault>,
-    index_type: IndexType,
-) -> Element {
+pub fn Indexer(vault: Arc<NoteVault>, index_type: IndexType) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
     let mut settings: Signal<AppSettings> = use_context();
     let theme = settings().get_theme();
 
@@ -60,14 +57,14 @@ pub fn Indexer(
                             button {
                                 class: "modal-btn secondary",
                                 onclick: move |_| {
-                                    modal_type.write().close();
+                                    app_state.write().close_modal();
                                 },
                                 "Close"
                             }
                         } else {
                             div {
                                 onmounted: move |_| {
-                                    modal_type.write().close();
+                                    app_state.write().close_modal();
                                 },
                             }
                         }
@@ -80,7 +77,7 @@ pub fn Indexer(
                     button {
                         class: "modal-btn secondary",
                         onclick: move |_| {
-                            modal_type.write().close();
+                            app_state.write().close_modal();
                         },
                         "Close"
                     }
@@ -89,10 +86,7 @@ pub fn Indexer(
         },
         None => (
             rsx! {
-                progress {
-                    class: "index-progress",
-                    background_color: "{theme.accent_yellow}",
-                }
+                progress { class: "index-progress", color: "{theme.accent_yellow}" }
             },
             rsx! {},
         ),

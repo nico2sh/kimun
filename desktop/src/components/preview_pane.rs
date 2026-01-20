@@ -7,7 +7,6 @@ use crate::{
     app_state::{AppState, PreviewListState},
     components::{
         focus_manager::FocusComponent,
-        modal::ModalType,
         note_list::{
             note_browse_entry::NoteBrowseEntry,
             note_list_loader::{no_op, use_note_list, SelectorFunctions},
@@ -61,7 +60,6 @@ pub struct PreviewPaneProps {
     vault: Arc<NoteVault>,
     #[props(default = PreviewListState::default())]
     initial_state: PreviewListState,
-    modal_type: Signal<ModalType>,
 }
 
 #[derive(Clone)]
@@ -114,7 +112,6 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
 
     let vault = props.vault;
     let active_path = use_signal(|| VaultPath::root());
-    let modal_type = props.modal_type;
     let mut show_search = use_signal(|| false);
 
     let PreviewListState {
@@ -291,7 +288,6 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                                 vault: vault.clone(),
                                 note_md: markdown_note.text.clone(),
                                 note_links: markdown_note.links.clone(),
-                                modal_type,
                             }
                         },
                         PreviewContent::Err(e) => rsx! {

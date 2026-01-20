@@ -12,7 +12,7 @@ use crate::{
     app_state::AppState,
     components::{
         focus_manager::FocusComponent,
-        modal::{confirmations::ConfirmationType, ModalType},
+        modal::confirmations::ConfirmationType,
         note_list::{
             note_browse_entry::{NoteBrowseEntry, NoteEntryType, SortCriteria},
             note_list_loader::{use_note_list, SelectorFunctions, UseNoteList},
@@ -21,7 +21,6 @@ use crate::{
         search_box::SearchBox,
     },
     global_events::{GlobalEvent, PubSub},
-    pages::settings::Settings,
     settings::AppSettings,
 };
 
@@ -30,11 +29,8 @@ use super::focus_manager::FocusManager;
 const NOTE_BROWSER: &str = "note_browser";
 
 #[component]
-pub fn NoteBrowser(
-    vault: Arc<NoteVault>,
-    editor_path: ReadSignal<VaultPath>,
-    modal_type: Signal<ModalType>,
-) -> Element {
+pub fn NoteBrowser(vault: Arc<NoteVault>, editor_path: ReadSignal<VaultPath>) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
     let settings: Signal<AppSettings> = use_context();
     let theme = settings().get_theme();
 
@@ -107,8 +103,9 @@ pub fn NoteBrowser(
                     color: "{theme.text_primary}",
                     title: "Create new note",
                     onclick: move |_e| {
-                        modal_type
+                        app_state
                             .write()
+                            .get_modal_mut()
                             .set_confirm(
                                 new_note_vault.clone(),
                                 ConfirmationType::NewNote(browsing_directory()),
@@ -128,8 +125,9 @@ pub fn NoteBrowser(
                     color: "{theme.text_primary}",
                     title: "Create new directory",
                     onclick: move |_e| {
-                        modal_type
+                        app_state
                             .write()
+                            .get_modal_mut()
                             .set_confirm(
                                 vault.clone(),
                                 ConfirmationType::NewDirectory(browsing_directory()),
@@ -179,7 +177,6 @@ pub fn NoteBrowser(
                         active_path: editor_path.read().to_owned(),
                         element_action: NoteBrowserHover {
                             vault,
-                            modal_type,
                             current_browse_path: browsing_directory,
                             use_note_list,
                         },
@@ -194,7 +191,6 @@ pub fn NoteBrowser(
 #[derive(Clone, PartialEq)]
 struct NoteBrowserHover {
     vault: Arc<NoteVault>,
-    modal_type: Signal<ModalType>,
     current_browse_path: SyncSignal<VaultPath>,
     use_note_list: UseNoteList<String>,
 }
@@ -202,13 +198,11 @@ struct NoteBrowserHover {
 impl NoteElementActions for NoteBrowserHover {
     fn on_hover(&self, entry: &NoteBrowseEntry) -> Element {
         let vault = self.vault.clone();
-        let modal_type = self.modal_type;
         let entry_path = entry.get_path().to_owned();
         rsx! {
             if !entry.is_up_dir() {
                 NoteActions {
                     vault,
-                    modal_type,
                     entry_path,
                     onclick: move |_e| {
                         info!("Clicked element");
@@ -244,21 +238,21 @@ impl NoteElementActions for NoteBrowserHover {
 #[derive(PartialEq, Clone, Props)]
 struct NoteActionsProps {
     vault: Arc<NoteVault>,
-    modal_type: Signal<ModalType>,
     entry_path: VaultPath,
     onclick: EventHandler<MouseEvent>,
 }
 
 #[component]
 fn NoteActions(props: NoteActionsProps) -> Element {
+    let mut app_state: Signal<AppState> = use_context();
     let settings: Signal<AppSettings> = use_context();
+
     let rename_vault = props.vault.clone();
     let rename_path = props.entry_path.clone();
     let move_vault = props.vault.clone();
     let move_path = props.entry_path.clone();
     let delete_vault = props.vault.clone();
 
-    let mut modal_type = props.modal_type;
     let theme = settings().get_theme();
 
     let mut hover_button_num = use_signal(|| 0);
@@ -280,8 +274,9 @@ fn NoteActions(props: NoteActionsProps) -> Element {
                 onclick: move |e| {
                     e.stop_propagation();
                     let rename_path = rename_path.clone();
-                    modal_type
+                    app_state
                         .write()
+                        .get_modal_mut()
                         .set_confirm(rename_vault.clone(), ConfirmationType::Rename(rename_path));
                 },
                 svg {
@@ -306,8 +301,9 @@ fn NoteActions(props: NoteActionsProps) -> Element {
                 onclick: move |e| {
                     e.stop_propagation();
                     let move_path = move_path.clone();
-                    modal_type
+                    app_state
                         .write()
+                        .get_modal_mut()
                         .set_confirm(move_vault.clone(), ConfirmationType::Move(move_path.clone()));
                 },
                 svg {
@@ -332,8 +328,9 @@ fn NoteActions(props: NoteActionsProps) -> Element {
                 onclick: move |e| {
                     e.stop_propagation();
                     let delete_path = props.entry_path.clone();
-                    modal_type
+                    app_state
                         .write()
+                        .get_modal_mut()
                         .set_confirm(
                             delete_vault.clone(),
                             ConfirmationType::Delete(delete_path.clone()),

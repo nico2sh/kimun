@@ -12,7 +12,6 @@ use crate::{
     components::{
         focus_manager::FocusComponent,
         icons,
-        modal::ModalType,
         note_list::{
             note_browse_entry::{NoteBrowseEntry, NoteEntryType, SortCriteria},
             note_list_loader::{no_op, use_note_list, SelectorFunctions},
@@ -34,7 +33,6 @@ pub struct PreviewData {
 fn SelectorView<F, S>(
     hint: String,
     filter_text: S,
-    mut modal_type: Signal<ModalType>,
     vault: Arc<NoteVault>,
     functions: F,
     send_to_preview: bool,
@@ -44,7 +42,7 @@ where
     S: StringSearch + Clone + 'static,
 {
     let mut app_state: Signal<AppState> = use_context();
-    let mut settings: Signal<AppSettings> = use_context();
+    let settings: Signal<AppSettings> = use_context();
 
     let filter_text_value = use_signal(|| filter_text);
     let sort_criteria_value = use_signal(|| SortCriteria::None);
@@ -104,7 +102,7 @@ where
     let row_number = entries().len();
 
     let selector_loaded = selector_handler.clone();
-    let element_action = ModalNoteListAction { modal_type };
+    let element_action = ModalNoteListAction {};
     let action_enter = element_action.clone();
     let theme = settings().get_theme();
     let mut send_hover = use_signal(|| false);
@@ -122,7 +120,7 @@ where
                 async move {
                     let key = e.data.code();
                     if key == Code::Escape {
-                        modal_type.write().close();
+                        app_state.write().close_modal();
                     }
                     if key == Code::ArrowDown {
                         selector_loaded.select_next();
@@ -175,7 +173,7 @@ where
                                             ),
                                         ),
                                     );
-                                modal_type.write().close();
+                                app_state.write().close_modal();
                             },
                             icons::FatArrowRight {}
                             span { class: "send-button-text", "To Sidebar" }
@@ -214,9 +212,7 @@ where
 }
 
 #[derive(Clone, PartialEq)]
-pub struct ModalNoteListAction {
-    modal_type: Signal<ModalType>,
-}
+pub struct ModalNoteListAction {}
 
 impl NoteElementActions for ModalNoteListAction {
     fn on_hover(&self, _entry: &NoteBrowseEntry) -> Element {
@@ -231,7 +227,7 @@ impl NoteElementActions for ModalNoteListAction {
                 search_str: _,
             } => {
                 app_state.write().set_path(&entry.path, false);
-                self.modal_type.write().close();
+                app_state.write().close_modal();
             }
             NoteEntryType::Journal {
                 title: _,
@@ -239,11 +235,11 @@ impl NoteElementActions for ModalNoteListAction {
                 search_str: _,
             } => {
                 app_state.write().set_path(&entry.path, false);
-                self.modal_type.write().close();
+                app_state.write().close_modal();
             }
             NoteEntryType::Create { name: _ } => {
                 app_state.write().set_path(&entry.path, true);
-                self.modal_type.write().close();
+                app_state.write().close_modal();
             }
             NoteEntryType::Directory { name: _ } => {
                 // Do nothing

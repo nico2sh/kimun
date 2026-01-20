@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
 
 use content_view::{NoText, TextEditor};
 use dioxus::{core::use_drop, logger::tracing::debug, prelude::*};
@@ -35,25 +35,20 @@ enum ContentType {
 
 #[component]
 pub fn MainView() -> Element {
-    let app_state: Signal<AppState> = use_context();
+    let mut app_state: Signal<AppState> = use_context();
+    let settings: Signal<AppSettings> = use_context();
+
     let editor_path = use_memo(move || app_state.read().current_path.to_owned());
     debug!("-== [Editor] Starting Editor at '{}' ==-", editor_path);
-    let settings: Signal<AppSettings> = use_context();
     let theme = settings().get_theme();
     let settings_value = settings.read();
 
     let vault_path: &std::path::PathBuf = settings_value.workspace_dir.as_ref().unwrap();
     let vault = Arc::new(NoteVault::new(vault_path)?);
 
-    // Modal setup and Indexing on the first run
-    let mut modal_type = use_signal(|| {
-        debug!("We set the modal to nothing");
-        ModalType::None
-    });
-
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
-    let mut app_state: Signal<AppState> = use_context();
+
     use_effect(move || {
         pc.subscribe(
             EDITOR,
@@ -100,8 +95,9 @@ pub fn MainView() -> Element {
         debug!("We check if we have to trigger the indexer");
         if settings.read().needs_indexing() {
             debug!("Triggering Indexer");
-            modal_type
+            app_state
                 .write()
+                .get_modal_mut()
                 .set_indexer(index_vault.clone(), IndexType::Validate);
         } else {
             debug!("No need to index");
@@ -124,7 +120,7 @@ pub fn MainView() -> Element {
                         }
                         Err(e) => {
                             let parent = note_path.get_parent_path().0;
-                            modal_type.set(ModalType::Error {
+                            app_state.write().set_modal(ModalType::Error {
                                 message: "Error Creating new Note".to_string(),
                                 error: e.to_string(),
                             });
@@ -180,7 +176,7 @@ pub fn MainView() -> Element {
                 class: "sidebar",
                 background: "{theme.bg_section}",
                 border_right: "{theme.border_light}",
-                NoteBrowser { vault: vault.clone(), editor_path, modal_type }
+                NoteBrowser { vault: vault.clone(), editor_path }
             }
         } else {
             div { class: "sidebar collapsed" }
@@ -208,12 +204,13 @@ pub fn MainView() -> Element {
                         }
                         ActionShortcuts::SearchNotes => {
                             debug!("Trigger Open Note Search");
-                            modal_type.write().set_note_search(vault.clone());
+                            app_state.write().get_modal_mut().set_note_search(vault.clone());
                         }
                         ActionShortcuts::OpenNote => {
                             debug!("Trigger Open Note Select");
-                            modal_type
+                            app_state
                                 .write()
+                                .get_modal_mut()
                                 .set_note_select(vault.clone(), editor_path.read().clone());
                         }
                         ActionShortcuts::NewJournal => {
@@ -226,7 +223,7 @@ pub fn MainView() -> Element {
                     }
                 }
             },
-            Modal { modal_type }
+            Modal {}
             EditorHeader { path: editor_path }
             div { class: "editor-main",
                 match &*content_path.read() {
@@ -235,7 +232,6 @@ pub fn MainView() -> Element {
                             TextEditor {
                                 note_path: editor_path,
                                 vault: vault.clone(),
-                                modal_type,
                                 preview: app_state.read().preview_mode,
                             }
                         }
@@ -266,7 +262,6 @@ pub fn MainView() -> Element {
                         PreviewPane {
                             vault: vault.clone(),
                             initial_state: source.to_owned(),
-                            modal_type,
                         }
                     }
                 }
