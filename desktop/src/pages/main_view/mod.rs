@@ -179,8 +179,6 @@ pub fn MainView() -> Element {
                 border_right: "{theme.border_light}",
                 NoteBrowser { vault: vault.clone(), editor_path }
             }
-        } else {
-            div { class: "sidebar collapsed" }
         }
         div {
             class: "editor-container",
