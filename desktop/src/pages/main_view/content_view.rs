@@ -233,6 +233,7 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     });
 
     use_effect(move || {
+        debug!("===> Initializing Javascript code for Markdown");
         if !props.preview {
             let init_script = r#"
 window.editor = new TextareaMarkdown(
@@ -241,9 +242,10 @@ window.editor = new TextareaMarkdown(
 "#;
             spawn(async {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                debug!("Initializing Markdown Editor");
                 if let Err(e) = document::eval(init_script).await {
                     error!("Error initializing editor: {}", e);
+                } else {
+                    debug!("===> Javascript code for Markdown initialized");
                 }
             });
         }
