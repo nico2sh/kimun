@@ -5,7 +5,7 @@ use kimun_core::{NoteVault, NotesValidation};
 
 use crate::{
     app_state::AppState,
-    components::button::{Button, ButtonBuilder, ButtonStyle},
+    components::button::{Button, ButtonStyle},
     settings::AppSettings,
 };
 

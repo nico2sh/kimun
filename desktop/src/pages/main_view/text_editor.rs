@@ -13,7 +13,6 @@ use crate::{
     },
 };
 
-const TEXT_EDITOR: &str = "text_editor";
 const EVAL_JS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/scripts/md_shortcuts.js"
