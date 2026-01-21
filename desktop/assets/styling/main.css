@@ -37,11 +37,6 @@ body {
   /* box-shadow: 0 0 40px var(--shadow-primary); */
 }
 
-.sidebar.collapsed {
-  width: 0;
-  overflow: hidden;
-}
-
 .sidebar-header {
   /* background: var(--bg-surface);
   color: var(--text-primary); */
