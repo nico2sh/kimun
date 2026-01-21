@@ -1,37 +1,32 @@
-use std::{rc::Rc, sync::Arc, time::Duration};
+use std::{rc::Rc, sync::Arc};
 
 use dioxus::{
     core::use_drop,
     logger::tracing::{debug, error},
     prelude::*,
 };
-// use dioxus_radio::hooks::{use_radio, Radio};
+
 use futures::StreamExt;
 use kimun_core::{nfs::VaultPath, note::NoteDetails, NoteVault};
 
 use crate::{
-    components::{
-        focus_manager::{FocusComponent, FocusManager},
-        preview::Markdown,
-    },
+    components::preview::Markdown,
     editor_state::{ContentType, EditorState},
     global_events::{GlobalEvent, PubSub},
+    pages::main_view::text_editor::TextEditor,
     settings::AppSettings,
-    utils::keys::{
-        action_shortcuts::{ActionShortcuts, TextAction},
-        key_combo::KeyCombo,
-        key_strike::KeyStrike,
-    },
     MARKDOWN_JS,
 };
 
+#[derive(Default, Clone)]
+enum LoadingStatus {
+    #[default]
+    Loading,
+    Loaded,
+}
+
 const AUTOSAVE_SECS: u64 = 5;
 const TEXT_EDITOR: &str = "text_editor";
-const EVAL_JS: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/scripts/md_shortcuts.js"
-));
-
 #[derive(Clone)]
 pub struct EditorSaveManager {
     path: VaultPath,
@@ -101,14 +96,14 @@ pub fn NoText(path: ReadSignal<VaultPath>) -> Element {
 }
 
 #[derive(Clone, Debug, PartialEq, Props)]
-pub struct TextEditorProps {
+pub struct ContentViewerProps {
     note_path: ReadSignal<VaultPath>,
     vault: Arc<NoteVault>,
     preview: bool,
 }
 
 #[component]
-pub fn TextEditor(props: TextEditorProps) -> Element {
+pub fn ContentViewer(props: ContentViewerProps) -> Element {
     let mut settings: Signal<AppSettings> = use_context();
 
     debug!(
@@ -117,8 +112,6 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     );
     let mut editor_state: Signal<EditorState> = use_context();
     let mut content = use_signal(|| "".to_string());
-
-    let focus_manager = use_context::<FocusManager>();
 
     let editor_vault = props.vault.clone();
     let cr = use_coroutine(move |mut rx: UnboundedReceiver<EditorMsg>| {
@@ -167,13 +160,13 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
     });
 
     let vault_content = props.vault.clone();
-    let mut note_content = use_resource(move || {
+    let loading_status = use_resource(move || {
         debug!("[Initial Content] Loading text content");
         let vault = vault_content.clone();
         async move {
             let exists = vault.exists(&props.note_path.read()).is_some();
             debug!("[Initial Content] Exists: {:?}", exists);
-            let text = if exists {
+            let result = if exists {
                 debug!("[Initial Content] Loading from path at {}", props.note_path);
                 let text = vault.load_note(&props.note_path.read()).map_or_else(
                     |e| {
@@ -193,9 +186,11 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
             } else {
                 "".to_string()
             };
-            cr.send(EditorMsg::Init { text: text.clone() });
+            cr.send(EditorMsg::Init {
+                text: result.clone(),
+            });
             debug!("[Initial Content] Init message sent");
-            text
+            LoadingStatus::Loaded
         }
     });
 
@@ -226,56 +221,29 @@ pub fn TextEditor(props: TextEditorProps) -> Element {
             }),
         );
     });
-    let fm = focus_manager.clone();
     use_drop(move || {
         pub_sub.unsubscribe(TEXT_EDITOR);
-        fm.unregister_focus(FocusComponent::Editor);
     });
 
-    use_effect(move || {
-        if !props.preview {
-            let init_script = r#"
-window.editor = new TextareaMarkdown(
-    document.getElementById('textEditor')
-);
-"#;
-            spawn(async {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                debug!("Initializing Markdown Editor");
-                if let Err(e) = document::eval(init_script).await {
-                    error!("Error initializing editor: {}", e);
-                }
-            });
-        }
-    });
     // let _ = use_global_shortcut("cmd+L", move || {
     //     info!("Command L");
     // });
-    use_effect(move || {
-        // If we set the preview, we update the content with the current value
-        if props.preview {
-            note_content.set(Some(content.peek().clone()));
-        }
-    });
-    let settings: Signal<AppSettings> = use_context();
-    let theme = settings().get_theme();
 
     // This manages the editor state
     rsx! {
         document::Script { src: MARKDOWN_JS }
         div { class: "editor-content",
             {
-                let focus = focus_manager.clone();
-                match &*note_content.read() {
-                    None => rsx! {
+                match loading_status.read().to_owned().unwrap_or_default() {
+                    LoadingStatus::Loading => rsx! {
                         div { onmounted: move |_e| {}, "Loading..." }
                     },
-                    Some(text) => rsx! {
+                    LoadingStatus::Loaded => rsx! {
                         if props.preview {
                             {
                                 let note_details = NoteDetails::new(
                                     &props.note_path.read(),
-                                    content.peek().clone(),
+                                    content.read().clone(),
                                 );
                                 let md_content = note_details.get_markdown_and_links();
                                 rsx! {
@@ -287,74 +255,11 @@ window.editor = new TextareaMarkdown(
                                 }
                             }
                         } else {
-                            textarea {
-                                class: "text-editor",
-                                color: "{theme.text_primary}",
-                                id: "textEditor",
-                                autofocus: true,
-                                onfocus: move |_e| {
-                                    focus.focus(FocusComponent::Editor);
-                                },
-                                onmounted: move |e| {
-                                    focus_manager.register_and_focus(FocusComponent::Editor, e.data());
-                                },
-                                // onselect: move |e| {
-                                //     info!("Select event {:?}", e.data());
-                                // },
-                                // onselectstart: move |e| {
-                                //     info!("Select start event {:?}", e.data());
-                                // },
-                                // onselectionchange: move |e| {
-                                //     info!("Select change event {:?}", e.data());
-                                // },
-                                oninput: move |e| {
-                                    *content.write() = e.value();
-                                    editor_state.write().mark_content_dirty();
-                                },
-                                onkeydown: move |event: Event<KeyboardData>| {
-                                    let data = event.data();
-                                    let key_combo: KeyCombo = data.into();
-                                    if key_combo.key == KeyStrike::Tab {
-                                        if key_combo.modifiers.is_shift() {
-                                            eval_action("unindent");
-                                        } else {
-                                            eval_action("indent");
-                                        }
-                                        event.prevent_default();
-                                    } else if let Some(ActionShortcuts::Text(action)) = settings
-                                        .read()
-                                        .key_bindings
-                                        .get_action(&key_combo)
-                                    {
-                                        match action {
-                                            TextAction::Bold => eval_action("bold"),
-                                            TextAction::Italic => eval_action("italic"),
-                                            TextAction::Link => eval_action("link"),
-                                            TextAction::Image => eval_action("image"),
-                                            TextAction::ToggleHeader => eval_action("toggle_header"),
-                                            TextAction::Header(n) => eval_action(&format!("heading{}", n)),
-                                            TextAction::Underline => eval_action("underline"),
-                                            TextAction::Strikethrough => eval_action("strike"),
-                                        }
-                                    }
-                                },
-                                spellcheck: true,
-                                wrap: "hard",
-                                resize: "none",
-                                placeholder: "Start writing something!",
-                                value: "{text}",
-                            }
+                            TextEditor { content }
                         }
                     },
                 }
             }
         }
-    }
-}
-
-fn eval_action(action: &str) {
-    let eval = document::eval(EVAL_JS);
-    if let Err(e) = eval.send(action) {
-        error!("Error sending value {}: {}", action, e);
     }
 }

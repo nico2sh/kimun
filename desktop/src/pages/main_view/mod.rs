@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use content_view::{NoText, TextEditor};
+use content_view::{ContentViewer, NoText};
 use dioxus::{core::use_drop, logger::tracing::debug, prelude::*};
 use header::EditorHeader;
 use kimun_core::{
@@ -23,6 +23,7 @@ use crate::{
 
 mod content_view;
 mod header;
+mod text_editor;
 
 const EDITOR: &str = "editor";
 
@@ -229,7 +230,7 @@ pub fn MainView() -> Element {
                 match &*content_path.read() {
                     ContentType::Note => {
                         rsx! {
-                            TextEditor {
+                            ContentViewer {
                                 note_path: editor_path,
                                 vault: vault.clone(),
                                 preview: app_state.read().preview_mode,
