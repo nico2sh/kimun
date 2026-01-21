@@ -119,7 +119,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cd desktop && \
-          dx build --release --target ${{ matrix.target }} && \
+          dx bundle --release --target ${{ matrix.target }} && \
           cp -r target/dx/kimun/release/${{ matrix.target_path}}/* ../dist/
         shell: bash
 
@@ -151,9 +151,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        uses: SebRollen/toml-action@v1.2.0
+        id: read_version
+        with:
+          file: "desktop/Cargo.toml"
+          field: "package.version"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -163,30 +171,78 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R release-artifacts
 
-      - name: Create compressed archives
+      - name: Create compressed archives with consistent naming
         run: |
           cd release-artifacts
+          VERSION="${{ steps.read_version.outputs.value }}"
+
           for dir in */; do
             dirname="${dir%/}"
+
+            # Extract platform info from artifact name
             if [[ "$dirname" == *"windows"* ]]; then
-              cd "$dirname" && zip -r "../${dirname}.zip" . && cd ..
-            else
-              tar -czf "${dirname}.tar.gz" -C "$dirname" .
+              PLATFORM="windows-x64"
+              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.zip"
+              cd "$dirname" && zip -r "../${ARCHIVE_NAME}" . && cd ..
+            elif [[ "$dirname" == *"intel"* ]]; then
+              PLATFORM="macos-x64"
+              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
+              tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
+            elif [[ "$dirname" == *"apple_silicon"* ]]; then
+              PLATFORM="macos-arm64"
+              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
+              tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
+            elif [[ "$dirname" == *"linux"* ]]; then
+              PLATFORM="linux-x64"
+              ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.tar.gz"
+              tar -czf "${ARCHIVE_NAME}" -C "$dirname" .
             fi
           done
-          ls -lh
+
+          ls -lh *.zip *.tar.gz 2>/dev/null || true
+        shell: bash
+
+      - name: Generate checksums
+        run: |
+          cd release-artifacts
+          sha256sum kimun-*.{zip,tar.gz} 2>/dev/null > checksums-sha256.txt || true
+          cat checksums-sha256.txt
         shell: bash
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
+          name: Kimun ${{ steps.read_version.outputs.value }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
+          body: |
+            ## Download Kimun ${{ steps.read_version.outputs.value }}
+
+            ### Installation Instructions
+
+            **Windows:**
+            - Download `kimun-${{ steps.read_version.outputs.value }}-windows-x64.zip`
+            - Extract and run the MSI installer
+
+            **macOS (Intel):**
+            - Download `kimun-${{ steps.read_version.outputs.value }}-macos-x64.tar.gz`
+            - Extract and open the DMG file
+
+            **macOS (Apple Silicon):**
+            - Download `kimun-${{ steps.read_version.outputs.value }}-macos-arm64.tar.gz`
+            - Extract and open the DMG file
+
+            **Linux:**
+            - Download `kimun-${{ steps.read_version.outputs.value }}-linux-x64.tar.gz`
+            - Extract and run the AppImage
+
+            ### Verify Downloads
+            See `checksums-sha256.txt` for SHA-256 checksums to verify your download.
           files: |
-            release-artifacts/*.zip
-            release-artifacts/*.tar.gz
+            release-artifacts/kimun-*.zip
+            release-artifacts/kimun-*.tar.gz
+            release-artifacts/checksums-sha256.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
