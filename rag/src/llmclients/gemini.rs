@@ -8,21 +8,15 @@ use crate::document::KimunChunk;
 use super::LLMClient;
 
 pub enum GeminiModel {
-    Gemini20Flash,
-    Gemini20FlashLite,
-    Gemini25FlashPreview0417,
-    Gemini25ProPreview0325,
-    Gemini25ProExp0325,
+    Gemini25Pro,
+    Gemini25Flash,
 }
 
 impl std::fmt::Display for GeminiModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            GeminiModel::Gemini20Flash => "gemini-2.0-flash",
-            GeminiModel::Gemini20FlashLite => "gemini-2.0-flash-lite",
-            GeminiModel::Gemini25FlashPreview0417 => "gemini-2.5-flash-preview-04-17",
-            GeminiModel::Gemini25ProPreview0325 => "gemini-2.5-pro-preview-03-25",
-            GeminiModel::Gemini25ProExp0325 => "gemini-2.5-pro-exp-03-25",
+            GeminiModel::Gemini25Pro => "gemini-2.5-pro",
+            GeminiModel::Gemini25Flash => "gemini-2.5-flash",
         };
         write!(f, "{}", s)
     }
