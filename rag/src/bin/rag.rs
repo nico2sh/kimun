@@ -31,13 +31,13 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Index => {
-            rag.init()?;
+            rag.init().await?;
             let vault_path = PathBuf::from("/Users/nhormazabal/OneDrive/Notes");
             let vault = NoteVault::new(vault_path)?;
             rag.store_embeddings(vault).await?;
         }
         Commands::Ask { query } => {
-            let answer = rag.query(query).await?;
+            let answer = rag.query(&query).await?;
 
             println!("{answer}");
         }

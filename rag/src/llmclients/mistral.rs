@@ -58,10 +58,11 @@ Answer:
     }
 }
 
+#[async_trait::async_trait]
 impl LLMClient for MistralClient {
-    async fn ask<S: AsRef<str>>(
+    async fn ask(
         &self,
-        question: S,
+        question: &str,
         context: Vec<(f64, crate::document::KimunChunk)>,
     ) -> anyhow::Result<String> {
         // Create a new reqwest client
@@ -73,7 +74,7 @@ impl LLMClient for MistralClient {
 
             messages: vec![Message {
                 role: "user".to_string(),
-                content: self.get_prompt(question.as_ref().to_string(), context),
+                content: self.get_prompt(question.to_string(), context),
             }],
         };
 

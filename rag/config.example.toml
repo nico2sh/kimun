@@ -1,0 +1,67 @@
+# Kimun RAG Server Configuration
+# Copy this file to ~/.config/kimun/rag.conf and customize
+
+[server]
+# Host to bind to (default: 127.0.0.1)
+host = "127.0.0.1"
+
+# Port to listen on (default: 8080)
+port = 8080
+
+# Maximum number of concurrent jobs (default: 10)
+max_concurrent_jobs = 10
+
+[vault]
+# Path to your notes vault
+path = "/path/to/your/notes"
+
+[vector_db]
+# Vector database type: "sqlite" or "qdrant"
+type = "sqlite"
+
+# SQLite-specific settings (when type = "sqlite")
+db_path = "./rag_index.sqlite"
+
+# Qdrant-specific settings (when type = "qdrant")
+# Uncomment and configure if using Qdrant:
+# type = "qdrant"
+# url = "http://localhost:6333"
+# collection = "kimun_embeddings"
+
+[llm]
+# LLM provider: "gemini", "claude", "openai", or "mistral"
+provider = "gemini"
+
+# Model name (provider-specific)
+# Gemini: "gemini-2.5-flash-preview-04-17" (default, most cost-effective)
+# Claude: "claude-3-5-sonnet-20241022" (default, best for text)
+# OpenAI: "gpt-4o-mini" (default, most cost-effective)
+# Mistral: "mistral-large-latest" (default)
+model = "gemini-2.5-flash-preview-04-17"
+
+# API keys MUST be set via environment variables:
+# - GEMINI_API_KEY for Gemini
+# - ANTHROPIC_API_KEY for Claude (e.g., export ANTHROPIC_API_KEY=sk-ant-...)
+# - OPENAI_API_KEY for OpenAI (e.g., export OPENAI_API_KEY=sk-...)
+# - MISTRAL_API_KEY for Mistral
+
+# Example configurations for each provider:
+
+# For Claude (recommended for best text quality):
+# provider = "claude"
+# model = "claude-3-5-sonnet-20241022"
+
+# For OpenAI (cost-effective):
+# provider = "openai"
+# model = "gpt-4o-mini"
+
+# For Mistral:
+# provider = "mistral"
+# model = "mistral-large-latest"
+
+[reranker]
+# Enable cross-encoder reranking for better results (default: true)
+enabled = true
+
+# Number of results to return after reranking (default: 20)
+top_k = 20

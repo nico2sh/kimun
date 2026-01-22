@@ -81,10 +81,11 @@ Answer:
     }
 }
 
+#[async_trait::async_trait]
 impl LLMClient for GeminiClient {
-    async fn ask<S: AsRef<str>>(
+    async fn ask(
         &self,
-        question: S,
+        question: &str,
         context: Vec<(f64, crate::document::KimunChunk)>,
     ) -> anyhow::Result<String> {
         // Create a new reqwest client
@@ -94,7 +95,7 @@ impl LLMClient for GeminiClient {
         let request_payload = GeminiRequest {
             contents: vec![GeminiContent {
                 parts: vec![GeminiPart {
-                    text: self.get_prompt(question.as_ref().to_string(), context),
+                    text: self.get_prompt(question.to_string(), context),
                 }],
             }],
         };
