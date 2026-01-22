@@ -1,19 +1,19 @@
-use std::sync::Arc;
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use clap::Parser;
+use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use kimun_rag::{
-    config::RagConfig,
-    server_state::AppState,
-    handlers::{
-        index_all_handler, index_single_handler, get_embeddings_handler,
-        answer_handler, job_status_handler,
-    },
     KimunRag,
+    config::RagConfig,
+    handlers::{
+        answer_handler, get_embeddings_handler, index_all_handler, index_single_handler,
+        job_status_handler,
+    },
+    server_state::AppState,
 };
 
 #[derive(Parser)]
@@ -95,8 +95,8 @@ async fn main() -> anyhow::Result<()> {
 /// Create RAG instance based on configuration
 async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> {
     use kimun_rag::{
-        config::{VectorDbConfig, LlmConfig},
-        dbembeddings::{vecsqlite::VecSQLite, vecqdrant::VecQdrant},
+        config::{LlmConfig, VectorDbConfig},
+        dbembeddings::{vecqdrant::VecQdrant, vecsqlite::VecSQLite},
         llmclients::claude::ClaudeClient,
         llmclients::gemini::{GeminiClient, GeminiModel},
         llmclients::mistral::MistralClient,
@@ -104,22 +104,27 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
     };
 
     // Create embeddings based on config
-    let embeddings: Arc<dyn kimun_rag::dbembeddings::Embeddings + Send + Sync> = match &config.vector_db {
-        VectorDbConfig::SQLite { db_path } => {
-            tracing::info!("Using SQLite vector database at {:?}", db_path);
-            Arc::new(VecSQLite::new(db_path))
-        }
-        VectorDbConfig::Qdrant { url, collection } => {
-            tracing::info!("Using Qdrant vector database at {} (collection: {})", url, collection);
-            Arc::new(VecQdrant::new(url.clone(), collection.clone()).await?)
-        }
-    };
+    let embeddings: Arc<dyn kimun_rag::dbembeddings::Embeddings + Send + Sync> =
+        match &config.vector_db {
+            VectorDbConfig::SQLite { db_path } => {
+                tracing::info!("Using SQLite vector database at {:?}", db_path);
+                Arc::new(VecSQLite::new(db_path))
+            }
+            VectorDbConfig::Qdrant { url, collection } => {
+                tracing::info!(
+                    "Using Qdrant vector database at {} (collection: {})",
+                    url,
+                    collection
+                );
+                Arc::new(VecQdrant::new(url.clone(), collection.clone()).await?)
+            }
+        };
 
     // Create LLM client based on config
     let llm_client: Arc<dyn kimun_rag::llmclients::LLMClient + Send + Sync> = match &config.llm {
         LlmConfig::Gemini { model: _ } => {
             tracing::info!("Using Gemini LLM");
-            Arc::new(GeminiClient::new(GeminiModel::Gemini25FlashPreview0417))
+            Arc::new(GeminiClient::new(GeminiModel::Gemini25Flash))
         }
         LlmConfig::Mistral { model: _ } => {
             tracing::info!("Using Mistral LLM");
@@ -135,7 +140,17 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
         }
     };
 
-    Ok(KimunRag::new(embeddings, llm_client))
+    let mut rag = KimunRag::new(embeddings, llm_client);
+
+    // Enable reranking if configured
+    if config.reranker.enabled {
+        tracing::info!("Enabling reranking with top_k={}", config.reranker.top_k);
+        rag = rag.with_reranking(config.reranker.top_k)?;
+    } else {
+        tracing::info!("Reranking disabled");
+    }
+
+    Ok(rag)
 }
 
 /// Health check endpoint

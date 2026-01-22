@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let cli = Cli::parse();
 
-    let mut rag = KimunRag::sqlite(&std::env::current_dir()?);
+    let rag = KimunRag::sqlite(&std::env::current_dir()?);
 
     match cli.command {
         Commands::Index => {
@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
             rag.store_embeddings(vault).await?;
         }
         Commands::Ask { query } => {
-            let answer = rag.query(&query).await?;
+            let answer = rag.ask(&query).await?;
 
             println!("{answer}");
         }
