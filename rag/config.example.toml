@@ -5,8 +5,8 @@
 # Host to bind to (default: 127.0.0.1)
 host = "127.0.0.1"
 
-# Port to listen on (default: 8080)
-port = 8080
+# Port to listen on (default: 7573)
+port = 7573
 
 # Maximum number of concurrent jobs (default: 10)
 max_concurrent_jobs = 10

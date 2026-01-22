@@ -126,9 +126,9 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
             tracing::info!("Using Gemini LLM with model: {}", model);
             Arc::new(GeminiClient::new(model))
         }
-        LlmConfig::Mistral { model: _ } => {
+        LlmConfig::Mistral { model } => {
             tracing::info!("Using Mistral LLM");
-            Arc::new(MistralClient::new())
+            Arc::new(MistralClient::new(model))
         }
         LlmConfig::Claude { model } => {
             tracing::info!("Using Claude LLM with model: {}", model);
