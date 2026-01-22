@@ -6,7 +6,6 @@ use document::ChunkLoader;
 use dbembeddings::Embeddings;
 use dbembeddings::vecsqlite::VecSQLite;
 use kimun_core::NoteVault;
-use llmclients::mistral::MistralClient;
 use llmclients::{LLMClient, gemini::GeminiClient};
 
 pub mod dbembeddings;
@@ -52,9 +51,7 @@ impl KimunRag {
     pub fn sqlite<P: AsRef<Path>>(path: P) -> Self {
         Self {
             embeddings: Arc::new(VecSQLite::new(path)),
-            llm_client: Arc::new(GeminiClient::new(
-                llmclients::gemini::GeminiModel::Gemini25Flash,
-            )),
+            llm_client: Arc::new(GeminiClient::new("gemini-2.5-flash")),
             reranker: None,
             reranker_top_k: 20,
         }

@@ -4,10 +4,8 @@ use std::time::SystemTime;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::config::RagConfig;
-use crate::dbembeddings::Embeddings;
-use crate::llmclients::LLMClient;
 use crate::KimunRag;
+use crate::config::RagConfig;
 
 /// Shared application state
 #[derive(Clone)]
