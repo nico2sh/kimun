@@ -37,6 +37,13 @@ pub struct QueryRequest {
     pub query: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AnswerRequest {
+    pub query: String,
+    pub llm_provider: Option<String>,  // "claude", "openai", "gemini", "mistral"
+    pub llm_model: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct IndexResponse {
     pub job_id: String,
@@ -204,26 +211,39 @@ pub async fn get_embeddings_handler(
 }
 
 /// Answer - Query text → LLM answer with context (queued)
+/// Supports dynamic LLM selection via request body and X-API-Key header
 pub async fn answer_handler(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<QueryRequest>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<AnswerRequest>,
 ) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     let job_id = Uuid::new_v4();
+
+    // Extract API key from header
+    let api_key = headers
+        .get("X-API-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
 
     // Mark job as queued
     state.job_tracker.lock().await.create(job_id, JobStatus::Queued);
 
     // Spawn background task
     let state_clone = state.clone();
-    let query = request.query.clone();
 
     tokio::spawn(async move {
         // Mark as processing
         state_clone.job_tracker.lock().await
             .update_status(&job_id, JobStatus::Processing);
 
-        // Perform query and answer
-        match answer_impl(state_clone.rag.clone(), &query).await {
+        // Perform query and answer with dynamic LLM
+        match answer_impl_with_llm(
+            state_clone.rag.clone(),
+            &request.query,
+            request.llm_provider.as_deref(),
+            request.llm_model.as_deref(),
+            api_key.as_deref(),
+        ).await {
             Ok((answer, sources)) => {
                 let result = serde_json::json!({
                     "answer": answer,
@@ -414,17 +434,60 @@ async fn index_all_impl(
     })
 }
 
-async fn answer_impl(
+/// Answer implementation with dynamic LLM selection
+async fn answer_impl_with_llm(
     rag: Arc<Mutex<KimunRag>>,
     query: &str,
+    llm_provider: Option<&str>,
+    llm_model: Option<&str>,
+    api_key: Option<&str>,
 ) -> anyhow::Result<(String, Vec<ChunkResult>)> {
+    use crate::llmclients::{
+        LLMClient,
+        claude::ClaudeClient,
+        openai::OpenAIClient,
+        gemini::GeminiClient,
+        mistral::MistralClient,
+    };
+
     let rag_lock = rag.lock().await;
 
-    // Get context
+    // Get context from embeddings
     let results = rag_lock.query(query).await?;
 
-    // Get answer
-    let answer = rag_lock.ask(query).await?;
+    // Create LLM client based on request or use default
+    let answer = if let Some(provider) = llm_provider {
+        // Temporarily set API key in environment if provided
+        let _env_guard = if let Some(key) = api_key {
+            Some(set_temp_api_key(provider, key))
+        } else {
+            None
+        };
+
+        let llm_client: Arc<dyn LLMClient + Send + Sync> = match provider {
+            "claude" => {
+                let model = llm_model.unwrap_or("claude-3-5-sonnet-20241022");
+                Arc::new(ClaudeClient::new(model.to_string()))
+            }
+            "openai" => {
+                let model = llm_model.unwrap_or("gpt-4o-mini");
+                Arc::new(OpenAIClient::new(model.to_string()))
+            }
+            "gemini" => {
+                let model = llm_model.unwrap_or("gemini-2.5-flash");
+                Arc::new(GeminiClient::new(model))
+            }
+            "mistral" => {
+                Arc::new(MistralClient::new())
+            }
+            _ => anyhow::bail!("Unknown LLM provider: {}", provider),
+        };
+
+        llm_client.ask(query, results.clone()).await?
+    } else {
+        // Use default RAG LLM client
+        rag_lock.ask(query).await?
+    };
 
     // Format sources
     let sources: Vec<ChunkResult> = results
@@ -444,4 +507,51 @@ async fn answer_impl(
         .collect();
 
     Ok((answer, sources))
+}
+
+/// Helper to temporarily set API key in environment
+/// Returns a guard that will restore the original value on drop
+fn set_temp_api_key(provider: &str, api_key: &str) -> TempEnvGuard {
+    let env_var = match provider {
+        "claude" => "ANTHROPIC_API_KEY",
+        "openai" => "OPENAI_API_KEY",
+        "gemini" => "GEMINI_API_KEY",
+        "mistral" => "MISTRAL_API_KEY",
+        _ => return TempEnvGuard { var: None, original: None },
+    };
+
+    let original = std::env::var(env_var).ok();
+
+    // SAFETY: We're modifying environment variables in a controlled way within a single-threaded
+    // context (tokio spawn). The guard ensures restoration. This is acceptable for temporary
+    // API key injection per request.
+    unsafe {
+        std::env::set_var(env_var, api_key);
+    }
+
+    TempEnvGuard {
+        var: Some(env_var.to_string()),
+        original,
+    }
+}
+
+/// Guard that restores environment variable on drop
+struct TempEnvGuard {
+    var: Option<String>,
+    original: Option<String>,
+}
+
+impl Drop for TempEnvGuard {
+    fn drop(&mut self) {
+        if let Some(var) = &self.var {
+            // SAFETY: Restoring environment variable state
+            unsafe {
+                if let Some(original) = &self.original {
+                    std::env::set_var(var, original);
+                } else {
+                    std::env::remove_var(var);
+                }
+            }
+        }
+    }
 }
