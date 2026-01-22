@@ -7,16 +7,18 @@ use crate::document::KimunChunk;
 
 use super::LLMClient;
 
-pub struct MistralClient {
+pub struct ClaudeClient {
     api_key: String,
+    model: String,
 }
 
-impl MistralClient {
-    pub fn new() -> Self {
+impl ClaudeClient {
+    pub fn new(model: String) -> Self {
         // Get API key from environment variable
-        let api_key =
-            std::env::var("MISTRAL_API_KEY").expect("MISTRAL_API_KEY environment variable not set");
-        Self { api_key }
+        let api_key = std::env::var("ANTHROPIC_API_KEY")
+            .expect("ANTHROPIC_API_KEY environment variable not set");
+
+        Self { api_key, model }
     }
 
     fn get_prompt(&self, question: String, context: Vec<(f64, KimunChunk)>) -> String {
@@ -46,12 +48,10 @@ impl MistralClient {
             r#"
 Context information is below.
 ---------------------
-{context_string}
----------------------
+{context_string}---------------------
 Given the context information and not prior knowledge, answer the query.
 Query: {question}
-Answer:
-"#
+Answer:"#
         );
 
         prompt
@@ -59,7 +59,7 @@ Answer:
 }
 
 #[async_trait::async_trait]
-impl LLMClient for MistralClient {
+impl LLMClient for ClaudeClient {
     async fn ask(
         &self,
         question: &str,
@@ -69,10 +69,10 @@ impl LLMClient for MistralClient {
         let client = Client::new();
 
         // Prepare the request payload
-        let request_payload = MistralRequest {
-            model: "mistral-large-latest".to_string(), // Replace with the model you want to use
-
-            messages: vec![Message {
+        let request_payload = ClaudeRequest {
+            model: self.model.clone(),
+            max_tokens: 4096,
+            messages: vec![ClaudeMessage {
                 role: "user".to_string(),
                 content: self.get_prompt(question.to_string(), context),
             }],
@@ -80,8 +80,9 @@ impl LLMClient for MistralClient {
 
         // Make the API call
         let response = client
-            .post("https://api.mistral.ai/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&request_payload)
             .send()
@@ -90,65 +91,64 @@ impl LLMClient for MistralClient {
         // Check if request was successful
         if response.status().is_success() {
             // Parse the response
-            let mistral_response: MistralResponse = response.json().await?;
+            let claude_response: ClaudeResponse = response.json().await?;
 
-            let response = mistral_response
-                .choices
-                .iter()
-                .map(|c| c.message.content.to_owned())
+            let response = claude_response
+                .content
+                .into_iter()
+                .filter_map(|c| {
+                    if c.content_type == "text" {
+                        Some(c.text)
+                    } else {
+                        None
+                    }
+                })
                 .collect::<Vec<String>>()
                 .join("\n");
+
+            debug!("Input Tokens Used: {}", claude_response.usage.input_tokens);
             debug!(
-                "Prompt Tokens Used: {}",
-                mistral_response.usage.prompt_tokens
+                "Output Tokens Used: {}",
+                claude_response.usage.output_tokens
             );
-            debug!(
-                "Completion Tokens Used: {}",
-                mistral_response.usage.completion_tokens
-            );
-            debug!("Total Tokens: {}", mistral_response.usage.total_tokens);
 
             Ok(response)
         } else {
             let status = response.status();
-            let body = (response.text().await?).to_string();
-            bail!("Error: {}\nResponse body: {}", status, body);
+            let body = response.text().await?;
+            bail!("Claude API error: {}\n{}", status, body)
         }
     }
 }
 
 #[derive(Serialize)]
-struct MistralRequest {
+struct ClaudeRequest {
     model: String,
-    messages: Vec<Message>,
+    max_tokens: u32,
+    messages: Vec<ClaudeMessage>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Message {
+#[derive(Serialize)]
+struct ClaudeMessage {
     role: String,
     content: String,
 }
 
-#[derive(Deserialize, Debug)]
-struct MistralResponse {
-    id: String,
-    object: String,
-    created: u64,
-    model: String,
-    choices: Vec<Choice>,
-    usage: Usage,
+#[derive(Deserialize)]
+struct ClaudeResponse {
+    content: Vec<ClaudeContent>,
+    usage: ClaudeUsage,
 }
 
-#[derive(Deserialize, Debug)]
-struct Choice {
-    index: u32,
-    message: Message,
-    finish_reason: String,
+#[derive(Deserialize)]
+struct ClaudeContent {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: String,
 }
 
-#[derive(Deserialize, Debug)]
-struct Usage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
+#[derive(Deserialize)]
+struct ClaudeUsage {
+    input_tokens: u32,
+    output_tokens: u32,
 }

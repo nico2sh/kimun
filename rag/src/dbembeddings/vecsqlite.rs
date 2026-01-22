@@ -127,6 +127,7 @@ impl VecSQLite {
     }
 }
 
+#[async_trait::async_trait]
 impl Embeddings for VecSQLite {
     fn init(&mut self) -> anyhow::Result<()> {
         let md = std::fs::metadata(&self.db_path)?;
@@ -154,6 +155,16 @@ impl Embeddings for VecSQLite {
             (), // empty list of parameters.
         )?;
 
+        // Create index tracking table
+        tx.execute(
+            "CREATE TABLE indexed_notes (
+            path TEXT PRIMARY KEY,
+            content_hash TEXT NOT NULL,
+            last_indexed INTEGER NOT NULL
+        )",
+            (),
+        )?;
+
         tx.commit()?;
 
         Ok(())
@@ -174,11 +185,58 @@ impl Embeddings for VecSQLite {
         Ok(())
     }
 
-    async fn query_embedding<S: AsRef<str>>(
-        &self,
-        query: S,
-    ) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
+    async fn query_embedding(&self, query: &str) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
         let query_embed = self.embedder.prompt_embedding(query).await?;
         self.get_docs(&query_embed)
     }
+
+    fn get_indexed_notes(&self) -> anyhow::Result<std::collections::HashMap<String, crate::dbembeddings::IndexedNote>> {
+        use std::collections::HashMap;
+
+        let conn = VecSQLite::connection()?;
+        let mut stmt = conn.prepare("SELECT path, content_hash, last_indexed FROM indexed_notes")?;
+
+        let notes = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    crate::dbembeddings::IndexedNote {
+                        path: row.get(0)?,
+                        content_hash: row.get(1)?,
+                        last_indexed: row.get(2)?,
+                    },
+                ))
+            })?
+            .collect::<Result<HashMap<String, crate::dbembeddings::IndexedNote>, _>>()?;
+
+        Ok(notes)
+    }
+
+    fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()> {
+        let conn = VecSQLite::connection()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO indexed_notes (path, content_hash, last_indexed) VALUES (?1, ?2, ?3)",
+            (path, content_hash, now),
+        )?;
+
+        Ok(())
+    }
+
+    fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {
+        let conn = VecSQLite::connection()?;
+        conn.execute("DELETE FROM indexed_notes WHERE path = ?1", [path])?;
+        Ok(())
+    }
+}
+
+/// Compute SHA256 hash of content for change detection
+pub fn compute_content_hash(content: &str) -> String {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
 }

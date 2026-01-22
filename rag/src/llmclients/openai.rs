@@ -7,16 +7,18 @@ use crate::document::KimunChunk;
 
 use super::LLMClient;
 
-pub struct MistralClient {
+pub struct OpenAIClient {
     api_key: String,
+    model: String,
 }
 
-impl MistralClient {
-    pub fn new() -> Self {
+impl OpenAIClient {
+    pub fn new(model: String) -> Self {
         // Get API key from environment variable
         let api_key =
-            std::env::var("MISTRAL_API_KEY").expect("MISTRAL_API_KEY environment variable not set");
-        Self { api_key }
+            std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable not set");
+
+        Self { api_key, model }
     }
 
     fn get_prompt(&self, question: String, context: Vec<(f64, KimunChunk)>) -> String {
@@ -46,12 +48,10 @@ impl MistralClient {
             r#"
 Context information is below.
 ---------------------
-{context_string}
----------------------
+{context_string}---------------------
 Given the context information and not prior knowledge, answer the query.
 Query: {question}
-Answer:
-"#
+Answer:"#
         );
 
         prompt
@@ -59,7 +59,7 @@ Answer:
 }
 
 #[async_trait::async_trait]
-impl LLMClient for MistralClient {
+impl LLMClient for OpenAIClient {
     async fn ask(
         &self,
         question: &str,
@@ -69,10 +69,9 @@ impl LLMClient for MistralClient {
         let client = Client::new();
 
         // Prepare the request payload
-        let request_payload = MistralRequest {
-            model: "mistral-large-latest".to_string(), // Replace with the model you want to use
-
-            messages: vec![Message {
+        let request_payload = OpenAIRequest {
+            model: self.model.clone(),
+            messages: vec![OpenAIMessage {
                 role: "user".to_string(),
                 content: self.get_prompt(question.to_string(), context),
             }],
@@ -80,7 +79,7 @@ impl LLMClient for MistralClient {
 
         // Make the API call
         let response = client
-            .post("https://api.mistral.ai/v1/chat/completions")
+            .post("https://api.openai.com/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request_payload)
@@ -90,64 +89,59 @@ impl LLMClient for MistralClient {
         // Check if request was successful
         if response.status().is_success() {
             // Parse the response
-            let mistral_response: MistralResponse = response.json().await?;
+            let openai_response: OpenAIResponse = response.json().await?;
 
-            let response = mistral_response
+            let response = openai_response
                 .choices
-                .iter()
-                .map(|c| c.message.content.to_owned())
+                .into_iter()
+                .map(|c| c.message.content)
                 .collect::<Vec<String>>()
                 .join("\n");
+
             debug!(
                 "Prompt Tokens Used: {}",
-                mistral_response.usage.prompt_tokens
+                openai_response.usage.prompt_tokens
             );
             debug!(
                 "Completion Tokens Used: {}",
-                mistral_response.usage.completion_tokens
+                openai_response.usage.completion_tokens
             );
-            debug!("Total Tokens: {}", mistral_response.usage.total_tokens);
+            debug!("Total Tokens: {}", openai_response.usage.total_tokens);
 
             Ok(response)
         } else {
             let status = response.status();
-            let body = (response.text().await?).to_string();
-            bail!("Error: {}\nResponse body: {}", status, body);
+            let body = response.text().await?;
+            bail!("OpenAI API error: {}\n{}", status, body)
         }
     }
 }
 
 #[derive(Serialize)]
-struct MistralRequest {
+struct OpenAIRequest {
     model: String,
-    messages: Vec<Message>,
+    messages: Vec<OpenAIMessage>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Message {
+#[derive(Serialize, Deserialize)]
+struct OpenAIMessage {
     role: String,
     content: String,
 }
 
-#[derive(Deserialize, Debug)]
-struct MistralResponse {
-    id: String,
-    object: String,
-    created: u64,
-    model: String,
-    choices: Vec<Choice>,
-    usage: Usage,
+#[derive(Deserialize)]
+struct OpenAIResponse {
+    choices: Vec<OpenAIChoice>,
+    usage: OpenAIUsage,
 }
 
-#[derive(Deserialize, Debug)]
-struct Choice {
-    index: u32,
-    message: Message,
-    finish_reason: String,
+#[derive(Deserialize)]
+struct OpenAIChoice {
+    message: OpenAIMessage,
 }
 
-#[derive(Deserialize, Debug)]
-struct Usage {
+#[derive(Deserialize)]
+struct OpenAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
