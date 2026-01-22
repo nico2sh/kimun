@@ -7,33 +7,21 @@ use crate::document::KimunChunk;
 
 use super::LLMClient;
 
-pub enum GeminiModel {
-    Gemini25Pro,
-    Gemini25Flash,
-}
-
-impl std::fmt::Display for GeminiModel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            GeminiModel::Gemini25Pro => "gemini-2.5-pro",
-            GeminiModel::Gemini25Flash => "gemini-2.5-flash",
-        };
-        write!(f, "{}", s)
-    }
-}
-
 pub struct GeminiClient {
     api_key: String,
-    model: GeminiModel,
+    model: String,
 }
 
 impl GeminiClient {
-    pub fn new(model: GeminiModel) -> Self {
+    pub fn new(model: impl Into<String>) -> Self {
         // Get API key from environment variable
         let api_key =
             std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY environment variable not set");
 
-        Self { api_key, model }
+        Self {
+            api_key,
+            model: model.into(),
+        }
     }
 
     fn get_prompt(&self, question: String, context: Vec<(f64, KimunChunk)>) -> String {

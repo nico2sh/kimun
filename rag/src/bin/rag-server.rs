@@ -98,7 +98,7 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
         config::{LlmConfig, VectorDbConfig},
         dbembeddings::{vecqdrant::VecQdrant, vecsqlite::VecSQLite},
         llmclients::claude::ClaudeClient,
-        llmclients::gemini::{GeminiClient, GeminiModel},
+        llmclients::gemini::GeminiClient,
         llmclients::mistral::MistralClient,
         llmclients::openai::OpenAIClient,
     };
@@ -122,9 +122,9 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
 
     // Create LLM client based on config
     let llm_client: Arc<dyn kimun_rag::llmclients::LLMClient + Send + Sync> = match &config.llm {
-        LlmConfig::Gemini { model: _ } => {
-            tracing::info!("Using Gemini LLM");
-            Arc::new(GeminiClient::new(GeminiModel::Gemini25Flash))
+        LlmConfig::Gemini { model } => {
+            tracing::info!("Using Gemini LLM with model: {}", model);
+            Arc::new(GeminiClient::new(model))
         }
         LlmConfig::Mistral { model: _ } => {
             tracing::info!("Using Mistral LLM");
@@ -132,11 +132,11 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
         }
         LlmConfig::Claude { model } => {
             tracing::info!("Using Claude LLM with model: {}", model);
-            Arc::new(ClaudeClient::new(model.clone()))
+            Arc::new(ClaudeClient::new(model))
         }
         LlmConfig::OpenAI { model } => {
             tracing::info!("Using OpenAI LLM with model: {}", model);
-            Arc::new(OpenAIClient::new(model.clone()))
+            Arc::new(OpenAIClient::new(model))
         }
     };
 

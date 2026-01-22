@@ -13,12 +13,15 @@ pub struct ClaudeClient {
 }
 
 impl ClaudeClient {
-    pub fn new(model: String) -> Self {
+    pub fn new(model: impl Into<String>) -> Self {
         // Get API key from environment variable
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .expect("ANTHROPIC_API_KEY environment variable not set");
 
-        Self { api_key, model }
+        Self {
+            api_key,
+            model: model.into(),
+        }
     }
 
     fn get_prompt(&self, question: String, context: Vec<(f64, KimunChunk)>) -> String {
