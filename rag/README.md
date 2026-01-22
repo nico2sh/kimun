@@ -11,6 +11,42 @@ A high-performance Retrieval-Augmented Generation (RAG) server for querying your
 - **Async Job Queue**: Background processing for indexing and query operations
 - **RESTful API**: Clean HTTP endpoints for all operations
 
+## Examples
+
+### Using different LLMs for different queries
+
+```bash
+# Use Claude for complex reasoning (with custom API key)
+curl -X POST http://localhost:8080/api/answer \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk-ant-your-key-here" \
+  -d '{
+    "query": "Compare and contrast the architectural patterns in my notes",
+    "llm_provider": "claude",
+    "llm_model": "claude-3-5-sonnet-20241022"
+  }'
+
+# Use GPT-4o-mini for quick, simple questions
+curl -X POST http://localhost:8080/api/answer \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk-your-openai-key" \
+  -d '{
+    "query": "What is the main topic of note X?",
+    "llm_provider": "openai",
+    "llm_model": "gpt-4o-mini"
+  }'
+
+# Use Gemini for cost-effective queries
+curl -X POST http://localhost:8080/api/answer \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-gemini-key" \
+  -d '{
+    "query": "List all the projects mentioned in my notes",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-2.5-flash"
+  }'
+```
+
 ## Quick Start
 
 ### 1. Configuration
@@ -159,7 +195,7 @@ Response:
 
 ### Answer with LLM
 
-Get an AI-generated answer based on your notes:
+Get an AI-generated answer based on your notes. You can optionally specify which LLM provider to use for this specific request:
 
 ```bash
 POST /api/answer
@@ -170,6 +206,34 @@ Content-Type: application/json
 }
 ```
 
+Or with dynamic LLM selection (provider and model in body, API key in header):
+
+```bash
+POST /api/answer
+Content-Type: application/json
+X-API-Key: sk-ant-your-api-key-here
+
+{
+  "query": "Explain RAG systems",
+  "llm_provider": "claude",
+  "llm_model": "claude-3-5-sonnet-20241022"
+}
+```
+
+**Request Parameters:**
+- **Body:**
+  - `query` (required): The question to answer
+  - `llm_provider` (optional): Which LLM to use - `"claude"`, `"openai"`, `"gemini"`, or `"mistral"`
+  - `llm_model` (optional): Specific model name
+- **Headers:**
+  - `X-API-Key` (optional): Override the default API key for this request
+
+**Supported LLM providers:**
+- `"claude"` - Models: `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`, etc.
+- `"openai"` - Models: `gpt-4o-mini`, `gpt-4o`, `gpt-4-turbo`, etc.
+- `"gemini"` - Models: `gemini-2.5-flash`, `gemini-1.5-pro`, etc.
+- `"mistral"` - Uses `mistral-large-latest`
+
 Response:
 ```json
 {
@@ -177,6 +241,17 @@ Response:
   "message": "Query job started"
 }
 ```
+
+**Use cases for dynamic LLM selection:**
+- Test different models without restarting the server
+- Use cheaper models for simple queries, powerful models for complex ones
+- Multi-tenant scenarios with per-user API keys (via `X-API-Key` header)
+- A/B testing different LLM providers
+
+**Security note:** API keys are passed via the `X-API-Key` header (not in the request body) to:
+- Prevent keys from appearing in logs that might record request bodies
+- Follow HTTP best practices for authentication credentials
+- Enable easier filtering in proxies and middleware
 
 ### Check Job Status
 
