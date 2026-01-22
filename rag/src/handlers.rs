@@ -1,18 +1,14 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
+    KimunRag,
     config::RagConfig,
     document::{KimunChunk, KimunMetadata},
     server_state::{AppState, JobStatus},
-    KimunRag,
 };
 
 // ============================================================================
@@ -40,7 +36,7 @@ pub struct QueryRequest {
 #[derive(Debug, Deserialize)]
 pub struct AnswerRequest {
     pub query: String,
-    pub llm_provider: Option<String>,  // "claude", "openai", "gemini", "mistral"
+    pub llm_provider: Option<String>, // "claude", "openai", "gemini", "mistral"
     pub llm_model: Option<String>,
 }
 
@@ -100,13 +96,20 @@ pub async fn index_all_handler(
     let job_id = Uuid::new_v4();
 
     // Mark job as queued
-    state.job_tracker.lock().await.create(job_id, JobStatus::Queued);
+    state
+        .job_tracker
+        .lock()
+        .await
+        .create(job_id, JobStatus::Queued);
 
     // Spawn background task
     let state_clone = state.clone();
     tokio::spawn(async move {
         // Mark as processing
-        state_clone.job_tracker.lock().await
+        state_clone
+            .job_tracker
+            .lock()
+            .await
             .update_status(&job_id, JobStatus::Processing);
 
         // Perform indexing
@@ -117,12 +120,19 @@ pub async fn index_all_handler(
                     "skipped": stats.skipped,
                     "updated": stats.updated,
                     "errors": stats.errors,
-                }).to_string();
-                state_clone.job_tracker.lock().await
+                })
+                .to_string();
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
                     .set_result(&job_id, result);
             }
             Err(e) => {
-                state_clone.job_tracker.lock().await
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
                     .set_error(&job_id, e.to_string());
             }
         }
@@ -144,9 +154,10 @@ pub async fn index_single_handler(
         .chunks
         .iter()
         .map(|chunk| {
-            let date = chunk.date.as_ref().and_then(|d| {
-                chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()
-            });
+            let date = chunk
+                .date
+                .as_ref()
+                .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
 
             KimunChunk {
                 content: chunk.content.clone(),
@@ -226,14 +237,21 @@ pub async fn answer_handler(
         .map(|s| s.to_string());
 
     // Mark job as queued
-    state.job_tracker.lock().await.create(job_id, JobStatus::Queued);
+    state
+        .job_tracker
+        .lock()
+        .await
+        .create(job_id, JobStatus::Queued);
 
     // Spawn background task
     let state_clone = state.clone();
 
     tokio::spawn(async move {
         // Mark as processing
-        state_clone.job_tracker.lock().await
+        state_clone
+            .job_tracker
+            .lock()
+            .await
             .update_status(&job_id, JobStatus::Processing);
 
         // Perform query and answer with dynamic LLM
@@ -243,17 +261,26 @@ pub async fn answer_handler(
             request.llm_provider.as_deref(),
             request.llm_model.as_deref(),
             api_key.as_deref(),
-        ).await {
+        )
+        .await
+        {
             Ok((answer, sources)) => {
                 let result = serde_json::json!({
                     "answer": answer,
                     "sources": sources,
-                }).to_string();
-                state_clone.job_tracker.lock().await
+                })
+                .to_string();
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
                     .set_result(&job_id, result);
             }
             Err(e) => {
-                state_clone.job_tracker.lock().await
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
                     .set_error(&job_id, e.to_string());
             }
         }
@@ -286,7 +313,10 @@ pub async fn job_status_handler(
             JobStatus::Queued => ("queued".to_string(), None, None),
             JobStatus::Processing => ("processing".to_string(), None, None),
             JobStatus::Completed => {
-                let result = job.result.as_ref().and_then(|s| serde_json::from_str(s).ok());
+                let result = job
+                    .result
+                    .as_ref()
+                    .and_then(|s| serde_json::from_str(s).ok());
                 ("completed".to_string(), result, None)
             }
             JobStatus::Failed => ("failed".to_string(), None, job.error.clone()),
@@ -326,7 +356,11 @@ async fn store_single_note_impl(
     }
 
     // Compute hash
-    let content: String = chunks.iter().map(|c| c.content.as_str()).collect::<Vec<_>>().join("\n");
+    let content: String = chunks
+        .iter()
+        .map(|c| c.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     let content_hash = crate::dbembeddings::vecsqlite::compute_content_hash(&content);
 
     // Store embeddings
@@ -356,7 +390,7 @@ async fn index_all_impl(
         let mut stmt = conn.prepare(
             "SELECT n.path, n.title, n.date, nc.content
              FROM notes n
-             JOIN notesContent nc ON n.path = nc.path"
+             JOIN notesContent nc ON n.path = nc.path",
         )?;
 
         let notes_iter = stmt.query_map([], |row| {
@@ -365,20 +399,24 @@ async fn index_all_impl(
             let date_str: Option<String> = row.get(2)?;
             let content: String = row.get(3)?;
 
-            let date = date_str.and_then(|d| {
-                chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok()
-            });
+            let date =
+                date_str.and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
 
             Ok((path, title, date, content))
         })?;
 
         // Group by path
-        let mut notes_map: std::collections::HashMap<String, Vec<(String, Option<chrono::NaiveDate>, String)>> =
-            std::collections::HashMap::new();
+        let mut notes_map: std::collections::HashMap<
+            String,
+            Vec<(String, Option<chrono::NaiveDate>, String)>,
+        > = std::collections::HashMap::new();
 
         for note in notes_iter {
             let (path, title, date, content) = note?;
-            notes_map.entry(path).or_insert_with(Vec::new).push((title, date, content));
+            notes_map
+                .entry(path)
+                .or_insert_with(Vec::new)
+                .push((title, date, content));
         }
 
         Ok(notes_map)
@@ -407,7 +445,11 @@ async fn index_all_impl(
             .collect();
 
         // Compute hash
-        let content: String = chunks.iter().map(|c| c.content.as_str()).collect::<Vec<_>>().join("\n");
+        let content: String = chunks
+            .iter()
+            .map(|c| c.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         let content_hash = crate::dbembeddings::vecsqlite::compute_content_hash(&content);
 
         // Check if we need to reindex
@@ -443,11 +485,8 @@ async fn answer_impl_with_llm(
     api_key: Option<&str>,
 ) -> anyhow::Result<(String, Vec<ChunkResult>)> {
     use crate::llmclients::{
-        LLMClient,
-        claude::ClaudeClient,
+        LLMClient, claude::ClaudeClient, gemini::GeminiClient, mistral::MistralClient,
         openai::OpenAIClient,
-        gemini::GeminiClient,
-        mistral::MistralClient,
     };
 
     let rag_lock = rag.lock().await;
@@ -464,7 +503,7 @@ async fn answer_impl_with_llm(
             None
         };
 
-        let llm_client: Arc<dyn LLMClient + Send + Sync> = match provider {
+        let llm_client: Arc<dyn LLMClient + Send + Sync> = match provider.to_lowercase().as_str() {
             "claude" => {
                 let model = llm_model.unwrap_or("claude-3-5-sonnet-20241022");
                 Arc::new(ClaudeClient::new(model.to_string()))
@@ -478,7 +517,8 @@ async fn answer_impl_with_llm(
                 Arc::new(GeminiClient::new(model))
             }
             "mistral" => {
-                Arc::new(MistralClient::new())
+                let model = llm_model.unwrap_or("mistral-large-latest");
+                Arc::new(MistralClient::new(model))
             }
             _ => anyhow::bail!("Unknown LLM provider: {}", provider),
         };
@@ -517,7 +557,12 @@ fn set_temp_api_key(provider: &str, api_key: &str) -> TempEnvGuard {
         "openai" => "OPENAI_API_KEY",
         "gemini" => "GEMINI_API_KEY",
         "mistral" => "MISTRAL_API_KEY",
-        _ => return TempEnvGuard { var: None, original: None },
+        _ => {
+            return TempEnvGuard {
+                var: None,
+                original: None,
+            };
+        }
     };
 
     let original = std::env::var(env_var).ok();

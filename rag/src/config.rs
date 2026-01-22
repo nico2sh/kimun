@@ -81,7 +81,7 @@ fn default_host() -> String {
 }
 
 fn default_port() -> u16 {
-    8080
+    7573
 }
 
 fn default_max_concurrent_jobs() -> usize {
@@ -200,7 +200,7 @@ provider = "gemini"
 
         let config: RagConfig = toml::from_str(config_toml).unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
-        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.server.port, 7573);
         assert_eq!(config.reranker.enabled, true);
         assert_eq!(config.reranker.top_k, 20);
     }

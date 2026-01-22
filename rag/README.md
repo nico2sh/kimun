@@ -17,7 +17,7 @@ A high-performance Retrieval-Augmented Generation (RAG) server for querying your
 
 ```bash
 # Use Claude for complex reasoning (with custom API key)
-curl -X POST http://localhost:8080/api/answer \
+curl -X POST http://localhost:7573/api/answer \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sk-ant-your-key-here" \
   -d '{
@@ -27,7 +27,7 @@ curl -X POST http://localhost:8080/api/answer \
   }'
 
 # Use GPT-4o-mini for quick, simple questions
-curl -X POST http://localhost:8080/api/answer \
+curl -X POST http://localhost:7573/api/answer \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sk-your-openai-key" \
   -d '{
@@ -37,7 +37,7 @@ curl -X POST http://localhost:8080/api/answer \
   }'
 
 # Use Gemini for cost-effective queries
-curl -X POST http://localhost:8080/api/answer \
+curl -X POST http://localhost:7573/api/answer \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-gemini-key" \
   -d '{
@@ -63,7 +63,7 @@ Edit `~/.config/kimun/rag.conf`:
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 7573
 
 [vault]
 path = "/path/to/your/notes"

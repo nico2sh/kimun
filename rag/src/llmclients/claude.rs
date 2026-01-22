@@ -51,7 +51,8 @@ impl ClaudeClient {
             r#"
 Context information is below.
 ---------------------
-{context_string}---------------------
+{context_string}
+---------------------
 Given the context information and not prior knowledge, answer the query.
 Query: {question}
 Answer:"#

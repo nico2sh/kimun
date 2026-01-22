@@ -9,14 +9,18 @@ use super::LLMClient;
 
 pub struct MistralClient {
     api_key: String,
+    model: String,
 }
 
 impl MistralClient {
-    pub fn new() -> Self {
+    pub fn new(model: impl Into<String>) -> Self {
         // Get API key from environment variable
         let api_key =
             std::env::var("MISTRAL_API_KEY").expect("MISTRAL_API_KEY environment variable not set");
-        Self { api_key }
+        Self {
+            api_key,
+            model: model.into(),
+        }
     }
 
     fn get_prompt(&self, question: String, context: Vec<(f64, KimunChunk)>) -> String {
@@ -70,7 +74,7 @@ impl LLMClient for MistralClient {
 
         // Prepare the request payload
         let request_payload = MistralRequest {
-            model: "mistral-large-latest".to_string(), // Replace with the model you want to use
+            model: self.model.clone(), // Replace with the model you want to use
 
             messages: vec![Message {
                 role: "user".to_string(),
