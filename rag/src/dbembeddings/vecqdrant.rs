@@ -162,6 +162,12 @@ impl Embeddings for VecQdrant {
         Ok(())
     }
 
+    async fn delete_embeddings(&self, _paths: Vec<&String>) -> anyhow::Result<()> {
+        // TODO: Implement batch deletion for multiple paths
+        // For each path in paths, delete all points where payload.path matches
+        todo!()
+    }
+
     async fn query_embedding(&self, query: &str) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
         self.ensure_collection().await?;
 

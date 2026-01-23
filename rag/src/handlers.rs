@@ -457,10 +457,11 @@ async fn index_all_impl(
 
     // Use incremental indexing per path
     let rag_lock = rag.lock().await;
-    let indexed_notes = rag_lock.embeddings.get_indexed_notes()?;
+    let mut indexed_notes = rag_lock.embeddings.get_indexed_notes()?;
 
     let mut indexed_count = 0;
     let mut skipped_count = 0;
+    let mut updated_count = 0;
 
     for (path, contents) in notes_map {
         let content_hash = if contents.windows(2).all(|w| w[0].3 == w[1].3) {
@@ -492,26 +493,35 @@ async fn index_all_impl(
         // let content_hash = crate::dbembeddings::vecsqlite::compute_content_hash(&content);
 
         // Check if we need to reindex
-        let needs_indexing = if let Some(indexed) = indexed_notes.get(&path) {
-            indexed.content_hash != content_hash
+        let needs_indexing = if let Some(indexed) = indexed_notes.remove(&path) {
+            let update = indexed.content_hash != content_hash;
+            if update {
+                updated_count += 1;
+            } else {
+                skipped_count += 1;
+            }
+            update
         } else {
+            indexed_count += 1;
             true
         };
 
         if needs_indexing {
             rag_lock.embeddings.store_embeddings(&chunks).await?;
             rag_lock.embeddings.mark_as_indexed(&path, &content_hash)?;
-            indexed_count += 1;
-        } else {
-            skipped_count += 1;
         }
     }
+
+    let missing = indexed_notes.keys().collect::<Vec<&String>>();
+    let removed_count = missing.len();
+    rag_lock.embeddings.delete_embeddings(missing).await?;
 
     Ok(crate::IndexStats {
         indexed: indexed_count,
         skipped: skipped_count,
-        updated: 0,
+        updated: updated_count,
         errors: 0,
+        removed: removed_count,
     })
 }
 
