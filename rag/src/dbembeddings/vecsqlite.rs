@@ -80,9 +80,11 @@ impl VecSQLite {
             docs.path,
             docs.title,
             docs.date,
-            docs.text
+            docs.text,
+            indexed_notes.content_hash
           FROM vec_items
           JOIN docs ON vec_items.rowid = docs.rowid
+          JOIN indexed_notes ON docs.path = indexed_notes.path
           WHERE vec_items.embedding MATCH ?1
           AND k = 128
           ORDER BY vec_items.distance
@@ -100,6 +102,7 @@ impl VecSQLite {
                 let title: String = r.get(2)?;
                 let date: String = r.get(3)?;
                 let text: String = r.get(4)?;
+                let hash: String = r.get(5)?;
                 let kimun_chunk = KimunChunk {
                     content: text,
                     metadata: crate::document::KimunMetadata {
@@ -109,6 +112,7 @@ impl VecSQLite {
                             Ok(d) => Some(d),
                             Err(_) => None,
                         },
+                        hash,
                     },
                 };
                 Ok((distance, kimun_chunk))
@@ -129,7 +133,8 @@ impl VecSQLite {
 
 #[async_trait::async_trait]
 impl Embeddings for VecSQLite {
-    fn init(&mut self) -> anyhow::Result<()> {
+    fn init(&self) -> anyhow::Result<()> {
+        debug!("Checking the db_path at {}", self.db_path.to_string_lossy());
         let md = std::fs::metadata(&self.db_path)?;
         // We delete the db file
         if md.is_dir() {
@@ -138,6 +143,7 @@ impl Embeddings for VecSQLite {
             std::fs::remove_file(&self.db_path)?;
         }
 
+        debug!("Creating tables");
         let mut conn = VecSQLite::connection()?;
         let tx = conn.transaction()?;
         tx.execute(
@@ -190,11 +196,14 @@ impl Embeddings for VecSQLite {
         self.get_docs(&query_embed)
     }
 
-    fn get_indexed_notes(&self) -> anyhow::Result<std::collections::HashMap<String, crate::dbembeddings::IndexedNote>> {
+    fn get_indexed_notes(
+        &self,
+    ) -> anyhow::Result<std::collections::HashMap<String, crate::dbembeddings::IndexedNote>> {
         use std::collections::HashMap;
 
         let conn = VecSQLite::connection()?;
-        let mut stmt = conn.prepare("SELECT path, content_hash, last_indexed FROM indexed_notes")?;
+        let mut stmt =
+            conn.prepare("SELECT path, content_hash, last_indexed FROM indexed_notes")?;
 
         let notes = stmt
             .query_map([], |row| {
@@ -235,7 +244,7 @@ impl Embeddings for VecSQLite {
 
 /// Compute SHA256 hash of content for change detection
 pub fn compute_content_hash(content: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     format!("{:x}", hasher.finalize())

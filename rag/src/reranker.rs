@@ -1,6 +1,6 @@
-use std::sync::Mutex;
-use fastembed::{TextRerank, RerankerModel, RerankInitOptions};
 use crate::document::KimunChunk;
+use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
+use std::sync::Mutex;
 
 /// Reranker for improving search result quality using cross-encoder models
 pub struct CrossEncoderReranker {
@@ -34,9 +34,7 @@ impl CrossEncoderReranker {
         // Prepare documents for reranking
         let documents: Vec<String> = results
             .iter()
-            .map(|(_, chunk)| {
-                format!("{}\n{}", chunk.metadata.title, chunk.content)
-            })
+            .map(|(_, chunk)| format!("{}\n{}", chunk.metadata.title, chunk.content))
             .collect();
 
         // Convert to &str references for the API
@@ -100,6 +98,7 @@ mod tests {
                         source_path: "doc1.md".to_string(),
                         title: "Python".to_string(),
                         date: None,
+                        hash: "1234".to_string(),
                     },
                 },
             ),
@@ -111,6 +110,7 @@ mod tests {
                         source_path: "doc2.md".to_string(),
                         title: "Animals".to_string(),
                         date: None,
+                        hash: "5678".to_string(),
                     },
                 },
             ),

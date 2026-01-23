@@ -18,7 +18,6 @@ use crate::{
 #[derive(Debug, Deserialize)]
 pub struct IndexSingleRequest {
     pub path: String,
-    pub chunks: Vec<ChunkData>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,29 +148,8 @@ pub async fn index_single_handler(
     State(state): State<Arc<AppState>>,
     Json(request): Json<IndexSingleRequest>,
 ) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Convert request to KimunChunks
-    let chunks: Vec<KimunChunk> = request
-        .chunks
-        .iter()
-        .map(|chunk| {
-            let date = chunk
-                .date
-                .as_ref()
-                .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
-
-            KimunChunk {
-                content: chunk.content.clone(),
-                metadata: KimunMetadata {
-                    source_path: request.path.clone(),
-                    title: chunk.title.clone(),
-                    date,
-                },
-            }
-        })
-        .collect();
-
     // Store synchronously (as per user requirement)
-    match store_single_note_impl(&request.path, chunks, state.rag.clone()).await {
+    match store_single_note_impl(&request.path, state.rag.clone(), &state.config).await {
         Ok(()) => Ok(Json(IndexResponse {
             job_id: Uuid::new_v4().to_string(),
             message: format!("Successfully indexed path {}", request.path),
@@ -344,9 +322,64 @@ pub async fn job_status_handler(
 
 async fn store_single_note_impl(
     path: &str,
-    chunks: Vec<KimunChunk>,
     rag: Arc<Mutex<KimunRag>>,
+    config: &RagConfig,
 ) -> anyhow::Result<()> {
+    // Open the vault database
+    let vault_path = config.vault.path.clone();
+    let db_path = vault_path.join("kimun.sqlite");
+
+    if !db_path.exists() {
+        anyhow::bail!("Vault database not found at {:?}", db_path);
+    }
+
+    let source_path = path.to_string();
+    // Read notes from the database in a blocking task (rusqlite is not Send)
+    let chunks = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        use rusqlite::Connection;
+        let conn = Connection::open(&db_path)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT n.path, n.noteName, n.title, nc.breadCrumb, nc.text, n.hash
+             FROM notes n
+             JOIN notesContent nc ON n.path = nc.path where n.path = ?1",
+        )?;
+        let notes_iter = stmt.query_map([source_path], |row| {
+            let path: String = row.get(0)?;
+            let note_name: String = row.get(1)?;
+            let note_title: String = row.get(2)?;
+            let breadcrumb: String = row.get(3)?;
+            let text: String = row.get(4)?;
+            let hash: String = row.get(5)?;
+
+            let filename = note_name.strip_suffix(".md").unwrap_or(note_name.as_str());
+            let date = chrono::NaiveDate::parse_from_str(filename, "%Y-%m-%d").ok();
+            let title = if breadcrumb.is_empty() {
+                note_title
+            } else {
+                breadcrumb
+            };
+
+            Ok((path, note_name, title, text, date, hash))
+        })?;
+
+        let mut chunks = vec![];
+        for note in notes_iter {
+            let (path, _note_name, title, text, date, hash) = note?;
+            let chunk = KimunChunk {
+                content: text,
+                metadata: KimunMetadata {
+                    source_path: path,
+                    title,
+                    date,
+                    hash,
+                },
+            };
+            chunks.push(chunk);
+        }
+        Ok(chunks)
+    })
+    .await??;
     let rag_lock = rag.lock().await;
 
     if chunks.is_empty() {
@@ -354,18 +387,11 @@ async fn store_single_note_impl(
         rag_lock.embeddings.remove_indexed_note(path)?;
         return Ok(());
     }
-
-    // Compute hash
-    let content: String = chunks
-        .iter()
-        .map(|c| c.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let content_hash = crate::dbembeddings::vecsqlite::compute_content_hash(&content);
+    let content_hash = &chunks.first().unwrap().metadata.hash;
 
     // Store embeddings
     rag_lock.embeddings.store_embeddings(&chunks).await?;
-    rag_lock.embeddings.mark_as_indexed(path, &content_hash)?;
+    rag_lock.embeddings.mark_as_indexed(path, content_hash)?;
 
     Ok(())
 }
@@ -388,35 +414,41 @@ async fn index_all_impl(
         let conn = Connection::open(&db_path)?;
 
         let mut stmt = conn.prepare(
-            "SELECT n.path, n.title, n.date, nc.content
+            "SELECT n.path, n.noteName, n.title, nc.breadCrumb, nc.text, n.hash
              FROM notes n
              JOIN notesContent nc ON n.path = nc.path",
         )?;
-
         let notes_iter = stmt.query_map([], |row| {
             let path: String = row.get(0)?;
-            let title: String = row.get(1)?;
-            let date_str: Option<String> = row.get(2)?;
-            let content: String = row.get(3)?;
+            let note_name: String = row.get(1)?;
+            let note_title: String = row.get(2)?;
+            let breadcrumb: String = row.get(3)?;
+            let text: String = row.get(4)?;
+            let hash: String = row.get(5)?;
 
-            let date =
-                date_str.and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
+            let filename = note_name.strip_suffix(".md").unwrap_or(note_name.as_str());
+            let date = chrono::NaiveDate::parse_from_str(filename, "%Y-%m-%d").ok();
+            let title = if breadcrumb.is_empty() {
+                note_title
+            } else {
+                breadcrumb
+            };
 
-            Ok((path, title, date, content))
+            Ok((path, note_name, title, text, date, hash))
         })?;
 
         // Group by path
         let mut notes_map: std::collections::HashMap<
             String,
-            Vec<(String, Option<chrono::NaiveDate>, String)>,
+            Vec<(String, Option<chrono::NaiveDate>, String, String)>,
         > = std::collections::HashMap::new();
 
         for note in notes_iter {
-            let (path, title, date, content) = note?;
+            let (path, _note_name, title, text, date, hash) = note?;
             notes_map
                 .entry(path)
                 .or_insert_with(Vec::new)
-                .push((title, date, content));
+                .push((title, date, text, hash));
         }
 
         Ok(notes_map)
@@ -431,26 +463,33 @@ async fn index_all_impl(
     let mut skipped_count = 0;
 
     for (path, contents) in notes_map {
+        let content_hash = if contents.windows(2).all(|w| w[0].3 == w[1].3) {
+            contents.first().map(|f| f.3.clone()).unwrap_or_default()
+        } else {
+            "".to_string()
+        };
+
         // Convert to chunks
         let chunks: Vec<KimunChunk> = contents
             .into_iter()
-            .map(|(title, date, content)| KimunChunk {
+            .map(|(title, date, content, hash)| KimunChunk {
                 content,
                 metadata: KimunMetadata {
                     source_path: path.clone(),
                     title,
                     date,
+                    hash,
                 },
             })
             .collect();
 
         // Compute hash
-        let content: String = chunks
-            .iter()
-            .map(|c| c.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let content_hash = crate::dbembeddings::vecsqlite::compute_content_hash(&content);
+        // let content: String = chunks
+        //     .iter()
+        //     .map(|c| c.content.as_str())
+        //     .collect::<Vec<_>>()
+        //     .join("\n");
+        // let content_hash = crate::dbembeddings::vecsqlite::compute_content_hash(&content);
 
         // Check if we need to reindex
         let needs_indexing = if let Some(indexed) = indexed_notes.get(&path) {

@@ -1,8 +1,4 @@
-use std::path::PathBuf;
-
-use clap::{Parser, Subcommand, arg, command};
-use kimun_core::NoteVault;
-use kimun_rag::KimunRag;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -22,26 +18,26 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::new()
-        .filter(Some("kimun_"), log::LevelFilter::max())
-        .init();
-    let cli = Cli::parse();
+    // env_logger::Builder::new()
+    //     .filter(Some("kimun_"), log::LevelFilter::max())
+    //     .init();
+    // let cli = Cli::parse();
 
-    let rag = KimunRag::sqlite(&std::env::current_dir()?);
+    // let rag = KimunRag::sqlite(&std::env::current_dir()?);
 
-    match cli.command {
-        Commands::Index => {
-            rag.init().await?;
-            let vault_path = PathBuf::from("/Users/nhormazabal/OneDrive/Notes");
-            let vault = NoteVault::new(vault_path)?;
-            rag.store_embeddings(vault).await?;
-        }
-        Commands::Ask { query } => {
-            let answer = rag.ask(&query).await?;
+    // match cli.command {
+    //     Commands::Index => {
+    //         rag.init().await?;
+    //         let vault_path = PathBuf::from("/Users/nhormazabal/OneDrive/Notes");
+    //         let vault = NoteVault::new(vault_path)?;
+    //         rag.store_embeddings(vault).await?;
+    //     }
+    //     Commands::Ask { query } => {
+    //         let answer = rag.ask(&query).await?;
 
-            println!("{answer}");
-        }
-    }
+    //         println!("{answer}");
+    //     }
+    // }
 
     Ok(())
 }

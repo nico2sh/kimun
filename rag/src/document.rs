@@ -3,7 +3,9 @@
 // split by Markdown titles
 //
 
-use kimun_core::{NoteVault, nfs::VaultPath, note::NoteDetails};
+// use kimun_core::{NoteVault, nfs::VaultPath, note::NoteDetails};
+
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct KimunChunk {
@@ -16,6 +18,7 @@ pub struct KimunMetadata {
     pub source_path: String,
     pub title: String,
     pub date: Option<chrono::NaiveDate>,
+    pub hash: String,
 }
 
 impl KimunMetadata {
@@ -25,47 +28,68 @@ impl KimunMetadata {
 }
 
 pub struct ChunkLoader {
-    vault: NoteVault,
+    vault_path: PathBuf,
 }
 
 impl ChunkLoader {
-    pub fn new(vault: NoteVault) -> Self {
-        Self { vault }
+    pub fn new(db_path: PathBuf) -> Self {
+        Self {
+            vault_path: db_path,
+        }
     }
 
     pub fn load_notes(&self) -> anyhow::Result<Vec<KimunChunk>> {
+        use rusqlite::Connection;
+
+        let db_path = self.vault_path.join("kimun.sqlite");
+        let conn = Connection::open(&db_path)?;
+        if !db_path.exists() {
+            anyhow::bail!("Vault database not found at {:?}", db_path);
+        }
+        let mut stmt = conn.prepare(
+            "SELECT n.path, n.noteName, n.title, nc.breadCrumb, nc.text, hash
+             FROM notes n
+             JOIN notesContent nc ON n.path = nc.path",
+        )?;
+        let notes_iter = stmt.query_map([], |row| {
+            let path: String = row.get(0)?;
+            let note_name: String = row.get(1)?;
+            let note_title: String = row.get(2)?;
+            let breadcrumb: String = row.get(3)?;
+            let text: String = row.get(4)?;
+            let hash: String = row.get(5)?;
+
+            let filename = note_name.strip_suffix(".md").unwrap_or(note_name.as_str());
+            let date = chrono::NaiveDate::parse_from_str(filename, "%Y-%m-%d").ok();
+            let title = if breadcrumb.is_empty() {
+                note_title
+            } else {
+                breadcrumb
+            };
+
+            Ok((path, note_name, title, text, date, hash))
+        })?;
+
         let mut result = Vec::new();
         // let path_chunks = self.vault.get_note_chunks(&VaultPath::new("journal"))?;
-        let path_chunks = self.vault.get_note_chunks(&VaultPath::new("journal"))?;
-        for (path, chunks) in path_chunks.iter() {
-            let (_parent, file) = path.get_parent_path();
-            let filename = file.strip_suffix(".md").unwrap_or(file.as_str());
+        // let path_chunks = self.vault.get_note_chunks(&VaultPath::new("journal"))?;
+        for note in notes_iter {
+            let (path, _note_name, title, text, date, hash) = note?;
 
-            let date = match chrono::NaiveDate::parse_from_str(filename, "%Y-%m-%d") {
-                Ok(d) => Some(d),
-                Err(_) => None,
+            let metadata = KimunMetadata {
+                source_path: path,
+                title,
+                date,
+                hash,
             };
-            for chunk in chunks {
-                let title = if chunk.breadcrumb.is_empty() {
-                    NoteDetails::get_title_from_text(&chunk.text)
-                } else {
-                    chunk.breadcrumb.join(", ")
-                };
-                let metadata = KimunMetadata {
-                    source_path: path.to_string(),
-                    title,
-                    date,
-                };
-                let document = KimunChunk {
-                    content: chunk.text.clone(),
-                    metadata,
-                };
-
-                // We chunk into manageable sizes
-                let doc_chunks = ChunkLoader::chunk_document_adaptive(document, 1024, 2048);
-                for doc in doc_chunks {
-                    result.push(doc);
-                }
+            let document = KimunChunk {
+                content: text.clone(),
+                metadata,
+            };
+            // We chunk into manageable sizes
+            let doc_chunks = ChunkLoader::chunk_document_adaptive(document, 1024, 2048);
+            for doc in doc_chunks {
+                result.push(doc);
             }
         }
 
@@ -177,6 +201,7 @@ Second line"#;
                 source_path: "path".to_string(),
                 title: "".to_string(),
                 date: None,
+                hash: "".to_string(),
             },
         };
 
