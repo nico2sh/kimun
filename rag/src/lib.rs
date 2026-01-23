@@ -103,7 +103,7 @@ impl KimunRag {
         let chunks = chunk_loader.load_notes()?;
 
         // Get currently indexed notes
-        let indexed_notes = self.embeddings.get_indexed_notes()?;
+        let mut indexed_notes = self.embeddings.get_indexed_notes()?;
 
         // Group chunks by path and compute hashes
         let mut path_chunks: std::collections::HashMap<String, Vec<&document::KimunChunk>> =
@@ -117,20 +117,32 @@ impl KimunRag {
 
         let mut indexed_count = 0;
         let mut skipped_count = 0;
+        let mut updated_count = 0;
 
         for (path, path_chunks_vec) in path_chunks {
-            // Compute hash of all chunks for this path
-            let content: String = path_chunks_vec
-                .iter()
-                .map(|c| c.content.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let content_hash = dbembeddings::vecsqlite::compute_content_hash(&content);
+            let content_hash = if path_chunks_vec
+                .windows(2)
+                .all(|w| w[0].metadata.hash == w[1].metadata.hash)
+            {
+                path_chunks_vec
+                    .first()
+                    .map(|f| f.metadata.hash.clone())
+                    .unwrap_or_default()
+            } else {
+                "".to_string()
+            };
 
             // Check if we need to reindex
-            let needs_indexing = if let Some(indexed) = indexed_notes.get(&path) {
-                indexed.content_hash != content_hash
+            let needs_indexing = if let Some(indexed) = indexed_notes.remove(&path) {
+                let update = indexed.content_hash != content_hash;
+                if update {
+                    updated_count += 1;
+                } else {
+                    skipped_count += 1;
+                }
+                update
             } else {
+                indexed_count += 1;
                 true
             };
 
@@ -141,17 +153,19 @@ impl KimunRag {
 
                 self.embeddings.store_embeddings(&chunks_to_index).await?;
                 self.embeddings.mark_as_indexed(&path, &content_hash)?;
-                indexed_count += 1;
-            } else {
-                skipped_count += 1;
             }
         }
+
+        let missing = indexed_notes.keys().collect::<Vec<&String>>();
+        let removed_count = missing.len();
+        self.embeddings.delete_embeddings(missing).await?;
 
         Ok(IndexStats {
             indexed: indexed_count,
             skipped: skipped_count,
-            updated: 0,
+            updated: updated_count,
             errors: 0,
+            removed: removed_count,
         })
     }
 
@@ -173,12 +187,17 @@ impl KimunRag {
         }
 
         // Compute hash
-        let content: String = chunks
-            .iter()
-            .map(|c| c.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let content_hash = dbembeddings::vecsqlite::compute_content_hash(&content);
+        let content_hash = if chunks
+            .windows(2)
+            .all(|w| w[0].metadata.hash == w[1].metadata.hash)
+        {
+            chunks
+                .first()
+                .map(|f| f.metadata.hash.clone())
+                .unwrap_or_default()
+        } else {
+            "".to_string()
+        };
 
         // Store embeddings
         self.embeddings.store_embeddings(&chunks).await?;
@@ -194,5 +213,6 @@ pub struct IndexStats {
     pub indexed: usize,
     pub skipped: usize,
     pub updated: usize,
+    pub removed: usize,
     pub errors: usize,
 }

@@ -19,6 +19,7 @@ pub struct IndexedNote {
 pub trait Embeddings: Send + Sync {
     fn init(&self) -> anyhow::Result<()>;
     async fn store_embeddings(&self, content: &[KimunChunk]) -> anyhow::Result<()>;
+    async fn delete_embeddings(&self, paths: Vec<&String>) -> anyhow::Result<()>;
     async fn query_embedding(&self, content: &str) -> anyhow::Result<Vec<(f64, KimunChunk)>>;
 
     // Index tracking methods

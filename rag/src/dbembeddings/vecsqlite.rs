@@ -16,8 +16,6 @@ use super::{
     embedder::{Embedder, fastembedder::FastEmbedder},
 };
 
-const DB_FILENAME: &str = "kimun_vec.sqlite";
-
 pub struct VecSQLite {
     embedder: FastEmbedder,
     db_path: PathBuf,
@@ -31,27 +29,24 @@ impl VecSQLite {
 
         let embedder = FastEmbedder::new().unwrap();
 
-        let mut db_path = path.as_ref().to_path_buf();
-        db_path.push(DB_FILENAME);
+        let db_path = path.as_ref().to_path_buf();
         Self { embedder, db_path }
     }
 
-    fn connection() -> anyhow::Result<rusqlite::Connection> {
-        let connection = rusqlite::Connection::open(DB_FILENAME)?;
+    fn connection(&self) -> anyhow::Result<rusqlite::Connection> {
+        let connection = rusqlite::Connection::open(&self.db_path)?;
         Ok(connection)
     }
 
-    fn insert_vec(&self, docs: Vec<(usize, &KimunChunk, &Vec<f32>)>) -> anyhow::Result<()> {
-        let mut conn = VecSQLite::connection()?;
+    fn insert_vec(&self, docs: Vec<(&KimunChunk, &Vec<f32>)>) -> anyhow::Result<()> {
+        let mut conn = self.connection()?;
         let tx = conn.transaction()?;
-        let doc_sql =
-            "INSERT INTO docs (rowid, path, title, date, text) VALUES (?1, ?2, ?3, ?4, ?5)";
+        let doc_sql = "INSERT INTO docs (path, title, date, text) VALUES (?1, ?2, ?3, ?4)";
         let vec_sql = "INSERT INTO vec_items(rowid, embedding) VALUES (?1, ?2)";
-        for (id, doc, vec) in docs {
+        for (doc, vec) in docs {
             tx.execute(
                 doc_sql,
                 params![
-                    id,
                     doc.metadata.source_path,
                     doc.metadata.title,
                     doc.metadata
@@ -61,7 +56,8 @@ impl VecSQLite {
                     doc.content
                 ],
             )?;
-            tx.execute(vec_sql, params![id, vec.as_bytes()])?;
+            let row_id = tx.last_insert_rowid();
+            tx.execute(vec_sql, params![row_id, vec.as_bytes()])?;
         }
         tx.commit()?;
         Ok(())
@@ -69,7 +65,7 @@ impl VecSQLite {
 
     fn get_docs(&self, vec: &[f32]) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
         let start = SystemTime::now();
-        let conn = VecSQLite::connection()?;
+        let conn = self.connection()?;
         let mut max_distance = f64::MIN;
         let mut min_distance = f64::MAX;
         let result: Vec<(f64, KimunChunk)> = conn
@@ -129,22 +125,87 @@ impl VecSQLite {
         debug!("Max distance: {}", max_distance);
         Ok(result)
     }
+
+    fn validate_database(&self) -> anyhow::Result<bool> {
+        // Try to open the database
+        let conn = rusqlite::Connection::open(&self.db_path)?;
+
+        // Check if all required tables exist with correct schema
+        let tables_query = "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('docs', 'indexed_notes')";
+        let mut stmt = conn.prepare(tables_query)?;
+        let table_count: usize = stmt.query_map([], |_| Ok(()))?.count();
+
+        if table_count != 2 {
+            return Ok(false);
+        }
+
+        // Check if vec_items virtual table exists
+        let vec_table_query =
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_items'";
+        let mut vec_stmt = conn.prepare(vec_table_query)?;
+        let vec_exists = vec_stmt.exists([])?;
+
+        if !vec_exists {
+            return Ok(false);
+        }
+
+        // Verify docs table schema
+        let docs_schema_query = "SELECT sql FROM sqlite_master WHERE type='table' AND name='docs'";
+        let docs_schema: String = conn.query_row(docs_schema_query, [], |row| row.get(0))?;
+        if !docs_schema.contains("rowid")
+            || !docs_schema.contains("path")
+            || !docs_schema.contains("title")
+            || !docs_schema.contains("date")
+            || !docs_schema.contains("text")
+        {
+            return Ok(false);
+        }
+
+        // Verify indexed_notes table schema
+        let indexed_schema_query =
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='indexed_notes'";
+        let indexed_schema: String = conn.query_row(indexed_schema_query, [], |row| row.get(0))?;
+        if !indexed_schema.contains("path")
+            || !indexed_schema.contains("content_hash")
+            || !indexed_schema.contains("last_indexed")
+        {
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
 }
 
 #[async_trait::async_trait]
 impl Embeddings for VecSQLite {
     fn init(&self) -> anyhow::Result<()> {
         debug!("Checking the db_path at {}", self.db_path.to_string_lossy());
-        let md = std::fs::metadata(&self.db_path)?;
-        // We delete the db file
-        if md.is_dir() {
-            std::fs::remove_dir_all(&self.db_path)?;
+
+        // Check if file exists
+        if self.db_path.exists() {
+            // Validate it's a valid SQLite database with expected schema
+            match self.validate_database() {
+                Ok(true) => {
+                    debug!("Database exists and is valid, skipping initialization");
+                    return Ok(());
+                }
+                Ok(false) | Err(_) => {
+                    debug!("Database exists but is invalid, recreating");
+                    // Remove invalid database file/directory
+                    if self.db_path.is_dir() {
+                        std::fs::remove_dir_all(&self.db_path)?;
+                    } else {
+                        std::fs::remove_file(&self.db_path)?;
+                    }
+                }
+            }
         } else {
-            std::fs::remove_file(&self.db_path)?;
+            debug!("Database does not exist, creating new database");
         }
 
+        // Create new database with schema
         debug!("Creating tables");
-        let mut conn = VecSQLite::connection()?;
+        let mut conn = self.connection()?;
         let tx = conn.transaction()?;
         tx.execute(
             "CREATE VIRTUAL TABLE vec_items USING vec0(embedding float[1024])",
@@ -183,11 +244,43 @@ impl Embeddings for VecSQLite {
         for batch in embed_chunks {
             let mut insert_batch = vec![];
             for c in batch {
-                insert_batch.push((i, content.get(i).unwrap(), c));
+                insert_batch.push((content.get(i).unwrap(), c));
                 i += 1;
             }
             self.insert_vec(insert_batch)?;
         }
+        Ok(())
+    }
+
+    async fn delete_embeddings(&self, paths: Vec<&String>) -> anyhow::Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.connection()?;
+        let tx = conn.transaction()?;
+
+        // Process each path
+        for path in paths {
+            // First, get all rowids for docs with this path to delete from vec_items
+            let rowids: Vec<i64> = tx
+                .prepare("SELECT rowid FROM docs WHERE path = ?1")?
+                .query_map([path.as_str()], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // Delete from vec_items for each rowid
+            for rowid in rowids {
+                tx.execute("DELETE FROM vec_items WHERE rowid = ?1", [rowid])?;
+            }
+
+            // Delete from docs table
+            tx.execute("DELETE FROM docs WHERE path = ?1", [path.as_str()])?;
+
+            // Delete from indexed_notes table
+            tx.execute("DELETE FROM indexed_notes WHERE path = ?1", [path.as_str()])?;
+        }
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -201,7 +294,7 @@ impl Embeddings for VecSQLite {
     ) -> anyhow::Result<std::collections::HashMap<String, crate::dbembeddings::IndexedNote>> {
         use std::collections::HashMap;
 
-        let conn = VecSQLite::connection()?;
+        let conn = self.connection()?;
         let mut stmt =
             conn.prepare("SELECT path, content_hash, last_indexed FROM indexed_notes")?;
 
@@ -222,7 +315,7 @@ impl Embeddings for VecSQLite {
     }
 
     fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()> {
-        let conn = VecSQLite::connection()?;
+        let conn = self.connection()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
@@ -236,16 +329,16 @@ impl Embeddings for VecSQLite {
     }
 
     fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {
-        let conn = VecSQLite::connection()?;
+        let conn = self.connection()?;
         conn.execute("DELETE FROM indexed_notes WHERE path = ?1", [path])?;
         Ok(())
     }
 }
 
-/// Compute SHA256 hash of content for change detection
-pub fn compute_content_hash(content: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
+// Compute SHA256 hash of content for change detection
+// pub fn compute_content_hash(content: &str) -> String {
+//     use sha2::{Digest, Sha256};
+//     let mut hasher = Sha256::new();
+//     hasher.update(content.as_bytes());
+//     format!("{:x}", hasher.finalize())
+// }

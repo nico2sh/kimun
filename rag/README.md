@@ -130,6 +130,7 @@ POST /api/index/all
 ```
 
 Response:
+
 ```json
 {
   "job_id": "uuid",
@@ -146,18 +147,12 @@ POST /api/index/single
 Content-Type: application/json
 
 {
-  "path": "/path/to/note.md",
-  "chunks": [
-    {
-      "content": "Note content here",
-      "title": "Note Title",
-      "date": "2024-01-22"  // Optional, YYYY-MM-DD format
-    }
-  ]
+  "path": "/path/to/note.md"
 }
 ```
 
 Response:
+
 ```json
 {
   "job_id": "uuid",
@@ -179,6 +174,7 @@ Content-Type: application/json
 ```
 
 Response:
+
 ```json
 {
   "chunks": [
@@ -221,6 +217,7 @@ X-API-Key: sk-ant-your-api-key-here
 ```
 
 **Request Parameters:**
+
 - **Body:**
   - `query` (required): The question to answer
   - `llm_provider` (optional): Which LLM to use - `"claude"`, `"openai"`, `"gemini"`, or `"mistral"`
@@ -229,12 +226,14 @@ X-API-Key: sk-ant-your-api-key-here
   - `X-API-Key` (optional): Override the default API key for this request
 
 **Supported LLM providers:**
+
 - `"claude"` - Models: `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`, etc.
 - `"openai"` - Models: `gpt-4o-mini`, `gpt-4o`, `gpt-4-turbo`, etc.
 - `"gemini"` - Models: `gemini-2.5-flash`, `gemini-1.5-pro`, etc.
 - `"mistral"` - Uses `mistral-large-latest`
 
 Response:
+
 ```json
 {
   "job_id": "uuid",
@@ -243,12 +242,14 @@ Response:
 ```
 
 **Use cases for dynamic LLM selection:**
+
 - Test different models without restarting the server
 - Use cheaper models for simple queries, powerful models for complex ones
 - Multi-tenant scenarios with per-user API keys (via `X-API-Key` header)
 - A/B testing different LLM providers
 
 **Security note:** API keys are passed via the `X-API-Key` header (not in the request body) to:
+
 - Prevent keys from appearing in logs that might record request bodies
 - Follow HTTP best practices for authentication credentials
 - Enable easier filtering in proxies and middleware
@@ -262,6 +263,7 @@ GET /api/job/{job_id}
 ```
 
 Response:
+
 ```json
 {
   "job_id": "uuid",
@@ -274,6 +276,7 @@ Response:
 ```
 
 For indexing jobs:
+
 ```json
 {
   "result": {
@@ -286,6 +289,7 @@ For indexing jobs:
 ```
 
 For answer jobs:
+
 ```json
 {
   "result": {
@@ -300,6 +304,7 @@ For answer jobs:
 ### Vector Database
 
 #### SQLite (Local, file-based)
+
 ```toml
 [vector_db]
 type = "sqlite"
@@ -307,6 +312,7 @@ db_path = "./rag_index.sqlite"
 ```
 
 #### Qdrant (Standalone server)
+
 ```toml
 [vector_db]
 type = "qdrant"
@@ -315,6 +321,7 @@ collection = "kimun_embeddings"
 ```
 
 To run Qdrant with Docker:
+
 ```bash
 docker-compose up -d
 ```
@@ -322,6 +329,7 @@ docker-compose up -d
 ### LLM Providers
 
 #### Claude (Recommended for quality)
+
 ```toml
 [llm]
 provider = "claude"
@@ -329,6 +337,7 @@ model = "claude-3-5-sonnet-20241022"
 ```
 
 #### OpenAI (Cost-effective)
+
 ```toml
 [llm]
 provider = "openai"
@@ -336,6 +345,7 @@ model = "gpt-4o-mini"
 ```
 
 #### Gemini (Most cost-effective)
+
 ```toml
 [llm]
 provider = "gemini"
@@ -343,6 +353,7 @@ model = "gemini-2.5-flash-preview-04-17"
 ```
 
 #### Mistral
+
 ```toml
 [llm]
 provider = "mistral"
@@ -364,21 +375,22 @@ top_k = 20      # Number of results after reranking
 ### Components
 
 1. **Embeddings Layer** (`dbembeddings/`)
+
    - FastEmbed with BGE-Large-EN-V15 model (1024 dimensions)
    - SQLite or Qdrant for vector storage
    - Content hash-based incremental indexing
-
 2. **LLM Clients** (`llmclients/`)
+
    - Unified interface for multiple providers
    - Consistent prompt formatting
    - Environment-based API key management
-
 3. **Reranker** (`reranker.rs`)
+
    - BGE Reranker Base cross-encoder model
    - Improves initial vector search results
    - Configurable top-k filtering
-
 4. **HTTP Handlers** (`handlers.rs`)
+
    - Axum-based async HTTP server
    - Job tracking for async operations
    - JSON request/response format
@@ -386,13 +398,14 @@ top_k = 20      # Number of results after reranking
 ### Data Flow
 
 1. **Indexing**:
+
    ```
    Vault DB → ChunkLoader → FastEmbed → Vector DB
                                       ↓
                               Content Hash → Indexed Notes Table
    ```
-
 2. **Querying**:
+
    ```
    Query → FastEmbed → Vector DB (similarity search)
          ↓
@@ -453,12 +466,14 @@ cargo test --test '*'
 ### "Vault database not found"
 
 Ensure your vault path points to a directory containing `kimun.sqlite` with tables:
+
 - `notes` (columns: path, title, date)
 - `notesContent` (columns: path, content)
 
 ### "Failed to download model"
 
 First run downloads embedding models (~500MB) and reranker model (~300MB). Ensure:
+
 - Stable internet connection
 - ~1GB free disk space
 - Write permissions in cache directory
@@ -466,6 +481,7 @@ First run downloads embedding models (~500MB) and reranker model (~300MB). Ensur
 ### "API key not found"
 
 Export the appropriate environment variable before starting the server:
+
 ```bash
 export ANTHROPIC_API_KEY=your-key-here
 ```
@@ -473,6 +489,7 @@ export ANTHROPIC_API_KEY=your-key-here
 ### High memory usage
 
 The embedding models load into memory (~1.5GB total). This is normal. To reduce:
+
 - Disable reranking (`enabled = false`)
 - Use smaller batch sizes for indexing
 
@@ -483,6 +500,7 @@ See LICENSE file in the repository root.
 ## Contributing
 
 Contributions welcome! Please:
+
 1. Follow existing code style
 2. Add tests for new features
 3. Update documentation
