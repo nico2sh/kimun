@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/index/single", post(index_single_handler))
         .route("/api/embeddings", post(get_embeddings_handler))
         .route("/api/answer", post(answer_handler))
-        .route("/api/job/:job_id", get(job_status_handler))
+        .route("/api/job/{job_id}", get(job_status_handler))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 

@@ -1,11 +1,11 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use document::ChunkLoader;
 
 use dbembeddings::Embeddings;
 use dbembeddings::vecsqlite::VecSQLite;
-use kimun_core::NoteVault;
+// use kimun_core::NoteVault;
 use llmclients::{LLMClient, gemini::GeminiClient};
 
 pub mod dbembeddings;
@@ -58,16 +58,15 @@ impl KimunRag {
     }
 
     /// Initialize the embeddings database
-    /// Note: With the current trait design using Arc, initialization happens
-    /// automatically on first use. This method is kept for API compatibility.
     pub async fn init(&self) -> anyhow::Result<()> {
+        self.embeddings.init()?;
         tracing::debug!("KimunRag initialized (using lazy initialization)");
         Ok(())
     }
 
     /// Store embeddings for all notes in the vault
-    pub async fn store_embeddings(&self, vault: NoteVault) -> anyhow::Result<()> {
-        let chunk_loader = ChunkLoader::new(vault);
+    pub async fn store_embeddings(&self, db_path: PathBuf) -> anyhow::Result<()> {
+        let chunk_loader = ChunkLoader::new(db_path);
         let chunks = chunk_loader.load_notes()?;
 
         self.embeddings.store_embeddings(&chunks).await?;
@@ -98,9 +97,9 @@ impl KimunRag {
     /// Store embeddings with incremental indexing (only index changed notes)
     pub async fn store_embeddings_incremental(
         &self,
-        vault: NoteVault,
+        db_path: PathBuf,
     ) -> anyhow::Result<IndexStats> {
-        let chunk_loader = ChunkLoader::new(vault);
+        let chunk_loader = ChunkLoader::new(db_path);
         let chunks = chunk_loader.load_notes()?;
 
         // Get currently indexed notes
@@ -157,8 +156,8 @@ impl KimunRag {
     }
 
     /// Store a single note (replacing all existing chunks for that path)
-    pub async fn store_single_note(&self, vault: NoteVault, note_path: &str) -> anyhow::Result<()> {
-        let chunk_loader = ChunkLoader::new(vault);
+    pub async fn store_single_note(&self, db_path: PathBuf, note_path: &str) -> anyhow::Result<()> {
+        let chunk_loader = ChunkLoader::new(db_path);
         let all_chunks = chunk_loader.load_notes()?;
 
         // Filter to only the chunks for this path

@@ -1,12 +1,12 @@
-use std::collections::HashMap;
 use log::debug;
 use qdrant_client::{
     Qdrant,
     qdrant::{
-        CreateCollectionBuilder, Distance, PointStruct, VectorParamsBuilder,
-        ScoredPoint, SearchPointsBuilder, UpsertPointsBuilder,
+        CreateCollectionBuilder, Distance, PointStruct, ScoredPoint, SearchPointsBuilder,
+        UpsertPointsBuilder, VectorParamsBuilder,
     },
 };
+use std::collections::HashMap;
 
 use crate::document::KimunChunk;
 
@@ -74,6 +74,7 @@ impl VecQdrant {
             Value::from(chunk.metadata.get_date_string().unwrap_or_default()),
         );
         payload.insert("text".to_string(), Value::from(chunk.content.clone()));
+        payload.insert("hash".to_string(), Value::from(chunk.metadata.hash.clone()));
 
         PointStruct::new(id, embedding, payload)
     }
@@ -91,11 +92,14 @@ impl VecQdrant {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_default();
-        let date_str = payload
-            .get("date")
-            .and_then(|v| v.as_str());
+        let date_str = payload.get("date").and_then(|v| v.as_str());
         let text = payload
             .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let hash = payload
+            .get("hash")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_default();
@@ -116,6 +120,7 @@ impl VecQdrant {
                 source_path: path,
                 title,
                 date,
+                hash,
             },
         })
     }
@@ -123,7 +128,7 @@ impl VecQdrant {
 
 #[async_trait::async_trait]
 impl Embeddings for VecQdrant {
-    fn init(&mut self) -> anyhow::Result<()> {
+    fn init(&self) -> anyhow::Result<()> {
         // Qdrant initialization is async, so we can't do it here
         // Collection will be created on first use
         Ok(())
@@ -167,8 +172,7 @@ impl Embeddings for VecQdrant {
         let search_result = self
             .client
             .search_points(
-                SearchPointsBuilder::new(&self.collection, query_vec, 128)
-                    .with_payload(true)
+                SearchPointsBuilder::new(&self.collection, query_vec, 128).with_payload(true),
             )
             .await?;
 

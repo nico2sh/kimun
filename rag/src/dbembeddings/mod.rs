@@ -1,11 +1,11 @@
+use crate::document::KimunChunk;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use crate::document::KimunChunk;
 
 mod embedder;
 
-pub mod vecsqlite;
 pub mod vecqdrant;
+pub mod vecsqlite;
 
 /// Information about an indexed note
 #[derive(Debug, Clone)]
@@ -17,7 +17,7 @@ pub struct IndexedNote {
 
 #[async_trait]
 pub trait Embeddings: Send + Sync {
-    fn init(&mut self) -> anyhow::Result<()>;
+    fn init(&self) -> anyhow::Result<()>;
     async fn store_embeddings(&self, content: &[KimunChunk]) -> anyhow::Result<()>;
     async fn query_embedding(&self, content: &str) -> anyhow::Result<Vec<(f64, KimunChunk)>>;
 

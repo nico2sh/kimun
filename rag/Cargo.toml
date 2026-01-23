@@ -13,7 +13,7 @@ async-trait = "0.1"
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 fastembed = "5.8.1"
-kimun_core = { path = "../core" }
+# kimun_core = { path = "../core" }
 reqwest = { version = "0.13.1", features = ["json"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 sqlite-vec = "0.1"
@@ -25,12 +25,12 @@ log = "0.4"
 env_logger = "0.11"
 
 # Server dependencies
-axum = "0.7"
+axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1.11", features = ["v4", "serde"] }
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
 toml = "0.8"
 dirs = "5.0"
 sha2 = "0.10"
