@@ -8,6 +8,10 @@ use dbembeddings::Embeddings;
 use dbembeddings::vecsqlite::VecSQLite;
 // use kimun_core::NoteVault;
 use llmclients::{LLMClient, gemini::GeminiClient};
+use log::debug;
+
+use crate::document::KimunChunk;
+use crate::reranker::CrossEncoderReranker;
 
 pub mod dbembeddings;
 pub mod document;
@@ -22,7 +26,7 @@ pub mod server_state;
 pub struct KimunRag {
     embeddings: Arc<dyn Embeddings + Send + Sync>,
     llm_client: Arc<dyn LLMClient + Send + Sync>,
-    reranker: Option<Arc<reranker::CrossEncoderReranker>>,
+    reranker: Option<Arc<CrossEncoderReranker>>,
     reranker_top_k: usize,
 }
 
@@ -42,7 +46,7 @@ impl KimunRag {
 
     /// Enable reranking with the given top_k parameter
     pub fn with_reranking(mut self, top_k: usize) -> anyhow::Result<Self> {
-        let reranker = reranker::CrossEncoderReranker::new()?;
+        let reranker = CrossEncoderReranker::new()?;
         self.reranker = Some(Arc::new(reranker));
         self.reranker_top_k = top_k;
         Ok(self)
@@ -76,23 +80,36 @@ impl KimunRag {
 
     /// Query embeddings and return raw results (without LLM)
     /// Applies reranking if enabled
-    pub async fn query(&self, query: &str) -> anyhow::Result<Vec<(f64, document::KimunChunk)>> {
+    pub async fn query_embeddings(
+        &self,
+        query: &str,
+    ) -> anyhow::Result<Vec<(f64, document::KimunChunk)>> {
         let results = self.embeddings.query_embedding(query).await?;
 
         // Apply reranking if enabled
         if let Some(reranker) = &self.reranker {
+            debug!("Reranking the results to {}", self.reranker_top_k);
             reranker.rerank(query, results, self.reranker_top_k).await
         } else {
+            debug!("No Reranking the results");
             Ok(results)
         }
     }
 
     /// Query the RAG system with a question and get an LLM answer
     /// Uses reranked results if reranking is enabled
-    pub async fn ask(&self, query: &str) -> anyhow::Result<String> {
-        let context = self.query(query).await?;
-        let answer = self.llm_client.ask(query, context).await?;
-        Ok(answer)
+    pub async fn ask(&self, query: &str) -> anyhow::Result<(String, Vec<(f64, KimunChunk)>)> {
+        self.ask_with_llm(query, self.llm_client.clone()).await
+    }
+
+    pub async fn ask_with_llm(
+        &self,
+        query: &str,
+        llm: Arc<dyn LLMClient + Send + Sync>,
+    ) -> anyhow::Result<(String, Vec<(f64, KimunChunk)>)> {
+        let context = self.query_embeddings(query).await?;
+        let answer = llm.ask(query, &context).await?;
+        Ok((answer, context))
     }
 
     /// Store embeddings with incremental indexing (only index changed notes)
