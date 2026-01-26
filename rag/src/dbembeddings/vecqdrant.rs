@@ -1,12 +1,16 @@
 use log::debug;
 use qdrant_client::{
-    Qdrant,
+    Payload, Qdrant,
     qdrant::{
-        CreateCollectionBuilder, Distance, PointStruct, ScoredPoint, SearchPointsBuilder,
-        UpsertPointsBuilder, VectorParamsBuilder,
+        Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
+        Distance, FieldType, Filter, PointId, PointStruct, ScoredPoint, ScrollPointsBuilder,
+        SearchPointsBuilder, SetPayloadPointsBuilder, UpsertPointsBuilder, Value,
+        VectorParamsBuilder,
     },
 };
+use serde_json::json;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 use crate::document::KimunChunk;
 
@@ -50,13 +54,24 @@ impl VecQdrant {
                 )
                 .await?;
 
+            self.client
+                .create_field_index(
+                    CreateFieldIndexCollectionBuilder::new(
+                        self.collection.as_str(),
+                        "path",
+                        FieldType::Keyword,
+                    )
+                    .wait(true),
+                )
+                .await?;
+
             debug!("Created Qdrant collection: {}", self.collection);
         }
 
         Ok(())
     }
 
-    fn chunk_to_point(chunk: &KimunChunk, embedding: Vec<f32>, id: u64) -> PointStruct {
+    fn chunk_to_point(chunk: &KimunChunk, embedding: Vec<f32>) -> PointStruct {
         use qdrant_client::qdrant::Value;
         use std::collections::HashMap;
 
@@ -76,12 +91,10 @@ impl VecQdrant {
         payload.insert("text".to_string(), Value::from(chunk.content.clone()));
         payload.insert("hash".to_string(), Value::from(chunk.metadata.hash.clone()));
 
-        PointStruct::new(id, embedding, payload)
+        PointStruct::new(Uuid::new_v4().to_string(), embedding, payload)
     }
 
-    fn point_to_chunk(point: &ScoredPoint) -> anyhow::Result<KimunChunk> {
-        let payload = &point.payload;
-
+    fn payload_to_chunk(payload: &HashMap<String, Value>) -> KimunChunk {
         let path = payload
             .get("path")
             .and_then(|v| v.as_str())
@@ -114,7 +127,7 @@ impl VecQdrant {
             None
         };
 
-        Ok(KimunChunk {
+        KimunChunk {
             content: text,
             metadata: crate::document::KimunMetadata {
                 source_path: path,
@@ -122,34 +135,59 @@ impl VecQdrant {
                 date,
                 hash,
             },
-        })
+        }
+    }
+
+    fn point_to_chunk(point: &ScoredPoint) -> KimunChunk {
+        let payload = &point.payload;
+
+        VecQdrant::payload_to_chunk(payload)
+    }
+}
+
+enum PaginationStatus {
+    First,
+    Next(PointId),
+    None,
+}
+
+impl PaginationStatus {
+    fn has_more(&self) -> bool {
+        match self {
+            PaginationStatus::None => false,
+            _ => true,
+        }
+    }
+}
+
+impl From<Option<PointId>> for PaginationStatus {
+    fn from(value: Option<PointId>) -> Self {
+        match value {
+            Some(point) => Self::Next(point),
+            None => Self::None,
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl Embeddings for VecQdrant {
-    fn init(&self) -> anyhow::Result<()> {
+    async fn init(&self) -> anyhow::Result<()> {
         // Qdrant initialization is async, so we can't do it here
         // Collection will be created on first use
+        self.ensure_collection().await?;
         Ok(())
     }
 
     async fn store_embeddings(&self, content: &[KimunChunk]) -> anyhow::Result<()> {
-        self.ensure_collection().await?;
-
         // Generate embeddings
         let embeddings = self.embedder.generate_embeddings(content).await?;
 
         // Create points in batches of 100
         for (batch_idx, batch) in content.chunks(100).enumerate() {
-            let start_id = (batch_idx * 100) as u64;
             let points: Vec<PointStruct> = batch
                 .iter()
                 .zip(embeddings.iter().skip(batch_idx * 100))
-                .enumerate()
-                .map(|(i, (chunk, embedding))| {
-                    VecQdrant::chunk_to_point(chunk, embedding.clone(), start_id + i as u64)
-                })
+                .map(|(chunk, embedding)| VecQdrant::chunk_to_point(chunk, embedding.clone()))
                 .collect();
 
             // Upsert points using the builder API
@@ -158,19 +196,28 @@ impl Embeddings for VecQdrant {
                 .await?;
         }
 
-        debug!("Stored {} embeddings in Qdrant", content.len());
         Ok(())
     }
 
-    async fn delete_embeddings(&self, _paths: Vec<&String>) -> anyhow::Result<()> {
-        // TODO: Implement batch deletion for multiple paths
+    async fn delete_embeddings(&self, paths: Vec<&String>) -> anyhow::Result<()> {
         // For each path in paths, delete all points where payload.path matches
-        todo!()
+        self.client
+            .delete_points(
+                DeletePointsBuilder::new(&self.collection)
+                    .points(Filter::must([Condition::matches(
+                        "path",
+                        paths
+                            .into_iter()
+                            .map(|p| p.to_owned())
+                            .collect::<Vec<String>>(),
+                    )]))
+                    .wait(true),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn query_embedding(&self, query: &str) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
-        self.ensure_collection().await?;
-
         // Generate query embedding
         let query_vec = self.embedder.prompt_embedding(query).await?;
 
@@ -187,7 +234,7 @@ impl Embeddings for VecQdrant {
             .result
             .iter()
             .map(|point| {
-                let chunk = VecQdrant::point_to_chunk(point).unwrap();
+                let chunk = VecQdrant::point_to_chunk(point);
                 (point.score as f64, chunk)
             })
             .collect();
@@ -202,25 +249,76 @@ impl Embeddings for VecQdrant {
         Ok(results)
     }
 
-    fn get_indexed_notes(&self) -> anyhow::Result<HashMap<String, IndexedNote>> {
-        // Qdrant doesn't have built-in index tracking
-        // We would need to store this in a separate collection or use payload
-        // For now, return empty - this means Qdrant won't support incremental indexing
-        // TODO: Implement index tracking in Qdrant using a separate collection or metadata
-        Ok(HashMap::new())
+    async fn get_indexed_notes(&self) -> anyhow::Result<HashMap<String, IndexedNote>> {
+        let page_size = 200;
+        let mut result = HashMap::new();
+        let mut pagination = PaginationStatus::First;
+
+        while pagination.has_more() {
+            let spb = match pagination {
+                PaginationStatus::Next(point_id) => ScrollPointsBuilder::new(&self.collection)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .offset(point_id)
+                    .limit(page_size),
+                _ => ScrollPointsBuilder::new(&self.collection)
+                    .with_payload(true)
+                    .with_vectors(false)
+                    .limit(page_size),
+            };
+            let scroll_result = self.client.scroll(spb).await?;
+
+            scroll_result.result.into_iter().for_each(|p| {
+                let chunk = VecQdrant::payload_to_chunk(&p.payload);
+                let path = chunk.metadata.source_path.clone();
+                let note = IndexedNote {
+                    path: chunk.metadata.source_path,
+                    content_hash: chunk.metadata.hash,
+                    last_indexed: 0,
+                };
+                result.insert(path, note);
+            });
+
+            pagination = scroll_result.next_page_offset.into();
+        }
+
+        debug!("Indexed: {}", result.len());
+
+        Ok(result)
     }
 
-    fn mark_as_indexed(&self, _path: &str, _content_hash: &str) -> anyhow::Result<()> {
-        // TODO: Implement index tracking
+    async fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()> {
+        self.client
+            .set_payload(
+                SetPayloadPointsBuilder::new(
+                    &self.collection,
+                    Payload::try_from(json!({
+                        "hash": content_hash.to_string(),
+                    }))
+                    .unwrap(),
+                )
+                .points_selector(Filter::must([Condition::matches("path", path.to_string())]))
+                .wait(true),
+            )
+            .await?;
         Ok(())
     }
 
-    fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {
+    async fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {
         // Delete all points with this path
-        // This is synchronous but calls async method - we'll need to handle this
-        // For now, return Ok as deletion can happen on next indexing
-        // TODO: Implement proper deletion
-        debug!("Note removal not yet implemented for Qdrant: {}", path);
+        self.client
+            .set_payload(
+                SetPayloadPointsBuilder::new(
+                    &self.collection,
+                    Payload::try_from(json!({
+                        "hash": "",
+                    }))
+                    .unwrap(),
+                )
+                .points_selector(Filter::must([Condition::matches("path", path.to_string())]))
+                .wait(true),
+            )
+            .await?;
         Ok(())
     }
 }

@@ -48,16 +48,31 @@ impl GeminiClient {
         }
 
         let prompt = format!(
-            r#"
-Context information is below.
+            r#"You are an intelligent assistant with access to a personal knowledge base.
+Answer the user's question using the retrieved context first. If the retrieved notes contain relevant information, base your answer primarily on them.
+If the context is incomplete, missing, or can be enriched with widely accepted knowledge about the topic related with the question, supplement the answer with accurate common knowledge.
+Always distinguish between information from the notes and general knowledge.
+If no useful information is available in either, respond with: 'I don't have enough information to answer.'
+
+Retrieved context:
 ---------------------
-{context_string}
+{context_string}.
 ---------------------
-Given the context information and not prior knowledge, answer the query.
-Query: {question}
-Answer:
-"#
+
+Question: {question}"#
         );
+
+        //         let prompt = format!(
+        //             r#"
+        // Context information is below.
+        // ---------------------
+        // {context_string}
+        // ---------------------
+        // Given the context information and not prior knowledge, answer the query. You can
+        // Query: {question}
+        // Answer:
+        // "#
+        //         );
 
         prompt
     }

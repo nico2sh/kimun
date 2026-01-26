@@ -178,7 +178,7 @@ impl VecSQLite {
 
 #[async_trait::async_trait]
 impl Embeddings for VecSQLite {
-    fn init(&self) -> anyhow::Result<()> {
+    async fn init(&self) -> anyhow::Result<()> {
         debug!("Checking the db_path at {}", self.db_path.to_string_lossy());
 
         // Check if file exists
@@ -289,7 +289,7 @@ impl Embeddings for VecSQLite {
         self.get_docs(&query_embed)
     }
 
-    fn get_indexed_notes(
+    async fn get_indexed_notes(
         &self,
     ) -> anyhow::Result<std::collections::HashMap<String, crate::dbembeddings::IndexedNote>> {
         use std::collections::HashMap;
@@ -314,7 +314,7 @@ impl Embeddings for VecSQLite {
         Ok(notes)
     }
 
-    fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()> {
+    async fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()> {
         let conn = self.connection()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -328,7 +328,7 @@ impl Embeddings for VecSQLite {
         Ok(())
     }
 
-    fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {
+    async fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {
         let conn = self.connection()?;
         conn.execute("DELETE FROM indexed_notes WHERE path = ?1", [path])?;
         Ok(())

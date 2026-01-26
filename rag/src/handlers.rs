@@ -1,4 +1,5 @@
 use axum::{Json, extract::State, http::StatusCode};
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -62,6 +63,7 @@ pub struct ChunkResult {
     pub title: String,
     pub date: Option<String>,
     pub content: String,
+    pub hash: String,
     pub similarity_score: f64,
 }
 
@@ -178,12 +180,14 @@ pub async fn get_embeddings_handler(
                     let source_path = chunk.metadata.source_path.clone();
                     let title = chunk.metadata.title.clone();
                     let date = chunk.metadata.get_date_string();
+                    let hash = chunk.metadata.hash.clone();
                     ChunkResult {
                         path: source_path,
                         title,
                         date,
                         content: chunk.content,
                         similarity_score: score,
+                        hash,
                     }
                 })
                 .collect();
@@ -384,14 +388,17 @@ async fn store_single_note_impl(
 
     if chunks.is_empty() {
         // If no chunks, remove from index
-        rag_lock.embeddings.remove_indexed_note(path)?;
+        rag_lock.embeddings.remove_indexed_note(path).await?;
         return Ok(());
     }
     let content_hash = &chunks.first().unwrap().metadata.hash;
 
     // Store embeddings
     rag_lock.embeddings.store_embeddings(&chunks).await?;
-    rag_lock.embeddings.mark_as_indexed(path, content_hash)?;
+    rag_lock
+        .embeddings
+        .mark_as_indexed(path, content_hash)
+        .await?;
 
     Ok(())
 }
@@ -457,7 +464,10 @@ async fn index_all_impl(
 
     // Use incremental indexing per path
     let rag_lock = rag.lock().await;
-    let mut indexed_notes = rag_lock.embeddings.get_indexed_notes()?;
+    let mut indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
+    if let Some((key, value)) = indexed_notes.iter().next() {
+        println!("Arbitrary element: {} = {}", key, value);
+    }
 
     let mut indexed_count = 0;
     let mut skipped_count = 0;
@@ -508,7 +518,10 @@ async fn index_all_impl(
 
         if needs_indexing {
             rag_lock.embeddings.store_embeddings(&chunks).await?;
-            rag_lock.embeddings.mark_as_indexed(&path, &content_hash)?;
+            rag_lock
+                .embeddings
+                .mark_as_indexed(&path, &content_hash)
+                .await?;
         }
     }
 
@@ -516,13 +529,16 @@ async fn index_all_impl(
     let removed_count = missing.len();
     rag_lock.embeddings.delete_embeddings(missing).await?;
 
-    Ok(crate::IndexStats {
+    let index_stats = crate::IndexStats {
         indexed: indexed_count,
         skipped: skipped_count,
         updated: updated_count,
         errors: 0,
         removed: removed_count,
-    })
+    };
+    debug!("Done indexing: {}", index_stats);
+
+    Ok(index_stats)
 }
 
 /// Answer implementation with dynamic LLM selection
@@ -585,12 +601,14 @@ async fn answer_impl_with_llm(
             let source_path = chunk.metadata.source_path.clone();
             let title = chunk.metadata.title.clone();
             let date = chunk.metadata.get_date_string();
+            let hash = chunk.metadata.hash.clone();
             ChunkResult {
                 path: source_path,
                 title,
                 date,
                 content: chunk.content,
                 similarity_score: score,
+                hash,
             }
         })
         .collect();

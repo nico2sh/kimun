@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -59,7 +60,7 @@ impl KimunRag {
 
     /// Initialize the embeddings database
     pub async fn init(&self) -> anyhow::Result<()> {
-        self.embeddings.init()?;
+        self.embeddings.init().await?;
         tracing::debug!("KimunRag initialized (using lazy initialization)");
         Ok(())
     }
@@ -103,7 +104,7 @@ impl KimunRag {
         let chunks = chunk_loader.load_notes()?;
 
         // Get currently indexed notes
-        let mut indexed_notes = self.embeddings.get_indexed_notes()?;
+        let mut indexed_notes = self.embeddings.get_indexed_notes().await?;
 
         // Group chunks by path and compute hashes
         let mut path_chunks: std::collections::HashMap<String, Vec<&document::KimunChunk>> =
@@ -152,7 +153,9 @@ impl KimunRag {
                     path_chunks_vec.iter().map(|c| (*c).clone()).collect();
 
                 self.embeddings.store_embeddings(&chunks_to_index).await?;
-                self.embeddings.mark_as_indexed(&path, &content_hash)?;
+                self.embeddings
+                    .mark_as_indexed(&path, &content_hash)
+                    .await?;
             }
         }
 
@@ -182,7 +185,7 @@ impl KimunRag {
 
         if chunks.is_empty() {
             // If no chunks, remove from index
-            self.embeddings.remove_indexed_note(note_path)?;
+            self.embeddings.remove_indexed_note(note_path).await?;
             return Ok(());
         }
 
@@ -201,7 +204,9 @@ impl KimunRag {
 
         // Store embeddings
         self.embeddings.store_embeddings(&chunks).await?;
-        self.embeddings.mark_as_indexed(note_path, &content_hash)?;
+        self.embeddings
+            .mark_as_indexed(note_path, &content_hash)
+            .await?;
 
         Ok(())
     }
@@ -215,4 +220,15 @@ pub struct IndexStats {
     pub updated: usize,
     pub removed: usize,
     pub errors: usize,
+}
+
+impl Display for IndexStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Index Stats: ")?;
+        writeln!(f, "  > Indexed: {}", self.indexed)?;
+        writeln!(f, "  > Skipped: {}", self.skipped)?;
+        writeln!(f, "  > Updated: {}", self.updated)?;
+        writeln!(f, "  > Removed: {}", self.removed)?;
+        writeln!(f, "  > Errors: {}", self.errors)
+    }
 }
