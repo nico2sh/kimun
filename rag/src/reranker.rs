@@ -1,11 +1,11 @@
 use crate::document::KimunChunk;
 use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
 use log::debug;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Reranker for improving search result quality using cross-encoder models
 pub struct CrossEncoderReranker {
-    model: Mutex<TextRerank>,
+    model: Arc<Mutex<TextRerank>>,
 }
 
 impl CrossEncoderReranker {
@@ -16,12 +16,15 @@ impl CrossEncoderReranker {
                 .with_show_download_progress(true),
         )?;
         Ok(Self {
-            model: Mutex::new(model),
+            model: Arc::new(Mutex::new(model)),
         })
     }
 
     /// Rerank search results based on query relevance
     /// Returns the top_k results sorted by relevance score
+    ///
+    /// This operation is CPU-intensive and runs in a blocking thread pool
+    /// to avoid blocking the async runtime.
     pub async fn rerank(
         &self,
         query: &str,
@@ -38,12 +41,20 @@ impl CrossEncoderReranker {
             .map(|(_, chunk)| format!("{}\n{}", chunk.metadata.title, chunk.content))
             .collect();
 
-        // Convert to &str references for the API
-        let doc_refs: Vec<&str> = documents.iter().map(|s| s.as_str()).collect();
+        let query_owned = query.to_string();
+        let model = self.model.clone(); // Clone the Arc, not the model itself
 
-        // Perform reranking
-        let mut model = self.model.lock().unwrap();
-        let rerank_results = model.rerank(query, doc_refs, true, None)?;
+        // Run the CPU-intensive reranking in a blocking task to avoid blocking the async runtime
+        let rerank_results = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            // This is a synchronous blocking operation - neural network inference
+            let mut model_guard = model.lock().unwrap();
+
+            // Create Vec<&String> which satisfies AsRef<[&String]>
+            let doc_refs: Vec<&String> = documents.iter().collect();
+            let results = model_guard.rerank(&query_owned, doc_refs, true, None)?;
+            Ok(results)
+        })
+        .await??;
 
         // Sort by score and take top_k
         let mut scored_results: Vec<(f64, KimunChunk)> = rerank_results
@@ -55,7 +66,7 @@ impl CrossEncoderReranker {
             .collect();
 
         // Sort by score descending
-        scored_results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        scored_results.sort_by(|(score_a, _), (score_b, _)| score_b.partial_cmp(&score_a).unwrap());
 
         // Take top_k
         scored_results.truncate(top_k);
