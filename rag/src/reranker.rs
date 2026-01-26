@@ -1,5 +1,6 @@
 use crate::document::KimunChunk;
 use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
+use log::debug;
 use std::sync::Mutex;
 
 /// Reranker for improving search result quality using cross-encoder models
@@ -71,9 +72,11 @@ pub async fn apply_reranking(
     top_k: usize,
 ) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
     if let Some(reranker) = reranker {
+        debug!("Reranking the results with the TOP {}", top_k);
         reranker.rerank(query, results, top_k).await
     } else {
         // No reranking, just return top_k
+        debug!("No Reranking, returning the TOP {}", top_k);
         let mut results = results;
         results.truncate(top_k);
         Ok(results)

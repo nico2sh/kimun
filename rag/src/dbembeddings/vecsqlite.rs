@@ -16,6 +16,8 @@ use super::{
     embedder::{Embedder, fastembedder::FastEmbedder},
 };
 
+const TOP_RESULTS: u32 = 512;
+
 pub struct VecSQLite {
     embedder: FastEmbedder,
     db_path: PathBuf,
@@ -70,7 +72,8 @@ impl VecSQLite {
         let mut min_distance = f64::MAX;
         let result: Vec<(f64, KimunChunk)> = conn
             .prepare(
-                r"
+                format!(
+                    r"
           SELECT
             distance,
             docs.path,
@@ -82,9 +85,11 @@ impl VecSQLite {
           JOIN docs ON vec_items.rowid = docs.rowid
           JOIN indexed_notes ON docs.path = indexed_notes.path
           WHERE vec_items.embedding MATCH ?1
-          AND k = 128
+          AND k = {TOP_RESULTS}
           ORDER BY vec_items.distance
-        ",
+        "
+                )
+                .as_str(),
             )?
             .query_map([vec.as_bytes()], |r| {
                 let distance: f64 = r.get(0)?;

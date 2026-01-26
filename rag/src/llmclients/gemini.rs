@@ -24,7 +24,7 @@ impl GeminiClient {
         }
     }
 
-    fn get_prompt(&self, question: String, context: Vec<(f64, KimunChunk)>) -> String {
+    fn get_prompt(&self, question: String, context: &Vec<(f64, KimunChunk)>) -> String {
         let mut context_string = String::new();
         for (distance, chunk) in context {
             context_string.push_str(&format!(
@@ -83,7 +83,7 @@ impl LLMClient for GeminiClient {
     async fn ask(
         &self,
         question: &str,
-        context: Vec<(f64, crate::document::KimunChunk)>,
+        context: &Vec<(f64, crate::document::KimunChunk)>,
     ) -> anyhow::Result<String> {
         // Create a new reqwest client
         let client = Client::new();

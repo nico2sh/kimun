@@ -172,7 +172,7 @@ pub async fn get_embeddings_handler(
 ) -> Result<Json<EmbeddingsResponse>, (StatusCode, Json<ErrorResponse>)> {
     let rag = state.rag.lock().await;
 
-    match rag.query(&request.query).await {
+    match rag.query_embeddings(&request.query).await {
         Ok(results) => {
             let chunks: Vec<ChunkResult> = results
                 .into_iter()
@@ -554,13 +554,11 @@ async fn answer_impl_with_llm(
         openai::OpenAIClient,
     };
 
+    debug!("Answering a question");
     let rag_lock = rag.lock().await;
 
-    // Get context from embeddings
-    let results = rag_lock.query(query).await?;
-
     // Create LLM client based on request or use default
-    let answer = if let Some(provider) = llm_provider {
+    let (answer, results) = if let Some(provider) = llm_provider {
         // Temporarily set API key in environment if provided
         let _env_guard = if let Some(key) = api_key {
             Some(set_temp_api_key(provider, key))
@@ -588,9 +586,11 @@ async fn answer_impl_with_llm(
             _ => anyhow::bail!("Unknown LLM provider: {}", provider),
         };
 
-        llm_client.ask(query, results.clone()).await?
+        debug!("asking the LLM {}", provider);
+        rag_lock.ask_with_llm(query, llm_client).await?
     } else {
         // Use default RAG LLM client
+        debug!("asking the default LLM");
         rag_lock.ask(query).await?
     };
 

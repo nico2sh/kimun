@@ -19,6 +19,8 @@ use super::{
     embedder::{Embedder, fastembedder::FastEmbedder},
 };
 
+const TOP_RESULTS: u64 = 512;
+
 pub struct VecQdrant {
     embedder: FastEmbedder,
     client: Qdrant,
@@ -225,7 +227,8 @@ impl Embeddings for VecQdrant {
         let search_result = self
             .client
             .search_points(
-                SearchPointsBuilder::new(&self.collection, query_vec, 128).with_payload(true),
+                SearchPointsBuilder::new(&self.collection, query_vec, TOP_RESULTS)
+                    .with_payload(true),
             )
             .await?;
 
