@@ -555,18 +555,40 @@ async fn answer_impl_with_llm(
     };
 
     debug!("Answering a question");
-    let rag_lock = rag.lock().await;
 
-    // Create LLM client based on request or use default
-    let (answer, results) = if let Some(provider) = llm_provider {
-        // Temporarily set API key in environment if provided
-        let _env_guard = if let Some(key) = api_key {
-            Some(set_temp_api_key(provider, key))
-        } else {
-            None
-        };
+    // Step 1: Query embeddings (fast vector search) and get reranker while holding the lock briefly
+    let (raw_results, reranker_option) = {
+        let rag_lock = rag.lock().await;
+        let results = rag_lock.query_embeddings_raw(query).await?;
+        let reranker = rag_lock.get_reranker();
+        (results, reranker)
+    }; // Lock released here
 
-        let llm_client: Arc<dyn LLMClient + Send + Sync> = match provider.to_lowercase().as_str() {
+    debug!("Got {} raw results from embeddings query", raw_results.len());
+
+    // Step 2: Apply reranking (CPU-intensive) WITHOUT holding the lock
+    let results = if let Some((reranker, top_k)) = reranker_option {
+        debug!("Reranking results without lock");
+        reranker.rerank(query, raw_results, top_k).await?
+    } else {
+        debug!("No reranking needed");
+        raw_results
+    };
+
+    debug!("After reranking: {} results", results.len());
+
+    // Step 3: Set up API key if provided (without lock)
+    let _env_guard = if let Some(key) = api_key {
+        llm_provider
+            .as_ref()
+            .map(|provider| set_temp_api_key(provider, key))
+    } else {
+        None
+    };
+
+    // Step 4: Create or get LLM client (without holding the lock)
+    let llm_client: Arc<dyn LLMClient + Send + Sync> = if let Some(provider) = llm_provider {
+        match provider.to_lowercase().as_str() {
             "claude" => {
                 let model = llm_model.unwrap_or("claude-3-5-sonnet-20241022");
                 Arc::new(ClaudeClient::new(model.to_string()))
@@ -584,15 +606,18 @@ async fn answer_impl_with_llm(
                 Arc::new(MistralClient::new(model))
             }
             _ => anyhow::bail!("Unknown LLM provider: {}", provider),
-        };
-
-        debug!("asking the LLM {}", provider);
-        rag_lock.ask_with_llm(query, llm_client).await?
+        }
     } else {
-        // Use default RAG LLM client
-        debug!("asking the default LLM");
-        rag_lock.ask(query).await?
+        // Get default LLM client (briefly holding lock just to clone the Arc)
+        let rag_lock = rag.lock().await;
+        let client = rag_lock.get_llm_client();
+        drop(rag_lock); // Explicitly release lock before LLM call
+        client
     };
+
+    // Step 5: Call LLM without holding any lock - this is the slow operation (can take seconds)
+    debug!("Calling LLM without lock");
+    let answer = llm_client.ask(query, &results).await?;
 
     // Format sources
     let sources: Vec<ChunkResult> = results

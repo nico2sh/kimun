@@ -44,6 +44,11 @@ impl KimunRag {
         }
     }
 
+    /// Get a clone of the LLM client
+    pub fn get_llm_client(&self) -> Arc<dyn LLMClient + Send + Sync> {
+        self.llm_client.clone()
+    }
+
     /// Enable reranking with the given top_k parameter
     pub fn with_reranking(mut self, top_k: usize) -> anyhow::Result<Self> {
         let reranker = CrossEncoderReranker::new()?;
@@ -76,6 +81,36 @@ impl KimunRag {
 
         self.embeddings.store_embeddings(&chunks).await?;
         Ok(())
+    }
+
+    /// Query embeddings without reranking (fast - just vector search)
+    /// Use this when you need to minimize lock time
+    pub async fn query_embeddings_raw(
+        &self,
+        query: &str,
+    ) -> anyhow::Result<Vec<(f64, document::KimunChunk)>> {
+        self.embeddings.query_embedding(query).await
+    }
+
+    /// Get reranker if enabled (returns Arc so it can be used without lock)
+    pub fn get_reranker(&self) -> Option<(Arc<CrossEncoderReranker>, usize)> {
+        self.reranker.as_ref().map(|r| (r.clone(), self.reranker_top_k))
+    }
+
+    /// Apply reranking to results
+    /// This is CPU-intensive and should be called without holding locks
+    pub async fn apply_reranking(
+        &self,
+        query: &str,
+        results: Vec<(f64, document::KimunChunk)>,
+    ) -> anyhow::Result<Vec<(f64, document::KimunChunk)>> {
+        if let Some(reranker) = &self.reranker {
+            debug!("Reranking the results to {}", self.reranker_top_k);
+            reranker.rerank(query, results, self.reranker_top_k).await
+        } else {
+            debug!("No reranking needed");
+            Ok(results)
+        }
     }
 
     /// Query embeddings and return raw results (without LLM)
