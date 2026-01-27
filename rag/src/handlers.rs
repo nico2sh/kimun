@@ -1,14 +1,15 @@
 use axum::{Json, extract::State, http::StatusCode};
 use log::debug;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
     KimunRag,
     config::RagConfig,
-    document::{KimunChunk, KimunMetadata},
+    dbembeddings::IndexedNote,
+    document::{ChunkPayload, KimunChunk, KimunMetadata},
     server_state::{AppState, JobStatus},
 };
 
@@ -323,6 +324,51 @@ pub async fn job_status_handler(
 // ============================================================================
 // Implementation Functions
 // ============================================================================
+async fn store_chunks_impl(
+    chunks: &[ChunkPayload],
+    indexed_notes: &HashMap<String, IndexedNote>,
+    rag: Arc<Mutex<KimunRag>>,
+) -> anyhow::Result<()> {
+    // Read notes from the database in a blocking task (rusqlite is not Send)
+    let mut chunk_payloads: HashMap<String, Vec<KimunChunk>> = HashMap::new();
+    for chunk in chunks {
+        let path = chunk.doc_path.clone();
+        chunk_payloads
+            .entry(path)
+            .or_insert_with(|| vec![chunk.to_owned().into()]);
+    }
+
+    let rag_lock = rag.lock().await;
+    for (path, chunks) in chunk_payloads {
+        // We take the first hash as the valid one
+        let content_hash = chunks
+            .first()
+            .map_or_else(|| "".to_string(), |c| c.metadata.hash.clone());
+
+        let needs_indexing = if let Some(indexed) = indexed_notes.get(&path) {
+            let update = indexed.content_hash != content_hash;
+            if update {
+                // These ones needs to be updated, so we need to remove them first
+                rag_lock.embeddings.delete_embeddings(vec![&path]).await?;
+            } else {
+                // skipped_count += 1;
+            }
+            update
+        } else {
+            true
+        };
+
+        if needs_indexing {
+            rag_lock.embeddings.store_embeddings(&chunks).await?;
+            rag_lock
+                .embeddings
+                .mark_as_indexed(&path, &content_hash)
+                .await?;
+        }
+    }
+
+    Ok(())
+}
 
 async fn store_single_note_impl(
     path: &str,
@@ -344,41 +390,28 @@ async fn store_single_note_impl(
         let conn = Connection::open(&db_path)?;
 
         let mut stmt = conn.prepare(
-            "SELECT n.path, n.noteName, n.title, nc.breadCrumb, nc.text, n.hash
+            "SELECT n.path, nc.breadCrumb, nc.text, n.hash
              FROM notes n
              JOIN notesContent nc ON n.path = nc.path where n.path = ?1",
         )?;
-        let notes_iter = stmt.query_map([source_path], |row| {
+        let chunks_iter = stmt.query_map([source_path], |row| {
             let path: String = row.get(0)?;
-            let note_name: String = row.get(1)?;
-            let note_title: String = row.get(2)?;
-            let breadcrumb: String = row.get(3)?;
-            let text: String = row.get(4)?;
-            let hash: String = row.get(5)?;
+            let breadcrumb: String = row.get(1)?;
+            let text: String = row.get(2)?;
+            let hash: String = row.get(3)?;
 
-            let filename = note_name.strip_suffix(".md").unwrap_or(note_name.as_str());
-            let date = chrono::NaiveDate::parse_from_str(filename, "%Y-%m-%d").ok();
-            let title = if breadcrumb.is_empty() {
-                note_title
-            } else {
-                breadcrumb
-            };
-
-            Ok((path, note_name, title, text, date, hash))
+            Ok(ChunkPayload {
+                title: breadcrumb,
+                text,
+                doc_path: path,
+                doc_hash: hash,
+            })
         })?;
 
         let mut chunks = vec![];
-        for note in notes_iter {
-            let (path, _note_name, title, text, date, hash) = note?;
-            let chunk = KimunChunk {
-                content: text,
-                metadata: KimunMetadata {
-                    source_path: path,
-                    title,
-                    date,
-                    hash,
-                },
-            };
+        for chunk_payload in chunks_iter {
+            let chunk_payload = chunk_payload?;
+            let chunk = Into::<KimunChunk>::into(chunk_payload);
             chunks.push(chunk);
         }
         Ok(chunks)
@@ -421,41 +454,36 @@ async fn index_all_impl(
         let conn = Connection::open(&db_path)?;
 
         let mut stmt = conn.prepare(
-            "SELECT n.path, n.noteName, n.title, nc.breadCrumb, nc.text, n.hash
+            "SELECT n.path, nc.breadCrumb, nc.text, n.hash
              FROM notes n
              JOIN notesContent nc ON n.path = nc.path",
         )?;
-        let notes_iter = stmt.query_map([], |row| {
+        let chunks_iter = stmt.query_map([], |row| {
             let path: String = row.get(0)?;
-            let note_name: String = row.get(1)?;
-            let note_title: String = row.get(2)?;
-            let breadcrumb: String = row.get(3)?;
-            let text: String = row.get(4)?;
-            let hash: String = row.get(5)?;
+            let breadcrumb: String = row.get(1)?;
+            let text: String = row.get(2)?;
+            let hash: String = row.get(3)?;
 
-            let filename = note_name.strip_suffix(".md").unwrap_or(note_name.as_str());
-            let date = chrono::NaiveDate::parse_from_str(filename, "%Y-%m-%d").ok();
-            let title = if breadcrumb.is_empty() {
-                note_title
-            } else {
-                breadcrumb
+            let chunk = ChunkPayload {
+                title: breadcrumb,
+                text,
+                doc_path: path,
+                doc_hash: hash,
             };
 
-            Ok((path, note_name, title, text, date, hash))
+            Ok(chunk)
         })?;
 
         // Group by path
-        let mut notes_map: std::collections::HashMap<
-            String,
-            Vec<(String, Option<chrono::NaiveDate>, String, String)>,
-        > = std::collections::HashMap::new();
+        let mut notes_map: std::collections::HashMap<String, Vec<ChunkPayload>> =
+            std::collections::HashMap::new();
 
-        for note in notes_iter {
-            let (path, _note_name, title, text, date, hash) = note?;
+        for chunk in chunks_iter {
+            let chunk = chunk?;
             notes_map
-                .entry(path)
+                .entry(chunk.doc_path.clone())
                 .or_insert_with(Vec::new)
-                .push((title, date, text, hash));
+                .push(chunk);
         }
 
         Ok(notes_map)
@@ -474,8 +502,11 @@ async fn index_all_impl(
     let mut updated_count = 0;
 
     for (path, contents) in notes_map {
-        let content_hash = if contents.windows(2).all(|w| w[0].3 == w[1].3) {
-            contents.first().map(|f| f.3.clone()).unwrap_or_default()
+        let content_hash = if contents.windows(2).all(|w| w[0].doc_hash == w[1].doc_hash) {
+            contents
+                .first()
+                .map(|f| f.doc_hash.clone())
+                .unwrap_or_default()
         } else {
             "".to_string()
         };
@@ -483,15 +514,7 @@ async fn index_all_impl(
         // Convert to chunks
         let chunks: Vec<KimunChunk> = contents
             .into_iter()
-            .map(|(title, date, content, hash)| KimunChunk {
-                content,
-                metadata: KimunMetadata {
-                    source_path: path.clone(),
-                    title,
-                    date,
-                    hash,
-                },
-            })
+            .map(|chunk_payload| chunk_payload.into())
             .collect();
 
         // Compute hash
@@ -564,7 +587,10 @@ async fn answer_impl_with_llm(
         (results, reranker)
     }; // Lock released here
 
-    debug!("Got {} raw results from embeddings query", raw_results.len());
+    debug!(
+        "Got {} raw results from embeddings query",
+        raw_results.len()
+    );
 
     // Step 2: Apply reranking (CPU-intensive) WITHOUT holding the lock
     let results = if let Some((reranker, top_k)) = reranker_option {

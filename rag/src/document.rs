@@ -7,6 +7,44 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChunkPayload {
+    pub title: String,
+    pub text: String,
+    pub doc_path: String,
+    pub doc_hash: String,
+}
+
+impl Into<KimunChunk> for ChunkPayload {
+    fn into(self) -> KimunChunk {
+        // Get the last segment of the path (separated by '/')
+        let filename = self.doc_path
+            .rsplit('/')
+            .next()
+            .unwrap_or("");
+
+        // Remove .md extension
+        let filename_without_ext = filename.strip_suffix(".md").unwrap_or(filename);
+
+        // Try to parse as date in format %Y-%m-%d
+        let date = chrono::NaiveDate::parse_from_str(filename_without_ext, "%Y-%m-%d").ok();
+
+        let metadata = KimunMetadata {
+            source_path: self.doc_path,
+            title: self.title,
+            date,
+            hash: self.doc_hash,
+        };
+
+        KimunChunk {
+            content: self.text,
+            metadata,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct KimunChunk {
     pub content: String,
