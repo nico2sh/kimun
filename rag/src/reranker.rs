@@ -66,7 +66,7 @@ impl CrossEncoderReranker {
             .collect();
 
         // Sort by score descending
-        scored_results.sort_by(|(score_a, _), (score_b, _)| score_b.partial_cmp(&score_a).unwrap());
+        scored_results.sort_by(|(score_a, _), (score_b, _)| score_b.partial_cmp(score_a).unwrap());
 
         // Take top_k
         scored_results.truncate(top_k);
