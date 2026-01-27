@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
-    KimunRag,
+    IndexStats, KimunRag,
     config::RagConfig,
     dbembeddings::IndexedNote,
     document::{ChunkPayload, KimunChunk, KimunMetadata},
@@ -328,7 +328,13 @@ async fn store_chunks_impl(
     chunks: &[ChunkPayload],
     indexed_notes: &HashMap<String, IndexedNote>,
     rag: Arc<Mutex<KimunRag>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<IndexStats> {
+    let mut indexed_count = 0;
+    let mut updated_count = 0;
+    let mut skipped_count = 0;
+
+    debug!("Starting to store {} chunks", chunks.len());
+
     // Read notes from the database in a blocking task (rusqlite is not Send)
     let mut chunk_payloads: HashMap<String, Vec<KimunChunk>> = HashMap::new();
     for chunk in chunks {
@@ -349,25 +355,38 @@ async fn store_chunks_impl(
             let update = indexed.content_hash != content_hash;
             if update {
                 // These ones needs to be updated, so we need to remove them first
+                debug!("For updating, deleting embeddings for {}", path);
                 rag_lock.embeddings.delete_embeddings(vec![&path]).await?;
+                updated_count += 1;
             } else {
-                // skipped_count += 1;
+                debug!("Skipping embeddings for {}", path);
+                skipped_count += 1;
             }
             update
         } else {
+            debug!("Indexing embeddings for {}", path);
+            indexed_count += 1;
             true
         };
 
         if needs_indexing {
+            debug!("Starting storing embeddings");
             rag_lock.embeddings.store_embeddings(&chunks).await?;
             rag_lock
                 .embeddings
                 .mark_as_indexed(&path, &content_hash)
                 .await?;
+            debug!("Finished storing embeddings");
         }
     }
 
-    Ok(())
+    Ok(IndexStats {
+        indexed: indexed_count,
+        skipped: skipped_count,
+        updated: updated_count,
+        removed: 0,
+        errors: 0,
+    })
 }
 
 async fn store_single_note_impl(
@@ -449,7 +468,7 @@ async fn index_all_impl(
     }
 
     // Read notes from the database in a blocking task (rusqlite is not Send)
-    let notes_map = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let chunks = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         use rusqlite::Connection;
         let conn = Connection::open(&db_path)?;
 
@@ -458,107 +477,45 @@ async fn index_all_impl(
              FROM notes n
              JOIN notesContent nc ON n.path = nc.path",
         )?;
-        let chunks_iter = stmt.query_map([], |row| {
-            let path: String = row.get(0)?;
-            let breadcrumb: String = row.get(1)?;
-            let text: String = row.get(2)?;
-            let hash: String = row.get(3)?;
+        let chunks_iter = stmt
+            .query_map([], |row| {
+                let path: String = row.get(0)?;
+                let breadcrumb: String = row.get(1)?;
+                let text: String = row.get(2)?;
+                let hash: String = row.get(3)?;
 
-            let chunk = ChunkPayload {
-                title: breadcrumb,
-                text,
-                doc_path: path,
-                doc_hash: hash,
-            };
+                let chunk = ChunkPayload {
+                    title: breadcrumb,
+                    text,
+                    doc_path: path,
+                    doc_hash: hash,
+                };
 
-            Ok(chunk)
-        })?;
+                Ok(chunk)
+            })?
+            .filter_map(|p| p.ok())
+            .collect::<Vec<ChunkPayload>>();
 
-        // Group by path
-        let mut notes_map: std::collections::HashMap<String, Vec<ChunkPayload>> =
-            std::collections::HashMap::new();
-
-        for chunk in chunks_iter {
-            let chunk = chunk?;
-            notes_map
-                .entry(chunk.doc_path.clone())
-                .or_insert_with(Vec::new)
-                .push(chunk);
-        }
-
-        Ok(notes_map)
+        Ok(chunks_iter)
     })
     .await??;
 
-    // Use incremental indexing per path
-    let rag_lock = rag.lock().await;
-    let mut indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
-    if let Some((key, value)) = indexed_notes.iter().next() {
-        println!("Arbitrary element: {} = {}", key, value);
-    }
+    let mut indexed_notes = {
+        // We get the lock in a separate context, so we don't hold it
+        let rag_lock = rag.lock().await;
+        let indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
+        indexed_notes
+    };
+    let mut index_stats = store_chunks_impl(&chunks, &indexed_notes, rag.clone()).await?;
 
-    let mut indexed_count = 0;
-    let mut skipped_count = 0;
-    let mut updated_count = 0;
-
-    for (path, contents) in notes_map {
-        let content_hash = if contents.windows(2).all(|w| w[0].doc_hash == w[1].doc_hash) {
-            contents
-                .first()
-                .map(|f| f.doc_hash.clone())
-                .unwrap_or_default()
-        } else {
-            "".to_string()
-        };
-
-        // Convert to chunks
-        let chunks: Vec<KimunChunk> = contents
-            .into_iter()
-            .map(|chunk_payload| chunk_payload.into())
-            .collect();
-
-        // Compute hash
-        // let content: String = chunks
-        //     .iter()
-        //     .map(|c| c.content.as_str())
-        //     .collect::<Vec<_>>()
-        //     .join("\n");
-        // let content_hash = crate::dbembeddings::vecsqlite::compute_content_hash(&content);
-
-        // Check if we need to reindex
-        let needs_indexing = if let Some(indexed) = indexed_notes.remove(&path) {
-            let update = indexed.content_hash != content_hash;
-            if update {
-                updated_count += 1;
-            } else {
-                skipped_count += 1;
-            }
-            update
-        } else {
-            indexed_count += 1;
-            true
-        };
-
-        if needs_indexing {
-            rag_lock.embeddings.store_embeddings(&chunks).await?;
-            rag_lock
-                .embeddings
-                .mark_as_indexed(&path, &content_hash)
-                .await?;
-        }
+    for chunk in chunks {
+        indexed_notes.remove(&chunk.doc_path);
     }
 
     let missing = indexed_notes.keys().collect::<Vec<&String>>();
-    let removed_count = missing.len();
+    index_stats.removed += missing.len();
+    let rag_lock = rag.lock().await;
     rag_lock.embeddings.delete_embeddings(missing).await?;
-
-    let index_stats = crate::IndexStats {
-        indexed: indexed_count,
-        skipped: skipped_count,
-        updated: updated_count,
-        errors: 0,
-        removed: removed_count,
-    };
     debug!("Done indexing: {}", index_stats);
 
     Ok(index_stats)

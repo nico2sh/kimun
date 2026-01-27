@@ -94,7 +94,9 @@ impl KimunRag {
 
     /// Get reranker if enabled (returns Arc so it can be used without lock)
     pub fn get_reranker(&self) -> Option<(Arc<CrossEncoderReranker>, usize)> {
-        self.reranker.as_ref().map(|r| (r.clone(), self.reranker_top_k))
+        self.reranker
+            .as_ref()
+            .map(|r| (r.clone(), self.reranker_top_k))
     }
 
     /// Apply reranking to results
@@ -276,7 +278,7 @@ pub struct IndexStats {
 
 impl Display for IndexStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Index Stats: ")?;
+        writeln!(f, "Index Stats: ")?;
         writeln!(f, "  > Indexed: {}", self.indexed)?;
         writeln!(f, "  > Skipped: {}", self.skipped)?;
         writeln!(f, "  > Updated: {}", self.updated)?;
