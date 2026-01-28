@@ -11,6 +11,9 @@ use llmclients::{LLMClient, gemini::GeminiClient};
 use log::debug;
 
 use crate::document::FlattenedChunk;
+
+// Re-export commonly used types and functions
+pub use document::{KimunDoc, Chunk, split_chunks_for_rag};
 use crate::reranker::CrossEncoderReranker;
 
 pub mod dbembeddings;
