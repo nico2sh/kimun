@@ -397,35 +397,60 @@ async fn index_docs_impl(
         None => &rag_lock.embeddings.get_indexed_notes().await?,
     };
     debug!("Indexed notes: {}", indexed_notes.len());
+
+    let mut current_batch_pos = 0;
+    const BATCH_SIZE: usize = 250;
+    let mut batch: Vec<KimunDoc> = Vec::with_capacity(BATCH_SIZE);
+
     for doc in docs {
         let content_hash = doc.hash.clone();
         let needs_indexing = if let Some(indexed) = indexed_notes.get(&doc.path) {
             let update = indexed.content_hash != content_hash;
             if update {
                 // These ones needs to be updated, so we need to remove them first
-                debug!("For updating, deleting embeddings for {}", doc.path);
+                // debug!("For updating, deleting embeddings for {}", doc.path);
                 rag_lock
                     .embeddings
                     .delete_embeddings(vec![&doc.path])
                     .await?;
                 updated_count += 1;
             } else {
-                debug!("Skipping embeddings for {}", doc.path);
+                // debug!("Skipping embeddings for {}", doc.path);
                 skipped_count += 1;
             }
             update
         } else {
-            debug!("Indexing embeddings for {}", doc.path);
+            // debug!("Indexing embeddings for {}", doc.path);
             indexed_count += 1;
             true
         };
 
         if needs_indexing {
-            rag_lock
-                .embeddings
-                .store_embeddings(&[doc.to_owned()])
-                .await?;
+            batch.push(doc.to_owned());
+
+            // Store batch when it reaches BATCH_SIZE
+            let batch_len = batch.len();
+            if batch_len >= BATCH_SIZE {
+                debug!(
+                    "Storing batch from {} to {} documents",
+                    current_batch_pos,
+                    current_batch_pos + batch_len
+                );
+                rag_lock.embeddings.store_embeddings(&batch).await?;
+                batch.clear();
+                current_batch_pos += batch_len;
+            }
         }
+    }
+
+    // Store any remaining documents in the batch
+    if !batch.is_empty() {
+        debug!(
+            "Storing final batch from {} to {} documents",
+            current_batch_pos,
+            current_batch_pos + batch.len()
+        );
+        rag_lock.embeddings.store_embeddings(&batch).await?;
     }
 
     Ok(IndexStats {
