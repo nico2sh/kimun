@@ -287,23 +287,6 @@ impl Embeddings for VecQdrant {
         Ok(result)
     }
 
-    async fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()> {
-        self.client
-            .set_payload(
-                SetPayloadPointsBuilder::new(
-                    &self.collection,
-                    Payload::try_from(json!({
-                        "hash": content_hash.to_string(),
-                    }))
-                    .unwrap(),
-                )
-                .points_selector(Filter::must([Condition::matches("path", path.to_string())]))
-                .wait(true),
-            )
-            .await?;
-        Ok(())
-    }
-
     async fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {
         // Delete all points with this path
         self.client

@@ -188,9 +188,6 @@ impl KimunRag {
             if needs_indexing {
                 debug!("Starting storing embeddings");
                 self.embeddings.store_embeddings(&chunks).await?;
-                self.embeddings
-                    .mark_as_indexed(&chunk.path, &content_hash)
-                    .await?;
                 debug!("Finished storing embeddings");
             }
         }

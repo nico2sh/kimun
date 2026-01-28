@@ -34,6 +34,6 @@ pub trait Embeddings: Send + Sync {
 
     // Index tracking methods
     async fn get_indexed_notes(&self) -> anyhow::Result<HashMap<String, IndexedNote>>;
-    async fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()>;
+    // async fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()>;
     async fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()>;
 }

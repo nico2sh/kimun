@@ -126,6 +126,7 @@ RAG server requires `~/.config/kimun/rag.conf` (copy from [rag/config.example.to
 **API Endpoints:**
 - `POST /api/index/all` - Index all notes from vault
 - `POST /api/index/single` - Index single note with chunks
+- `POST /api/index/docs` - Index a list of documents with chunks (accepts `Vec<KimunDoc>`)
 - `POST /api/embeddings` - Semantic search (no LLM)
 - `POST /api/answer` - LLM-powered answer with sources
   - Supports dynamic LLM selection via `llm_provider` and `llm_model` in body

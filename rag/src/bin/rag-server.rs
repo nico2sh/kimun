@@ -10,8 +10,8 @@ use kimun_rag::{
     KimunRag,
     config::RagConfig,
     handlers::{
-        answer_handler, get_embeddings_handler, index_all_handler, index_single_handler,
-        job_status_handler,
+        answer_handler, get_embeddings_handler, index_all_handler, index_docs_handler,
+        index_single_handler, job_status_handler,
     },
     server_state::AppState,
 };
@@ -74,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_handler))
         .route("/api/index/all", post(index_all_handler))
         .route("/api/index/single", post(index_single_handler))
+        .route("/api/index/docs", post(index_docs_handler))
         .route("/api/embeddings", post(get_embeddings_handler))
         .route("/api/answer", post(answer_handler))
         .route("/api/job/{job_id}", get(job_status_handler))
