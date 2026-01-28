@@ -173,25 +173,35 @@ impl Embeddings for VecQdrant {
     }
 
     async fn store_embeddings(&self, content: &[KimunDoc]) -> anyhow::Result<()> {
+        // Create points in batches of 100
+        const BATCH_SIZE: usize = 100;
         let chunks = FlattenedChunk::from_chunks(content);
+        debug!(
+            "{} docs flattened to {} chunks",
+            content.len(),
+            chunks.len()
+        );
         // Generate embeddings
 
         let mut batch_count = 0;
-        // Create points in batches of 100
-        for batch in chunks.chunks(100) {
+        for batch in chunks.chunks(BATCH_SIZE) {
+            debug!("Starting batch #{}", batch_count);
             let embeddings = self.embedder.generate_embeddings(batch).await?;
             let points: Vec<PointStruct> = batch
                 .iter()
                 .zip(embeddings)
                 .map(|(chunk, embedding)| VecQdrant::chunk_to_point(chunk, embedding.clone()))
                 .collect();
+            let points_count = points.len();
 
-            debug!("Created {} embeddings", points.len());
             // Upsert points using the builder API
             self.client
                 .upsert_points(UpsertPointsBuilder::new(&self.collection, points))
                 .await?;
-            debug!("Finished batch {} of embeddings", batch_count);
+            debug!(
+                "Finished batch #{} with {} embeddings",
+                batch_count, points_count
+            );
             batch_count += 1;
         }
 
