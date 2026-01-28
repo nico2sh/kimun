@@ -1,7 +1,8 @@
+use anyhow::bail;
 use axum::{Json, extract::State, http::StatusCode};
 use log::debug;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, hash::Hash, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -9,7 +10,7 @@ use crate::{
     IndexStats, KimunRag,
     config::RagConfig,
     dbembeddings::IndexedNote,
-    document::{ChunkPayload, KimunChunk, KimunMetadata},
+    document::{Chunk, KimunDoc},
     server_state::{AppState, JobStatus},
 };
 
@@ -90,6 +91,61 @@ pub struct ErrorResponse {
 // ============================================================================
 // Handlers
 // ============================================================================
+
+pub async fn index_chunks_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<Vec<KimunDoc>>,
+) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let job_id = Uuid::new_v4();
+
+    // Mark job as queued
+    state
+        .job_tracker
+        .lock()
+        .await
+        .create(job_id, JobStatus::Queued);
+
+    // Spawn background task
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        // Mark as processing
+        state_clone
+            .job_tracker
+            .lock()
+            .await
+            .update_status(&job_id, JobStatus::Processing);
+
+        // Perform indexing
+        match index_chunks_impl(&request, None, state_clone.rag.clone()).await {
+            Ok(stats) => {
+                let result = serde_json::json!({
+                    "indexed": stats.indexed,
+                    "skipped": stats.skipped,
+                    "updated": stats.updated,
+                    "errors": stats.errors,
+                })
+                .to_string();
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
+                    .set_result(&job_id, result);
+            }
+            Err(e) => {
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
+                    .set_error(&job_id, e.to_string());
+            }
+        }
+    });
+
+    Ok(Json(IndexResponse {
+        job_id: job_id.to_string(),
+        message: "Index chunks job started".to_string(),
+    }))
+}
 
 /// Index All - Parse vault and create/store embeddings
 pub async fn index_all_handler(
@@ -178,15 +234,15 @@ pub async fn get_embeddings_handler(
             let chunks: Vec<ChunkResult> = results
                 .into_iter()
                 .map(|(score, chunk)| {
-                    let source_path = chunk.metadata.source_path.clone();
-                    let title = chunk.metadata.title.clone();
-                    let date = chunk.metadata.get_date_string();
-                    let hash = chunk.metadata.hash.clone();
+                    let source_path = chunk.doc_path.clone();
+                    let title = chunk.title.clone();
+                    let date = chunk.get_date_string();
+                    let hash = chunk.doc_hash.clone();
                     ChunkResult {
                         path: source_path,
                         title,
                         date,
-                        content: chunk.content,
+                        content: chunk.text,
                         similarity_score: score,
                         hash,
                     }
@@ -324,59 +380,55 @@ pub async fn job_status_handler(
 // ============================================================================
 // Implementation Functions
 // ============================================================================
-async fn store_chunks_impl(
-    chunks: &[ChunkPayload],
-    indexed_notes: &HashMap<String, IndexedNote>,
+async fn index_chunks_impl(
+    docs: &[KimunDoc],
+    indexed_notes: Option<&HashMap<String, IndexedNote>>,
     rag: Arc<Mutex<KimunRag>>,
 ) -> anyhow::Result<IndexStats> {
     let mut indexed_count = 0;
     let mut updated_count = 0;
     let mut skipped_count = 0;
 
-    debug!("Starting to store {} chunks", chunks.len());
-
-    // Read notes from the database in a blocking task (rusqlite is not Send)
-    let mut chunk_payloads: HashMap<String, Vec<KimunChunk>> = HashMap::new();
-    for chunk in chunks {
-        let path = chunk.doc_path.clone();
-        chunk_payloads
-            .entry(path)
-            .or_insert_with(|| vec![chunk.to_owned().into()]);
-    }
+    debug!("Starting to store {} chunks", docs.len());
 
     let rag_lock = rag.lock().await;
-    for (path, chunks) in chunk_payloads {
-        // We take the first hash as the valid one
-        let content_hash = chunks
-            .first()
-            .map_or_else(|| "".to_string(), |c| c.metadata.hash.clone());
-
-        let needs_indexing = if let Some(indexed) = indexed_notes.get(&path) {
+    let indexed_notes = match indexed_notes {
+        Some(inotes) => inotes,
+        None => &rag_lock.embeddings.get_indexed_notes().await?,
+    };
+    debug!("Indexed notes: {}", indexed_notes.len());
+    for doc in docs {
+        let content_hash = doc.hash.clone();
+        let needs_indexing = if let Some(indexed) = indexed_notes.get(&doc.path) {
             let update = indexed.content_hash != content_hash;
             if update {
                 // These ones needs to be updated, so we need to remove them first
-                debug!("For updating, deleting embeddings for {}", path);
-                rag_lock.embeddings.delete_embeddings(vec![&path]).await?;
+                debug!("For updating, deleting embeddings for {}", doc.path);
+                rag_lock
+                    .embeddings
+                    .delete_embeddings(vec![&doc.path])
+                    .await?;
                 updated_count += 1;
             } else {
-                debug!("Skipping embeddings for {}", path);
+                debug!("Skipping embeddings for {}", doc.path);
                 skipped_count += 1;
             }
             update
         } else {
-            debug!("Indexing embeddings for {}", path);
+            debug!("Indexing embeddings for {}", doc.path);
             indexed_count += 1;
             true
         };
 
         if needs_indexing {
-            debug!("Starting storing embeddings");
-            rag_lock.embeddings.store_embeddings(&chunks).await?;
             rag_lock
                 .embeddings
-                .mark_as_indexed(&path, &content_hash)
+                .store_embeddings(&[doc.to_owned()])
                 .await?;
-            debug!("Finished storing embeddings");
+            rag_lock
+                .embeddings
+                .mark_as_indexed(&doc.path, &content_hash)
+                .await?;
         }
     }
 
@@ -413,44 +465,54 @@ async fn store_single_note_impl(
              FROM notes n
              JOIN notesContent nc ON n.path = nc.path where n.path = ?1",
         )?;
-        let chunks_iter = stmt.query_map([source_path], |row| {
-            let path: String = row.get(0)?;
-            let breadcrumb: String = row.get(1)?;
-            let text: String = row.get(2)?;
-            let hash: String = row.get(3)?;
+        let mut rows = stmt.query([source_path])?;
 
-            Ok(ChunkPayload {
-                title: breadcrumb,
-                text,
-                doc_path: path,
-                doc_hash: hash,
-            })
-        })?;
+        let mut chunk_option: Option<KimunDoc> = None;
+        while let Some(row) = rows.next()? {
+            if let Some(chunk) = chunk_option.as_mut() {
+                let path: String = row.get(0)?;
+                if chunk.path != path {
+                    bail!("Paths differ, query is returning different paths, shouldn't happen: {} vs {}", chunk.path, path);
+                }
 
-        let mut chunks = vec![];
-        for chunk_payload in chunks_iter {
-            let chunk_payload = chunk_payload?;
-            let chunk = Into::<KimunChunk>::into(chunk_payload);
-            chunks.push(chunk);
+                let breadcrumb: String = row.get(1)?;
+                let text: String = row.get(2)?;
+                let c = Chunk{ title: breadcrumb, text };
+                chunk.chunks.push(c);
+            } else {
+                let path: String = row.get(0)?;
+                let breadcrumb: String = row.get(1)?;
+                let text: String = row.get(2)?;
+                let hash: String = row.get(3)?;
+                let c = KimunDoc {
+                    path,
+                    hash,
+                    chunks: vec![Chunk {
+                        title: breadcrumb,
+                        text,
+                    }],
+                };
+                chunk_option = Some(c);
+            }
         }
-        Ok(chunks)
+
+        Ok(KimunDoc {
+            path: "".to_string(),
+            hash: "".to_string(),
+            chunks: vec![],
+        })
+
+        // }
     })
     .await??;
-    let rag_lock = rag.lock().await;
 
-    if chunks.is_empty() {
-        // If no chunks, remove from index
-        rag_lock.embeddings.remove_indexed_note(path).await?;
-        return Ok(());
-    }
-    let content_hash = &chunks.first().unwrap().metadata.hash;
-
-    // Store embeddings
-    rag_lock.embeddings.store_embeddings(&chunks).await?;
-    rag_lock
-        .embeddings
-        .mark_as_indexed(path, content_hash)
-        .await?;
+    let indexed_notes = {
+        // We get the lock in a separate context, so we don't hold it
+        let rag_lock = rag.lock().await;
+        let indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
+        indexed_notes
+    };
+    index_chunks_impl(&[chunks], Some(&indexed_notes), rag).await?;
 
     Ok(())
 }
@@ -475,41 +537,61 @@ async fn index_all_impl(
         let mut stmt = conn.prepare(
             "SELECT n.path, nc.breadCrumb, nc.text, n.hash
              FROM notes n
-             JOIN notesContent nc ON n.path = nc.path",
+             JOIN notesContent nc ON n.path = nc.path ORDER BY n.path",
         )?;
-        let chunks_iter = stmt
-            .query_map([], |row| {
-                let path: String = row.get(0)?;
-                let breadcrumb: String = row.get(1)?;
-                let text: String = row.get(2)?;
-                let hash: String = row.get(3)?;
+        let mut rows = stmt.query([])?;
 
-                let chunk = ChunkPayload {
-                    title: breadcrumb,
-                    text,
-                    doc_path: path,
-                    doc_hash: hash,
+        let mut chunks: Vec<KimunDoc> = vec![];
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            let breadcrumb: String = row.get(1)?;
+            let text: String = row.get(2)?;
+            let hash: String = row.get(3)?;
+            if let Some(ch) = chunks.last_mut() {
+                if ch.path != path {
+                    let new_chunk = KimunDoc {
+                        path: path.clone(),
+                        hash,
+                        chunks: vec![Chunk {
+                            title: breadcrumb,
+                            text,
+                        }],
+                    };
+                    chunks.push(new_chunk);
+                } else {
+                    ch.chunks.push(Chunk {
+                        title: breadcrumb,
+                        text,
+                    });
+                }
+            } else {
+                let new_chunk = KimunDoc {
+                    path: path.clone(),
+                    hash,
+                    chunks: vec![Chunk {
+                        title: breadcrumb,
+                        text,
+                    }],
                 };
+                chunks.push(new_chunk);
+            }
+        }
 
-                Ok(chunk)
-            })?
-            .filter_map(|p| p.ok())
-            .collect::<Vec<ChunkPayload>>();
-
-        Ok(chunks_iter)
+        Ok(chunks)
     })
     .await??;
 
     let mut indexed_notes = {
         // We get the lock in a separate context, so we don't hold it
         let rag_lock = rag.lock().await;
+        debug!("Getting indexed Notes");
         let indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
         indexed_notes
     };
-    let mut index_stats = store_chunks_impl(&chunks, &indexed_notes, rag.clone()).await?;
+    let mut index_stats = index_chunks_impl(&chunks, Some(&indexed_notes), rag.clone()).await?;
 
     for chunk in chunks {
-        indexed_notes.remove(&chunk.doc_path);
+        indexed_notes.remove(&chunk.path);
     }
 
     let missing = indexed_notes.keys().collect::<Vec<&String>>();
@@ -606,15 +688,15 @@ async fn answer_impl_with_llm(
     let sources: Vec<ChunkResult> = results
         .into_iter()
         .map(|(score, chunk)| {
-            let source_path = chunk.metadata.source_path.clone();
-            let title = chunk.metadata.title.clone();
-            let date = chunk.metadata.get_date_string();
-            let hash = chunk.metadata.hash.clone();
+            let source_path = chunk.doc_path.clone();
+            let title = chunk.title.clone();
+            let date = chunk.get_date_string();
+            let hash = chunk.doc_hash.clone();
             ChunkResult {
                 path: source_path,
                 title,
                 date,
-                content: chunk.content,
+                content: chunk.text,
                 similarity_score: score,
                 hash,
             }

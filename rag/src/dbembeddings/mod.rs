@@ -1,4 +1,4 @@
-use crate::document::KimunChunk;
+use crate::document::{FlattenedChunk, KimunDoc};
 use async_trait::async_trait;
 use std::{collections::HashMap, fmt::Display};
 
@@ -28,9 +28,9 @@ impl Display for IndexedNote {
 #[async_trait]
 pub trait Embeddings: Send + Sync {
     async fn init(&self) -> anyhow::Result<()>;
-    async fn store_embeddings(&self, content: &[KimunChunk]) -> anyhow::Result<()>;
+    async fn store_embeddings(&self, content: &[KimunDoc]) -> anyhow::Result<()>;
     async fn delete_embeddings(&self, paths: Vec<&String>) -> anyhow::Result<()>;
-    async fn query_embedding(&self, content: &str) -> anyhow::Result<Vec<(f64, KimunChunk)>>;
+    async fn query_embedding(&self, content: &str) -> anyhow::Result<Vec<(f64, FlattenedChunk)>>;
 
     // Index tracking methods
     async fn get_indexed_notes(&self) -> anyhow::Result<HashMap<String, IndexedNote>>;

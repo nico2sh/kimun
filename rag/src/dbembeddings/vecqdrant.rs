@@ -12,7 +12,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::document::KimunChunk;
+use crate::document::{FlattenedChunk, KimunDoc};
 
 use super::{
     Embeddings, IndexedNote,
@@ -73,30 +73,24 @@ impl VecQdrant {
         Ok(())
     }
 
-    fn chunk_to_point(chunk: &KimunChunk, embedding: Vec<f32>) -> PointStruct {
+    fn chunk_to_point(chunk: &FlattenedChunk, embedding: Vec<f32>) -> PointStruct {
         use qdrant_client::qdrant::Value;
         use std::collections::HashMap;
 
         let mut payload = HashMap::new();
-        payload.insert(
-            "path".to_string(),
-            Value::from(chunk.metadata.source_path.clone()),
-        );
-        payload.insert(
-            "title".to_string(),
-            Value::from(chunk.metadata.title.clone()),
-        );
+        payload.insert("path".to_string(), Value::from(chunk.doc_path.clone()));
+        payload.insert("title".to_string(), Value::from(chunk.title.clone()));
         payload.insert(
             "date".to_string(),
-            Value::from(chunk.metadata.get_date_string().unwrap_or_default()),
+            Value::from(chunk.get_date_string().unwrap_or_default()),
         );
-        payload.insert("text".to_string(), Value::from(chunk.content.clone()));
-        payload.insert("hash".to_string(), Value::from(chunk.metadata.hash.clone()));
+        payload.insert("text".to_string(), Value::from(chunk.text.clone()));
+        payload.insert("hash".to_string(), Value::from(chunk.doc_hash.clone()));
 
         PointStruct::new(Uuid::new_v4().to_string(), embedding, payload)
     }
 
-    fn payload_to_chunk(payload: &HashMap<String, Value>) -> KimunChunk {
+    fn payload_to_chunk(payload: &HashMap<String, Value>) -> FlattenedChunk {
         let path = payload
             .get("path")
             .and_then(|v| v.as_str())
@@ -129,18 +123,16 @@ impl VecQdrant {
             None
         };
 
-        KimunChunk {
-            content: text,
-            metadata: crate::document::KimunMetadata {
-                source_path: path,
-                title,
-                date,
-                hash,
-            },
+        FlattenedChunk {
+            doc_path: path,
+            doc_hash: hash,
+            title,
+            text,
+            date,
         }
     }
 
-    fn point_to_chunk(point: &ScoredPoint) -> KimunChunk {
+    fn point_to_chunk(point: &ScoredPoint) -> FlattenedChunk {
         let payload = &point.payload;
 
         VecQdrant::payload_to_chunk(payload)
@@ -180,22 +172,27 @@ impl Embeddings for VecQdrant {
         Ok(())
     }
 
-    async fn store_embeddings(&self, content: &[KimunChunk]) -> anyhow::Result<()> {
+    async fn store_embeddings(&self, content: &[KimunDoc]) -> anyhow::Result<()> {
+        let chunks = FlattenedChunk::from_chunks(content);
         // Generate embeddings
-        let embeddings = self.embedder.generate_embeddings(content).await?;
 
+        let mut batch_count = 0;
         // Create points in batches of 100
-        for (batch_idx, batch) in content.chunks(100).enumerate() {
+        for batch in chunks.chunks(100) {
+            let embeddings = self.embedder.generate_embeddings(batch).await?;
             let points: Vec<PointStruct> = batch
                 .iter()
-                .zip(embeddings.iter().skip(batch_idx * 100))
+                .zip(embeddings)
                 .map(|(chunk, embedding)| VecQdrant::chunk_to_point(chunk, embedding.clone()))
                 .collect();
 
+            debug!("Created {} embeddings", points.len());
             // Upsert points using the builder API
             self.client
                 .upsert_points(UpsertPointsBuilder::new(&self.collection, points))
                 .await?;
+            debug!("Finished batch {} of embeddings", batch_count);
+            batch_count += 1;
         }
 
         Ok(())
@@ -219,7 +216,7 @@ impl Embeddings for VecQdrant {
         Ok(())
     }
 
-    async fn query_embedding(&self, query: &str) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
+    async fn query_embedding(&self, query: &str) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         // Generate query embedding
         let query_vec = self.embedder.prompt_embedding(query).await?;
 
@@ -233,7 +230,7 @@ impl Embeddings for VecQdrant {
             .await?;
 
         // Convert results
-        let results: Vec<(f64, KimunChunk)> = search_result
+        let results: Vec<(f64, FlattenedChunk)> = search_result
             .result
             .iter()
             .map(|point| {
@@ -273,10 +270,10 @@ impl Embeddings for VecQdrant {
 
             scroll_result.result.into_iter().for_each(|p| {
                 let chunk = VecQdrant::payload_to_chunk(&p.payload);
-                let path = chunk.metadata.source_path.clone();
+                let path = chunk.doc_path.clone();
                 let note = IndexedNote {
-                    path: chunk.metadata.source_path,
-                    content_hash: chunk.metadata.hash,
+                    path: chunk.doc_path,
+                    content_hash: chunk.doc_hash,
                     last_indexed: 0,
                 };
                 result.insert(path, note);

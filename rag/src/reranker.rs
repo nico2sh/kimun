@@ -1,7 +1,8 @@
-use crate::document::KimunChunk;
 use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
 use log::debug;
 use std::sync::{Arc, Mutex};
+
+use crate::document::FlattenedChunk;
 
 /// Reranker for improving search result quality using cross-encoder models
 pub struct CrossEncoderReranker {
@@ -28,9 +29,9 @@ impl CrossEncoderReranker {
     pub async fn rerank(
         &self,
         query: &str,
-        results: Vec<(f64, KimunChunk)>,
+        results: Vec<(f64, FlattenedChunk)>,
         top_k: usize,
-    ) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
+    ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         if results.is_empty() {
             return Ok(results);
         }
@@ -38,7 +39,7 @@ impl CrossEncoderReranker {
         // Prepare documents for reranking
         let documents: Vec<String> = results
             .iter()
-            .map(|(_, chunk)| format!("{}\n{}", chunk.metadata.title, chunk.content))
+            .map(|(_, chunk)| format!("{}\n{}", chunk.title, chunk.text))
             .collect();
 
         let query_owned = query.to_string();
@@ -57,7 +58,7 @@ impl CrossEncoderReranker {
         .await??;
 
         // Sort by score and take top_k
-        let mut scored_results: Vec<(f64, KimunChunk)> = rerank_results
+        let mut scored_results: Vec<(f64, FlattenedChunk)> = rerank_results
             .into_iter()
             .map(|result| {
                 let original_chunk = &results[result.index].1;
@@ -78,10 +79,10 @@ impl CrossEncoderReranker {
 /// Apply reranking if enabled in config
 pub async fn apply_reranking(
     query: &str,
-    results: Vec<(f64, KimunChunk)>,
+    results: Vec<(f64, FlattenedChunk)>,
     reranker: Option<&CrossEncoderReranker>,
     top_k: usize,
-) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
+) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
     if let Some(reranker) = reranker {
         debug!("Reranking the results with the TOP {}", top_k);
         reranker.rerank(query, results, top_k).await
@@ -97,7 +98,6 @@ pub async fn apply_reranking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::KimunMetadata;
 
     #[tokio::test]
     async fn test_reranker_basic() {
@@ -106,26 +106,22 @@ mod tests {
         let chunks = vec![
             (
                 0.8,
-                KimunChunk {
-                    content: "Python is a programming language".to_string(),
-                    metadata: KimunMetadata {
-                        source_path: "doc1.md".to_string(),
-                        title: "Python".to_string(),
-                        date: None,
-                        hash: "1234".to_string(),
-                    },
+                FlattenedChunk {
+                    text: "Python is a programming language".to_string(),
+                    doc_path: "doc1.md".to_string(),
+                    title: "Python".to_string(),
+                    date: None,
+                    doc_hash: "1234".to_string(),
                 },
             ),
             (
                 0.7,
-                KimunChunk {
-                    content: "Snakes are reptiles".to_string(),
-                    metadata: KimunMetadata {
-                        source_path: "doc2.md".to_string(),
-                        title: "Animals".to_string(),
-                        date: None,
-                        hash: "5678".to_string(),
-                    },
+                FlattenedChunk {
+                    text: "Snakes are reptiles".to_string(),
+                    doc_path: "doc2.md".to_string(),
+                    title: "Animals".to_string(),
+                    date: None,
+                    doc_hash: "5678".to_string(),
                 },
             ),
         ];
@@ -137,6 +133,6 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         // The programming-related chunk should rank higher
-        assert!(results[0].1.content.contains("programming"));
+        assert!(results[0].1.text.contains("programming"));
     }
 }

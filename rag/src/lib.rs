@@ -10,7 +10,7 @@ use dbembeddings::vecsqlite::VecSQLite;
 use llmclients::{LLMClient, gemini::GeminiClient};
 use log::debug;
 
-use crate::document::KimunChunk;
+use crate::document::FlattenedChunk;
 use crate::reranker::CrossEncoderReranker;
 
 pub mod dbembeddings;
@@ -88,7 +88,7 @@ impl KimunRag {
     pub async fn query_embeddings_raw(
         &self,
         query: &str,
-    ) -> anyhow::Result<Vec<(f64, document::KimunChunk)>> {
+    ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
         self.embeddings.query_embedding(query).await
     }
 
@@ -104,8 +104,8 @@ impl KimunRag {
     pub async fn apply_reranking(
         &self,
         query: &str,
-        results: Vec<(f64, document::KimunChunk)>,
-    ) -> anyhow::Result<Vec<(f64, document::KimunChunk)>> {
+        results: Vec<(f64, document::FlattenedChunk)>,
+    ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
         if let Some(reranker) = &self.reranker {
             debug!("Reranking the results to {}", self.reranker_top_k);
             reranker.rerank(query, results, self.reranker_top_k).await
@@ -120,7 +120,7 @@ impl KimunRag {
     pub async fn query_embeddings(
         &self,
         query: &str,
-    ) -> anyhow::Result<Vec<(f64, document::KimunChunk)>> {
+    ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
         let results = self.embeddings.query_embedding(query).await?;
 
         // Apply reranking if enabled
@@ -135,7 +135,7 @@ impl KimunRag {
 
     /// Query the RAG system with a question and get an LLM answer
     /// Uses reranked results if reranking is enabled
-    pub async fn ask(&self, query: &str) -> anyhow::Result<(String, Vec<(f64, KimunChunk)>)> {
+    pub async fn ask(&self, query: &str) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
         self.ask_with_llm(query, self.llm_client.clone()).await
     }
 
@@ -143,7 +143,7 @@ impl KimunRag {
         &self,
         query: &str,
         llm: Arc<dyn LLMClient + Send + Sync>,
-    ) -> anyhow::Result<(String, Vec<(f64, KimunChunk)>)> {
+    ) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
         let context = self.query_embeddings(query).await?;
         let answer = llm.ask(query, &context).await?;
         Ok((answer, context))
@@ -154,62 +154,44 @@ impl KimunRag {
         &self,
         db_path: PathBuf,
     ) -> anyhow::Result<IndexStats> {
+        debug!("Starting store embeddings incremental");
         let chunk_loader = ChunkLoader::new(db_path);
         let chunks = chunk_loader.load_notes()?;
 
         // Get currently indexed notes
         let mut indexed_notes = self.embeddings.get_indexed_notes().await?;
 
-        // Group chunks by path and compute hashes
-        let mut path_chunks: std::collections::HashMap<String, Vec<&document::KimunChunk>> =
-            std::collections::HashMap::new();
-        for chunk in &chunks {
-            path_chunks
-                .entry(chunk.metadata.source_path.clone())
-                .or_insert_with(Vec::new)
-                .push(chunk);
-        }
-
         let mut indexed_count = 0;
         let mut skipped_count = 0;
         let mut updated_count = 0;
 
-        for (path, path_chunks_vec) in path_chunks {
-            let content_hash = if path_chunks_vec
-                .windows(2)
-                .all(|w| w[0].metadata.hash == w[1].metadata.hash)
-            {
-                path_chunks_vec
-                    .first()
-                    .map(|f| f.metadata.hash.clone())
-                    .unwrap_or_default()
-            } else {
-                "".to_string()
-            };
-
-            // Check if we need to reindex
-            let needs_indexing = if let Some(indexed) = indexed_notes.remove(&path) {
+        for chunk in &chunks {
+            let content_hash = chunk.hash.clone();
+            let needs_indexing = if let Some(indexed) = indexed_notes.remove(&chunk.path) {
                 let update = indexed.content_hash != content_hash;
                 if update {
+                    // These ones needs to be updated, so we need to remove them first
+                    debug!("For updating, deleting embeddings for {}", chunk.path);
+                    self.embeddings.delete_embeddings(vec![&chunk.path]).await?;
                     updated_count += 1;
                 } else {
+                    debug!("Skipping embeddings for {}", chunk.path);
                     skipped_count += 1;
                 }
                 update
             } else {
+                debug!("Indexing embeddings for {}", chunk.path);
                 indexed_count += 1;
                 true
             };
 
             if needs_indexing {
-                // Index these chunks
-                let chunks_to_index: Vec<document::KimunChunk> =
-                    path_chunks_vec.iter().map(|c| (*c).clone()).collect();
-
-                self.embeddings.store_embeddings(&chunks_to_index).await?;
+                debug!("Starting storing embeddings");
+                self.embeddings.store_embeddings(&chunks).await?;
                 self.embeddings
-                    .mark_as_indexed(&path, &content_hash)
+                    .mark_as_indexed(&chunk.path, &content_hash)
                     .await?;
+                debug!("Finished storing embeddings");
             }
         }
 
@@ -226,44 +208,41 @@ impl KimunRag {
         })
     }
 
-    /// Store a single note (replacing all existing chunks for that path)
-    pub async fn store_single_note(&self, db_path: PathBuf, note_path: &str) -> anyhow::Result<()> {
-        let chunk_loader = ChunkLoader::new(db_path);
-        let all_chunks = chunk_loader.load_notes()?;
+    // Store a single note (replacing all existing chunks for that path)
+    //     pub async fn store_single_note(&self, db_path: PathBuf, note_path: &str) -> anyhow::Result<()> {
+    //         let chunk_loader = ChunkLoader::new(db_path);
+    //         let all_chunks = chunk_loader.load_notes()?;
 
-        // Filter to only the chunks for this path
-        let chunks: Vec<document::KimunChunk> = all_chunks
-            .into_iter()
-            .filter(|c| c.metadata.source_path == note_path)
-            .collect();
+    //         // Filter to only the chunks for this path
+    //         let chunks: Vec<document::ChunksPayload> = all_chunks
+    //             .into_iter()
+    //             .filter(|c| c.doc_path == note_path)
+    //             .collect();
 
-        if chunks.is_empty() {
-            // If no chunks, remove from index
-            self.embeddings.remove_indexed_note(note_path).await?;
-            return Ok(());
-        }
+    //         if chunks.is_empty() {
+    //             // If no chunks, remove from index
+    //             self.embeddings.remove_indexed_note(note_path).await?;
+    //             return Ok(());
+    //         }
 
-        // Compute hash
-        let content_hash = if chunks
-            .windows(2)
-            .all(|w| w[0].metadata.hash == w[1].metadata.hash)
-        {
-            chunks
-                .first()
-                .map(|f| f.metadata.hash.clone())
-                .unwrap_or_default()
-        } else {
-            "".to_string()
-        };
+    //         // Compute hash
+    //         let content_hash = if chunks.windows(2).all(|w| w[0].doc_hash == w[1].doc_hash) {
+    //             chunks
+    //                 .first()
+    //                 .map(|f| f.doc_hash.clone())
+    //                 .unwrap_or_default()
+    //         } else {
+    //             "".to_string()
+    //         };
 
-        // Store embeddings
-        self.embeddings.store_embeddings(&chunks).await?;
-        self.embeddings
-            .mark_as_indexed(note_path, &content_hash)
-            .await?;
+    //         // Store embeddings
+    //         self.embeddings.store_embeddings(&chunks).await?;
+    //         self.embeddings
+    //             .mark_as_indexed(note_path, &content_hash)
+    //             .await?;
 
-        Ok(())
-    }
+    //         Ok(())
+    //     }
 }
 
 /// Statistics from indexing operation
