@@ -45,6 +45,10 @@ impl VecSQLite {
         let tx = conn.transaction()?;
         let doc_sql = "INSERT INTO docs (path, title, date, text) VALUES (?1, ?2, ?3, ?4)";
         let vec_sql = "INSERT INTO vec_items(rowid, embedding) VALUES (?1, ?2)";
+        let index_sql = "INSERT OR REPLACE INTO indexed_notes (path, content_hash, last_indexed) VALUES (?1, ?2, ?3)";
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
         for (doc, vec) in docs {
             tx.execute(
                 doc_sql,
@@ -59,6 +63,10 @@ impl VecSQLite {
             )?;
             let row_id = tx.last_insert_rowid();
             tx.execute(vec_sql, params![row_id, vec.as_bytes()])?;
+            tx.execute(
+                index_sql,
+                [doc.doc_path.clone(), doc.doc_hash.clone(), now.to_string()],
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -315,20 +323,6 @@ impl Embeddings for VecSQLite {
             .collect::<Result<HashMap<String, crate::dbembeddings::IndexedNote>, _>>()?;
 
         Ok(notes)
-    }
-
-    async fn mark_as_indexed(&self, path: &str, content_hash: &str) -> anyhow::Result<()> {
-        let conn = self.connection()?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs() as i64;
-
-        conn.execute(
-            "INSERT OR REPLACE INTO indexed_notes (path, content_hash, last_indexed) VALUES (?1, ?2, ?3)",
-            (path, content_hash, now),
-        )?;
-
-        Ok(())
     }
 
     async fn remove_indexed_note(&self, path: &str) -> anyhow::Result<()> {

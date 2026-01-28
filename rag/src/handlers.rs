@@ -92,7 +92,7 @@ pub struct ErrorResponse {
 // Handlers
 // ============================================================================
 
-pub async fn index_chunks_handler(
+pub async fn index_docs_handler(
     State(state): State<Arc<AppState>>,
     Json(request): Json<Vec<KimunDoc>>,
 ) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -116,7 +116,7 @@ pub async fn index_chunks_handler(
             .update_status(&job_id, JobStatus::Processing);
 
         // Perform indexing
-        match index_chunks_impl(&request, None, state_clone.rag.clone()).await {
+        match index_docs_impl(&request, None, state_clone.rag.clone()).await {
             Ok(stats) => {
                 let result = serde_json::json!({
                     "indexed": stats.indexed,
@@ -380,7 +380,7 @@ pub async fn job_status_handler(
 // ============================================================================
 // Implementation Functions
 // ============================================================================
-async fn index_chunks_impl(
+async fn index_docs_impl(
     docs: &[KimunDoc],
     indexed_notes: Option<&HashMap<String, IndexedNote>>,
     rag: Arc<Mutex<KimunRag>>,
@@ -424,10 +424,6 @@ async fn index_chunks_impl(
             rag_lock
                 .embeddings
                 .store_embeddings(&[doc.to_owned()])
-                .await?;
-            rag_lock
-                .embeddings
-                .mark_as_indexed(&doc.path, &content_hash)
                 .await?;
         }
     }
@@ -512,7 +508,7 @@ async fn store_single_note_impl(
         let indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
         indexed_notes
     };
-    index_chunks_impl(&[chunks], Some(&indexed_notes), rag).await?;
+    index_docs_impl(&[chunks], Some(&indexed_notes), rag).await?;
 
     Ok(())
 }
@@ -588,7 +584,7 @@ async fn index_all_impl(
         let indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
         indexed_notes
     };
-    let mut index_stats = index_chunks_impl(&chunks, Some(&indexed_notes), rag.clone()).await?;
+    let mut index_stats = index_docs_impl(&chunks, Some(&indexed_notes), rag.clone()).await?;
 
     for chunk in chunks {
         indexed_notes.remove(&chunk.path);

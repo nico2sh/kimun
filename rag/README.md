@@ -160,6 +160,58 @@ Response:
 }
 ```
 
+### Index Documents
+
+Index a list of documents with their chunks. This is useful for batch indexing or when you have pre-processed documents:
+
+```bash
+POST /api/index/docs
+Content-Type: application/json
+
+[
+  {
+    "path": "notes/example.md",
+    "hash": "abc123def456",
+    "chunks": [
+      {
+        "title": "Introduction",
+        "text": "This is the first chunk of content..."
+      },
+      {
+        "title": "Details",
+        "text": "This is another chunk..."
+      }
+    ]
+  },
+  {
+    "path": "notes/another.md",
+    "hash": "789xyz",
+    "chunks": [
+      {
+        "title": "Overview",
+        "text": "Content here..."
+      }
+    ]
+  }
+]
+```
+
+Response:
+
+```json
+{
+  "job_id": "uuid",
+  "message": "Index chunks job started"
+}
+```
+
+**Features:**
+- Accepts multiple documents in a single request
+- Each document includes its content hash for incremental indexing
+- Automatically skips unchanged documents (same hash)
+- Updates documents that have changed
+- Background processing with job tracking
+
 ### Get Embeddings
 
 Query for similar chunks (no LLM, just semantic search):
