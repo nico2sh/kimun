@@ -3,7 +3,7 @@ use log::debug;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::document::KimunChunk;
+use crate::document::FlattenedChunk;
 
 use super::LLMClient;
 
@@ -24,15 +24,15 @@ impl OpenAIClient {
         }
     }
 
-    fn get_prompt(&self, question: String, context: &Vec<(f64, KimunChunk)>) -> String {
+    fn get_prompt(&self, question: String, context: &Vec<(f64, FlattenedChunk)>) -> String {
         let mut context_string = String::new();
         for (distance, chunk) in context {
             context_string.push_str(&format!(
                 "--- Document: {} (Relevance: {:.4}) ---\n",
-                chunk.metadata.source_path, distance
+                chunk.doc_path, distance
             ));
-            let mut title = chunk.metadata.title.clone();
-            if let Some(date) = chunk.metadata.get_date_string() {
+            let mut title = chunk.title.clone();
+            if let Some(date) = chunk.get_date_string() {
                 context_string.push_str(&format!("Date: {date}\n"));
                 title = title
                     .trim()
@@ -43,7 +43,7 @@ impl OpenAIClient {
             if !title.is_empty() {
                 context_string.push_str(&format!("# {title}\n"));
             }
-            context_string.push_str(&chunk.content);
+            context_string.push_str(&chunk.text);
             context_string.push_str("\n\n");
         }
 
@@ -67,7 +67,7 @@ impl LLMClient for OpenAIClient {
     async fn ask(
         &self,
         question: &str,
-        context: &Vec<(f64, crate::document::KimunChunk)>,
+        context: &Vec<(f64, crate::document::FlattenedChunk)>,
     ) -> anyhow::Result<String> {
         // Create a new reqwest client
         let client = Client::new();

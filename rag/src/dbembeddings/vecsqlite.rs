@@ -9,7 +9,7 @@ use rusqlite::{ffi::sqlite3_auto_extension, params};
 use sqlite_vec::sqlite3_vec_init;
 use zerocopy::IntoBytes;
 
-use crate::document::KimunChunk;
+use crate::document::{FlattenedChunk, KimunDoc};
 
 use super::{
     Embeddings,
@@ -40,7 +40,7 @@ impl VecSQLite {
         Ok(connection)
     }
 
-    fn insert_vec(&self, docs: Vec<(&KimunChunk, &Vec<f32>)>) -> anyhow::Result<()> {
+    fn insert_vec(&self, docs: Vec<(&FlattenedChunk, &Vec<f32>)>) -> anyhow::Result<()> {
         let mut conn = self.connection()?;
         let tx = conn.transaction()?;
         let doc_sql = "INSERT INTO docs (path, title, date, text) VALUES (?1, ?2, ?3, ?4)";
@@ -49,13 +49,12 @@ impl VecSQLite {
             tx.execute(
                 doc_sql,
                 params![
-                    doc.metadata.source_path,
-                    doc.metadata.title,
-                    doc.metadata
-                        .date
+                    doc.doc_path,
+                    doc.title,
+                    doc.date
                         .map(|date| date.format("%Y-%m-%d").to_string())
                         .unwrap_or_default(),
-                    doc.content
+                    doc.text
                 ],
             )?;
             let row_id = tx.last_insert_rowid();
@@ -65,12 +64,12 @@ impl VecSQLite {
         Ok(())
     }
 
-    fn get_docs(&self, vec: &[f32]) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
+    fn get_docs(&self, vec: &[f32]) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         let start = SystemTime::now();
         let conn = self.connection()?;
         let mut max_distance = f64::MIN;
         let mut min_distance = f64::MAX;
-        let result: Vec<(f64, KimunChunk)> = conn
+        let result: Vec<(f64, FlattenedChunk)> = conn
             .prepare(
                 format!(
                     r"
@@ -104,16 +103,14 @@ impl VecSQLite {
                 let date: String = r.get(3)?;
                 let text: String = r.get(4)?;
                 let hash: String = r.get(5)?;
-                let kimun_chunk = KimunChunk {
-                    content: text,
-                    metadata: crate::document::KimunMetadata {
-                        source_path: path,
-                        title,
-                        date: match NaiveDate::parse_from_str(date.as_str(), "%Y-%m-%d") {
-                            Ok(d) => Some(d),
-                            Err(_) => None,
-                        },
-                        hash,
+                let kimun_chunk = FlattenedChunk {
+                    doc_path: path,
+                    doc_hash: hash,
+                    text,
+                    title,
+                    date: match NaiveDate::parse_from_str(date.as_str(), "%Y-%m-%d") {
+                        Ok(d) => Some(d),
+                        Err(_) => None,
                     },
                 };
                 Ok((distance, kimun_chunk))
@@ -242,14 +239,15 @@ impl Embeddings for VecSQLite {
         Ok(())
     }
 
-    async fn store_embeddings(&self, content: &[KimunChunk]) -> anyhow::Result<()> {
-        let embeddings = self.embedder.generate_embeddings(content).await?;
+    async fn store_embeddings(&self, content: &[KimunDoc]) -> anyhow::Result<()> {
+        let chunks = FlattenedChunk::from_chunks(content);
+        let embeddings = self.embedder.generate_embeddings(&chunks).await?;
         let embed_chunks = embeddings.chunks(100);
         let mut i = 0;
         for batch in embed_chunks {
             let mut insert_batch = vec![];
             for c in batch {
-                insert_batch.push((content.get(i).unwrap(), c));
+                insert_batch.push((chunks.get(i).unwrap(), c));
                 i += 1;
             }
             self.insert_vec(insert_batch)?;
@@ -289,7 +287,7 @@ impl Embeddings for VecSQLite {
         Ok(())
     }
 
-    async fn query_embedding(&self, query: &str) -> anyhow::Result<Vec<(f64, KimunChunk)>> {
+    async fn query_embedding(&self, query: &str) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         let query_embed = self.embedder.prompt_embedding(query).await?;
         self.get_docs(&query_embed)
     }
