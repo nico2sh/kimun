@@ -7,6 +7,7 @@ A high-performance Retrieval-Augmented Generation (RAG) server for querying your
 - **Multiple Vector Databases**: Support for SQLite (with sqlite-vec) and Qdrant
 - **Multiple LLM Providers**: Gemini, Claude, OpenAI, and Mistral
 - **Cross-Encoder Reranking**: Improved search relevance using BGE Reranker
+- **Dynamic Context Window Sizing**: Configurable context window (small/medium/large) per request
 - **Incremental Indexing**: Content hash-based change detection to avoid reindexing
 - **Async Job Queue**: Background processing for indexing and query operations
 - **RESTful API**: Clean HTTP endpoints for all operations
@@ -16,36 +17,82 @@ A high-performance Retrieval-Augmented Generation (RAG) server for querying your
 ### Using different LLMs for different queries
 
 ```bash
-# Use Claude for complex reasoning (with custom API key)
+# Use Claude for complex analysis with large context window
 curl -X POST http://localhost:7573/api/answer \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sk-ant-your-key-here" \
   -d '{
     "query": "Compare and contrast the architectural patterns in my notes",
     "llm_provider": "claude",
-    "llm_model": "claude-3-5-sonnet-20241022"
+    "llm_model": "claude-3-5-sonnet-20241022",
+    "context_size": "large"
   }'
 
-# Use GPT-4o-mini for quick, simple questions
+# Use GPT-4o-mini for quick, simple questions with small context
 curl -X POST http://localhost:7573/api/answer \
   -H "Content-Type: application/json" \
   -H "X-API-Key: sk-your-openai-key" \
   -d '{
     "query": "What is the main topic of note X?",
     "llm_provider": "openai",
-    "llm_model": "gpt-4o-mini"
+    "llm_model": "gpt-4o-mini",
+    "context_size": "small"
   }'
 
-# Use Gemini for cost-effective queries
+# Use Gemini for cost-effective queries with medium context (default)
 curl -X POST http://localhost:7573/api/answer \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-gemini-key" \
   -d '{
     "query": "List all the projects mentioned in my notes",
     "llm_provider": "gemini",
-    "llm_model": "gemini-2.5-flash"
+    "llm_model": "gemini-2.5-flash",
+    "context_size": "medium"
   }'
 ```
+
+### Context Window Sizing Examples
+
+The `context_size` parameter controls how many documents are included in the context window for the LLM. Choose based on your query complexity and performance needs:
+
+```bash
+# Small context (10 docs) - Quick fact lookups
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is the password for staging environment?",
+    "context_size": "small"
+  }'
+
+# Medium context (20 docs) - General questions (default)
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "How do I set up the development environment?",
+    "context_size": "medium"
+  }'
+
+# Large context (40 docs) - Comprehensive analysis
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Summarize all the architecture decisions and their trade-offs",
+    "context_size": "large"
+  }'
+
+# Backward compatibility - omit context_size (defaults to medium)
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What are my notes about machine learning?"
+  }'
+```
+
+**When to use each size:**
+
+- **Small**: Definitions, quick lookups, simple factual questions
+- **Medium**: Most general queries, explanations, moderate analysis
+- **Large**: Comprehensive summaries, complex analysis, research queries
 
 ## Quick Start
 
@@ -254,7 +301,7 @@ Content-Type: application/json
 }
 ```
 
-Or with dynamic LLM selection (provider and model in body, API key in header):
+Or with dynamic LLM selection and context window sizing:
 
 ```bash
 POST /api/answer
@@ -264,7 +311,8 @@ X-API-Key: sk-ant-your-api-key-here
 {
   "query": "Explain RAG systems",
   "llm_provider": "claude",
-  "llm_model": "claude-3-5-sonnet-20241022"
+  "llm_model": "claude-3-5-sonnet-20241022",
+  "context_size": "large"
 }
 ```
 
@@ -274,8 +322,17 @@ X-API-Key: sk-ant-your-api-key-here
   - `query` (required): The question to answer
   - `llm_provider` (optional): Which LLM to use - `"claude"`, `"openai"`, `"gemini"`, or `"mistral"`
   - `llm_model` (optional): Specific model name
+  - `context_size` (optional): Context window size - `"small"` (10 docs), `"medium"` (20 docs, default), `"large"` (40 docs)
 - **Headers:**
   - `X-API-Key` (optional): Override the default API key for this request
+
+**Context Window Sizes:**
+
+| Size | Documents | Use Case | Performance |
+|------|-----------|----------|-------------|
+| `"small"` | 10 | Quick lookups, simple questions | Fastest response |
+| `"medium"` | 20 | Balanced queries (default) | Standard response |
+| `"large"` | 40 | Comprehensive analysis | Thorough but slower |
 
 **Supported LLM providers:**
 
@@ -293,12 +350,13 @@ Response:
 }
 ```
 
-**Use cases for dynamic LLM selection:**
+**Use cases for dynamic LLM selection and context sizing:**
 
-- Test different models without restarting the server
-- Use cheaper models for simple queries, powerful models for complex ones
-- Multi-tenant scenarios with per-user API keys (via `X-API-Key` header)
-- A/B testing different LLM providers
+- **Model selection**: Test different models without restarting the server
+- **Cost optimization**: Use cheaper models + small context for simple queries, powerful models + large context for complex ones
+- **Performance tuning**: Adjust context size based on query complexity and response time requirements
+- **Multi-tenant scenarios**: Per-user API keys (via `X-API-Key` header) and context preferences
+- **A/B testing**: Different LLM providers and context window sizes
 
 **Security note:** API keys are passed via the `X-API-Key` header (not in the request body) to:
 
@@ -419,8 +477,15 @@ Cross-encoder reranking improves search quality by 15-30% but adds ~100ms latenc
 ```toml
 [reranker]
 enabled = true  # Set to false to disable
-top_k = 20      # Number of results after reranking
+top_k = 20      # Default context size (can be overridden per request)
 ```
+
+**Note**: The global `top_k` setting can be overridden per request using the `context_size` parameter:
+- `context_size: "small"` → 10 documents (regardless of config)
+- `context_size: "medium"` → 20 documents (default)
+- `context_size: "large"` → 40 documents (regardless of config)
+
+This allows dynamic context window sizing without restarting the server.
 
 ## Architecture
 
@@ -440,7 +505,8 @@ top_k = 20      # Number of results after reranking
 
    - BGE Reranker Base cross-encoder model
    - Improves initial vector search results
-   - Configurable top-k filtering
+   - Dynamic context window sizing (10/20/40 results per request)
+   - Per-request top-k override via `context_size` parameter
 4. **HTTP Handlers** (`handlers.rs`)
 
    - Axum-based async HTTP server
@@ -459,26 +525,40 @@ top_k = 20      # Number of results after reranking
 2. **Querying**:
 
    ```
-   Query → FastEmbed → Vector DB (similarity search)
-         ↓
-   Top 128 results → Reranker (optional) → Top 20 results
-         ↓
-   LLM Client → Answer with sources
+   Query + context_size → FastEmbed → Vector DB (similarity search)
+                       ↓
+                   Top 128 results → Reranker (optional) → Top N results
+                                   ↓                       (10/20/40)
+                           LLM Client → Answer with sources
    ```
+
+   Where N is determined by `context_size` parameter:
+   - `"small"` → 10 results
+   - `"medium"` → 20 results (default)
+   - `"large"` → 40 results
 
 ## Performance
 
 - **Embedding generation**: ~50-100ms per chunk (BGE-Large)
 - **Vector search**: <10ms (SQLite), <5ms (Qdrant)
-- **Reranking**: ~100ms for 128→20 results
-- **LLM response**: 500-2000ms (provider-dependent)
+- **Reranking**:
+  - Small context (128→10): ~60ms
+  - Medium context (128→20): ~100ms
+  - Large context (128→40): ~150ms
+- **LLM response**: 500-2000ms (provider-dependent, varies with context size)
 
 ### Optimization Tips
 
 1. **Use Qdrant for >10k notes** - Better performance at scale
 2. **Enable reranking** - Significantly improves answer quality
-3. **Adjust top_k** - Lower values = faster, higher = more context
-4. **SQLite for development** - Simpler setup, good for <10k notes
+3. **Choose appropriate context_size** - Use `"small"` for speed, `"large"` for comprehensiveness
+4. **Dynamic context sizing** - Use different sizes per query type rather than changing global config
+5. **SQLite for development** - Simpler setup, good for <10k notes
+
+**Context Size Guidelines:**
+- Quick lookups/definitions → `"small"` (10 docs, ~200ms faster)
+- General Q&A → `"medium"` (20 docs, balanced)
+- Research/analysis → `"large"` (40 docs, more thorough)
 
 ## Development
 
