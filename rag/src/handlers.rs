@@ -10,7 +10,7 @@ use crate::{
     IndexStats, KimunRag,
     config::RagConfig,
     dbembeddings::IndexedNote,
-    document::{Chunk, KimunDoc},
+    document::{KimunDoc, KimunSection},
     server_state::{AppState, JobStatus},
 };
 
@@ -231,6 +231,9 @@ pub async fn get_embeddings_handler(
 
     match rag.query_embeddings(&request.query).await {
         Ok(results) => {
+            // Deduplicate by FlattenedChunk, keeping the highest score for each unique chunk
+            let results = deduplicate_chunks(results);
+
             let chunks: Vec<ChunkResult> = results
                 .into_iter()
                 .map(|(score, chunk)| {
@@ -380,6 +383,42 @@ pub async fn job_status_handler(
 // ============================================================================
 // Implementation Functions
 // ============================================================================
+
+/// Deduplicates embedding results by FlattenedChunk, keeping the highest score for each unique chunk
+fn deduplicate_chunks(
+    results: Vec<(f64, crate::document::FlattenedChunk)>,
+) -> Vec<(f64, crate::document::FlattenedChunk)> {
+    use std::collections::HashMap;
+
+    let original_count = results.len();
+    let mut dedup_map: HashMap<crate::document::FlattenedChunk, f64> = HashMap::new();
+
+    for (score, chunk) in results {
+        // Keep the chunk with the highest score
+        dedup_map
+            .entry(chunk)
+            .and_modify(|existing_score| {
+                if score > *existing_score {
+                    *existing_score = score;
+                }
+            })
+            .or_insert(score);
+    }
+
+    let deduplicated: Vec<(f64, crate::document::FlattenedChunk)> = dedup_map
+        .into_iter()
+        .map(|(chunk, score)| (score, chunk))
+        .collect();
+
+    debug!(
+        "After deduplication: {} unique results (from {} total)",
+        deduplicated.len(),
+        original_count
+    );
+
+    deduplicated
+}
+
 async fn index_docs_impl(
     docs: &[KimunDoc],
     indexed_notes: Option<&HashMap<String, IndexedNote>>,
@@ -498,8 +537,8 @@ async fn store_single_note_impl(
 
                 let breadcrumb: String = row.get(1)?;
                 let text: String = row.get(2)?;
-                let c = Chunk{ title: breadcrumb, text };
-                chunk.chunks.push(c);
+                let c = KimunSection{ title: breadcrumb, text };
+                chunk.sections.push(c);
             } else {
                 let path: String = row.get(0)?;
                 let breadcrumb: String = row.get(1)?;
@@ -508,7 +547,7 @@ async fn store_single_note_impl(
                 let c = KimunDoc {
                     path,
                     hash,
-                    chunks: vec![Chunk {
+                    sections: vec![KimunSection {
                         title: breadcrumb,
                         text,
                     }],
@@ -520,7 +559,7 @@ async fn store_single_note_impl(
         Ok(KimunDoc {
             path: "".to_string(),
             hash: "".to_string(),
-            chunks: vec![],
+            sections: vec![],
         })
 
         // }
@@ -573,14 +612,14 @@ async fn index_all_impl(
                     let new_chunk = KimunDoc {
                         path: path.clone(),
                         hash,
-                        chunks: vec![Chunk {
+                        sections: vec![KimunSection {
                             title: breadcrumb,
                             text,
                         }],
                     };
                     chunks.push(new_chunk);
                 } else {
-                    ch.chunks.push(Chunk {
+                    ch.sections.push(KimunSection {
                         title: breadcrumb,
                         text,
                     });
@@ -589,7 +628,7 @@ async fn index_all_impl(
                 let new_chunk = KimunDoc {
                     path: path.clone(),
                     hash,
-                    chunks: vec![Chunk {
+                    sections: vec![KimunSection {
                         title: breadcrumb,
                         text,
                     }],
@@ -651,6 +690,9 @@ async fn answer_impl_with_llm(
         "Got {} raw results from embeddings query",
         raw_results.len()
     );
+
+    // Deduplicate by FlattenedChunk, keeping the highest score for each unique chunk
+    let raw_results = deduplicate_chunks(raw_results);
 
     // Step 2: Apply reranking (CPU-intensive) WITHOUT holding the lock
     let results = if let Some((reranker, top_k)) = reranker_option {
