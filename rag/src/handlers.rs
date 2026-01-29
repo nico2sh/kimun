@@ -33,6 +33,8 @@ pub struct ChunkData {
 #[derive(Debug, Deserialize)]
 pub struct QueryRequest {
     pub query: String,
+    #[serde(default)]
+    pub context_size: ContextSize,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -257,7 +259,10 @@ pub async fn get_embeddings_handler(
 ) -> Result<Json<EmbeddingsResponse>, (StatusCode, Json<ErrorResponse>)> {
     let rag = state.rag.lock().await;
 
-    match rag.query_embeddings(&request.query).await {
+    match rag
+        .query_embeddings(&request.query, request.context_size.to_top_k())
+        .await
+    {
         Ok(results) => {
             // Deduplicate by FlattenedChunk, keeping the highest score for each unique chunk
             let results = deduplicate_chunks(results);
@@ -729,7 +734,7 @@ async fn answer_impl_with_llm(
     debug!("Using context_size {:?} with top_k {}", context_size, top_k);
 
     // Step 2: Apply reranking (CPU-intensive) WITHOUT holding the lock
-    let results = if let Some((reranker, _)) = reranker_option {
+    let results = if let Some(reranker) = reranker_option {
         debug!("Reranking results without lock");
         reranker.rerank(query, raw_results, top_k).await?
     } else {
