@@ -13,8 +13,8 @@ use log::debug;
 use crate::document::FlattenedChunk;
 
 // Re-export commonly used types and functions
-pub use document::{KimunDoc, Chunk, split_chunks_for_rag};
 use crate::reranker::CrossEncoderReranker;
+pub use document::{KimunDoc, KimunSection, split_chunks_for_rag};
 
 pub mod dbembeddings;
 pub mod document;

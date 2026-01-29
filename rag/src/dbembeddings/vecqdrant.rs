@@ -12,14 +12,17 @@ use serde_json::json;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::document::{FlattenedChunk, KimunDoc};
+use crate::{
+    document::{FlattenedChunk, KimunDoc},
+    split_chunks_for_rag,
+};
 
 use super::{
     Embeddings, IndexedNote,
     embedder::{Embedder, fastembedder::FastEmbedder},
 };
 
-const TOP_RESULTS: u64 = 512;
+const TOP_RESULTS: u64 = 80;
 
 pub struct VecQdrant {
     embedder: FastEmbedder,
@@ -175,6 +178,7 @@ impl Embeddings for VecQdrant {
     async fn store_embeddings(&self, content: &[KimunDoc]) -> anyhow::Result<()> {
         // Create points in batches of 100
         const BATCH_SIZE: usize = 100;
+
         let chunks = FlattenedChunk::from_chunks(content);
         debug!(
             "{} docs flattened to {} chunks",
@@ -185,19 +189,38 @@ impl Embeddings for VecQdrant {
 
         let mut batch_count = 0;
         for batch in chunks.chunks(BATCH_SIZE) {
-            debug!("Starting batch #{}", batch_count);
-            let embeddings = self.embedder.generate_embeddings(batch).await?;
-            let points: Vec<PointStruct> = batch
-                .iter()
-                .zip(embeddings)
-                .map(|(chunk, embedding)| VecQdrant::chunk_to_point(chunk, embedding.clone()))
-                .collect();
-            let points_count = points.len();
+            debug!("Starting batch #{} with size {}", batch_count, BATCH_SIZE);
+            let mut points_count = 0;
+            for flchunk in batch {
+                let chunks = split_chunks_for_rag(&flchunk.text, 800, 1536)
+                    .iter()
+                    .map(|c| FlattenedChunk {
+                        doc_path: flchunk.doc_path.clone(),
+                        doc_hash: flchunk.doc_hash.clone(),
+                        title: flchunk.title.clone(),
+                        text: c.to_owned(),
+                        date: flchunk.date.clone(),
+                    })
+                    .collect::<Vec<FlattenedChunk>>();
+                // debug!("chunk: {:?}, chunks: {:?}", flchunk, chunks);
 
-            // Upsert points using the builder API
-            self.client
-                .upsert_points(UpsertPointsBuilder::new(&self.collection, points))
-                .await?;
+                let embeddings = self.embedder.generate_embeddings(&chunks).await?;
+                let points = embeddings
+                    .iter()
+                    .map(|e| VecQdrant::chunk_to_point(flchunk, e.clone()))
+                    .collect::<Vec<PointStruct>>();
+                // let points: Vec<PointStruct> = batch
+                //     .iter()
+                //     .zip(embeddings)
+                //     .map(|(chunk, embedding)| VecQdrant::chunk_to_point(chunk, embedding.clone()))
+                //     .collect();
+                points_count += points.len();
+
+                // Upsert points using the builder API
+                self.client
+                    .upsert_points(UpsertPointsBuilder::new(&self.collection, points))
+                    .await?;
+            }
             debug!(
                 "Finished batch #{} with {} embeddings",
                 batch_count, points_count
