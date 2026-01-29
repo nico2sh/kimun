@@ -35,11 +35,39 @@ pub struct QueryRequest {
     pub query: String,
 }
 
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub enum ContextSize {
+    #[serde(rename = "small")]
+    Small,
+    #[serde(rename = "medium")]
+    Medium,
+    #[serde(rename = "large")]
+    Large,
+}
+
+impl ContextSize {
+    pub fn to_top_k(self) -> usize {
+        match self {
+            ContextSize::Small => 10,
+            ContextSize::Medium => 20,
+            ContextSize::Large => 40,
+        }
+    }
+}
+
+impl Default for ContextSize {
+    fn default() -> Self {
+        ContextSize::Medium
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AnswerRequest {
     pub query: String,
     pub llm_provider: Option<String>, // "claude", "openai", "gemini", "mistral"
     pub llm_model: Option<String>,
+    #[serde(default)]
+    pub context_size: ContextSize,
 }
 
 #[derive(Debug, Serialize)]
@@ -303,6 +331,7 @@ pub async fn answer_handler(
             request.llm_provider.as_deref(),
             request.llm_model.as_deref(),
             api_key.as_deref(),
+            request.context_size,
         )
         .await
         {
@@ -670,6 +699,7 @@ async fn answer_impl_with_llm(
     llm_provider: Option<&str>,
     llm_model: Option<&str>,
     api_key: Option<&str>,
+    context_size: ContextSize,
 ) -> anyhow::Result<(String, Vec<ChunkResult>)> {
     use crate::llmclients::{
         LLMClient, claude::ClaudeClient, gemini::GeminiClient, mistral::MistralClient,
@@ -694,13 +724,18 @@ async fn answer_impl_with_llm(
     // Deduplicate by FlattenedChunk, keeping the highest score for each unique chunk
     let raw_results = deduplicate_chunks(raw_results);
 
+    // Determine top_k from context_size parameter
+    let top_k = context_size.to_top_k();
+    debug!("Using context_size {:?} with top_k {}", context_size, top_k);
+
     // Step 2: Apply reranking (CPU-intensive) WITHOUT holding the lock
-    let results = if let Some((reranker, top_k)) = reranker_option {
+    let results = if let Some((reranker, _)) = reranker_option {
         debug!("Reranking results without lock");
         reranker.rerank(query, raw_results, top_k).await?
     } else {
-        debug!("No reranking needed");
-        raw_results
+        debug!("No reranking needed, applying top_k limit");
+        // Still apply top_k limit even without reranking
+        raw_results.into_iter().take(top_k).collect()
     };
 
     debug!("After reranking: {} results", results.len());

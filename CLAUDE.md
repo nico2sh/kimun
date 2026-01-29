@@ -110,9 +110,10 @@ Async HTTP server (Axum) providing semantic search and LLM-powered answers over 
    - Supported: Claude (`claude.rs`), OpenAI (`openai.rs`), Gemini (`gemini.rs`), Mistral (`mistral.rs`)
    - API keys from environment variables or `X-API-Key` header
 
-3. **Reranker** 
+3. **Reranker**
    - BGE Reranker Base cross-encoder
-   - Optional post-processing to improve top-k results
+   - Optional post-processing to improve result relevance
+   - Dynamic context window sizing (10/20/40 results based on request parameter)
    - ~15-30% quality improvement with ~100ms latency
 
 4. **HTTP Handlers** 
@@ -123,6 +124,8 @@ Async HTTP server (Axum) providing semantic search and LLM-powered answers over 
 **Configuration:**
 RAG server requires `~/.config/kimun/rag.conf` (copy from [rag/config.example.toml](rag/config.example.toml))
 
+**Note:** The global `reranker.top_k` config setting can be overridden per-request using the `context_size` parameter in `/api/answer` calls.
+
 **API Endpoints:**
 - `POST /api/index/all` - Index all notes from vault
 - `POST /api/index/single` - Index single note with chunks
@@ -131,7 +134,27 @@ RAG server requires `~/.config/kimun/rag.conf` (copy from [rag/config.example.to
 - `POST /api/answer` - LLM-powered answer with sources
   - Supports dynamic LLM selection via `llm_provider` and `llm_model` in body
   - Override API key via `X-API-Key` header
+  - Control context window size via `context_size` parameter (`"small"`, `"medium"`, `"large"`)
 - `GET /api/job/{job_id}` - Check async job status
+
+**Context Window Sizes:**
+The `/api/answer` endpoint supports configurable context window sizes:
+
+| Size | Documents | Use Case | Performance |
+|------|-----------|----------|-------------|
+| `"small"` | 10 | Quick, focused answers | Fastest response |
+| `"medium"` | 20 | Balanced (default) | Standard response |
+| `"large"` | 40 | Comprehensive analysis | Slower, more thorough |
+
+**Request Parameters for `/api/answer`:**
+```json
+{
+  "query": "string (required)",
+  "llm_provider": "string (optional) - claude, openai, gemini, mistral",
+  "llm_model": "string (optional) - provider-specific model name",
+  "context_size": "string (optional) - small, medium (default), large"
+}
+```
 
 **Data Flow:**
 
@@ -144,11 +167,69 @@ Vault DB → ChunkLoader → FastEmbed → Vector DB
 
 Querying:
 ```
-Query → FastEmbed → Vector DB (similarity search)
-      ↓
-Top 128 results → Reranker (optional) → Top 20 results
-      ↓
-LLM Client → Answer with sources
+Query + context_size → FastEmbed → Vector DB (similarity search)
+                    ↓
+                Top 128 results → Reranker (optional) → Top N results (10/20/40)
+                                 ↓
+                            LLM Client → Answer with sources
+```
+
+**Note:** The final context window size is determined by the `context_size` parameter:
+- `"small"` → 10 results
+- `"medium"` → 20 results (default)
+- `"large"` → 40 results
+
+## Context Window Sizing
+
+The RAG server supports dynamic context window sizing on a per-request basis through the `context_size` parameter in the `/api/answer` endpoint. This allows you to balance between response speed and comprehensiveness based on your specific needs.
+
+### Choosing Context Size
+
+**Small (`"small"` - 10 documents):**
+- **Best for:** Quick questions, simple lookups, when you need fast responses
+- **Performance:** Fastest response time, lowest token usage
+- **Use cases:** "What's the definition of X?", "When did Y happen?", quick factual queries
+
+**Medium (`"medium"` - 20 documents, default):**
+- **Best for:** Most general-purpose queries, balanced performance
+- **Performance:** Standard response time, balanced quality vs. speed
+- **Use cases:** General questions, explanations, moderate complexity analysis
+- **Note:** This is the default if no `context_size` is specified (backward compatibility)
+
+**Large (`"large"` - 40 documents):**
+- **Best for:** Complex analysis, comprehensive summaries, when you need thorough coverage
+- **Performance:** Slower response, higher quality and completeness
+- **Use cases:** "Summarize everything about topic X", complex research queries, detailed analysis
+
+### Implementation Details
+
+- The `context_size` parameter is applied after vector similarity search and deduplication
+- When reranking is enabled, the BGE reranker processes all results and returns the top N based on your chosen size
+- When reranking is disabled, the top N results from vector search are used directly
+- The feature is backward compatible - omitting `context_size` defaults to "medium" (20 documents)
+- Context size affects both the information sent to the LLM and the sources returned in the response
+
+### Examples by Use Case
+
+**Quick Fact Lookup (Small):**
+```bash
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the password for the staging environment?", "context_size": "small"}'
+```
+
+**General Question (Medium):**
+```bash
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How do I set up the development environment?", "context_size": "medium"}'
+```
+
+**Comprehensive Analysis (Large):**
+```bash
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Summarize all the architecture decisions and trade-offs", "context_size": "large"}'
 ```
 
 ## Development Workflows
@@ -186,10 +267,28 @@ cd rag && cargo run --bin rag-server
 # 4. Index notes
 curl -X POST http://localhost:7573/api/index/all
 
-# 5. Query
+# 5. Query (basic)
 curl -X POST http://localhost:7573/api/answer \
   -H "Content-Type: application/json" \
   -d '{"query": "What are my notes about?"}'
+
+# Query with different context sizes
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What are my productivity tips?", "context_size": "small"}'
+
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What are my productivity tips?", "context_size": "medium"}'
+
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What are my productivity tips?", "context_size": "large"}'
+
+# Query with specific LLM and context size
+curl -X POST http://localhost:7573/api/answer \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Summarize my meeting notes", "llm_provider": "claude", "llm_model": "claude-3-5-sonnet-20241022", "context_size": "large"}'
 ```
 
 ### Adding a New LLM Provider to RAG
