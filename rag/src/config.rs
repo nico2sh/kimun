@@ -71,8 +71,6 @@ pub enum LlmConfig {
 pub struct RerankerConfig {
     #[serde(default = "default_reranker_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_reranker_top_k")]
-    pub top_k: usize,
 }
 
 // Default value functions
@@ -118,10 +116,6 @@ fn default_openai_model() -> String {
 
 fn default_reranker_enabled() -> bool {
     true
-}
-
-fn default_reranker_top_k() -> usize {
-    20
 }
 
 impl RagConfig {
@@ -202,6 +196,5 @@ provider = "gemini"
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 7573);
         assert_eq!(config.reranker.enabled, true);
-        assert_eq!(config.reranker.top_k, 20);
     }
 }

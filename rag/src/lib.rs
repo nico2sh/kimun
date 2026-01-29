@@ -30,7 +30,6 @@ pub struct KimunRag {
     embeddings: Arc<dyn Embeddings + Send + Sync>,
     llm_client: Arc<dyn LLMClient + Send + Sync>,
     reranker: Option<Arc<CrossEncoderReranker>>,
-    reranker_top_k: usize,
 }
 
 impl KimunRag {
@@ -43,7 +42,6 @@ impl KimunRag {
             embeddings,
             llm_client,
             reranker: None,
-            reranker_top_k: 20,
         }
     }
 
@@ -53,10 +51,9 @@ impl KimunRag {
     }
 
     /// Enable reranking with the given top_k parameter
-    pub fn with_reranking(mut self, top_k: usize) -> anyhow::Result<Self> {
+    pub fn with_reranking(mut self) -> anyhow::Result<Self> {
         let reranker = CrossEncoderReranker::new()?;
         self.reranker = Some(Arc::new(reranker));
-        self.reranker_top_k = top_k;
         Ok(self)
     }
 
@@ -66,7 +63,6 @@ impl KimunRag {
             embeddings: Arc::new(VecSQLite::new(path)),
             llm_client: Arc::new(GeminiClient::new("gemini-2.5-flash")),
             reranker: None,
-            reranker_top_k: 20,
         }
     }
 
@@ -96,10 +92,8 @@ impl KimunRag {
     }
 
     /// Get reranker if enabled (returns Arc so it can be used without lock)
-    pub fn get_reranker(&self) -> Option<(Arc<CrossEncoderReranker>, usize)> {
-        self.reranker
-            .as_ref()
-            .map(|r| (r.clone(), self.reranker_top_k))
+    pub fn get_reranker(&self) -> Option<Arc<CrossEncoderReranker>> {
+        self.reranker.as_ref().map(|r| r.clone())
     }
 
     /// Apply reranking to results
@@ -108,13 +102,14 @@ impl KimunRag {
         &self,
         query: &str,
         results: Vec<(f64, document::FlattenedChunk)>,
+        top_k: usize,
     ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
         if let Some(reranker) = &self.reranker {
-            debug!("Reranking the results to {}", self.reranker_top_k);
-            reranker.rerank(query, results, self.reranker_top_k).await
+            debug!("Reranking the results to {}", top_k);
+            reranker.rerank(query, results, top_k).await
         } else {
             debug!("No reranking needed");
-            Ok(results)
+            Ok(results.into_iter().take(top_k).collect())
         }
     }
 
@@ -123,31 +118,38 @@ impl KimunRag {
     pub async fn query_embeddings(
         &self,
         query: &str,
+        top_k: usize,
     ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
         let results = self.embeddings.query_embedding(query).await?;
 
         // Apply reranking if enabled
         if let Some(reranker) = &self.reranker {
-            debug!("Reranking the results to {}", self.reranker_top_k);
-            reranker.rerank(query, results, self.reranker_top_k).await
+            debug!("Reranking the results to {}", top_k);
+            reranker.rerank(query, results, top_k).await
         } else {
             debug!("No Reranking the results");
-            Ok(results)
+            Ok(results.into_iter().take(top_k).collect())
         }
     }
 
     /// Query the RAG system with a question and get an LLM answer
     /// Uses reranked results if reranking is enabled
-    pub async fn ask(&self, query: &str) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
-        self.ask_with_llm(query, self.llm_client.clone()).await
+    pub async fn ask(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
+        self.ask_with_llm(query, self.llm_client.clone(), top_k)
+            .await
     }
 
     pub async fn ask_with_llm(
         &self,
         query: &str,
         llm: Arc<dyn LLMClient + Send + Sync>,
+        top_k: usize,
     ) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
-        let context = self.query_embeddings(query).await?;
+        let context = self.query_embeddings(query, top_k).await?;
         let answer = llm.ask(query, &context).await?;
         Ok((answer, context))
     }

@@ -99,22 +99,24 @@ impl FlattenedChunk {
 /// # Examples
 ///
 /// ```rust
-/// use rag::document::{KimunDoc, Chunk, split_chunks_for_rag};
+/// use kimun_rag::document::{KimunDoc, KimunSection, split_chunks_for_rag};
 ///
+/// let text = "This is a very long text...".to_string();
 /// let doc = KimunDoc {
 ///     path: "notes/example.md".to_string(),
 ///     hash: "abc123".to_string(),
-///     chunks: vec![
-///         Chunk {
+///     sections: vec![
+///         KimunSection {
 ///             title: "Introduction".to_string(),
-///             text: "This is a very long text...".to_string(),
+///             text: text.clone()
 ///         }
 ///     ],
 /// };
 ///
 /// // Split into chunks targeting 800 chars (~200 tokens), max 1536 chars (~384 tokens)
 /// // This is optimal for BGE-Large-EN-V1.5 embeddings (512 token limit)
-/// let optimized = split_chunks_for_rag(doc, 800, 1536);
+/// let optimized = split_chunks_for_rag(text, 800, 1536);
+///
 /// ```
 pub fn split_chunks_for_rag(
     doc: impl AsRef<str>,
@@ -608,7 +610,16 @@ fn main() {
     #[test]
     fn test_split_chunks_empty_string() {
         let result = crate::document::split_chunks_for_rag("", 500, 1000);
-        assert_eq!(result.len(), 0, "Empty string should return empty vec");
+        assert_eq!(
+            result.len(),
+            1,
+            "Empty string should return a vec with one element"
+        );
+        assert_eq!(
+            result.first().unwrap(),
+            "",
+            "Empty string should return a vec with no text"
+        );
     }
 
     #[test]

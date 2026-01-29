@@ -145,8 +145,8 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
 
     // Enable reranking if configured
     if config.reranker.enabled {
-        tracing::info!("Enabling reranking with top_k={}", config.reranker.top_k);
-        rag = rag.with_reranking(config.reranker.top_k)?;
+        tracing::info!("Enabling reranking");
+        rag = rag.with_reranking()?;
     } else {
         tracing::info!("Reranking disabled");
     }
