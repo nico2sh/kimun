@@ -1,0 +1,862 @@
+use anyhow::bail;
+use axum::{Json, extract::State, http::StatusCode};
+use log::debug;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
+use uuid::Uuid;
+
+use crate::{
+    IndexStats, KimunRag,
+    config::RagConfig,
+    dbembeddings::IndexedNote,
+    document::{KimunDoc, KimunSection},
+    server_state::{AppState, JobStatus},
+};
+
+// ============================================================================
+// Request/Response Types
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct IndexSingleRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChunkData {
+    pub content: String,
+    pub title: String,
+    pub date: Option<String>, // Format: YYYY-MM-DD
+}
+
+#[derive(Debug, Deserialize)]
+pub struct QueryRequest {
+    pub query: String,
+    #[serde(default)]
+    pub context_size: ContextSize,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+pub enum ContextSize {
+    #[serde(rename = "small")]
+    Small,
+    #[serde(rename = "medium")]
+    Medium,
+    #[serde(rename = "large")]
+    Large,
+}
+
+impl ContextSize {
+    pub fn to_top_k(self) -> usize {
+        match self {
+            ContextSize::Small => 10,
+            ContextSize::Medium => 20,
+            ContextSize::Large => 40,
+        }
+    }
+}
+
+impl Default for ContextSize {
+    fn default() -> Self {
+        ContextSize::Medium
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnswerRequest {
+    pub query: String,
+    pub llm_provider: Option<String>, // "claude", "openai", "gemini", "mistral"
+    pub llm_model: Option<String>,
+    #[serde(default)]
+    pub context_size: ContextSize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IndexResponse {
+    pub job_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QueryResponse {
+    pub job_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmbeddingsResponse {
+    pub chunks: Vec<ChunkResult>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChunkResult {
+    pub path: String,
+    pub title: String,
+    pub date: Option<String>,
+    pub content: String,
+    pub hash: String,
+    pub similarity_score: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnswerResponse {
+    pub answer: String,
+    pub sources: Vec<ChunkResult>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JobStatusResponse {
+    pub job_id: String,
+    pub status: String,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
+}
+
+// ============================================================================
+// Handlers
+// ============================================================================
+
+pub async fn index_docs_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<Vec<KimunDoc>>,
+) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let job_id = Uuid::new_v4();
+
+    // Mark job as queued
+    state
+        .job_tracker
+        .lock()
+        .await
+        .create(job_id, JobStatus::Queued);
+
+    // Spawn background task
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        // Mark as processing
+        state_clone
+            .job_tracker
+            .lock()
+            .await
+            .update_status(&job_id, JobStatus::Processing);
+
+        // Perform indexing
+        match index_docs_impl(&request, None, state_clone.rag.clone()).await {
+            Ok(stats) => {
+                let result = serde_json::json!({
+                    "indexed": stats.indexed,
+                    "skipped": stats.skipped,
+                    "updated": stats.updated,
+                    "errors": stats.errors,
+                })
+                .to_string();
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
+                    .set_result(&job_id, result);
+            }
+            Err(e) => {
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
+                    .set_error(&job_id, e.to_string());
+            }
+        }
+    });
+
+    Ok(Json(IndexResponse {
+        job_id: job_id.to_string(),
+        message: "Index chunks job started".to_string(),
+    }))
+}
+
+/// Index All - Parse vault and create/store embeddings
+pub async fn index_all_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let job_id = Uuid::new_v4();
+
+    // Mark job as queued
+    state
+        .job_tracker
+        .lock()
+        .await
+        .create(job_id, JobStatus::Queued);
+
+    // Spawn background task
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        // Mark as processing
+        state_clone
+            .job_tracker
+            .lock()
+            .await
+            .update_status(&job_id, JobStatus::Processing);
+
+        // Perform indexing
+        match index_all_impl(state_clone.rag.clone(), &state_clone.config).await {
+            Ok(stats) => {
+                let result = serde_json::json!({
+                    "indexed": stats.indexed,
+                    "skipped": stats.skipped,
+                    "updated": stats.updated,
+                    "errors": stats.errors,
+                })
+                .to_string();
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
+                    .set_result(&job_id, result);
+            }
+            Err(e) => {
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
+                    .set_error(&job_id, e.to_string());
+            }
+        }
+    });
+
+    Ok(Json(IndexResponse {
+        job_id: job_id.to_string(),
+        message: "Indexing job started".to_string(),
+    }))
+}
+
+/// Index Single Entry - Receive text chunks + path, replace all chunks for that path
+pub async fn index_single_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<IndexSingleRequest>,
+) -> Result<Json<IndexResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Store synchronously (as per user requirement)
+    match store_single_note_impl(&request.path, state.rag.clone(), &state.config).await {
+        Ok(()) => Ok(Json(IndexResponse {
+            job_id: Uuid::new_v4().to_string(),
+            message: format!("Successfully indexed path {}", request.path),
+        })),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to index: {}", e),
+            }),
+        )),
+    }
+}
+
+/// Get Embeddings - Query text → return top X chunks with path, title, similarity scores
+pub async fn get_embeddings_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<QueryRequest>,
+) -> Result<Json<EmbeddingsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let rag = state.rag.lock().await;
+
+    match rag
+        .query_embeddings(&request.query, request.context_size.to_top_k())
+        .await
+    {
+        Ok(results) => {
+            // Deduplicate by FlattenedChunk, keeping the highest score for each unique chunk
+            let results = deduplicate_chunks(results);
+
+            let chunks: Vec<ChunkResult> = results
+                .into_iter()
+                .map(|(score, chunk)| {
+                    let source_path = chunk.doc_path.clone();
+                    let title = chunk.title.clone();
+                    let date = chunk.get_date_string();
+                    let hash = chunk.doc_hash.clone();
+                    ChunkResult {
+                        path: source_path,
+                        title,
+                        date,
+                        content: chunk.text,
+                        similarity_score: score,
+                        hash,
+                    }
+                })
+                .collect();
+
+            Ok(Json(EmbeddingsResponse { chunks }))
+        }
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Query failed: {}", e),
+            }),
+        )),
+    }
+}
+
+/// Answer - Query text → LLM answer with context (queued)
+/// Supports dynamic LLM selection via request body and X-API-Key header
+pub async fn answer_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<AnswerRequest>,
+) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let job_id = Uuid::new_v4();
+
+    // Extract API key from header
+    let api_key = headers
+        .get("X-API-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    // Mark job as queued
+    state
+        .job_tracker
+        .lock()
+        .await
+        .create(job_id, JobStatus::Queued);
+
+    // Spawn background task
+    let state_clone = state.clone();
+
+    tokio::spawn(async move {
+        // Mark as processing
+        state_clone
+            .job_tracker
+            .lock()
+            .await
+            .update_status(&job_id, JobStatus::Processing);
+
+        // Perform query and answer with dynamic LLM
+        match answer_impl_with_llm(
+            state_clone.rag.clone(),
+            &request.query,
+            request.llm_provider.as_deref(),
+            request.llm_model.as_deref(),
+            api_key.as_deref(),
+            request.context_size,
+        )
+        .await
+        {
+            Ok((answer, sources)) => {
+                let result = serde_json::json!({
+                    "answer": answer,
+                    "sources": sources,
+                })
+                .to_string();
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
+                    .set_result(&job_id, result);
+            }
+            Err(e) => {
+                state_clone
+                    .job_tracker
+                    .lock()
+                    .await
+                    .set_error(&job_id, e.to_string());
+            }
+        }
+    });
+
+    Ok(Json(QueryResponse {
+        job_id: job_id.to_string(),
+        message: "Query job started".to_string(),
+    }))
+}
+
+/// Job Status - Get status of a job
+pub async fn job_status_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(job_id_str): axum::extract::Path<String>,
+) -> Result<Json<JobStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let job_id = Uuid::parse_str(&job_id_str).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid job ID format".to_string(),
+            }),
+        )
+    })?;
+
+    let tracker = state.job_tracker.lock().await;
+
+    if let Some(job) = tracker.get(&job_id) {
+        let (status_str, result, error) = match &job.status {
+            JobStatus::Queued => ("queued".to_string(), None, None),
+            JobStatus::Processing => ("processing".to_string(), None, None),
+            JobStatus::Completed => {
+                let result = job
+                    .result
+                    .as_ref()
+                    .and_then(|s| serde_json::from_str(s).ok());
+                ("completed".to_string(), result, None)
+            }
+            JobStatus::Failed => ("failed".to_string(), None, job.error.clone()),
+        };
+
+        Ok(Json(JobStatusResponse {
+            job_id: job_id_str,
+            status: status_str,
+            result,
+            error,
+        }))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Job {} not found", job_id_str),
+            }),
+        ))
+    }
+}
+
+// ============================================================================
+// Implementation Functions
+// ============================================================================
+
+/// Deduplicates embedding results by FlattenedChunk, keeping the highest score for each unique chunk
+fn deduplicate_chunks(
+    results: Vec<(f64, crate::document::FlattenedChunk)>,
+) -> Vec<(f64, crate::document::FlattenedChunk)> {
+    use std::collections::HashMap;
+
+    let original_count = results.len();
+    let mut dedup_map: HashMap<crate::document::FlattenedChunk, f64> = HashMap::new();
+
+    for (score, chunk) in results {
+        // Keep the chunk with the highest score
+        dedup_map
+            .entry(chunk)
+            .and_modify(|existing_score| {
+                if score > *existing_score {
+                    *existing_score = score;
+                }
+            })
+            .or_insert(score);
+    }
+
+    let deduplicated: Vec<(f64, crate::document::FlattenedChunk)> = dedup_map
+        .into_iter()
+        .map(|(chunk, score)| (score, chunk))
+        .collect();
+
+    debug!(
+        "After deduplication: {} unique results (from {} total)",
+        deduplicated.len(),
+        original_count
+    );
+
+    deduplicated
+}
+
+async fn index_docs_impl(
+    docs: &[KimunDoc],
+    indexed_notes: Option<&HashMap<String, IndexedNote>>,
+    rag: Arc<Mutex<KimunRag>>,
+) -> anyhow::Result<IndexStats> {
+    let mut indexed_count = 0;
+    let mut updated_count = 0;
+    let mut skipped_count = 0;
+
+    debug!("Starting to store {} chunks", docs.len());
+
+    let rag_lock = rag.lock().await;
+    let indexed_notes = match indexed_notes {
+        Some(inotes) => inotes,
+        None => &rag_lock.embeddings.get_indexed_notes().await?,
+    };
+    debug!("Indexed notes: {}", indexed_notes.len());
+
+    let mut current_batch_pos = 0;
+    const BATCH_SIZE: usize = 250;
+    let mut batch: Vec<KimunDoc> = Vec::with_capacity(BATCH_SIZE);
+
+    for doc in docs {
+        let content_hash = doc.hash.clone();
+        let needs_indexing = if let Some(indexed) = indexed_notes.get(&doc.path) {
+            let update = indexed.content_hash != content_hash;
+            if update {
+                // These ones needs to be updated, so we need to remove them first
+                // debug!("For updating, deleting embeddings for {}", doc.path);
+                rag_lock
+                    .embeddings
+                    .delete_embeddings(vec![&doc.path])
+                    .await?;
+                updated_count += 1;
+            } else {
+                // debug!("Skipping embeddings for {}", doc.path);
+                skipped_count += 1;
+            }
+            update
+        } else {
+            // debug!("Indexing embeddings for {}", doc.path);
+            indexed_count += 1;
+            true
+        };
+
+        if needs_indexing {
+            batch.push(doc.to_owned());
+
+            // Store batch when it reaches BATCH_SIZE
+            let batch_len = batch.len();
+            if batch_len >= BATCH_SIZE {
+                debug!(
+                    "Storing batch from {} to {} documents",
+                    current_batch_pos,
+                    current_batch_pos + batch_len
+                );
+                rag_lock.embeddings.store_embeddings(&batch).await?;
+                batch.clear();
+                current_batch_pos += batch_len;
+            }
+        }
+    }
+
+    // Store any remaining documents in the batch
+    if !batch.is_empty() {
+        debug!(
+            "Storing final batch from {} to {} documents",
+            current_batch_pos,
+            current_batch_pos + batch.len()
+        );
+        rag_lock.embeddings.store_embeddings(&batch).await?;
+    }
+
+    Ok(IndexStats {
+        indexed: indexed_count,
+        skipped: skipped_count,
+        updated: updated_count,
+        removed: 0,
+        errors: 0,
+    })
+}
+
+async fn store_single_note_impl(
+    path: &str,
+    rag: Arc<Mutex<KimunRag>>,
+    config: &RagConfig,
+) -> anyhow::Result<()> {
+    // Open the vault database
+    let vault_path = config.vault.path.clone();
+    let db_path = vault_path.join("kimun.sqlite");
+
+    if !db_path.exists() {
+        anyhow::bail!("Vault database not found at {:?}", db_path);
+    }
+
+    let source_path = path.to_string();
+    // Read notes from the database in a blocking task (rusqlite is not Send)
+    let chunks = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        use rusqlite::Connection;
+        let conn = Connection::open(&db_path)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT n.path, nc.breadCrumb, nc.text, n.hash
+             FROM notes n
+             JOIN notesContent nc ON n.path = nc.path where n.path = ?1",
+        )?;
+        let mut rows = stmt.query([source_path])?;
+
+        let mut chunk_option: Option<KimunDoc> = None;
+        while let Some(row) = rows.next()? {
+            if let Some(chunk) = chunk_option.as_mut() {
+                let path: String = row.get(0)?;
+                if chunk.path != path {
+                    bail!("Paths differ, query is returning different paths, shouldn't happen: {} vs {}", chunk.path, path);
+                }
+
+                let breadcrumb: String = row.get(1)?;
+                let text: String = row.get(2)?;
+                let c = KimunSection{ title: breadcrumb, text };
+                chunk.sections.push(c);
+            } else {
+                let path: String = row.get(0)?;
+                let breadcrumb: String = row.get(1)?;
+                let text: String = row.get(2)?;
+                let hash: String = row.get(3)?;
+                let c = KimunDoc {
+                    path,
+                    hash,
+                    sections: vec![KimunSection {
+                        title: breadcrumb,
+                        text,
+                    }],
+                };
+                chunk_option = Some(c);
+            }
+        }
+
+        Ok(KimunDoc {
+            path: "".to_string(),
+            hash: "".to_string(),
+            sections: vec![],
+        })
+
+        // }
+    })
+    .await??;
+
+    let indexed_notes = {
+        // We get the lock in a separate context, so we don't hold it
+        let rag_lock = rag.lock().await;
+        let indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
+        indexed_notes
+    };
+    index_docs_impl(&[chunks], Some(&indexed_notes), rag).await?;
+
+    Ok(())
+}
+
+async fn index_all_impl(
+    rag: Arc<Mutex<KimunRag>>,
+    config: &RagConfig,
+) -> anyhow::Result<crate::IndexStats> {
+    // Open the vault database
+    let vault_path = config.vault.path.clone();
+    let db_path = vault_path.join("kimun.sqlite");
+
+    if !db_path.exists() {
+        anyhow::bail!("Vault database not found at {:?}", db_path);
+    }
+
+    // Read notes from the database in a blocking task (rusqlite is not Send)
+    let chunks = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        use rusqlite::Connection;
+        let conn = Connection::open(&db_path)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT n.path, nc.breadCrumb, nc.text, n.hash
+             FROM notes n
+             JOIN notesContent nc ON n.path = nc.path ORDER BY n.path",
+        )?;
+        let mut rows = stmt.query([])?;
+
+        let mut chunks: Vec<KimunDoc> = vec![];
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            let breadcrumb: String = row.get(1)?;
+            let text: String = row.get(2)?;
+            let hash: String = row.get(3)?;
+            if let Some(ch) = chunks.last_mut() {
+                if ch.path != path {
+                    let new_chunk = KimunDoc {
+                        path: path.clone(),
+                        hash,
+                        sections: vec![KimunSection {
+                            title: breadcrumb,
+                            text,
+                        }],
+                    };
+                    chunks.push(new_chunk);
+                } else {
+                    ch.sections.push(KimunSection {
+                        title: breadcrumb,
+                        text,
+                    });
+                }
+            } else {
+                let new_chunk = KimunDoc {
+                    path: path.clone(),
+                    hash,
+                    sections: vec![KimunSection {
+                        title: breadcrumb,
+                        text,
+                    }],
+                };
+                chunks.push(new_chunk);
+            }
+        }
+
+        Ok(chunks)
+    })
+    .await??;
+
+    let mut indexed_notes = {
+        // We get the lock in a separate context, so we don't hold it
+        let rag_lock = rag.lock().await;
+        debug!("Getting indexed Notes");
+        let indexed_notes = rag_lock.embeddings.get_indexed_notes().await?;
+        indexed_notes
+    };
+    let mut index_stats = index_docs_impl(&chunks, Some(&indexed_notes), rag.clone()).await?;
+
+    for chunk in chunks {
+        indexed_notes.remove(&chunk.path);
+    }
+
+    let missing = indexed_notes.keys().collect::<Vec<&String>>();
+    index_stats.removed += missing.len();
+    let rag_lock = rag.lock().await;
+    rag_lock.embeddings.delete_embeddings(missing).await?;
+    debug!("Done indexing: {}", index_stats);
+
+    Ok(index_stats)
+}
+
+/// Answer implementation with dynamic LLM selection
+async fn answer_impl_with_llm(
+    rag: Arc<Mutex<KimunRag>>,
+    query: &str,
+    llm_provider: Option<&str>,
+    llm_model: Option<&str>,
+    api_key: Option<&str>,
+    context_size: ContextSize,
+) -> anyhow::Result<(String, Vec<ChunkResult>)> {
+    use crate::llmclients::{
+        LLMClient, claude::ClaudeClient, gemini::GeminiClient, mistral::MistralClient,
+        openai::OpenAIClient,
+    };
+
+    debug!("Answering a question");
+
+    // Step 1: Query embeddings (fast vector search) and get reranker while holding the lock briefly
+    let (raw_results, reranker_option) = {
+        let rag_lock = rag.lock().await;
+        let results = rag_lock.query_embeddings_raw(query).await?;
+        let reranker = rag_lock.get_reranker();
+        (results, reranker)
+    }; // Lock released here
+
+    debug!(
+        "Got {} raw results from embeddings query",
+        raw_results.len()
+    );
+
+    // Deduplicate by FlattenedChunk, keeping the highest score for each unique chunk
+    let raw_results = deduplicate_chunks(raw_results);
+
+    // Determine top_k from context_size parameter
+    let top_k = context_size.to_top_k();
+    debug!("Using context_size {:?} with top_k {}", context_size, top_k);
+
+    // Step 2: Apply reranking (CPU-intensive) WITHOUT holding the lock
+    let results = if let Some(reranker) = reranker_option {
+        debug!("Reranking results without lock");
+        reranker.rerank(query, raw_results, top_k).await?
+    } else {
+        debug!("No reranking needed, applying top_k limit");
+        // Still apply top_k limit even without reranking
+        raw_results.into_iter().take(top_k).collect()
+    };
+
+    debug!("After reranking: {} results", results.len());
+
+    // Step 3: Set up API key if provided (without lock)
+    let _env_guard = if let Some(key) = api_key {
+        llm_provider
+            .as_ref()
+            .map(|provider| set_temp_api_key(provider, key))
+    } else {
+        None
+    };
+
+    // Step 4: Create or get LLM client (without holding the lock)
+    let llm_client: Arc<dyn LLMClient + Send + Sync> = if let Some(provider) = llm_provider {
+        match provider.to_lowercase().as_str() {
+            "claude" => {
+                let model = llm_model.unwrap_or("claude-3-5-sonnet-20241022");
+                Arc::new(ClaudeClient::new(model.to_string()))
+            }
+            "openai" => {
+                let model = llm_model.unwrap_or("gpt-4o-mini");
+                Arc::new(OpenAIClient::new(model.to_string()))
+            }
+            "gemini" => {
+                let model = llm_model.unwrap_or("gemini-2.5-flash");
+                Arc::new(GeminiClient::new(model))
+            }
+            "mistral" => {
+                let model = llm_model.unwrap_or("mistral-large-latest");
+                Arc::new(MistralClient::new(model))
+            }
+            _ => anyhow::bail!("Unknown LLM provider: {}", provider),
+        }
+    } else {
+        // Get default LLM client (briefly holding lock just to clone the Arc)
+        let rag_lock = rag.lock().await;
+        let client = rag_lock.get_llm_client();
+        drop(rag_lock); // Explicitly release lock before LLM call
+        client
+    };
+
+    // Step 5: Call LLM without holding any lock - this is the slow operation (can take seconds)
+    debug!("Calling LLM without lock");
+    let answer = llm_client.ask(query, &results).await?;
+
+    // Format sources
+    let sources: Vec<ChunkResult> = results
+        .into_iter()
+        .map(|(score, chunk)| {
+            let source_path = chunk.doc_path.clone();
+            let title = chunk.title.clone();
+            let date = chunk.get_date_string();
+            let hash = chunk.doc_hash.clone();
+            ChunkResult {
+                path: source_path,
+                title,
+                date,
+                content: chunk.text,
+                similarity_score: score,
+                hash,
+            }
+        })
+        .collect();
+
+    Ok((answer, sources))
+}
+
+/// Helper to temporarily set API key in environment
+/// Returns a guard that will restore the original value on drop
+fn set_temp_api_key(provider: &str, api_key: &str) -> TempEnvGuard {
+    let env_var = match provider {
+        "claude" => "ANTHROPIC_API_KEY",
+        "openai" => "OPENAI_API_KEY",
+        "gemini" => "GEMINI_API_KEY",
+        "mistral" => "MISTRAL_API_KEY",
+        _ => {
+            return TempEnvGuard {
+                var: None,
+                original: None,
+            };
+        }
+    };
+
+    let original = std::env::var(env_var).ok();
+
+    // SAFETY: We're modifying environment variables in a controlled way within a single-threaded
+    // context (tokio spawn). The guard ensures restoration. This is acceptable for temporary
+    // API key injection per request.
+    unsafe {
+        std::env::set_var(env_var, api_key);
+    }
+
+    TempEnvGuard {
+        var: Some(env_var.to_string()),
+        original,
+    }
+}
+
+/// Guard that restores environment variable on drop
+struct TempEnvGuard {
+    var: Option<String>,
+    original: Option<String>,
+}
+
+impl Drop for TempEnvGuard {
+    fn drop(&mut self) {
+        if let Some(var) = &self.var {
+            // SAFETY: Restoring environment variable state
+            unsafe {
+                if let Some(original) = &self.original {
+                    std::env::set_var(var, original);
+                } else {
+                    std::env::remove_var(var);
+                }
+            }
+        }
+    }
+}

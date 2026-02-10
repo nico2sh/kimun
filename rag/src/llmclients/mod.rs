@@ -1,12 +1,17 @@
-use crate::document::KimunChunk;
+use async_trait::async_trait;
 
+use crate::document::FlattenedChunk;
+
+pub mod claude;
 pub mod gemini;
 pub mod mistral;
+pub mod openai;
 
-pub trait LLMClient {
-    async fn ask<S: AsRef<str>>(
+#[async_trait]
+pub trait LLMClient: Send + Sync {
+    async fn ask(
         &self,
-        question: S,
-        context: Vec<(f64, KimunChunk)>,
+        question: &str,
+        context: &Vec<(f64, FlattenedChunk)>,
     ) -> anyhow::Result<String>;
 }

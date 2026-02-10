@@ -3,54 +3,36 @@ use log::debug;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::document::KimunChunk;
+use crate::document::FlattenedChunk;
 
 use super::LLMClient;
 
-pub enum GeminiModel {
-    Gemini20Flash,
-    Gemini20FlashLite,
-    Gemini25FlashPreview0417,
-    Gemini25ProPreview0325,
-    Gemini25ProExp0325,
-}
-
-impl std::fmt::Display for GeminiModel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            GeminiModel::Gemini20Flash => "gemini-2.0-flash",
-            GeminiModel::Gemini20FlashLite => "gemini-2.0-flash-lite",
-            GeminiModel::Gemini25FlashPreview0417 => "gemini-2.5-flash-preview-04-17",
-            GeminiModel::Gemini25ProPreview0325 => "gemini-2.5-pro-preview-03-25",
-            GeminiModel::Gemini25ProExp0325 => "gemini-2.5-pro-exp-03-25",
-        };
-        write!(f, "{}", s)
-    }
-}
-
 pub struct GeminiClient {
     api_key: String,
-    model: GeminiModel,
+    model: String,
 }
 
 impl GeminiClient {
-    pub fn new(model: GeminiModel) -> Self {
+    pub fn new(model: impl Into<String>) -> Self {
         // Get API key from environment variable
         let api_key =
             std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY environment variable not set");
 
-        Self { api_key, model }
+        Self {
+            api_key,
+            model: model.into(),
+        }
     }
 
-    fn get_prompt(&self, question: String, context: Vec<(f64, KimunChunk)>) -> String {
+    fn get_prompt(&self, question: String, context: &Vec<(f64, FlattenedChunk)>) -> String {
         let mut context_string = String::new();
         for (distance, chunk) in context {
             context_string.push_str(&format!(
                 "--- Document: {} (Relevance: {:.4}) ---\n",
-                chunk.metadata.source_path, distance
+                chunk.doc_path, distance
             ));
-            let mut title = chunk.metadata.title.clone();
-            if let Some(date) = chunk.metadata.get_date_string() {
+            let mut title = chunk.title.clone();
+            if let Some(date) = chunk.get_date_string() {
                 context_string.push_str(&format!("Date: {date}\n"));
                 title = title
                     .trim()
@@ -61,31 +43,47 @@ impl GeminiClient {
             if !title.is_empty() {
                 context_string.push_str(&format!("# {title}\n"));
             }
-            context_string.push_str(&chunk.content);
+            context_string.push_str(&chunk.text);
             context_string.push_str("\n\n");
         }
 
         let prompt = format!(
-            r#"
-Context information is below.
+            r#"You are an intelligent assistant with access to a personal knowledge base.
+Answer the user's question using the retrieved context first. If the retrieved notes contain relevant information, base your answer primarily on them.
+If the context is incomplete, missing, or can be enriched with widely accepted knowledge about the topic related with the question, supplement the answer with accurate common knowledge.
+Always distinguish between information from the notes and general knowledge.
+If no useful information is available in either, respond with: 'I don't have enough information to answer.'
+
+Retrieved context:
 ---------------------
-{context_string}
+{context_string}.
 ---------------------
-Given the context information and not prior knowledge, answer the query.
-Query: {question}
-Answer:
-"#
+
+Question: {question}"#
         );
+
+        //         let prompt = format!(
+        //             r#"
+        // Context information is below.
+        // ---------------------
+        // {context_string}
+        // ---------------------
+        // Given the context information and not prior knowledge, answer the query. You can
+        // Query: {question}
+        // Answer:
+        // "#
+        //         );
 
         prompt
     }
 }
 
+#[async_trait::async_trait]
 impl LLMClient for GeminiClient {
-    async fn ask<S: AsRef<str>>(
+    async fn ask(
         &self,
-        question: S,
-        context: Vec<(f64, crate::document::KimunChunk)>,
+        question: &str,
+        context: &Vec<(f64, crate::document::FlattenedChunk)>,
     ) -> anyhow::Result<String> {
         // Create a new reqwest client
         let client = Client::new();
@@ -94,7 +92,7 @@ impl LLMClient for GeminiClient {
         let request_payload = GeminiRequest {
             contents: vec![GeminiContent {
                 parts: vec![GeminiPart {
-                    text: self.get_prompt(question.as_ref().to_string(), context),
+                    text: self.get_prompt(question.to_string(), context),
                 }],
             }],
         };
