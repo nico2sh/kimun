@@ -25,12 +25,13 @@ pub struct TextEditorProps {
 
 #[component]
 pub fn TextEditor(props: TextEditorProps) -> Element {
+    debug!("Text Editor loading");
     let settings: Signal<AppSettings> = use_context();
     let focus_manager = use_context::<FocusManager>();
     let mut editor_state: Signal<EditorState> = use_context();
 
     let TextEditorProps { mut content } = props;
-    let text = content.read().to_owned();
+    let text = content.peek().to_owned();
 
     let fm = focus_manager.clone();
     use_drop(move || {
