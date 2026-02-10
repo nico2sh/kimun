@@ -1,72 +1,269 @@
-use std::path::Path;
+use std::fmt::Display;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use document::ChunkLoader;
 
+use dbembeddings::Embeddings;
 use dbembeddings::vecsqlite::VecSQLite;
-use dbembeddings::{Embeddings, veclance::VecLance};
-use kimun_core::NoteVault;
-use llmclients::mistral::MistralClient;
+// use kimun_core::NoteVault;
 use llmclients::{LLMClient, gemini::GeminiClient};
+use log::debug;
 
-mod dbembeddings;
-mod document;
-mod llmclients;
+use crate::document::FlattenedChunk;
 
-pub struct KimunRag<E, C>
-where
-    E: Embeddings,
-    C: LLMClient,
-{
-    embeddings: Box<E>,
-    llm_client: Box<C>,
+// Re-export commonly used types and functions
+use crate::reranker::CrossEncoderReranker;
+pub use document::{KimunDoc, KimunSection, split_chunks_for_rag};
+
+pub mod dbembeddings;
+pub mod document;
+pub mod llmclients;
+pub mod reranker;
+
+// Public modules for server
+pub mod config;
+pub mod handlers;
+pub mod server_state;
+
+pub struct KimunRag {
+    embeddings: Arc<dyn Embeddings + Send + Sync>,
+    llm_client: Arc<dyn LLMClient + Send + Sync>,
+    reranker: Option<Arc<CrossEncoderReranker>>,
 }
 
-impl KimunRag<VecSQLite, GeminiClient> {
-    pub fn sqlite<P: AsRef<Path>>(path: P) -> Self {
-        Self::new(
-            VecSQLite::new(path),
-            GeminiClient::new(llmclients::gemini::GeminiModel::Gemini25FlashPreview0417),
-        )
-    }
-}
-
-impl KimunRag<VecLance, GeminiClient> {
-    pub fn lance<P: AsRef<Path>>(path: P) -> Self {
-        Self::new(
-            VecLance::new(path),
-            GeminiClient::new(llmclients::gemini::GeminiModel::Gemini25ProPreview0325),
-        )
-    }
-}
-
-impl<E, C> KimunRag<E, C>
-where
-    E: Embeddings,
-    C: LLMClient,
-{
-    pub fn new(embeddings: E, llm_client: C) -> Self {
+impl KimunRag {
+    /// Create a new KimunRag instance with provided embeddings and LLM client
+    pub fn new(
+        embeddings: Arc<dyn Embeddings + Send + Sync>,
+        llm_client: Arc<dyn LLMClient + Send + Sync>,
+    ) -> Self {
         Self {
-            embeddings: Box::new(embeddings),
-            llm_client: Box::new(llm_client),
+            embeddings,
+            llm_client,
+            reranker: None,
         }
     }
 
-    pub fn init(&mut self) -> anyhow::Result<()> {
-        self.embeddings.init()
+    /// Get a clone of the LLM client
+    pub fn get_llm_client(&self) -> Arc<dyn LLMClient + Send + Sync> {
+        self.llm_client.clone()
     }
 
-    pub async fn store_embeddings(&self, vault: NoteVault) -> anyhow::Result<()> {
-        let chunk_loader = ChunkLoader::new(vault);
+    /// Enable reranking with the given top_k parameter
+    pub fn with_reranking(mut self) -> anyhow::Result<Self> {
+        let reranker = CrossEncoderReranker::new()?;
+        self.reranker = Some(Arc::new(reranker));
+        Ok(self)
+    }
+
+    /// Helper to create with SQLite and Gemini (for backward compatibility)
+    pub fn sqlite<P: AsRef<Path>>(path: P) -> Self {
+        Self {
+            embeddings: Arc::new(VecSQLite::new(path)),
+            llm_client: Arc::new(GeminiClient::new("gemini-2.5-flash")),
+            reranker: None,
+        }
+    }
+
+    /// Initialize the embeddings database
+    pub async fn init(&self) -> anyhow::Result<()> {
+        self.embeddings.init().await?;
+        tracing::debug!("KimunRag initialized (using lazy initialization)");
+        Ok(())
+    }
+
+    /// Store embeddings for all notes in the vault
+    pub async fn store_embeddings(&self, db_path: PathBuf) -> anyhow::Result<()> {
+        let chunk_loader = ChunkLoader::new(db_path);
         let chunks = chunk_loader.load_notes()?;
 
         self.embeddings.store_embeddings(&chunks).await?;
         Ok(())
     }
 
-    pub async fn query(&self, query: String) -> anyhow::Result<String> {
-        let context = self.embeddings.query_embedding(&query).await?;
+    /// Query embeddings without reranking (fast - just vector search)
+    /// Use this when you need to minimize lock time
+    pub async fn query_embeddings_raw(
+        &self,
+        query: &str,
+    ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
+        self.embeddings.query_embedding(query).await
+    }
 
-        let answer = self.llm_client.ask(query, context).await?;
-        Ok(answer)
+    /// Get reranker if enabled (returns Arc so it can be used without lock)
+    pub fn get_reranker(&self) -> Option<Arc<CrossEncoderReranker>> {
+        self.reranker.as_ref().map(|r| r.clone())
+    }
+
+    /// Apply reranking to results
+    /// This is CPU-intensive and should be called without holding locks
+    pub async fn apply_reranking(
+        &self,
+        query: &str,
+        results: Vec<(f64, document::FlattenedChunk)>,
+        top_k: usize,
+    ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
+        if let Some(reranker) = &self.reranker {
+            debug!("Reranking the results to {}", top_k);
+            reranker.rerank(query, results, top_k).await
+        } else {
+            debug!("No reranking needed");
+            Ok(results.into_iter().take(top_k).collect())
+        }
+    }
+
+    /// Query embeddings and return raw results (without LLM)
+    /// Applies reranking if enabled
+    pub async fn query_embeddings(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> anyhow::Result<Vec<(f64, document::FlattenedChunk)>> {
+        let results = self.embeddings.query_embedding(query).await?;
+
+        // Apply reranking if enabled
+        if let Some(reranker) = &self.reranker {
+            debug!("Reranking the results to {}", top_k);
+            reranker.rerank(query, results, top_k).await
+        } else {
+            debug!("No Reranking the results");
+            Ok(results.into_iter().take(top_k).collect())
+        }
+    }
+
+    /// Query the RAG system with a question and get an LLM answer
+    /// Uses reranked results if reranking is enabled
+    pub async fn ask(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
+        self.ask_with_llm(query, self.llm_client.clone(), top_k)
+            .await
+    }
+
+    pub async fn ask_with_llm(
+        &self,
+        query: &str,
+        llm: Arc<dyn LLMClient + Send + Sync>,
+        top_k: usize,
+    ) -> anyhow::Result<(String, Vec<(f64, FlattenedChunk)>)> {
+        let context = self.query_embeddings(query, top_k).await?;
+        let answer = llm.ask(query, &context).await?;
+        Ok((answer, context))
+    }
+
+    /// Store embeddings with incremental indexing (only index changed notes)
+    pub async fn store_embeddings_incremental(
+        &self,
+        db_path: PathBuf,
+    ) -> anyhow::Result<IndexStats> {
+        debug!("Starting store embeddings incremental");
+        let chunk_loader = ChunkLoader::new(db_path);
+        let chunks = chunk_loader.load_notes()?;
+
+        // Get currently indexed notes
+        let mut indexed_notes = self.embeddings.get_indexed_notes().await?;
+
+        let mut indexed_count = 0;
+        let mut skipped_count = 0;
+        let mut updated_count = 0;
+
+        for chunk in &chunks {
+            let content_hash = chunk.hash.clone();
+            let needs_indexing = if let Some(indexed) = indexed_notes.remove(&chunk.path) {
+                let update = indexed.content_hash != content_hash;
+                if update {
+                    // These ones needs to be updated, so we need to remove them first
+                    debug!("For updating, deleting embeddings for {}", chunk.path);
+                    self.embeddings.delete_embeddings(vec![&chunk.path]).await?;
+                    updated_count += 1;
+                } else {
+                    debug!("Skipping embeddings for {}", chunk.path);
+                    skipped_count += 1;
+                }
+                update
+            } else {
+                debug!("Indexing embeddings for {}", chunk.path);
+                indexed_count += 1;
+                true
+            };
+
+            if needs_indexing {
+                debug!("Starting storing embeddings");
+                self.embeddings.store_embeddings(&chunks).await?;
+                debug!("Finished storing embeddings");
+            }
+        }
+
+        let missing = indexed_notes.keys().collect::<Vec<&String>>();
+        let removed_count = missing.len();
+        self.embeddings.delete_embeddings(missing).await?;
+
+        Ok(IndexStats {
+            indexed: indexed_count,
+            skipped: skipped_count,
+            updated: updated_count,
+            errors: 0,
+            removed: removed_count,
+        })
+    }
+
+    // Store a single note (replacing all existing chunks for that path)
+    //     pub async fn store_single_note(&self, db_path: PathBuf, note_path: &str) -> anyhow::Result<()> {
+    //         let chunk_loader = ChunkLoader::new(db_path);
+    //         let all_chunks = chunk_loader.load_notes()?;
+
+    //         // Filter to only the chunks for this path
+    //         let chunks: Vec<document::ChunksPayload> = all_chunks
+    //             .into_iter()
+    //             .filter(|c| c.doc_path == note_path)
+    //             .collect();
+
+    //         if chunks.is_empty() {
+    //             // If no chunks, remove from index
+    //             self.embeddings.remove_indexed_note(note_path).await?;
+    //             return Ok(());
+    //         }
+
+    //         // Compute hash
+    //         let content_hash = if chunks.windows(2).all(|w| w[0].doc_hash == w[1].doc_hash) {
+    //             chunks
+    //                 .first()
+    //                 .map(|f| f.doc_hash.clone())
+    //                 .unwrap_or_default()
+    //         } else {
+    //             "".to_string()
+    //         };
+
+    //         // Store embeddings
+    //         self.embeddings.store_embeddings(&chunks).await?;
+    //         self.embeddings
+    //             .mark_as_indexed(note_path, &content_hash)
+    //             .await?;
+
+    //         Ok(())
+    //     }
+}
+
+/// Statistics from indexing operation
+#[derive(Debug, Clone)]
+pub struct IndexStats {
+    pub indexed: usize,
+    pub skipped: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub errors: usize,
+}
+
+impl Display for IndexStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Index Stats: ")?;
+        writeln!(f, "  > Indexed: {}", self.indexed)?;
+        writeln!(f, "  > Skipped: {}", self.skipped)?;
+        writeln!(f, "  > Updated: {}", self.updated)?;
+        writeln!(f, "  > Removed: {}", self.removed)?;
+        writeln!(f, "  > Errors: {}", self.errors)
     }
 }

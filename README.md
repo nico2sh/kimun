@@ -4,6 +4,11 @@ A notes app. Focus on simplicity, but powerful on searchability.
 
 Mostly human written. Except CSS, CSS is hard.
 
+## Components
+
+- **Desktop App**: The main Tauri-based note-taking application
+- **RAG Server**: A standalone HTTP server for semantic search and AI-powered Q&A over your notes (see [rag/README.md](rag/README.md))
+
 ## Building
 
 The app uses gxhash that uses some specific hardware acceleration features. If when compiling you get an error, make sure you add the flag `RUSTFLAGS="-C target-cpu=native"`
