@@ -40,6 +40,13 @@ pub enum VectorDbConfig {
         #[serde(default = "default_qdrant_collection")]
         collection: String,
     },
+    #[serde(rename = "lancedb")]
+    LanceDB {
+        #[serde(default = "default_lancedb_path")]
+        db_path: PathBuf,
+        #[serde(default = "default_lancedb_table")]
+        table_name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +102,14 @@ fn default_qdrant_url() -> String {
 }
 
 fn default_qdrant_collection() -> String {
+    "kimun_embeddings".to_string()
+}
+
+fn default_lancedb_path() -> PathBuf {
+    PathBuf::from("./lance_db")
+}
+
+fn default_lancedb_table() -> String {
     "kimun_embeddings".to_string()
 }
 

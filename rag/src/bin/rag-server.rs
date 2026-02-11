@@ -119,6 +119,15 @@ async fn create_rag_from_config(config: &RagConfig) -> anyhow::Result<KimunRag> 
                 );
                 Arc::new(VecQdrant::new(url.clone(), collection.clone()).await?)
             }
+            // LanceDB temporarily disabled due to dependency issue
+            // See veclancedb.rs for details
+            VectorDbConfig::LanceDB { .. } => {
+                anyhow::bail!(
+                    "LanceDB is currently disabled due to a dependency compatibility issue. \
+                     Please use Qdrant (recommended) or SQLite instead. \
+                     See rag/src/dbembeddings/veclancedb.rs for more information."
+                )
+            }
         };
 
     // Create LLM client based on config
