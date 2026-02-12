@@ -41,4 +41,4 @@ arrow-array = "57.3"
 # Issue: lance-index v2.0.0 uses tempfile::TempDir::keep() which was removed in tempfile 3.19+
 # Status: Waiting for LanceDB to update to lance v3.0.0+ which fixes this issue
 # Workaround: Use Qdrant as your vector database (recommended)
-lancedb = "0.26.2"
+# lancedb = "0.26.2"
