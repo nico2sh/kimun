@@ -16,23 +16,17 @@ max_concurrent_jobs = 10
 path = "/path/to/your/notes"
 
 [vector_db]
-# Vector database type: "qdrant", "sqlite", or "lancedb"
-# Recommended: Use Qdrant for production deployments
-type = "qdrant"
+# Vector database type: "sqlite" or "qdrant"
+type = "sqlite"
 
-# Qdrant settings (recommended, when type = "qdrant")
-url = "http://localhost:6333"
-collection = "kimun_embeddings"
+# SQLite-specific settings (when type = "sqlite")
+db_path = "./rag_index.sqlite"
 
-# SQLite settings (simple, when type = "sqlite")
-# Note: SQLite vector db is being deprecated in favor of Qdrant
-# db_path = "./rag_index.sqlite"
-
-# LanceDB settings (when type = "lancedb")
-# Note: Currently disabled due to dependency issue with lance-index 2.0.0
-# Waiting for upstream fix in LanceDB (lance v3.0.0+)
-# db_path = "./lance_db"
-# table_name = "kimun_embeddings"
+# Qdrant-specific settings (when type = "qdrant")
+# Uncomment and configure if using Qdrant:
+# type = "qdrant"
+# url = "http://localhost:6333"
+# collection = "kimun_embeddings"
 
 [llm]
 # LLM provider: "gemini", "claude", "openai", or "mistral"
