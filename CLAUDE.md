@@ -100,9 +100,10 @@ Async HTTP server (Axum) providing semantic search and LLM-powered answers over 
 
 **Architecture Layers:**
 
-1. **Embeddings Layer** 
+1. **Embeddings Layer**
    - FastEmbed with BGE-Large-EN-V15 (1024 dimensions)
-   - Vector storage: SQLite (`vecsqlite.rs`) or Qdrant (`vecqdrant.rs`)
+   - Vector storage: Qdrant (`vecqdrant.rs`, recommended) or SQLite (`vecsqlite.rs`, deprecated)
+   - LanceDB (`veclancedb.rs`) implementation exists but currently disabled due to dependency issue (waiting for lance v3.0.0+)
    - Content hash-based incremental indexing to avoid reprocessing unchanged notes
 
 2. **LLM Clients** 
@@ -250,24 +251,31 @@ cd desktop && cargo test
 ### Testing RAG Server Locally
 
 ```bash
-# 1. Set up config
+# 1. Start Qdrant (recommended vector database)
+# Using Docker:
+docker run -p 6333:6333 -p 6334:6334 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant
+# Or install and run Qdrant locally: https://qdrant.tech/documentation/quick-start/
+
+# 2. Set up config
 mkdir -p ~/.config/kimun
 cp rag/config.example.toml ~/.config/kimun/rag.conf
-# Edit rag.conf: set vault.path to your notes directory
+# Edit rag.conf:
+#   - Set vault.path to your notes directory
+#   - Ensure vector_db type is set to "qdrant"
 
-# 2. Export API key for your chosen LLM
+# 3. Export API key for your chosen LLM
 export ANTHROPIC_API_KEY=sk-ant-...  # for Claude
 export OPENAI_API_KEY=sk-...         # for OpenAI
 export GEMINI_API_KEY=...            # for Gemini
 export MISTRAL_API_KEY=...           # for Mistral
 
-# 3. Run server
+# 4. Run server
 cd rag && cargo run --bin rag-server
 
-# 4. Index notes
+# 5. Index notes
 curl -X POST http://localhost:7573/api/index/all
 
-# 5. Query (basic)
+# 6. Query (basic)
 curl -X POST http://localhost:7573/api/answer \
   -H "Content-Type: application/json" \
   -d '{"query": "What are my notes about?"}'
