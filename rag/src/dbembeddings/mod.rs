@@ -6,7 +6,7 @@ mod embedder;
 
 // LanceDB temporarily disabled due to dependency issue
 // See veclancedb.rs for details
-pub mod veclancedb;
+// pub mod veclancedb;
 pub mod vecqdrant;
 pub mod vecsqlite;
 
