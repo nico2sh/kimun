@@ -52,6 +52,14 @@ pub struct NoteVault {
     vault_db: VaultDB,
 }
 
+// Manual PartialEq implementation comparing only workspace_path
+// (SqlitePool doesn't implement PartialEq, but vaults with same workspace are equivalent)
+impl PartialEq for NoteVault {
+    fn eq(&self, other: &Self) -> bool {
+        self.workspace_path == other.workspace_path
+    }
+}
+
 impl NoteVault {
     /// Creates a new instance of the Note Vault.
     /// Make sure you call `NoteVault::init_and_validate(&self)` to initialize the DB index if

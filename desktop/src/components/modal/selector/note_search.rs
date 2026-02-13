@@ -22,14 +22,15 @@ struct SearchFunctions {
 }
 
 impl SelectorFunctions<String> for SearchFunctions {
-    fn init(&self) -> Vec<NoteBrowseEntry> {
+    async fn init(&self) -> Vec<NoteBrowseEntry> {
         debug!("Opening Note Search");
         vec![]
     }
 
-    fn filter(&self, filter_text: String, _items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
+    async fn filter(&self, filter_text: String, _items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
         debug!("Searching {}", filter_text);
-        match self.vault.search_notes(filter_text) {
+        let vault = self.vault.clone();
+        match vault.search_notes(filter_text).await {
             Ok(res) => res
                 .into_iter()
                 .map(|(entry, content)| NoteBrowseEntry::from_note_details(entry.path, content))

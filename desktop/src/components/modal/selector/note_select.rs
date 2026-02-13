@@ -25,8 +25,9 @@ struct SelectFunctions {
 }
 
 impl SelectFunctions {
-    fn open(&self) -> Vec<NoteBrowseEntry> {
-        match self.vault.get_all_notes() {
+    async fn open(&self) -> Vec<NoteBrowseEntry> {
+        let vault = self.vault.clone();
+        match vault.get_all_notes().await {
             Ok(res) => res
                 .into_iter()
                 .map(|(entry, content)| NoteBrowseEntry::from_note_details(entry.path, content))
@@ -40,15 +41,15 @@ impl SelectFunctions {
 }
 
 impl SelectorFunctions<String> for SelectFunctions {
-    fn init(&self) -> Vec<NoteBrowseEntry> {
+    async fn init(&self) -> Vec<NoteBrowseEntry> {
         debug!("Opening Note Selector");
 
-        let items = self.open().into_iter().collect::<Vec<NoteBrowseEntry>>();
+        let items = self.open().await;
         debug!("Loaded {} items", items.len());
         items
     }
 
-    fn filter(&self, filter_text: String, items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
+    async fn filter(&self, filter_text: String, items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
         if !items.is_empty() {
             let mut result = Vec::new();
             if !filter_text.is_empty() {

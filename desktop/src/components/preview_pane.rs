@@ -68,11 +68,11 @@ pub struct PreviewListFunctions {
 }
 
 impl SelectorFunctions<PreviewListSource> for PreviewListFunctions {
-    fn init(&self) -> Vec<NoteBrowseEntry> {
+    async fn init(&self) -> Vec<NoteBrowseEntry> {
         vec![]
     }
 
-    fn filter(
+    async fn filter(
         &self,
         filter_text: PreviewListSource,
         _initial_items: &[NoteBrowseEntry],
@@ -80,7 +80,8 @@ impl SelectorFunctions<PreviewListSource> for PreviewListFunctions {
         match &filter_text {
             PreviewListSource::FromQuery(_query) => {
                 let filter_text = filter_text.to_owned();
-                match self.vault.search_notes(filter_text.to_string()) {
+                let vault = self.vault.clone();
+                match vault.search_notes(filter_text.to_string()).await {
                     Ok(res) => res
                         .into_iter()
                         .map(|(entry, content)| {
