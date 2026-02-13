@@ -34,10 +34,10 @@ pub enum FSError {
     VaultPathNotFound { path: VaultPath },
 }
 
-#[derive(Error, Debug, PartialEq)]
+#[derive(Error, Debug)]
 pub enum DBError {
     #[error("Database Error: {0}")]
-    DBError(#[from] rusqlite::Error),
+    DBError(#[from] sqlx::Error),
     #[error("Error DB Connection Closed")]
     DBConnectionClosed,
     #[error("Error Querying Data: {0}")]
@@ -46,4 +46,6 @@ pub enum DBError {
     NonCritical(String),
     #[error("DB related error: {0}")]
     Other(String),
+    #[error("Pool error: {0}")]
+    PoolError(String),
 }
