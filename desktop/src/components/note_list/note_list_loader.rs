@@ -8,8 +8,8 @@ pub trait SelectorFunctions<S>: Clone
 where
     S: StringSearch,
 {
-    fn init(&self) -> Vec<NoteBrowseEntry>;
-    fn filter(&self, filter_text: S, initial_items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry>;
+    async fn init(&self) -> Vec<NoteBrowseEntry>;
+    async fn filter(&self, filter_text: S, initial_items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry>;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -83,9 +83,7 @@ where
                 LoadState::Initializing => {
                     info!("---=== Initializing");
                     selected.set(None);
-                    let result = tokio::task::spawn(async move { functions.init() })
-                        .await
-                        .unwrap_or_default();
+                    let result = functions.init().await;
                     state_data.write().raw_data = result;
                     load_state.set(LoadState::Filtering);
                 }
@@ -96,10 +94,7 @@ where
                     let raw_data = state_data.peek().raw_data.clone();
                     state_data.write().filter_value = filter_text.clone();
                     let filter_text = filter_text.clone();
-                    let rows =
-                        tokio::spawn(async move { functions.filter(filter_text, &raw_data) })
-                            .await
-                            .unwrap_or_default();
+                    let rows = functions.filter(filter_text, &raw_data).await;
                     info!("We truncate the row mounts with {} values", rows.len());
                     state_data.write().filtered_data = rows;
                     load_state.set(LoadState::Sorting);

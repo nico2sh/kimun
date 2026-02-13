@@ -44,8 +44,23 @@ pub fn MainView() -> Element {
     let theme = settings().get_theme();
     let settings_value = settings.read();
 
-    let vault_path: &std::path::PathBuf = settings_value.workspace_dir.as_ref().unwrap();
-    let vault = Arc::new(NoteVault::new(vault_path)?);
+    let vault_path = settings_value.workspace_dir.clone().unwrap();
+    let vault_resource = use_resource(move || {
+        let vault_path = vault_path.clone();
+        async move {
+            NoteVault::new(vault_path).await.ok().map(Arc::new)
+        }
+    });
+
+    // Wait for vault to be loaded
+    let vault = match vault_resource.read().as_ref() {
+        Some(Some(vault)) => vault.clone(),
+        _ => {
+            return rsx! {
+                div { class: "loading", "Loading vault..." }
+            };
+        }
+    };
 
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
@@ -114,9 +129,14 @@ pub fn MainView() -> Element {
                     debug!("It's a note and we have to create it");
                     app_state.write().preview_mode = false;
                     let note_path = editor_path.read().to_owned();
-                    match editor_vault.create_note(&note_path, "") {
+                    let editor_vault = editor_vault.clone();
+                    let note_path_for_closure = note_path.clone();
+                    // Block on async operation in memo
+                    match tokio::runtime::Handle::current().block_on(async move {
+                        editor_vault.create_note(&note_path_for_closure, "").await
+                    }) {
                         Ok(_) => {
-                            pub_sub.publish(GlobalEvent::NewNoteCreated(note_path));
+                            pub_sub.publish(GlobalEvent::NewNoteCreated(note_path.clone()));
                             ContentType::Note
                         }
                         Err(e) => {
@@ -214,9 +234,12 @@ pub fn MainView() -> Element {
                         }
                         ActionShortcuts::NewJournal => {
                             debug!("New Journal Entry");
-                            if let Ok(journal_entry) = vault.journal_entry() {
-                                app_state.write().set_path(&journal_entry.0.path, true);
-                            }
+                            let vault = vault.clone();
+                            spawn(async move {
+                                if let Ok(journal_entry) = vault.journal_entry().await {
+                                    app_state.write().set_path(&journal_entry.0.path, true);
+                                }
+                            });
                         }
                         _ => {}
                     }

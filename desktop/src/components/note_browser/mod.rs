@@ -357,7 +357,7 @@ struct BrowseFuncions {
 }
 
 impl SelectorFunctions<String> for BrowseFuncions {
-    fn init(&self) -> Vec<NoteBrowseEntry> {
+    async fn init(&self) -> Vec<NoteBrowseEntry> {
         info!("Load all entries");
         let mut entries = vec![];
         let (search_options, rx) = VaultBrowseOptionsBuilder::new(&self.browsing_directory.read())
@@ -367,6 +367,7 @@ impl SelectorFunctions<String> for BrowseFuncions {
         let browsing_vault = self.vault.clone();
         browsing_vault
             .browse_vault(search_options)
+            .await
             .expect("Error fetching Entries");
 
         while let Ok(entry) = rx.recv() {
@@ -400,7 +401,7 @@ impl SelectorFunctions<String> for BrowseFuncions {
         entries
     }
 
-    fn filter(
+    async fn filter(
         &self,
         filter_text: String,
         initial_items: &[NoteBrowseEntry],
