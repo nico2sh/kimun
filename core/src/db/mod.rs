@@ -3,10 +3,11 @@ mod search_terms;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use log::{debug, error};
-use rusqlite::{config::DbConfig, params, Connection, Transaction};
-use rusqlite::{params_from_iter, OpenFlags, OptionalExtension};
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::{Row, Sqlite, Transaction};
 use search_terms::SearchTerms;
 
 use crate::nfs::PATH_SEPARATOR;
@@ -19,9 +20,10 @@ use super::{nfs::NoteEntryData, VaultPath};
 const VERSION: &str = "0.4";
 const DB_FILE: &str = "kimun.sqlite";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(super) struct VaultDB {
     workspace_path: PathBuf,
+    pool: SqlitePool,
 }
 
 pub enum DBStatus {
@@ -32,143 +34,133 @@ pub enum DBStatus {
 }
 
 impl VaultDB {
-    pub(super) fn new<P: AsRef<Path>>(workspace_path: P) -> Self {
-        Self {
-            workspace_path: workspace_path.as_ref().to_owned(),
-        }
+    pub(super) async fn new<P: AsRef<Path>>(workspace_path: P) -> Result<Self, DBError> {
+        let workspace_path = workspace_path.as_ref().to_owned();
+        let db_path = workspace_path.join(DB_FILE);
+        let connection_string = format!("sqlite:{}?mode=rwc", db_path.display());
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(Duration::from_secs(30))
+            .connect(&connection_string)
+            .await?;
+
+        Ok(Self {
+            workspace_path,
+            pool,
+        })
     }
 
-    /// Executes a function with a connection, the connection is closed right
-    /// after the funciton closes
-    pub fn call<F, R>(&self, function: F) -> Result<R, DBError>
-    where
-        F: FnOnce(&mut rusqlite::Connection) -> Result<R, DBError> + 'static + Send,
-    {
-        let mut conn = ConnectionBuilder::build(&self.workspace_path)?;
-
-        let res = function(&mut conn);
-        conn.close().map_err(|(_conn, e)| e)?;
-
-        res
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     pub fn get_db_path(&self) -> PathBuf {
         self.workspace_path.join(DB_FILE)
     }
 
-    pub fn check_db(&self) -> Result<DBStatus, DBError> {
+    pub async fn check_db(&self) -> Result<DBStatus, DBError> {
         debug!("Checking the DB");
-        let db_path = self.get_db_path();
-        let conn_res = Connection::open_with_flags(
-            db_path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
-        );
-        match conn_res {
-            Ok(mut conn) => {
-                debug!("Connected to the DB, checking schema");
-                let ver = self.current_schema_version(&mut conn)?.unwrap_or_default();
-                debug!("DB Version: {}, current DB Version: {}", ver, VERSION);
-                let status = if ver == VERSION {
+
+        let version: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM appData WHERE name = 'version'"
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .or_else(|e| {
+            // If the table doesn't exist, return FileNotFound
+            if e.to_string().contains("no such table") {
+                return Ok(None);
+            }
+            Err(e)
+        })?;
+
+        match version {
+            Some(v) => {
+                debug!("DB Version: {}, current DB Version: {}", v, VERSION);
+                if v == VERSION {
                     debug!("DB up to date");
-                    DBStatus::Ready
+                    Ok(DBStatus::Ready)
                 } else {
                     debug!("DB outdated");
-                    DBStatus::Outdated
-                };
-                conn.close().map_err(|(_conn, e)| e)?;
-                Ok(status)
+                    Ok(DBStatus::Outdated)
+                }
             }
+            None => {
+                debug!("DB not valid or not found");
+                Ok(DBStatus::NotValid)
+            }
+        }
+    }
+
+    pub async fn close(&self) -> Result<(), DBError> {
+        self.pool.close().await;
+        Ok(())
+    }
+}
+
+/// Deletes all tables and recreates them
+pub async fn init_db(pool: &SqlitePool) -> Result<(), DBError> {
+    debug!("Deleting DB");
+    delete_db(pool).await?;
+    debug!("Creating Tables");
+    create_tables(pool).await
+}
+
+async fn delete_db(pool: &SqlitePool) -> Result<(), DBError> {
+    let rows = sqlx::query("SELECT name FROM sqlite_schema WHERE type = 'table'")
+        .fetch_all(pool)
+        .await?;
+
+    let mut tables = vec![];
+    for row in rows {
+        let table_name: String = row.try_get("name")?;
+        tables.push(table_name);
+    }
+
+    for table in tables {
+        // Can't use params for tables or columns, so we use format!
+        let drop_query = format!("DROP TABLE '{}'", table);
+        match sqlx::query(&drop_query).execute(pool).await {
+            Ok(_) => {},
             Err(e) => {
-                if let Some(error_code) = e.sqlite_error_code() {
-                    match error_code {
-                        rusqlite::ErrorCode::CannotOpen => Ok(DBStatus::FileNotFound),
-                        rusqlite::ErrorCode::NotADatabase => Ok(DBStatus::NotValid),
-                        _ => Err(e)?,
-                    }
+                if table.contains("_") {
+                    // Some virtual tables are automatically deleted
+                    debug!("Error for table {}: {}", table, e);
                 } else {
-                    Err(e)?
+                    return Err(DBError::DBError(e));
                 }
             }
         }
     }
 
-    fn current_schema_version(&self, conn: &mut Connection) -> Result<Option<String>, DBError> {
-        let mut stmt = conn.prepare("SELECT value FROM appData WHERE name = 'version'")?;
-        let ver = stmt
-            .query_row([], |row| {
-                let ver: String = row.get(0)?;
-                Ok(ver)
-            })
-            .optional()?;
-
-        Ok(ver)
-    }
-}
-
-/// Deletes all tables and recreates them
-pub fn init_db(connection: &mut Connection) -> Result<(), DBError> {
-    debug!("Deleting DB");
-    delete_db(connection)?;
-    debug!("Creating Tables");
-    create_tables(connection)
-}
-
-fn _close_connection(connection: Connection) -> Result<(), DBError> {
-    // debug!("Closing Database");
-    Ok(connection.close().map_err(|(_conn, error)| error)?)
-}
-
-fn delete_db(connection: &mut Connection) -> Result<(), DBError> {
-    let mut stmt = connection.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'")?;
-    let mut table_rows = stmt.query([])?;
-    let mut tables = vec![];
-
-    while let Some(row) = table_rows.next()? {
-        let table_name: String = row.get(0)?;
-
-        tables.push(table_name);
-    }
-
-    for table in tables {
-        // Can't use params for tables or columns
-        // so we use format!
-        connection
-            .execute(&format!("DROP TABLE '{}'", table), [])
-            .or_else(|e| {
-                if table.contains("_") {
-                    // Some virtual tables ar automatically deleted
-                    debug!("Error for table {}: {}", table, e);
-                    Ok(0)
-                } else {
-                    Err(DBError::DBError(e))
-                }
-            })?;
-    }
-
-    connection.execute("VACUUM", [])?;
+    sqlx::query("VACUUM").execute(pool).await?;
     Ok(())
 }
 
-fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
-    let tx = connection.transaction()?;
+async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
+    let mut tx = pool.begin().await?;
 
-    tx.execute(
+    sqlx::query(
         "CREATE TABLE appData (
             name TEXT PRIMARY KEY,
             value TEXT
-        )",
-        (), // empty list of parameters.
-    )?;
-    tx.execute(
-        "INSERT INTO appData (name, value) VALUES (?1, ?2)",
-        ["version", VERSION],
-    )?;
+        )"
+    )
+    .execute(&mut *tx)
+    .await?;
 
-    // Storing hash as a string, as SQlite doesn't like
+    sqlx::query("INSERT INTO appData (name, value) VALUES (?, ?)")
+        .bind("version")
+        .bind(VERSION)
+        .execute(&mut *tx)
+        .await?;
+
+    // Storing hash as a string, as SQLite doesn't like
     // unsigned 64bit integers, alternatively we could
-    // have used signed numbers by substracting the half
+    // have used signed numbers by subtracting the half
     // of the max value
-    tx.execute(
+    sqlx::query(
         "CREATE TABLE notes (
             path TEXT PRIMARY KEY,
             title TEXT,
@@ -177,32 +169,38 @@ fn create_tables(connection: &mut Connection) -> Result<(), DBError> {
             modified INTEGER,
             basePath TEXT,
             noteName TEXT
-        )",
-        (), // empty list of parameters.
-    )?;
-    tx.execute(
+        )"
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE links (
-                source TEXT,
-                destination TEXT
-            )",
-        (), // empty list of parameters.
-    )?;
-    tx.execute(
+            source TEXT,
+            destination TEXT
+        )"
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
         "CREATE INDEX backlinks
-	    		ON links(destination)
-		",
-        (),
-    )?;
-    tx.execute(
+            ON links(destination)"
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
         "CREATE VIRTUAL TABLE notesContent USING fts4(
             path,
             breadcrumb,
             text
-        )",
-        (), // empty list of parameters.
-    )?;
+        )"
+    )
+    .execute(&mut *tx)
+    .await?;
 
-    tx.commit()?;
+    tx.commit().await?;
 
     Ok(())
 }
@@ -285,35 +283,38 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
     (sql, params)
 }
 
-pub fn get_all_notes(
-    connection: &mut Connection,
+pub async fn get_all_notes(
+    pool: &SqlitePool,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let query = "SELECT DISTINCT path, title, size, modified, hash, noteName FROM notes";
-    let mut stmt = connection.prepare(&query)?;
 
-    let res = stmt
-        .query_map([], |row| {
-            let path: String = row.get(0)?;
-            let title = row.get(1)?;
-            let size = row.get(2)?;
-            let modified = row.get(3)?;
-            let hash: String = row.get(4)?;
-            let note_path = VaultPath::new(&path);
-            let data = NoteEntryData {
-                path: note_path.clone(),
-                size,
-                modified_secs: modified,
-            };
-            let det = NoteContentData::new(title, hash.parse().unwrap());
-            Ok((data, det))
-        })?
-        .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
-    Ok(res)
+    let rows = sqlx::query(query)
+        .fetch_all(pool)
+        .await?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let path: String = row.try_get("path")?;
+        let title: String = row.try_get("title")?;
+        let size: i64 = row.try_get("size")?;
+        let modified: i64 = row.try_get("modified")?;
+        let hash: String = row.try_get("hash")?;
+
+        let note_path = VaultPath::new(&path);
+        let data = NoteEntryData {
+            path: note_path.clone(),
+            size: size as u64,
+            modified_secs: modified as u64,
+        };
+        let det = NoteContentData::new(title, hash.parse().unwrap());
+        result.push((data, det));
+    }
+
+    Ok(result)
 }
 
-pub fn search_terms<S: AsRef<str>>(
-    connection: &mut Connection,
+pub async fn search_terms<S: AsRef<str>>(
+    pool: &SqlitePool,
     search_query: S,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let (query, params) = build_search_sql_query(search_query);
@@ -325,150 +326,176 @@ pub fn search_terms<S: AsRef<str>>(
 
     debug!("QUERY: {}", query);
 
-    let params = params_from_iter(params);
-    let mut stmt = connection.prepare(&query)?;
-    let res = stmt
-        .query_map(params, |row| {
-            let path: String = row.get(0)?;
-            let title = row.get(1)?;
-            let size = row.get(2)?;
-            let modified = row.get(3)?;
-            let hash: String = row.get(4)?;
-            let note_path = VaultPath::new(&path);
-            let data = NoteEntryData {
-                path: note_path.clone(),
-                size,
-                modified_secs: modified,
-            };
-            let det = NoteContentData::new(title, hash.parse().unwrap());
-            Ok((data, det))
-        })?
-        .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
-    Ok(res)
+    let mut sql_query = sqlx::query(&query);
+    for param in params {
+        sql_query = sql_query.bind(param);
+    }
+
+    let rows = sql_query.fetch_all(pool).await?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let path: String = row.try_get("path")?;
+        let title: String = row.try_get("title")?;
+        let size: i64 = row.try_get("size")?;
+        let modified: i64 = row.try_get("modified")?;
+        let hash: String = row.try_get("hash")?;
+
+        let note_path = VaultPath::new(&path);
+        let data = NoteEntryData {
+            path: note_path.clone(),
+            size: size as u64,
+            modified_secs: modified as u64,
+        };
+        let det = NoteContentData::new(title, hash.parse().unwrap());
+        result.push((data, det));
+    }
+
+    Ok(result)
 }
 
-fn note_exists(connection: &mut Connection, path: &VaultPath) -> Result<bool, DBError> {
-    let sql = "SELECT count(*) FROM notes where path = ?1";
-    let mut stmt = connection.prepare(sql)?;
-    let res = stmt.query_row([path.to_string()], |row| row.get(0))?;
-    match res {
+async fn note_exists(pool: &SqlitePool, path: &VaultPath) -> Result<bool, DBError> {
+    let sql = "SELECT count(*) FROM notes where path = ?";
+    let count: i64 = sqlx::query_scalar(sql)
+        .bind(path.to_string())
+        .fetch_one(pool)
+        .await?;
+
+    match count {
         0 => Ok(false),
         1 => Ok(true),
         _ => Err(DBError::Other(format!(
             "Unexpected error, the DB contains more than one ({}) entry for path {}",
-            res, path
+            count, path
         ))),
     }
 }
 
-pub fn search_note_by_name<S: AsRef<str>>(
-    connection: &mut Connection,
+pub async fn search_note_by_name<S: AsRef<str>>(
+    pool: &SqlitePool,
     name: S,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let name = name.as_ref().to_lowercase();
-    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where noteName = ?1";
-    let mut stmt = connection.prepare(sql)?;
-    let res = stmt
-        .query_map([name], |row| {
-            let path: String = row.get(0)?;
-            let title = row.get(1)?;
-            let size = row.get(2)?;
-            let modified = row.get(3)?;
-            let hash: String = row.get(4)?;
-            let note_path = VaultPath::new(&path);
-            let data = NoteEntryData {
-                path: note_path.clone(),
-                size,
-                modified_secs: modified,
-            };
-            let det = NoteContentData::new(title, hash.parse().unwrap());
-            Ok((data, det))
-        })?
-        .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
-    Ok(res)
+    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where noteName = ?";
+
+    let rows = sqlx::query(sql)
+        .bind(&name)
+        .fetch_all(pool)
+        .await?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let path: String = row.try_get("path")?;
+        let title: String = row.try_get("title")?;
+        let size: i64 = row.try_get("size")?;
+        let modified: i64 = row.try_get("modified")?;
+        let hash: String = row.try_get("hash")?;
+
+        let note_path = VaultPath::new(&path);
+        let data = NoteEntryData {
+            path: note_path.clone(),
+            size: size as u64,
+            modified_secs: modified as u64,
+        };
+        let det = NoteContentData::new(title, hash.parse().unwrap());
+        result.push((data, det));
+    }
+
+    Ok(result)
 }
 
-pub fn search_note_by_path(
-    connection: &mut Connection,
+pub async fn search_note_by_path(
+    pool: &SqlitePool,
     path: &VaultPath,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where path = ?1";
-    let mut stmt = connection.prepare(sql)?;
+    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where path = ?";
     let path_string = path
         .to_string()
         .strip_prefix(PATH_SEPARATOR)
         .map(|s| s.to_string())
         .unwrap_or_else(|| path.to_string());
-    let res = stmt
-        .query_map([path_string], |row| {
-            let path: String = row.get(0)?;
-            let title = row.get(1)?;
-            let size = row.get(2)?;
-            let modified = row.get(3)?;
-            let hash: String = row.get(4)?;
-            let note_path = VaultPath::new(&path);
-            let data = NoteEntryData {
-                path: note_path.clone(),
-                size,
-                modified_secs: modified,
-            };
-            let det = NoteContentData::new(title, hash.parse().unwrap());
-            Ok((data, det))
-        })?
-        .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
+
+    let rows = sqlx::query(sql)
+        .bind(&path_string)
+        .fetch_all(pool)
+        .await?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let path: String = row.try_get("path")?;
+        let title: String = row.try_get("title")?;
+        let size: i64 = row.try_get("size")?;
+        let modified: i64 = row.try_get("modified")?;
+        let hash: String = row.try_get("hash")?;
+
+        let note_path = VaultPath::new(&path);
+        let data = NoteEntryData {
+            path: note_path.clone(),
+            size: size as u64,
+            modified_secs: modified as u64,
+        };
+        let det = NoteContentData::new(title, hash.parse().unwrap());
+        result.push((data, det));
+    }
+
     // Should always return one or zero
-    Ok(res)
+    Ok(result)
 }
 
-pub fn get_notes(
-    connection: &mut Connection,
+pub async fn get_notes(
+    pool: &SqlitePool,
     path: &VaultPath,
     recursive: bool,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let sql = if recursive {
-        "SELECT path, title, size, modified, hash, noteName FROM notes where basePath LIKE (?1 || '%')"
+        "SELECT path, title, size, modified, hash, noteName FROM notes where basePath LIKE (? || '%')"
     } else {
-        "SELECT path, title, size, modified, hash, noteName FROM notes where basePath = ?1"
+        "SELECT path, title, size, modified, hash, noteName FROM notes where basePath = ?"
     };
-    let mut stmt = connection.prepare(sql)?;
-    let res = stmt
-        .query_map([path.to_string()], |row| {
-            let path: String = row.get(0)?;
-            let title = row.get(1)?;
-            let size = row.get(2)?;
-            let modified = row.get(3)?;
-            let hash: String = row.get(4)?;
-            let note_path = VaultPath::new(&path);
-            let data = NoteEntryData {
-                path: note_path.clone(),
-                size,
-                modified_secs: modified,
-            };
-            let det = NoteContentData::new(title, hash.parse().unwrap());
-            Ok((data, det))
-        })?
-        .map(|el| el.map_err(DBError::DBError))
-        .collect::<Result<Vec<(NoteEntryData, NoteContentData)>, DBError>>()?;
-    Ok(res)
+
+    let rows = sqlx::query(sql)
+        .bind(path.to_string())
+        .fetch_all(pool)
+        .await?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let path: String = row.try_get("path")?;
+        let title: String = row.try_get("title")?;
+        let size: i64 = row.try_get("size")?;
+        let modified: i64 = row.try_get("modified")?;
+        let hash: String = row.try_get("hash")?;
+
+        let note_path = VaultPath::new(&path);
+        let data = NoteEntryData {
+            path: note_path.clone(),
+            size: size as u64,
+            modified_secs: modified as u64,
+        };
+        let det = NoteContentData::new(title, hash.parse().unwrap());
+        result.push((data, det));
+    }
+
+    Ok(result)
 }
 
-pub fn get_notes_sections(
-    connection: &mut Connection,
+pub async fn get_notes_sections(
+    pool: &SqlitePool,
     path: &VaultPath,
     _recursive: bool,
 ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, DBError> {
     let mut result = HashMap::new();
-    let sql = "SELECT path, breadcrumb, text FROM notesContent where path LIKE(?1 || '%')";
-    let mut stmt = connection.prepare(sql)?;
-    let mut res = stmt.query([path.to_string()])?;
+    let sql = "SELECT path, breadcrumb, text FROM notesContent where path LIKE(? || '%')";
 
-    while let Some(row) = res.next()? {
-        let path: String = row.get(0)?;
-        let breadcrumb: String = row.get(1)?;
-        let text: String = row.get(2)?;
+    let rows = sqlx::query(sql)
+        .bind(path.to_string())
+        .fetch_all(pool)
+        .await?;
+
+    for row in rows {
+        let path: String = row.try_get("path")?;
+        let breadcrumb: String = row.try_get("breadcrumb")?;
+        let text: String = row.try_get("text")?;
 
         let path = VaultPath::new(path);
         let breadcrumb = breadcrumb
@@ -484,53 +511,62 @@ pub fn get_notes_sections(
     Ok(result)
 }
 
-pub fn insert_notes(tx: &Transaction, notes: &Vec<(NoteEntryData, String)>) -> Result<(), DBError> {
+pub async fn insert_notes(
+    tx: &mut Transaction<'_, Sqlite>,
+    notes: &Vec<(NoteEntryData, String)>,
+) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Inserting {} notes", notes.len());
         for (entry_data, text) in notes {
-            insert_note(tx, entry_data, text)?;
+            insert_note(tx, entry_data, text).await?;
         }
     }
     Ok(())
 }
 
-pub fn update_notes(tx: &Transaction, notes: &Vec<(NoteEntryData, String)>) -> Result<(), DBError> {
+pub async fn update_notes(
+    tx: &mut Transaction<'_, Sqlite>,
+    notes: &Vec<(NoteEntryData, String)>,
+) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Updating {} notes", notes.len());
         for (entry_data, text) in notes {
-            update_note(tx, entry_data, text)?;
+            update_note(tx, entry_data, text).await?;
         }
     }
     Ok(())
 }
 
-pub fn delete_notes(tx: &Transaction, paths: &Vec<VaultPath>) -> Result<(), DBError> {
+pub async fn delete_notes(
+    tx: &mut Transaction<'_, Sqlite>,
+    paths: &Vec<VaultPath>,
+) -> Result<(), DBError> {
     if !paths.is_empty() {
         for path in paths {
-            delete_note(tx, path)?;
+            delete_note(tx, path).await?;
         }
     }
     Ok(())
 }
 
-pub fn save_note<S: AsRef<str>>(
-    connection: &mut Connection,
+pub async fn save_note<S: AsRef<str>>(
+    pool: &SqlitePool,
     entry_data: &NoteEntryData,
     text: S,
 ) -> Result<(), DBError> {
-    let exists = note_exists(connection, &entry_data.path)?;
-    let tx = connection.transaction()?;
+    let exists = note_exists(pool, &entry_data.path).await?;
+    let mut tx = pool.begin().await?;
     if exists {
-        update_note(&tx, entry_data, text)
+        update_note(&mut tx, entry_data, text).await
     } else {
-        insert_note(&tx, entry_data, text)
+        insert_note(&mut tx, entry_data, text).await
     }?;
-    tx.commit()?;
+    tx.commit().await?;
     Ok(())
 }
 
-fn insert_note<S: AsRef<str>>(
-    tx: &Transaction,
+async fn insert_note<S: AsRef<str>>(
+    tx: &mut Transaction<'_, Sqlite>,
     entry_data: &NoteEntryData,
     text: S,
 ) -> Result<(), DBError> {
@@ -538,35 +574,50 @@ fn insert_note<S: AsRef<str>>(
     let note_details = NoteDetails::new(&entry_data.path, text);
     let path_string = entry_data.path.to_string();
     let data = note_details.get_content_data();
-    if let Err(e) = tx.execute(
-        "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![path_string, data.title, entry_data.size, entry_data.modified_secs, data.hash.to_string(), parent_path.to_string(), name],
-    ){
+
+    if let Err(e) = sqlx::query(
+        "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(&path_string)
+    .bind(&data.title)
+    .bind(entry_data.size as i64)
+    .bind(entry_data.modified_secs as i64)
+    .bind(data.hash.to_string())
+    .bind(parent_path.to_string())
+    .bind(&name)
+    .execute(&mut **tx)
+    .await
+    {
         error!("Error inserting note: {}\nDetails: {}", e, note_details);
     }
+
     for chunk in &note_details.get_content_chunks() {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
-        tx.execute(
-            "INSERT INTO notesContent (path, breadcrumb, text) VALUES (?1, ?2, ?3)",
-            params![path_string, breadcrumb, chunk_text],
-        )?;
+        sqlx::query("INSERT INTO notesContent (path, breadcrumb, text) VALUES (?, ?, ?)")
+            .bind(&path_string)
+            .bind(&breadcrumb)
+            .bind(chunk_text)
+            .execute(&mut **tx)
+            .await?;
     }
+
     let markdownlinks = note_details.get_markdown_and_links();
     for link in &markdownlinks.links {
         if let LinkType::Note(path) = &link.ltype {
-            tx.execute(
-                "INSERT INTO links (source, destination) VALUES (?1, ?2)",
-                params![path_string, path.to_string()],
-            )?;
+            sqlx::query("INSERT INTO links (source, destination) VALUES (?, ?)")
+                .bind(&path_string)
+                .bind(path.to_string())
+                .execute(&mut **tx)
+                .await?;
         }
     }
 
     Ok(())
 }
 
-fn update_note<S: AsRef<str>>(
-    tx: &Transaction,
+async fn update_note<S: AsRef<str>>(
+    tx: &mut Transaction<'_, Sqlite>,
     entry_data: &NoteEntryData,
     text: S,
 ) -> Result<(), DBError> {
@@ -575,93 +626,120 @@ fn update_note<S: AsRef<str>>(
     let title = data.title.clone();
     let hash = data.hash.to_string();
     let path_string = entry_data.path.to_string();
-    tx.execute(
-        "UPDATE notes SET title = ?2, size = ?3, modified = ?4, hash = ?5 WHERE path = ?1",
-        params![
-            path_string,
-            title,
-            entry_data.size,
-            entry_data.modified_secs,
-            hash
-        ],
-    )?;
-    tx.execute(
-        "DELETE FROM notesContent WHERE path = ?1",
-        params![path_string],
-    )?;
+
+    sqlx::query("UPDATE notes SET title = ?, size = ?, modified = ?, hash = ? WHERE path = ?")
+        .bind(&title)
+        .bind(entry_data.size as i64)
+        .bind(entry_data.modified_secs as i64)
+        .bind(&hash)
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("DELETE FROM notesContent WHERE path = ?")
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
     for chunk in &note_details.get_content_chunks() {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
-        tx.execute(
-            "INSERT INTO notesContent (path, breadcrumb, text) VALUES (?1, ?2, ?3)",
-            params![path_string, breadcrumb, chunk_text],
-        )?;
+        sqlx::query("INSERT INTO notesContent (path, breadcrumb, text) VALUES (?, ?, ?)")
+            .bind(&path_string)
+            .bind(&breadcrumb)
+            .bind(chunk_text)
+            .execute(&mut **tx)
+            .await?;
     }
 
-    tx.execute("DELETE FROM links WHERE source = ?1", params![path_string])?;
+    sqlx::query("DELETE FROM links WHERE source = ?")
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
     let markdownlinks = note_details.get_markdown_and_links();
     for link in &markdownlinks.links {
         if let LinkType::Note(path) = &link.ltype {
-            tx.execute(
-                "INSERT INTO links (source, destination) VALUES (?1, ?2)",
-                params![path_string, path.to_string()],
-            )?;
+            sqlx::query("INSERT INTO links (source, destination) VALUES (?, ?)")
+                .bind(&path_string)
+                .bind(path.to_string())
+                .execute(&mut **tx)
+                .await?;
         }
     }
-    Ok(())
-}
-
-fn delete_note(tx: &Transaction, path: &VaultPath) -> Result<(), DBError> {
-    tx.execute(
-        "DELETE FROM notes WHERE path = ?1",
-        params![path.to_string()],
-    )?;
-    tx.execute(
-        "DELETE FROM notesContent WHERE path = ?1",
-        params![path.to_string()],
-    )?;
-    tx.execute(
-        "DELETE FROM links WHERE source = ?1",
-        params![path.to_string()],
-    )?;
 
     Ok(())
 }
 
-pub fn rename_note(tx: &Transaction, from: &VaultPath, to: &VaultPath) -> Result<(), DBError> {
+async fn delete_note(tx: &mut Transaction<'_, Sqlite>, path: &VaultPath) -> Result<(), DBError> {
+    let path_string = path.to_string();
+
+    sqlx::query("DELETE FROM notes WHERE path = ?")
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("DELETE FROM notesContent WHERE path = ?")
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("DELETE FROM links WHERE source = ?")
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn rename_note(
+    tx: &mut Transaction<'_, Sqlite>,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<(), DBError> {
     let old_note_name = from.get_name();
     let (new_base_path, new_note_name) = to.get_parent_path();
 
-    tx.execute(
-        "UPDATE notes SET path = ?1, basePath = ?2, noteName = ?3 WHERE path = ?4",
-        params![
-            to.to_string(),
-            new_base_path.to_string(),
-            new_note_name,
-            from.to_string()
-        ],
-    )?;
-    tx.execute(
-        "UPDATE notesContent SET path = ?1 WHERE path = ?2",
-        params![to.to_string(), from.to_string()],
-    )?;
-    tx.execute(
-        "UPDATE links SET source = ?1 WHERE source = ?2",
-        params![to.to_string(), from.to_string()],
-    )?;
-    tx.execute(
-        "UPDATE links SET destination = ?1 WHERE destination = ?2",
-        params![to.to_string(), from.to_string()],
-    )?;
-    tx.execute(
-        "UPDATE links SET destination = ?1 WHERE destination = ?2",
-        params![old_note_name, new_note_name],
-    )?;
+    sqlx::query("UPDATE notes SET path = ?, basePath = ?, noteName = ? WHERE path = ?")
+        .bind(to.to_string())
+        .bind(new_base_path.to_string())
+        .bind(&new_note_name)
+        .bind(from.to_string())
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("UPDATE notesContent SET path = ? WHERE path = ?")
+        .bind(to.to_string())
+        .bind(from.to_string())
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("UPDATE links SET source = ? WHERE source = ?")
+        .bind(to.to_string())
+        .bind(from.to_string())
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("UPDATE links SET destination = ? WHERE destination = ?")
+        .bind(to.to_string())
+        .bind(from.to_string())
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("UPDATE links SET destination = ? WHERE destination = ?")
+        .bind(&old_note_name)
+        .bind(&new_note_name)
+        .execute(&mut **tx)
+        .await?;
 
     Ok(())
 }
 
-pub fn rename_directory(tx: &Transaction, from: &VaultPath, to: &VaultPath) -> Result<(), DBError> {
+pub async fn rename_directory(
+    tx: &mut Transaction<'_, Sqlite>,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<(), DBError> {
     let from = {
         let s = from.to_string();
         if s.ends_with('/') {
@@ -678,58 +756,77 @@ pub fn rename_directory(tx: &Transaction, from: &VaultPath, to: &VaultPath) -> R
             s + "/"
         }
     };
-    let notes_sql = "UPDATE notes SET path = ?2 || SUBSTR(path, LENGTH(?1) + 1), basePath = ?2 || SUBSTR(basePath, LENGTH(?1) + 1) WHERE basePath LIKE (?1 || '%')";
-    tx.execute(notes_sql, params![from, to])?;
 
-    tx.execute(
-        "UPDATE notesContent SET path = ?2 || SUBSTR(path, LENGTH(?1) + 1) WHERE path LIKE (?1 || '%')",
-        params![from, to],
-    )?;
-    tx.execute(
-        "UPDATE links SET source = ?2 || SUBSTR(source, LENGTH(?1) + 1) WHERE source LIKE (?1 || '%')",
-        params![from, to],
-    )?;
-    tx.execute(
-        "UPDATE links SET destination = ?2 || SUBSTR(destination, LENGTH(?1) + 1) WHERE destination LIKE (?1 || '%')",
-        params![from, to],
-    )?;
+    let notes_sql = "UPDATE notes SET path = ? || SUBSTR(path, LENGTH(?) + 1), basePath = ? || SUBSTR(basePath, LENGTH(?) + 1) WHERE basePath LIKE (? || '%')";
+    sqlx::query(notes_sql)
+        .bind(&to)
+        .bind(&from)
+        .bind(&to)
+        .bind(&from)
+        .bind(&from)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("UPDATE notesContent SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%')")
+        .bind(&to)
+        .bind(&from)
+        .bind(&from)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("UPDATE links SET source = ? || SUBSTR(source, LENGTH(?) + 1) WHERE source LIKE (? || '%')")
+        .bind(&to)
+        .bind(&from)
+        .bind(&from)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("UPDATE links SET destination = ? || SUBSTR(destination, LENGTH(?) + 1) WHERE destination LIKE (? || '%')")
+        .bind(&to)
+        .bind(&from)
+        .bind(&from)
+        .execute(&mut **tx)
+        .await?;
 
     Ok(())
 }
 
-pub fn delete_directories(tx: &Transaction, directories: &Vec<VaultPath>) -> Result<(), DBError> {
+pub async fn delete_directories(
+    tx: &mut Transaction<'_, Sqlite>,
+    directories: &Vec<VaultPath>,
+) -> Result<(), DBError> {
     if !directories.is_empty() {
         for directory in directories {
-            delete_directory(tx, directory)?;
+            delete_directory(tx, directory).await?;
         }
     }
     Ok(())
 }
 
-fn delete_directory(tx: &Transaction, directory_path: &VaultPath) -> Result<(), DBError> {
+async fn delete_directory(
+    tx: &mut Transaction<'_, Sqlite>,
+    directory_path: &VaultPath,
+) -> Result<(), DBError> {
     let path_string = directory_path.to_string();
-    let sql1 = "DELETE FROM notes WHERE path LIKE (?1 || '%')";
-    let sql2 = "DELETE FROM notesContent WHERE path LIKE (?1 || '%')";
-    let sql3 = "DELETE FROM links WHERE source LIKE (?1 || '%')";
 
-    tx.execute(sql1, params![path_string])?;
-    tx.execute(sql2, params![path_string])?;
-    tx.execute(sql3, params![path_string])?;
+    sqlx::query("DELETE FROM notes WHERE path LIKE (? || '%')")
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("DELETE FROM notesContent WHERE path LIKE (? || '%')")
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("DELETE FROM links WHERE source LIKE (? || '%')")
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
 
     Ok(())
 }
 
-pub struct ConnectionBuilder {}
-
-impl ConnectionBuilder {
-    pub fn build<P: AsRef<Path>>(workspace_path: P) -> Result<Connection, DBError> {
-        // debug!("Opening Database");
-        let db_path = workspace_path.as_ref().join(DB_FILE);
-        let connection = Connection::open(&db_path)?;
-        let _c = connection.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FTS3_TOKENIZER, true)?;
-        Ok(connection)
-    }
-}
 
 #[cfg(test)]
 mod tests {

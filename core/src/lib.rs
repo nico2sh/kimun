@@ -45,30 +45,18 @@ impl IndexReport {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct NoteVault {
     pub workspace_path: PathBuf,
     journal_path: VaultPath,
     vault_db: VaultDB,
 }
 
-impl Default for NoteVault {
-    fn default() -> Self {
-        let workspace_path = PathBuf::default();
-        let vault_db = VaultDB::new(workspace_path.clone());
-        Self {
-            workspace_path,
-            journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
-            vault_db,
-        }
-    }
-}
-
 impl NoteVault {
     /// Creates a new instance of the Note Vault.
     /// Make sure you call `NoteVault::init_and_validate(&self)` to initialize the DB index if
     /// needed
-    pub fn new<P: AsRef<Path>>(workspace_path: P) -> Result<Self, VaultError> {
+    pub async fn new<P: AsRef<Path>>(workspace_path: P) -> Result<Self, VaultError> {
         debug!("Creating new vault Instance");
         let workspace_path = workspace_path.as_ref().to_path_buf();
         if !workspace_path.exists() {
@@ -83,7 +71,7 @@ impl NoteVault {
             }))?;
         };
 
-        let vault_db = VaultDB::new(&workspace_path);
+        let vault_db = VaultDB::new(&workspace_path).await?;
         let note_vault = Self {
             workspace_path,
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
@@ -101,33 +89,33 @@ impl NoteVault {
     /// Then does a quick scan of the workspace directory to update the index if there are new or
     /// missing notes.
     /// This can be slow on large vaults.
-    pub fn init_and_validate(&self) -> Result<IndexReport, VaultError> {
+    pub async fn init_and_validate(&self) -> Result<IndexReport, VaultError> {
         debug!("Initializing DB and validating it");
-        let db_result = self.vault_db.check_db();
+        let db_result = self.vault_db.check_db().await;
         match db_result {
             Ok(check_res) => {
                 match check_res {
                     db::DBStatus::Ready => {
                         // We only check if there are new notes
-                        self.index_notes(NotesValidation::None)
+                        self.index_notes(NotesValidation::None).await
                     }
-                    db::DBStatus::Outdated => self.recreate_index(),
-                    db::DBStatus::NotValid => self.force_rebuild(),
+                    db::DBStatus::Outdated => self.recreate_index().await,
+                    db::DBStatus::NotValid => self.force_rebuild().await,
                     db::DBStatus::FileNotFound => {
                         // No need to validate, no data there
-                        self.recreate_index()
+                        self.recreate_index().await
                     }
                 }
             }
             Err(e) => {
                 debug!("Error validating the DB, rebuilding it: {}", e);
-                self.force_rebuild()
+                self.force_rebuild().await
             }
         }
     }
 
     /// Deletes the db file and recreates the index
-    pub fn force_rebuild(&self) -> Result<IndexReport, VaultError> {
+    pub async fn force_rebuild(&self) -> Result<IndexReport, VaultError> {
         let db_path = self.vault_db.get_db_path();
         let md = std::fs::metadata(&db_path).map_err(FSError::ReadFileError)?;
         // We delete the db file
@@ -136,19 +124,19 @@ impl NoteVault {
         } else {
             std::fs::remove_file(db_path).map_err(FSError::ReadFileError)?;
         }
-        self.recreate_index()
+        self.recreate_index().await
     }
 
     /// Deletes all the cached data from the DB by destroying the tables
     /// and recreates the index
     /// This is similar to a force rebuild but instead of deleting the db file
     /// it only deletes the tables.
-    pub fn recreate_index(&self) -> Result<IndexReport, VaultError> {
+    pub async fn recreate_index(&self) -> Result<IndexReport, VaultError> {
         let index_report = IndexReport::new();
         debug!("Initializing DB from Vault request");
-        self.vault_db.call(db::init_db)?;
+        db::init_db(self.vault_db.pool()).await?;
         debug!("Tables created, creating index");
-        self.int_index_notes(index_report, NotesValidation::Full)
+        self.int_index_notes(index_report, NotesValidation::Full).await
     }
 
     /// Traverses the whole vault directory and verifies the notes to
@@ -160,20 +148,18 @@ impl NoteVault {
     /// NotesValidation::Fast Checks the size of the file to identify if the note has changed and
     /// then update the DB entry.
     /// NotesValidation::None Checks if the note exists or not.
-    pub fn index_notes(&self, validation_mode: NotesValidation) -> Result<IndexReport, VaultError> {
+    pub async fn index_notes(&self, validation_mode: NotesValidation) -> Result<IndexReport, VaultError> {
         let index_report = IndexReport::new();
-        self.int_index_notes(index_report, validation_mode)
+        self.int_index_notes(index_report, validation_mode).await
     }
 
-    fn int_index_notes(
+    async fn int_index_notes(
         &self,
         mut index_report: IndexReport,
         validation_mode: NotesValidation,
     ) -> Result<IndexReport, VaultError> {
         let workspace_path = self.workspace_path.clone();
-        self.vault_db.call(move |conn| {
-            create_index_for(&workspace_path, conn, &VaultPath::root(), validation_mode)
-        })?;
+        create_index_for(&workspace_path, self.vault_db.pool(), &VaultPath::root(), validation_mode).await?;
         index_report.finish();
         debug!("TIME: {}", index_report.duration.as_secs());
         Ok(index_report)
@@ -183,9 +169,9 @@ impl NoteVault {
         VaultEntry::new(&self.workspace_path, path.to_owned()).ok()
     }
 
-    pub fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
+    pub async fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
         let (title, note_path) = self.get_todays_journal();
-        let content = self.load_or_create_note(&note_path, Some(format!("# {}\n\n", title)))?;
+        let content = self.load_or_create_note(&note_path, Some(format!("# {}\n\n", title))).await?;
         let details = NoteDetails::new(&note_path, &content);
         Ok((details, content))
     }
@@ -219,7 +205,7 @@ impl NoteVault {
 
     // create a new one, a text can be specified as the initial text for the
     // note when created
-    pub fn load_or_create_note(
+    pub async fn load_or_create_note(
         &self,
         path: &VaultPath,
         default_text: Option<String>,
@@ -229,7 +215,7 @@ impl NoteVault {
             Err(e) => {
                 if let FSError::VaultPathNotFound { path: _ } = e {
                     let text = default_text.unwrap_or_default();
-                    self.create_note(path, &text)?;
+                    self.create_note(path, &text).await?;
                     Ok(text)
                 } else {
                     Err(e)?
@@ -256,55 +242,38 @@ impl NoteVault {
         Ok(NoteDetails::new(path, text))
     }
 
-    pub fn get_note_chunks(
+    pub async fn get_note_chunks(
         &self,
         path: &VaultPath,
     ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, VaultError> {
-        let path = path.to_owned();
-        let a = self
-            .vault_db
-            .call(move |conn| db::get_notes_sections(conn, &path, false))?;
-
+        let a = db::get_notes_sections(self.vault_db.pool(), path, false).await?;
         Ok(a)
     }
 
     // Search notes using a search syntax
-    pub fn search_notes<S: AsRef<str>>(
+    pub async fn search_notes<S: AsRef<str>>(
         &self,
         search_query: S,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        // let mut connection = ConnectionBuilder::new(&self.workspace_path)
-        //     .build()
-        //     .unwrap();
-        let search_query = search_query.as_ref().to_owned();
-
-        let a = self
-            .vault_db
-            .call(move |conn| db::search_terms(conn, search_query))?;
-
+        let search_query = search_query.as_ref();
+        let a = db::search_terms(self.vault_db.pool(), search_query).await?;
         Ok(a)
     }
 
     // Get all notes
-    pub fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        let a = self.vault_db.call(move |conn| db::get_all_notes(conn))?;
-
+    pub async fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
+        let a = db::get_all_notes(self.vault_db.pool()).await?;
         Ok(a)
     }
     pub fn path_to_pathbuf(&self, path: &VaultPath) -> PathBuf {
         path.to_pathbuf(&self.workspace_path)
     }
 
-    pub fn browse_vault(&self, options: VaultBrowseOptions) -> Result<(), VaultError> {
+    pub async fn browse_vault(&self, options: VaultBrowseOptions) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
 
-        // TODO: See if we can put everything inside the closure
-        let query_path = options.path.clone();
-        let cached_notes = self.vault_db.call(move |conn| {
-            let notes = db::get_notes(conn, &query_path, options.recursive)?;
-            Ok(notes)
-        })?;
+        let cached_notes = db::get_notes(self.vault_db.pool(), &options.path, options.recursive).await?;
 
         let mut builder = NoteListVisitorBuilder::new(
             &self.workspace_path,
@@ -324,14 +293,11 @@ impl NoteVault {
         let notes_to_delete = builder.get_notes_to_delete();
         let notes_to_modify = builder.get_notes_to_modify();
 
-        self.vault_db.call(move |conn| {
-            let tx = conn.transaction()?;
-            db::insert_notes(&tx, &notes_to_add)?;
-            db::delete_notes(&tx, &notes_to_delete)?;
-            db::update_notes(&tx, &notes_to_modify)?;
-            tx.commit()?;
-            Ok(())
-        })?;
+        let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
+        db::insert_notes(&mut tx, &notes_to_add).await?;
+        db::delete_notes(&mut tx, &notes_to_delete).await?;
+        db::update_notes(&mut tx, &notes_to_modify).await?;
+        tx.commit().await.map_err(DBError::from)?;
 
         let time = std::time::SystemTime::now()
             .duration_since(start)
@@ -377,13 +343,13 @@ impl NoteVault {
         Ok(result)
     }
 
-    pub fn create_note<S: AsRef<str>>(
+    pub async fn create_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
         text: S,
     ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
         if self.exists(path).is_none() {
-            self.save_note(path, text)
+            self.save_note(path, text).await
         } else {
             Err(VaultError::NoteExists { path: path.clone() })
         }
@@ -398,7 +364,7 @@ impl NoteVault {
         }
     }
 
-    pub fn save_note<S: AsRef<str>>(
+    pub async fn save_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
         text: S,
@@ -411,15 +377,14 @@ impl NoteVault {
         let text = text.as_ref().to_owned();
 
         // Save to DB
-        self.vault_db
-            .call(move |conn| db::save_note(conn, &entry_data, text))?;
+        db::save_note(self.vault_db.pool(), &entry_data, text).await?;
 
         Ok(result)
     }
 
     /// If the string is a path, it looks for a specific note, if it's just a note name
     /// it looks for that note in any path in the vault, so it may return many results
-    pub fn open_or_search(
+    pub async fn open_or_search(
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
@@ -435,17 +400,14 @@ impl NoteVault {
         if path.is_note_file() {
             debug!("We search by name {}", name);
             // It's a note name, we look for the note name, not the path
-            self.vault_db
-                .call(|conn| db::search_note_by_name(conn, name))
+            db::search_note_by_name(self.vault_db.pool(), name).await
         } else {
             debug!("We search by path {}", path);
-            let path = path.clone();
-            self.vault_db
-                .call(move |conn| db::search_note_by_path(conn, &path))
+            db::search_note_by_path(self.vault_db.pool(), path).await
         }
     }
 
-    pub fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
+    pub async fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         if !path.is_note() {
             return Err(VaultError::FSError(FSError::InvalidPath {
@@ -455,20 +417,16 @@ impl NoteVault {
         }
 
         // We delete in DB first
-        let path_to_delete = path.clone();
-        self.vault_db.call(move |conn| {
-            let tx = conn.transaction()?;
-            db::delete_notes(&tx, &vec![path_to_delete])?;
-            tx.commit()?;
-            Ok(())
-        })?;
+        let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
+        db::delete_notes(&mut tx, &vec![path.clone()]).await?;
+        tx.commit().await.map_err(DBError::from)?;
 
         nfs::delete_note(&self.workspace_path, &path)?;
 
         Ok(())
     }
 
-    pub fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
+    pub async fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         if path.is_note() {
             return Err(VaultError::FSError(FSError::InvalidPath {
@@ -478,20 +436,16 @@ impl NoteVault {
         }
 
         // We delete in DB first
-        let path_to_delete = path.clone();
-        self.vault_db.call(move |conn| {
-            let tx = conn.transaction()?;
-            db::delete_directories(&tx, &vec![path_to_delete])?;
-            tx.commit()?;
-            Ok(())
-        })?;
+        let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
+        db::delete_directories(&mut tx, &vec![path.clone()]).await?;
+        tx.commit().await.map_err(DBError::from)?;
 
         nfs::delete_directory(&self.workspace_path, &path)?;
 
         Ok(())
     }
 
-    pub fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+    pub async fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
 
@@ -503,17 +457,14 @@ impl NoteVault {
         }
         nfs::rename_note(&self.workspace_path, &from, &to)?;
 
-        self.vault_db.call(move |conn| {
-            let tx = conn.transaction()?;
-            db::rename_note(&tx, &from, &to)?;
-            tx.commit()?;
-            Ok(())
-        })?;
+        let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
+        db::rename_note(&mut tx, &from, &to).await?;
+        tx.commit().await.map_err(DBError::from)?;
 
         Ok(())
     }
 
-    pub fn rename_directory(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+    pub async fn rename_directory(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
 
@@ -525,12 +476,9 @@ impl NoteVault {
         }
         nfs::rename_directory(&self.workspace_path, &from, &to)?;
 
-        self.vault_db.call(move |conn| {
-            let tx = conn.transaction()?;
-            db::rename_directory(&tx, &from, &to)?;
-            tx.commit()?;
-            Ok(())
-        })?;
+        let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
+        db::rename_directory(&mut tx, &from, &to).await?;
+        tx.commit().await.map_err(DBError::from)?;
 
         Ok(())
     }
@@ -681,9 +629,10 @@ impl Display for NotesValidation {
     }
 }
 
-fn create_index_for<P: AsRef<Path>>(
+#[async_recursion::async_recursion]
+async fn create_index_for<P: AsRef<Path> + Send>(
     workspace_path: P,
-    connection: &mut rusqlite::Connection,
+    pool: &sqlx::SqlitePool,
     path: &VaultPath,
     validation_mode: NotesValidation,
 ) -> Result<(), DBError> {
@@ -691,7 +640,7 @@ fn create_index_for<P: AsRef<Path>>(
     let workspace_path = workspace_path.as_ref();
     let walker = nfs::get_file_walker(workspace_path, path, false);
 
-    let cached_notes = db::get_notes(connection, path, false)?;
+    let cached_notes = db::get_notes(pool, path, false).await?;
     let mut builder =
         NoteListVisitorBuilder::new(workspace_path, validation_mode, cached_notes, None);
     walker.visit(&mut builder);
@@ -699,15 +648,15 @@ fn create_index_for<P: AsRef<Path>>(
     let notes_to_delete = builder.get_notes_to_delete();
     let notes_to_modify = builder.get_notes_to_modify();
 
-    let tx = connection.transaction()?;
-    db::delete_notes(&tx, &notes_to_delete)?;
-    db::insert_notes(&tx, &notes_to_add)?;
-    db::update_notes(&tx, &notes_to_modify)?;
-    tx.commit()?;
+    let mut tx = pool.begin().await?;
+    db::delete_notes(&mut tx, &notes_to_delete).await?;
+    db::insert_notes(&mut tx, &notes_to_add).await?;
+    db::update_notes(&mut tx, &notes_to_modify).await?;
+    tx.commit().await?;
 
     let directories_to_insert = builder.get_directories_found();
     for directory in directories_to_insert.iter().filter(|p| !p.eq(&path)) {
-        create_index_for(workspace_path, connection, directory, validation_mode)?;
+        create_index_for(workspace_path, pool, directory, validation_mode).await?;
     }
 
     Ok(())
@@ -734,20 +683,10 @@ mod tests {
         assert!(report.duration.as_millis() >= 10);
     }
 
-    #[test]
-    fn test_note_vault_default() {
-        let vault = NoteVault::default();
-
-        assert_eq!(vault.workspace_path, PathBuf::default());
-        assert_eq!(vault.journal_path, VaultPath::new(DEFAULT_JOURNAL_PATH));
-        // VaultDB doesn't implement PartialEq, so we can't directly compare it
-        // but we can verify the vault was created successfully
-    }
-
-    #[test]
-    fn test_note_vault_new_with_nonexistent_path() {
+    #[tokio::test]
+    async fn test_note_vault_new_with_nonexistent_path() {
         let nonexistent_path = "/this/path/does/not/exist";
-        let result = NoteVault::new(nonexistent_path);
+        let result = NoteVault::new(nonexistent_path).await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -758,13 +697,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_note_vault_new_with_file_instead_of_directory() {
+    #[tokio::test]
+    async fn test_note_vault_new_with_file_instead_of_directory() {
         // Create a temporary file
         let temp_file = tempfile::NamedTempFile::new().unwrap();
         let file_path = temp_file.path();
 
-        let result = NoteVault::new(file_path);
+        let result = NoteVault::new(file_path).await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -775,12 +714,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_note_vault_new_with_valid_directory() {
+    #[tokio::test]
+    async fn test_note_vault_new_with_valid_directory() {
         let temp_dir = TempDir::new().unwrap();
         let dir_path = temp_dir.path();
 
-        let result = NoteVault::new(dir_path);
+        let result = NoteVault::new(dir_path).await;
 
         assert!(result.is_ok());
         let vault = result.unwrap();
@@ -788,10 +727,10 @@ mod tests {
         assert_eq!(vault.journal_path, VaultPath::new(DEFAULT_JOURNAL_PATH));
     }
 
-    #[test]
-    fn test_get_todays_journal() {
+    #[tokio::test]
+    async fn test_get_todays_journal() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).unwrap();
+        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
 
         let (title, note_path) = vault.get_todays_journal();
 
@@ -808,10 +747,10 @@ mod tests {
         assert_eq!(note_path, expected_path);
     }
 
-    #[test]
-    fn test_journal_date_with_valid_journal_note() {
+    #[tokio::test]
+    async fn test_journal_date_with_valid_journal_note() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).unwrap();
+        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
 
         // Create a journal note path
         let journal_note_path = vault
@@ -826,10 +765,10 @@ mod tests {
         assert_eq!(date, NaiveDate::from_ymd_opt(2023, 12, 25).unwrap());
     }
 
-    #[test]
-    fn test_journal_date_with_invalid_date_format() {
+    #[tokio::test]
+    async fn test_journal_date_with_invalid_date_format() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).unwrap();
+        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
 
         // Create a note path with invalid date format
         let invalid_journal_path = vault
@@ -841,10 +780,10 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_journal_date_with_non_journal_path() {
+    #[tokio::test]
+    async fn test_journal_date_with_non_journal_path() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).unwrap();
+        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
 
         // Create a note path outside of journal directory
         let non_journal_path = VaultPath::new("/other/2023-12-25.md");
@@ -853,10 +792,10 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_journal_date_with_non_note_path() {
+    #[tokio::test]
+    async fn test_journal_date_with_non_note_path() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).unwrap();
+        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
 
         // Create a directory path (not a note)
         let directory_path = vault.journal_path.append(&VaultPath::new("2023-12-25"));
@@ -865,10 +804,10 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_path_to_pathbuf() {
+    #[tokio::test]
+    async fn test_path_to_pathbuf() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).unwrap();
+        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
 
         let vault_path = VaultPath::new("/test/note.md");
         let result = vault.path_to_pathbuf(&vault_path);
