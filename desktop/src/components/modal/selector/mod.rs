@@ -39,7 +39,7 @@ fn SelectorView<F, S>(
 ) -> Element
 where
     F: SelectorFunctions<S> + Clone + Send + 'static,
-    S: StringSearch + Clone + 'static,
+    S: StringSearch + Clone + Send + 'static,
 {
     let mut app_state: Signal<AppState> = use_context();
     let settings: Signal<AppSettings> = use_context();

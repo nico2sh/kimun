@@ -30,6 +30,7 @@ pulldown-cmark = "0.13"
 syntect = "5.3"
 lazy_static = "1.5"
 itertools = "0.14"
+rayon = "1.11.0"
 
 [features]
 bundle = []

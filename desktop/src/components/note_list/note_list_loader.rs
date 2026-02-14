@@ -1,15 +1,22 @@
+use rayon::prelude::*;
+use std::future::Future;
+
 use crate::components::{
     note_list::note_browse_entry::{NoteBrowseEntry, SortCriteria},
     search_box::StringSearch,
 };
 use dioxus::prelude::*;
 
-pub trait SelectorFunctions<S>: Clone
+pub trait SelectorFunctions<S>: Clone + Send + 'static
 where
     S: StringSearch,
 {
-    async fn init(&self) -> Vec<NoteBrowseEntry>;
-    async fn filter(&self, filter_text: S, initial_items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry>;
+    fn init(&self) -> impl Future<Output = Vec<NoteBrowseEntry>> + Send;
+    fn filter(
+        &self,
+        filter_text: S,
+        initial_items: &[NoteBrowseEntry],
+    ) -> impl Future<Output = Vec<NoteBrowseEntry>> + Send;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -17,7 +24,6 @@ pub enum LoadState {
     Initializing,
     Ready,
     Filtering,
-    Sorting,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -27,7 +33,6 @@ where
 {
     raw_data: Vec<NoteBrowseEntry>,
     filter_value: S,
-    filtered_data: Vec<NoteBrowseEntry>,
     sort_criteria: SortCriteria,
     sort_ascending: bool,
 }
@@ -60,11 +65,11 @@ pub fn use_note_list<S, F>(
     sort_criteria: Signal<SortCriteria>,
     sort_ascending: Signal<bool>,
     functions: F,
-    on_ready: impl FnOnce(Vec<NoteBrowseEntry>) -> Vec<NoteBrowseEntry> + Clone + 'static,
+    on_ready: impl FnOnce(Vec<NoteBrowseEntry>) -> Vec<NoteBrowseEntry> + Send + Clone + 'static,
 ) -> UseNoteList<S>
 where
     F: SelectorFunctions<S> + Clone + Send + 'static,
-    S: StringSearch + Clone + 'static,
+    S: StringSearch + Clone + Send + 'static,
 {
     let mut load_state: Signal<LoadState> = use_signal(|| LoadState::Initializing);
 
@@ -83,56 +88,67 @@ where
                 LoadState::Initializing => {
                     info!("---=== Initializing");
                     selected.set(None);
-                    let result = functions.init().await;
+                    let funcs = functions.clone();
+                    let result = tokio::spawn(async move { funcs.init().await })
+                        .await
+                        .unwrap_or_default();
                     state_data.write().raw_data = result;
                     load_state.set(LoadState::Filtering);
                 }
                 LoadState::Filtering => {
                     debug!("Filtering");
                     selected.set(None);
+                    // Debounce: wait briefly to batch rapid keystrokes
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     let filter_text = search_text.peek().clone();
-                    let raw_data = state_data.peek().raw_data.clone();
-                    state_data.write().filter_value = filter_text.clone();
-                    let filter_text = filter_text.clone();
-                    let rows = functions.filter(filter_text, &raw_data).await;
-                    info!("We truncate the row mounts with {} values", rows.len());
-                    state_data.write().filtered_data = rows;
-                    load_state.set(LoadState::Sorting);
-                }
-                LoadState::Sorting => {
-                    debug!("Sorting");
-                    let sort_criteria = sort_criteria();
-                    let sort_ascending = sort_ascending();
-                    state_data.write().sort_criteria = sort_criteria.clone();
-                    state_data.write().sort_ascending = sort_ascending;
-                    let mut r = state_data.peek().filtered_data.clone();
-                    if SortCriteria::None != state_data.peek().sort_criteria {
-                        r = tokio::spawn(async move {
-                            if sort_ascending {
-                                r.sort_by_key(|b| b.sort_string_for(&sort_criteria));
-                            } else {
-                                r.sort_by_key(|b| {
-                                    std::cmp::Reverse(b.sort_string_for(&sort_criteria))
-                                });
-                            };
-                            r
+                    let sort_crit = sort_criteria.peek().clone();
+                    let sort_asc = *sort_ascending.peek();
+                    // Skip if nothing actually changed after debounce
+                    if filter_text != state_data.peek().filter_value
+                        || sort_crit != state_data.peek().sort_criteria
+                        || sort_asc != state_data.peek().sort_ascending
+                    {
+                        let raw_data = state_data.peek().raw_data.clone();
+                        let funcs = functions.clone();
+                        let on_ready = on_ready.clone();
+                        let can_sort = SortCriteria::None != sort_crit;
+                        let result = tokio::spawn(async move {
+                            let mut rows =
+                                funcs.filter(filter_text.clone(), &raw_data).await;
+                            if can_sort {
+                                if sort_asc {
+                                    rows.par_sort_by_key(|b| {
+                                        b.sort_string_for(&sort_crit)
+                                    });
+                                } else {
+                                    rows.par_sort_by_key(|b| {
+                                        std::cmp::Reverse(
+                                            b.sort_string_for(&sort_crit),
+                                        )
+                                    });
+                                }
+                            }
+                            on_ready(rows)
                         })
                         .await
                         .unwrap_or_default();
+                        {
+                            let mut sd = state_data.write();
+                            sd.filter_value = search_text.peek().clone();
+                            sd.sort_criteria = sort_criteria.peek().clone();
+                            sd.sort_ascending = *sort_ascending.peek();
+                        }
+                        display_data.set(result);
                     }
-
-                    let r = on_ready(r);
-                    display_data.set(r);
                     load_state.set(LoadState::Ready);
                 }
                 LoadState::Ready => {
                     debug!("Ready");
-                    if search_text() != state_data.peek().filter_value {
-                        load_state.set(LoadState::Filtering);
-                    } else if sort_criteria() != state_data.peek().sort_criteria
+                    if search_text() != state_data.peek().filter_value
+                        || sort_criteria() != state_data.peek().sort_criteria
                         || sort_ascending() != state_data.peek().sort_ascending
                     {
-                        load_state.set(LoadState::Sorting);
+                        load_state.set(LoadState::Filtering);
                     }
                 }
             }
