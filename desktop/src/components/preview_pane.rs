@@ -164,7 +164,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
             if active_path.read().is_root_or_empty() {
                 PreviewContent::None
             } else {
-                match vault_content.load_note(&active_path.read()) {
+                match vault_content.load_note(&active_path.read()).await {
                     Ok(note) => PreviewContent::Note(note.get_markdown_and_links()),
                     Err(e) => PreviewContent::Err(format!("Error loading Note: {}", e)),
                 }

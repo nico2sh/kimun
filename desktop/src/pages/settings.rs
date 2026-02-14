@@ -104,17 +104,15 @@ pub fn Settings() -> Element {
                             Button {
                                 title: "Full Index",
                                 theme: theme.clone(),
-                                action: move |_| {
+                                action: move |_| async move {
                                     if let Some(workspace_dir) = settings().workspace_dir {
-                                        spawn(async move {
-                                            if let Ok(vault) = NoteVault::new(workspace_dir).await {
-                                                let vault = Arc::new(vault);
-                                                app_state
-                                                    .write()
-                                                    .get_modal_mut()
-                                                    .set_indexer(vault, IndexType::Full);
-                                            }
-                                        });
+                                        if let Ok(vault) = NoteVault::new(workspace_dir).await {
+                                            let vault = Arc::new(vault);
+                                            app_state
+                                                .write()
+                                                .get_modal_mut()
+                                                .set_indexer(vault, IndexType::Full);
+                                        }
                                     }
                                 },
                                 disabled: settings().workspace_dir.is_none(),

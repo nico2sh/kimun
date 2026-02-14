@@ -73,7 +73,7 @@ where
                 if let Some(value) = entry {
                     let value_copy = value.to_owned();
                     tokio::spawn(async move {
-                        let preview = vault.load_note(&value_copy.get_path()).map_or_else(
+                        let preview = vault.load_note(&value_copy.get_path()).await.map_or_else(
                             |e| PreviewData {
                                 title: "Error loading preview...".to_string(),
                                 data: e.to_string(),

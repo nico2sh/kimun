@@ -47,9 +47,7 @@ pub fn MainView() -> Element {
     let vault_path = settings_value.workspace_dir.clone().unwrap();
     let vault_resource = use_resource(move || {
         let vault_path = vault_path.clone();
-        async move {
-            NoteVault::new(vault_path).await.ok().map(Arc::new)
-        }
+        async move { NoteVault::new(vault_path).await.ok().map(Arc::new) }
     });
 
     // Wait for vault to be loaded
@@ -121,57 +119,106 @@ pub fn MainView() -> Element {
     });
 
     let editor_vault = vault.clone();
-    let content_path = use_memo(move || {
-        editor_vault.exists(&editor_path.read()).map_or_else(
-            || {
-                debug!("Path doesn't exist");
-                if editor_path.read().is_note() && app_state.read().create_if_not_exists {
-                    debug!("It's a note and we have to create it");
-                    app_state.write().preview_mode = false;
-                    let note_path = editor_path.read().to_owned();
-                    let editor_vault = editor_vault.clone();
-                    let note_path_for_closure = note_path.clone();
-                    // Block on async operation in memo
-                    match tokio::runtime::Handle::current().block_on(async move {
-                        editor_vault.create_note(&note_path_for_closure, "").await
-                    }) {
-                        Ok(_) => {
-                            pub_sub.publish(GlobalEvent::NewNoteCreated(note_path.clone()));
+    let content_path = use_resource(move || {
+        let editor_vault = editor_vault.clone();
+        let pub_sub = pub_sub.clone();
+        async move {
+            match editor_vault.exists(&editor_path.read()).await {
+                Some(entry) => {
+                    match entry.data {
+                        // If it's an attachment, we look for the parent
+                        EntryData::Note(_nt) => {
+                            debug!("Path is a note");
                             ContentType::Note
                         }
-                        Err(e) => {
-                            let parent = note_path.get_parent_path().0;
-                            app_state.write().set_modal(ModalType::Error {
-                                message: "Error Creating new Note".to_string(),
-                                error: e.to_string(),
-                            });
-                            ContentType::Reroute(parent)
+                        EntryData::Directory(_dt) => {
+                            debug!("Path is a directory");
+                            ContentType::Directory
+                        }
+                        EntryData::Attachment => {
+                            debug!("Path is an attachment");
+                            ContentType::Reroute(entry.path.get_parent_path().0)
                         }
                     }
-                } else {
-                    debug!("We reroute to the root");
-                    ContentType::Reroute(VaultPath::root())
                 }
-            },
-            // Exists, so we see if it's a directory or a note
-            |e| match e.data {
-                // If it's an attachment, we look for the parent
-                EntryData::Note(_nt) => {
-                    debug!("Path is a note");
-                    ContentType::Note
+                None => {
+                    debug!("Path doesn't exist");
+                    if editor_path.read().is_note() && app_state.read().create_if_not_exists {
+                        debug!("It's a note and we have to create it");
+                        app_state.write().preview_mode = false;
+                        let note_path = editor_path.read().to_owned();
+                        let note_path_for_closure = note_path.clone();
+                        // Block on async operation in memo
+                        match editor_vault.create_note(&note_path_for_closure, "").await {
+                            Ok(_) => {
+                                pub_sub.publish(GlobalEvent::NewNoteCreated(note_path.clone()));
+                                ContentType::Note
+                            }
+                            Err(e) => {
+                                let parent = note_path.get_parent_path().0;
+                                app_state.write().set_modal(ModalType::Error {
+                                    message: "Error Creating new Note".to_string(),
+                                    error: e.to_string(),
+                                });
+                                ContentType::Reroute(parent)
+                            }
+                        }
+                    } else {
+                        debug!("We reroute to the root");
+                        ContentType::Reroute(VaultPath::root())
+                    }
                 }
-                EntryData::Directory(_dt) => {
-                    debug!("Path is a directory");
-                    ContentType::Directory
-                }
-                EntryData::Attachment => {
-                    debug!("Path is an attachment");
-                    ContentType::Reroute(e.path.get_parent_path().0)
-                }
-            },
-        )
+            }
+            // tokio::runtime::Handle::current().block_on(editor_vault.exists(&editor_path.read())).map_or_else(
+            //     || {
+            //         debug!("Path doesn't exist");
+            //         if editor_path.read().is_note() && app_state.read().create_if_not_exists {
+            //             debug!("It's a note and we have to create it");
+            //             app_state.write().preview_mode = false;
+            //             let note_path = editor_path.read().to_owned();
+            //             let editor_vault = editor_vault.clone();
+            //             let note_path_for_closure = note_path.clone();
+            //             // Block on async operation in memo
+            //             match tokio::runtime::Handle::current().block_on(async move {
+            //                 editor_vault.create_note(&note_path_for_closure, "").await
+            //             }) {
+            //                 Ok(_) => {
+            //                     pub_sub.publish(GlobalEvent::NewNoteCreated(note_path.clone()));
+            //                     ContentType::Note
+            //                 }
+            //                 Err(e) => {
+            //                     let parent = note_path.get_parent_path().0;
+            //                     app_state.write().set_modal(ModalType::Error {
+            //                         message: "Error Creating new Note".to_string(),
+            //                         error: e.to_string(),
+            //                     });
+            //                     ContentType::Reroute(parent)
+            //                 }
+            //             }
+            //         } else {
+            //             debug!("We reroute to the root");
+            //             ContentType::Reroute(VaultPath::root())
+            //         }
+            //     },
+            //     // Exists, so we see if it's a directory or a note
+            //     |e| match e.data {
+            //         // If it's an attachment, we look for the parent
+            //         EntryData::Note(_nt) => {
+            //             debug!("Path is a note");
+            //             ContentType::Note
+            //         }
+            //         EntryData::Directory(_dt) => {
+            //             debug!("Path is a directory");
+            //             ContentType::Directory
+            //         }
+            //         EntryData::Attachment => {
+            //             debug!("Path is an attachment");
+            //             ContentType::Reroute(e.path.get_parent_path().0)
+            //         }
+            //     },
+            // )
+        }
     });
-
     // use_wry_event_handler(move |event, _| {
     //     if let Event::WindowEvent {
     //         window_id,
@@ -249,7 +296,7 @@ pub fn MainView() -> Element {
             EditorHeader { path: editor_path }
             div { class: "editor-main",
                 match &*content_path.read() {
-                    ContentType::Note => {
+                    Some(ContentType::Note) => {
                         rsx! {
                             ContentViewer {
                                 note_path: editor_path,
@@ -258,13 +305,13 @@ pub fn MainView() -> Element {
                             }
                         }
                     }
-                    ContentType::Directory => {
+                    Some(ContentType::Directory) => {
                         debug!("Opening Directory View");
                         rsx! {
                             NoText { path: editor_path }
                         }
                     }
-                    ContentType::Reroute(new_path) => {
+                    Some(ContentType::Reroute(new_path)) => {
                         let next_path = new_path.clone();
                         rsx! {
                             div {
@@ -272,6 +319,14 @@ pub fn MainView() -> Element {
                                     debug!("Rerouting to {}...", next_path);
                                     app_state.write().set_path(&next_path, true);
                                 },
+                            }
+                        }
+                    }
+                    None => {
+                        debug!("Loading...");
+                        rsx! {
+                            div {
+                                "Loading..."
                             }
                         }
                     }
