@@ -423,4 +423,179 @@ mod tests {
 
         assert_eq!(received.path, test_result.path);
     }
+
+    #[test]
+    fn test_scan_multiple_markdown_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        // Create several markdown files in the root and a subdirectory
+        let notes = vec![
+            ("note_a.md", "# Note A\n\nFirst note content."),
+            ("note_b.md", "# Note B\n\nSecond note with more text."),
+            ("note_c.md", "---\ntitle: Note C\n---\n\nFrontmatter note."),
+        ];
+        let sub_dir = VaultPath::new("subdir");
+        let sub_notes = vec![
+            ("subdir/deep.md", "# Deep Note\n\nNested note."),
+        ];
+
+        create_directory(workspace_path, &sub_dir).unwrap();
+        for (path, content) in &notes {
+            save_note(workspace_path, &VaultPath::new(*path), *content).unwrap();
+        }
+        for (path, content) in &sub_notes {
+            save_note(workspace_path, &VaultPath::new(*path), *content).unwrap();
+        }
+
+        // Scan with the visitor using a recursive walker (no cached notes)
+        let (sender, receiver) = mpsc::channel();
+        let mut builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            NotesValidation::None,
+            vec![],
+            Some(sender),
+        );
+
+        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        walker.visit(&mut builder);
+
+        // Collect all SearchResults from the channel
+        let mut results: Vec<SearchResult> = Vec::new();
+        while let Ok(r) = receiver.try_recv() {
+            results.push(r);
+        }
+
+        // Separate notes and directories from the results
+        let note_paths: Vec<String> = results
+            .iter()
+            .filter_map(|r| match &r.rtype {
+                crate::ResultType::Note(_) => Some(r.path.to_string()),
+                _ => None,
+            })
+            .collect();
+
+        let dir_paths: Vec<String> = results
+            .iter()
+            .filter_map(|r| match &r.rtype {
+                crate::ResultType::Directory => Some(r.path.to_string()),
+                _ => None,
+            })
+            .collect();
+
+        // All four notes should be discovered
+        assert_eq!(note_paths.len(), 4, "Expected 4 notes, got: {:?}", note_paths);
+        for expected in &["note_a.md", "note_b.md", "note_c.md", "deep.md"] {
+            assert!(
+                note_paths.iter().any(|p| p.contains(expected)),
+                "Missing note {} in {:?}",
+                expected,
+                note_paths
+            );
+        }
+
+        // The subdirectory should be found
+        assert!(
+            dir_paths.iter().any(|p| p.contains("subdir")),
+            "Missing subdir in {:?}",
+            dir_paths
+        );
+
+        // All notes should be in the "to add" list since there were no cached notes
+        let to_add = builder.get_notes_to_add();
+        assert_eq!(to_add.len(), 4, "Expected 4 notes to add, got {}", to_add.len());
+
+        // Nothing to delete or modify
+        assert!(builder.get_notes_to_delete().is_empty());
+        assert!(builder.get_notes_to_modify().is_empty());
+    }
+
+    #[test]
+    fn test_scan_detects_modified_note() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        let note_path = VaultPath::new("changing.md");
+        let original = "# Original\n\nOriginal content.";
+        save_note(workspace_path, &note_path, original).unwrap();
+
+        // Get the entry as the walker would see it (absolute path via from_path)
+        let full_path = workspace_path.join("changing.md");
+        let entry = VaultEntry::from_path(workspace_path, &full_path).unwrap();
+        let (note_data, content_data) = match entry.data {
+            EntryData::Note(d) => {
+                let details = d.load_details(workspace_path, &d.path).unwrap();
+                let cd = details.get_content_data();
+                (d, cd)
+            }
+            _ => panic!("Expected note"),
+        };
+
+        // Overwrite with different content so the file size changes
+        let updated = "# Updated\n\nThis content is deliberately much longer to change the file size on disk.";
+        save_note(workspace_path, &note_path, updated).unwrap();
+
+        // Supply the old cached entry (with the original size) to the builder
+        let cached = vec![(note_data, content_data)];
+
+        let mut builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            NotesValidation::Fast,
+            cached,
+            None,
+        );
+
+        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        walker.visit(&mut builder);
+
+        // The note should show up as modified (size changed)
+        let modified = builder.get_notes_to_modify();
+        assert_eq!(modified.len(), 1, "Expected 1 modified note, got {}", modified.len());
+        assert!(modified[0].0.path.to_string().contains("changing.md"));
+
+        // Nothing to add (it was already cached) and nothing to delete (still on disk)
+        assert!(builder.get_notes_to_add().is_empty());
+        assert!(builder.get_notes_to_delete().is_empty());
+    }
+
+    #[test]
+    fn test_scan_detects_deleted_note() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        // Create a note, get its cached data, then delete it from disk
+        let note_path = VaultPath::new("ephemeral.md");
+        save_note(workspace_path, &note_path, "# Gone soon").unwrap();
+
+        let full_path = workspace_path.join("ephemeral.md");
+        let entry = VaultEntry::from_path(workspace_path, &full_path).unwrap();
+        let cached = match entry.data {
+            EntryData::Note(d) => {
+                let details = d.load_details(workspace_path, &d.path).unwrap();
+                vec![(d, details.get_content_data())]
+            }
+            _ => panic!("Expected note"),
+        };
+
+        // Remove the file from disk
+        std::fs::remove_file(workspace_path.join("ephemeral.md")).unwrap();
+
+        let mut builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            NotesValidation::None,
+            cached,
+            None,
+        );
+
+        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        walker.visit(&mut builder);
+
+        // The note should appear in the delete list (cached but not on disk)
+        let to_delete = builder.get_notes_to_delete();
+        assert_eq!(to_delete.len(), 1);
+        assert!(to_delete[0].to_string().contains("ephemeral.md"));
+
+        assert!(builder.get_notes_to_add().is_empty());
+        assert!(builder.get_notes_to_modify().is_empty());
+    }
 }

@@ -108,7 +108,7 @@ impl NoteVault {
                         self.index_notes(NotesValidation::None).await
                     }
                     db::DBStatus::Outdated => self.recreate_index().await,
-                    db::DBStatus::NotValid => self.force_rebuild().await,
+                    db::DBStatus::NotValid => self.recreate_index().await,
                     db::DBStatus::FileNotFound => {
                         // No need to validate, no data there
                         self.recreate_index().await
@@ -117,14 +117,20 @@ impl NoteVault {
             }
             Err(e) => {
                 debug!("Error validating the DB, rebuilding it: {}", e);
-                self.force_rebuild().await
+                self.recreate_index().await
             }
         }
     }
 
-    /// Deletes the db file and recreates the index
+    /// Deletes the db file and recreates the index.
+    /// On Windows, the pool must be closed before the file can be deleted,
+    /// so this method closes the pool first. After calling this method,
+    /// the NoteVault instance should be discarded and a new one created.
     pub async fn force_rebuild(&self) -> Result<IndexReport, VaultError> {
         let db_path = self.vault_db.get_db_path();
+        // Close the pool to release file handles before deleting.
+        // This is required on Windows where open handles prevent file deletion.
+        self.vault_db.close().await?;
         let md = std::fs::metadata(&db_path).map_err(FSError::ReadFileError)?;
         // We delete the db file
         if md.is_dir() {
@@ -132,6 +138,10 @@ impl NoteVault {
         } else {
             std::fs::remove_file(db_path).map_err(FSError::ReadFileError)?;
         }
+        // Note: the pool is closed at this point. The caller should create
+        // a new NoteVault instance if further DB operations are needed.
+        // recreate_index will reconnect via the pool's rwc mode which
+        // recreates the file.
         self.recreate_index().await
     }
 
