@@ -169,54 +169,6 @@ pub fn MainView() -> Element {
                     }
                 }
             }
-            // tokio::runtime::Handle::current().block_on(editor_vault.exists(&editor_path.read())).map_or_else(
-            //     || {
-            //         debug!("Path doesn't exist");
-            //         if editor_path.read().is_note() && app_state.read().create_if_not_exists {
-            //             debug!("It's a note and we have to create it");
-            //             app_state.write().preview_mode = false;
-            //             let note_path = editor_path.read().to_owned();
-            //             let editor_vault = editor_vault.clone();
-            //             let note_path_for_closure = note_path.clone();
-            //             // Block on async operation in memo
-            //             match tokio::runtime::Handle::current().block_on(async move {
-            //                 editor_vault.create_note(&note_path_for_closure, "").await
-            //             }) {
-            //                 Ok(_) => {
-            //                     pub_sub.publish(GlobalEvent::NewNoteCreated(note_path.clone()));
-            //                     ContentType::Note
-            //                 }
-            //                 Err(e) => {
-            //                     let parent = note_path.get_parent_path().0;
-            //                     app_state.write().set_modal(ModalType::Error {
-            //                         message: "Error Creating new Note".to_string(),
-            //                         error: e.to_string(),
-            //                     });
-            //                     ContentType::Reroute(parent)
-            //                 }
-            //             }
-            //         } else {
-            //             debug!("We reroute to the root");
-            //             ContentType::Reroute(VaultPath::root())
-            //         }
-            //     },
-            //     // Exists, so we see if it's a directory or a note
-            //     |e| match e.data {
-            //         // If it's an attachment, we look for the parent
-            //         EntryData::Note(_nt) => {
-            //             debug!("Path is a note");
-            //             ContentType::Note
-            //         }
-            //         EntryData::Directory(_dt) => {
-            //             debug!("Path is a directory");
-            //             ContentType::Directory
-            //         }
-            //         EntryData::Attachment => {
-            //             debug!("Path is an attachment");
-            //             ContentType::Reroute(e.path.get_parent_path().0)
-            //         }
-            //     },
-            // )
         }
     });
     // use_wry_event_handler(move |event, _| {
