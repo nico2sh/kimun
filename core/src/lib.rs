@@ -183,8 +183,8 @@ impl NoteVault {
         Ok(index_report)
     }
 
-    pub fn exists(&self, path: &VaultPath) -> Option<VaultEntry> {
-        VaultEntry::new(&self.workspace_path, path.to_owned()).ok()
+    pub async fn exists(&self, path: &VaultPath) -> Option<VaultEntry> {
+        VaultEntry::new(&self.workspace_path, path.to_owned()).await.ok()
     }
 
     pub async fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
@@ -228,7 +228,7 @@ impl NoteVault {
         path: &VaultPath,
         default_text: Option<String>,
     ) -> Result<String, VaultError> {
-        match nfs::load_note(&self.workspace_path, path) {
+        match nfs::load_note(&self.workspace_path, path).await {
             Ok(text) => Ok(text),
             Err(e) => {
                 if let FSError::VaultPathNotFound { path: _ } = e {
@@ -246,8 +246,8 @@ impl NoteVault {
     // If the file doesn't exist you will get a VaultError::FSError with a
     // FSError::NotePathNotFound as the source, you can use that to
     // lazy create a note, or use the load_or_create_note function instead
-    pub fn get_note_text(&self, path: &VaultPath) -> Result<String, VaultError> {
-        let text = nfs::load_note(&self.workspace_path, path)?;
+    pub async fn get_note_text(&self, path: &VaultPath) -> Result<String, VaultError> {
+        let text = nfs::load_note(&self.workspace_path, path).await?;
         Ok(text)
     }
 
@@ -255,8 +255,8 @@ impl NoteVault {
     // If the file doesn't exist you will get a VaultError::FSError with a
     // FSError::NotePathNotFound as the source, you can use that to
     // lazy create a note, or use the load_or_create_note function instead
-    pub fn load_note(&self, path: &VaultPath) -> Result<NoteDetails, VaultError> {
-        let text = self.get_note_text(path)?;
+    pub async fn load_note(&self, path: &VaultPath) -> Result<NoteDetails, VaultError> {
+        let text = self.get_note_text(path).await?;
         Ok(NoteDetails::new(path, text))
     }
 
@@ -298,6 +298,7 @@ impl NoteVault {
             options.validation,
             cached_notes,
             Some(options.sender.clone()),
+            tokio::runtime::Handle::current(),
         );
         // We traverse the directory
         let walker = nfs::get_file_walker(
@@ -366,16 +367,16 @@ impl NoteVault {
         path: &VaultPath,
         text: S,
     ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
-        if self.exists(path).is_none() {
+        if self.exists(path).await.is_none() {
             self.save_note(path, text).await
         } else {
             Err(VaultError::NoteExists { path: path.clone() })
         }
     }
 
-    pub fn create_directory(&self, path: &VaultPath) -> Result<DirectoryEntryData, VaultError> {
-        if self.exists(path).is_none() {
-            let ded = nfs::create_directory(&self.workspace_path, path)?;
+    pub async fn create_directory(&self, path: &VaultPath) -> Result<DirectoryEntryData, VaultError> {
+        if self.exists(path).await.is_none() {
+            let ded = nfs::create_directory(&self.workspace_path, path).await?;
             Ok(ded)
         } else {
             Err(VaultError::DirectoryExists { path: path.clone() })
@@ -388,9 +389,9 @@ impl NoteVault {
         text: S,
     ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
         // Save to disk
-        let entry_data = nfs::save_note(&self.workspace_path, path, &text)?;
+        let entry_data = nfs::save_note(&self.workspace_path, path, &text).await?;
         // TODO: Check if we actually need to create details twice
-        let details = entry_data.load_details(&self.workspace_path, path)?;
+        let details = entry_data.load_details(&self.workspace_path, path).await?;
         let result = (entry_data.clone(), details.get_content_data());
         let text = text.as_ref().to_owned();
 
@@ -439,7 +440,7 @@ impl NoteVault {
         db::delete_notes(&mut tx, &vec![path.clone()]).await?;
         tx.commit().await.map_err(DBError::from)?;
 
-        nfs::delete_note(&self.workspace_path, &path)?;
+        nfs::delete_note(&self.workspace_path, &path).await?;
 
         Ok(())
     }
@@ -458,7 +459,7 @@ impl NoteVault {
         db::delete_directories(&mut tx, &vec![path.clone()]).await?;
         tx.commit().await.map_err(DBError::from)?;
 
-        nfs::delete_directory(&self.workspace_path, &path)?;
+        nfs::delete_directory(&self.workspace_path, &path).await?;
 
         Ok(())
     }
@@ -467,13 +468,13 @@ impl NoteVault {
         let from = from.flatten();
         let to = to.flatten();
 
-        if self.exists(&to).is_some() {
+        if self.exists(&to).await.is_some() {
             return Err(VaultError::FSError(FSError::InvalidPath {
                 path: to.to_string(),
                 message: "Destination path already exists".to_string(),
             }));
         }
-        nfs::rename_note(&self.workspace_path, &from, &to)?;
+        nfs::rename_note(&self.workspace_path, &from, &to).await?;
 
         let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
         db::rename_note(&mut tx, &from, &to).await?;
@@ -486,13 +487,13 @@ impl NoteVault {
         let from = from.flatten();
         let to = to.flatten();
 
-        if self.exists(&to).is_some() {
+        if self.exists(&to).await.is_some() {
             return Err(VaultError::FSError(FSError::InvalidPath {
                 path: to.to_string(),
                 message: "Destination path already exists".to_string(),
             }));
         }
-        nfs::rename_directory(&self.workspace_path, &from, &to)?;
+        nfs::rename_directory(&self.workspace_path, &from, &to).await?;
 
         let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
         db::rename_directory(&mut tx, &from, &to).await?;
@@ -660,7 +661,7 @@ async fn create_index_for<P: AsRef<Path> + Send>(
 
     let cached_notes = db::get_notes(pool, path, false).await?;
     let mut builder =
-        NoteListVisitorBuilder::new(workspace_path, validation_mode, cached_notes, None);
+        NoteListVisitorBuilder::new(workspace_path, validation_mode, cached_notes, None, tokio::runtime::Handle::current());
     walker.visit(&mut builder);
     let notes_to_add = builder.get_notes_to_add();
     let notes_to_delete = builder.get_notes_to_delete();

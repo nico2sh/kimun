@@ -166,11 +166,11 @@ pub fn ContentViewer(props: ContentViewerProps) -> Element {
         debug!("[Initial Content] Loading text content");
         let vault = vault_content.clone();
         async move {
-            let exists = vault.exists(&props.note_path.read()).is_some();
+            let exists = vault.exists(&props.note_path.read()).await.is_some();
             debug!("[Initial Content] Exists: {:?}", exists);
             let result = if exists {
                 debug!("[Initial Content] Loading from path at {}", props.note_path);
-                let text = vault.load_note(&props.note_path.read()).map_or_else(
+                let text = vault.load_note(&props.note_path.read()).await.map_or_else(
                     |e| {
                         error!("[Initial Content] Error loading Note: {}", e);
                         String::new()
