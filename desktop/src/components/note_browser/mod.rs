@@ -192,7 +192,7 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, editor_path: ReadSignal<VaultPath>) ->
 struct NoteBrowserHover {
     vault: Arc<NoteVault>,
     current_browse_path: SyncSignal<VaultPath>,
-    use_note_list: UseNoteList<String>,
+    use_note_list: UseNoteList,
 }
 
 impl NoteElementActions for NoteBrowserHover {
@@ -356,7 +356,7 @@ struct BrowseFuncions {
     browsing_directory: SyncSignal<VaultPath>,
 }
 
-impl SelectorFunctions<String> for BrowseFuncions {
+impl SelectorFunctions for BrowseFuncions {
     async fn init(&self) -> Vec<NoteBrowseEntry> {
         info!("Load all entries");
         let mut entries = vec![];

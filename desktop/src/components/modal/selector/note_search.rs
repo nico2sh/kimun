@@ -21,13 +21,17 @@ struct SearchFunctions {
     vault: Arc<NoteVault>,
 }
 
-impl SelectorFunctions<String> for SearchFunctions {
+impl SelectorFunctions for SearchFunctions {
     async fn init(&self) -> Vec<NoteBrowseEntry> {
         debug!("Opening Note Search");
         vec![]
     }
 
-    async fn filter(&self, filter_text: String, _items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
+    async fn filter(
+        &self,
+        filter_text: String,
+        _items: &[NoteBrowseEntry],
+    ) -> Vec<NoteBrowseEntry> {
         debug!("Searching {}", filter_text);
         let vault = self.vault.clone();
         match vault.search_notes(filter_text).await {

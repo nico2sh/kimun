@@ -7,14 +7,11 @@ use crate::components::{
 };
 use dioxus::prelude::*;
 
-pub trait SelectorFunctions<S>: Clone + Send + 'static
-where
-    S: StringSearch,
-{
+pub trait SelectorFunctions: Clone + Send + 'static {
     fn init(&self) -> impl Future<Output = Vec<NoteBrowseEntry>> + Send;
     fn filter(
         &self,
-        filter_text: S,
+        filter_text: String,
         initial_items: &[NoteBrowseEntry],
     ) -> impl Future<Output = Vec<NoteBrowseEntry>> + Send;
 }
@@ -27,30 +24,21 @@ pub enum LoadState {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
-pub struct SearchStateData<S>
-where
-    S: StringSearch + 'static,
-{
-    filter_value: S,
-    sort_criteria: SortCriteria,
-    sort_ascending: bool,
+pub struct SearchStateData {
+    pub filter_value: String,
+    pub sort_criteria: SortCriteria,
+    pub sort_ascending: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct UseNoteList<S>
-where
-    S: StringSearch + 'static,
-{
-    inner: Signal<SearchStateData<S>>,
+pub struct UseNoteList {
+    inner: Signal<SearchStateData>,
     raw_data: Signal<Vec<NoteBrowseEntry>>,
     pub display_data: Signal<Vec<NoteBrowseEntry>>,
     state: Signal<LoadState>,
 }
 
-impl<S> UseNoteList<S>
-where
-    S: StringSearch,
-{
+impl UseNoteList {
     pub fn reset(&mut self) {
         *self.state.write() = LoadState::Initializing;
     }
@@ -60,16 +48,15 @@ pub fn no_op(e: Vec<NoteBrowseEntry>) -> Vec<NoteBrowseEntry> {
     e
 }
 
-pub fn use_note_list<S, F>(
-    search_text: Signal<S>,
+pub fn use_note_list<F>(
+    search_text: Signal<String>,
     sort_criteria: Signal<SortCriteria>,
     sort_ascending: Signal<bool>,
     functions: F,
     on_ready: impl FnOnce(Vec<NoteBrowseEntry>) -> Vec<NoteBrowseEntry> + Send + Clone + 'static,
-) -> UseNoteList<S>
+) -> UseNoteList
 where
-    F: SelectorFunctions<S> + Clone + Send + 'static,
-    S: StringSearch + Clone + Send + 'static,
+    F: SelectorFunctions + Clone + Send + 'static,
 {
     let mut load_state: Signal<LoadState> = use_signal(|| LoadState::Initializing);
 
