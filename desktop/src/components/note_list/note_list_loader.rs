@@ -27,11 +27,10 @@ pub enum LoadState {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
-pub struct StateData<S>
+pub struct SearchStateData<S>
 where
     S: StringSearch + 'static,
 {
-    raw_data: Vec<NoteBrowseEntry>,
     filter_value: S,
     sort_criteria: SortCriteria,
     sort_ascending: bool,
@@ -42,7 +41,8 @@ pub struct UseNoteList<S>
 where
     S: StringSearch + 'static,
 {
-    inner: Signal<StateData<S>>,
+    inner: Signal<SearchStateData<S>>,
+    raw_data: Signal<Vec<NoteBrowseEntry>>,
     pub display_data: Signal<Vec<NoteBrowseEntry>>,
     state: Signal<LoadState>,
 }
@@ -76,7 +76,8 @@ where
     let mut selected: Signal<Option<usize>> = use_signal(|| None);
 
     let functions_load = functions.clone();
-    let mut state_data = use_signal(|| StateData::default());
+    let mut state_data = use_signal(|| SearchStateData::default());
+    let mut raw_data = use_signal(|| vec![]);
     let mut display_data = use_signal(|| vec![]);
 
     _ = use_resource(move || {
@@ -92,7 +93,7 @@ where
                     let result = tokio::spawn(async move { funcs.init().await })
                         .await
                         .unwrap_or_default();
-                    state_data.write().raw_data = result;
+                    raw_data.set(result);
                     load_state.set(LoadState::Filtering);
                 }
                 LoadState::Filtering => {
@@ -108,23 +109,18 @@ where
                         || sort_crit != state_data.peek().sort_criteria
                         || sort_asc != state_data.peek().sort_ascending
                     {
-                        let raw_data = state_data.peek().raw_data.clone();
+                        let raw_data = raw_data.peek().clone();
                         let funcs = functions.clone();
                         let on_ready = on_ready.clone();
                         let can_sort = SortCriteria::None != sort_crit;
                         let result = tokio::spawn(async move {
-                            let mut rows =
-                                funcs.filter(filter_text.clone(), &raw_data).await;
+                            let mut rows = funcs.filter(filter_text.clone(), &raw_data).await;
                             if can_sort {
                                 if sort_asc {
-                                    rows.par_sort_by_key(|b| {
-                                        b.sort_string_for(&sort_crit)
-                                    });
+                                    rows.par_sort_by_key(|b| b.sort_string_for(&sort_crit));
                                 } else {
                                     rows.par_sort_by_key(|b| {
-                                        std::cmp::Reverse(
-                                            b.sort_string_for(&sort_crit),
-                                        )
+                                        std::cmp::Reverse(b.sort_string_for(&sort_crit))
                                     });
                                 }
                             }
@@ -157,6 +153,7 @@ where
 
     UseNoteList {
         inner: state_data,
+        raw_data,
         display_data,
         state: load_state,
     }
