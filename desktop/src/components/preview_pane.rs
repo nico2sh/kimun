@@ -18,36 +18,36 @@ use crate::{
     settings::AppSettings,
 };
 
-#[derive(Clone, PartialEq, Debug)]
-pub enum PreviewListSource {
-    FromQuery(String),
-    FromList(String, Vec<NoteBrowseEntry>),
-}
+// #[derive(Clone, PartialEq, Debug)]
+// pub enum PreviewListSource {
+//     FromQuery(String),
+//     FromList(String, Vec<NoteBrowseEntry>),
+// }
 
-impl Default for PreviewListSource {
-    fn default() -> Self {
-        Self::FromQuery("".to_string())
-    }
-}
+// impl Default for PreviewListSource {
+//     fn default() -> Self {
+//         Self::FromQuery("".to_string())
+//     }
+// }
 
-impl StringSearch for PreviewListSource {
-    fn change_value(&mut self, value: String) {
-        *self = PreviewListSource::FromQuery(value);
-    }
-}
+// impl StringSearch for PreviewListSource {
+//     fn change_value(&mut self, value: String) {
+//         *self = PreviewListSource::FromQuery(value);
+//     }
+// }
 
-impl Display for PreviewListSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                PreviewListSource::FromList(query, _items) => query,
-                PreviewListSource::FromQuery(query) => query,
-            }
-        )
-    }
-}
+// impl Display for PreviewListSource {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(
+//             f,
+//             "{}",
+//             match self {
+//                 PreviewListSource::FromList(query, _items) => query,
+//                 PreviewListSource::FromQuery(query) => query,
+//             }
+//         )
+//     }
+// }
 
 enum PreviewContent {
     None,
@@ -67,38 +67,32 @@ pub struct PreviewListFunctions {
     pub vault: Arc<NoteVault>,
 }
 
-impl SelectorFunctions<PreviewListSource> for PreviewListFunctions {
+impl SelectorFunctions for PreviewListFunctions {
     async fn init(&self) -> Vec<NoteBrowseEntry> {
         vec![]
     }
 
     async fn filter(
         &self,
-        filter_text: PreviewListSource,
+        filter_text: String,
         _initial_items: &[NoteBrowseEntry],
     ) -> Vec<NoteBrowseEntry> {
-        match &filter_text {
-            PreviewListSource::FromQuery(_query) => {
-                let filter_text = filter_text.to_owned();
-                let vault = self.vault.clone();
-                match vault.search_notes(filter_text.to_string()).await {
-                    Ok(res) => res
-                        .into_iter()
-                        .map(|(entry, content)| {
-                            if let Some(date) = self.vault.journal_date(&entry.path) {
-                                NoteBrowseEntry::from_note_journal(entry.path, content, date)
-                            } else {
-                                NoteBrowseEntry::from_note_details(entry.path, content)
-                            }
-                        })
-                        .collect::<Vec<NoteBrowseEntry>>(),
-                    Err(e) => {
-                        error!("Error searching notes: {}", e);
-                        vec![]
+        let vault = self.vault.clone();
+        match vault.search_notes(filter_text.to_string()).await {
+            Ok(res) => res
+                .into_iter()
+                .map(|(entry, content)| {
+                    if let Some(date) = self.vault.journal_date(&entry.path) {
+                        NoteBrowseEntry::from_note_journal(entry.path, content, date)
+                    } else {
+                        NoteBrowseEntry::from_note_details(entry.path, content)
                     }
-                }
+                })
+                .collect::<Vec<NoteBrowseEntry>>(),
+            Err(e) => {
+                error!("Error searching notes: {}", e);
+                vec![]
             }
-            PreviewListSource::FromList(_query, items) => items.to_owned(),
         }
     }
 }

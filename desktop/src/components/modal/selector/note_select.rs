@@ -40,7 +40,7 @@ impl SelectFunctions {
     }
 }
 
-impl SelectorFunctions<String> for SelectFunctions {
+impl SelectorFunctions for SelectFunctions {
     async fn init(&self) -> Vec<NoteBrowseEntry> {
         debug!("Opening Note Selector");
 

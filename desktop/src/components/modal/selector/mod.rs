@@ -17,7 +17,6 @@ use crate::{
             note_list_loader::{no_op, use_note_list, SelectorFunctions},
             NoteElementActions, NoteList, SelectorHandler,
         },
-        preview_pane::PreviewListSource,
         search_box::{SearchBox, StringSearch},
     },
     settings::AppSettings,
@@ -30,16 +29,15 @@ pub struct PreviewData {
 }
 
 #[allow(non_snake_case)]
-fn SelectorView<F, S>(
+fn SelectorView<F>(
     hint: String,
-    filter_text: S,
+    filter_text: String,
     vault: Arc<NoteVault>,
     functions: F,
     send_to_preview: bool,
 ) -> Element
 where
-    F: SelectorFunctions<S> + Clone + Send + 'static,
-    S: StringSearch + Clone + Send + 'static,
+    F: SelectorFunctions + Clone + Send + 'static,
 {
     let mut app_state: Signal<AppState> = use_context();
     let settings: Signal<AppSettings> = use_context();
@@ -164,10 +162,7 @@ where
                                     .show_preview_pane(
                                         Some(
                                             PreviewListState::new(
-                                                PreviewListSource::FromList(
-                                                    filter_text_value.read().to_string(),
-                                                    note_list_loaded.display_data.read().to_owned(),
-                                                ),
+                                                filter_text_value.read().to_string(),
                                                 sort_criteria_value(),
                                                 sort_ascending_value(),
                                             ),
