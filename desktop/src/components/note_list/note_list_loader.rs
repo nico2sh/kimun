@@ -1,9 +1,7 @@
 use rayon::prelude::*;
 use std::future::Future;
 
-use crate::components::{
-    note_list::note_browse_entry::{NoteBrowseEntry, SortCriteria},
-};
+use crate::components::note_list::note_browse_entry::{NoteBrowseEntry, SortCriteria};
 use dioxus::prelude::*;
 
 pub trait SelectorFunctions: Clone + Send + 'static {
@@ -19,7 +17,8 @@ pub trait SelectorFunctions: Clone + Send + 'static {
 pub enum LoadState {
     Initializing,
     Ready,
-    Filtering,
+    // Forced means that we will trigger the filtering no matter if the filters haven't changed
+    Filtering { forced: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -46,6 +45,8 @@ impl UseNoteList {
 pub fn no_op(e: Vec<NoteBrowseEntry>) -> Vec<NoteBrowseEntry> {
     e
 }
+
+const DEBOUNCE_MILLIS: u64 = 200;
 
 pub fn use_note_list<F>(
     search_text: Signal<String>,
@@ -80,18 +81,19 @@ where
                         .await
                         .unwrap_or_default();
                     raw_data.set(result);
-                    load_state.set(LoadState::Filtering);
+                    load_state.set(LoadState::Filtering { forced: true });
                 }
-                LoadState::Filtering => {
+                LoadState::Filtering { forced } => {
                     debug!("Filtering");
                     selected.set(None);
                     // Debounce: wait briefly to batch rapid keystrokes
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MILLIS)).await;
                     let filter_text = search_text.peek().clone();
                     let sort_crit = sort_criteria.peek().clone();
                     let sort_asc = *sort_ascending.peek();
                     // Skip if nothing actually changed after debounce
-                    if filter_text != state_data.peek().filter_value
+                    if forced
+                        || filter_text != state_data.peek().filter_value
                         || sort_crit != state_data.peek().sort_criteria
                         || sort_asc != state_data.peek().sort_ascending
                     {
@@ -120,6 +122,7 @@ where
                             sd.sort_criteria = sort_criteria.peek().clone();
                             sd.sort_ascending = *sort_ascending.peek();
                         }
+                        debug!("Displaying {} entries", result.len());
                         display_data.set(result);
                     }
                     load_state.set(LoadState::Ready);
@@ -130,7 +133,7 @@ where
                         || sort_criteria() != state_data.peek().sort_criteria
                         || sort_ascending() != state_data.peek().sort_ascending
                     {
-                        load_state.set(LoadState::Filtering);
+                        load_state.set(LoadState::Filtering { forced: false });
                     }
                 }
             }

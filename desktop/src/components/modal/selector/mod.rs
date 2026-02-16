@@ -39,6 +39,8 @@ fn SelectorView<F>(
 where
     F: SelectorFunctions + Clone + Send + 'static,
 {
+    debug!("== Modal file loaded");
+
     let mut app_state: Signal<AppState> = use_context();
     let settings: Signal<AppSettings> = use_context();
 
@@ -97,12 +99,13 @@ where
         }
     });
 
-    let row_number = entries().len();
+    // Memoize theme to avoid re-reading on every render
+    let theme_memo = use_memo(move || settings().get_theme());
+    let theme = theme_memo();
 
     let selector_loaded = selector_handler.clone();
     let element_action = ModalNoteListAction {};
     let action_enter = element_action.clone();
-    let theme = settings().get_theme();
     let mut send_hover = use_signal(|| false);
 
     rsx! {
@@ -126,10 +129,13 @@ where
                     if key == Code::ArrowUp {
                         selector_loaded.select_prev();
                     }
-                    if key == Code::Enter && row_number > 0 {
-                        let current_selected = (selector_loaded.get_selected()).unwrap_or(0);
-                        if let Some(row) = entries().get(current_selected) {
-                            element_action.on_select(row);
+                    if key == Code::Enter {
+                        let row_number = entries.peek().len();
+                        if row_number > 0 {
+                            let current_selected = (selector_loaded.get_selected()).unwrap_or(0);
+                            if let Some(row) = entries.peek().get(current_selected) {
+                                element_action.on_select(row);
+                            }
                         }
                     }
                 }
