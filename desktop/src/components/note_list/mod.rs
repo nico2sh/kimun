@@ -207,6 +207,50 @@ where
     let mut select_by_mouse = use_signal(|| true);
     let row_mounts = use_signal(|| SparseVector::<Rc<MountedData>>::with_capacity(num_entries));
 
+    // Chunked rendering: Show items incrementally to avoid blocking UI
+    const INITIAL_CHUNK: usize = 50; // Render first 50 immediately
+    const CHUNK_SIZE: usize = 100; // Then render 100 at a time
+    const CHUNK_DELAY_MS: u64 = 10; // Small delay between chunks
+
+    let mut visible_count = use_signal(|| INITIAL_CHUNK);
+    let mut render_version = use_signal(|| 0u32); // Track when entries change
+
+    // Reset visible count when entries change
+    use_effect(move || {
+        // Subscribe to entries to detect changes
+        let total = entries().len();
+
+        // Reset to show initial chunk
+        visible_count.set(INITIAL_CHUNK.min(total));
+
+        // Increment version to trigger incremental rendering
+        let current_version = *render_version.peek();
+        render_version.set(current_version.wrapping_add(1));
+    });
+
+    // Incrementally render remaining items
+    _ = use_resource(move || {
+        let version = render_version();
+        let total = entries.peek().len();
+        let start_count = visible_count();
+
+        async move {
+            let mut current = start_count;
+
+            while current < total {
+                tokio::time::sleep(std::time::Duration::from_millis(CHUNK_DELAY_MS)).await;
+
+                // Check if version changed (new data arrived)
+                if render_version() != version {
+                    break;
+                }
+
+                current = (current + CHUNK_SIZE).min(total);
+                visible_count.set(current);
+            }
+        }
+    });
+
     _ = use_resource(move || async move {
         let r = selector_handler.manually_selected.read().to_owned();
         // Use peek() to avoid subscribing to row_mounts
@@ -243,24 +287,41 @@ where
             },
             // Use keyed list to optimize re-renders
             // Each NoteListItem subscribes to selected_signal independently
-            for (index , entry) in entries().iter().enumerate() {
-                {
-                    let entry_path = entry.get_path().to_owned();
-                    let is_active = entry_path.eq(&active_path);
+            // Only render items up to visible_count for chunked rendering
+            {
+                let all_entries = entries();
+                let visible = visible_count();
+                let items_to_render = all_entries.iter().take(visible).enumerate();
 
-                    rsx! {
-                        NoteListItem {
-                            key: "{entry_path}",
-                            entry: entry.clone(),
-                            index,
-                            is_active,
-                            theme: theme.clone(),
-                            item_class: item_class.to_string(),
-                            element_action: element_action.clone(),
-                            selected_signal: selector_handler.selected,
-                            selector_handler: selector_handler.clone(),
-                            select_by_mouse,
-                            row_mounts,
+                rsx! {
+                    for (index , entry) in items_to_render {
+                        {
+                            let entry_path = entry.get_path().to_owned();
+                            let is_active = entry_path.eq(&active_path);
+
+                            rsx! {
+                                NoteListItem {
+                                    key: "{entry_path}",
+                                    entry: entry.clone(),
+                                    index,
+                                    is_active,
+                                    theme: theme.clone(),
+                                    item_class: item_class.to_string(),
+                                    element_action: element_action.clone(),
+                                    selected_signal: selector_handler.selected,
+                                    selector_handler: selector_handler.clone(),
+                                    select_by_mouse,
+                                    row_mounts,
+                                }
+                            }
+                        }
+                    }
+                    // Show loading indicator if there are more items
+                    if visible < all_entries.len() {
+                        div {
+                            class: "loading-more",
+                            style: "padding: 1rem; text-align: center; color: {theme.text_muted};",
+                            "Loading {all_entries.len() - visible} more..."
                         }
                     }
                 }
