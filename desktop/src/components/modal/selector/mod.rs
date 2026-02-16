@@ -66,35 +66,46 @@ where
         let selected = selector_preview.get_selected();
         let vault = vault.clone();
         async move {
-            if let Some(selection) = selected {
-                info!("Preview Text for {}", selected.unwrap());
-                let r = entries();
-                let entry = r.get(selection);
-                if let Some(value) = entry {
-                    let value_copy = value.to_owned();
-                    tokio::spawn(async move {
-                        let preview = vault.load_note(&value_copy.get_path()).await.map_or_else(
-                            |e| PreviewData {
-                                title: "Error loading preview...".to_string(),
-                                data: e.to_string(),
-                                content: "".to_string(),
-                            },
-                            |d| PreviewData {
-                                title: d.get_title(),
-                                data: d.path.to_string(),
-                                content: d.raw_text,
-                            },
-                        );
-                        Some(preview)
-                    })
-                    .await
-                    .unwrap()
-                } else {
-                    None
+            match selected {
+                Some(selection) => {
+                    info!("Preview Text for {}", selection);
+                    let r = entries();
+                    match r.get(selection) {
+                        Some(value) => match &value.e_type {
+                            NoteEntryType::Note { .. } => {
+                                let value_copy = value.to_owned();
+                                tokio::spawn(async move {
+                                    let preview = vault
+                                        .load_note(&value_copy.get_path())
+                                        .await
+                                        .map_or_else(
+                                            |e| PreviewData {
+                                                title: "Error loading preview...".to_string(),
+                                                data: e.to_string(),
+                                                content: "".to_string(),
+                                            },
+                                            |d| PreviewData {
+                                                title: d.get_title(),
+                                                data: d.path.to_string(),
+                                                content: d.raw_text,
+                                            },
+                                        );
+                                    Some(preview)
+                                })
+                                .await
+                                .unwrap_or_default()
+                            }
+                            NoteEntryType::Create { name } => Some(PreviewData {
+                                title: "Create New Note".to_string(),
+                                data: value.get_path().to_string(),
+                                content: format!("New note will be created: {}", name),
+                            }),
+                            _ => None,
+                        },
+                        None => None,
+                    }
                 }
-            } else {
-                // Nothing selected
-                None
+                None => None,
             }
         }
     });

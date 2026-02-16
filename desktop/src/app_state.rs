@@ -96,14 +96,17 @@ impl AppState {
     }
 
     pub fn show_preview_pane(&mut self, state: Option<PreviewListState>) {
+        debug!("Show preview pane");
         if let Some(state) = state {
-            self.set_preview_pane_state(state);
+            self.set_preview_pane_state(state.clone());
+            self.show_preview_pane = Some(state);
         } else {
             self.show_preview_pane = Some(self.last_preview_list_state.clone());
         }
     }
 
     pub fn hide_preview_pane(&mut self) {
+        debug!("Hide preview pane");
         self.show_preview_pane = None;
     }
 
