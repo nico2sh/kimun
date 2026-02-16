@@ -174,7 +174,7 @@ where
                 row_mounts.write().insert(index, e.data());
             },
             onmouseover: move |_e| {
-                if select_by_mouse() {
+                if *select_by_mouse.peek() {
                     selector_handler.set_selected(Some(index));
                 }
             },
@@ -285,12 +285,12 @@ where
             class: "entry-list",
             id: "entryList",
             onmousemove: move |_e| {
-                if !select_by_mouse() {
+                if !*select_by_mouse.peek() {
                     select_by_mouse.set(true);
                 }
             },
             onmouseleave: move |_e| {
-                if select_by_mouse() {
+                if *select_by_mouse.peek() {
                     selector_mouse.set_selected(None);
                 }
             },
