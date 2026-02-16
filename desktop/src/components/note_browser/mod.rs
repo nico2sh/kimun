@@ -358,7 +358,7 @@ struct BrowseFuncions {
 
 impl SelectorFunctions for BrowseFuncions {
     async fn init(&self) -> Vec<NoteBrowseEntry> {
-        info!("Load all entries");
+        info!("Load all entries from path {}", self.browsing_directory);
         let mut entries = vec![];
         let (search_options, rx) = VaultBrowseOptionsBuilder::new(&self.browsing_directory.read())
             .full_validation()

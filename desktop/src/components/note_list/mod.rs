@@ -8,6 +8,7 @@ use kimun_core::nfs::VaultPath;
 
 use crate::components::note_list::note_browse_entry::NoteBrowseEntry;
 use crate::settings::AppSettings;
+use crate::themes::Theme;
 use crate::utils::sparse_vector::SparseVector;
 
 #[derive(Clone, PartialEq, Props)]
@@ -95,6 +96,100 @@ impl SelectorHandler {
     }
 }
 
+// Memoized list item component - each item subscribes to selected signal independently
+// This allows only the previously selected and newly selected items to re-render
+#[derive(Clone, PartialEq, Props)]
+struct NoteListItemProps<H>
+where
+    H: NoteElementActions + Clone + PartialEq + 'static,
+{
+    entry: NoteBrowseEntry,
+    index: usize,
+    is_active: bool,
+    theme: Theme,
+    item_class: String,
+    element_action: H,
+    selected_signal: Signal<Option<usize>>,
+    selector_handler: SelectorHandler,
+    select_by_mouse: Signal<bool>,
+    row_mounts: Signal<SparseVector<Rc<MountedData>>>,
+}
+
+#[component]
+fn NoteListItem<H>(props: NoteListItemProps<H>) -> Element
+where
+    H: NoteElementActions + Clone + PartialEq + 'static,
+{
+    let NoteListItemProps {
+        entry,
+        index,
+        is_active,
+        theme,
+        item_class,
+        mut element_action,
+        selected_signal,
+        selector_handler,
+        select_by_mouse,
+        mut row_mounts,
+    } = props;
+
+    // Memoize selection check - only re-render when THIS item's selection status changes
+    // Not when the selection signal changes to a different item
+    let is_selected_memo = use_memo(move || selected_signal() == Some(index));
+    let is_selected = is_selected_memo();
+    debug!("Rendering item {index}, selected: {is_selected}");
+
+    let cls = format!(
+        "{}{}",
+        item_class,
+        if is_selected {
+            " selected"
+        } else if is_active {
+            " active"
+        } else {
+            ""
+        },
+    );
+
+    let border_color = if is_selected {
+        theme.accent_yellow.to_string()
+    } else if is_active {
+        theme.accent_green.to_string()
+    } else {
+        "transparent".to_string()
+    };
+
+    let entry_action = entry.clone();
+
+    rsx! {
+        div {
+            class: "{cls}",
+            border_bottom_color: "{theme.border_light}",
+            border_left_color: "{border_color}",
+            background_color: if is_selected { "{theme.bg_hover}" } else { "transparent" },
+            id: "element-{index}",
+            onmounted: move |e| {
+                row_mounts.write().insert(index, e.data());
+            },
+            onmouseover: move |_e| {
+                if select_by_mouse() {
+                    selector_handler.set_selected(Some(index));
+                }
+            },
+            onclick: move |e| {
+                info!("Clicked element");
+                e.stop_propagation();
+                element_action.on_select(&entry_action);
+            },
+            {entry.get_view(&theme)}
+
+            if is_selected {
+                {element_action.on_hover(&entry)}
+            }
+        }
+    }
+}
+
 #[component]
 pub fn NoteList<H>(props: NoteListProps<H>) -> Element
 where
@@ -104,16 +199,18 @@ where
     let selector_handler = props.selector_handler;
     let entries = props.entries;
 
-    let num_entries = props.entries.len();
+    // Use peek() to avoid subscribing to entries signal for length check
+    let num_entries = props.entries.peek().len();
     let active_path: VaultPath = props.active_path;
     let element_action = props.element_action;
 
     let mut select_by_mouse = use_signal(|| true);
-    let mut row_mounts = use_signal(|| SparseVector::<Rc<MountedData>>::with_capacity(num_entries));
+    let row_mounts = use_signal(|| SparseVector::<Rc<MountedData>>::with_capacity(num_entries));
 
     _ = use_resource(move || async move {
         let r = selector_handler.manually_selected.read().to_owned();
-        if let Some(mount) = row_mounts().get(r) {
+        // Use peek() to avoid subscribing to row_mounts
+        if let Some(mount) = row_mounts.peek().get(r) {
             let _a = mount.scroll_to(ScrollBehavior::Smooth).await;
             select_by_mouse.set(false);
         }
@@ -125,8 +222,11 @@ where
         "note-item"
     };
 
-    let theme = settings().get_theme();
+    // Memoize theme to avoid re-reading settings signal on every render
+    let theme_memo = use_memo(move || settings.peek().get_theme());
+    let theme = theme_memo();
     let selector_mouse = selector_handler.clone();
+
     rsx! {
         div {
             class: "entry-list",
@@ -141,53 +241,26 @@ where
                     selector_mouse.set_selected(None);
                 }
             },
+            // Use keyed list to optimize re-renders
+            // Each NoteListItem subscribes to selected_signal independently
             for (index , entry) in entries().iter().enumerate() {
                 {
                     let entry_path = entry.get_path().to_owned();
-                    let slct = selector_handler.get_selected() == Some(index);
-                    let active = entry_path.eq(&active_path);
-                    let entry_action = entry.clone();
-                    let mut element_click = element_action.clone();
-                    let cls = format!(
-                        "{item_class}{}",
-                        if slct { " selected" } else { if active { " active" } else { "" } },
-                    );
-                    let border_color = if slct {
-                        theme.accent_yellow.to_string()
-                    } else {
-                        if active {
-                            theme.accent_green.to_string()
-                        } else {
-                            "transparent".to_string()
-                        }
-                    };
-                    let selector_handler = selector_handler.clone();
+                    let is_active = entry_path.eq(&active_path);
+
                     rsx! {
-                        div {
-                            class: "{cls}",
-                            border_bottom_color: "{theme.border_light}",
-                            border_left_color: "{border_color}",
-                            background_color: if slct { "{theme.bg_hover}" } else { "transparent" },
-                            id: "element-{index}",
-                            onmounted: move |e| {
-                                row_mounts.write().insert(index, e.data());
-                            },
-                            onmouseover: move |_e| {
-                                if select_by_mouse() {
-                                    selector_handler.set_selected(Some(index));
-                                }
-                            },
-                            onclick: move |e| {
-                                info!("Clicked element");
-                                e.stop_propagation();
-                                element_click.on_select(&entry_action);
-                            },
-                            {entry.get_view(&theme)}
-
-
-                            if slct {
-                                {element_action.on_hover(entry)}
-                            }
+                        NoteListItem {
+                            key: "{entry_path}",
+                            entry: entry.clone(),
+                            index,
+                            is_active,
+                            theme: theme.clone(),
+                            item_class: item_class.to_string(),
+                            element_action: element_action.clone(),
+                            selected_signal: selector_handler.selected,
+                            selector_handler: selector_handler.clone(),
+                            select_by_mouse,
+                            row_mounts,
                         }
                     }
                 }
