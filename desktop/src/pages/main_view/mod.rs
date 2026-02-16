@@ -96,6 +96,7 @@ pub fn MainView() -> Element {
                 }
                 GlobalEvent::OpenPreviewPane(source) => {
                     debug!("Preview pane, with source: {}", source);
+                    app_state.write().set_preview_pane_state(source);
                 }
                 _ => {}
             }),
@@ -277,9 +278,7 @@ pub fn MainView() -> Element {
                     None => {
                         debug!("Loading...");
                         rsx! {
-                            div {
-                                "Loading..."
-                            }
+                            div { "Loading..." }
                         }
                     }
                 }
