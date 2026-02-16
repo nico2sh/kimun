@@ -17,7 +17,7 @@ use crate::{
             note_list_loader::{no_op, use_note_list, SelectorFunctions},
             NoteElementActions, NoteList, SelectorHandler,
         },
-        search_box::{SearchBox, StringSearch},
+        search_box::SearchBox,
     },
     settings::AppSettings,
 };
