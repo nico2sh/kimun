@@ -3,7 +3,6 @@ use std::future::Future;
 
 use crate::components::{
     note_list::note_browse_entry::{NoteBrowseEntry, SortCriteria},
-    search_box::StringSearch,
 };
 use dioxus::prelude::*;
 

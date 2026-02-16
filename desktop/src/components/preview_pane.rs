@@ -1,4 +1,4 @@
-use std::{fmt::Display, sync::Arc};
+use std::sync::Arc;
 
 use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, note::MarkdownNote, NoteVault};
@@ -13,7 +13,7 @@ use crate::{
             NoteElementActions, NoteList, SelectorHandler,
         },
         preview::Markdown,
-        search_box::{SearchBox, StringSearch},
+        search_box::SearchBox,
     },
     settings::AppSettings,
 };
