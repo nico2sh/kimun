@@ -2,9 +2,7 @@
 
 A notes app. Focus on simplicity, but powerful on searchability.
 
-Mostly human written. Except CSS, CSS is hard.
-
-## Components
+Components
 
 - **Desktop App**: The main Tauri-based note-taking application
 - **RAG Server**: A standalone HTTP server for semantic search and AI-powered Q&A over your notes (see [rag/README.md](rag/README.md))
@@ -116,13 +114,13 @@ A bash script to generate Semantic Version tags on git releases
 
 If I do a search, it will return:
 
-| Search term | Result | Notes |
-|-------------|--------|-------|
-|`kimun` | `projects.md` `tasks.md` `personal-thoughts.md`| All three notes contains Kimün, the dieresis is ignored|
-|`>personal kimun` |`projects.md` `tasks.md`| Only these two notes have the search term under "Personal"|
-|`@thoughts` |`personal-thougts.md` `general-thougts.md`| We look for a file whose name contains "thoughts"|
-|`@thoughts kimun` |`personal-thougts.md`| We look for a file called "thoughts" containing "Kimun"|
-|`screen*` |`tasks.md` `general-thougts.md`| "tasks.md" contains the word "screenshot", "general-thoughts.md" contains the word "screens"|
+| Search term         | Result                                                | Notes                                                                                        |
+| ------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `kimun`           | `projects.md` `tasks.md` `personal-thoughts.md` | All three notes contains Kimün, the dieresis is ignored                                     |
+| `>personal kimun` | `projects.md` `tasks.md`                          | Only these two notes have the search term under "Personal"                                   |
+| `@thoughts`       | `personal-thougts.md` `general-thougts.md`        | We look for a file whose name contains "thoughts"                                            |
+| `@thoughts kimun` | `personal-thougts.md`                               | We look for a file called "thoughts" containing "Kimun"                                      |
+| `screen*`         | `tasks.md` `general-thougts.md`                   | "tasks.md" contains the word "screenshot", "general-thoughts.md" contains the word "screens" |
 
 ## Short-term roadmap
 
