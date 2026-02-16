@@ -33,7 +33,7 @@ pub struct UseNoteList {
     inner: Signal<SearchStateData>,
     raw_data: Signal<Vec<NoteBrowseEntry>>,
     pub display_data: Signal<Vec<NoteBrowseEntry>>,
-    state: Signal<LoadState>,
+    pub state: Signal<LoadState>,
 }
 
 impl UseNoteList {
