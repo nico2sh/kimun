@@ -2,20 +2,12 @@
 
 A notes app. Focus on simplicity, but powerful on searchability.
 
+Although by no means this has been vibe coded, as most of the core has been manually written, there's a fair contribution of AI assisted code (using Claude). Most of the cases for tedious refactors (migrate from rusqlite to sqlx), data structures I'm too lazy to code myself (Sparse Vector) or CSS, as CSS is terribly hard. Use AI as a tool, not as a replacement.
+
 Components
 
 - **Desktop App**: The main Tauri-based note-taking application
 - **RAG Server**: A standalone HTTP server for semantic search and AI-powered Q&A over your notes (see [rag/README.md](rag/README.md))
-
-## Building
-
-The app uses gxhash that uses some specific hardware acceleration features. If when compiling you get an error, make sure you add the flag `RUSTFLAGS="-C target-cpu=native"`
-
-On Windows (PowerShell):
-
-```powershell
-$env:RUSTFLAGS="-C target-cpu=native"
-```
 
 ## Searching
 
