@@ -187,6 +187,7 @@ where
                 active_path: VaultPath::root(),
                 element_action,
                 selector_handler,
+                load_state: note_list_loaded.state,
             }
             div { class: "preview-pane", background_color: "{theme.bg_main}",
                 match &*preview_text.read_unchecked() {

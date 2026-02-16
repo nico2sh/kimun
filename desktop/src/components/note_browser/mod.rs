@@ -71,6 +71,9 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, editor_path: ReadSignal<VaultPath>) ->
     );
     let selector_handler = SelectorHandler::build(use_note_list.display_data.clone());
 
+    // Extract state signal before moving use_note_list
+    let list_state = use_note_list.state;
+
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
     use_effect(move || {
@@ -181,6 +184,7 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, editor_path: ReadSignal<VaultPath>) ->
                             use_note_list,
                         },
                         selector_handler,
+                        load_state: list_state,
                     }
                 }
             }

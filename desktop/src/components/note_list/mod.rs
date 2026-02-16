@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::components::note_list::note_browse_entry::NoteBrowseEntry;
+use crate::components::note_list::note_list_loader::LoadState;
 use crate::settings::AppSettings;
 use crate::themes::Theme;
 use crate::utils::sparse_vector::SparseVector;
@@ -22,6 +23,8 @@ where
     selector_handler: SelectorHandler,
     #[props(default = false)]
     compact: bool,
+    #[props(optional)]
+    load_state: Option<Signal<LoadState>>,
 }
 
 pub trait NoteElementActions: Clone + PartialEq {
@@ -137,7 +140,6 @@ where
     // Not when the selection signal changes to a different item
     let is_selected_memo = use_memo(move || selected_signal() == Some(index));
     let is_selected = is_selected_memo();
-    debug!("Rendering item {index}, selected: {is_selected}");
 
     let cls = format!(
         "{}{}",
@@ -271,6 +273,13 @@ where
     let theme = theme_memo();
     let selector_mouse = selector_handler.clone();
 
+    // Check if we're in loading state
+    let is_initializing = props
+        .load_state
+        .as_ref()
+        .map(|state| matches!(state(), LoadState::Initializing))
+        .unwrap_or(false);
+
     rsx! {
         div {
             class: "entry-list",
@@ -285,43 +294,52 @@ where
                     selector_mouse.set_selected(None);
                 }
             },
-            // Use keyed list to optimize re-renders
-            // Each NoteListItem subscribes to selected_signal independently
-            // Only render items up to visible_count for chunked rendering
-            {
-                let all_entries = entries();
-                let visible = visible_count();
-                let items_to_render = all_entries.iter().take(visible).enumerate();
+            // Show loading message during initialization
+            if is_initializing {
+                div {
+                    class: "loading-initial",
+                    style: "padding: 2rem; text-align: center; color: {theme.text_muted};",
+                    "Loading notes..."
+                }
+            } else {
+                // Use keyed list to optimize re-renders
+                // Each NoteListItem subscribes to selected_signal independently
+                // Only render items up to visible_count for chunked rendering
+                {
+                    let all_entries = entries();
+                    let visible = visible_count();
+                    let items_to_render = all_entries.iter().take(visible).enumerate();
 
-                rsx! {
-                    for (index , entry) in items_to_render {
-                        {
-                            let entry_path = entry.get_path().to_owned();
-                            let is_active = entry_path.eq(&active_path);
+                    rsx! {
+                        for (index , entry) in items_to_render {
+                            {
+                                let entry_path = entry.get_path().to_owned();
+                                let is_active = entry_path.eq(&active_path);
 
-                            rsx! {
-                                NoteListItem {
-                                    key: "{entry_path}",
-                                    entry: entry.clone(),
-                                    index,
-                                    is_active,
-                                    theme: theme.clone(),
-                                    item_class: item_class.to_string(),
-                                    element_action: element_action.clone(),
-                                    selected_signal: selector_handler.selected,
-                                    selector_handler: selector_handler.clone(),
-                                    select_by_mouse,
-                                    row_mounts,
+                                rsx! {
+                                    NoteListItem {
+                                        key: "{entry_path}",
+                                        entry: entry.clone(),
+                                        index,
+                                        is_active,
+                                        theme: theme.clone(),
+                                        item_class: item_class.to_string(),
+                                        element_action: element_action.clone(),
+                                        selected_signal: selector_handler.selected,
+                                        selector_handler: selector_handler.clone(),
+                                        select_by_mouse,
+                                        row_mounts,
+                                    }
                                 }
                             }
                         }
-                    }
-                    // Show loading indicator if there are more items
-                    if visible < all_entries.len() {
-                        div {
-                            class: "loading-more",
-                            style: "padding: 1rem; text-align: center; color: {theme.text_muted};",
-                            "Loading {all_entries.len() - visible} more..."
+                        // Show loading indicator if there are more items
+                        if visible < all_entries.len() {
+                            div {
+                                class: "loading-more",
+                                style: "padding: 1rem; text-align: center; color: {theme.text_muted};",
+                                "Loading {all_entries.len() - visible} more..."
+                            }
                         }
                     }
                 }

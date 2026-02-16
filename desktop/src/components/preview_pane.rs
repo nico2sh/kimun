@@ -128,6 +128,9 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
     let selector_handler = SelectorHandler::build(loaded_note_list.display_data.clone());
     let entries = loaded_note_list.display_data;
 
+    // Extract state signal before moving loaded_note_list
+    let list_state = loaded_note_list.state;
+
     use_drop(move || {
         debug!("We close the pane");
         app_state
@@ -232,6 +235,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                             element_action: NoHoverAction { active_path },
                             selector_handler,
                             compact: true,
+                            load_state: list_state,
                         }
                     }
                 }
