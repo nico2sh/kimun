@@ -44,11 +44,8 @@ impl EditorSaveManager {
             let path = self.path.clone();
             let text = self.content.peek().clone();
             let vault = self.vault.clone();
-            tokio::spawn(async move {
-                let _ = vault.save_note(&path, text);
-                debug!("Saved at {}", path);
-            })
-            .await?;
+            let _ = vault.save_note(&path, text).await;
+            debug!("Saved at {}", path);
             self.editor_state.write().mark_content_clean();
         }
         Ok(())
@@ -62,7 +59,12 @@ impl Drop for EditorSaveManager {
         if dirty_status {
             debug!("Saving so we don't lose data");
             let text = self.content.peek().clone();
-            let _ = self.vault.save_note(&self.path, text);
+            let vault = self.vault.clone();
+            let path = self.path.clone();
+            // Spawn a task for async save - Drop must be synchronous
+            tokio::spawn(async move {
+                let _ = vault.save_note(&path, text).await;
+            });
             // self.content.write().mark_clean();
         }
     }
@@ -164,11 +166,11 @@ pub fn ContentViewer(props: ContentViewerProps) -> Element {
         debug!("[Initial Content] Loading text content");
         let vault = vault_content.clone();
         async move {
-            let exists = vault.exists(&props.note_path.read()).is_some();
+            let exists = vault.exists(&props.note_path.read()).await.is_some();
             debug!("[Initial Content] Exists: {:?}", exists);
             let result = if exists {
                 debug!("[Initial Content] Loading from path at {}", props.note_path);
-                let text = vault.load_note(&props.note_path.read()).map_or_else(
+                let text = vault.load_note(&props.note_path.read()).await.map_or_else(
                     |e| {
                         error!("[Initial Content] Error loading Note: {}", e);
                         String::new()
@@ -208,7 +210,11 @@ pub fn ContentViewer(props: ContentViewerProps) -> Element {
                         if dirty_status {
                             debug!("Saving so we don't lose data");
                             let text = content.peek().clone();
-                            let _ = vault.save_note(&props.note_path.read(), text);
+                            let vault = vault.clone();
+                            let path = props.note_path.read().clone();
+                            spawn(async move {
+                                let _ = vault.save_note(&path, text).await;
+                            });
                             editor_state.write().mark_content_clean();
                         }
                     }

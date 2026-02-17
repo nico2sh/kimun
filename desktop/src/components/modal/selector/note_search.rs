@@ -21,15 +21,20 @@ struct SearchFunctions {
     vault: Arc<NoteVault>,
 }
 
-impl SelectorFunctions<String> for SearchFunctions {
-    fn init(&self) -> Vec<NoteBrowseEntry> {
+impl SelectorFunctions for SearchFunctions {
+    async fn init(&self) -> Vec<NoteBrowseEntry> {
         debug!("Opening Note Search");
         vec![]
     }
 
-    fn filter(&self, filter_text: String, _items: &[NoteBrowseEntry]) -> Vec<NoteBrowseEntry> {
+    async fn filter(
+        &self,
+        filter_text: String,
+        _items: &[NoteBrowseEntry],
+    ) -> Vec<NoteBrowseEntry> {
         debug!("Searching {}", filter_text);
-        match self.vault.search_notes(filter_text) {
+        let vault = self.vault.clone();
+        match vault.search_notes(filter_text).await {
             Ok(res) => res
                 .into_iter()
                 .map(|(entry, content)| NoteBrowseEntry::from_note_details(entry.path, content))
@@ -58,52 +63,3 @@ pub fn NoteSearch(props: SearchProps) -> Element {
         true,
     )
 }
-
-// #[derive(Clone, Eq, PartialEq)]
-// pub struct NoteSearchEntry {
-//     note_path: VaultPath,
-//     note_title: String,
-//     search_str: String,
-// }
-
-// impl NoteSearchEntry {
-//     pub fn from_note_details(note: (NoteEntryData, NoteContentData)) -> Self {
-//         let entry = note.0;
-//         let content = note.1;
-//         let note_path = entry.path.clone();
-//         let note_title = content.title;
-//         let path_str = format!("{} {}", note_path, note_title);
-//         Self {
-//             note_path,
-//             note_title,
-//             search_str: path_str,
-//         }
-//     }
-// }
-
-// impl AsRef<str> for NoteSearchEntry {
-//     fn as_ref(&self) -> &str {
-//         self.search_str.as_str()
-//     }
-// }
-
-// impl RowItem for NoteSearchEntry {
-//     fn on_select(&self) -> bool {
-//         let encoded_path = encode_path(&self.note_path);
-//         navigator().replace(crate::Route::MainView {
-//             encoded_path,
-//             create: false,
-//         });
-//         true
-//     }
-
-//     fn get_view(&self) -> Element {
-//         rsx! {
-//             div {
-//                 class: "note-item-content",
-//                 div { class: "note-title", "{self.note_title}" }
-//                 div { class: "note-meta", "{self.note_path.to_string()}" }
-//             }
-//         }
-//     }
-// }

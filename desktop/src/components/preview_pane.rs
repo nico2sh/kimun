@@ -1,4 +1,4 @@
-use std::{fmt::Display, sync::Arc};
+use std::sync::Arc;
 
 use dioxus::prelude::*;
 use kimun_core::{nfs::VaultPath, note::MarkdownNote, NoteVault};
@@ -13,41 +13,41 @@ use crate::{
             NoteElementActions, NoteList, SelectorHandler,
         },
         preview::Markdown,
-        search_box::{SearchBox, StringSearch},
+        search_box::SearchBox,
     },
     settings::AppSettings,
 };
 
-#[derive(Clone, PartialEq, Debug)]
-pub enum PreviewListSource {
-    FromQuery(String),
-    FromList(String, Vec<NoteBrowseEntry>),
-}
+// #[derive(Clone, PartialEq, Debug)]
+// pub enum PreviewListSource {
+//     FromQuery(String),
+//     FromList(String, Vec<NoteBrowseEntry>),
+// }
 
-impl Default for PreviewListSource {
-    fn default() -> Self {
-        Self::FromQuery("".to_string())
-    }
-}
+// impl Default for PreviewListSource {
+//     fn default() -> Self {
+//         Self::FromQuery("".to_string())
+//     }
+// }
 
-impl StringSearch for PreviewListSource {
-    fn change_value(&mut self, value: String) {
-        *self = PreviewListSource::FromQuery(value);
-    }
-}
+// impl StringSearch for PreviewListSource {
+//     fn change_value(&mut self, value: String) {
+//         *self = PreviewListSource::FromQuery(value);
+//     }
+// }
 
-impl Display for PreviewListSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                PreviewListSource::FromList(query, _items) => query,
-                PreviewListSource::FromQuery(query) => query,
-            }
-        )
-    }
-}
+// impl Display for PreviewListSource {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(
+//             f,
+//             "{}",
+//             match self {
+//                 PreviewListSource::FromList(query, _items) => query,
+//                 PreviewListSource::FromQuery(query) => query,
+//             }
+//         )
+//     }
+// }
 
 enum PreviewContent {
     None,
@@ -67,37 +67,32 @@ pub struct PreviewListFunctions {
     pub vault: Arc<NoteVault>,
 }
 
-impl SelectorFunctions<PreviewListSource> for PreviewListFunctions {
-    fn init(&self) -> Vec<NoteBrowseEntry> {
+impl SelectorFunctions for PreviewListFunctions {
+    async fn init(&self) -> Vec<NoteBrowseEntry> {
         vec![]
     }
 
-    fn filter(
+    async fn filter(
         &self,
-        filter_text: PreviewListSource,
+        filter_text: String,
         _initial_items: &[NoteBrowseEntry],
     ) -> Vec<NoteBrowseEntry> {
-        match &filter_text {
-            PreviewListSource::FromQuery(_query) => {
-                let filter_text = filter_text.to_owned();
-                match self.vault.search_notes(filter_text.to_string()) {
-                    Ok(res) => res
-                        .into_iter()
-                        .map(|(entry, content)| {
-                            if let Some(date) = self.vault.journal_date(&entry.path) {
-                                NoteBrowseEntry::from_note_journal(entry.path, content, date)
-                            } else {
-                                NoteBrowseEntry::from_note_details(entry.path, content)
-                            }
-                        })
-                        .collect::<Vec<NoteBrowseEntry>>(),
-                    Err(e) => {
-                        error!("Error searching notes: {}", e);
-                        vec![]
+        let vault = self.vault.clone();
+        match vault.search_notes(filter_text.to_string()).await {
+            Ok(res) => res
+                .into_iter()
+                .map(|(entry, content)| {
+                    if let Some(date) = self.vault.journal_date(&entry.path) {
+                        NoteBrowseEntry::from_note_journal(entry.path, content, date)
+                    } else {
+                        NoteBrowseEntry::from_note_details(entry.path, content)
                     }
-                }
+                })
+                .collect::<Vec<NoteBrowseEntry>>(),
+            Err(e) => {
+                error!("Error searching notes: {}", e);
+                vec![]
             }
-            PreviewListSource::FromList(_query, items) => items.to_owned(),
         }
     }
 }
@@ -133,6 +128,9 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
     let selector_handler = SelectorHandler::build(loaded_note_list.display_data.clone());
     let entries = loaded_note_list.display_data;
 
+    // Extract state signal before moving loaded_note_list
+    let list_state = loaded_note_list.state;
+
     use_drop(move || {
         debug!("We close the pane");
         app_state
@@ -163,7 +161,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
             if active_path.read().is_root_or_empty() {
                 PreviewContent::None
             } else {
-                match vault_content.load_note(&active_path.read()) {
+                match vault_content.load_note(&active_path.read()).await {
                     Ok(note) => PreviewContent::Note(note.get_markdown_and_links()),
                     Err(e) => PreviewContent::Err(format!("Error loading Note: {}", e)),
                 }
@@ -237,6 +235,7 @@ pub fn PreviewPane(props: PreviewPaneProps) -> Element {
                             element_action: NoHoverAction { active_path },
                             selector_handler,
                             compact: true,
+                            load_state: list_state,
                         }
                     }
                 }

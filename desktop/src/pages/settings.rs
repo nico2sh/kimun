@@ -83,8 +83,15 @@ pub fn Settings() -> Element {
                                 theme: theme.clone(),
                                 action: move |_| {
                                     if let Some(workspace_dir) = settings().workspace_dir {
-                                        let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
-                                        app_state.write().get_modal_mut().set_indexer(vault, IndexType::Fast);
+                                        spawn(async move {
+                                            if let Ok(vault) = NoteVault::new(workspace_dir).await {
+                                                let vault = Arc::new(vault);
+                                                app_state
+                                                    .write()
+                                                    .get_modal_mut()
+                                                    .set_indexer(vault, IndexType::Fast);
+                                            }
+                                        });
                                     }
                                 },
                                 disabled: settings().workspace_dir.is_none(),
@@ -97,10 +104,15 @@ pub fn Settings() -> Element {
                             Button {
                                 title: "Full Index",
                                 theme: theme.clone(),
-                                action: move |_| {
+                                action: move |_| async move {
                                     if let Some(workspace_dir) = settings().workspace_dir {
-                                        let vault = Arc::new(NoteVault::new(workspace_dir).unwrap());
-                                        app_state.write().get_modal_mut().set_indexer(vault, IndexType::Full);
+                                        if let Ok(vault) = NoteVault::new(workspace_dir).await {
+                                            let vault = Arc::new(vault);
+                                            app_state
+                                                .write()
+                                                .get_modal_mut()
+                                                .set_indexer(vault, IndexType::Full);
+                                        }
                                     }
                                 },
                                 disabled: settings().workspace_dir.is_none(),

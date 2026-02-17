@@ -101,25 +101,31 @@ pub fn DeleteConfirm(vault: Arc<NoteVault>, path: VaultPath) -> Element {
                 pub_sub.publish(GlobalEvent::MarkNoteClean);
 
                 let is_note = delete_path.is_note();
-                let delete_result = if is_note {
-                    vault.delete_note(&delete_path)
-                } else {
-                    vault.delete_directory(&delete_path)
-                };
-                if let Err(e) = delete_result {
-                    error!("Error: {}", e);
-                    app_state.write().get_modal_mut().set_error(
-                        format!(
-                            "Error deleting {}: {}",
-                            if is_note { "note" } else { "directory" },
-                            delete_path
-                        ),
-                        format!("{}", e),
-                    );
-                } else {
-                    pub_sub.publish(GlobalEvent::Deleted(delete_path.clone()));
-                    app_state.write().close_modal();
-                }
+                let vault = vault.clone();
+                let delete_path = delete_path.clone();
+                let pub_sub = pub_sub.clone();
+
+                spawn(async move {
+                    let delete_result = if is_note {
+                        vault.delete_note(&delete_path).await
+                    } else {
+                        vault.delete_directory(&delete_path).await
+                    };
+                    if let Err(e) = delete_result {
+                        error!("Error: {}", e);
+                        app_state.write().get_modal_mut().set_error(
+                            format!(
+                                "Error deleting {}: {}",
+                                if is_note { "note" } else { "directory" },
+                                delete_path
+                            ),
+                            format!("{}", e),
+                        );
+                    } else {
+                        pub_sub.publish(GlobalEvent::Deleted(delete_path.clone()));
+                        app_state.write().close_modal();
+                    }
+                });
             }),
         ),
     ];
@@ -152,7 +158,10 @@ pub fn MoveConfirm(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
                 .no_validation()
                 .build();
             let _ = tokio::spawn(async move {
-                vault.browse_vault(options).expect("Error fetching Entries");
+                vault
+                    .browse_vault(options)
+                    .await
+                    .expect("Error fetching Entries");
             })
             .await;
             while let Ok(res) = receiver.recv() {
@@ -178,30 +187,36 @@ pub fn MoveConfirm(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
                 pub_sub.publish(GlobalEvent::SaveCurrentNote);
                 let to = dest_path.read().append(&VaultPath::new(&current_note_name));
                 let is_note = from_path.is_note();
-                let move_result = if is_note {
-                    vault.rename_note(&from_path, &to)
-                } else {
-                    vault.rename_directory(&from_path, &to)
-                };
+                let vault = vault.clone();
+                let from_path = from_path.clone();
+                let pub_sub = pub_sub.clone();
 
-                if let Err(e) = move_result {
-                    error!("Error: {}", e);
-                    app_state.write().get_modal_mut().set_error(
-                        format!(
-                            "Error moving {}: {}",
-                            if is_note { "note" } else { "directory" },
-                            from_path
-                        ),
-                        format!("{}", e),
-                    );
-                } else {
-                    pub_sub.publish(GlobalEvent::Moved {
-                        from: from_path.clone(),
-                        to,
-                    });
+                spawn(async move {
+                    let move_result = if is_note {
+                        vault.rename_note(&from_path, &to).await
+                    } else {
+                        vault.rename_directory(&from_path, &to).await
+                    };
 
-                    app_state.write().close_modal();
-                }
+                    if let Err(e) = move_result {
+                        error!("Error: {}", e);
+                        app_state.write().get_modal_mut().set_error(
+                            format!(
+                                "Error moving {}: {}",
+                                if is_note { "note" } else { "directory" },
+                                from_path
+                            ),
+                            format!("{}", e),
+                        );
+                    } else {
+                        pub_sub.publish(GlobalEvent::Moved {
+                            from: from_path.clone(),
+                            to,
+                        });
+
+                        app_state.write().close_modal();
+                    }
+                });
             }),
         ),
     ];
@@ -261,30 +276,36 @@ pub fn RenameConfirm(vault: Arc<NoteVault>, path: VaultPath) -> Element {
                 pub_sub.publish(GlobalEvent::SaveCurrentNote);
                 let to = current_path.append(&VaultPath::new(&*new_name.read()));
                 let is_note = path.is_note();
-                let move_result = if is_note {
-                    vault.rename_note(&path, &to)
-                } else {
-                    vault.rename_directory(&path, &to)
-                };
+                let vault = vault.clone();
+                let path = path.clone();
+                let pub_sub = pub_sub.clone();
 
-                if let Err(e) = move_result {
-                    error!("Error: {}", e);
-                    app_state.write().get_modal_mut().set_error(
-                        format!(
-                            "Error renaming {}: {}",
-                            if is_note { "note" } else { "directory" },
-                            path
-                        ),
-                        format!("{}", e),
-                    );
-                } else {
-                    pub_sub.publish(GlobalEvent::Renamed {
-                        old_name: path.clone(),
-                        new_name: to.clone(),
-                    });
+                spawn(async move {
+                    let move_result = if is_note {
+                        vault.rename_note(&path, &to).await
+                    } else {
+                        vault.rename_directory(&path, &to).await
+                    };
 
-                    app_state.write().close_modal();
-                }
+                    if let Err(e) = move_result {
+                        error!("Error: {}", e);
+                        app_state.write().get_modal_mut().set_error(
+                            format!(
+                                "Error renaming {}: {}",
+                                if is_note { "note" } else { "directory" },
+                                path
+                            ),
+                            format!("{}", e),
+                        );
+                    } else {
+                        pub_sub.publish(GlobalEvent::Renamed {
+                            old_name: path.clone(),
+                            new_name: to.clone(),
+                        });
+
+                        app_state.write().close_modal();
+                    }
+                });
             }),
         ),
     ];
@@ -342,7 +363,10 @@ pub fn CreateNote(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
                 .no_validation()
                 .build();
             let _ = tokio::spawn(async move {
-                vault.browse_vault(options).expect("Error fetching Entries");
+                vault
+                    .browse_vault(options)
+                    .await
+                    .expect("Error fetching Entries");
             })
             .await;
             while let Ok(res) = receiver.recv() {
@@ -393,16 +417,21 @@ pub fn CreateNote(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
                             border_color: if select_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
                             onfocusin: move |_e| select_focused.set(true),
                             onfocusout: move |_e| select_focused.set(false),
-                            onchange: move |e| {
-                                new_note_base_path.set(VaultPath::new(e.value()));
-                                let (p, valid) = get_path_is_valid(
-                                    vault_select.clone(),
-                                    &new_note_base_path.read(),
-                                    &*new_note_name.read(),
-                                    false,
-                                );
-                                new_full_path.set(p);
-                                is_valid.set(valid);
+                            onchange: move |e: Event<FormData>| {
+                                let vault = vault_select.clone();
+                                async move {
+                                    new_note_base_path.set(VaultPath::new(e.value()));
+                                    let base = new_note_base_path.read().clone();
+                                    let name = new_note_name.read().clone();
+                                    let (p, valid) = get_path_is_valid(
+                                        vault,
+                                        &base,
+                                        &name,
+                                        false,
+                                    ).await;
+                                    new_full_path.set(p);
+                                    is_valid.set(valid);
+                                }
                             },
                             for path in paths {
                                 option {
@@ -426,16 +455,21 @@ pub fn CreateNote(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
                         color: "{theme.text_primary}",
                         value: "{new_note_name}",
                         placeholder: "Enter new file name",
-                        oninput: move |e| {
-                            new_note_name.set(e.value());
-                            let (p, valid) = get_path_is_valid(
-                                vault.clone(),
-                                &new_note_base_path.read(),
-                                &*new_note_name.read(),
-                                false,
-                            );
-                            new_full_path.set(p);
-                            is_valid.set(valid);
+                        oninput: move |e: Event<FormData>| {
+                            let vault = vault.clone();
+                            async move {
+                                new_note_name.set(e.value());
+                                let base = new_note_base_path.read().clone();
+                                let name = new_note_name.read().clone();
+                                let (p, valid) = get_path_is_valid(
+                                    vault,
+                                    &base,
+                                    &name,
+                                    false,
+                                ).await;
+                                new_full_path.set(p);
+                                is_valid.set(valid);
+                            }
                         },
                     }
                     label { color: if !&is_valid() { "{theme.accent_red}" } else { "{theme.text_light}" },
@@ -476,7 +510,10 @@ pub fn CreateDirectory(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
                 .no_validation()
                 .build();
             let _ = tokio::spawn(async move {
-                vault.browse_vault(options).expect("Error fetching Entries");
+                vault
+                    .browse_vault(options)
+                    .await
+                    .expect("Error fetching Entries");
             })
             .await;
             while let Ok(res) = receiver.recv() {
@@ -499,15 +536,20 @@ pub fn CreateDirectory(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
         ButtonBuilder::primary(
             "Create",
             Callback::new(move |_e| {
-                if is_valid() {
-                    if let Err(e) = create_vault.create_directory(&new_full_path()) {
-                        app_state
-                            .write()
-                            .get_modal_mut()
-                            .set_error("Error creating new Directory".to_string(), e.to_string());
-                    } else {
-                        pub_sub.publish(GlobalEvent::NewDirectoryCreated(new_full_path()));
-                        app_state.write().close_modal();
+                let create_vault = create_vault.clone();
+                let pub_sub = pub_sub.clone();
+                async move {
+                    if is_valid() {
+                        let new_path = new_full_path();
+                        if let Err(e) = create_vault.create_directory(&new_path).await {
+                            app_state.write().get_modal_mut().set_error(
+                                "Error creating new Directory".to_string(),
+                                e.to_string(),
+                            );
+                        } else {
+                            pub_sub.publish(GlobalEvent::NewDirectoryCreated(new_path));
+                            app_state.write().close_modal();
+                        }
                     }
                 }
             }),
@@ -535,17 +577,22 @@ pub fn CreateDirectory(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
                             border_color: if select_focused() { "{theme.text_primary}" } else { "{theme.border_light}" },
                             onfocusin: move |_e| select_focused.set(true),
                             onfocusout: move |_e| select_focused.set(false),
-                            onchange: move |e| {
-                                let bd = VaultPath::new(e.value());
-                                new_directory_base_path.set(bd.clone());
-                                let (p, valid) = get_path_is_valid(
-                                    vault_select.clone(),
-                                    &new_directory_base_path.read(),
-                                    &*new_directory_name.read(),
-                                    true,
-                                );
-                                new_full_path.set(p);
-                                is_valid.set(valid);
+                            onchange: move |e: Event<FormData>| {
+                                let vault = vault_select.clone();
+                                async move {
+                                    let bd = VaultPath::new(e.value());
+                                    new_directory_base_path.set(bd.clone());
+                                    let base = new_directory_base_path.read().clone();
+                                    let name = new_directory_name.read().clone();
+                                    let (p, valid) = get_path_is_valid(
+                                        vault,
+                                        &base,
+                                        &name,
+                                        true,
+                                    ).await;
+                                    new_full_path.set(p);
+                                    is_valid.set(valid);
+                                }
                             },
                             for path in paths {
                                 option {
@@ -569,16 +616,21 @@ pub fn CreateDirectory(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
                         color: "{theme.text_primary}",
                         value: "{new_directory_name}",
                         placeholder: "Enter new directory name",
-                        oninput: move |e| {
-                            new_directory_name.set(e.value());
-                            let (p, valid) = get_path_is_valid(
-                                vault.clone(),
-                                &new_directory_base_path.read(),
-                                &*new_directory_name.read(),
-                                true,
-                            );
-                            new_full_path.set(p);
-                            is_valid.set(valid);
+                        oninput: move |e: Event<FormData>| {
+                            let vault = vault.clone();
+                            async move {
+                                new_directory_name.set(e.value());
+                                let base = new_directory_base_path.read().clone();
+                                let name = new_directory_name.read().clone();
+                                let (p, valid) = get_path_is_valid(
+                                    vault,
+                                    &base,
+                                    &name,
+                                    true,
+                                ).await;
+                                new_full_path.set(p);
+                                is_valid.set(valid);
+                            }
                         },
                     }
                     label { color: if !&is_valid() { "{theme.accent_red}" } else { "{theme.text_light}" },
@@ -591,7 +643,7 @@ pub fn CreateDirectory(vault: Arc<NoteVault>, from_path: VaultPath) -> Element {
     }
 }
 
-fn get_path_is_valid<S: AsRef<str>>(
+async fn get_path_is_valid<S: AsRef<str>>(
     vault: Arc<NoteVault>,
     base_path: &VaultPath,
     name: S,
@@ -605,7 +657,7 @@ fn get_path_is_valid<S: AsRef<str>>(
         VaultPath::note_path_from(name)
     });
     let valid = if valid {
-        vault.exists(&path).is_none()
+        vault.exists(&path).await.is_none()
     } else {
         valid
     };

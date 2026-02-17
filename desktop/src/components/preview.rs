@@ -89,6 +89,7 @@ impl MdContext {
                     MdContext::el_attachment(props, children, vault_path)
                 }
                 LinkType::Url => MdContext::el_a(children, note_link.raw_link.clone()),
+                LinkType::Hashtag => MdContext::el_a(children, note_link.raw_link.clone()),
             }
         }
     }
@@ -271,34 +272,38 @@ impl MdContext {
             span {
                 class: "icon-note note-link",
                 onclick: move |_e| {
-                    match vault.open_or_search(&note_path) {
-                        Ok(res) => {
-                            match res.len() {
-                                0 => {
-                                    info!("No Result");
-                                    app_state.write().set_path(&note_path, true);
-                                }
-                                1 => {
-                                    info!("One result");
-                                    let (details, _data) = res.first().unwrap();
-                                    app_state.write().set_path(&details.path, false);
-                                }
-                                _ => {
-                                    debug!("Show picker for {note_path}");
-                                    let note_list = res
-                                        .iter()
-                                        .map(|(details, data)| {
-                                            (data.title.clone(), details.path.clone())
-                                        })
-                                        .collect();
-                                    app_state.write().set_modal(ModalType::NotePicker { note_list });
+                    let vault = vault.clone();
+                    let note_path = note_path.clone();
+                    spawn(async move {
+                        match vault.open_or_search(&note_path).await {
+                            Ok(res) => {
+                                match res.len() {
+                                    0 => {
+                                        info!("No Result");
+                                        app_state.write().set_path(&note_path, true);
+                                    }
+                                    1 => {
+                                        info!("One result");
+                                        let (details, _data) = res.first().unwrap();
+                                        app_state.write().set_path(&details.path, false);
+                                    }
+                                    _ => {
+                                        debug!("Show picker for {note_path}");
+                                        let note_list = res
+                                            .iter()
+                                            .map(|(details, data)| {
+                                                (data.title.clone(), details.path.clone())
+                                            })
+                                            .collect();
+                                        app_state.write().set_modal(ModalType::NotePicker { note_list });
+                                    }
                                 }
                             }
+                            Err(e) => {
+                                error!("Error clicking on note: {}", e);
+                            }
                         }
-                        Err(e) => {
-                            error!("Error clicking on note: {}", e);
-                        }
-                    }
+                    });
                 },
                 {children}
             }

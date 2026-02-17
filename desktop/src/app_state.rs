@@ -1,27 +1,36 @@
+use std::fmt::Display;
+
 use dioxus::prelude::*;
 use kimun_core::nfs::VaultPath;
 
 use crate::{
     components::{
-        focus_manager::FocusManager, modal::ModalType, note_list::note_browse_entry::SortCriteria,
-        preview_pane::PreviewListSource,
+        focus_manager::FocusManager,
+        modal::ModalType,
+        note_list::{note_browse_entry::SortCriteria, note_list_loader::SearchStateData},
     },
     settings::AppSettings,
 };
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PreviewListState {
-    pub source: PreviewListSource,
+    pub source: String,
     pub sort_criteria: SortCriteria,
     pub sort_ascending: bool,
 }
 
+impl Display for PreviewListState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Source: {}, Sort Criteria: {:?}, Sort Ascending: {}",
+            self.source, self.sort_criteria, self.sort_ascending
+        )
+    }
+}
+
 impl PreviewListState {
-    pub fn new(
-        source: PreviewListSource,
-        sort_criteria: SortCriteria,
-        sort_ascending: bool,
-    ) -> Self {
+    pub fn new(source: String, sort_criteria: SortCriteria, sort_ascending: bool) -> Self {
         Self {
             source,
             sort_criteria,
@@ -29,11 +38,11 @@ impl PreviewListState {
         }
     }
 
-    pub fn from_source(source: PreviewListSource) -> Self {
+    pub fn from_source(source: SearchStateData) -> Self {
         Self {
-            source,
-            sort_criteria: SortCriteria::None,
-            sort_ascending: true,
+            source: source.filter_value,
+            sort_criteria: source.sort_criteria,
+            sort_ascending: source.sort_ascending,
         }
     }
 }
@@ -87,14 +96,17 @@ impl AppState {
     }
 
     pub fn show_preview_pane(&mut self, state: Option<PreviewListState>) {
+        debug!("Show preview pane");
         if let Some(state) = state {
-            self.set_preview_pane_state(state);
+            self.set_preview_pane_state(state.clone());
+            self.show_preview_pane = Some(state);
         } else {
             self.show_preview_pane = Some(self.last_preview_list_state.clone());
         }
     }
 
     pub fn hide_preview_pane(&mut self) {
+        debug!("Hide preview pane");
         self.show_preview_pane = None;
     }
 
