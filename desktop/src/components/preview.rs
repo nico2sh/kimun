@@ -89,6 +89,7 @@ impl MdContext {
                     MdContext::el_attachment(props, children, vault_path)
                 }
                 LinkType::Url => MdContext::el_a(children, note_link.raw_link.clone()),
+                LinkType::Hashtag => MdContext::el_a(children, note_link.raw_link.clone()),
             }
         }
     }

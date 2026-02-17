@@ -1,6 +1,7 @@
 use log::debug;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use regex::{Captures, Regex};
+use std::sync::LazyLock;
 
 use crate::{
     nfs::{self, VaultPath},
@@ -10,8 +11,23 @@ use crate::{
 use super::NoteLink;
 
 const _MAX_TITLE_LENGTH: usize = 40;
-const REGEX_WIKILINK: &str = r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#;
-const REGEX_HASHTAG: &str = r#"#(?P<ht_text>[A-Za-z0-9_]+)"#;
+
+// Compile regexes once at startup
+static WIKILINK_RX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#).unwrap()
+});
+
+static HASHTAG_RX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"#(?P<ht_text>[A-Za-z0-9_]+)"#).unwrap()
+});
+
+static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?P<bang>!?)(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#).unwrap()
+});
+
+static URL_RX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^https?:\/\/[\w\d]+\.[\w\d]+(?:(?:\.[\w\d]+)|(?:[\w\d\/?=#]+))+$"#).unwrap()
+});
 
 pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
     let hash = nfs::hash_text(md_text.as_ref());
@@ -23,129 +39,131 @@ pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
 pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
     let (frontmatter, text) = remove_frontmatter(md_text.as_ref());
 
-    let text = cleanup_hashtags(cleanup_wikilinks(text));
+    // Clean up wikilinks and hashtags for indexing
+    let text = process_wikilinks(&text, |_link, _text| None);
+    let text = cleanup_hashtags(&text);
 
     let mut content_chunks = parse_text(&text);
+
     if !frontmatter.is_empty() {
         content_chunks.push(ContentChunk {
             breadcrumb: vec!["FrontMatter".to_string()],
             text: frontmatter,
         })
-    };
+    }
+
     content_chunks
 }
 
-fn cleanup_wikilinks<S: AsRef<str>>(md_text: S) -> String {
-    let rx = Regex::new(REGEX_WIKILINK).unwrap();
-    let text = rx
-        .replace_all(md_text.as_ref(), |caps: &Captures| {
+/// Process wikilinks with a custom handler function
+/// Handler returns None to remove the wikilink (keep only text), or Some(String) to replace it
+fn process_wikilinks<F>(md_text: &str, handler: F) -> String
+where
+    F: Fn(&str, &str) -> Option<String>,
+{
+    WIKILINK_RX
+        .replace_all(md_text, |caps: &Captures| {
             let items = &caps["link_text"];
-            let link_text = items.split("|").collect::<Vec<&str>>();
-            let text = match link_text.len() {
-                1 => link_text[0],
-                2 => link_text[1],
-                _ => "",
+            let parts: Vec<&str> = items.split('|').collect();
+
+            let (link, text) = match parts.len() {
+                1 => (parts[0], parts[0]),
+                2 => (parts[0], parts[1]),
+                _ => return String::new(),
             };
-            text.to_string()
+
+            handler(link, text).unwrap_or_else(|| text.to_string())
         })
-        .into_owned();
-    text
+        .into_owned()
 }
 
-fn cleanup_hashtags<S: AsRef<str>>(md_text: S) -> String {
-    let rx = Regex::new(REGEX_HASHTAG).unwrap();
-    let text = rx
-        .replace_all(md_text.as_ref(), |caps: &Captures| {
-            let text = &caps["ht_text"];
-            text.to_string()
-        })
-        .into_owned();
-    text
-}
-
-// Convert any wikilink into a link to a note, only note links
-fn convert_wikilinks<S: AsRef<str>>(md_text: S) -> String {
-    let rx = Regex::new(REGEX_WIKILINK).unwrap();
-    let text = rx
-        .replace_all(md_text.as_ref(), |caps: &Captures| {
-            let items = &caps["link_text"];
-            let link_text = items.split("|").collect::<Vec<&str>>();
-            let (link, text) = match link_text.len() {
-                1 => (link_text[0], link_text[0]),
-                2 => (link_text[0], link_text[1]),
-                _ => ("", ""),
-            };
-            if !link.is_empty() && VaultPath::is_valid(link) {
-                let link = VaultPath::note_path_from(link);
-                format!("[{}]({})", text, link)
-            } else {
-                format!("[[{}]]", items)
-            }
-        })
-        .into_owned();
-    text
+fn cleanup_hashtags(md_text: &str) -> String {
+    HASHTAG_RX
+        .replace_all(md_text, |caps: &Captures| caps["ht_text"].to_string())
+        .into_owned()
 }
 
 /// Returns the converted text into Markdown (replacing note wikilinks to markdown links)
 /// Normalizes the links urls when needed (lowercasing the path for vault paths)
 /// And a list of the links existing in the note, relative links are transformed to absolute links.
+/// Hashtags are converted to markdown links and added to the links list.
 pub fn get_markdown_and_links<S: AsRef<str>>(
     reference_path: &VaultPath,
     md_text: S,
 ) -> (String, Vec<NoteLink>) {
-    let md_text = convert_wikilinks(md_text);
     let mut links = vec![];
-    let md_link_regex = r#"(?P<bang>!?)(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#;
-    let url_regex = r#"^https?:\/\/[\w\d]+\.[\w\d]+(?:(?:\.[\w\d]+)|(?:[\w\d\/?=#]+))+$"#;
 
-    let rx = Regex::new(md_link_regex).unwrap();
-    let clean_md_text = rx.replace_all(md_text.as_ref(), |caps: &Captures| {
+    // Convert wikilinks to markdown links
+    let md_text = process_wikilinks(md_text.as_ref(), |link, text| {
+        if VaultPath::is_valid(link) {
+            let link_path = VaultPath::note_path_from(link);
+            Some(format!("[{}]({})", text, link_path))
+        } else {
+            // Keep invalid wikilinks as-is
+            Some(format!("[[{}]]", if link == text {
+                link.to_string()
+            } else {
+                format!("{}|{}", link, text)
+            }))
+        }
+    });
+
+    // Process markdown links and extract them
+    let md_text = MD_LINK_RX.replace_all(&md_text, |caps: &Captures| {
         let bang = &caps["bang"];
         let text = &caps["text"];
-        let link = &caps["link"].trim();
-        // We ignore links that start with a `!`, since these are images
-        if bang.is_empty() {
-            debug!("checking link {}", link);
-            // Is it a URL or a local path?
-            let rxurl = Regex::new(url_regex).unwrap();
-            let clean_link = if rxurl.is_match(link) {
-                let url_link = NoteLink::url(link, text);
-                links.push(url_link);
-                link.to_string()
-            } else if VaultPath::is_valid(link) {
-                // It is a local path
-                let path = VaultPath::new(link);
-                if path.is_note_file() {
-                    // A single note
-                    links.push(NoteLink::note(&path, text));
-                    // We return the path as we found it
-                    path.to_string()
-                } else {
-                    // A path to content, we resolve the relative path
-                    let ref_path = if reference_path.is_note() {
-                        reference_path.get_parent_path().0
-                    } else {
-                        reference_path.to_owned()
-                    };
-                    let abs_path = ref_path.append(&path).flatten();
-                    if abs_path.is_note() {
-                        // Note
-                        links.push(NoteLink::note(&abs_path, text));
-                    } else {
-                        // Attachment
-                        links.push(NoteLink::vault_path(&abs_path, text));
-                    }
-                    // We return the resolved absolute path
-                    abs_path.to_string()
-                }
-            } else {
-                debug!("link not counting {}", link);
-                link.to_string()
-            };
-            format!("[{}]({})", text, clean_link)
-        } else {
-            format!("![{}]({})", text, link)
+        let link = caps["link"].trim();
+
+        // Ignore image links
+        if !bang.is_empty() {
+            return format!("![{}]({})", text, link);
         }
+
+        debug!("checking link {}", link);
+
+        let clean_link = if URL_RX.is_match(link) {
+            // URL link
+            links.push(NoteLink::url(link, text));
+            link.to_string()
+        } else if VaultPath::is_valid(link) {
+            // Vault path link
+            let path = VaultPath::new(link);
+
+            if path.is_note_file() {
+                // Absolute note path
+                links.push(NoteLink::note(&path, text));
+                path.to_string()
+            } else {
+                // Relative path - resolve it
+                let ref_path = if reference_path.is_note() {
+                    reference_path.get_parent_path().0
+                } else {
+                    reference_path.to_owned()
+                };
+
+                let abs_path = ref_path.append(&path).flatten();
+
+                if abs_path.is_note() {
+                    links.push(NoteLink::note(&abs_path, text));
+                } else {
+                    links.push(NoteLink::vault_path(&abs_path, text));
+                }
+
+                abs_path.to_string()
+            }
+        } else {
+            debug!("link not counting {}", link);
+            link.to_string()
+        };
+
+        format!("[{}]({})", text, clean_link)
+    });
+
+    // Process hashtags and convert them to links
+    let clean_md_text = HASHTAG_RX.replace_all(&md_text, |caps: &Captures| {
+        let tag = &caps["ht_text"];
+        links.push(NoteLink::hashtag(tag));
+        format!("[#{}](#{})", tag, tag)
     });
 
     (clean_md_text.to_string(), links)
@@ -153,10 +171,10 @@ pub fn get_markdown_and_links<S: AsRef<str>>(
 
 pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
     let (_frontmatter, md_text) = remove_frontmatter(md_text);
-    let mut parser = pulldown_cmark::Parser::new(md_text.as_ref());
+    let mut parser = Parser::new(md_text.as_ref());
     let result = loop_events(&mut parser);
-    // debug!("{:?}", result);
-    let title = result
+
+    result
         .iter()
         .find_map(|tt| match tt {
             TextLine::Empty => None,
@@ -164,8 +182,7 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
             TextLine::Text(text) => Some(text.to_owned()),
             TextLine::ListItem(_level, text) => Some(text.to_owned()),
         })
-        .unwrap_or_default();
-    title
+        .unwrap_or_default()
 }
 
 fn parse_text(md_text: &str) -> Vec<ContentChunk> {
@@ -173,42 +190,40 @@ fn parse_text(md_text: &str) -> Vec<ContentChunk> {
     let mut current_breadcrumb: Vec<(u8, String)> = vec![];
     let mut current_content = vec![];
 
-    let mut parser = pulldown_cmark::Parser::new(md_text);
+    let mut parser = Parser::new(md_text);
     let result = loop_events(&mut parser);
+
     for text_line in result {
         match text_line {
             TextLine::Header(level, text) => {
+                // Save current chunk if we have content
                 if !current_breadcrumb.is_empty() || !current_content.is_empty() {
-                    let breadcrumb = current_breadcrumb.clone();
-                    let content =
-                        crate::utilities::remove_diacritics(&current_content.clone().join("\n"));
+                    let content = crate::utilities::remove_diacritics(&current_content.join("\n"));
                     content_chunks.push(ContentChunk {
-                        breadcrumb: breadcrumb.into_iter().map(|c| c.1).collect(),
+                        breadcrumb: current_breadcrumb.iter().map(|(_, t)| t.clone()).collect(),
                         text: content,
                     });
                 }
-                while !current_breadcrumb.is_empty()
-                    && current_breadcrumb.last().unwrap().0 >= level
-                {
-                    current_breadcrumb.remove(current_breadcrumb.len() - 1);
-                }
+
+                // Update breadcrumb for new header
+                current_breadcrumb.retain(|(lvl, _)| *lvl < level);
                 current_breadcrumb.push((level, text));
                 current_content.clear();
             }
             TextLine::Empty => {
-                // We do nothing
+                // Skip empty lines
             }
-            _ => current_content.push(text_line.to_text()),
+            _ => {
+                current_content.push(text_line.to_text());
+            }
         }
     }
 
+    // Save final chunk
     if !current_breadcrumb.is_empty() || !current_content.is_empty() {
-        let content = crate::utilities::remove_diacritics(&current_content.clone().join("\n"));
+        let content = crate::utilities::remove_diacritics(&current_content.join("\n"));
         content_chunks.push(ContentChunk {
-            breadcrumb: current_breadcrumb
-                .into_iter()
-                .map(|c| c.1.clone())
-                .collect(),
+            breadcrumb: current_breadcrumb.iter().map(|(_, t)| t.clone()).collect(),
             text: content,
         });
     }
@@ -218,32 +233,34 @@ fn parse_text(md_text: &str) -> Vec<ContentChunk> {
 
 fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
     let mut lines = text.as_ref().lines();
-    let first_line = lines.next();
-    if let Some(line) = first_line {
-        if line == "---" || line == "+++" {
-            let close = line;
-            let mut frontmatter = vec![];
-            let mut content = vec![];
-            let mut closed_fm = false;
-            for next_line in lines {
-                if next_line == close {
-                    closed_fm = true;
-                } else if closed_fm {
-                    content.push(next_line);
-                } else {
-                    frontmatter.push(next_line);
-                }
-            }
-            if closed_fm {
-                (frontmatter.join("\n"), content.join("\n"))
-            } else {
-                ("".to_string(), frontmatter.join("\n"))
-            }
+
+    let Some(first_line) = lines.next() else {
+        return (String::new(), String::new());
+    };
+
+    if first_line != "---" && first_line != "+++" {
+        return (String::new(), text.as_ref().to_string());
+    }
+
+    let delimiter = first_line;
+    let mut frontmatter = vec![];
+    let mut content = vec![];
+    let mut closed_fm = false;
+
+    for line in lines {
+        if line == delimiter && !closed_fm {
+            closed_fm = true;
+        } else if closed_fm {
+            content.push(line);
         } else {
-            ("".to_string(), text.as_ref().to_string())
+            frontmatter.push(line);
         }
+    }
+
+    if closed_fm {
+        (frontmatter.join("\n"), content.join("\n"))
     } else {
-        ("".to_string(), "".to_string())
+        (String::new(), frontmatter.join("\n"))
     }
 }
 
@@ -261,24 +278,24 @@ impl TextLine {
         match self {
             TextLine::Empty => TextLine::Text(text),
             TextLine::Header(level, header_text) => {
-                TextLine::Header(level.to_owned(), format!("{}{}", header_text, text))
+                TextLine::Header(*level, format!("{}{}", header_text, text))
             }
             TextLine::Text(line_text) => TextLine::Text(format!("{}{}", line_text, text)),
             TextLine::ListItem(level, item_text) => {
-                TextLine::ListItem(level.to_owned(), format!("{}{}", item_text, text))
+                TextLine::ListItem(*level, format!("{}{}", item_text, text))
             }
         }
     }
 
     fn to_text(&self) -> String {
         match self {
-            TextLine::Empty => "".to_string(),
+            TextLine::Empty => String::new(),
             TextLine::Header(level, text) => {
-                format!("{} {}", "#".repeat(level.to_owned().into()), text)
+                format!("{} {}", "#".repeat(*level as usize), text)
             }
             TextLine::Text(text) => text.to_owned(),
             TextLine::ListItem(level, text) => {
-                format!("{}* {}", " ".repeat((level.to_owned() * 4).into()), text)
+                format!("{}* {}", " ".repeat((*level as usize) * 4), text)
             }
         }
     }
@@ -287,11 +304,11 @@ impl TextLine {
         match self {
             TextLine::Empty => TextLine::Empty,
             TextLine::Header(level, text) => {
-                TextLine::Header(level.to_owned(), text.trim().to_string())
+                TextLine::Header(*level, text.trim().to_string())
             }
             TextLine::Text(text) => TextLine::Text(text.trim().to_string()),
             TextLine::ListItem(level, text) => {
-                TextLine::ListItem(level.to_owned(), text.trim().to_string())
+                TextLine::ListItem(*level, text.trim().to_string())
             }
         }
     }
@@ -300,41 +317,27 @@ impl TextLine {
 fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
     let mut text_lines: Vec<TextLine> = vec![];
     let mut tag_stack = vec![];
+
     for event in parser.by_ref() {
-        // debug!("TEXT LINES BEFORE: {:?}", text_lines);
-        // debug!("EVENT: {:?}", event);
         match event {
             Event::Start(tag) => {
-                // debug!(
-                //     "FOUND TAG: {:?}\n -> CURRENT ELEMENT LIST: {:?}",
-                //     tag, text_lines
-                // );
-                let tag = tag.to_owned();
                 let current_line = text_lines.pop().unwrap_or_default();
                 let new_lines = parse_tag(&tag, current_line);
-                for l in new_lines {
-                    text_lines.push(l);
-                }
+                text_lines.extend(new_lines);
                 tag_stack.push(tag);
-                // We get the current text
-                // let last_line = text_lines.pop().unwrap_or_default();
-                // let mut tag_text = parse_tag(&tag, parser, last_line);
-                // text_lines.append(&mut tag_text);
             }
             Event::End(tag_end) => {
-                if let Some(end) = tag_stack.pop() {
-                    if tag_end != end.to_end() {
-                        panic!("Non Matching Tags: {:?}", tag_end);
-                    } else {
-                        let current_line = text_lines.pop().unwrap_or_default();
-                        let new_lines = parse_tag_end(&tag_end, current_line);
-                        for l in new_lines {
-                            text_lines.push(l);
-                        }
-                    }
-                } else {
+                let Some(start_tag) = tag_stack.pop() else {
+                    panic!("Non Matching Tags: {:?}", tag_end);
+                };
+
+                if tag_end != start_tag.to_end() {
                     panic!("Non Matching Tags: {:?}", tag_end);
                 }
+
+                let current_line = text_lines.pop().unwrap_or_default();
+                let new_lines = parse_tag_end(&tag_end, current_line);
+                text_lines.extend(new_lines);
             }
             Event::Text(cow_str) => {
                 let last_text = text_lines.pop().unwrap_or_default();
@@ -344,19 +347,11 @@ fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
                 let current_line = text_lines.pop().unwrap_or_default();
                 text_lines.push(current_line.append_text(format!("`{}`", cow_str)));
             }
-            Event::InlineMath(cow_str) => {
-                text_lines.push(TextLine::Text(cow_str.to_string()));
-            }
-            Event::DisplayMath(cow_str) => {
-                text_lines.push(TextLine::Text(cow_str.to_string()));
-            }
-            Event::Html(cow_str) => {
-                text_lines.push(TextLine::Text(cow_str.to_string()));
-            }
-            Event::InlineHtml(cow_str) => {
-                text_lines.push(TextLine::Text(cow_str.to_string()));
-            }
-            Event::FootnoteReference(cow_str) => {
+            Event::InlineMath(cow_str)
+            | Event::DisplayMath(cow_str)
+            | Event::Html(cow_str)
+            | Event::InlineHtml(cow_str)
+            | Event::FootnoteReference(cow_str) => {
                 text_lines.push(TextLine::Text(cow_str.to_string()));
             }
             Event::SoftBreak => {
@@ -373,20 +368,14 @@ fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
                 text_lines.push(TextLine::Text(result.to_string()));
             }
         }
-        // debug!("TEXT LINES AFTER: {:?}", text_lines);
     }
+
     text_lines
 }
 
 fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
     match tag {
-        Tag::Heading {
-            level,
-            id: _,
-            classes: _,
-            attrs: _,
-        } => {
-            // debug!("TEXT LINE: {:?}", text_type);
+        Tag::Heading { level, .. } => {
             let level = match level {
                 pulldown_cmark::HeadingLevel::H1 => 1,
                 pulldown_cmark::HeadingLevel::H2 => 2,
@@ -395,69 +384,52 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
                 pulldown_cmark::HeadingLevel::H5 => 5,
                 pulldown_cmark::HeadingLevel::H6 => 6,
             };
-            vec![current_line, TextLine::Header(level, "".to_string())]
+            vec![current_line, TextLine::Header(level, String::new())]
         }
-        Tag::Link {
-            link_type: _,
-            dest_url: _,
-            title,
-            id: _,
-        } => {
+        Tag::Link { title, .. } => {
             vec![current_line.append_text(title.to_string())]
         }
-        Tag::Image {
-            link_type: _,
-            dest_url: _,
-            title,
-            id: _,
-        } => {
+        Tag::Image { title, .. } => {
             vec![current_line.append_text(title.to_string())]
         }
         Tag::CodeBlock(kind) => {
             let open = match kind {
                 pulldown_cmark::CodeBlockKind::Indented => "```".to_string(),
-                pulldown_cmark::CodeBlockKind::Fenced(cow_str) => {
-                    format!("```{}", cow_str)
-                }
+                pulldown_cmark::CodeBlockKind::Fenced(lang) => format!("```{}", lang),
             };
             vec![TextLine::Text(open), TextLine::Empty]
         }
-        Tag::List(_number) => {
+        Tag::List(_) => {
             let line = if let TextLine::ListItem(lvl, _) = current_line {
-                TextLine::ListItem(lvl + 1, "".to_string())
+                TextLine::ListItem(lvl + 1, String::new())
             } else {
-                TextLine::ListItem(0, "".to_string())
+                TextLine::ListItem(0, String::new())
             };
             vec![current_line, line]
         }
         Tag::Item => {
-            if let TextLine::ListItem(lvl, text) = &current_line {
-                let lvl = lvl.to_owned();
-                if text.is_empty() {
-                    vec![current_line]
-                } else {
-                    vec![
-                        current_line,
-                        TextLine::ListItem(lvl.to_owned(), "".to_string()),
-                    ]
+            match &current_line {
+                TextLine::ListItem(lvl, text) => {
+                    let lvl = *lvl;
+                    if text.is_empty() {
+                        vec![current_line]
+                    } else {
+                        vec![current_line, TextLine::ListItem(lvl, String::new())]
+                    }
                 }
-            } else {
-                vec![TextLine::ListItem(0, "".to_string())]
+                _ => vec![TextLine::ListItem(0, String::new())],
             }
         }
         Tag::Paragraph => {
             vec![current_line, TextLine::Empty]
         }
         Tag::Strong | Tag::Emphasis | Tag::Strikethrough | Tag::Subscript | Tag::Superscript => {
-            // We ignore format
             vec![current_line]
         }
-        Tag::BlockQuote(_kind) => {
+        Tag::BlockQuote(_) => {
             vec![current_line]
         }
         _ => {
-            // nada
-            // debug!("LOOPING IN TAG: {:?}", tag);
             vec![current_line]
         }
     }
@@ -470,11 +442,12 @@ fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
         }
         TagEnd::List(_) => {
             if let TextLine::ListItem(lvl, text) = &current_line {
-                let last_line = if lvl > &0 {
-                    TextLine::ListItem(lvl - 1, "".to_string())
+                let last_line = if *lvl > 0 {
+                    TextLine::ListItem(lvl - 1, String::new())
                 } else {
                     TextLine::Empty
                 };
+
                 if text.is_empty() {
                     vec![last_line]
                 } else {
@@ -488,8 +461,6 @@ fn parse_tag_end(tag_end: &TagEnd, current_line: TextLine) -> Vec<TextLine> {
             vec![current_line, TextLine::Empty]
         }
         _ => {
-            // nada
-            // debug!("LOOPING IN TAG: {:?}", tag_end);
             vec![current_line]
         }
     }
@@ -507,13 +478,13 @@ mod test {
         },
     };
 
-    use super::{convert_wikilinks, get_markdown_and_links};
+    use super::get_markdown_and_links;
 
     #[test]
     fn convert_wiki_link() {
         let markdown = r#"Here is a [[Wikilink|text with link]]"#;
 
-        let md = convert_wikilinks(markdown);
+        let (md, _) = get_markdown_and_links(&VaultPath::root(), markdown);
 
         assert_eq!(md, "Here is a [text with link](wikilink.md)");
     }
@@ -524,7 +495,7 @@ mod test {
 
     And a [[https://example.com|url link]]"#;
 
-        let md = convert_wikilinks(markdown);
+        let (md, _) = get_markdown_and_links(&VaultPath::root(), markdown);
 
         assert_eq!(
             md,
@@ -698,7 +669,7 @@ Some text"#;
 
 - First Item
 - Second Item
-- 
+-
 
 "#;
         let content_chunks = get_content_chunks(markdown);
@@ -1030,5 +1001,55 @@ ls -la ./test
             "Some text\n```bash\nmkdir test\nls -la ./test\n```",
             content_chunks[0].get_text()
         );
+    }
+
+    #[test]
+    fn extract_hashtags_as_links() {
+        let markdown = r#"Some text with #hashtag and another #tag123"#;
+
+        let (md, links) = get_markdown_and_links(&VaultPath::root(), markdown);
+
+        assert_eq!(2, links.len());
+        assert!(links.iter().any(|link| {
+            link.text.eq("hashtag")
+                && link.ltype.eq(&LinkType::Hashtag)
+                && link.raw_link.eq("#hashtag")
+        }));
+        assert!(links.iter().any(|link| {
+            link.text.eq("tag123")
+                && link.ltype.eq(&LinkType::Hashtag)
+                && link.raw_link.eq("#tag123")
+        }));
+        assert_eq!(md, "Some text with [#hashtag](#hashtag) and another [#tag123](#tag123)");
+    }
+
+    #[test]
+    fn extract_mixed_links_and_hashtags() {
+        let markdown = r#"This is a [link](note.md) and #hashtag with [[wikilink]] and #another_tag"#;
+
+        let note_path = VaultPath::new("/test_note.md");
+        let (_md, links) = get_markdown_and_links(&note_path, markdown);
+
+        assert_eq!(4, links.len());
+        // Check for note links
+        assert_eq!(
+            2,
+            links
+                .iter()
+                .filter(|l| matches!(l.ltype, LinkType::Note(_)))
+                .count()
+        );
+        // Check for hashtags
+        assert_eq!(
+            2,
+            links
+                .iter()
+                .filter(|l| matches!(l.ltype, LinkType::Hashtag))
+                .count()
+        );
+        assert!(links.iter().any(|link| link.text.eq("hashtag")
+            && link.ltype.eq(&LinkType::Hashtag)));
+        assert!(links.iter().any(|link| link.text.eq("another_tag")
+            && link.ltype.eq(&LinkType::Hashtag)));
     }
 }
