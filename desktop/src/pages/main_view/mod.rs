@@ -44,8 +44,21 @@ pub fn MainView() -> Element {
     let theme = settings().get_theme();
     let settings_value = settings.read();
 
-    let vault_path: &std::path::PathBuf = settings_value.workspace_dir.as_ref().unwrap();
-    let vault = Arc::new(NoteVault::new(vault_path)?);
+    let vault_path = settings_value.workspace_dir.clone().unwrap();
+    let vault_resource = use_resource(move || {
+        let vault_path = vault_path.clone();
+        async move { NoteVault::new(vault_path).await.ok().map(Arc::new) }
+    });
+
+    // Wait for vault to be loaded
+    let vault = match vault_resource.read().as_ref() {
+        Some(Some(vault)) => vault.clone(),
+        _ => {
+            return rsx! {
+                div { class: "loading", "Loading vault..." }
+            };
+        }
+    };
 
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
@@ -83,6 +96,7 @@ pub fn MainView() -> Element {
                 }
                 GlobalEvent::OpenPreviewPane(source) => {
                     debug!("Preview pane, with source: {}", source);
+                    app_state.write().set_preview_pane_state(source);
                 }
                 _ => {}
             }),
@@ -106,52 +120,58 @@ pub fn MainView() -> Element {
     });
 
     let editor_vault = vault.clone();
-    let content_path = use_memo(move || {
-        editor_vault.exists(&editor_path.read()).map_or_else(
-            || {
-                debug!("Path doesn't exist");
-                if editor_path.read().is_note() && app_state.read().create_if_not_exists {
-                    debug!("It's a note and we have to create it");
-                    app_state.write().preview_mode = false;
-                    let note_path = editor_path.read().to_owned();
-                    match editor_vault.create_note(&note_path, "") {
-                        Ok(_) => {
-                            pub_sub.publish(GlobalEvent::NewNoteCreated(note_path));
+    let content_path = use_resource(move || {
+        let editor_vault = editor_vault.clone();
+        let pub_sub = pub_sub.clone();
+        async move {
+            match editor_vault.exists(&editor_path.read()).await {
+                Some(entry) => {
+                    match entry.data {
+                        // If it's an attachment, we look for the parent
+                        EntryData::Note(_nt) => {
+                            debug!("Path is a note");
                             ContentType::Note
                         }
-                        Err(e) => {
-                            let parent = note_path.get_parent_path().0;
-                            app_state.write().set_modal(ModalType::Error {
-                                message: "Error Creating new Note".to_string(),
-                                error: e.to_string(),
-                            });
-                            ContentType::Reroute(parent)
+                        EntryData::Directory(_dt) => {
+                            debug!("Path is a directory");
+                            ContentType::Directory
+                        }
+                        EntryData::Attachment => {
+                            debug!("Path is an attachment");
+                            ContentType::Reroute(entry.path.get_parent_path().0)
                         }
                     }
-                } else {
-                    debug!("We reroute to the root");
-                    ContentType::Reroute(VaultPath::root())
                 }
-            },
-            // Exists, so we see if it's a directory or a note
-            |e| match e.data {
-                // If it's an attachment, we look for the parent
-                EntryData::Note(_nt) => {
-                    debug!("Path is a note");
-                    ContentType::Note
+                None => {
+                    debug!("Path doesn't exist");
+                    if editor_path.read().is_note() && app_state.read().create_if_not_exists {
+                        debug!("It's a note and we have to create it");
+                        app_state.write().preview_mode = false;
+                        let note_path = editor_path.read().to_owned();
+                        let note_path_for_closure = note_path.clone();
+                        // Block on async operation in memo
+                        match editor_vault.create_note(&note_path_for_closure, "").await {
+                            Ok(_) => {
+                                pub_sub.publish(GlobalEvent::NewNoteCreated(note_path.clone()));
+                                ContentType::Note
+                            }
+                            Err(e) => {
+                                let parent = note_path.get_parent_path().0;
+                                app_state.write().set_modal(ModalType::Error {
+                                    message: "Error Creating new Note".to_string(),
+                                    error: e.to_string(),
+                                });
+                                ContentType::Reroute(parent)
+                            }
+                        }
+                    } else {
+                        debug!("We reroute to the root");
+                        ContentType::Reroute(VaultPath::root())
+                    }
                 }
-                EntryData::Directory(_dt) => {
-                    debug!("Path is a directory");
-                    ContentType::Directory
-                }
-                EntryData::Attachment => {
-                    debug!("Path is an attachment");
-                    ContentType::Reroute(e.path.get_parent_path().0)
-                }
-            },
-        )
+            }
+        }
     });
-
     // use_wry_event_handler(move |event, _| {
     //     if let Event::WindowEvent {
     //         window_id,
@@ -214,9 +234,12 @@ pub fn MainView() -> Element {
                         }
                         ActionShortcuts::NewJournal => {
                             debug!("New Journal Entry");
-                            if let Ok(journal_entry) = vault.journal_entry() {
-                                app_state.write().set_path(&journal_entry.0.path, true);
-                            }
+                            let vault = vault.clone();
+                            spawn(async move {
+                                if let Ok(journal_entry) = vault.journal_entry().await {
+                                    app_state.write().set_path(&journal_entry.0.path, true);
+                                }
+                            });
                         }
                         _ => {}
                     }
@@ -226,7 +249,7 @@ pub fn MainView() -> Element {
             EditorHeader { path: editor_path }
             div { class: "editor-main",
                 match &*content_path.read() {
-                    ContentType::Note => {
+                    Some(ContentType::Note) => {
                         rsx! {
                             ContentViewer {
                                 note_path: editor_path,
@@ -235,13 +258,13 @@ pub fn MainView() -> Element {
                             }
                         }
                     }
-                    ContentType::Directory => {
+                    Some(ContentType::Directory) => {
                         debug!("Opening Directory View");
                         rsx! {
                             NoText { path: editor_path }
                         }
                     }
-                    ContentType::Reroute(new_path) => {
+                    Some(ContentType::Reroute(new_path)) => {
                         let next_path = new_path.clone();
                         rsx! {
                             div {
@@ -250,6 +273,12 @@ pub fn MainView() -> Element {
                                     app_state.write().set_path(&next_path, true);
                                 },
                             }
+                        }
+                    }
+                    None => {
+                        debug!("Loading...");
+                        rsx! {
+                            div { "Loading..." }
                         }
                     }
                 }

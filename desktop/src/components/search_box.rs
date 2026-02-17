@@ -64,7 +64,11 @@ where
 
     let mount_focus = input_focus.clone();
     let return_focus = input_focus.clone();
-    let theme = settings().get_theme();
+
+    // Memoize theme to avoid re-reading on every render
+    let theme_memo = use_memo(move || settings.peek().get_theme());
+    let theme = theme_memo();
+
     let mut icon_button_hover = use_signal(|| false);
     let mut sort_hover: Signal<Option<SortCriteria>> = use_signal(|| None);
 

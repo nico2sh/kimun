@@ -17,8 +17,7 @@ use crate::{
             note_list_loader::{no_op, use_note_list, SelectorFunctions},
             NoteElementActions, NoteList, SelectorHandler,
         },
-        preview_pane::PreviewListSource,
-        search_box::{SearchBox, StringSearch},
+        search_box::SearchBox,
     },
     settings::AppSettings,
 };
@@ -30,17 +29,18 @@ pub struct PreviewData {
 }
 
 #[allow(non_snake_case)]
-fn SelectorView<F, S>(
+fn SelectorView<F>(
     hint: String,
-    filter_text: S,
+    filter_text: String,
     vault: Arc<NoteVault>,
     functions: F,
     send_to_preview: bool,
 ) -> Element
 where
-    F: SelectorFunctions<S> + Clone + Send + 'static,
-    S: StringSearch + Clone + 'static,
+    F: SelectorFunctions + Clone + Send + 'static,
 {
+    debug!("== Modal file loaded");
+
     let mut app_state: Signal<AppState> = use_context();
     let settings: Signal<AppSettings> = use_context();
 
@@ -66,45 +66,57 @@ where
         let selected = selector_preview.get_selected();
         let vault = vault.clone();
         async move {
-            if let Some(selection) = selected {
-                info!("Preview Text for {}", selected.unwrap());
-                let r = entries();
-                let entry = r.get(selection);
-                if let Some(value) = entry {
-                    let value_copy = value.to_owned();
-                    tokio::spawn(async move {
-                        let preview = vault.load_note(&value_copy.get_path()).map_or_else(
-                            |e| PreviewData {
-                                title: "Error loading preview...".to_string(),
-                                data: e.to_string(),
-                                content: "".to_string(),
-                            },
-                            |d| PreviewData {
-                                title: d.get_title(),
-                                data: d.path.to_string(),
-                                content: d.raw_text,
-                            },
-                        );
-                        Some(preview)
-                    })
-                    .await
-                    .unwrap()
-                } else {
-                    None
+            match selected {
+                Some(selection) => {
+                    info!("Preview Text for {}", selection);
+                    let r = entries();
+                    match r.get(selection) {
+                        Some(value) => match &value.e_type {
+                            NoteEntryType::Note { .. } => {
+                                let value_copy = value.to_owned();
+                                tokio::spawn(async move {
+                                    let preview = vault
+                                        .load_note(&value_copy.get_path())
+                                        .await
+                                        .map_or_else(
+                                            |e| PreviewData {
+                                                title: "Error loading preview...".to_string(),
+                                                data: e.to_string(),
+                                                content: "".to_string(),
+                                            },
+                                            |d| PreviewData {
+                                                title: d.get_title(),
+                                                data: d.path.to_string(),
+                                                content: d.raw_text,
+                                            },
+                                        );
+                                    Some(preview)
+                                })
+                                .await
+                                .unwrap_or_default()
+                            }
+                            NoteEntryType::Create { name } => Some(PreviewData {
+                                title: "Create New Note".to_string(),
+                                data: value.get_path().to_string(),
+                                content: format!("New note will be created: {}", name),
+                            }),
+                            _ => None,
+                        },
+                        None => None,
+                    }
                 }
-            } else {
-                // Nothing selected
-                None
+                None => None,
             }
         }
     });
 
-    let row_number = entries().len();
+    // Memoize theme to avoid re-reading on every render
+    let theme_memo = use_memo(move || settings().get_theme());
+    let theme = theme_memo();
 
     let selector_loaded = selector_handler.clone();
     let element_action = ModalNoteListAction {};
     let action_enter = element_action.clone();
-    let theme = settings().get_theme();
     let mut send_hover = use_signal(|| false);
 
     rsx! {
@@ -128,10 +140,13 @@ where
                     if key == Code::ArrowUp {
                         selector_loaded.select_prev();
                     }
-                    if key == Code::Enter && row_number > 0 {
-                        let current_selected = (selector_loaded.get_selected()).unwrap_or(0);
-                        if let Some(row) = entries().get(current_selected) {
-                            element_action.on_select(row);
+                    if key == Code::Enter {
+                        let row_number = entries.peek().len();
+                        if row_number > 0 {
+                            let current_selected = (selector_loaded.get_selected()).unwrap_or(0);
+                            if let Some(row) = entries.peek().get(current_selected) {
+                                element_action.on_select(row);
+                            }
                         }
                     }
                 }
@@ -164,10 +179,7 @@ where
                                     .show_preview_pane(
                                         Some(
                                             PreviewListState::new(
-                                                PreviewListSource::FromList(
-                                                    filter_text_value.read().to_string(),
-                                                    note_list_loaded.display_data.read().to_owned(),
-                                                ),
+                                                filter_text_value.read().to_string(),
                                                 sort_criteria_value(),
                                                 sort_ascending_value(),
                                             ),
@@ -186,6 +198,7 @@ where
                 active_path: VaultPath::root(),
                 element_action,
                 selector_handler,
+                load_state: note_list_loaded.state,
             }
             div { class: "preview-pane", background_color: "{theme.bg_main}",
                 match &*preview_text.read_unchecked() {

@@ -3,7 +3,6 @@ pub mod visitor;
 use std::{
     fmt::Display,
     hash::Hash,
-    io::Write,
     path::{Path, PathBuf},
     str::FromStr,
     time::UNIX_EPOCH,
@@ -57,22 +56,22 @@ pub struct NoteEntryData {
 }
 
 impl NoteEntryData {
-    pub fn load_details<P: AsRef<Path>>(
+    pub async fn load_details<P: AsRef<Path>>(
         &self,
         workspace_path: P,
         path: &VaultPath,
     ) -> Result<NoteDetails, FSError> {
-        let content = load_note(workspace_path, path)?;
+        let content = load_note(workspace_path, path).await?;
         Ok(NoteDetails::new(path, content))
     }
 
-    fn from_path<P: AsRef<Path>>(
+    async fn from_path<P: AsRef<Path>>(
         workspace_path: P,
         path: &VaultPath,
     ) -> Result<NoteEntryData, FSError> {
         let file_path = path.to_pathbuf(&workspace_path);
 
-        let metadata = file_path.metadata()?;
+        let metadata = tokio::fs::metadata(&file_path).await?;
         let size = metadata.len();
         let modified_secs = metadata
             .modified()
@@ -98,7 +97,7 @@ impl DirectoryEntryData {
     }
 }
 
-fn _get_dir_content_size<P: AsRef<Path>>(
+async fn _get_dir_content_size<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<u64, FSError> {
@@ -111,7 +110,7 @@ fn _get_dir_content_size<P: AsRef<Path>>(
     for entry in walker.flatten() {
         let entry_path = entry.path();
         if entry_path.is_file() && entry_path.extension().is_some_and(|ext| ext == "md") {
-            let metadata = std::fs::metadata(&os_path)?;
+            let metadata = tokio::fs::metadata(&os_path).await?;
             let file_size = metadata.len();
             content_size += file_size;
         }
@@ -120,18 +119,22 @@ fn _get_dir_content_size<P: AsRef<Path>>(
 }
 
 impl VaultEntry {
-    pub fn new<P: AsRef<Path>>(workspace_path: P, path: VaultPath) -> Result<Self, FSError> {
+    pub async fn new<P: AsRef<Path>>(workspace_path: P, path: VaultPath) -> Result<Self, FSError> {
         let os_path = path.to_pathbuf(&workspace_path);
-        if !os_path.exists() {
-            return Err(FSError::NoFileOrDirectoryFound {
-                path: path_to_string(os_path),
-            });
-        }
+        let metadata =
+            tokio::fs::metadata(&os_path)
+                .await
+                .map_err(|e| match e.kind() {
+                    std::io::ErrorKind::NotFound => FSError::NoFileOrDirectoryFound {
+                        path: path_to_string(&os_path),
+                    },
+                    _ => FSError::ReadFileError(e),
+                })?;
 
-        let kind = if os_path.is_dir() {
+        let kind = if metadata.is_dir() {
             EntryData::Directory(DirectoryEntryData { path: path.clone() })
         } else if path.is_note() {
-            let note_entry_data = NoteEntryData::from_path(workspace_path, &path)?;
+            let note_entry_data = NoteEntryData::from_path(workspace_path, &path).await?;
             EntryData::Note(note_entry_data)
         } else {
             EntryData::Attachment
@@ -145,12 +148,12 @@ impl VaultEntry {
         })
     }
 
-    pub fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
+    pub async fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
         workspace_path: P,
         full_path: F,
     ) -> Result<Self, FSError> {
         let note_path = VaultPath::from_path(&workspace_path, &full_path)?;
-        Self::new(&workspace_path, note_path)
+        Self::new(&workspace_path, note_path).await
     }
 }
 
@@ -190,12 +193,12 @@ pub(crate) fn hash_text<S: AsRef<str>>(text: S) -> u64 {
 
 /// Loads a note from disk, if the file doesn't exist, returns a FSError::NotePathNotFound
 /// Returns the note's text. If you want the details, use NoteDetails::from_content
-pub(crate) fn load_note<P: AsRef<Path>>(
+pub(crate) async fn load_note<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<String, FSError> {
     let os_path = path.to_pathbuf(&workspace_path);
-    match std::fs::read(&os_path) {
+    match tokio::fs::read(&os_path).await {
         Ok(file) => {
             let text = String::from_utf8(file)?;
             Ok(text)
@@ -209,7 +212,7 @@ pub(crate) fn load_note<P: AsRef<Path>>(
     }
 }
 
-pub fn create_directory<P: AsRef<Path>>(
+pub async fn create_directory<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<DirectoryEntryData, FSError> {
@@ -221,13 +224,13 @@ pub fn create_directory<P: AsRef<Path>>(
     }
 
     let full_path = path.to_pathbuf(workspace_path);
-    std::fs::create_dir_all(full_path)?;
+    tokio::fs::create_dir_all(full_path).await?;
     Ok(DirectoryEntryData {
         path: path.to_owned(),
     })
 }
 
-pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
+pub async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     workspace_path: P,
     path: &VaultPath,
     text: S,
@@ -241,20 +244,14 @@ pub fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     let (parent, note) = path.get_parent_path();
     let base_path = parent.to_pathbuf(&workspace_path);
     let full_path = base_path.join(note);
-    std::fs::create_dir_all(base_path)?;
+    tokio::fs::create_dir_all(base_path).await?;
+    tokio::fs::write(full_path, text.as_ref().as_bytes()).await?;
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(full_path)?;
-    file.write_all(text.as_ref().as_bytes())?;
-
-    let entry = NoteEntryData::from_path(workspace_path, path)?;
+    let entry = NoteEntryData::from_path(workspace_path, path).await?;
     Ok(entry)
 }
 
-pub fn rename_note<P: AsRef<Path>>(
+pub async fn rename_note<P: AsRef<Path>>(
     workspace_path: P,
     from: &VaultPath,
     to: &VaultPath,
@@ -276,15 +273,18 @@ pub fn rename_note<P: AsRef<Path>>(
     let full_to_path = to.to_pathbuf(&workspace_path);
     // We create the destination directory if doesn't exist
     if let Some(parent) = full_to_path.parent() {
-        if !std::fs::exists(parent)? || !parent.is_dir() {
-            std::fs::create_dir_all(parent)?;
+        match tokio::fs::metadata(parent).await {
+            Ok(m) if m.is_dir() => {}
+            _ => {
+                tokio::fs::create_dir_all(parent).await?;
+            }
         }
     }
-    std::fs::rename(full_from_path, full_to_path)?;
+    tokio::fs::rename(full_from_path, full_to_path).await?;
     Ok(())
 }
 
-pub fn rename_directory<P: AsRef<Path>>(
+pub async fn rename_directory<P: AsRef<Path>>(
     workspace_path: P,
     from: &VaultPath,
     to: &VaultPath,
@@ -305,24 +305,27 @@ pub fn rename_directory<P: AsRef<Path>>(
     let full_from_path = from.to_pathbuf(&workspace_path);
     let full_to_path = to.to_pathbuf(&workspace_path);
     // We create the destination directory if doesn't exist
-    if !std::fs::exists(&full_to_path)? || !full_to_path.is_dir() {
-        std::fs::create_dir_all(&full_to_path)?;
+    match tokio::fs::metadata(&full_to_path).await {
+        Ok(m) if m.is_dir() => {}
+        _ => {
+            tokio::fs::create_dir_all(&full_to_path).await?;
+        }
     }
-    std::fs::rename(full_from_path, full_to_path)?;
+    tokio::fs::rename(full_from_path, full_to_path).await?;
     Ok(())
 }
-pub fn delete_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<(), FSError> {
+pub async fn delete_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<(), FSError> {
     let full_path = path.to_pathbuf(workspace_path);
-    std::fs::remove_file(full_path)?;
+    tokio::fs::remove_file(full_path).await?;
     Ok(())
 }
 
-pub fn delete_directory<P: AsRef<Path>>(
+pub async fn delete_directory<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<(), FSError> {
     let full_path = path.to_pathbuf(workspace_path);
-    std::fs::remove_dir_all(full_path)?;
+    tokio::fs::remove_dir_all(full_path).await?;
     Ok(())
 }
 
@@ -959,10 +962,10 @@ mod tests {
         assert!(!valid);
     }
 
-    #[test]
-    fn test_file_not_exists() {
+    #[tokio::test]
+    async fn test_file_not_exists() {
         let path = VaultPath::new("don't exist");
-        let res = load_note(std::env::current_dir().unwrap(), &path);
+        let res = load_note(std::env::current_dir().unwrap(), &path).await;
 
         let result = if let Err(e) = res {
             matches!(e, FSError::VaultPathNotFound { path: _ })
@@ -1032,8 +1035,8 @@ mod tests {
         assert_eq!("/workspace/note.md", entry.to_string());
     }
 
-    #[test]
-    fn create_a_note() {
+    #[tokio::test]
+    async fn create_a_note() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -1041,26 +1044,26 @@ mod tests {
         let note_path = VaultPath::new("note.md");
         let note_text = "this is an empty note".to_string();
 
-        let res = save_note(workspace_path, &note_path, &note_text);
+        let res = save_note(workspace_path, &note_path, &note_text).await;
         if let Err(e) = &res {
             panic!("Error saving note: {e}")
         }
 
-        let note = load_note(workspace_path, &note_path);
+        let note = load_note(workspace_path, &note_path).await;
         if let Err(e) = &note {
             panic!("Error loading note: {e}")
         }
         assert_eq!(note.unwrap(), note_text);
 
-        let del_res = delete_note(workspace_path, &note_path);
+        let del_res = delete_note(workspace_path, &note_path).await;
         if let Err(e) = &del_res {
             panic!("Error deleting note: {e}")
         }
-        assert!(load_note(workspace_path, &note_path).is_err());
+        assert!(load_note(workspace_path, &note_path).await.is_err());
     }
 
-    #[test]
-    fn move_a_note() {
+    #[tokio::test]
+    async fn move_a_note() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -1069,41 +1072,41 @@ mod tests {
         let dest_note_path = VaultPath::new("directory/moved_note.md");
         let note_text = "this is an empty note".to_string();
 
-        let res = save_note(workspace_path, &note_path, &note_text);
+        let res = save_note(workspace_path, &note_path, &note_text).await;
         if let Err(e) = &res {
             panic!("Error saving note: {e}")
         }
-        let note = load_note(workspace_path, &note_path);
+        let note = load_note(workspace_path, &note_path).await;
         if let Err(e) = &note {
             panic!("Error loading note: {e}")
         }
         assert_eq!(note.as_ref().unwrap().to_owned(), note_text);
 
-        let ren_res = rename_note(workspace_path, &note_path, &dest_note_path);
+        let ren_res = rename_note(workspace_path, &note_path, &dest_note_path).await;
         if let Err(e) = &ren_res {
             panic!("Error renaming note: {e}")
         }
-        let moved_note = load_note(workspace_path, &dest_note_path);
+        let moved_note = load_note(workspace_path, &dest_note_path).await;
         if let Err(e) = &moved_note {
             panic!("Error loading note: {e}")
         }
         assert_eq!(note.unwrap(), moved_note.unwrap());
-        assert!(load_note(workspace_path, &note_path).is_err());
+        assert!(load_note(workspace_path, &note_path).await.is_err());
 
-        let del_res = delete_note(workspace_path, &dest_note_path);
+        let del_res = delete_note(workspace_path, &dest_note_path).await;
         if let Err(e) = &del_res {
             panic!("Error deleting note: {e}")
         }
-        assert!(load_note(workspace_path, &dest_note_path).is_err());
+        assert!(load_note(workspace_path, &dest_note_path).await.is_err());
 
-        let del_res = delete_directory(workspace_path, &dest_note_path.get_parent_path().0);
+        let del_res = delete_directory(workspace_path, &dest_note_path.get_parent_path().0).await;
         if let Err(e) = &del_res {
             panic!("Error deleting directory: {e}")
         }
     }
 
-    #[test]
-    fn move_a_directory() -> Result<(), FSError> {
+    #[tokio::test]
+    async fn move_a_directory() -> Result<(), FSError> {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -1114,30 +1117,30 @@ mod tests {
         let dest_note_path = dest_note_dir.append(&VaultPath::new("note.md"));
         let note_text = "this is an empty note".to_string();
 
-        save_note(workspace_path, &from_note_path, &note_text)?;
-        let note = load_note(workspace_path, &from_note_path)?;
+        save_note(workspace_path, &from_note_path, &note_text).await?;
+        let note = load_note(workspace_path, &from_note_path).await?;
         assert_eq!(note, note_text);
 
-        rename_directory(workspace_path, &from_note_dir, &dest_note_dir)?;
-        let moved_note = load_note(workspace_path, &dest_note_path)?;
+        rename_directory(workspace_path, &from_note_dir, &dest_note_dir).await?;
+        let moved_note = load_note(workspace_path, &dest_note_path).await?;
         assert_eq!(note, moved_note);
-        assert!(load_note(workspace_path, &from_note_dir).is_err());
+        assert!(load_note(workspace_path, &from_note_dir).await.is_err());
 
-        delete_note(workspace_path, &dest_note_path)?;
-        assert!(load_note(workspace_path, &dest_note_path).is_err());
+        delete_note(workspace_path, &dest_note_path).await?;
+        assert!(load_note(workspace_path, &dest_note_path).await.is_err());
 
         let first_level = dest_note_path.get_parent_path().0;
         let second_level = first_level.get_parent_path().0;
-        delete_directory(workspace_path, &first_level)?;
-        delete_directory(workspace_path, &second_level)?;
+        delete_directory(workspace_path, &first_level).await?;
+        delete_directory(workspace_path, &second_level).await?;
 
         Ok(())
     }
 
     // Additional comprehensive tests for NFS module
 
-    #[test]
-    fn test_vault_entry_new_with_directory() {
+    #[tokio::test]
+    async fn test_vault_entry_new_with_directory() {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -1145,9 +1148,11 @@ mod tests {
         let dir_path = VaultPath::new("test_directory");
 
         // Create directory first
-        std::fs::create_dir_all(workspace_path.join("test_directory")).ok();
+        tokio::fs::create_dir_all(workspace_path.join("test_directory"))
+            .await
+            .ok();
 
-        let result = VaultEntry::new(workspace_path, dir_path.clone());
+        let result = VaultEntry::new(workspace_path, dir_path.clone()).await;
         assert!(result.is_ok());
 
         let entry = result.unwrap();
@@ -1162,19 +1167,21 @@ mod tests {
         }
 
         // Cleanup
-        std::fs::remove_dir_all(workspace_path.join("test_directory")).ok();
+        tokio::fs::remove_dir_all(workspace_path.join("test_directory"))
+            .await
+            .ok();
     }
 
-    #[test]
-    fn test_vault_entry_new_with_note() {
+    #[tokio::test]
+    async fn test_vault_entry_new_with_note() {
         let workspace_path = Path::new("testdata");
         let note_path = VaultPath::new("test_note.md");
         let note_content = "# Test Note\n\nThis is a test.";
 
         // Create note first
-        save_note(workspace_path, &note_path, note_content).unwrap();
+        save_note(workspace_path, &note_path, note_content).await.unwrap();
 
-        let result = VaultEntry::new(workspace_path, note_path.clone());
+        let result = VaultEntry::new(workspace_path, note_path.clone()).await;
         assert!(result.is_ok());
 
         let entry = result.unwrap();
@@ -1190,19 +1197,21 @@ mod tests {
         }
 
         // Cleanup
-        delete_note(workspace_path, &note_path).ok();
+        delete_note(workspace_path, &note_path).await.ok();
     }
 
-    #[test]
-    fn test_vault_entry_new_with_attachment() {
+    #[tokio::test]
+    async fn test_vault_entry_new_with_attachment() {
         let workspace_path = Path::new("testdata");
         let attachment_path = VaultPath::new("test.txt");
 
         // Create a text file (attachment)
-        std::fs::create_dir_all(workspace_path).ok();
-        std::fs::write(workspace_path.join("test.txt"), "test content").unwrap();
+        tokio::fs::create_dir_all(workspace_path).await.ok();
+        tokio::fs::write(workspace_path.join("test.txt"), "test content")
+            .await
+            .unwrap();
 
-        let result = VaultEntry::new(workspace_path, attachment_path.clone());
+        let result = VaultEntry::new(workspace_path, attachment_path.clone()).await;
         assert!(result.is_ok());
 
         let entry = result.unwrap();
@@ -1212,15 +1221,15 @@ mod tests {
         }
 
         // Cleanup
-        std::fs::remove_file(workspace_path.join("test.txt")).ok();
+        tokio::fs::remove_file(workspace_path.join("test.txt")).await.ok();
     }
 
-    #[test]
-    fn test_vault_entry_new_with_nonexistent_path() {
+    #[tokio::test]
+    async fn test_vault_entry_new_with_nonexistent_path() {
         let workspace_path = Path::new("testdata");
         let nonexistent_path = VaultPath::new("does_not_exist.md");
 
-        let result = VaultEntry::new(workspace_path, nonexistent_path);
+        let result = VaultEntry::new(workspace_path, nonexistent_path).await;
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -1229,70 +1238,70 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_vault_entry_from_path() {
+    #[tokio::test]
+    async fn test_vault_entry_from_path() {
         let workspace_path = Path::new("testdata");
         let note_path = VaultPath::new("from_path_test.md");
         let note_content = "Test content";
 
         // Create note
-        save_note(workspace_path, &note_path, note_content).unwrap();
+        save_note(workspace_path, &note_path, note_content).await.unwrap();
 
         let full_path = workspace_path.join("from_path_test.md");
-        let result = VaultEntry::from_path(workspace_path, &full_path);
+        let result = VaultEntry::from_path(workspace_path, &full_path).await;
         assert!(result.is_ok());
 
         let entry = result.unwrap();
         assert_eq!(entry.path, note_path.clone().absolute());
 
         // Cleanup
-        delete_note(workspace_path, &note_path).ok();
+        delete_note(workspace_path, &note_path).await.ok();
     }
 
-    #[test]
-    fn test_vault_entry_display() {
+    #[tokio::test]
+    async fn test_vault_entry_display() {
         let workspace_path = Path::new("testdata");
         let note_path = VaultPath::new("display_test.md");
         let dir_path = VaultPath::new("display_dir");
         let attachment_path = VaultPath::new("display.txt");
 
         // Test note display
-        save_note(workspace_path, &note_path, "content").unwrap();
-        let note_entry = VaultEntry::new(workspace_path, note_path.clone()).unwrap();
+        save_note(workspace_path, &note_path, "content").await.unwrap();
+        let note_entry = VaultEntry::new(workspace_path, note_path.clone()).await.unwrap();
         let note_display = format!("{}", note_entry);
         assert!(note_display.contains("[NOT]"));
         assert!(note_display.contains(&note_path.to_string()));
 
         // Test directory display
-        std::fs::create_dir_all(workspace_path.join("display_dir")).ok();
-        let dir_entry = VaultEntry::new(workspace_path, dir_path.clone()).unwrap();
+        tokio::fs::create_dir_all(workspace_path.join("display_dir")).await.ok();
+        let dir_entry = VaultEntry::new(workspace_path, dir_path.clone()).await.unwrap();
         let dir_display = format!("{}", dir_entry);
         assert!(dir_display.contains("[DIR]"));
         assert!(dir_display.contains(&dir_path.to_string()));
 
         // Test attachment display
-        std::fs::write(workspace_path.join("display.txt"), "content").ok();
-        let attachment_entry = VaultEntry::new(workspace_path, attachment_path.clone()).unwrap();
+        tokio::fs::write(workspace_path.join("display.txt"), "content").await.ok();
+        let attachment_entry = VaultEntry::new(workspace_path, attachment_path.clone()).await.unwrap();
         let attachment_display = format!("{}", attachment_entry);
         assert!(attachment_display.contains("[ATT]"));
 
         // Cleanup
-        delete_note(workspace_path, &note_path).ok();
-        std::fs::remove_dir_all(workspace_path.join("display_dir")).ok();
-        std::fs::remove_file(workspace_path.join("display.txt")).ok();
+        delete_note(workspace_path, &note_path).await.ok();
+        tokio::fs::remove_dir_all(workspace_path.join("display_dir")).await.ok();
+        tokio::fs::remove_file(workspace_path.join("display.txt")).await.ok();
     }
 
-    #[test]
-    fn test_note_entry_data_load_details() {
+    #[tokio::test]
+    async fn test_note_entry_data_load_details() {
         let workspace_path = Path::new("testdata");
         let note_path = VaultPath::new("details_test.md");
         let note_content = "# Test\n\nContent here";
 
-        save_note(workspace_path, &note_path, note_content).unwrap();
-        let entry = VaultEntry::new(workspace_path, note_path.clone()).unwrap();
+        save_note(workspace_path, &note_path, note_content).await.unwrap();
+        let entry = VaultEntry::new(workspace_path, note_path.clone()).await.unwrap();
 
         if let EntryData::Note(note_data) = entry.data {
-            let details_result = note_data.load_details(workspace_path, &note_path);
+            let details_result = note_data.load_details(workspace_path, &note_path).await;
             assert!(details_result.is_ok());
 
             let details = details_result.unwrap();
@@ -1303,7 +1312,7 @@ mod tests {
         }
 
         // Cleanup
-        delete_note(workspace_path, &note_path).ok();
+        delete_note(workspace_path, &note_path).await.ok();
     }
 
     #[test]
@@ -1355,12 +1364,12 @@ mod tests {
         assert!(hash1 > 0);
     }
 
-    #[test]
-    fn test_create_directory_with_note_path() {
+    #[tokio::test]
+    async fn test_create_directory_with_note_path() {
         let workspace_path = Path::new("testdata");
         let note_path = VaultPath::new("invalid.md");
 
-        let result = create_directory(workspace_path, &note_path);
+        let result = create_directory(workspace_path, &note_path).await;
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -1371,13 +1380,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_save_note_with_directory_path() {
+    #[tokio::test]
+    async fn test_save_note_with_directory_path() {
         let workspace_path = Path::new("testdata");
         let dir_path = VaultPath::new("directory");
         let content = "test content";
 
-        let result = save_note(workspace_path, &dir_path, content);
+        let result = save_note(workspace_path, &dir_path, content).await;
         assert!(result.is_err());
 
         match result.unwrap_err() {
@@ -1388,33 +1397,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_rename_note_with_invalid_paths() {
+    #[tokio::test]
+    async fn test_rename_note_with_invalid_paths() {
         let workspace_path = Path::new("testdata");
         let dir_path = VaultPath::new("directory");
         let note_path = VaultPath::new("note.md");
 
         // Test renaming from directory (should fail)
-        let result = rename_note(workspace_path, &dir_path, &note_path);
+        let result = rename_note(workspace_path, &dir_path, &note_path).await;
         assert!(result.is_err());
 
         // Test renaming to directory (should fail)
-        let result = rename_note(workspace_path, &note_path, &dir_path);
+        let result = rename_note(workspace_path, &note_path, &dir_path).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_rename_directory_with_invalid_paths() {
+    #[tokio::test]
+    async fn test_rename_directory_with_invalid_paths() {
         let workspace_path = Path::new("testdata");
         let dir_path = VaultPath::new("directory");
         let note_path = VaultPath::new("note.md");
 
         // Test renaming from note (should fail)
-        let result = rename_directory(workspace_path, &note_path, &dir_path);
+        let result = rename_directory(workspace_path, &note_path, &dir_path).await;
         assert!(result.is_err());
 
         // Test renaming to note (should fail)
-        let result = rename_directory(workspace_path, &dir_path, &note_path);
+        let result = rename_directory(workspace_path, &dir_path, &note_path).await;
         assert!(result.is_err());
     }
 

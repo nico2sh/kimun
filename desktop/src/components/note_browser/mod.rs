@@ -71,6 +71,9 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, editor_path: ReadSignal<VaultPath>) ->
     );
     let selector_handler = SelectorHandler::build(use_note_list.display_data.clone());
 
+    // Extract state signal before moving use_note_list
+    let list_state = use_note_list.state;
+
     let pub_sub: PubSub<GlobalEvent> = use_context();
     let pc = pub_sub.clone();
     use_effect(move || {
@@ -181,6 +184,7 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, editor_path: ReadSignal<VaultPath>) ->
                             use_note_list,
                         },
                         selector_handler,
+                        load_state: list_state,
                     }
                 }
             }
@@ -192,7 +196,7 @@ pub fn NoteBrowser(vault: Arc<NoteVault>, editor_path: ReadSignal<VaultPath>) ->
 struct NoteBrowserHover {
     vault: Arc<NoteVault>,
     current_browse_path: SyncSignal<VaultPath>,
-    use_note_list: UseNoteList<String>,
+    use_note_list: UseNoteList,
 }
 
 impl NoteElementActions for NoteBrowserHover {
@@ -356,9 +360,9 @@ struct BrowseFuncions {
     browsing_directory: SyncSignal<VaultPath>,
 }
 
-impl SelectorFunctions<String> for BrowseFuncions {
-    fn init(&self) -> Vec<NoteBrowseEntry> {
-        info!("Load all entries");
+impl SelectorFunctions for BrowseFuncions {
+    async fn init(&self) -> Vec<NoteBrowseEntry> {
+        info!("Load all entries from path {}", self.browsing_directory);
         let mut entries = vec![];
         let (search_options, rx) = VaultBrowseOptionsBuilder::new(&self.browsing_directory.read())
             .full_validation()
@@ -367,6 +371,7 @@ impl SelectorFunctions<String> for BrowseFuncions {
         let browsing_vault = self.vault.clone();
         browsing_vault
             .browse_vault(search_options)
+            .await
             .expect("Error fetching Entries");
 
         while let Ok(entry) = rx.recv() {
@@ -400,7 +405,7 @@ impl SelectorFunctions<String> for BrowseFuncions {
         entries
     }
 
-    fn filter(
+    async fn filter(
         &self,
         filter_text: String,
         initial_items: &[NoteBrowseEntry],

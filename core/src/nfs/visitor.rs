@@ -6,6 +6,7 @@ use std::{
 
 use ignore::{ParallelVisitor, ParallelVisitorBuilder};
 use log::error;
+use tokio::runtime::Handle;
 
 use crate::{
     nfs::{DirectoryDetails, EntryData, NoteEntryData, VaultEntry, VaultPath},
@@ -21,6 +22,7 @@ struct NoteListVisitor {
     notes_to_add: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
     directories_found: Arc<Mutex<Vec<VaultPath>>>,
     sender: Option<Sender<SearchResult>>,
+    handle: Handle,
 }
 
 impl NoteListVisitor {
@@ -59,7 +61,7 @@ impl NoteListVisitor {
 
     // We check the content hash
     fn has_changed_deep_check(&self, cached: &mut NoteContentData, disk: &NoteEntryData) -> bool {
-        let details = disk.load_details(&self.workspace_path, &disk.path).unwrap();
+        let details = self.handle.block_on(disk.load_details(&self.workspace_path, &disk.path)).unwrap();
         let details_hash = details.get_content_data().hash;
         let cached_hash = cached.hash;
         !details_hash.eq(&cached_hash)
@@ -77,8 +79,8 @@ impl NoteListVisitor {
                 NotesValidation::None => false,
             };
             if changed {
-                let details = data
-                    .load_details(&self.workspace_path, &data.path)
+                let details = self.handle.block_on(data
+                    .load_details(&self.workspace_path, &data.path))
                     .expect("Can't get details for note");
                 let text = details.raw_text.clone();
                 self.notes_to_modify
@@ -90,8 +92,8 @@ impl NoteListVisitor {
                 cached_details
             }
         } else {
-            let details = data
-                .load_details(&self.workspace_path, &data.path)
+            let details = self.handle.block_on(data
+                .load_details(&self.workspace_path, &data.path))
                 .expect("Can't get Details for note");
             let text = details.raw_text.clone();
             self.notes_to_add
@@ -109,7 +111,7 @@ impl ParallelVisitor for NoteListVisitor {
         match entry {
             Ok(dir) => {
                 // debug!("Scanning: {}", dir.path().as_os_str().to_string_lossy());
-                let npe = VaultEntry::from_path(&self.workspace_path, dir.path());
+                let npe = self.handle.block_on(VaultEntry::from_path(&self.workspace_path, dir.path()));
                 match npe {
                     Ok(entry) => {
                         self.verify_cache(&entry);
@@ -136,6 +138,7 @@ pub struct NoteListVisitorBuilder {
     notes_to_add: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
     directories_found: Arc<Mutex<Vec<VaultPath>>>,
     sender: Option<Sender<SearchResult>>,
+    handle: Handle,
 }
 
 impl NoteListVisitorBuilder {
@@ -144,6 +147,7 @@ impl NoteListVisitorBuilder {
         validation: NotesValidation,
         cached_notes: Vec<(NoteEntryData, NoteContentData)>,
         sender: Option<Sender<SearchResult>>,
+        handle: Handle,
     ) -> Self {
         let mut notes_to_delete = HashMap::new();
         for cached in cached_notes {
@@ -158,6 +162,7 @@ impl NoteListVisitorBuilder {
             notes_to_add: Arc::new(Mutex::new(Vec::new())),
             directories_found: Arc::new(Mutex::new(Vec::new())),
             sender,
+            handle,
         }
     }
 
@@ -208,6 +213,7 @@ impl<'s> ParallelVisitorBuilder<'s> for NoteListVisitorBuilder {
             notes_to_add: self.notes_to_add.clone(),
             directories_found: self.directories_found.clone(),
             sender: self.sender.clone(),
+            handle: self.handle.clone(),
         };
         Box::new(dbv)
     }
@@ -220,8 +226,8 @@ mod tests {
     use tempfile::TempDir;
     use crate::nfs::{save_note, create_directory};
 
-    #[test]
-    fn test_note_list_visitor_builder_new() {
+    #[tokio::test]
+    async fn test_note_list_visitor_builder_new() {
         let temp_dir = TempDir::new().unwrap();
         let workspace_path = temp_dir.path();
         let validation = NotesValidation::None;
@@ -233,6 +239,7 @@ mod tests {
             validation,
             cached_notes,
             Some(sender),
+            Handle::current(),
         );
 
         assert_eq!(builder.workspace_path, workspace_path);
@@ -240,8 +247,8 @@ mod tests {
         assert!(builder.sender.is_some());
     }
 
-    #[test]
-    fn test_note_list_visitor_builder_without_sender() {
+    #[tokio::test]
+    async fn test_note_list_visitor_builder_without_sender() {
         let temp_dir = TempDir::new().unwrap();
         let workspace_path = temp_dir.path();
         let validation = NotesValidation::Fast;
@@ -252,6 +259,7 @@ mod tests {
             validation,
             cached_notes,
             None,
+            Handle::current(),
         );
 
         assert_eq!(builder.workspace_path, workspace_path);
@@ -259,8 +267,8 @@ mod tests {
         assert!(builder.sender.is_none());
     }
 
-    #[test]
-    fn test_note_list_visitor_builder_with_cached_notes() {
+    #[tokio::test]
+    async fn test_note_list_visitor_builder_with_cached_notes() {
         let temp_dir = TempDir::new().unwrap();
         let workspace_path = temp_dir.path();
         let validation = NotesValidation::Full;
@@ -280,6 +288,7 @@ mod tests {
             validation,
             cached_notes,
             None,
+            Handle::current(),
         );
 
         // Test that notes are initially in the "to delete" list
@@ -293,8 +302,8 @@ mod tests {
         assert_eq!(builder.get_directories_found().len(), 0);
     }
 
-    #[test]
-    fn test_note_list_visitor_builder_getters() {
+    #[tokio::test]
+    async fn test_note_list_visitor_builder_getters() {
         let temp_dir = TempDir::new().unwrap();
         let workspace_path = temp_dir.path();
         let validation = NotesValidation::None;
@@ -305,6 +314,7 @@ mod tests {
             validation,
             cached_notes,
             None,
+            Handle::current(),
         );
 
         // Test all getter methods return empty collections initially
@@ -314,8 +324,8 @@ mod tests {
         assert_eq!(builder.get_directories_found().len(), 0);
     }
 
-    #[test]
-    fn test_note_list_visitor_builder_parallel_visitor_trait() {
+    #[tokio::test]
+    async fn test_note_list_visitor_builder_parallel_visitor_trait() {
         let temp_dir = TempDir::new().unwrap();
         let workspace_path = temp_dir.path();
         let validation = NotesValidation::None;
@@ -326,6 +336,7 @@ mod tests {
             validation,
             cached_notes,
             None,
+            Handle::current(),
         );
 
         // Test that we can build a parallel visitor
@@ -333,8 +344,8 @@ mod tests {
         // If this compiles and runs, the trait is implemented correctly
     }
 
-    #[test]
-    fn test_visitor_with_real_file_operations() {
+    #[tokio::test]
+    async fn test_visitor_with_real_file_operations() {
         let temp_dir = TempDir::new().unwrap();
         let workspace_path = temp_dir.path();
         let validation = NotesValidation::None;
@@ -344,8 +355,8 @@ mod tests {
         let dir_path = VaultPath::new("test_directory");
         let note_content = "# Test Note\n\nThis is a test note.";
 
-        save_note(workspace_path, &note_path, note_content).unwrap();
-        create_directory(workspace_path, &dir_path).unwrap();
+        save_note(workspace_path, &note_path, note_content).await.unwrap();
+        create_directory(workspace_path, &dir_path).await.unwrap();
 
         let cached_notes = vec![];
         let (sender, _receiver) = mpsc::channel();
@@ -355,6 +366,7 @@ mod tests {
             validation,
             cached_notes,
             Some(sender),
+            Handle::current(),
         );
 
         // Create a visitor and simulate file discovery
@@ -366,12 +378,12 @@ mod tests {
         // This test verifies the builder setup works correctly
 
         // Cleanup
-        std::fs::remove_file(workspace_path.join("test_note.md")).ok();
-        std::fs::remove_dir_all(workspace_path.join("test_directory")).ok();
+        tokio::fs::remove_file(workspace_path.join("test_note.md")).await.ok();
+        tokio::fs::remove_dir_all(workspace_path.join("test_directory")).await.ok();
     }
 
-    #[test]
-    fn test_note_list_visitor_different_validation_modes() {
+    #[tokio::test]
+    async fn test_note_list_visitor_different_validation_modes() {
         let temp_dir = TempDir::new().unwrap();
         let workspace_path = temp_dir.path();
         let cached_notes = vec![];
@@ -389,6 +401,7 @@ mod tests {
                 validation,
                 cached_notes.clone(),
                 None,
+                Handle::current(),
             );
 
             assert_eq!(builder.validation, validation);
@@ -399,8 +412,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_channel_communication() {
+    #[tokio::test]
+    async fn test_channel_communication() {
         let temp_dir = TempDir::new().unwrap();
         let workspace_path = temp_dir.path();
         let validation = NotesValidation::None;
@@ -412,6 +425,7 @@ mod tests {
             validation,
             cached_notes,
             Some(sender.clone()),
+            Handle::current(),
         );
 
         // Test that we can send a search result through the channel
@@ -422,5 +436,183 @@ mod tests {
         let received = receiver.recv().unwrap();
 
         assert_eq!(received.path, test_result.path);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_scan_multiple_markdown_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        // Create several markdown files in the root and a subdirectory
+        let notes = vec![
+            ("note_a.md", "# Note A\n\nFirst note content."),
+            ("note_b.md", "# Note B\n\nSecond note with more text."),
+            ("note_c.md", "---\ntitle: Note C\n---\n\nFrontmatter note."),
+        ];
+        let sub_dir = VaultPath::new("subdir");
+        let sub_notes = vec![
+            ("subdir/deep.md", "# Deep Note\n\nNested note."),
+        ];
+
+        create_directory(workspace_path, &sub_dir).await.unwrap();
+        for (path, content) in &notes {
+            save_note(workspace_path, &VaultPath::new(*path), *content).await.unwrap();
+        }
+        for (path, content) in &sub_notes {
+            save_note(workspace_path, &VaultPath::new(*path), *content).await.unwrap();
+        }
+
+        // Scan with the visitor using a recursive walker (no cached notes)
+        let (sender, receiver) = mpsc::channel();
+        let mut builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            NotesValidation::None,
+            vec![],
+            Some(sender),
+            Handle::current(),
+        );
+
+        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        walker.visit(&mut builder);
+
+        // Collect all SearchResults from the channel
+        let mut results: Vec<SearchResult> = Vec::new();
+        while let Ok(r) = receiver.try_recv() {
+            results.push(r);
+        }
+
+        // Separate notes and directories from the results
+        let note_paths: Vec<String> = results
+            .iter()
+            .filter_map(|r| match &r.rtype {
+                crate::ResultType::Note(_) => Some(r.path.to_string()),
+                _ => None,
+            })
+            .collect();
+
+        let dir_paths: Vec<String> = results
+            .iter()
+            .filter_map(|r| match &r.rtype {
+                crate::ResultType::Directory => Some(r.path.to_string()),
+                _ => None,
+            })
+            .collect();
+
+        // All four notes should be discovered
+        assert_eq!(note_paths.len(), 4, "Expected 4 notes, got: {:?}", note_paths);
+        for expected in &["note_a.md", "note_b.md", "note_c.md", "deep.md"] {
+            assert!(
+                note_paths.iter().any(|p| p.contains(expected)),
+                "Missing note {} in {:?}",
+                expected,
+                note_paths
+            );
+        }
+
+        // The subdirectory should be found
+        assert!(
+            dir_paths.iter().any(|p| p.contains("subdir")),
+            "Missing subdir in {:?}",
+            dir_paths
+        );
+
+        // All notes should be in the "to add" list since there were no cached notes
+        let to_add = builder.get_notes_to_add();
+        assert_eq!(to_add.len(), 4, "Expected 4 notes to add, got {}", to_add.len());
+
+        // Nothing to delete or modify
+        assert!(builder.get_notes_to_delete().is_empty());
+        assert!(builder.get_notes_to_modify().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_scan_detects_modified_note() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        let note_path = VaultPath::new("changing.md");
+        let original = "# Original\n\nOriginal content.";
+        save_note(workspace_path, &note_path, original).await.unwrap();
+
+        // Get the entry as the walker would see it (absolute path via from_path)
+        let full_path = workspace_path.join("changing.md");
+        let entry = VaultEntry::from_path(workspace_path, &full_path).await.unwrap();
+        let (note_data, content_data) = match entry.data {
+            EntryData::Note(d) => {
+                let details = d.load_details(workspace_path, &d.path).await.unwrap();
+                let cd = details.get_content_data();
+                (d, cd)
+            }
+            _ => panic!("Expected note"),
+        };
+
+        // Overwrite with different content so the file size changes
+        let updated = "# Updated\n\nThis content is deliberately much longer to change the file size on disk.";
+        save_note(workspace_path, &note_path, updated).await.unwrap();
+
+        // Supply the old cached entry (with the original size) to the builder
+        let cached = vec![(note_data, content_data)];
+
+        let mut builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            NotesValidation::Fast,
+            cached,
+            None,
+            Handle::current(),
+        );
+
+        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        walker.visit(&mut builder);
+
+        // The note should show up as modified (size changed)
+        let modified = builder.get_notes_to_modify();
+        assert_eq!(modified.len(), 1, "Expected 1 modified note, got {}", modified.len());
+        assert!(modified[0].0.path.to_string().contains("changing.md"));
+
+        // Nothing to add (it was already cached) and nothing to delete (still on disk)
+        assert!(builder.get_notes_to_add().is_empty());
+        assert!(builder.get_notes_to_delete().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_scan_detects_deleted_note() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        // Create a note, get its cached data, then delete it from disk
+        let note_path = VaultPath::new("ephemeral.md");
+        save_note(workspace_path, &note_path, "# Gone soon").await.unwrap();
+
+        let full_path = workspace_path.join("ephemeral.md");
+        let entry = VaultEntry::from_path(workspace_path, &full_path).await.unwrap();
+        let cached = match entry.data {
+            EntryData::Note(d) => {
+                let details = d.load_details(workspace_path, &d.path).await.unwrap();
+                vec![(d, details.get_content_data())]
+            }
+            _ => panic!("Expected note"),
+        };
+
+        // Remove the file from disk
+        tokio::fs::remove_file(workspace_path.join("ephemeral.md")).await.unwrap();
+
+        let mut builder = NoteListVisitorBuilder::new(
+            workspace_path,
+            NotesValidation::None,
+            cached,
+            None,
+            Handle::current(),
+        );
+
+        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        walker.visit(&mut builder);
+
+        // The note should appear in the delete list (cached but not on disk)
+        let to_delete = builder.get_notes_to_delete();
+        assert_eq!(to_delete.len(), 1);
+        assert!(to_delete[0].to_string().contains("ephemeral.md"));
+
+        assert!(builder.get_notes_to_add().is_empty());
+        assert!(builder.get_notes_to_modify().is_empty());
     }
 }

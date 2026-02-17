@@ -34,15 +34,11 @@ pub fn Indexer(vault: Arc<NoteVault>, index_type: IndexType) -> Element {
         let index_type = index_type.clone();
         let vault = vault.clone();
         async move {
-            tokio::spawn(async move {
-                match index_type {
-                    IndexType::Validate => vault.init_and_validate(),
-                    IndexType::Fast => vault.index_notes(NotesValidation::Fast),
-                    IndexType::Full => vault.recreate_index(),
-                }
-            })
-            .await
-            .unwrap()
+            match index_type {
+                IndexType::Validate => vault.init_and_validate().await,
+                IndexType::Fast => vault.index_notes(NotesValidation::Fast).await,
+                IndexType::Full => vault.recreate_index().await,
+            }
         }
     });
 
