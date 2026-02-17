@@ -106,6 +106,7 @@ pub enum LinkType {
     Note(VaultPath),
     Attachment(VaultPath),
     Url,
+    Hashtag,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +144,14 @@ impl NoteLink {
             ltype: LinkType::Url,
             text: text.as_ref().to_string(),
             raw_link: url.as_ref().to_string(),
+        }
+    }
+    pub fn hashtag<S: AsRef<str>>(tag: S) -> Self {
+        let tag_text = tag.as_ref().to_string();
+        Self {
+            ltype: LinkType::Hashtag,
+            text: tag_text.clone(),
+            raw_link: format!("#{}", tag_text),
         }
     }
 }
