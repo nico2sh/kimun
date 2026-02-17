@@ -6,7 +6,7 @@ Although by no means this has been vibe coded, as most of the core has been manu
 
 Components
 
-- **Desktop App**: The main Tauri-based note-taking application
+- **Desktop App**: The main Dioxus-based note-taking application
 - **RAG Server**: A standalone HTTP server for semantic search and AI-powered Q&A over your notes (see [rag/README.md](rag/README.md))
 
 ## Searching
