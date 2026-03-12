@@ -1,0 +1,29 @@
+info:
+  name: Ask a question
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: http://127.0.0.1:8080/api/answer
+  body:
+    type: json
+    data: |-
+      {
+        "query": "{{?question}}",
+        "context_size": "large"
+      }
+  auth: inherit
+
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        const job_id = res.body.job_id;
+        bru.setVar("job_id", job_id);
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
