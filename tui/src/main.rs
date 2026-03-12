@@ -1,4 +1,6 @@
 pub mod app;
+pub mod app_screen;
+pub mod components;
 pub mod keys;
 pub mod settings;
 pub mod ui;
@@ -14,8 +16,10 @@ use ratatui::prelude::{Backend, CrosstermBackend};
 use std::io;
 
 use crate::app::App;
+use crate::components::actions::Action;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     color_eyre::install()?;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -51,23 +55,44 @@ where
                 // Skip events that are not KeyEventKind::Press
                 continue;
             }
-            match &app.current_screen {
-                app::CurrentScreen::Starting => match key.code {
-                    KeyCode::Char('q') => app.current_screen = app::CurrentScreen::Exiting,
-                    _ => {}
-                },
-                app::CurrentScreen::Settings => todo!(),
-                app::CurrentScreen::Editor(note_vault) => todo!(),
-                app::CurrentScreen::Exiting => match key.code {
-                    KeyCode::Char('y') => {
-                        return Ok(true);
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('q') => {
-                        return Ok(false);
-                    }
-                    _ => {}
-                },
-            }
+            app.current_screen.update(Action::Noop);
+            // match &app.current_screen {
+            //     app::CurrentScreen::Starting => {
+            //         log::debug!("Starting");
+            //         if let Some(_vault_path) = &app.settings.workspace_dir {
+            //             // let vault = NoteVault::new(vault_path)?;
+            //             app.current_screen = app::CurrentScreen::Editor;
+            //         } else {
+            //             app.current_screen = app::CurrentScreen::Settings;
+            //         }
+            //     }
+            //     app::CurrentScreen::Settings => {
+            //         log::debug!("Settings");
+            //         match key.code {
+            //             KeyCode::Char('q') => app.current_screen = app::CurrentScreen::Exiting,
+            //             _ => {}
+            //         }
+            //     }
+            //     app::CurrentScreen::Editor => {
+            //         log::debug!("Editor");
+            //         match key.code {
+            //             KeyCode::Char('q') => app.current_screen = app::CurrentScreen::Exiting,
+            //             _ => {}
+            //         }
+            //     }
+            //     app::CurrentScreen::Exiting => {
+            //         log::debug!("Exiting");
+            //         match key.code {
+            //             KeyCode::Char('y') => {
+            //                 return Ok(true);
+            //             }
+            //             KeyCode::Char('n') | KeyCode::Char('q') => {
+            //                 return Ok(false);
+            //             }
+            //             _ => {}
+            //         }
+            //     }
+            // }
             log::debug!("{}", key.code)
         }
     }
