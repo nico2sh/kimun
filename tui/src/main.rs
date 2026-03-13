@@ -5,9 +5,12 @@ pub mod keys;
 pub mod settings;
 pub mod ui;
 
+use std::sync::Arc;
+
 use color_eyre::Result;
-use crossterm::event::{self, DisableMouseCapture, Event, KeyCode};
+use crossterm::event::{self, DisableMouseCapture, Event};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+use kimun_core::NoteVault;
 use ratatui::Terminal;
 use ratatui::crossterm::event::EnableMouseCapture;
 use ratatui::crossterm::execute;
@@ -16,7 +19,11 @@ use ratatui::prelude::{Backend, CrosstermBackend};
 use std::io;
 
 use crate::app::App;
-use crate::components::actions::Action;
+use crate::app_screen::AppScreen;
+use crate::app_screen::editor::EditorScreen;
+use crate::app_screen::settings::SettingsScreen;
+use crate::components::app_message::AppMessage;
+use crate::components::events::AppEvent;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,12 +34,7 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new()?;
-    let res = run_app(&mut terminal, &mut app)?;
-    // if let Err(err) = tui::restore() {
-    //     eprintln!(
-    //         "failed to restore terminal. Run `reset` or restart your terminal to recover: {err}"
-    //     );
-    // }
+    run_app(&mut terminal, &mut app).await?;
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -40,60 +42,51 @@ async fn main() -> Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
-
     Ok(())
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<bool>
+async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
 where
     io::Error: From<B::Error>,
 {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
+
+    // Run on_enter for the initial screen.
+    if let Some(screen) = &mut app.current_screen {
+        screen.on_enter(&tx).await;
+    }
+
     loop {
-        terminal.draw(|f| ui::ui(f, app))?;
-        if let Event::Key(key) = event::read()? {
-            if key.kind == event::KeyEventKind::Release {
-                // Skip events that are not KeyEventKind::Press
-                continue;
+        // Drain all pending messages before drawing.
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                AppMessage::Quit => return Ok(()),
+                AppMessage::OpenSettings => {
+                    let mut screen: Box<dyn AppScreen> = Box::new(SettingsScreen::new());
+                    screen.on_enter(&tx).await;
+                    app.current_screen = Some(screen);
+                }
+                AppMessage::OpenEditor(path) => {
+                    let vault = NoteVault::new(&path).await.map_err(io::Error::other)?;
+                    let mut screen: Box<dyn AppScreen> =
+                        Box::new(EditorScreen::new(Arc::new(vault), app.settings.clone()));
+                    screen.on_enter(&tx).await;
+                    app.current_screen = Some(screen);
+                }
             }
-            app.current_screen.update(Action::Noop);
-            // match &app.current_screen {
-            //     app::CurrentScreen::Starting => {
-            //         log::debug!("Starting");
-            //         if let Some(_vault_path) = &app.settings.workspace_dir {
-            //             // let vault = NoteVault::new(vault_path)?;
-            //             app.current_screen = app::CurrentScreen::Editor;
-            //         } else {
-            //             app.current_screen = app::CurrentScreen::Settings;
-            //         }
-            //     }
-            //     app::CurrentScreen::Settings => {
-            //         log::debug!("Settings");
-            //         match key.code {
-            //             KeyCode::Char('q') => app.current_screen = app::CurrentScreen::Exiting,
-            //             _ => {}
-            //         }
-            //     }
-            //     app::CurrentScreen::Editor => {
-            //         log::debug!("Editor");
-            //         match key.code {
-            //             KeyCode::Char('q') => app.current_screen = app::CurrentScreen::Exiting,
-            //             _ => {}
-            //         }
-            //     }
-            //     app::CurrentScreen::Exiting => {
-            //         log::debug!("Exiting");
-            //         match key.code {
-            //             KeyCode::Char('y') => {
-            //                 return Ok(true);
-            //             }
-            //             KeyCode::Char('n') | KeyCode::Char('q') => {
-            //                 return Ok(false);
-            //             }
-            //             _ => {}
-            //         }
-            //     }
-            // }
-            log::debug!("{}", key.code)
+        }
+
+        terminal.draw(|f| ui::ui(f, app))?;
+
+        // Convert crossterm event → AppEvent, skip unhandled variants.
+        let app_event = match event::read()? {
+            Event::Key(key) if key.kind != event::KeyEventKind::Release => AppEvent::Key(key),
+            Event::Mouse(mouse) => AppEvent::Mouse(mouse),
+            _ => continue,
+        };
+
+        if let Some(screen) = &mut app.current_screen {
+            screen.handle_event(app_event, &tx);
         }
     }
 }
