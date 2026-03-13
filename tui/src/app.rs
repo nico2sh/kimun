@@ -1,7 +1,4 @@
-use std::rc::Rc;
-
 use color_eyre::eyre;
-use kimun_core::NoteVault;
 
 use crate::{
     app_screen::{AppScreen, start::StartScreen},
@@ -9,9 +6,10 @@ use crate::{
 };
 
 pub struct App {
-    pub key_input: String,                  // the currently being edited json key.
-    pub value_input: String,                // the currently being edited json value.
-    pub current_screen: Box<dyn AppScreen>, // the current screen the user is looking at, and will later determine what is rendered.
+    /// The currently active screen. Held as `Option` so we can temporarily
+    /// `take()` it when calling screen methods (avoids double-borrow of `App`).
+    pub current_screen: Option<Box<dyn AppScreen>>,
+
     pub settings: AppSettings,
 }
 
@@ -19,9 +17,7 @@ impl App {
     pub fn new() -> eyre::Result<Self> {
         let settings = AppSettings::load_from_disk()?;
         Ok(Self {
-            key_input: String::new(),
-            value_input: String::new(),
-            current_screen: Box::new(StartScreen {}),
+            current_screen: Some(Box::new(StartScreen::new(settings.clone()))),
             settings,
         })
     }

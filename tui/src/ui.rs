@@ -6,7 +6,9 @@ use ratatui::{
 use crate::app::App;
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
-    app.current_screen.render(frame);
+    if let Some(screen) = &mut app.current_screen {
+        screen.render(frame);
+    }
 }
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
