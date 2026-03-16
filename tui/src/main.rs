@@ -66,12 +66,37 @@ where
                     screen.on_enter(&tx).await;
                     app.current_screen = Some(screen);
                 }
-                AppMessage::OpenEditor(path) => {
-                    let vault = NoteVault::new(&path).await.map_err(io::Error::other)?;
-                    let mut screen: Box<dyn AppScreen> =
-                        Box::new(EditorScreen::new(Arc::new(vault), app.settings.clone()));
+                AppMessage::OpenEditor(vault, path) => {
+                    let mut screen: Box<dyn AppScreen> = Box::new(EditorScreen::new(
+                        Arc::new(vault),
+                        path,
+                        app.settings.clone(),
+                    ));
                     screen.on_enter(&tx).await;
                     app.current_screen = Some(screen);
+                }
+                AppMessage::OpenPath(path) => {
+                    if let Some(vault_path) = &app.settings.workspace_dir {
+                        if path.is_note() {
+                            if let Some(editor) = app
+                                .current_screen
+                                .as_mut()
+                                .and_then(|s| s.as_any_mut().downcast_mut::<EditorScreen>())
+                            {
+                                editor.open_path(path).await;
+                            } else {
+                                let vault = NoteVault::new(&vault_path)
+                                    .await
+                                    .map_err(io::Error::other)?;
+                                tx.send(AppMessage::OpenEditor(vault, path)).ok();
+                            }
+                        } else {
+                            // We open the note browser
+                        }
+                    } else {
+                        // We are trying to open a path or browse without having a vault
+                        tx.send(AppMessage::OpenSettings).ok();
+                    }
                 }
             }
         }

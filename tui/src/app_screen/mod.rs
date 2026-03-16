@@ -2,6 +2,8 @@ pub mod editor;
 pub mod settings;
 pub mod start;
 
+use std::any::Any;
+
 use async_trait::async_trait;
 use ratatui::Frame;
 
@@ -20,4 +22,7 @@ pub trait AppScreen: Send {
     fn handle_event(&mut self, event: AppEvent, tx: &AppTx) -> EventState;
 
     fn render(&mut self, f: &mut Frame);
+
+    /// For downcasting to a concrete screen type.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }

@@ -1,8 +1,5 @@
-use std::path::PathBuf;
-
+use kimun_core::{NoteVault, nfs::VaultPath};
 use tokio::sync::mpsc::UnboundedSender;
-
-use crate::settings::AppSettings;
 
 /// Messages screens send to the main loop. All variants must be `Send` so
 /// they can travel through the tokio channel. Keep data simple — no vault
@@ -12,7 +9,8 @@ pub enum AppMessage {
     Quit,
     OpenSettings,
     /// Navigate to the editor for the given vault root path.
-    OpenEditor(PathBuf),
+    OpenEditor(NoteVault, VaultPath),
+    OpenPath(VaultPath),
 }
 
 /// Convenience alias used throughout the codebase.
