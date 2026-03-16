@@ -17,4 +17,6 @@ log = "0.4.29"
 tokio = { version = "1.50.0", features = ["full"] }
 tokio-util = "0.7.18"
 async-trait = "0.1"
+futures = "0.3"
 ratatui-textarea = { version = "0.8.0", features = ["search"] }
+nucleo = "0.5"
