@@ -3,7 +3,9 @@
     "allow": [
       "Bash(cargo check:*)",
       "Bash(cargo test:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(cargo build:*)",
+      "mcp__plugin_nr_google-search__web_fetch"
     ]
   }
 }
