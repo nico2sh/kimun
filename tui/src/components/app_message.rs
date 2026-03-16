@@ -7,6 +7,7 @@ use tokio::sync::mpsc::UnboundedSender;
 #[derive(Debug)]
 pub enum AppMessage {
     Quit,
+    Redraw,
     OpenSettings,
     /// Navigate to the editor for the given vault root path.
     OpenEditor(NoteVault, VaultPath),

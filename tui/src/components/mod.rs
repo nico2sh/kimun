@@ -1,6 +1,7 @@
 pub mod app_message;
 pub mod event_state;
 pub mod events;
+pub mod sidebar;
 pub mod text_editor;
 
 use ratatui::Frame;
