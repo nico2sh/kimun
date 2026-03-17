@@ -212,12 +212,11 @@ impl AppSettings {
             }
 
             // Try to read and deserialize the theme file
-            if let Ok(theme_string) = fs::read_to_string(&path) {
-                if let Ok(theme) = toml::from_str::<Theme>(&theme_string) {
-                    themes.push(theme);
-                } else {
-                    debug!("Failed to deserialize theme file: {:?}", path);
-                }
+            match fs::read_to_string(&path).and_then(|s| {
+                toml::from_str::<Theme>(&s).map_err(|e| std::io::Error::other(e))
+            }) {
+                Ok(theme) => themes.push(theme),
+                Err(e) => log::warn!("Skipping theme file {:?}: {}", path, e),
             }
         }
 
@@ -246,10 +245,25 @@ impl AppSettings {
             let mut toml = String::new();
             settings_file.read_to_string(&mut toml)?;
 
-            let mut setting: AppSettings = toml::from_str(toml.as_ref())?;
-            // Ensure any new default bindings added after the config was saved are present.
-            setting.merge_missing_default_bindings();
-            Ok(setting)
+            match toml::from_str::<AppSettings>(toml.as_ref()) {
+                Ok(mut setting) => {
+                    setting.merge_missing_default_bindings();
+                    Ok(setting)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Config file at {:?} could not be parsed ({}). \
+                         Renaming to .corrupt and starting with defaults.",
+                        settings_file_path,
+                        e
+                    );
+                    let corrupt_path = settings_file_path.with_extension("toml.corrupt");
+                    let _ = fs::rename(&settings_file_path, &corrupt_path);
+                    let defaults = Self::default();
+                    defaults.save_to_disk()?;
+                    Ok(defaults)
+                }
+            }
         }
     }
 
