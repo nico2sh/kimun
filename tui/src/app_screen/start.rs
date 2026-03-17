@@ -30,7 +30,7 @@ impl AppScreen for StartScreen {
         tx.send(AppMessage::OpenPath(path)).ok();
     }
 
-    fn handle_event(&mut self, event: AppEvent, tx: &AppTx) -> EventState {
+    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
         match event {
             AppEvent::Key(key) if key.code == KeyCode::Char('q') => {
                 tx.send(AppMessage::Quit).ok();

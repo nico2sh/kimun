@@ -160,47 +160,21 @@ impl AppSettings {
         Ok(config_home.join(THEMES_DIR))
     }
 
-    fn create_and_save_default_theme(theme_path: &PathBuf) -> eyre::Result<Theme> {
-        let default_theme = Theme::default();
-        let toml = toml::to_string_pretty(&default_theme)?;
-
-        // Ensure the themes directory exists
-        if let Some(parent) = theme_path.parent() {
-            fs::create_dir_all(parent)?;
+    fn load_theme_from_path(path: &std::path::Path) -> eyre::Result<Theme> {
+        let theme_string = fs::read_to_string(path)?;
+        match toml::from_str::<Theme>(&theme_string) {
+            Ok(theme) => Ok(theme),
+            Err(e) => {
+                debug!("Failed to deserialize theme file {:?}: {}. Removing.", path, e);
+                let _ = fs::remove_file(path);
+                Err(eyre::eyre!("corrupt theme file: {}", e))
+            }
         }
-
-        fs::write(theme_path, toml)?;
-        Ok(default_theme)
     }
 
     fn load_default_theme() -> eyre::Result<Theme> {
         let theme_path = AppSettings::get_themes_path()?.join("default.toml");
-
-        // Try to read and deserialize the theme file
-        match fs::read_to_string(&theme_path) {
-            Ok(theme_string) => {
-                // Try to deserialize the TOML content
-                match toml::from_str::<Theme>(&theme_string) {
-                    Ok(theme) => Ok(theme),
-                    Err(e) => {
-                        // Deserialization failed, remove the corrupted file
-                        debug!(
-                            "Failed to deserialize theme file: {}. Removing and creating default.",
-                            e
-                        );
-                        let _ = fs::remove_file(&theme_path);
-
-                        // Create and save default theme
-                        Self::create_and_save_default_theme(&theme_path)
-                    }
-                }
-            }
-            Err(_) => {
-                // File doesn't exist or can't be read, create default theme
-                debug!("Theme file not found. Creating default theme.");
-                Self::create_and_save_default_theme(&theme_path)
-            }
-        }
+        Self::load_theme_from_path(&theme_path)
     }
 
     fn load_custom_themes() -> Vec<Theme> {
@@ -345,5 +319,35 @@ impl AppSettings {
             .into_iter()
             .find(|t| t.name == self.theme)
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_theme_from_nonexistent_path_returns_err_without_creating_file() {
+        // RED: fails to compile because load_theme_from_path doesn't exist.
+        // GREEN: method exists, returns Err, and does NOT create the file.
+        let path = std::env::temp_dir().join("kimun_tdd_test_theme_absent.toml");
+        let _ = std::fs::remove_file(&path); // ensure clean state
+
+        let result = AppSettings::load_theme_from_path(&path);
+
+        assert!(result.is_err(), "should return Err when file is absent");
+        assert!(!path.exists(), "must not create the file as a side effect");
+    }
+
+    #[test]
+    fn load_theme_from_corrupt_path_returns_err_without_recreating_file() {
+        // After a corrupt file is removed, no replacement must be written.
+        let path = std::env::temp_dir().join("kimun_tdd_test_theme_corrupt.toml");
+        std::fs::write(&path, b"not valid toml {{{{").unwrap();
+
+        let result = AppSettings::load_theme_from_path(&path);
+
+        assert!(result.is_err(), "should return Err for corrupt TOML");
+        assert!(!path.exists(), "corrupt file must be removed, not recreated");
     }
 }

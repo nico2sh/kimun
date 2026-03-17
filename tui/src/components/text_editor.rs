@@ -79,7 +79,7 @@ impl Component for TextEditorComponent {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
+    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         self.rect = rect;
         self.text_area.set_cursor_style(
             Style::default()
