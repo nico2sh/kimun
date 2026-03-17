@@ -2,12 +2,10 @@ pub mod editor;
 pub mod settings;
 pub mod start;
 
-use std::any::Any;
-
 use async_trait::async_trait;
 use ratatui::Frame;
 
-use crate::components::app_message::AppTx;
+use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 
@@ -23,6 +21,35 @@ pub trait AppScreen: Send {
 
     fn render(&mut self, f: &mut Frame);
 
-    /// For downcasting to a concrete screen type.
-    fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// Handle an application-level message. Return `None` if the screen consumed
+    /// the message, or `Some(msg)` to pass it back to the main loop.
+    /// The default implementation forwards everything (screen doesn't handle it).
+    async fn handle_app_message(&mut self, msg: AppMessage, _tx: &AppTx) -> Option<AppMessage> {
+        Some(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc::unbounded_channel;
+
+    use super::*;
+    use crate::app_screen::settings::SettingsScreen;
+    use crate::components::app_message::AppMessage;
+
+    #[tokio::test]
+    async fn non_editor_screen_passes_focus_message_back() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = SettingsScreen::new();
+        let result = screen.handle_app_message(AppMessage::FocusSidebar, &tx).await;
+        assert!(result.is_some(), "SettingsScreen should not consume FocusSidebar");
+    }
+
+    #[tokio::test]
+    async fn non_editor_screen_passes_focus_editor_message_back() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = SettingsScreen::new();
+        let result = screen.handle_app_message(AppMessage::FocusEditor, &tx).await;
+        assert!(result.is_some(), "SettingsScreen should not consume FocusEditor");
+    }
 }

@@ -1,5 +1,3 @@
-use std::any::Any;
-
 use async_trait::async_trait;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::widgets::{Block, Borders};
@@ -34,7 +32,4 @@ impl AppScreen for SettingsScreen {
         f.render_widget(block, f.area());
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
 }

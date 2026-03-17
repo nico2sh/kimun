@@ -91,43 +91,28 @@ where
                     app.current_screen = Some(screen);
                 }
                 AppMessage::OpenPath(path) => {
-                    if let Some(vault_path) = &app.settings.workspace_dir {
-                        if let Some(editor) = app
-                            .current_screen
-                            .as_mut()
-                            .and_then(|s| s.as_any_mut().downcast_mut::<EditorScreen>())
-                        {
-                            if path.is_note() {
-                                editor.open_path(path, tx.clone()).await;
-                            } else {
-                                editor.navigate_sidebar(path, tx.clone()).await;
-                            }
-                        } else if path.is_note() {
-                            let vault = NoteVault::new(&vault_path)
-                                .await
-                                .map_err(io::Error::other)?;
-                            tx.send(AppMessage::OpenEditor(vault, path)).ok();
-                        }
+                    let unhandled = if let Some(screen) = app.current_screen.as_mut() {
+                        screen
+                            .handle_app_message(AppMessage::OpenPath(path), &tx)
+                            .await
                     } else {
-                        tx.send(AppMessage::OpenSettings).ok();
+                        Some(AppMessage::OpenPath(path))
+                    };
+                    if let Some(AppMessage::OpenPath(path)) = unhandled {
+                        if let Some(vault_path) = &app.settings.workspace_dir {
+                            if path.is_note() {
+                                let vault =
+                                    NoteVault::new(vault_path).await.map_err(io::Error::other)?;
+                                tx.send(AppMessage::OpenEditor(vault, path)).ok();
+                            }
+                        } else {
+                            tx.send(AppMessage::OpenSettings).ok();
+                        }
                     }
                 }
-                AppMessage::FocusEditor => {
-                    if let Some(editor) = app
-                        .current_screen
-                        .as_mut()
-                        .and_then(|s| s.as_any_mut().downcast_mut::<EditorScreen>())
-                    {
-                        editor.focus_editor();
-                    }
-                }
-                AppMessage::FocusSidebar => {
-                    if let Some(editor) = app
-                        .current_screen
-                        .as_mut()
-                        .and_then(|s| s.as_any_mut().downcast_mut::<EditorScreen>())
-                    {
-                        editor.focus_sidebar();
+                AppMessage::FocusEditor | AppMessage::FocusSidebar => {
+                    if let Some(screen) = app.current_screen.as_mut() {
+                        screen.handle_app_message(msg, &tx).await;
                     }
                 }
             }

@@ -94,9 +94,6 @@ impl Component for SidebarComponent {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
         self.poll_loading();
 
-        // Sync focused state from sidebar into file list component.
-        self.file_list.focused = self.focused;
-
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)])
@@ -128,6 +125,6 @@ impl Component for SidebarComponent {
             f.set_cursor_position((cursor_x, search_inner.y));
         }
 
-        self.file_list.render(f, rows[2], theme);
+        self.file_list.render(f, rows[2], theme, self.focused);
     }
 }
