@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout};
 
 use crate::app_screen::AppScreen;
@@ -69,10 +68,6 @@ impl AppScreen for BrowseScreen {
                     return EventState::Consumed;
                 }
             }
-            if key.code == KeyCode::Esc {
-                tx.send(AppMessage::Quit).ok();
-                return EventState::Consumed;
-            }
         }
         self.sidebar.handle_event(event, tx)
     }
@@ -100,6 +95,7 @@ impl AppScreen for BrowseScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyCode;
     use tokio::sync::mpsc::unbounded_channel;
 
     fn make_settings_with_defaults() -> AppSettings {
@@ -137,14 +133,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn esc_sends_quit() {
+    async fn esc_does_not_quit() {
+        // Quit is now handled globally in main.rs via Ctrl+Q; BrowseScreen ignores Esc.
         let vault = make_vault().await;
         let settings = make_settings_with_defaults();
         let (tx, mut rx) = unbounded_channel();
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
         screen.handle_event(&key_event(KeyCode::Esc), &tx);
-        let msg = rx.try_recv().expect("should have sent a message");
-        assert!(matches!(msg, AppMessage::Quit));
+        assert!(rx.try_recv().is_err(), "Esc should not send any message from BrowseScreen");
     }
 
     #[tokio::test]

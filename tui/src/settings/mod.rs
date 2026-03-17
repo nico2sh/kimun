@@ -97,6 +97,7 @@ fn default_keybindings() -> KeyBindings {
     // TUI navigation shortcuts (always Ctrl — terminal apps don't use Cmd/Meta).
     kb.batch_add()
         .with_ctrl()
+        .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyB, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyN, ActionShortcuts::SortByName)
         .add(KeyStrike::KeyT, ActionShortcuts::SortByTitle)

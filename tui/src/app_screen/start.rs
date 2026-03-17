@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use kimun_core::nfs::VaultPath;
-use ratatui::crossterm::event::KeyCode;
 use ratatui::widgets::{Block, Borders};
 
 use crate::app_screen::AppScreen;
@@ -30,14 +29,8 @@ impl AppScreen for StartScreen {
         tx.send(AppMessage::OpenPath(path)).ok();
     }
 
-    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
-        match event {
-            AppEvent::Key(key) if key.code == KeyCode::Char('q') => {
-                tx.send(AppMessage::Quit).ok();
-                EventState::Consumed
-            }
-            _ => EventState::NotConsumed,
-        }
+    fn handle_event(&mut self, _event: &AppEvent, _tx: &AppTx) -> EventState {
+        EventState::NotConsumed
     }
 
     fn render(&mut self, f: &mut ratatui::Frame) {
