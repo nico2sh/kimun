@@ -1,7 +1,7 @@
 use std::sync::mpsc::Receiver;
 
-use kimun_core::{ResultType, SearchResult};
 use kimun_core::nfs::VaultPath;
+use kimun_core::{ResultType, SearchResult};
 use nucleo::Matcher;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use ratatui::Frame;
@@ -65,14 +65,27 @@ impl SortOrder {
 // ---------------------------------------------------------------------------
 
 pub enum FileListEntry {
-    Up { parent: VaultPath },
-    Note { path: VaultPath, title: String, filename: String },
-    Directory { path: VaultPath, name: String },
-    Attachment { path: VaultPath, filename: String },
+    Up {
+        parent: VaultPath,
+    },
+    Note {
+        path: VaultPath,
+        title: String,
+        filename: String,
+        journal_date: Option<String>,
+    },
+    Directory {
+        path: VaultPath,
+        name: String,
+    },
+    Attachment {
+        path: VaultPath,
+        filename: String,
+    },
 }
 
 impl FileListEntry {
-    pub fn from_result(result: SearchResult) -> Self {
+    pub fn from_result(result: SearchResult, journal_date: Option<String>) -> Self {
         let filename = result.path.get_parent_path().1;
         match result.rtype {
             ResultType::Note(data) => {
@@ -81,10 +94,21 @@ impl FileListEntry {
                 } else {
                     data.title
                 };
-                Self::Note { path: result.path, title, filename }
+                Self::Note {
+                    path: result.path,
+                    title,
+                    filename,
+                    journal_date,
+                }
             }
-            ResultType::Directory => Self::Directory { path: result.path, name: filename },
-            ResultType::Attachment => Self::Attachment { path: result.path, filename },
+            ResultType::Directory => Self::Directory {
+                path: result.path,
+                name: filename,
+            },
+            ResultType::Attachment => Self::Attachment {
+                path: result.path,
+                filename,
+            },
         }
     }
 
@@ -100,7 +124,9 @@ impl FileListEntry {
     pub fn search_str(&self) -> Option<String> {
         match self {
             Self::Up { .. } => None,
-            Self::Note { title, filename, .. } => Some(format!("{} {}", title, filename)),
+            Self::Note {
+                title, filename, ..
+            } => Some(format!("{} {}", title, filename)),
             Self::Directory { name, .. } => Some(name.clone()),
             Self::Attachment { filename, .. } => Some(filename.clone()),
         }
@@ -110,7 +136,9 @@ impl FileListEntry {
     fn sort_key(&self, field: SortField) -> String {
         match self {
             Self::Up { .. } => String::new(),
-            Self::Note { title, filename, .. } => match field {
+            Self::Note {
+                title, filename, ..
+            } => match field {
                 SortField::Title => title.to_lowercase(),
                 SortField::Name => filename.to_lowercase(),
             },
@@ -122,32 +150,54 @@ impl FileListEntry {
     /// Terminal rows this entry occupies when rendered.
     pub fn visual_height(&self) -> u16 {
         match self {
-            Self::Note { .. } => 2, // title + filename
+            Self::Note { journal_date, .. } => {
+                if journal_date.is_some() {
+                    3
+                } else {
+                    2
+                }
+            }
             _ => 1,
         }
     }
 
     fn to_list_item(&self) -> ListItem<'static> {
         let lines: Vec<Line> = match self {
-            Self::Up { .. } => vec![
-                Line::from(Span::styled("↑  ..", Style::default().fg(Color::DarkGray))),
-            ],
-            Self::Note { title, filename, .. } => vec![
-                Line::from(format!(" {}", title)),
-                Line::from(Span::styled(
+            Self::Up { .. } => vec![Line::from(Span::styled(
+                "󰁝 [UP] ..",
+                Style::default().fg(Color::DarkGray),
+            ))],
+            Self::Note {
+                title,
+                filename,
+                journal_date,
+                ..
+            } => {
+                let mut lines = vec![];
+                if let Some(date) = journal_date {
+                    lines.push(Line::from(format!("󰃭 {}", title)));
+                    lines.push(Line::from(Span::styled(
+                        format!(" {}", date),
+                        Style::default().fg(Color::Rgb(131, 165, 152)), // Gruvbox aqua
+                    )));
+                } else {
+                    lines.push(Line::from(format!("󰈚 {}", title)));
+                }
+                lines.push(Line::from(Span::styled(
                     format!(" {}", filename),
-                    Style::default().add_modifier(Modifier::ITALIC).fg(Color::Gray),
-                )),
-            ],
-            Self::Directory { name, .. } => vec![
-                Line::from(format!(" 📁 {}", name)),
-            ],
-            Self::Attachment { filename, .. } => vec![
-                Line::from(Span::styled(
-                    format!(" {}", filename),
-                    Style::default().add_modifier(Modifier::ITALIC).fg(Color::Gray),
-                )),
-            ],
+                    Style::default()
+                        .add_modifier(Modifier::ITALIC)
+                        .fg(Color::Gray),
+                )));
+                lines
+            }
+            Self::Directory { name, .. } => vec![Line::from(format!("  {}", name))],
+            Self::Attachment { filename, .. } => vec![Line::from(Span::styled(
+                format!(" {}", filename),
+                Style::default()
+                    .add_modifier(Modifier::ITALIC)
+                    .fg(Color::Gray),
+            ))],
         };
         ListItem::new(Text::from(lines))
     }
@@ -334,30 +384,42 @@ impl FileListComponent {
     }
 
     fn reset_selection(&mut self) {
-        self.list_state.select(if self.display_len() > 0 { Some(0) } else { None });
+        self.list_state.select(if self.display_len() > 0 {
+            Some(0)
+        } else {
+            None
+        });
     }
 
     pub fn select_next(&mut self) {
         let len = self.display_len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let cur = self.list_state.selected().unwrap_or(0);
         self.list_state.select(Some((cur + 1) % len));
     }
 
     pub fn select_prev(&mut self) {
         let len = self.display_len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let cur = self.list_state.selected().unwrap_or(0);
-        self.list_state.select(Some(if cur == 0 { len - 1 } else { cur - 1 }));
+        self.list_state
+            .select(Some(if cur == 0 { len - 1 } else { cur - 1 }));
     }
 
     fn activate_selected(&self, tx: &AppTx) {
-        let Some(display_idx) = self.list_state.selected() else { return };
+        let Some(display_idx) = self.list_state.selected() else {
+            return;
+        };
         let entry_idx = match &self.display_indices {
             None => display_idx,
             Some(v) => v[display_idx],
         };
-        tx.send(AppMessage::OpenPath(self.entries[entry_idx].path().clone())).ok();
+        tx.send(AppMessage::OpenPath(self.entries[entry_idx].path().clone()))
+            .ok();
     }
 
     fn display_idx_at_row(&self, row: u16) -> Option<usize> {
@@ -412,9 +474,18 @@ impl Component for FileListComponent {
                 }
                 // Navigation and search input.
                 match key.code {
-                    KeyCode::Up => { self.select_prev(); EventState::Consumed }
-                    KeyCode::Down => { self.select_next(); EventState::Consumed }
-                    KeyCode::Enter => { self.activate_selected(tx); EventState::Consumed }
+                    KeyCode::Up => {
+                        self.select_prev();
+                        EventState::Consumed
+                    }
+                    KeyCode::Down => {
+                        self.select_next();
+                        EventState::Consumed
+                    }
+                    KeyCode::Enter => {
+                        self.activate_selected(tx);
+                        EventState::Consumed
+                    }
                     KeyCode::Char(c) => {
                         if key.modifiers.contains(KeyModifiers::SHIFT) {
                             self.search_query.push(c.to_ascii_uppercase());
@@ -498,8 +569,8 @@ impl Component for FileListComponent {
         let focused = self.focused;
         let title = self.header_title();
 
-        const BG_DARK: Color = Color::Rgb(40, 40, 40);   // Gruvbox #282828
-        const BG_MID:  Color = Color::Rgb(60, 56, 54);   // Gruvbox #3c3836
+        const BG_DARK: Color = Color::Rgb(40, 40, 40); // Gruvbox #282828
+        const BG_MID: Color = Color::Rgb(60, 56, 54); // Gruvbox #3c3836
 
         let entry_iter: Box<dyn Iterator<Item = &FileListEntry>> = match &self.display_indices {
             None => Box::new(self.entries.iter()),
@@ -526,7 +597,10 @@ impl Component for FileListComponent {
                 .border_style(border_style)
         };
 
-        let has_content = self.entries.iter().any(|e| !matches!(e, FileListEntry::Up { .. }));
+        let has_content = self
+            .entries
+            .iter()
+            .any(|e| !matches!(e, FileListEntry::Up { .. }));
         if self.loading && !has_content {
             let loading = Paragraph::new("Loading…")
                 .style(Style::default().fg(Color::DarkGray))
@@ -538,6 +612,5 @@ impl Component for FileListComponent {
                 .highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow));
             f.render_stateful_widget(list, rect, &mut self.list_state);
         }
-
     }
 }
