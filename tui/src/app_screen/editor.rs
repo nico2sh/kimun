@@ -4,8 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use kimun_core::nfs::VaultPath;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders};
 
 use crate::app_screen::AppScreen;
@@ -29,6 +30,7 @@ pub struct EditorScreen {
     sidebar: SidebarComponent,
     path: VaultPath,
     focus: Focus,
+    sidebar_visible: bool,
 }
 
 impl EditorScreen {
@@ -40,6 +42,7 @@ impl EditorScreen {
             sidebar: SidebarComponent::new(),
             path,
             focus: Focus::Editor,
+            sidebar_visible: true,
         }
     }
 }
@@ -50,25 +53,16 @@ impl EditorScreen {
         let content = self.vault.get_note_text(&self.path).await.unwrap();
         self.editor.set_text(content);
 
-        let dir = if path.is_note() {
-            path.get_parent_path().0
-        } else {
-            path
-        };
-
-        let (options, rx) = VaultBrowseOptionsBuilder::new(&dir)
-            .non_recursive()
-            .full_validation()
-            .build();
-
-        let vault = self.vault.clone();
-        let tx2 = tx.clone();
-        tokio::spawn(async move {
-            vault.browse_vault(options).await.ok();
-            tx2.send(AppMessage::Redraw).ok();
-        });
-
-        self.sidebar.start_loading(rx, dir);
+        // Only load the sidebar on first open (when it has no entries yet).
+        // Selecting a note while browsing should not reload the sidebar.
+        if self.sidebar.is_empty() {
+            let dir = if path.is_note() {
+                path.get_parent_path().0
+            } else {
+                path
+            };
+            self.navigate_sidebar(dir, tx).await;
+        }
     }
 
     pub async fn navigate_sidebar(&mut self, dir: VaultPath, tx: AppTx) {
@@ -88,6 +82,26 @@ impl EditorScreen {
     }
 }
 
+impl EditorScreen {
+    pub fn focus_editor(&mut self) {
+        self.focus = Focus::Editor;
+        self.sidebar.focused = false;
+    }
+
+    pub fn focus_sidebar(&mut self) {
+        self.sidebar_visible = true;
+        self.focus = Focus::Sidebar;
+        self.sidebar.focused = true;
+    }
+
+    fn toggle_sidebar(&mut self) {
+        self.sidebar_visible = !self.sidebar_visible;
+        if !self.sidebar_visible {
+            self.focus_editor();
+        }
+    }
+}
+
 #[async_trait]
 impl AppScreen for EditorScreen {
     async fn on_enter(&mut self, tx: &AppTx) {
@@ -100,24 +114,24 @@ impl AppScreen for EditorScreen {
     }
 
     fn handle_event(&mut self, event: AppEvent, tx: &AppTx) -> EventState {
-        match &event {
-            AppEvent::Key(key) if key.code == KeyCode::Esc => {
+        if let AppEvent::Key(key) = &event {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+            // Ctrl+B — toggle sidebar from anywhere.
+            if ctrl && key.code == KeyCode::Char('b') {
+                self.toggle_sidebar();
+                return EventState::Consumed;
+            }
+
+            if key.code == KeyCode::Esc {
                 tx.send(AppMessage::Quit).ok();
                 return EventState::Consumed;
             }
-            AppEvent::Key(key) if key.code == KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Sidebar => Focus::Editor,
-                    Focus::Editor => Focus::Sidebar,
-                };
-                self.sidebar.focused = matches!(self.focus, Focus::Sidebar);
-                return EventState::Consumed;
-            }
-            _ => {}
         }
 
         match self.focus {
             Focus::Sidebar => self.sidebar.handle_event(&event, tx),
+            // Tab in editor passes through so the editor handles indent
             Focus::Editor => self.editor.handle_event(&event, tx),
         }
     }
@@ -135,20 +149,41 @@ impl AppScreen for EditorScreen {
         let header = Block::default().title("Kimün").borders(Borders::ALL);
         f.render_widget(header, rows[0]);
 
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(30), Constraint::Min(0)])
-            .split(rows[1]);
+        let columns = if self.sidebar_visible {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(30), Constraint::Min(0)])
+                .split(rows[1])
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0)])
+                .split(rows[1])
+        };
 
-        self.sidebar.render(f, columns[0]);
+        let editor_area = if self.sidebar_visible {
+            self.sidebar.render(f, columns[0]);
+            columns[1]
+        } else {
+            columns[0]
+        };
 
-        let editor_block = Block::default().title("Editor").borders(Borders::ALL);
-        let editor_inner = editor_block.inner(columns[1]);
-        f.render_widget(editor_block, columns[1]);
+        let editor_focused = matches!(self.focus, Focus::Editor);
+        let editor_block = Block::default()
+            .title("Editor")
+            .borders(Borders::ALL)
+            .border_style(if editor_focused {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            });
+        let editor_inner = editor_block.inner(editor_area);
+        f.render_widget(editor_block, editor_area);
         self.editor.render(f, editor_inner);
 
+        let focus_label = if editor_focused { "EDITOR" } else { "SIDEBAR" };
         let footer = Block::default()
-            .title("ESC: Quit  |  Tab: Switch focus")
+            .title(format!("[{focus_label}]  ESC: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  ^B: Toggle sidebar"))
             .borders(Borders::ALL);
         f.render_widget(footer, rows[2]);
     }
