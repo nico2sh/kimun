@@ -100,6 +100,24 @@ where
                         tx.send(AppMessage::OpenSettings).ok();
                     }
                 }
+                AppMessage::FocusEditor => {
+                    if let Some(editor) = app
+                        .current_screen
+                        .as_mut()
+                        .and_then(|s| s.as_any_mut().downcast_mut::<EditorScreen>())
+                    {
+                        editor.focus_editor();
+                    }
+                }
+                AppMessage::FocusSidebar => {
+                    if let Some(editor) = app
+                        .current_screen
+                        .as_mut()
+                        .and_then(|s| s.as_any_mut().downcast_mut::<EditorScreen>())
+                    {
+                        editor.focus_sidebar();
+                    }
+                }
             }
         }
 

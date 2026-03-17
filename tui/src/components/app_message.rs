@@ -12,6 +12,8 @@ pub enum AppMessage {
     /// Navigate to the editor for the given vault root path.
     OpenEditor(NoteVault, VaultPath),
     OpenPath(VaultPath),
+    FocusEditor,
+    FocusSidebar,
 }
 
 /// Convenience alias used throughout the codebase.

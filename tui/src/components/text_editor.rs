@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::components::Component;
-use crate::components::app_message::AppTx;
+use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 
@@ -33,15 +33,23 @@ impl TextEditorComponent {
 }
 
 impl Component for TextEditorComponent {
-    fn handle_event(&mut self, event: &AppEvent, _tx: &AppTx) -> EventState {
+    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
         match event {
             AppEvent::Key(key) => {
+                use ratatui::crossterm::event::KeyCode;
+                use crate::components::app_message::AppMessage;
+                // Shift+Tab: yield focus back to the sidebar.
+                if key.code == KeyCode::BackTab {
+                    tx.send(AppMessage::FocusSidebar).ok();
+                    return EventState::Consumed;
+                }
                 self.text_area.input(*key);
                 EventState::Consumed
             }
             AppEvent::Mouse(mouse) => {
                 match mouse.kind {
                     MouseEventKind::Down(_) => {
+                        tx.send(AppMessage::FocusEditor).ok();
                         if mouse.row >= self.rect.y && mouse.column >= self.rect.x {
                             let row = mouse.row - self.rect.y;
                             let col = mouse.column - self.rect.x;
