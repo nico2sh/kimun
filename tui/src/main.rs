@@ -51,7 +51,19 @@ where
     io::Error: From<B::Error>,
 {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
-    let mut event_stream = EventStream::new();
+
+    // Run the event stream in a dedicated task and forward events via a channel.
+    // This lets the main loop drain buffered events safely with `try_recv()`
+    // without touching the async stream's waker state.
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<Event>(256);
+    tokio::spawn(async move {
+        let mut stream = EventStream::new();
+        while let Some(Ok(event)) = stream.next().await {
+            if event_tx.send(event).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Run on_enter for the initial screen.
     if let Some(screen) = &mut app.current_screen {
@@ -126,16 +138,25 @@ where
         // Wait for either a user input event or an app message (e.g. Redraw
         // sent by a background task like the sidebar loader).
         tokio::select! {
-            maybe_event = event_stream.next() => {
-                let app_event = match maybe_event.and_then(|r| r.ok()) {
-                    Some(Event::Key(key)) if key.kind != crossterm::event::KeyEventKind::Release => {
-                        AppEvent::Key(key)
+            maybe_event = event_rx.recv() => {
+                let Some(first) = maybe_event else { continue };
+                // Drain all buffered events so rapid input (e.g. a mouse-wheel
+                // spin) is batched into a single redraw.
+                let mut raw_events = vec![first];
+                while let Ok(e) = event_rx.try_recv() {
+                    raw_events.push(e);
+                }
+                for raw in raw_events {
+                    let app_event = match raw {
+                        Event::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
+                            AppEvent::Key(key)
+                        }
+                        Event::Mouse(mouse) => AppEvent::Mouse(mouse),
+                        _ => continue,
+                    };
+                    if let Some(screen) = &mut app.current_screen {
+                        screen.handle_event(app_event, &tx);
                     }
-                    Some(Event::Mouse(mouse)) => AppEvent::Mouse(mouse),
-                    _ => continue,
-                };
-                if let Some(screen) = &mut app.current_screen {
-                    screen.handle_event(app_event, &tx);
                 }
             }
             Some(msg) = rx.recv() => {
