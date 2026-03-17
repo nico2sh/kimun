@@ -18,4 +18,5 @@ async-trait = "0.1"
 futures = "0.3"
 ratatui-textarea = { version = "0.8.0", features = ["search"] }
 nucleo = "0.5"
+throbber-widgets-tui = "0.10"
 chrono = "0.4"
