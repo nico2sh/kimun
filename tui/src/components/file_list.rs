@@ -263,6 +263,9 @@ impl FileListComponent {
     }
 
     pub fn push_entry(&mut self, entry: FileListEntry) {
+        if matches!(entry, FileListEntry::Attachment { .. }) {
+            return;
+        }
         self.entries.push(entry);
         if self.display_indices.is_none() && self.list_state.selected().is_none() {
             self.list_state.select(Some(0));
