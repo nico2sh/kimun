@@ -77,7 +77,7 @@ where
                 AppMessage::Quit => return Ok(()),
                 AppMessage::Redraw => {}
                 AppMessage::OpenSettings => {
-                    let mut screen: Box<dyn AppScreen> = Box::new(SettingsScreen::new());
+                    let mut screen: Box<dyn AppScreen> = Box::new(SettingsScreen::new(app.settings.clone()));
                     screen.on_enter(&tx).await;
                     app.current_screen = Some(screen);
                 }

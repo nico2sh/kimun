@@ -36,11 +36,12 @@ mod tests {
     use super::*;
     use crate::app_screen::settings::SettingsScreen;
     use crate::components::app_message::AppMessage;
+    use crate::settings::AppSettings;
 
     #[tokio::test]
     async fn non_editor_screen_passes_focus_message_back() {
         let (tx, _rx) = unbounded_channel();
-        let mut screen = SettingsScreen::new();
+        let mut screen = SettingsScreen::new(AppSettings::default());
         let result = screen.handle_app_message(AppMessage::FocusSidebar, &tx).await;
         assert!(result.is_some(), "SettingsScreen should not consume FocusSidebar");
     }
@@ -48,7 +49,7 @@ mod tests {
     #[tokio::test]
     async fn non_editor_screen_passes_focus_editor_message_back() {
         let (tx, _rx) = unbounded_channel();
-        let mut screen = SettingsScreen::new();
+        let mut screen = SettingsScreen::new(AppSettings::default());
         let result = screen.handle_app_message(AppMessage::FocusEditor, &tx).await;
         assert!(result.is_some(), "SettingsScreen should not consume FocusEditor");
     }
