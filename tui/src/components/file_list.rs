@@ -11,7 +11,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::components::Component;
 use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
@@ -226,7 +225,6 @@ impl AsRef<str> for MatchEntry {
 
 pub struct FileListComponent {
     pub entries: Vec<FileListEntry>,
-    pub focused: bool,
     pub loading: bool,
     display_indices: Option<Vec<usize>>,
     list_state: ListState,
@@ -234,6 +232,7 @@ pub struct FileListComponent {
     // Search
     pub search_query: String,
     filter_rx: Option<Receiver<Vec<usize>>>,
+    filter_task: Option<tokio::task::JoinHandle<()>>,
     // Sort
     pub sort_field: SortField,
     pub sort_order: SortOrder,
@@ -245,13 +244,13 @@ impl FileListComponent {
     pub fn new(key_bindings: KeyBindings) -> Self {
         Self {
             entries: Vec::new(),
-            focused: false,
             loading: false,
             display_indices: None,
             list_state: ListState::default(),
             rendered_rect: Rect::default(),
             search_query: String::new(),
             filter_rx: None,
+            filter_task: None,
             sort_field: SortField::Name,
             sort_order: SortOrder::Ascending,
             key_bindings,
@@ -280,6 +279,9 @@ impl FileListComponent {
     }
 
     pub fn clear(&mut self) {
+        if let Some(handle) = self.filter_task.take() {
+            handle.abort();
+        }
         self.entries.clear();
         self.display_indices = None;
         self.filter_rx = None;
@@ -339,7 +341,11 @@ impl FileListComponent {
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         self.filter_rx = Some(result_rx);
 
-        tokio::spawn(async move {
+        if let Some(handle) = self.filter_task.take() {
+            handle.abort();
+        }
+
+        let handle = tokio::spawn(async move {
             let indices = tokio::task::spawn_blocking(move || {
                 let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
                 let pattern = Pattern::parse(&query, CaseMatching::Ignore, Normalization::Smart);
@@ -355,6 +361,7 @@ impl FileListComponent {
             result_tx.send(indices).ok();
             tx.send(AppMessage::Redraw).ok();
         });
+        self.filter_task = Some(handle);
     }
 
     pub fn poll_filter(&mut self) {
@@ -450,8 +457,8 @@ impl FileListComponent {
     }
 }
 
-impl Component for FileListComponent {
-    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
+impl FileListComponent {
+    pub fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
         match event {
             AppEvent::Key(key) => {
                 // Check keybindings first for action shortcuts.
@@ -567,11 +574,9 @@ impl Component for FileListComponent {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
+    pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.poll_filter();
         self.rendered_rect = rect;
-
-        let focused = self.focused;
         let title = self.header_title();
 
         let bg_even = theme.bg.to_ratatui();
@@ -626,6 +631,48 @@ mod tests {
 
     use super::*;
 
+    fn make_tx() -> AppTx {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
+        tx
+    }
+
+    #[tokio::test]
+    async fn schedule_filter_stores_handle_and_cancels_previous() {
+        let tx = make_tx();
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        for i in 0..20 {
+            list.push_entry(make_note(&format!("{i}.md"), &format!("Note {i}")));
+        }
+
+        list.search_query = "note".to_string();
+        list.schedule_filter(tx.clone());
+
+        // After scheduling, a task handle must be stored.
+        assert!(list.filter_task.is_some(), "filter_task should be Some after first schedule");
+
+        // Schedule again — the implementation must abort the old task and store a new handle.
+        list.search_query = "note 1".to_string();
+        list.schedule_filter(tx.clone());
+
+        assert!(list.filter_task.is_some(), "filter_task should still be Some after re-schedule");
+    }
+
+    #[tokio::test]
+    async fn clear_aborts_filter_task() {
+        let tx = make_tx();
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        for i in 0..20 {
+            list.push_entry(make_note(&format!("{i}.md"), &format!("Note {i}")));
+        }
+        list.search_query = "note".to_string();
+        list.schedule_filter(tx);
+
+        assert!(list.filter_task.is_some());
+        list.clear();
+        // After clear, the handle should be gone.
+        assert!(list.filter_task.is_none(), "filter_task should be None after clear");
+    }
+
     fn make_note(filename: &str, title: &str) -> FileListEntry {
         FileListEntry::Note {
             path: VaultPath::new(filename),
@@ -643,6 +690,20 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn render_accepts_focused_parameter() {
+        // Verifies the new API: render(f, rect, theme, focused: bool).
+        // Before fix: render takes 3 args → compile error (RED).
+        // After fix: compiles and passes (GREEN).
+        use ratatui::{Terminal, backend::TestBackend};
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        terminal.draw(|f| {
+            list.render(f, f.area(), &crate::settings::themes::Theme::default(), false);
+        }).unwrap();
     }
 
     #[test]

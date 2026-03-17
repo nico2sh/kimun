@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -217,7 +216,25 @@ impl AppScreen for EditorScreen {
         f.render_widget(footer, rows[2]);
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+    async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) -> Option<AppMessage> {
+        match msg {
+            AppMessage::OpenPath(path) => {
+                if path.is_note() {
+                    self.open_path(path, tx.clone()).await;
+                } else {
+                    self.navigate_sidebar(path, tx.clone()).await;
+                }
+                None
+            }
+            AppMessage::FocusEditor => {
+                self.focus_editor();
+                None
+            }
+            AppMessage::FocusSidebar => {
+                self.focus_sidebar();
+                None
+            }
+            other => Some(other),
+        }
     }
 }
