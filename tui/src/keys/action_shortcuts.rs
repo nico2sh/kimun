@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum ActionShortcuts {
+    Quit,
     OpenSettings,
     ToggleNoteBrowser,
     SearchNotes,
@@ -24,6 +25,7 @@ pub enum ActionShortcuts {
 impl Display for ActionShortcuts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let action = match self {
+            ActionShortcuts::Quit => "Quit".to_string(),
             ActionShortcuts::OpenSettings => "OpenSettings".to_string(),
             ActionShortcuts::ToggleNoteBrowser => "ToggleNoteBrowser".to_string(),
             ActionShortcuts::SearchNotes => "SearchNotes".to_string(),
@@ -47,6 +49,7 @@ impl TryFrom<String> for ActionShortcuts {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         let action = match value.as_str() {
+            "Quit" => ActionShortcuts::Quit,
             "OpenSettings" => ActionShortcuts::OpenSettings,
             "ToggleNoteBrowser" => ActionShortcuts::ToggleNoteBrowser,
             "SearchNotes" => ActionShortcuts::SearchNotes,

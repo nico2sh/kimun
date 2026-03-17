@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use kimun_core::nfs::VaultPath;
-use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders};
@@ -122,11 +121,6 @@ impl AppScreen for EditorScreen {
 
     fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
         if let AppEvent::Key(key) = event {
-            if key.code == KeyCode::Esc {
-                tx.send(AppMessage::Quit).ok();
-                return EventState::Consumed;
-            }
-
             if let Some(combo) = key_event_to_combo(key) {
                 if let Some(ActionShortcuts::ToggleSidebar) =
                     self.settings.key_bindings.get_action(&combo)
@@ -204,7 +198,7 @@ impl AppScreen for EditorScreen {
 
         let focus_label = if editor_focused { "EDITOR" } else { "SIDEBAR" };
         let footer = Block::default()
-            .title(format!("[{focus_label}]  ESC: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  {}: Toggle sidebar", self.toggle_key))
+            .title(format!("[{focus_label}]  Ctrl+Q: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  {}: Toggle sidebar", self.toggle_key))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_ratatui()))
             .title_style(Style::default().fg(theme.fg_secondary.to_ratatui()));

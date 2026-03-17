@@ -27,6 +27,8 @@ use crate::app_screen::settings::SettingsScreen;
 use crate::app_screen::start::StartScreen;
 use crate::components::app_message::AppMessage;
 use crate::components::events::AppEvent;
+use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::key_event_to_combo;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -161,6 +163,17 @@ where
                         Event::Mouse(mouse) => AppEvent::Mouse(mouse),
                         _ => continue,
                     };
+                    // Global Ctrl+Q quit — fires before any screen gets the event.
+                    if let AppEvent::Key(key) = &app_event {
+                        if let Some(combo) = key_event_to_combo(key) {
+                            if app.settings.key_bindings.get_action(&combo)
+                                == Some(ActionShortcuts::Quit)
+                            {
+                                tx.send(AppMessage::Quit).ok();
+                                continue;
+                            }
+                        }
+                    }
                     if let Some(screen) = &mut app.current_screen {
                         screen.handle_event(&app_event, &tx);
                     }
