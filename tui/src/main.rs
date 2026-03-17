@@ -23,6 +23,7 @@ use crate::app::App;
 use crate::app_screen::AppScreen;
 use crate::app_screen::editor::EditorScreen;
 use crate::app_screen::settings::SettingsScreen;
+use crate::app_screen::start::StartScreen;
 use crate::components::app_message::AppMessage;
 use crate::components::events::AppEvent;
 
@@ -109,6 +110,19 @@ where
                             tx.send(AppMessage::OpenSettings).ok();
                         }
                     }
+                }
+                AppMessage::SettingsSaved(new_settings) => {
+                    app.settings = new_settings;
+                    let mut screen: Box<dyn AppScreen> =
+                        Box::new(StartScreen::new(app.settings.clone()));
+                    screen.on_enter(&tx).await;
+                    app.current_screen = Some(screen);
+                }
+                AppMessage::CloseSettings => {
+                    let mut screen: Box<dyn AppScreen> =
+                        Box::new(StartScreen::new(app.settings.clone()));
+                    screen.on_enter(&tx).await;
+                    app.current_screen = Some(screen);
                 }
                 other => {
                     if let Some(screen) = app.current_screen.as_mut() {
