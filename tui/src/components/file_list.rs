@@ -448,13 +448,42 @@ impl Component for FileListComponent {
                         if mouse.row > r.y {
                             let rel_row = mouse.row - r.y - 1;
                             if let Some(idx) = self.display_idx_at_row(rel_row) {
-                                self.list_state.select(Some(idx));
+                                if self.list_state.selected() == Some(idx) {
+                                    self.activate_selected(tx);
+                                } else {
+                                    self.list_state.select(Some(idx));
+                                }
                             }
                         }
                         EventState::Consumed
                     }
-                    MouseEventKind::ScrollUp => { self.select_prev(); EventState::Consumed }
-                    MouseEventKind::ScrollDown => { self.select_next(); EventState::Consumed }
+                    MouseEventKind::ScrollUp => {
+                        let offset = self.list_state.offset();
+                        if offset > 0 {
+                            *self.list_state.offset_mut() = offset - 1;
+                            // Move selection with the viewport so it stays at the same visual row.
+                            if let Some(sel) = self.list_state.selected() {
+                                if sel > 0 {
+                                    self.list_state.select(Some(sel - 1));
+                                }
+                            }
+                        }
+                        EventState::Consumed
+                    }
+                    MouseEventKind::ScrollDown => {
+                        let len = self.display_len();
+                        let offset = self.list_state.offset();
+                        if len > 0 && offset + 1 < len {
+                            *self.list_state.offset_mut() = offset + 1;
+                            // Move selection with the viewport so it stays at the same visual row.
+                            if let Some(sel) = self.list_state.selected() {
+                                if sel + 1 < len {
+                                    self.list_state.select(Some(sel + 1));
+                                }
+                            }
+                        }
+                        EventState::Consumed
+                    }
                     _ => EventState::NotConsumed,
                 }
             }
