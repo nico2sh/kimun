@@ -46,6 +46,7 @@ Component-based, matching the existing `EditorScreen` + `SidebarComponent` + `Te
 pub struct SettingsScreen {
     settings: AppSettings,           // mutable local clone
     initial_settings: AppSettings,   // snapshot at open, for change detection
+    theme: Theme,                    // current active theme; updated live as user changes theme
     section: SettingsSection,        // currently highlighted sidebar item
     focus: SettingsFocus,            // Sidebar | Content
     theme_picker: ThemePicker,
@@ -61,7 +62,12 @@ enum SettingsFocus { Sidebar, Content }
 
 **`AppSettings` must derive `PartialEq`** — used to detect whether settings have changed (`settings != initial_settings`). `KeyBindings` must also derive `PartialEq`. Add derives if not already present.
 
-**Construction:** `SettingsScreen::new(settings: AppSettings)` — receives a clone of `App::settings`. Stores it both as `settings` (mutable) and `initial_settings` (immutable snapshot).
+**Construction:**
+```rust
+pub fn new(settings: AppSettings) -> Self
+```
+Receives a clone of `App::settings`. Stores it both as `settings` (mutable) and `initial_settings` (immutable snapshot). `theme` is populated via `settings.get_theme()`. After every `ThemePicker` event, `SettingsScreen` must call `self.theme = self.settings.get_theme()` so the live preview updates immediately.
+
 `App::settings` is `Send` (`AppSettings` derives no non-Send types: `Vec<VaultPath>`, `Option<PathBuf>`, `String`, `KeyBindings` are all Send-safe).
 
 **Three call sites** must be updated when the constructor signature changes:
@@ -74,7 +80,7 @@ enum SettingsFocus { Sidebar, Content }
 - If `settings != initial_settings`: set `overlay = Overlay::ConfirmSave { focused_button: SaveButton::Save }`.
 
 **ConfirmSave — Save path:**
-1. If `settings.workspace_dir != initial_settings.workspace_dir`: set `pending_save_after_index = true`, set `overlay = Overlay::IndexingProgress(Running(handle))`, spawn full reindex task (same as `TriggerFullReindex`). On `IndexingDone(Ok)` with `pending_save_after_index == true`: call `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`, auto-close (no OK button).
+1. If `settings.workspace_dir != initial_settings.workspace_dir`: set `pending_save_after_index = true`, set `overlay = Overlay::IndexingProgress(Running(handle))`, spawn full reindex task (same as `TriggerFullReindex`). This spawn happens inside the synchronous `handle_event` — `tx` must be cloned before the closure: `let tx = tx.clone();` (same requirement as the `TriggerFastReindex`/`TriggerFullReindex` paths). On `IndexingDone(Ok)` with `pending_save_after_index == true`: call `settings.report_indexed()`, then `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`, auto-close (no OK button).
 2. Otherwise: call `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`.
 
 **ConfirmSave — Discard path:** send `AppMessage::CloseSettings`.
@@ -178,22 +184,24 @@ enum SaveButton { Save, Discard }
 
 A centered popup drawn on top of the settings screen. Shows directories only (files are skipped). Navigation:
 
-- Up/Down — move selection
-- Right or Enter on a directory row — navigate into it (calls `fs::read_dir` synchronously — fast for local FS, acceptable blocking for a TUI)
-- Left — go up one level
-- Enter on the current-directory header line — **confirm** and set vault path, close overlay
+- Up/Down — move selection within the directory list
+- Right or Enter when a directory row is selected — navigate into it (calls `fs::read_dir` synchronously — fast for local FS, acceptable blocking for a TUI)
+- Left — go up one level (`current_path.parent()`)
+- Ctrl+Enter (or `c`) — **confirm** current directory as vault path, close overlay
 - Esc — cancel, discard changes
+
+The header line showing the current path is **rendered separately** (not part of `ListState`). `ListState` index 0 always refers to the first directory entry. The header is not selectable. The "confirm" action always confirms `current_path` regardless of which list item is selected, and is triggered via Ctrl+Enter or `c` (not plain Enter, which is reserved for navigating into the selected directory).
 
 ```
 ┌──────────────────────────────────────────────────┐
 │  Select Vault Directory                          │
-│  /Users/me/                         [Enter: ✓]  │
+│  /Users/me/                                      │
 ├──────────────────────────────────────────────────┤
 │  ▶ notes/                                        │
 │    projects/                                     │
 │    documents/                                    │
 ├──────────────────────────────────────────────────┤
-│  Enter: select    ←: up    Esc: cancel           │
+│  Enter: open  Ctrl+Enter/c: confirm  Esc: cancel │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -264,7 +272,7 @@ enum IndexingProgressState {
 
 **On Done:** `SettingsScreen` calls `self.settings.report_indexed()`.
 
-**On `IndexingDone(Ok)` with `pending_save_after_index == true`:** auto-close — call `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`. No OK button is shown; the screen closes immediately. `pending_save_after_index` is reset to `false`.
+**On `IndexingDone(Ok)` with `pending_save_after_index == true`:** auto-close — call `settings.report_indexed()`, then `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`. No OK button is shown; the screen closes immediately. `pending_save_after_index` is reset to `false`.
 
 **On `IndexingDone(Err)` with `pending_save_after_index == true`:** show the Failed state with an OK button. The user must acknowledge. On dismiss, save is **not** triggered (index failed; user stays in settings with `pending_save_after_index = false`).
 
@@ -314,8 +322,10 @@ AppMessage::CloseSettings
 // SettingsScreen::handle_app_message intercepts this (returns None).
 AppMessage::OpenFileBrowser
 
-// Sent by IndexingSection when user activates Fast or Full.
+// Sent by IndexingSection when user activates Fast or Full reindex buttons.
 // SettingsScreen::handle_app_message intercepts both (returns None).
+// NOTE: TriggerFullReindex does NOT start indexing directly — it opens the
+// ConfirmFullReindex overlay first. Only after user confirms does indexing start.
 AppMessage::TriggerFastReindex
 AppMessage::TriggerFullReindex
 
@@ -336,8 +346,18 @@ AppMessage::OpenSettings => {
     screen.on_enter(&tx).await;
     app.current_screen = Some(screen);
 }
-AppMessage::OpenEditor(vault, path) => { /* unchanged */ }
-AppMessage::OpenPath(path) => { /* unchanged */ }
+AppMessage::OpenEditor(vault, path) => { /* unchanged — create EditorScreen */ }
+AppMessage::OpenPath(path) => {
+    // This arm body is UNCHANGED from the existing main.rs implementation.
+    // Must be preserved verbatim — it handles vault creation and the OpenSettings
+    // fallback when no workspace_dir is configured:
+    //   let unhandled = current_screen.handle_app_message(OpenPath(path)).await;
+    //   if unhandled == OpenPath(path):
+    //     if path.is_note() && workspace_dir is Some:
+    //       NoteVault::new(workspace_dir) → OpenEditor(vault, path)
+    //     else:
+    //       OpenSettings
+}
 AppMessage::SettingsSaved(settings) => {
     app.settings = settings;
     let path = app.settings.last_paths.last()
