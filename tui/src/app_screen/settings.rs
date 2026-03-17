@@ -430,6 +430,7 @@ impl AppScreen for SettingsScreen {
 
     fn render(&mut self, f: &mut Frame) {
         let theme = self.theme.clone();
+        f.render_widget(Block::default().style(theme.base_style()), f.area());
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -440,6 +441,7 @@ impl AppScreen for SettingsScreen {
             .title("Settings")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_ratatui()))
+            .style(theme.base_style())
             .title_style(Style::default().fg(theme.accent.to_ratatui()));
         f.render_widget(header, rows[0]);
 
@@ -457,11 +459,14 @@ impl AppScreen for SettingsScreen {
         };
         let items: Vec<ListItem> = ["Theme", "Vault", "Indexing"].iter().enumerate().map(|(i, name)| {
             let prefix = if i == active_idx { "> " } else { "  " };
+            let fg = if i == active_idx { theme.accent.to_ratatui() } else { theme.fg.to_ratatui() };
             ListItem::new(format!("{}{}", prefix, name))
+                .style(Style::default().fg(fg).bg(theme.bg_panel.to_ratatui()))
         }).collect();
         let sidebar_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(theme.border_style(sidebar_focused));
+            .border_style(theme.border_style(sidebar_focused))
+            .style(theme.panel_style());
         let sidebar_list = List::new(items).block(sidebar_block);
         f.render_widget(sidebar_list, cols[0]);
 
@@ -488,7 +493,8 @@ impl SettingsScreen {
                 let block = Block::default()
                     .title("Select Vault Directory")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.accent.to_ratatui()));
+                    .border_style(Style::default().fg(theme.accent.to_ratatui()))
+                    .style(theme.base_style());
                 let inner = block.inner(area);
                 f.render_widget(block, area);
 
@@ -498,17 +504,18 @@ impl SettingsScreen {
                     .split(inner);
 
                 let path_str = fb.current_path.to_string_lossy().into_owned();
-                f.render_widget(Paragraph::new(path_str), rows[0]);
+                f.render_widget(Paragraph::new(path_str).style(theme.base_style()), rows[0]);
 
                 let items: Vec<ListItem> = fb.entries.iter().map(|e| {
                     let name = e.file_name().unwrap_or_default().to_string_lossy();
                     ListItem::new(format!("  {}/", name))
+                        .style(Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui()))
                 }).collect();
                 let list = List::new(items)
                     .highlight_symbol("▶ ")
                     .highlight_style(Style::default().add_modifier(Modifier::BOLD));
                 f.render_stateful_widget(list, rows[1], &mut fb.list_state);
-                f.render_widget(Paragraph::new("Enter: open  c: confirm  Esc: cancel"), rows[2]);
+                f.render_widget(Paragraph::new("Enter: open  c: confirm  Esc: cancel").style(theme.base_style()), rows[2]);
             }
 
             Overlay::ConfirmFullReindex { focused_button } => {
@@ -517,12 +524,13 @@ impl SettingsScreen {
                 let block = Block::default()
                     .title("Full Reindex")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.accent.to_ratatui()));
+                    .border_style(Style::default().fg(theme.accent.to_ratatui()))
+                    .style(theme.base_style());
                 let inner = block.inner(area);
                 f.render_widget(block, area);
                 let cancel = if *focused_button == ConfirmButton::Cancel { "[ Cancel ]" } else { "  Cancel  " };
                 let confirm = if *focused_button == ConfirmButton::Confirm { "[ Confirm ]" } else { "  Confirm  " };
-                f.render_widget(Paragraph::new(format!("\n  This may take a while.\n\n  {}    {}", cancel, confirm)), inner);
+                f.render_widget(Paragraph::new(format!("\n  This may take a while.\n\n  {}    {}", cancel, confirm)).style(theme.base_style()), inner);
             }
 
             Overlay::ConfirmSave { focused_button } => {
@@ -531,12 +539,13 @@ impl SettingsScreen {
                 let block = Block::default()
                     .title("Save Settings?")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.accent.to_ratatui()));
+                    .border_style(Style::default().fg(theme.accent.to_ratatui()))
+                    .style(theme.base_style());
                 let inner = block.inner(area);
                 f.render_widget(block, area);
                 let save = if *focused_button == SaveButton::Save { "[ Save ]" } else { "  Save  " };
                 let discard = if *focused_button == SaveButton::Discard { "[ Discard ]" } else { "  Discard  " };
-                f.render_widget(Paragraph::new(format!("\n  You have unsaved changes.\n\n  {}    {}", save, discard)), inner);
+                f.render_widget(Paragraph::new(format!("\n  You have unsaved changes.\n\n  {}    {}", save, discard)).style(theme.base_style()), inner);
             }
 
             Overlay::IndexingProgress(state) => {
@@ -545,20 +554,23 @@ impl SettingsScreen {
                 let block = Block::default()
                     .title("Indexing")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.accent.to_ratatui()));
+                    .border_style(Style::default().fg(theme.accent.to_ratatui()))
+                    .style(theme.base_style());
                 let inner = block.inner(area);
                 f.render_widget(block, area);
                 match state {
                     IndexingProgressState::Running { .. } => {
                         self.throbber_state.calc_next();
-                        let throbber = Throbber::default().label("  Reindex in progress…");
+                        let throbber = Throbber::default()
+                            .label("  Reindex in progress…")
+                            .style(Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui()));
                         f.render_stateful_widget(throbber, inner, &mut self.throbber_state);
                     }
                     IndexingProgressState::Done(dur) => {
-                        f.render_widget(Paragraph::new(format!("  ✓  Done in {}s\n\n       [ OK ]", dur.as_secs())), inner);
+                        f.render_widget(Paragraph::new(format!("  ✓  Done in {}s\n\n       [ OK ]", dur.as_secs())).style(theme.base_style()), inner);
                     }
                     IndexingProgressState::Failed(msg) => {
-                        f.render_widget(Paragraph::new(format!("  ✗  Error: {}\n\n       [ OK ]", msg)), inner);
+                        f.render_widget(Paragraph::new(format!("  ✗  Error: {}\n\n       [ OK ]", msg)).style(theme.base_style()), inner);
                     }
                 }
             }

@@ -373,6 +373,16 @@ impl Theme {
         }
     }
 
+    /// Base style for most surfaces: theme fg on theme bg.
+    pub fn base_style(&self) -> Style {
+        Style::default().fg(self.fg.to_ratatui()).bg(self.bg.to_ratatui())
+    }
+
+    /// Panel style for sidebars and panels: theme fg on bg_panel.
+    pub fn panel_style(&self) -> Style {
+        Style::default().fg(self.fg.to_ratatui()).bg(self.bg_panel.to_ratatui())
+    }
+
     pub fn nord() -> Self {
         Theme {
             name: "Nord".to_string(),

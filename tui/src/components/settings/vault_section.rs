@@ -45,8 +45,9 @@ impl Component for VaultSection {
         let block = Block::default()
             .title("Vault Path")
             .borders(Borders::ALL)
-            .border_style(border_style);
-        let para = Paragraph::new(text).block(block);
+            .border_style(border_style)
+            .style(theme.base_style());
+        let para = Paragraph::new(text).block(block).style(theme.base_style());
         f.render_widget(para, rect);
     }
 }

@@ -102,18 +102,20 @@ impl Component for SidebarComponent {
         let header = Block::default()
             .title(self.current_dir.to_string())
             .borders(Borders::ALL)
-            .border_style(border_style);
+            .border_style(border_style)
+            .style(theme.panel_style());
         f.render_widget(header, rows[0]);
 
         let search_block = Block::default()
             .title(" Search")
             .borders(Borders::ALL)
-            .border_style(border_style);
+            .border_style(border_style)
+            .style(theme.panel_style());
         let search_inner = search_block.inner(rows[1]);
         f.render_widget(search_block, rows[1]);
         f.render_widget(
             Paragraph::new(self.file_list.search_query.as_str())
-                .style(Style::default().fg(theme.fg.to_ratatui())),
+                .style(Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg_panel.to_ratatui())),
             search_inner,
         );
 

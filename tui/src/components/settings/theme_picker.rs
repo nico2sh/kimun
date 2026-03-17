@@ -52,14 +52,22 @@ impl Component for ThemePicker {
         let block = Block::default()
             .title("Theme")
             .borders(Borders::ALL)
-            .border_style(border_style);
+            .border_style(border_style)
+            .style(theme.base_style());
         let items: Vec<ListItem> = self.themes.iter().enumerate().map(|(i, t)| {
             let selected = self.list_state.selected() == Some(i);
             let prefix = if selected { "● " } else { "  " };
             ListItem::new(format!("{}{}", prefix, t.name))
         }).collect();
-        let list = List::new(items).block(block);
-        f.render_widget(list, rect);
+        let list = List::new(items)
+            .block(block)
+            .style(theme.base_style())
+            .highlight_style(
+                ratatui::style::Style::default()
+                    .fg(theme.fg_selected.to_ratatui())
+                    .bg(theme.bg_selected.to_ratatui()),
+            );
+        f.render_stateful_widget(list, rect, &mut self.list_state);
     }
 }
 

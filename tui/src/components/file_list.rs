@@ -192,7 +192,10 @@ impl FileListEntry {
                 )));
                 lines
             }
-            Self::Directory { name, .. } => vec![Line::from(format!("  {}", name))],
+            Self::Directory { name, .. } => vec![Line::from(Span::styled(
+                format!("  {}", name),
+                Style::default().fg(theme.color_directory.to_ratatui()),
+            ))],
             Self::Attachment { filename, .. } => vec![Line::from(Span::styled(
                 format!(" {}", filename),
                 Style::default()
@@ -605,6 +608,7 @@ impl Component for FileListComponent {
                 .title(title.as_str())
                 .borders(Borders::ALL)
                 .border_style(border_style)
+                .style(theme.panel_style())
         };
 
         let has_content = self
@@ -613,7 +617,7 @@ impl Component for FileListComponent {
             .any(|e| !matches!(e, FileListEntry::Up { .. }));
         if self.loading && !has_content {
             let loading = Paragraph::new("Loading…")
-                .style(Style::default().fg(theme.fg_muted.to_ratatui()))
+                .style(Style::default().fg(theme.fg_muted.to_ratatui()).bg(theme.bg_panel.to_ratatui()))
                 .block(make_block());
             f.render_widget(loading, rect);
         } else {

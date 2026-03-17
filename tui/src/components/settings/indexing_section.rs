@@ -61,13 +61,18 @@ impl Component for IndexingSection {
         let block = Block::default()
             .title("Reindex")
             .borders(Borders::ALL)
-            .border_style(border_style);
+            .border_style(border_style)
+            .style(theme.base_style());
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
         let fast_label = if self.selected == IndexAction::Fast { "[ Fast Reindex ]" } else { "  Fast Reindex  " };
         let full_label = if self.selected == IndexAction::Full { "[ Full Reindex ]" } else { "  Full Reindex  " };
-        let dim = if self.vault_available { Style::default() } else { Style::default().add_modifier(Modifier::DIM) };
+        let dim = if self.vault_available {
+            Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui())
+        } else {
+            Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui()).add_modifier(Modifier::DIM)
+        };
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)

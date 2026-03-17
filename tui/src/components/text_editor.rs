@@ -90,7 +90,7 @@ impl Component for TextEditorComponent {
             Style::default().bg(theme.bg_selected.to_ratatui()),
         );
         self.text_area
-            .set_style(Style::default().fg(theme.fg.to_ratatui()));
+            .set_style(Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui()));
         f.render_widget(&self.text_area, rect);
     }
 }
