@@ -164,7 +164,7 @@ impl SettingsScreen {
             settings,
             initial_settings,
             theme,
-            section: SettingsSection::Theme,
+            section: SettingsSection::Vault,
             focus: SettingsFocus::Sidebar,
             overlay: Overlay::None,
             pending_save_after_index: false,
@@ -388,17 +388,17 @@ impl AppScreen for SettingsScreen {
                 SettingsFocus::Sidebar => match key.code {
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.section = match self.section {
-                            SettingsSection::Theme => SettingsSection::Vault,
-                            SettingsSection::Vault => SettingsSection::Indexing,
-                            SettingsSection::Indexing => SettingsSection::Theme,
+                            SettingsSection::Vault => SettingsSection::Theme,
+                            SettingsSection::Theme => SettingsSection::Indexing,
+                            SettingsSection::Indexing => SettingsSection::Vault,
                         };
                         EventState::Consumed
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.section = match self.section {
-                            SettingsSection::Theme => SettingsSection::Indexing,
-                            SettingsSection::Vault => SettingsSection::Theme,
-                            SettingsSection::Indexing => SettingsSection::Vault,
+                            SettingsSection::Vault => SettingsSection::Indexing,
+                            SettingsSection::Theme => SettingsSection::Vault,
+                            SettingsSection::Indexing => SettingsSection::Theme,
                         };
                         EventState::Consumed
                     }
