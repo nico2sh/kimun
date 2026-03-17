@@ -8,7 +8,9 @@
 
 ## Overview
 
-Replace the placeholder `SettingsScreen` with a fully functional settings screen. The screen uses a left-sidebar navigation + right content panel layout. It exposes three settings sections: Theme, Vault Path, and Indexing. Settings are saved to disk when the user presses Esc to return to the editor.
+Replace the placeholder `SettingsScreen` with a fully functional settings screen. The screen uses a left-sidebar navigation + right content panel layout. It exposes three settings sections: Theme, Vault Path, and Indexing.
+
+**Save behavior:** Settings are saved only when the user explicitly chooses Save. If settings have not changed, Esc closes without any dialog. If settings have changed, Esc shows a "Save / Discard" confirmation dialog. On Save, if the vault path was changed, a full reindex is run automatically before closing (same progress overlay, auto-closes when done).
 
 ---
 
@@ -26,7 +28,7 @@ Replace the placeholder `SettingsScreen` with a fully functional settings screen
 └──────────────────┴──────────────────────────────────────────────────┘
 ```
 
-Tab switches focus between the left sidebar and the right content panel. Up/Down (or `j`/`k`) navigate sections in the sidebar. Esc saves settings and returns to the editor.
+Tab switches focus between the left sidebar and the right content panel. Up/Down (or `j`/`k`) navigate sections in the sidebar. Esc closes settings — with a Save/Discard confirmation if settings have changed, or immediately without saving if nothing changed.
 
 ---
 
@@ -43,19 +45,23 @@ Component-based, matching the existing `EditorScreen` + `SidebarComponent` + `Te
 ```rust
 pub struct SettingsScreen {
     settings: AppSettings,           // mutable local clone
+    initial_settings: AppSettings,   // snapshot at open, for change detection
     section: SettingsSection,        // currently highlighted sidebar item
     focus: SettingsFocus,            // Sidebar | Content
     theme_picker: ThemePicker,
     vault_section: VaultSection,
     indexing_section: IndexingSection,
     overlay: Overlay,
+    pending_save_after_index: bool,  // true when vault path changed; auto-close on IndexingDone(Ok)
 }
 
 enum SettingsSection { Theme, Vault, Indexing }
 enum SettingsFocus { Sidebar, Content }
 ```
 
-**Construction:** `SettingsScreen::new(settings: AppSettings)` — receives a clone of `App::settings`.
+**`AppSettings` must derive `PartialEq`** — used to detect whether settings have changed (`settings != initial_settings`). `KeyBindings` must also derive `PartialEq`. Add derives if not already present.
+
+**Construction:** `SettingsScreen::new(settings: AppSettings)` — receives a clone of `App::settings`. Stores it both as `settings` (mutable) and `initial_settings` (immutable snapshot).
 `App::settings` is `Send` (`AppSettings` derives no non-Send types: `Vec<VaultPath>`, `Option<PathBuf>`, `String`, `KeyBindings` are all Send-safe).
 
 **Three call sites** must be updated when the constructor signature changes:
@@ -63,7 +69,19 @@ enum SettingsFocus { Sidebar, Content }
 2. `app_screen/mod.rs` test at line 43: add `AppSettings::default()` argument
 3. `app_screen/mod.rs` test at line 50: add `AppSettings::default()` argument
 
-**Esc behavior:** calls `settings.save_to_disk()` and sends `AppMessage::SettingsSaved(settings)`. The main loop updates `App::settings` and navigates back by sending `OpenPath` with `last_paths.last()` or `VaultPath::root()` (this method already exists — used in `start.rs` and `editor.rs`).
+**Esc behavior (no overlay active):**
+- If `settings == initial_settings`: send `AppMessage::CloseSettings` (no save, no dialog).
+- If `settings != initial_settings`: set `overlay = Overlay::ConfirmSave { focused_button: SaveButton::Save }`.
+
+**ConfirmSave — Save path:**
+1. If `settings.workspace_dir != initial_settings.workspace_dir`: set `pending_save_after_index = true`, set `overlay = Overlay::IndexingProgress(Running(handle))`, spawn full reindex task (same as `TriggerFullReindex`). On `IndexingDone(Ok)` with `pending_save_after_index == true`: call `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`, auto-close (no OK button).
+2. Otherwise: call `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`.
+
+**ConfirmSave — Discard path:** send `AppMessage::CloseSettings`.
+
+`AppMessage::SettingsSaved(settings)` — main loop updates `App::settings` and navigates back.
+`AppMessage::CloseSettings` — main loop navigates back without updating `App::settings`.
+Both navigate back by sending `OpenPath` with `last_paths.last()` or `VaultPath::root()` (pattern used in `start.rs`).
 
 **Event routing:** When `focus == Content`, key events are forwarded to the active section component. When `focus == Sidebar`, Up/Down change the selected section; Tab moves focus to the content panel.
 
@@ -148,10 +166,12 @@ enum Overlay {
     None,
     FileBrowser(FileBrowserState),
     ConfirmFullReindex { focused_button: ConfirmButton },  // Cancel | Confirm
+    ConfirmSave { focused_button: SaveButton },            // Save | Discard
     IndexingProgress(IndexingProgressState),
 }
 
 enum ConfirmButton { Cancel, Confirm }
+enum SaveButton { Save, Discard }
 ```
 
 ### File Browser Overlay
@@ -205,6 +225,23 @@ Simple two-button dialog. Left/Right selects Cancel or Confirm. Enter activates;
 └──────────────────────────────────────────────────┘
 ```
 
+### Save Confirmation Overlay
+
+Shown when the user presses Esc and settings have changed. Left/Right selects Save or Discard. Enter activates; Esc cancels (returns to `Overlay::None`, stays in settings).
+
+```
+┌──────────────────────────────────────────────────┐
+│  Save Settings?                                  │
+│                                                  │
+│  You have unsaved changes.                       │
+│                                                  │
+│       [ Save ]        [ Discard ]                │
+└──────────────────────────────────────────────────┘
+```
+
+- **Save**: if vault path changed → run full reindex with `pending_save_after_index = true` (auto-close on done); otherwise save immediately and close.
+- **Discard**: send `AppMessage::CloseSettings`, close without saving.
+
 ### Indexing Progress Overlay
 
 Uses `throbber-widgets-tui` (version `"0.10"`, compatible with ratatui 0.29+/0.30; verified against ATAC project usage). Added to `tui/Cargo.toml`.
@@ -227,7 +264,11 @@ enum IndexingProgressState {
 
 **On Done:** `SettingsScreen` calls `self.settings.report_indexed()`.
 
-**On dismiss (Enter or Esc on Done/Failed):** sets `overlay = Overlay::None`. The `JoinHandle` stored in `Running` is dropped when the state transitions away — since it has already completed by then, this is safe. If Esc were ever allowed during `Running`, the `JoinHandle` must be explicitly `.abort()`'ed first.
+**On `IndexingDone(Ok)` with `pending_save_after_index == true`:** auto-close — call `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`. No OK button is shown; the screen closes immediately. `pending_save_after_index` is reset to `false`.
+
+**On `IndexingDone(Err)` with `pending_save_after_index == true`:** show the Failed state with an OK button. The user must acknowledge. On dismiss, save is **not** triggered (index failed; user stays in settings with `pending_save_after_index = false`).
+
+**On dismiss (Enter or Esc on Done/Failed, `pending_save_after_index == false`):** sets `overlay = Overlay::None`. The `JoinHandle` stored in `Running` is dropped when the state transitions away — since it has already completed by then, this is safe. If Esc were ever allowed during `Running`, the `JoinHandle` must be explicitly `.abort()`'ed first.
 
 ```
 Running:
@@ -236,12 +277,15 @@ Running:
 │     ⣾  Fast reindex in progress…                │
 └──────────────────────────────────────────────────┘
 
-Done:
+Done (normal — user triggered):
 ┌──────────────────────────────────────────────────┐
 │  Indexing                                        │
 │     ✓  Done in 3 seconds                        │
 │            [ OK ]                                │
 └──────────────────────────────────────────────────┘
+
+Done (pending_save_after_index — auto-closes, no UI shown):
+(screen closes immediately)
 
 Failed:
 ┌──────────────────────────────────────────────────┐
@@ -258,8 +302,13 @@ Failed:
 New variants added to `AppMessage`:
 
 ```rust
-// Sent by SettingsScreen on Esc. Main loop updates App::settings and navigates back.
+// Sent by SettingsScreen when user confirms Save (or saves + vault path unchanged).
+// Main loop updates App::settings and navigates back.
 AppMessage::SettingsSaved(AppSettings)
+
+// Sent by SettingsScreen when user discards changes (or closes with no changes).
+// Main loop navigates back without updating App::settings.
+AppMessage::CloseSettings
 
 // Sent by VaultSection component when user presses Enter/b to open the file browser.
 // SettingsScreen::handle_app_message intercepts this (returns None).
@@ -296,10 +345,18 @@ AppMessage::SettingsSaved(settings) => {
         .unwrap_or_else(VaultPath::root);
     tx.send(AppMessage::OpenPath(path)).ok();
 }
+AppMessage::CloseSettings => {
+    // Navigate back without updating app.settings (user discarded changes).
+    let path = app.settings.last_paths.last()
+        .cloned()
+        .unwrap_or_else(VaultPath::root);
+    tx.send(AppMessage::OpenPath(path)).ok();
+}
 // All remaining variants are screen-internal: route to the active screen.
 // This arm MUST be last — it is a catch-all.
 // Covered variants: FocusEditor, FocusSidebar, OpenFileBrowser,
 //   TriggerFastReindex, TriggerFullReindex, IndexingDone.
+// Note: SettingsSaved and CloseSettings are handled above and never reach here.
 // Return value is discarded: these messages are scoped to the screen that
 // sent them. If the active screen returns Some (didn't handle it), the
 // message is intentionally dropped — acceptable for screen-internal signals.
@@ -317,13 +374,38 @@ The existing explicit `FocusEditor | FocusSidebar` arm is **removed** — it is 
 ## Data Flow
 
 ```
-User presses Esc (no overlay active)
+User presses Esc (no overlay active, settings unchanged)
   → SettingsScreen::handle_event
+    → tx.send(AppMessage::CloseSettings)
+      → main loop sends OpenPath(last_path_or_root)
+        → main loop creates EditorScreen with original settings
+
+User presses Esc (no overlay active, settings changed)
+  → SettingsScreen::handle_event
+    → overlay = ConfirmSave { focused_button: Save }
+
+User confirms Save (vault path unchanged)
+  → SettingsScreen::handle_event (ConfirmSave overlay, Enter on Save)
     → settings.save_to_disk()
     → tx.send(AppMessage::SettingsSaved(settings))
       → main loop updates App::settings
       → main loop sends OpenPath(last_path_or_root)
         → main loop creates EditorScreen with updated settings
+
+User confirms Save (vault path changed)
+  → SettingsScreen::handle_event (ConfirmSave overlay, Enter on Save)
+    → pending_save_after_index = true
+    → overlay = IndexingProgress(Running(handle))
+    → tokio::spawn full reindex task
+    → on IndexingDone(Ok):
+        settings.save_to_disk()
+        tx.send(AppMessage::SettingsSaved(settings))  [auto-close, no OK button]
+    → on IndexingDone(Err):
+        overlay = IndexingProgress(Failed(msg))  [user must dismiss OK, stays in settings]
+
+User selects Discard in ConfirmSave
+  → tx.send(AppMessage::CloseSettings)
+      → main loop sends OpenPath(last_path_or_root)
 ```
 
 ```
@@ -397,6 +479,11 @@ All tests are `#[cfg(test)]` inline modules.
 | `FileBrowserState::load` | Returns only directories; sorted alphabetically; handles empty directory |
 | `FileBrowserState` navigation | Navigate-into updates `current_path` and reloads entries; go-up updates path to parent |
 | Overlay state machine | `ConfirmFullReindex` + Esc → `Overlay::None`; `IndexingDone(Ok)` → `Done` + `report_indexed()` called; `IndexingDone(Err)` → `Failed`; Esc blocked while `Running` |
+| Save confirmation | Settings unchanged + Esc → `CloseSettings` sent (no dialog); Settings changed + Esc → `ConfirmSave` overlay shown |
+| `ConfirmSave` — Save, vault unchanged | `SettingsSaved` sent; `CloseSettings` not sent |
+| `ConfirmSave` — Save, vault changed | `pending_save_after_index = true`; `IndexingProgress(Running)` overlay shown; on `IndexingDone(Ok)` → `SettingsSaved` sent (auto-close, no OK button); on `IndexingDone(Err)` → `Failed` shown, settings not saved |
+| `ConfirmSave` — Discard | `CloseSettings` sent; `SettingsSaved` not sent |
+| `AppSettings` `PartialEq` | `settings == initial_settings` true when no changes; false after any change |
 | `app_screen::tests` | Update two existing tests to call `SettingsScreen::new(AppSettings::default())` |
 
 We do not test `NoteVault::index_notes` / `recreate_index` — those are covered by core library tests.
