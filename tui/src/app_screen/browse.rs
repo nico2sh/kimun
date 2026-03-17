@@ -107,7 +107,13 @@ mod tests {
     }
 
     async fn make_vault() -> Arc<NoteVault> {
-        let dir = std::env::temp_dir().join("kimun_browse_test_vault");
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let thread_id = std::thread::current().id();
+        let dir = std::env::temp_dir().join(format!("kimun_browse_test_{nonce}_{thread_id:?}"));
         std::fs::create_dir_all(&dir).unwrap();
         Arc::new(NoteVault::new(&dir).await.unwrap())
     }
