@@ -1,6 +1,7 @@
 use ratatui::Frame;
 use ratatui::crossterm::event::MouseEventKind;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::components::Component;
@@ -10,6 +11,7 @@ use crate::components::events::AppEvent;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
+use crate::settings::themes::Theme;
 
 pub struct TextEditorComponent {
     text_area: TextArea<'static>,
@@ -77,8 +79,18 @@ impl Component for TextEditorComponent {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect) {
+    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
         self.rect = rect;
+        self.text_area.set_cursor_style(
+            Style::default()
+                .fg(theme.bg.to_ratatui())
+                .bg(theme.accent.to_ratatui()),
+        );
+        self.text_area.set_selection_style(
+            Style::default().bg(theme.bg_selected.to_ratatui()),
+        );
+        self.text_area
+            .set_style(Style::default().fg(theme.fg.to_ratatui()));
         f.render_widget(&self.text_area, rect);
     }
 }

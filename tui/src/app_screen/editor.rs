@@ -6,7 +6,7 @@ use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use kimun_core::nfs::VaultPath;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders};
 
 use crate::app_screen::AppScreen;
@@ -19,6 +19,7 @@ use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
 use crate::settings::AppSettings;
+use crate::settings::themes::Theme;
 
 enum Focus {
     Sidebar,
@@ -28,24 +29,35 @@ enum Focus {
 pub struct EditorScreen {
     vault: Arc<NoteVault>,
     settings: AppSettings,
+    theme: Theme,
     editor: TextEditorComponent,
     sidebar: SidebarComponent,
     path: VaultPath,
     focus: Focus,
     sidebar_visible: bool,
+    toggle_key: String,
 }
 
 impl EditorScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: AppSettings) -> Self {
         let kb = settings.key_bindings.clone();
+        let theme = settings.get_theme();
+        let toggle_key = kb
+            .to_hashmap()
+            .get(&ActionShortcuts::ToggleSidebar)
+            .and_then(|v| v.first().cloned())
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "^B".to_string());
         Self {
             settings,
+            theme,
             editor: TextEditorComponent::new(kb.clone()),
             sidebar: SidebarComponent::new(kb, vault.clone()),
             vault,
             path,
             focus: Focus::Editor,
             sidebar_visible: true,
+            toggle_key,
         }
     }
 }
@@ -149,6 +161,8 @@ impl AppScreen for EditorScreen {
     }
 
     fn render(&mut self, f: &mut ratatui::Frame) {
+        let theme = &self.theme;
+
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -158,7 +172,11 @@ impl AppScreen for EditorScreen {
             ])
             .split(f.area());
 
-        let header = Block::default().title("Kimün").borders(Borders::ALL);
+        let header = Block::default()
+            .title("Kimün")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.to_ratatui()))
+            .title_style(Style::default().fg(theme.accent.to_ratatui()));
         f.render_widget(header, rows[0]);
 
         let columns = if self.sidebar_visible {
@@ -174,35 +192,28 @@ impl AppScreen for EditorScreen {
         };
 
         let editor_area = if self.sidebar_visible {
-            self.sidebar.render(f, columns[0]);
+            self.sidebar.render(f, columns[0], theme);
             columns[1]
         } else {
             columns[0]
         };
 
         let editor_focused = matches!(self.focus, Focus::Editor);
+        let editor_border_style = theme.border_style(editor_focused);
         let editor_block = Block::default()
             .title("Editor")
             .borders(Borders::ALL)
-            .border_style(if editor_focused {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default()
-            });
+            .border_style(editor_border_style);
         let editor_inner = editor_block.inner(editor_area);
         f.render_widget(editor_block, editor_area);
-        self.editor.render(f, editor_inner);
+        self.editor.render(f, editor_inner, theme);
 
         let focus_label = if editor_focused { "EDITOR" } else { "SIDEBAR" };
-        let toggle_key = self.settings.key_bindings
-            .to_hashmap()
-            .get(&ActionShortcuts::ToggleSidebar)
-            .and_then(|v| v.first().cloned())
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "^B".to_string());
         let footer = Block::default()
-            .title(format!("[{focus_label}]  ESC: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  {toggle_key}: Toggle sidebar"))
-            .borders(Borders::ALL);
+            .title(format!("[{focus_label}]  ESC: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  {}: Toggle sidebar", self.toggle_key))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.to_ratatui()))
+            .title_style(Style::default().fg(theme.fg_secondary.to_ratatui()));
         f.render_widget(footer, rows[2]);
     }
 
