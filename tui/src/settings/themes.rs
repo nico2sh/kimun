@@ -1,4 +1,4 @@
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::Display;
 
@@ -364,6 +364,15 @@ impl Theme {
         }
     }
 
+    /// Returns the appropriate border style depending on focus state.
+    pub fn border_style(&self, focused: bool) -> Style {
+        if focused {
+            Style::default().fg(self.border_focused.to_ratatui())
+        } else {
+            Style::default().fg(self.border.to_ratatui())
+        }
+    }
+
     pub fn nord() -> Self {
         Theme {
             name: "Nord".to_string(),
@@ -387,6 +396,21 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Style;
+
+    #[test]
+    fn test_border_style_focused() {
+        let theme = Theme::gruvbox_dark();
+        let style = theme.border_style(true);
+        assert_eq!(style, Style::default().fg(theme.border_focused.to_ratatui()));
+    }
+
+    #[test]
+    fn test_border_style_unfocused() {
+        let theme = Theme::gruvbox_dark();
+        let style = theme.border_style(false);
+        assert_eq!(style, Style::default().fg(theme.border.to_ratatui()));
+    }
 
     #[test]
     fn test_from_hex_6char() {

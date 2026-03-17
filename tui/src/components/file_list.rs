@@ -7,7 +7,7 @@ use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
@@ -18,6 +18,7 @@ use crate::components::events::AppEvent;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
+use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
 // Sort options
@@ -161,11 +162,11 @@ impl FileListEntry {
         }
     }
 
-    fn to_list_item(&self) -> ListItem<'static> {
+    fn to_list_item(&self, theme: &Theme) -> ListItem<'static> {
         let lines: Vec<Line> = match self {
             Self::Up { .. } => vec![Line::from(Span::styled(
                 "󰁝 [UP] ..",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.fg_muted.to_ratatui()),
             ))],
             Self::Note {
                 title,
@@ -178,7 +179,7 @@ impl FileListEntry {
                     lines.push(Line::from(format!("󰃭 {}", title)));
                     lines.push(Line::from(Span::styled(
                         format!(" {}", date),
-                        Style::default().fg(Color::Rgb(131, 165, 152)), // Gruvbox aqua
+                        Style::default().fg(theme.color_journal_date.to_ratatui()),
                     )));
                 } else {
                     lines.push(Line::from(format!("󰈚 {}", title)));
@@ -187,7 +188,7 @@ impl FileListEntry {
                     format!(" {}", filename),
                     Style::default()
                         .add_modifier(Modifier::ITALIC)
-                        .fg(Color::Gray),
+                        .fg(theme.fg_secondary.to_ratatui()),
                 )));
                 lines
             }
@@ -196,7 +197,7 @@ impl FileListEntry {
                 format!(" {}", filename),
                 Style::default()
                     .add_modifier(Modifier::ITALIC)
-                    .fg(Color::Gray),
+                    .fg(theme.fg_secondary.to_ratatui()),
             ))],
         };
         ListItem::new(Text::from(lines))
@@ -263,10 +264,14 @@ impl FileListComponent {
 
     pub fn push_entry(&mut self, entry: FileListEntry) {
         self.entries.push(entry);
-        self.apply_sort();
         if self.display_indices.is_none() && self.list_state.selected().is_none() {
             self.list_state.select(Some(0));
         }
+    }
+
+    /// Sort entries once after all items have been loaded.
+    pub fn finalize_sort(&mut self) {
+        self.apply_sort();
     }
 
     pub fn add_up_entry(&mut self, parent: VaultPath) {
@@ -562,15 +567,15 @@ impl Component for FileListComponent {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect) {
+    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
         self.poll_filter();
         self.rendered_rect = rect;
 
         let focused = self.focused;
         let title = self.header_title();
 
-        const BG_DARK: Color = Color::Rgb(40, 40, 40); // Gruvbox #282828
-        const BG_MID: Color = Color::Rgb(60, 56, 54); // Gruvbox #3c3836
+        let bg_even = theme.bg.to_ratatui();
+        let bg_odd = theme.bg_panel.to_ratatui();
 
         let entry_iter: Box<dyn Iterator<Item = &FileListEntry>> = match &self.display_indices {
             None => Box::new(self.entries.iter()),
@@ -579,16 +584,12 @@ impl Component for FileListComponent {
         let items: Vec<ListItem> = entry_iter
             .enumerate()
             .map(|(i, e)| {
-                let bg = if i % 2 == 0 { BG_DARK } else { BG_MID };
-                e.to_list_item().style(Style::default().bg(bg))
+                let bg = if i % 2 == 0 { bg_even } else { bg_odd };
+                e.to_list_item(theme).style(Style::default().bg(bg))
             })
             .collect();
 
-        let border_style = if focused {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = theme.border_style(focused);
 
         let make_block = || {
             Block::default()
@@ -603,14 +604,64 @@ impl Component for FileListComponent {
             .any(|e| !matches!(e, FileListEntry::Up { .. }));
         if self.loading && !has_content {
             let loading = Paragraph::new("Loading…")
-                .style(Style::default().fg(Color::DarkGray))
+                .style(Style::default().fg(theme.fg_muted.to_ratatui()))
                 .block(make_block());
             f.render_widget(loading, rect);
         } else {
             let list = List::new(items)
                 .block(make_block())
-                .highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+                .highlight_style(
+                    Style::default()
+                        .fg(theme.fg_selected.to_ratatui())
+                        .bg(theme.bg_selected.to_ratatui()),
+                );
             f.render_stateful_widget(list, rect, &mut self.list_state);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kimun_core::nfs::VaultPath;
+
+    use super::*;
+
+    fn make_note(filename: &str, title: &str) -> FileListEntry {
+        FileListEntry::Note {
+            path: VaultPath::new(filename),
+            title: title.to_string(),
+            filename: filename.to_string(),
+            journal_date: None,
+        }
+    }
+
+    fn entry_filenames(list: &FileListComponent) -> Vec<&str> {
+        list.entries
+            .iter()
+            .filter_map(|e| match e {
+                FileListEntry::Note { filename, .. } => Some(filename.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn push_entry_does_not_sort() {
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        list.push_entry(make_note("z.md", "Z Note"));
+        list.push_entry(make_note("a.md", "A Note"));
+        list.push_entry(make_note("m.md", "M Note"));
+        // Without sorting, entries stay in insertion order
+        assert_eq!(entry_filenames(&list), vec!["z.md", "a.md", "m.md"]);
+    }
+
+    #[test]
+    fn finalize_sort_sorts_by_name() {
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        list.push_entry(make_note("z.md", "Z Note"));
+        list.push_entry(make_note("a.md", "A Note"));
+        list.push_entry(make_note("m.md", "M Note"));
+        list.finalize_sort();
+        assert_eq!(entry_filenames(&list), vec!["a.md", "m.md", "z.md"]);
     }
 }

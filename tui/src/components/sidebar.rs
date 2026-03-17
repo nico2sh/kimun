@@ -7,8 +7,9 @@ use kimun_core::nfs::VaultPath;
 use kimun_core::SearchResult;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
+use crate::settings::themes::Theme;
 
 use crate::components::Component;
 use crate::components::app_message::AppTx;
@@ -71,6 +72,7 @@ impl SidebarComponent {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.pending_rx = None;
                     self.file_list.loading = false;
+                    self.file_list.finalize_sort();
                     break;
                 }
             }
@@ -89,7 +91,7 @@ impl Component for SidebarComponent {
         self.file_list.handle_event(event, tx)
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect) {
+    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
         self.poll_loading();
 
         // Sync focused state from sidebar into file list component.
@@ -100,24 +102,23 @@ impl Component for SidebarComponent {
             .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)])
             .split(rect);
 
+        let border_style = theme.border_style(self.focused);
+
         let header = Block::default()
             .title(self.current_dir.to_string())
-            .borders(Borders::ALL);
+            .borders(Borders::ALL)
+            .border_style(border_style);
         f.render_widget(header, rows[0]);
 
-        let search_border_style = if self.focused {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
         let search_block = Block::default()
             .title(" Search")
             .borders(Borders::ALL)
-            .border_style(search_border_style);
+            .border_style(border_style);
         let search_inner = search_block.inner(rows[1]);
         f.render_widget(search_block, rows[1]);
         f.render_widget(
-            Paragraph::new(self.file_list.search_query.as_str()),
+            Paragraph::new(self.file_list.search_query.as_str())
+                .style(Style::default().fg(theme.fg.to_ratatui())),
             search_inner,
         );
 
@@ -127,6 +128,6 @@ impl Component for SidebarComponent {
             f.set_cursor_position((cursor_x, search_inner.y));
         }
 
-        self.file_list.render(f, rows[2]);
+        self.file_list.render(f, rows[2], theme);
     }
 }

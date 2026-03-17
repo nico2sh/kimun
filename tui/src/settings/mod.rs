@@ -146,7 +146,7 @@ impl AppSettings {
         if let Ok(custom_default) = Self::load_default_theme() {
             list.push(custom_default);
         }
-        list.sort_by_key(|t| t.name.clone());
+        list.sort_by(|a, b| a.name.cmp(&b.name));
         list
     }
 
@@ -336,16 +336,14 @@ impl AppSettings {
         }
     }
 
-    // pub fn get_theme(&self) -> Theme {
-    //     self.theme_list()
-    //         .iter()
-    //         .find_map(|t| {
-    //             if t.name == self.theme {
-    //                 Some(t.to_owned())
-    //             } else {
-    //                 None
-    //             }
-    //         })
-    //         .unwrap_or_default()
-    // }
+    /// Resolve the active theme by name, falling back to the default.
+    pub fn get_theme(&self) -> Theme {
+        if self.theme.is_empty() {
+            return Theme::default();
+        }
+        self.theme_list()
+            .into_iter()
+            .find(|t| t.name == self.theme)
+            .unwrap_or_default()
+    }
 }
