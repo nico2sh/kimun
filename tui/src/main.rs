@@ -21,6 +21,7 @@ use std::io;
 
 use crate::app::App;
 use crate::app_screen::AppScreen;
+use crate::app_screen::browse::BrowseScreen;
 use crate::app_screen::editor::EditorScreen;
 use crate::app_screen::settings::SettingsScreen;
 use crate::app_screen::start::StartScreen;
@@ -91,6 +92,12 @@ where
                     screen.on_enter(&tx).await;
                     app.current_screen = Some(screen);
                 }
+                AppMessage::OpenBrowse(vault, path) => {
+                    let mut screen: Box<dyn AppScreen> =
+                        Box::new(BrowseScreen::new(Arc::new(vault), path, app.settings.clone()));
+                    screen.on_enter(&tx).await;
+                    app.current_screen = Some(screen);
+                }
                 AppMessage::OpenPath(path) => {
                     let unhandled = if let Some(screen) = app.current_screen.as_mut() {
                         screen
@@ -101,10 +108,11 @@ where
                     };
                     if let Some(AppMessage::OpenPath(path)) = unhandled {
                         if let Some(vault_path) = &app.settings.workspace_dir {
+                            let vault = NoteVault::new(vault_path).await.map_err(io::Error::other)?;
                             if path.is_note() {
-                                let vault =
-                                    NoteVault::new(vault_path).await.map_err(io::Error::other)?;
                                 tx.send(AppMessage::OpenEditor(vault, path)).ok();
+                            } else {
+                                tx.send(AppMessage::OpenBrowse(vault, path)).ok();
                             }
                         } else {
                             tx.send(AppMessage::OpenSettings).ok();
