@@ -4,15 +4,20 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::settings::AppSettings;
 
 /// Messages screens send to the main loop. All variants must be `Send` so
-/// they can travel through the tokio channel. Keep data simple — no vault
-/// handles, no `Arc<…>`. The main loop reconstructs whatever it needs.
+/// they can travel through the tokio channel.
+/// Note: `OpenEditor` and `OpenBrowse` carry `NoteVault` directly as an
+/// accepted deviation from keeping data simple — vault construction is cheap.
 #[derive(Debug)]
 pub enum AppMessage {
     Quit,
     Redraw,
     OpenSettings,
     /// Navigate to the editor for the given vault root path.
+    /// Accepted deviation: carries NoteVault directly (same as OpenBrowse).
     OpenEditor(NoteVault, VaultPath),
+    /// Navigate to the browse screen for the given vault root and directory path.
+    /// Accepted deviation: carries NoteVault directly (same as OpenEditor).
+    OpenBrowse(NoteVault, VaultPath),
     OpenPath(VaultPath),
     FocusEditor,
     FocusSidebar,
@@ -51,5 +56,12 @@ mod tests {
     fn indexing_done_variant_exists() {
         // This test fails to compile until IndexingDone(Result<Duration, String>) is added.
         let _msg = AppMessage::IndexingDone(Ok(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn open_browse_variant_exists() {
+        // Fails to compile until OpenBrowse(NoteVault, VaultPath) is added.
+        // NoteVault requires a real path at runtime, so we just verify the type compiles.
+        let _: fn(NoteVault, VaultPath) -> AppMessage = AppMessage::OpenBrowse;
     }
 }
