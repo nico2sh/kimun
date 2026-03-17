@@ -71,6 +71,14 @@ pub enum IndexingProgressState {
     Failed(String),
 }
 
+impl Drop for IndexingProgressState {
+    fn drop(&mut self) {
+        if let Self::Running(handle) = self {
+            handle.abort();
+        }
+    }
+}
+
 pub enum Overlay {
     None,
     FileBrowser(FileBrowserState),
@@ -128,8 +136,11 @@ impl SettingsScreen {
 
     fn do_save(&mut self, tx: &AppTx) {
         if self.settings.workspace_dir != self.initial_settings.workspace_dir {
+            let Some(workspace) = self.settings.workspace_dir.clone() else {
+                tx.send(AppMessage::IndexingDone(Err("No workspace set".to_string()))).ok();
+                return;
+            };
             self.pending_save_after_index = true;
-            let workspace = self.settings.workspace_dir.clone().unwrap();
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
                 let result = async {
@@ -179,10 +190,10 @@ impl AppScreen for SettingsScreen {
                     }
                     KeyCode::Left => { fb.go_up(); }
                     KeyCode::Right | KeyCode::Enter => {
-                        if let Some(idx) = fb.list_state.selected() {
-                            if let Some(entry) = fb.entries.get(idx).cloned() {
-                                fb.navigate_into(entry);
-                            }
+                        if let Some(idx) = fb.list_state.selected()
+                            && let Some(entry) = fb.entries.get(idx).cloned()
+                        {
+                            fb.navigate_into(entry);
                         }
                     }
                     KeyCode::Char('c') => {
@@ -220,7 +231,10 @@ impl AppScreen for SettingsScreen {
                     }
                     KeyCode::Enter => {
                         if *focused_button == ConfirmButton::Confirm {
-                            let workspace = self.settings.workspace_dir.clone().unwrap();
+                            let Some(workspace) = self.settings.workspace_dir.clone() else {
+                                self.overlay = Overlay::None;
+                                return EventState::Consumed;
+                            };
                             let tx2 = tx.clone();
                             let handle = tokio::spawn(async move {
                                 let result = async {
@@ -321,7 +335,7 @@ impl AppScreen for SettingsScreen {
                 },
                 SettingsFocus::Content => {
                     let app_event = AppEvent::Key(*key);
-                    let result = match self.section {
+                    match self.section {
                         SettingsSection::Theme => {
                             let r = self.theme_picker.handle_event(&app_event, tx);
                             // Live theme preview on every navigation step.
@@ -332,8 +346,7 @@ impl AppScreen for SettingsScreen {
                         }
                         SettingsSection::Vault => self.vault_section.handle_event(&app_event, tx),
                         SettingsSection::Indexing => self.indexing_section.handle_event(&app_event, tx),
-                    };
-                    result
+                    }
                 }
             },
         }
@@ -350,7 +363,12 @@ impl AppScreen for SettingsScreen {
                 None
             }
             AppMessage::TriggerFastReindex => {
-                let workspace = self.settings.workspace_dir.clone().unwrap();
+                // Fast reindex starts immediately (no confirmation overlay) — it is a
+                // low-cost incremental operation unlike full reindex.
+                let Some(workspace) = self.settings.workspace_dir.clone() else {
+                    tx.send(AppMessage::IndexingDone(Err("No workspace set".to_string()))).ok();
+                    return None;
+                };
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = async {
