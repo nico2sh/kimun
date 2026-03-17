@@ -148,6 +148,10 @@ impl AppScreen for EditorScreen {
 
     fn render(&mut self, f: &mut ratatui::Frame) {
         let theme = &self.theme;
+        f.render_widget(
+            ratatui::widgets::Block::default().style(theme.base_style()),
+            f.area(),
+        );
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -162,6 +166,7 @@ impl AppScreen for EditorScreen {
             .title("Kimün")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_ratatui()))
+            .style(theme.base_style())
             .title_style(Style::default().fg(theme.accent.to_ratatui()));
         f.render_widget(header, rows[0]);
 
@@ -191,7 +196,8 @@ impl AppScreen for EditorScreen {
         let editor_block = Block::default()
             .title("Editor")
             .borders(Borders::ALL)
-            .border_style(editor_border_style);
+            .border_style(editor_border_style)
+            .style(theme.base_style());
         let editor_inner = editor_block.inner(editor_area);
         f.render_widget(editor_block, editor_area);
         self.editor.render(f, editor_inner, theme, editor_focused);
@@ -201,6 +207,7 @@ impl AppScreen for EditorScreen {
             .title(format!("[{focus_label}]  Ctrl+Q: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  {}: Toggle sidebar", self.toggle_key))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_ratatui()))
+            .style(theme.base_style())
             .title_style(Style::default().fg(theme.fg_secondary.to_ratatui()));
         f.render_widget(footer, rows[2]);
     }

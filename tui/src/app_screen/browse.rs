@@ -73,6 +73,10 @@ impl AppScreen for BrowseScreen {
     }
 
     fn render(&mut self, f: &mut Frame) {
+        f.render_widget(
+            ratatui::widgets::Block::default().style(self.theme.base_style()),
+            f.area(),
+        );
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(0), Constraint::Length(60), Constraint::Min(0)])
