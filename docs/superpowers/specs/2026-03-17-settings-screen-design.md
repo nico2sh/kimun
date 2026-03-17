@@ -80,14 +80,18 @@ Receives a clone of `App::settings`. Stores it both as `settings` (mutable) and 
 - If `settings != initial_settings`: set `overlay = Overlay::ConfirmSave { focused_button: SaveButton::Save }`.
 
 **ConfirmSave — Save path:**
-1. If `settings.workspace_dir != initial_settings.workspace_dir`: set `pending_save_after_index = true`, set `overlay = Overlay::IndexingProgress(Running(handle))`, spawn full reindex task (same as `TriggerFullReindex`). This spawn happens inside the synchronous `handle_event` — `tx` must be cloned before the closure: `let tx = tx.clone();` (same requirement as the `TriggerFastReindex`/`TriggerFullReindex` paths). On `IndexingDone(Ok)` with `pending_save_after_index == true`: call `settings.report_indexed()`, then `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`, auto-close (no OK button).
-2. Otherwise: call `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`.
+1. If `settings.workspace_dir != initial_settings.workspace_dir`: set `pending_save_after_index = true`, set `overlay = Overlay::IndexingProgress(Running(handle))`, spawn full reindex task (same as `TriggerFullReindex`). This spawn happens inside the synchronous `handle_event` — `tx` must be cloned before the closure: `let tx = tx.clone();` (same requirement as the `TriggerFastReindex`/`TriggerFullReindex` paths). On `IndexingDone(Ok)` with `pending_save_after_index == true`: call `settings.report_indexed()`, then `settings.save_to_disk().ok()` (error is non-fatal — log it if a logger is available, then proceed), send `AppMessage::SettingsSaved(settings)`, auto-close (no OK button).
+2. Otherwise: call `settings.save_to_disk().ok()` (non-fatal — same error policy), send `AppMessage::SettingsSaved(settings)`.
 
-**ConfirmSave — Discard path:** send `AppMessage::CloseSettings`.
+**`save_to_disk` error policy:** Treat as non-fatal. Call `.ok()` to discard the `eyre::Result`. The settings are still applied to `App::settings` via `SettingsSaved` for the current session; they simply will not persist across restarts. Proper error display (e.g., a toast or error overlay) is out of scope for this spec.
+
+**ConfirmSave — Discard path:** send `AppMessage::CloseSettings`. All in-memory mutations to `settings` are discarded — including any `report_indexed()` calls from user-triggered reindexes during this session. `App::settings` is not updated.
 
 `AppMessage::SettingsSaved(settings)` — main loop updates `App::settings` and navigates back.
 `AppMessage::CloseSettings` — main loop navigates back without updating `App::settings`.
 Both navigate back by sending `OpenPath` with `last_paths.last()` or `VaultPath::root()` (pattern used in `start.rs`).
+
+**`handle_app_message` routing:** `SettingsScreen::handle_app_message` must include a fallback `other => Some(other)` arm to pass unrecognized variants back to the main loop. This preserves the existing behavior of `FocusEditor` / `FocusSidebar` variants (routed via the main loop's `other =>` catch-all) and ensures future variants do not silently disappear.
 
 **Event routing:** When `focus == Content`, key events are forwarded to the active section component. When `focus == Sidebar`, Up/Down change the selected section; Tab moves focus to the content panel.
 
@@ -109,7 +113,7 @@ They live under a new `tui/src/components/settings/` submodule with a `mod.rs`.
 
 Renders the full list from a `Vec<Theme>` passed at construction time (`ThemePicker::new(themes: Vec<Theme>, active_name: &str)`). Up/Down moves `ListState` selection. Enter or immediate highlight changes the internal selected index.
 
-**Ownership model:** `ThemePicker` does NOT hold a reference to `AppSettings`. Instead, `ThemePicker` exposes a `pub fn selected_theme_name(&self) -> &str` method. After every `handle_event` call on `ThemePicker`, `SettingsScreen` reads `theme_picker.selected_theme_name()` and writes it into `self.settings.theme`. This is the same "parent reads child state" pattern used in `EditorScreen` (which reads sidebar selection state to navigate).
+**Ownership model:** `ThemePicker` does NOT hold a reference to `AppSettings`. Instead, `ThemePicker` exposes a `pub fn selected_theme_name(&self) -> &str` method. After every `handle_event` call on `ThemePicker`, `SettingsScreen` reads `theme_picker.selected_theme_name()` and calls `self.settings.set_theme(name.to_string())` (use the public method, not direct field assignment). Then update `self.theme = self.settings.get_theme()` for live preview. This is the same "parent reads child state" pattern used in `EditorScreen` (which reads sidebar selection state to navigate).
 
 ```
 ┌─ Theme ──────────────────────────────────────────────┐
@@ -254,7 +258,11 @@ Shown when the user presses Esc and settings have changed. Left/Right selects Sa
 
 Uses `throbber-widgets-tui` (version `"0.10"`, compatible with ratatui 0.29+/0.30; verified against ATAC project usage). Added to `tui/Cargo.toml`.
 
-The indexing task is spawned from `SettingsScreen::handle_app_message` (which is `async`). `tokio::spawn` requires a `'static` future, so `tx` (a `&AppTx` reference) **must be cloned** before the spawn: `let tx = tx.clone();`. The owned `tx` is then moved into the closure. The task:
+The indexing task spawn location depends on what triggered it:
+- **User-triggered** (`TriggerFastReindex` / `TriggerFullReindex` + confirm): spawn happens inside `SettingsScreen::handle_app_message` (which is `async`).
+- **Vault-path-change on Save** (ConfirmSave → Save, vault path changed): spawn happens inside `SettingsScreen::handle_event` (synchronous). `tokio::spawn` is still valid here because the Tokio runtime is active.
+
+In both cases, `tokio::spawn` requires a `'static` future, so `tx` (a `&AppTx` reference) **must be cloned** before the spawn: `let tx = tx.clone();`. The owned `tx` is then moved into the closure. The task:
 1. Constructs `NoteVault::new(workspace_dir).await.map_err(|e| e.to_string())` — `VaultError` is not `Send` (it wraps `sqlx::Error`), so the error **must** be converted to `String` immediately at this call site. Do not use `?` with `VaultError` inside `tokio::spawn` — the future will not satisfy the `Send` bound.
 2. Calls the appropriate indexing method; similarly converts `VaultError` to `String` via `.map_err(|e| e.to_string())`
 3. Sends `AppMessage::IndexingDone(Ok(duration))` or `AppMessage::IndexingDone(Err(String))`
@@ -272,7 +280,7 @@ enum IndexingProgressState {
 
 **On Done:** `SettingsScreen` calls `self.settings.report_indexed()`.
 
-**On `IndexingDone(Ok)` with `pending_save_after_index == true`:** auto-close — call `settings.report_indexed()`, then `settings.save_to_disk()`, send `AppMessage::SettingsSaved(settings)`. No OK button is shown; the screen closes immediately. `pending_save_after_index` is reset to `false`.
+**On `IndexingDone(Ok)` with `pending_save_after_index == true`:** auto-close — call `settings.report_indexed()`, then `settings.save_to_disk().ok()` (non-fatal, same policy as above), send `AppMessage::SettingsSaved(settings)`. No OK button is shown; the screen closes immediately. `pending_save_after_index` is reset to `false`.
 
 **On `IndexingDone(Err)` with `pending_save_after_index == true`:** show the Failed state with an OK button. The user must acknowledge. On dismiss, save is **not** triggered (index failed; user stays in settings with `pending_save_after_index = false`).
 
@@ -346,7 +354,11 @@ AppMessage::OpenSettings => {
     screen.on_enter(&tx).await;
     app.current_screen = Some(screen);
 }
-AppMessage::OpenEditor(vault, path) => { /* unchanged — create EditorScreen */ }
+AppMessage::OpenEditor(vault, path) => {
+    // Copy verbatim from main.rs lines 84–92:
+    // Box::new(EditorScreen::new(Arc::new(vault), path, app.settings.clone()))
+    // screen.on_enter(&tx).await; app.current_screen = Some(screen)
+}
 AppMessage::OpenPath(path) => {
     // This arm body is UNCHANGED from the existing main.rs implementation.
     // Must be preserved verbatim — it handles vault creation and the OpenSettings
