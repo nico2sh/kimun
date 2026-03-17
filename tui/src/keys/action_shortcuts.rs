@@ -12,6 +12,13 @@ pub enum ActionShortcuts {
     NewJournal,
     TogglePreview,
     Text(TextAction),
+    // TUI navigation / file list
+    ToggleSidebar,
+    FocusEditor,
+    FocusSidebar,
+    SortByName,
+    SortByTitle,
+    SortReverseOrder,
 }
 
 impl Display for ActionShortcuts {
@@ -23,9 +30,13 @@ impl Display for ActionShortcuts {
             ActionShortcuts::OpenNote => "OpenNote".to_string(),
             ActionShortcuts::NewJournal => "NewJournal".to_string(),
             ActionShortcuts::TogglePreview => "TogglePreview".to_string(),
-            ActionShortcuts::Text(text_action) => {
-                format!("TextEditor-{}", text_action)
-            }
+            ActionShortcuts::Text(text_action) => format!("TextEditor-{}", text_action),
+            ActionShortcuts::ToggleSidebar => "ToggleSidebar".to_string(),
+            ActionShortcuts::FocusEditor => "FocusEditor".to_string(),
+            ActionShortcuts::FocusSidebar => "FocusSidebar".to_string(),
+            ActionShortcuts::SortByName => "SortByName".to_string(),
+            ActionShortcuts::SortByTitle => "SortByTitle".to_string(),
+            ActionShortcuts::SortReverseOrder => "SortReverseOrder".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -42,6 +53,12 @@ impl TryFrom<String> for ActionShortcuts {
             "OpenNote" => ActionShortcuts::OpenNote,
             "NewJournal" => ActionShortcuts::NewJournal,
             "TogglePreview" => ActionShortcuts::TogglePreview,
+            "ToggleSidebar" => ActionShortcuts::ToggleSidebar,
+            "FocusEditor" => ActionShortcuts::FocusEditor,
+            "FocusSidebar" => ActionShortcuts::FocusSidebar,
+            "SortByName" => ActionShortcuts::SortByName,
+            "SortByTitle" => ActionShortcuts::SortByTitle,
+            "SortReverseOrder" => ActionShortcuts::SortReverseOrder,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {

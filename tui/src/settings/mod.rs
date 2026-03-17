@@ -50,7 +50,7 @@ fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch<'_> {
 
 fn default_keybindings() -> KeyBindings {
     let mut kb = KeyBindings::empty();
-    // We use meta on macOS, ctrl on Windows
+    // We use meta on macOS, ctrl on Windows/Linux for desktop-app shortcuts.
     get_kb_buildr_ctrl_meta(&mut kb)
         .add(KeyStrike::Comma, ActionShortcuts::OpenSettings)
         .add(KeyStrike::Slash, ActionShortcuts::ToggleNoteBrowser)
@@ -60,36 +60,34 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyY, ActionShortcuts::TogglePreview)
         .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
         .add(KeyStrike::KeyI, ActionShortcuts::Text(TextAction::Italic))
-        .add(
-            KeyStrike::KeyU,
-            ActionShortcuts::Text(TextAction::Underline),
-        )
-        .add(
-            KeyStrike::KeyS,
-            ActionShortcuts::Text(TextAction::Strikethrough),
-        )
+        .add(KeyStrike::KeyU, ActionShortcuts::Text(TextAction::Underline))
+        .add(KeyStrike::KeyS, ActionShortcuts::Text(TextAction::Strikethrough))
         .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Link))
-        .add(
-            KeyStrike::KeyT,
-            ActionShortcuts::Text(TextAction::ToggleHeader),
-        )
-        .add(
-            KeyStrike::Digit1,
-            ActionShortcuts::Text(TextAction::Header(1)),
-        )
-        .add(
-            KeyStrike::Digit2,
-            ActionShortcuts::Text(TextAction::Header(2)),
-        )
-        .add(
-            KeyStrike::Digit3,
-            ActionShortcuts::Text(TextAction::Header(3)),
-        )
+        .add(KeyStrike::KeyT, ActionShortcuts::Text(TextAction::ToggleHeader))
+        .add(KeyStrike::Digit1, ActionShortcuts::Text(TextAction::Header(1)))
+        .add(KeyStrike::Digit2, ActionShortcuts::Text(TextAction::Header(2)))
+        .add(KeyStrike::Digit3, ActionShortcuts::Text(TextAction::Header(3)))
         // =============================
         // We add shift to the modifiers
         // =============================
         .with_shift()
         .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Image));
+
+    // TUI navigation shortcuts (always Ctrl — terminal apps don't use Cmd/Meta).
+    kb.batch_add()
+        .with_ctrl()
+        .add(KeyStrike::KeyB, ActionShortcuts::ToggleSidebar)
+        .add(KeyStrike::KeyN, ActionShortcuts::SortByName)
+        .add(KeyStrike::KeyT, ActionShortcuts::SortByTitle)
+        .add(KeyStrike::KeyR, ActionShortcuts::SortReverseOrder);
+
+    // Tab / Shift+Tab for focus switching (no modifier / shift only).
+    kb.batch_add()
+        .add(KeyStrike::Tab, ActionShortcuts::FocusEditor);
+    kb.batch_add()
+        .with_shift()
+        .add(KeyStrike::Tab, ActionShortcuts::FocusSidebar);
+
     kb
 }
 
@@ -244,9 +242,21 @@ impl AppSettings {
             let mut toml = String::new();
             settings_file.read_to_string(&mut toml)?;
 
-            let setting = toml::from_str(toml.as_ref())?;
+            let mut setting: AppSettings = toml::from_str(toml.as_ref())?;
+            // Ensure any new default bindings added after the config was saved are present.
+            setting.merge_missing_default_bindings();
             Ok(setting)
         }
+    }
+
+    /// Fills in any actions from `default_keybindings()` that are absent in the loaded config.
+    /// Existing user-customised bindings are never overwritten.
+    fn merge_missing_default_bindings(&mut self) {
+        let mut current = self.key_bindings.to_hashmap();
+        for (action, combos) in default_keybindings().to_hashmap() {
+            current.entry(action).or_insert(combos);
+        }
+        self.key_bindings = KeyBindings::from_hashmap(current);
     }
 
     pub fn get_workspace_string(&self) -> String {

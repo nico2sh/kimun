@@ -15,6 +15,9 @@ use crate::components::Component;
 use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
+use crate::keys::KeyBindings;
+use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::key_event_to_combo;
 
 // ---------------------------------------------------------------------------
 // Sort options
@@ -183,10 +186,12 @@ pub struct FileListComponent {
     // Sort
     pub sort_field: SortField,
     pub sort_order: SortOrder,
+    // Keybindings
+    key_bindings: KeyBindings,
 }
 
 impl FileListComponent {
-    pub fn new() -> Self {
+    pub fn new(key_bindings: KeyBindings) -> Self {
         Self {
             entries: Vec::new(),
             focused: false,
@@ -198,6 +203,7 @@ impl FileListComponent {
             filter_rx: None,
             sort_field: SortField::Name,
             sort_order: SortOrder::Ascending,
+            key_bindings,
         }
     }
 
@@ -381,32 +387,34 @@ impl Component for FileListComponent {
     fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
         match event {
             AppEvent::Key(key) => {
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                // Check keybindings first for action shortcuts.
+                if let Some(combo) = key_event_to_combo(key) {
+                    match self.key_bindings.get_action(&combo) {
+                        Some(ActionShortcuts::FocusEditor) => {
+                            tx.send(AppMessage::FocusEditor).ok();
+                            return EventState::Consumed;
+                        }
+                        Some(ActionShortcuts::SortByName) => {
+                            self.set_sort(SortField::Name, self.sort_order, tx.clone());
+                            return EventState::Consumed;
+                        }
+                        Some(ActionShortcuts::SortByTitle) => {
+                            self.set_sort(SortField::Title, self.sort_order, tx.clone());
+                            return EventState::Consumed;
+                        }
+                        Some(ActionShortcuts::SortReverseOrder) => {
+                            let order = self.sort_order.toggle();
+                            self.set_sort(self.sort_field, order, tx.clone());
+                            return EventState::Consumed;
+                        }
+                        _ => {}
+                    }
+                }
+                // Navigation and search input.
                 match key.code {
-                    // Tab: yield focus to editor
-                    KeyCode::Tab => {
-                        tx.send(AppMessage::FocusEditor).ok();
-                        EventState::Consumed
-                    }
-                    // Sort: Ctrl+N = by name, Ctrl+T = by title, Ctrl+R = reverse order
-                    KeyCode::Char('n') if ctrl => {
-                        self.set_sort(SortField::Name, self.sort_order, tx.clone());
-                        EventState::Consumed
-                    }
-                    KeyCode::Char('t') if ctrl => {
-                        self.set_sort(SortField::Title, self.sort_order, tx.clone());
-                        EventState::Consumed
-                    }
-                    KeyCode::Char('r') if ctrl => {
-                        let order = self.sort_order.toggle();
-                        self.set_sort(self.sort_field, order, tx.clone());
-                        EventState::Consumed
-                    }
-                    // Navigation
                     KeyCode::Up => { self.select_prev(); EventState::Consumed }
                     KeyCode::Down => { self.select_next(); EventState::Consumed }
                     KeyCode::Enter => { self.activate_selected(tx); EventState::Consumed }
-                    // Search input
                     KeyCode::Char(c) => {
                         if key.modifiers.contains(KeyModifiers::SHIFT) {
                             self.search_query.push(c.to_ascii_uppercase());
