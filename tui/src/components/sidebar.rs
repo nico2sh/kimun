@@ -13,6 +13,7 @@ use crate::components::app_message::AppTx;
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 use crate::components::file_list::{FileListComponent, FileListEntry};
+use crate::keys::KeyBindings;
 
 pub struct SidebarComponent {
     pub focused: bool,
@@ -22,11 +23,11 @@ pub struct SidebarComponent {
 }
 
 impl SidebarComponent {
-    pub fn new() -> Self {
+    pub fn new(key_bindings: KeyBindings) -> Self {
         Self {
             focused: false,
             current_dir: VaultPath::root(),
-            file_list: FileListComponent::new(),
+            file_list: FileListComponent::new(key_bindings),
             pending_rx: None,
         }
     }

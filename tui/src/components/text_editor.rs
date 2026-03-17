@@ -7,18 +7,23 @@ use crate::components::Component;
 use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
+use crate::keys::KeyBindings;
+use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::key_event_to_combo;
 
 pub struct TextEditorComponent {
     text_area: TextArea<'static>,
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
+    key_bindings: KeyBindings,
 }
 
 impl TextEditorComponent {
-    pub fn new() -> Self {
+    pub fn new(key_bindings: KeyBindings) -> Self {
         Self {
             text_area: TextArea::default(),
             rect: Rect::default(),
+            key_bindings,
         }
     }
 
@@ -36,12 +41,12 @@ impl Component for TextEditorComponent {
     fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
         match event {
             AppEvent::Key(key) => {
-                use ratatui::crossterm::event::KeyCode;
-                use crate::components::app_message::AppMessage;
-                // Shift+Tab: yield focus back to the sidebar.
-                if key.code == KeyCode::BackTab {
-                    tx.send(AppMessage::FocusSidebar).ok();
-                    return EventState::Consumed;
+                // Check keybindings for navigation actions.
+                if let Some(combo) = key_event_to_combo(key) {
+                    if let Some(ActionShortcuts::FocusSidebar) = self.key_bindings.get_action(&combo) {
+                        tx.send(AppMessage::FocusSidebar).ok();
+                        return EventState::Consumed;
+                    }
                 }
                 self.text_area.input(*key);
                 EventState::Consumed

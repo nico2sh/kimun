@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use kimun_core::nfs::VaultPath;
-use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders};
@@ -16,6 +16,8 @@ use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
+use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::key_event_to_combo;
 use crate::settings::AppSettings;
 
 enum Focus {
@@ -35,11 +37,12 @@ pub struct EditorScreen {
 
 impl EditorScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: AppSettings) -> Self {
+        let kb = settings.key_bindings.clone();
         Self {
             vault,
             settings,
-            editor: TextEditorComponent::new(),
-            sidebar: SidebarComponent::new(),
+            editor: TextEditorComponent::new(kb.clone()),
+            sidebar: SidebarComponent::new(kb),
             path,
             focus: Focus::Editor,
             sidebar_visible: true,
@@ -115,17 +118,18 @@ impl AppScreen for EditorScreen {
 
     fn handle_event(&mut self, event: AppEvent, tx: &AppTx) -> EventState {
         if let AppEvent::Key(key) = &event {
-            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-
-            // Ctrl+B — toggle sidebar from anywhere.
-            if ctrl && key.code == KeyCode::Char('b') {
-                self.toggle_sidebar();
-                return EventState::Consumed;
-            }
-
             if key.code == KeyCode::Esc {
                 tx.send(AppMessage::Quit).ok();
                 return EventState::Consumed;
+            }
+
+            if let Some(combo) = key_event_to_combo(key) {
+                if let Some(ActionShortcuts::ToggleSidebar) =
+                    self.settings.key_bindings.get_action(&combo)
+                {
+                    self.toggle_sidebar();
+                    return EventState::Consumed;
+                }
             }
         }
 
@@ -182,8 +186,14 @@ impl AppScreen for EditorScreen {
         self.editor.render(f, editor_inner);
 
         let focus_label = if editor_focused { "EDITOR" } else { "SIDEBAR" };
+        let toggle_key = self.settings.key_bindings
+            .to_hashmap()
+            .get(&ActionShortcuts::ToggleSidebar)
+            .and_then(|v| v.first().cloned())
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "^B".to_string());
         let footer = Block::default()
-            .title(format!("[{focus_label}]  ESC: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  ^B: Toggle sidebar"))
+            .title(format!("[{focus_label}]  ESC: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  {toggle_key}: Toggle sidebar"))
             .borders(Borders::ALL);
         f.render_widget(footer, rows[2]);
     }
