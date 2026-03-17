@@ -133,9 +133,17 @@ impl AppScreen for EditorScreen {
             }
         }
 
+        // Mouse events are routed to all components regardless of focus so that
+        // clicking anywhere can transfer focus correctly.
+        if matches!(event, AppEvent::Mouse(_)) {
+            if self.sidebar.handle_event(&event, tx).is_consumed() {
+                return EventState::Consumed;
+            }
+            return self.editor.handle_event(&event, tx);
+        }
+
         match self.focus {
             Focus::Sidebar => self.sidebar.handle_event(&event, tx),
-            // Tab in editor passes through so the editor handles indent
             Focus::Editor => self.editor.handle_event(&event, tx),
         }
     }
