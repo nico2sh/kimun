@@ -52,14 +52,20 @@ impl Component for TextEditorComponent {
                 EventState::Consumed
             }
             AppEvent::Mouse(mouse) => {
+                let r = &self.rect;
+                let in_bounds = mouse.column >= r.x
+                    && mouse.column < r.x + r.width
+                    && mouse.row >= r.y
+                    && mouse.row < r.y + r.height;
+                if !in_bounds {
+                    return EventState::NotConsumed;
+                }
                 match mouse.kind {
                     MouseEventKind::Down(_) => {
                         tx.send(AppMessage::FocusEditor).ok();
-                        if mouse.row >= self.rect.y && mouse.column >= self.rect.x {
-                            let row = mouse.row - self.rect.y;
-                            let col = mouse.column - self.rect.x;
-                            self.text_area.move_cursor(CursorMove::Jump(row, col));
-                        }
+                        let row = mouse.row - r.y;
+                        let col = mouse.column - r.x;
+                        self.text_area.move_cursor(CursorMove::Jump(row, col));
                     }
                     _ => {
                         self.text_area.input(*mouse);
