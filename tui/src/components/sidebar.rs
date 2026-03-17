@@ -5,7 +5,8 @@ use kimun_core::nfs::VaultPath;
 use kimun_core::SearchResult;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::widgets::{Block, Borders};
+use ratatui::style::{Color, Style};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::app_message::AppTx;
@@ -37,6 +38,7 @@ impl SidebarComponent {
     pub fn start_loading(&mut self, rx: Receiver<SearchResult>, current_dir: VaultPath) {
         self.current_dir = current_dir.clone();
         self.file_list.clear();
+        self.file_list.loading = true;
 
         if !current_dir.is_root_or_empty() {
             let parent = current_dir.get_parent_path().0;
@@ -61,6 +63,7 @@ impl SidebarComponent {
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.pending_rx = None;
+                    self.file_list.loading = false;
                     break;
                 }
             }
@@ -81,7 +84,7 @@ impl Component for SidebarComponent {
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)])
             .split(rect);
 
         let header = Block::default()
@@ -89,6 +92,28 @@ impl Component for SidebarComponent {
             .borders(Borders::ALL);
         f.render_widget(header, rows[0]);
 
-        self.file_list.render(f, rows[1]);
+        let search_border_style = if self.focused {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+        let search_block = Block::default()
+            .title(" Search")
+            .borders(Borders::ALL)
+            .border_style(search_border_style);
+        let search_inner = search_block.inner(rows[1]);
+        f.render_widget(search_block, rows[1]);
+        f.render_widget(
+            Paragraph::new(self.file_list.search_query.as_str()),
+            search_inner,
+        );
+
+        // Cursor at end of search query when focused.
+        if self.focused {
+            let cursor_x = search_inner.x + self.file_list.search_query.chars().count() as u16;
+            f.set_cursor_position((cursor_x, search_inner.y));
+        }
+
+        self.file_list.render(f, rows[2]);
     }
 }

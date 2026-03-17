@@ -9,7 +9,7 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::components::Component;
 use crate::components::app_message::{AppMessage, AppTx};
@@ -119,39 +119,31 @@ impl FileListEntry {
     /// Terminal rows this entry occupies when rendered.
     pub fn visual_height(&self) -> u16 {
         match self {
-            Self::Note { .. } => 3,
-            _ => 2,
+            Self::Note { .. } => 2, // title + filename
+            _ => 1,
         }
     }
 
     fn to_list_item(&self) -> ListItem<'static> {
-        let divider = Line::from(Span::styled(
-            "─".repeat(28),
-            Style::default().fg(Color::DarkGray),
-        ));
         let lines: Vec<Line> = match self {
             Self::Up { .. } => vec![
                 Line::from(Span::styled("↑  ..", Style::default().fg(Color::DarkGray))),
-                divider,
             ],
             Self::Note { title, filename, .. } => vec![
-                Line::from(title.clone()),
+                Line::from(format!(" {}", title)),
                 Line::from(Span::styled(
-                    filename.clone(),
-                    Style::default().add_modifier(Modifier::ITALIC),
+                    format!(" {}", filename),
+                    Style::default().add_modifier(Modifier::ITALIC).fg(Color::Gray),
                 )),
-                divider,
             ],
             Self::Directory { name, .. } => vec![
-                Line::from(format!("📁 {}", name)),
-                divider,
+                Line::from(format!(" 📁 {}", name)),
             ],
             Self::Attachment { filename, .. } => vec![
                 Line::from(Span::styled(
-                    filename.clone(),
-                    Style::default().add_modifier(Modifier::ITALIC),
+                    format!(" {}", filename),
+                    Style::default().add_modifier(Modifier::ITALIC).fg(Color::Gray),
                 )),
-                divider,
             ],
         };
         ListItem::new(Text::from(lines))
@@ -181,6 +173,7 @@ impl AsRef<str> for MatchEntry {
 pub struct FileListComponent {
     pub entries: Vec<FileListEntry>,
     pub focused: bool,
+    pub loading: bool,
     display_indices: Option<Vec<usize>>,
     list_state: ListState,
     rendered_rect: Rect,
@@ -197,6 +190,7 @@ impl FileListComponent {
         Self {
             entries: Vec::new(),
             focused: false,
+            loading: false,
             display_indices: None,
             list_state: ListState::default(),
             rendered_rect: Rect::default(),
@@ -230,6 +224,7 @@ impl FileListComponent {
         self.filter_rx = None;
         self.search_query.clear();
         self.list_state.select(None);
+        self.loading = false;
     }
 
     /// Sort entries in-place, keeping any leading Up entry at position 0.
@@ -378,12 +373,7 @@ impl FileListComponent {
     }
 
     fn header_title(&self) -> String {
-        format!(
-            " [{}{}] {}",
-            self.sort_field.label(),
-            self.sort_order.label(),
-            self.search_query
-        )
+        format!(" [{}{}]", self.sort_field.label(), self.sort_order.label())
     }
 }
 
@@ -471,32 +461,46 @@ impl Component for FileListComponent {
         let focused = self.focused;
         let title = self.header_title();
 
+        const BG_DARK: Color = Color::Rgb(40, 40, 40);   // Gruvbox #282828
+        const BG_MID:  Color = Color::Rgb(60, 56, 54);   // Gruvbox #3c3836
+
         let entry_iter: Box<dyn Iterator<Item = &FileListEntry>> = match &self.display_indices {
             None => Box::new(self.entries.iter()),
             Some(indices) => Box::new(indices.iter().map(|&i| &self.entries[i])),
         };
-        let items: Vec<ListItem> = entry_iter.map(FileListEntry::to_list_item).collect();
+        let items: Vec<ListItem> = entry_iter
+            .enumerate()
+            .map(|(i, e)| {
+                let bg = if i % 2 == 0 { BG_DARK } else { BG_MID };
+                e.to_list_item().style(Style::default().bg(bg))
+            })
+            .collect();
 
-        let block = Block::default()
-            .title(title.as_str())
-            .borders(Borders::ALL)
-            .border_style(if focused {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default()
-            });
+        let border_style = if focused {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
 
-        let list = List::new(items)
-            .block(block)
-            .highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+        let make_block = || {
+            Block::default()
+                .title(title.as_str())
+                .borders(Borders::ALL)
+                .border_style(border_style)
+        };
 
-        f.render_stateful_widget(list, rect, &mut self.list_state);
-
-        // Cursor: position after the header title text when focused.
-        if focused {
-            // title starts at (rect.x + 1, rect.y), cursor goes after query.
-            let cursor_x = rect.x + 1 + title.chars().count() as u16;
-            f.set_cursor_position((cursor_x, rect.y));
+        let has_content = self.entries.iter().any(|e| !matches!(e, FileListEntry::Up { .. }));
+        if self.loading && !has_content {
+            let loading = Paragraph::new("Loading…")
+                .style(Style::default().fg(Color::DarkGray))
+                .block(make_block());
+            f.render_widget(loading, rect);
+        } else {
+            let list = List::new(items)
+                .block(make_block())
+                .highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+            f.render_stateful_widget(list, rect, &mut self.list_state);
         }
+
     }
 }
