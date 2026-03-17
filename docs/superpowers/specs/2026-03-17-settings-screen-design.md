@@ -111,9 +111,13 @@ They live under a new `tui/src/components/settings/` submodule with a `mod.rs`.
 
 **File:** `tui/src/components/settings/theme_picker.rs`
 
-Renders the full list from a `Vec<Theme>` passed at construction time (`ThemePicker::new(themes: Vec<Theme>, active_name: &str)`). Up/Down moves `ListState` selection. Enter or immediate highlight changes the internal selected index.
+Renders the full list from a `Vec<Theme>` passed at construction time (`ThemePicker::new(themes: Vec<Theme>, active_name: &str)`). Up/Down moves `ListState` selection — **no Enter required**. The highlighted theme is applied as a live preview on every Up/Down keystroke.
 
-**Ownership model:** `ThemePicker` does NOT hold a reference to `AppSettings`. Instead, `ThemePicker` exposes a `pub fn selected_theme_name(&self) -> &str` method. After every `handle_event` call on `ThemePicker`, `SettingsScreen` reads `theme_picker.selected_theme_name()` and calls `self.settings.set_theme(name.to_string())` (use the public method, not direct field assignment). Then update `self.theme = self.settings.get_theme()` for live preview. This is the same "parent reads child state" pattern used in `EditorScreen` (which reads sidebar selection state to navigate).
+**Live preview:** After every `handle_event` call on `ThemePicker`, `SettingsScreen` reads `theme_picker.selected_theme_name()` and immediately calls `self.settings.set_theme(name.to_string())` then `self.theme = self.settings.get_theme()`. Because `self.theme` is passed to every sub-component's `render` call, the entire settings screen re-renders with the new colors on the next draw cycle — borders, text, highlights, all change in real time as the user moves through the list.
+
+**Change detection:** `self.settings.theme` is mutated on every navigation step. If the user browses back to the original theme name, `settings == initial_settings` will be `true` again and Esc will close without a dialog. If they land on a different theme, the ConfirmSave dialog appears as normal.
+
+**`ThemePicker` does NOT hold a reference to `AppSettings`.** It exposes `pub fn selected_theme_name(&self) -> &str`. The parent (`SettingsScreen`) owns all settings mutations — same "parent reads child state" pattern as `EditorScreen`. Use `self.settings.set_theme()`, not direct field assignment.
 
 ```
 ┌─ Theme ──────────────────────────────────────────────┐
