@@ -42,9 +42,9 @@ Component-based, matching the existing `EditorScreen` + `SidebarComponent` + `Te
 
 ```rust
 pub struct SettingsScreen {
-    settings: AppSettings,         // mutable local clone
-    section: SettingsSection,      // currently highlighted sidebar item
-    focus: SettingsFocus,          // Sidebar | Content
+    settings: AppSettings,           // mutable local clone
+    section: SettingsSection,        // currently highlighted sidebar item
+    focus: SettingsFocus,            // Sidebar | Content
     theme_picker: ThemePicker,
     vault_section: VaultSection,
     indexing_section: IndexingSection,
@@ -56,26 +56,36 @@ enum SettingsFocus { Sidebar, Content }
 ```
 
 **Construction:** `SettingsScreen::new(settings: AppSettings)` — receives a clone of `App::settings`.
+`App::settings` is `Send` (`AppSettings` derives no non-Send types: `Vec<VaultPath>`, `Option<PathBuf>`, `String`, `KeyBindings` are all Send-safe).
 
-**Esc behavior:** calls `settings.save_to_disk()` and sends `AppMessage::SettingsSaved(settings)`. The main loop updates `App::settings` and navigates back (sends `OpenPath` with last path, same as `StartScreen`).
+**Three call sites** must be updated when the constructor signature changes:
+1. `main.rs` line 80: `SettingsScreen::new()` → `SettingsScreen::new(app.settings.clone())`
+2. `app_screen/mod.rs` test at line 43: add `AppSettings::default()` argument
+3. `app_screen/mod.rs` test at line 50: add `AppSettings::default()` argument
 
-**Event routing:** When `focus == Content`, key events are forwarded to the active section component. When `focus == Sidebar`, Up/Down change the selected section, Tab moves focus to the content panel.
+**Esc behavior:** calls `settings.save_to_disk()` and sends `AppMessage::SettingsSaved(settings)`. The main loop updates `App::settings` and navigates back by sending `OpenPath` with `last_paths.last()` or `VaultPath::root()` (this method already exists — used in `start.rs` and `editor.rs`).
+
+**Event routing:** When `focus == Content`, key events are forwarded to the active section component. When `focus == Sidebar`, Up/Down change the selected section; Tab moves focus to the content panel.
+
+**After forwarding to a sub-component**, `SettingsScreen` reads back any state changes (see ThemePicker and IndexingSection sections below) and syncs them into `self.settings`.
 
 ---
 
 ## Sub-Components
 
-All three components implement the `Component` trait:
-`fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState`
-`fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool)`
+All three implement the `Component` trait:
+- `fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState`
+- `fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool)`
 
-They live under a new `tui/src/components/settings/` submodule.
+They live under a new `tui/src/components/settings/` submodule with a `mod.rs`.
 
 ### `ThemePicker`
 
 **File:** `tui/src/components/settings/theme_picker.rs`
 
-Renders the full list from `AppSettings::theme_list()`. The currently active theme is highlighted. Up/Down moves selection; each move immediately updates `settings.theme`. No async work.
+Renders the full list from a `Vec<Theme>` passed at construction time (`ThemePicker::new(themes: Vec<Theme>, active_name: &str)`). Up/Down moves `ListState` selection. Enter or immediate highlight changes the internal selected index.
+
+**Ownership model:** `ThemePicker` does NOT hold a reference to `AppSettings`. Instead, `ThemePicker` exposes a `pub fn selected_theme_name(&self) -> &str` method. After every `handle_event` call on `ThemePicker`, `SettingsScreen` reads `theme_picker.selected_theme_name()` and writes it into `self.settings.theme`. This is the same "parent reads child state" pattern used in `EditorScreen` (which reads sidebar selection state to navigate).
 
 ```
 ┌─ Theme ──────────────────────────────────────────────┐
@@ -87,13 +97,15 @@ Renders the full list from `AppSettings::theme_list()`. The currently active the
 └──────────────────────────────────────────────────────┘
 ```
 
-**State:** `list_state: ListState`, `themes: Vec<Theme>` (loaded once on construction).
+**State:** `list_state: ListState`, `themes: Vec<Theme>` (loaded once at construction).
 
 ### `VaultSection`
 
 **File:** `tui/src/components/settings/vault_section.rs`
 
-Displays the current vault path (or `(no vault set)` if `None`). Enter or `b` triggers the file browser overlay (handled by `SettingsScreen`, not this component — it sends an internal signal via `EventState` or a dedicated `AppMessage`).
+Displays the current vault path. Enter or `b` sends `AppMessage::OpenFileBrowser` via `tx`. `SettingsScreen::handle_app_message` intercepts this message (returns `None`) and sets `self.overlay = Overlay::FileBrowser(...)`.
+
+**Ownership model:** `VaultSection` stores its own `current_path: Option<PathBuf>` copy. `SettingsScreen` calls `vault_section.set_path(Option<PathBuf>)` whenever `settings.workspace_dir` changes (on file browser confirm) before the next render.
 
 ```
 ┌─ Vault Path ─────────────────────────────────────────┐
@@ -103,13 +115,15 @@ Displays the current vault path (or `(no vault set)` if `None`). Enter or `b` tr
 └──────────────────────────────────────────────────────┘
 ```
 
-**State:** holds a reference to the current `Option<PathBuf>` (passed in at render time from `SettingsScreen`).
-
 ### `IndexingSection`
 
 **File:** `tui/src/components/settings/indexing_section.rs`
 
-Two navigable actions: `[Fast Reindex]` and `[Full Reindex]`. Left/Right or `h`/`l` moves between them. Both are greyed out and non-interactive if `settings.workspace_dir` is `None`. Enter on Fast starts indexing immediately. Enter on Full triggers the confirmation overlay.
+Two navigable actions: `[Fast Reindex]` and `[Full Reindex]`. Left/Right or `h`/`l` cycles between them. Disabled (greyed, no interaction) when `vault_available == false` (a bool passed to `IndexingSection::new` and updatable via `set_vault_available(bool)`).
+
+On Enter: sends `AppMessage::TriggerFastReindex` or `AppMessage::TriggerFullReindex` via `tx`. `SettingsScreen::handle_app_message` intercepts these and acts:
+- `TriggerFastReindex` → sets `overlay = Overlay::IndexingProgress(Running(...))`, spawns task
+- `TriggerFullReindex` → sets `overlay = Overlay::ConfirmFullReindex`
 
 ```
 ┌─ Reindex ────────────────────────────────────────────┐
@@ -121,7 +135,7 @@ Two navigable actions: `[Fast Reindex]` and `[Full Reindex]`. Left/Right or `h`/
 └──────────────────────────────────────────────────────┘
 ```
 
-**State:** `selected: IndexAction` (`Fast | Full`).
+**State:** `selected: IndexAction` (`Fast | Full`), `vault_available: bool`.
 
 ---
 
@@ -133,25 +147,27 @@ Managed as an enum on `SettingsScreen`. Only one overlay is active at a time.
 enum Overlay {
     None,
     FileBrowser(FileBrowserState),
-    ConfirmFullReindex,
+    ConfirmFullReindex { focused_button: ConfirmButton },  // Cancel | Confirm
     IndexingProgress(IndexingProgressState),
 }
+
+enum ConfirmButton { Cancel, Confirm }
 ```
 
 ### File Browser Overlay
 
-A centered popup drawn on top of the settings screen. Shows directories only (files are greyed out). Navigation:
+A centered popup drawn on top of the settings screen. Shows directories only (files are skipped). Navigation:
 
 - Up/Down — move selection
-- Right or Enter — enter selected directory
+- Right or Enter on a directory row — navigate into it (calls `fs::read_dir` synchronously — fast for local FS, acceptable blocking for a TUI)
 - Left — go up one level
-- Enter on current directory header — confirm and set vault path
+- Enter on the current-directory header line — **confirm** and set vault path, close overlay
 - Esc — cancel, discard changes
 
 ```
 ┌──────────────────────────────────────────────────┐
 │  Select Vault Directory                          │
-│  /Users/me/                                      │
+│  /Users/me/                         [Enter: ✓]  │
 ├──────────────────────────────────────────────────┤
 │  ▶ notes/                                        │
 │    projects/                                     │
@@ -161,19 +177,23 @@ A centered popup drawn on top of the settings screen. Shows directories only (fi
 └──────────────────────────────────────────────────┘
 ```
 
-**Starting directory:** current `workspace_dir` if set, otherwise `$HOME`.
+**Starting directory:** `settings.workspace_dir` if `Some`, otherwise `$HOME` (via `std::env::var("HOME")`; fallback to `/`).
 
 ```rust
 struct FileBrowserState {
     current_path: PathBuf,
-    entries: Vec<PathBuf>,       // directories only, sorted
+    entries: Vec<PathBuf>,       // directories only, sorted alphabetically
     list_state: ListState,
 }
 ```
 
+`FileBrowserState::load(path: PathBuf)` reads the directory with `std::fs::read_dir`, filters to directories only, sorts alphabetically, and returns the state. Called synchronously — directory listing on local FS is fast enough for interactive navigation.
+
+On confirm: `SettingsScreen` calls `self.settings.set_workspace(&chosen_path)`, calls `vault_section.set_path(Some(chosen_path))`, calls `indexing_section.set_vault_available(true)`.
+
 ### Full Reindex Confirmation Overlay
 
-Simple two-button dialog. Left/Right selects Cancel or Confirm. Enter activates, Esc cancels.
+Simple two-button dialog. Left/Right selects Cancel or Confirm. Enter activates; Esc cancels (returns to `Overlay::None`).
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -187,7 +207,13 @@ Simple two-button dialog. Left/Right selects Cancel or Confirm. Enter activates,
 
 ### Indexing Progress Overlay
 
-Uses `throbber-widgets-tui` crate (added to `Cargo.toml`). The indexing task runs as a `tokio::spawn` from `SettingsScreen`. The task sends `AppMessage::IndexingDone(Result<Duration, String>)` when finished and sends periodic `AppMessage::Redraw` (~100ms interval) so the throbber animates.
+Uses `throbber-widgets-tui` (version `"0.10"`, compatible with ratatui 0.29+/0.30; verified against ATAC project usage). Added to `tui/Cargo.toml`.
+
+The indexing task is spawned from `SettingsScreen::handle_app_message` (which is `async`). `tokio::spawn` requires a `'static` future, so `tx` (a `&AppTx` reference) **must be cloned** before the spawn: `let tx = tx.clone();`. The owned `tx` is then moved into the closure. The task:
+1. Constructs `NoteVault::new(workspace_dir).await.map_err(|e| e.to_string())` — `VaultError` is not `Send` (it wraps `sqlx::Error`), so the error **must** be converted to `String` immediately at this call site. Do not use `?` with `VaultError` inside `tokio::spawn` — the future will not satisfy the `Send` bound.
+2. Calls the appropriate indexing method; similarly converts `VaultError` to `String` via `.map_err(|e| e.to_string())`
+3. Sends `AppMessage::IndexingDone(Ok(duration))` or `AppMessage::IndexingDone(Err(String))`
+4. Sends periodic `AppMessage::Redraw` (~100ms via `tokio::time::sleep`) so the throbber animates while running
 
 ```rust
 enum IndexingProgressState {
@@ -196,6 +222,12 @@ enum IndexingProgressState {
     Failed(String),
 }
 ```
+
+**Esc while Running:** Esc is blocked — the user must wait for the indexing task to complete. The UI shows the throbber with no dismiss option until `Done` or `Failed`.
+
+**On Done:** `SettingsScreen` calls `self.settings.report_indexed()`.
+
+**On dismiss (Enter or Esc on Done/Failed):** sets `overlay = Overlay::None`. The `JoinHandle` stored in `Running` is dropped when the state transitions away — since it has already completed by then, this is safe. If Esc were ever allowed during `Running`, the `JoinHandle` must be explicitly `.abort()`'ed first.
 
 ```
 Running:
@@ -219,26 +251,44 @@ Failed:
 └──────────────────────────────────────────────────┘
 ```
 
-On Done: calls `settings.report_indexed()`. Esc or Enter dismisses the overlay.
-
 ---
 
 ## AppMessage Changes
 
-Two new variants added to `AppMessage`:
+New variants added to `AppMessage`:
 
 ```rust
+// Sent by SettingsScreen on Esc. Main loop updates App::settings and navigates back.
 AppMessage::SettingsSaved(AppSettings)
-// Sent by SettingsScreen on Esc. Main loop updates App::settings
-// and navigates back (OpenPath with last_paths.last() or root).
 
-AppMessage::IndexingDone(Result<Duration, String>)
+// Sent by VaultSection component when user presses Enter/b to open the file browser.
+// SettingsScreen::handle_app_message intercepts this (returns None).
+AppMessage::OpenFileBrowser
+
+// Sent by IndexingSection when user activates Fast or Full.
+// SettingsScreen::handle_app_message intercepts both (returns None).
+AppMessage::TriggerFastReindex
+AppMessage::TriggerFullReindex
+
 // Sent by the indexing tokio task on completion.
-// Handled by SettingsScreen::handle_app_message to update overlay state.
+// SettingsScreen::handle_app_message intercepts this (returns None).
+AppMessage::IndexingDone(Result<Duration, String>)
 ```
 
-**Main loop handling of `SettingsSaved`:**
+All new variants contain only `Send`-safe types (`AppSettings`, `Duration`, `String` are all `Send`).
+
+**Main loop drain — complete updated match block** (the `while let Ok(msg) = rx.try_recv()` loop in `main.rs`):
+
 ```rust
+AppMessage::Quit => return Ok(()),
+AppMessage::Redraw => {}
+AppMessage::OpenSettings => {
+    let mut screen: Box<dyn AppScreen> = Box::new(SettingsScreen::new(app.settings.clone()));
+    screen.on_enter(&tx).await;
+    app.current_screen = Some(screen);
+}
+AppMessage::OpenEditor(vault, path) => { /* unchanged */ }
+AppMessage::OpenPath(path) => { /* unchanged */ }
 AppMessage::SettingsSaved(settings) => {
     app.settings = settings;
     let path = app.settings.last_paths.last()
@@ -246,31 +296,62 @@ AppMessage::SettingsSaved(settings) => {
         .unwrap_or_else(VaultPath::root);
     tx.send(AppMessage::OpenPath(path)).ok();
 }
+// All remaining variants are screen-internal: route to the active screen.
+// This arm MUST be last — it is a catch-all.
+// Covered variants: FocusEditor, FocusSidebar, OpenFileBrowser,
+//   TriggerFastReindex, TriggerFullReindex, IndexingDone.
+// Return value is discarded: these messages are scoped to the screen that
+// sent them. If the active screen returns Some (didn't handle it), the
+// message is intentionally dropped — acceptable for screen-internal signals.
+other => {
+    if let Some(screen) = app.current_screen.as_mut() {
+        screen.handle_app_message(other, &tx).await;
+    }
+}
 ```
+
+The existing explicit `FocusEditor | FocusSidebar` arm is **removed** — it is now covered by the `other` catch-all, which has identical behaviour for those variants.
 
 ---
 
 ## Data Flow
 
 ```
-User presses Esc
+User presses Esc (no overlay active)
   → SettingsScreen::handle_event
     → settings.save_to_disk()
     → tx.send(AppMessage::SettingsSaved(settings))
       → main loop updates App::settings
-      → main loop sends OpenPath(last_path)
+      → main loop sends OpenPath(last_path_or_root)
         → main loop creates EditorScreen with updated settings
 ```
 
 ```
-User triggers Fast Reindex
-  → IndexingSection::handle_event → EventState::Consumed (screen detects action)
-  → SettingsScreen sets overlay = IndexingProgress(Running(_))
-  → tokio::spawn(async { vault.index_notes(Fast).await; tx.send(IndexingDone(...)) })
-  → task sends Redraw every ~100ms
-  → SettingsScreen::handle_app_message receives IndexingDone
+User presses Enter on [Fast Reindex] (vault path set)
+  → IndexingSection::handle_event → tx.send(AppMessage::TriggerFastReindex)
+  → main loop routes to SettingsScreen::handle_app_message
+    → overlay = IndexingProgress(Running(handle))
+    → tokio::spawn:
+        NoteVault::new(workspace_dir).await
+        vault.index_notes(NotesValidation::Fast).await
+        loop { sleep(100ms); tx.send(Redraw) } until done
+        tx.send(AppMessage::IndexingDone(Ok(duration) | Err(msg)))
+  → main loop routes IndexingDone to SettingsScreen::handle_app_message
     → overlay = IndexingProgress(Done(duration) | Failed(msg))
     → settings.report_indexed() on success
+```
+
+```
+User presses Enter on vault path row (Browse)
+  → VaultSection::handle_event → tx.send(AppMessage::OpenFileBrowser)
+  → main loop routes to SettingsScreen::handle_app_message
+    → overlay = FileBrowser(FileBrowserState::load(starting_dir))
+  → User navigates, presses Enter to confirm
+    → SettingsScreen::handle_event (overlay active)
+      → settings.set_workspace(&chosen_path)
+      → vault_section.set_path(Some(chosen_path))
+      → indexing_section.set_vault_available(true)
+      → overlay = Overlay::None
 ```
 
 ---
@@ -280,7 +361,7 @@ User triggers Fast Reindex
 ```
 tui/src/
   app_screen/
-    settings.rs              ← SettingsScreen (replace placeholder)
+    settings.rs              ← SettingsScreen (full implementation)
   components/
     settings/
       mod.rs                 ← pub mod theme_picker; vault_section; indexing_section;
@@ -289,14 +370,18 @@ tui/src/
       indexing_section.rs
 ```
 
+`tui/src/components/mod.rs` gets `pub mod settings;`.
+
 ---
 
 ## Dependencies
 
 Add to `tui/Cargo.toml`:
 ```toml
-throbber-widgets-tui = "0.7"
+throbber-widgets-tui = "0.10"
 ```
+
+Version 0.10 is compatible with ratatui 0.29+/0.30 (verified via ATAC project which uses the same dependency combination).
 
 ---
 
@@ -304,12 +389,14 @@ throbber-widgets-tui = "0.7"
 
 All tests are `#[cfg(test)]` inline modules.
 
-| Component | Tests |
-|-----------|-------|
-| `ThemePicker` | Selection updates on Up/Down; wraps around; renders without panic |
-| `VaultSection` | Renders `(no vault set)` when `None`; renders path when `Some` |
-| `IndexingSection` | Actions disabled when no vault; Left/Right cycles selection |
-| `FileBrowserState` | Loads only directories; Enter navigates in; Left goes up |
-| Overlay state machine | `ConfirmFullReindex` Esc → `None`; `IndexingDone(Ok)` → `Done`; `IndexingDone(Err)` → `Failed` |
+| Component / Unit | Tests |
+|-----------------|-------|
+| `ThemePicker` | `selected_theme_name()` returns initial theme; Up/Down changes selection and wraps; renders without panic (`TestBackend`) |
+| `VaultSection` | Renders `(no vault set)` when path is `None`; renders path string when `Some` |
+| `IndexingSection` | `handle_event` returns `NotConsumed` when `vault_available == false`; Left/Right cycles `Fast ↔ Full`; Enter sends correct `AppMessage` |
+| `FileBrowserState::load` | Returns only directories; sorted alphabetically; handles empty directory |
+| `FileBrowserState` navigation | Navigate-into updates `current_path` and reloads entries; go-up updates path to parent |
+| Overlay state machine | `ConfirmFullReindex` + Esc → `Overlay::None`; `IndexingDone(Ok)` → `Done` + `report_indexed()` called; `IndexingDone(Err)` → `Failed`; Esc blocked while `Running` |
+| `app_screen::tests` | Update two existing tests to call `SettingsScreen::new(AppSettings::default())` |
 
 We do not test `NoteVault::index_notes` / `recreate_index` — those are covered by core library tests.
