@@ -21,5 +21,5 @@ pub trait Component {
         EventState::NotConsumed
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme);
+    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool);
 }

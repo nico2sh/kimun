@@ -140,7 +140,7 @@ where
                         _ => continue,
                     };
                     if let Some(screen) = &mut app.current_screen {
-                        screen.handle_event(app_event, &tx);
+                        screen.handle_event(&app_event, &tx);
                     }
                 }
             }

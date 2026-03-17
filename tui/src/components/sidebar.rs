@@ -19,7 +19,6 @@ use crate::components::file_list::{FileListComponent, FileListEntry};
 use crate::keys::KeyBindings;
 
 pub struct SidebarComponent {
-    pub focused: bool,
     current_dir: VaultPath,
     pub file_list: FileListComponent,
     pending_rx: Option<Receiver<SearchResult>>,
@@ -29,7 +28,6 @@ pub struct SidebarComponent {
 impl SidebarComponent {
     pub fn new(key_bindings: KeyBindings, vault: Arc<NoteVault>) -> Self {
         Self {
-            focused: false,
             current_dir: VaultPath::root(),
             file_list: FileListComponent::new(key_bindings),
             pending_rx: None,
@@ -91,7 +89,7 @@ impl Component for SidebarComponent {
         self.file_list.handle_event(event, tx)
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
+    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.poll_loading();
 
         let rows = Layout::default()
@@ -99,7 +97,7 @@ impl Component for SidebarComponent {
             .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)])
             .split(rect);
 
-        let border_style = theme.border_style(self.focused);
+        let border_style = theme.border_style(focused);
 
         let header = Block::default()
             .title(self.current_dir.to_string())
@@ -120,11 +118,11 @@ impl Component for SidebarComponent {
         );
 
         // Cursor at end of search query when focused.
-        if self.focused {
+        if focused {
             let cursor_x = search_inner.x + self.file_list.search_query.chars().count() as u16;
             f.set_cursor_position((cursor_x, search_inner.y));
         }
 
-        self.file_list.render(f, rows[2], theme, self.focused);
+        self.file_list.render(f, rows[2], theme, focused);
     }
 }

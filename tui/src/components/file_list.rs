@@ -11,6 +11,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
+use crate::components::Component;
 use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
@@ -457,8 +458,8 @@ impl FileListComponent {
     }
 }
 
-impl FileListComponent {
-    pub fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
+impl Component for FileListComponent {
+    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
         match event {
             AppEvent::Key(key) => {
                 // Check keybindings first for action shortcuts.
@@ -574,7 +575,7 @@ impl FileListComponent {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.poll_filter();
         self.rendered_rect = rect;
         let title = self.header_title();
@@ -694,9 +695,8 @@ mod tests {
 
     #[test]
     fn render_accepts_focused_parameter() {
-        // Verifies the new API: render(f, rect, theme, focused: bool).
-        // Before fix: render takes 3 args → compile error (RED).
-        // After fix: compiles and passes (GREEN).
+        // Verifies the new API: render(f, rect, theme, focused: bool) via Component trait.
+        use crate::components::Component;
         use ratatui::{Terminal, backend::TestBackend};
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -704,6 +704,15 @@ mod tests {
         terminal.draw(|f| {
             list.render(f, f.area(), &crate::settings::themes::Theme::default(), false);
         }).unwrap();
+    }
+
+    #[test]
+    fn file_list_implements_component_trait() {
+        // RED: fails to compile until FileListComponent implements Component.
+        // GREEN: compiles once `impl Component for FileListComponent` is added.
+        use crate::components::Component;
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        let _: &mut dyn Component = &mut list;
     }
 
     #[test]
