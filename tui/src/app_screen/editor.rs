@@ -39,10 +39,10 @@ impl EditorScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: AppSettings) -> Self {
         let kb = settings.key_bindings.clone();
         Self {
-            vault,
             settings,
             editor: TextEditorComponent::new(kb.clone()),
-            sidebar: SidebarComponent::new(kb),
+            sidebar: SidebarComponent::new(kb, vault.clone()),
+            vault,
             path,
             focus: Focus::Editor,
             sidebar_visible: true,

@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-use kimun_core::ResultType;
+use chrono::NaiveDate;
+use kimun_core::{NoteVault, ResultType};
 use kimun_core::nfs::VaultPath;
 use kimun_core::SearchResult;
 use ratatui::Frame;
@@ -20,15 +22,17 @@ pub struct SidebarComponent {
     current_dir: VaultPath,
     pub file_list: FileListComponent,
     pending_rx: Option<Receiver<SearchResult>>,
+    vault: Arc<NoteVault>,
 }
 
 impl SidebarComponent {
-    pub fn new(key_bindings: KeyBindings) -> Self {
+    pub fn new(key_bindings: KeyBindings, vault: Arc<NoteVault>) -> Self {
         Self {
             focused: false,
             current_dir: VaultPath::root(),
             file_list: FileListComponent::new(key_bindings),
             pending_rx: None,
+            vault,
         }
     }
 
@@ -59,7 +63,9 @@ impl SidebarComponent {
                     {
                         continue;
                     }
-                    self.file_list.push_entry(FileListEntry::from_result(result));
+                    let journal_date = self.vault.journal_date(&result.path)
+                        .map(format_journal_date);
+                    self.file_list.push_entry(FileListEntry::from_result(result, journal_date));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -70,6 +76,12 @@ impl SidebarComponent {
             }
         }
     }
+}
+
+/// Format a `NaiveDate` as a human-readable string with day-of-week.
+/// Example: "Wednesday, March 17, 2026"
+fn format_journal_date(date: NaiveDate) -> String {
+    date.format("%A, %B %-d, %Y").to_string()
 }
 
 impl Component for SidebarComponent {
