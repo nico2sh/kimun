@@ -110,9 +110,9 @@ where
                         }
                     }
                 }
-                AppMessage::FocusEditor | AppMessage::FocusSidebar => {
+                other => {
                     if let Some(screen) = app.current_screen.as_mut() {
-                        screen.handle_app_message(msg, &tx).await;
+                        screen.handle_app_message(other, &tx).await;
                     }
                 }
             }
