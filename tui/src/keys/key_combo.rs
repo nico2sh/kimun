@@ -17,8 +17,11 @@ impl Display for KeyCombo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let modif = self.modifiers.to_string();
         let key = self.key.to_string();
-
-        write!(f, "{}", [modif, key].join(" & "))
+        if modif.is_empty() {
+            write!(f, "{}", key)
+        } else {
+            write!(f, "{} & {}", modif, key)
+        }
     }
 }
 
@@ -133,6 +136,7 @@ impl TryFrom<String> for KeyModifiers {
         let mut modifiers = KeyModifiers::default();
         for modif in splits {
             match modif {
+                "" => {}
                 CONTROL => modifiers.with_ctrl(),
                 SHIFT => modifiers.with_shift(),
                 ALT => modifiers.with_alt(),
@@ -339,5 +343,26 @@ mod tests {
         assert!(!kc.modifiers.ctrl);
         assert!(!kc.modifiers.alt);
         assert_eq!(kc.key, KeyStrike::KeyL);
+    }
+
+    #[test]
+    fn roundtrip_keycombo_no_modifier() {
+        // A combo with no modifiers must serialize without " & " prefix
+        // and deserialize back correctly.
+        let kc = KeyCombo::new(KeyModifiers::default(), KeyStrike::Tab);
+        let serialized = kc.to_string();
+        assert_eq!(serialized, "<Tab>");
+
+        let parsed = KeyCombo::try_from(serialized).unwrap();
+        assert_eq!(parsed, kc);
+    }
+
+    #[test]
+    fn deserialize_legacy_no_modifier_with_ampersand() {
+        // Old config files wrote " & <Tab>" for no-modifier Tab — must still parse.
+        let kc = KeyCombo::try_from(" & <Tab>".to_string()).unwrap();
+        assert!(!kc.modifiers.is_ctrl());
+        assert!(!kc.modifiers.is_shift());
+        assert_eq!(kc.key, KeyStrike::Tab);
     }
 }
