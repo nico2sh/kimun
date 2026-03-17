@@ -66,17 +66,34 @@ pub enum ConfirmButton { Cancel, Confirm }
 pub enum SaveButton { Save, Discard }
 
 pub enum IndexingProgressState {
-    Running(tokio::task::JoinHandle<()>),
+    Running {
+        work: tokio::task::JoinHandle<()>,
+        ticker: tokio::task::JoinHandle<()>,
+    },
     Done(Duration),
     Failed(String),
 }
 
 impl Drop for IndexingProgressState {
     fn drop(&mut self) {
-        if let Self::Running(handle) = self {
-            handle.abort();
+        if let Self::Running { work, ticker } = self {
+            work.abort();
+            ticker.abort();
         }
     }
+}
+
+fn spawn_running(work: tokio::task::JoinHandle<()>, tx: &AppTx) -> IndexingProgressState {
+    let tx2 = tx.clone();
+    let ticker = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if tx2.send(AppMessage::Redraw).is_err() {
+                break;
+            }
+        }
+    });
+    IndexingProgressState::Running { work, ticker }
 }
 
 pub enum Overlay {
@@ -152,7 +169,7 @@ impl SettingsScreen {
                 }.await;
                 tx2.send(AppMessage::IndexingDone(result)).ok();
             });
-            self.overlay = Overlay::IndexingProgress(IndexingProgressState::Running(handle));
+            self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
         } else {
             self.settings.save_to_disk().ok();
             let settings = self.settings.clone();
@@ -246,7 +263,7 @@ impl AppScreen for SettingsScreen {
                                 }.await;
                                 tx2.send(AppMessage::IndexingDone(result)).ok();
                             });
-                            self.overlay = Overlay::IndexingProgress(IndexingProgressState::Running(handle));
+                            self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
                         } else {
                             self.overlay = Overlay::None;
                         }
@@ -281,7 +298,7 @@ impl AppScreen for SettingsScreen {
 
             Overlay::IndexingProgress(state) => {
                 match state {
-                    IndexingProgressState::Running(_) => {
+                    IndexingProgressState::Running { .. } => {
                         return EventState::Consumed; // block all input while running
                     }
                     IndexingProgressState::Done(_) | IndexingProgressState::Failed(_) => {
@@ -380,7 +397,7 @@ impl AppScreen for SettingsScreen {
                     }.await;
                     tx2.send(AppMessage::IndexingDone(result)).ok();
                 });
-                self.overlay = Overlay::IndexingProgress(IndexingProgressState::Running(handle));
+                self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
                 None
             }
             AppMessage::TriggerFullReindex => {
@@ -495,7 +512,7 @@ impl SettingsScreen {
             }
 
             Overlay::ConfirmFullReindex { focused_button } => {
-                let area = centered_rect(50, 30, f.area());
+                let area = fixed_centered_rect(44, 6, f.area());
                 f.render_widget(Clear, area);
                 let block = Block::default()
                     .title("Full Reindex")
@@ -509,7 +526,7 @@ impl SettingsScreen {
             }
 
             Overlay::ConfirmSave { focused_button } => {
-                let area = centered_rect(50, 30, f.area());
+                let area = fixed_centered_rect(44, 6, f.area());
                 f.render_widget(Clear, area);
                 let block = Block::default()
                     .title("Save Settings?")
@@ -523,7 +540,7 @@ impl SettingsScreen {
             }
 
             Overlay::IndexingProgress(state) => {
-                let area = centered_rect(50, 20, f.area());
+                let area = fixed_centered_rect(44, 5, f.area());
                 f.render_widget(Clear, area);
                 let block = Block::default()
                     .title("Indexing")
@@ -532,7 +549,7 @@ impl SettingsScreen {
                 let inner = block.inner(area);
                 f.render_widget(block, area);
                 match state {
-                    IndexingProgressState::Running(_) => {
+                    IndexingProgressState::Running { .. } => {
                         self.throbber_state.calc_next();
                         let throbber = Throbber::default().label("  Reindex in progress…");
                         f.render_stateful_widget(throbber, inner, &mut self.throbber_state);
@@ -547,6 +564,12 @@ impl SettingsScreen {
             }
         }
     }
+}
+
+fn fixed_centered_rect(width: u16, height: u16, r: Rect) -> Rect {
+    let x = r.x + (r.width.saturating_sub(width)) / 2;
+    let y = r.y + (r.height.saturating_sub(height)) / 2;
+    Rect { x, y, width: width.min(r.width), height: height.min(r.height) }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -708,7 +731,7 @@ mod settings_screen_tests {
         screen.overlay = Overlay::ConfirmSave { focused_button: SaveButton::Save };
         screen.handle_event(&key(KeyCode::Enter), &tx);
         assert!(screen.pending_save_after_index);
-        assert!(matches!(screen.overlay, Overlay::IndexingProgress(IndexingProgressState::Running(_))));
+        assert!(matches!(screen.overlay, Overlay::IndexingProgress(IndexingProgressState::Running { .. })));
     }
 
     #[tokio::test]
@@ -716,7 +739,7 @@ mod settings_screen_tests {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
         screen.pending_save_after_index = true;
-        screen.overlay = Overlay::IndexingProgress(IndexingProgressState::Running(tokio::spawn(async {})));
+        screen.overlay = Overlay::IndexingProgress(IndexingProgressState::Running { work: tokio::spawn(async {}), ticker: tokio::spawn(async {}) });
         screen.handle_app_message(AppMessage::IndexingDone(Ok(Duration::from_secs(1))), &tx).await;
         let msg = rx.try_recv().expect("expected SettingsSaved");
         assert!(matches!(msg, AppMessage::SettingsSaved(_)));
@@ -728,7 +751,7 @@ mod settings_screen_tests {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
         screen.pending_save_after_index = true;
-        screen.overlay = Overlay::IndexingProgress(IndexingProgressState::Running(tokio::spawn(async {})));
+        screen.overlay = Overlay::IndexingProgress(IndexingProgressState::Running { work: tokio::spawn(async {}), ticker: tokio::spawn(async {}) });
         screen.handle_app_message(AppMessage::IndexingDone(Err("disk error".to_string())), &tx).await;
         assert!(rx.try_recv().is_err(), "no SettingsSaved when index failed");
         assert!(!screen.pending_save_after_index);
@@ -740,7 +763,7 @@ mod settings_screen_tests {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
         screen.pending_save_after_index = false;
-        screen.overlay = Overlay::IndexingProgress(IndexingProgressState::Running(tokio::spawn(async {})));
+        screen.overlay = Overlay::IndexingProgress(IndexingProgressState::Running { work: tokio::spawn(async {}), ticker: tokio::spawn(async {}) });
         screen.handle_app_message(AppMessage::IndexingDone(Ok(Duration::from_secs(2))), &tx).await;
         assert!(rx.try_recv().is_err(), "no auto-close when pending is false");
         assert!(matches!(screen.overlay, Overlay::IndexingProgress(IndexingProgressState::Done(_))));
@@ -751,9 +774,10 @@ mod settings_screen_tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
-        screen.overlay = Overlay::IndexingProgress(IndexingProgressState::Running(
-            rt.spawn(async {}),
-        ));
+        screen.overlay = Overlay::IndexingProgress(IndexingProgressState::Running {
+            work: rt.spawn(async {}),
+            ticker: rt.spawn(async {}),
+        });
         screen.handle_event(&key(KeyCode::Esc), &tx);
         assert!(rx.try_recv().is_err(), "Esc must be blocked while indexing");
     }
