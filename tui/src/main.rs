@@ -5,7 +5,17 @@ pub mod keys;
 pub mod settings;
 pub mod ui;
 
+use clap::Parser;
 use color_eyre::Result;
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "kimun", about = "Kimün notes")]
+struct Cli {
+    /// Path to a custom config file
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+}
 use crossterm::event::{
     DisableMouseCapture, Event, EventStream, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -32,6 +42,7 @@ use crate::keys::key_event_to_combo;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
     color_eyre::install()?;
     #[cfg(debug_assertions)]
     {
@@ -54,7 +65,7 @@ async fn main() -> Result<()> {
     );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::new().await?;
+    let mut app = App::new(cli.config).await?;
     run_app(&mut terminal, &mut app).await?;
     disable_raw_mode()?;
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);

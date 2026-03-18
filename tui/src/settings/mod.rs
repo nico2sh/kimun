@@ -41,6 +41,10 @@ pub struct AppSettings {
     pub key_bindings: KeyBindings,
     #[serde(default = "default_autosave_interval")]
     pub autosave_interval_secs: u64,
+    /// Custom config file path. `None` means use the default location.
+    /// Not serialized — it's a runtime-only override.
+    #[serde(skip)]
+    pub config_file: Option<PathBuf>,
 }
 
 #[cfg(target_os = "macos")]
@@ -133,6 +137,7 @@ impl Default for AppSettings {
             needs_indexing: true,
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
+            config_file: None,
         }
     }
 }
@@ -159,9 +164,17 @@ impl AppSettings {
         list
     }
 
-    fn get_config_file_path() -> eyre::Result<PathBuf> {
+    fn default_config_file_path() -> eyre::Result<PathBuf> {
         let config_home = get_or_create_config_dir(CONFIG_DIR)?;
         Ok(config_home.join(BASE_CONFIG_FILE))
+    }
+
+    fn get_config_file_path(&self) -> eyre::Result<PathBuf> {
+        if let Some(ref path) = self.config_file {
+            Ok(path.clone())
+        } else {
+            Self::default_config_file_path()
+        }
     }
 
     fn get_themes_path() -> eyre::Result<PathBuf> {
@@ -237,7 +250,7 @@ impl AppSettings {
 
     pub fn save_to_disk(&self) -> eyre::Result<()> {
         log::debug!("Saving settings to disk");
-        let settings_file_path = Self::get_config_file_path()?;
+        let settings_file_path = self.get_config_file_path()?;
         let mut file = File::create(settings_file_path)?;
         let toml = toml::to_string(&self)?;
         file.write_all(toml.as_bytes())?;
@@ -245,7 +258,7 @@ impl AppSettings {
     }
 
     pub fn load_from_disk() -> eyre::Result<Self> {
-        let settings_file_path = Self::get_config_file_path()?;
+        let settings_file_path = Self::default_config_file_path()?;
 
         if !settings_file_path.exists() {
             let default_settings = Self::default();
@@ -275,6 +288,40 @@ impl AppSettings {
                     defaults.save_to_disk()?;
                     Ok(defaults)
                 }
+            }
+        }
+    }
+
+    pub fn load_from_file(path: PathBuf) -> eyre::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if !path.exists() {
+            let mut default_settings = Self::default();
+            default_settings.config_file = Some(path);
+            default_settings.save_to_disk()?;
+            return Ok(default_settings);
+        }
+        let mut toml_str = String::new();
+        File::open(&path)?.read_to_string(&mut toml_str)?;
+        match toml::from_str::<AppSettings>(&toml_str) {
+            Ok(mut setting) => {
+                setting.config_file = Some(path);
+                setting.merge_missing_default_bindings();
+                Ok(setting)
+            }
+            Err(e) => {
+                log::warn!(
+                    "Config file at {:?} could not be parsed ({}). \
+                     Renaming to .corrupt and starting with defaults.",
+                    path, e
+                );
+                let corrupt_path = path.with_extension("toml.corrupt");
+                let _ = fs::rename(&path, &corrupt_path);
+                let mut defaults = Self::default();
+                defaults.config_file = Some(path);
+                defaults.save_to_disk()?;
+                Ok(defaults)
             }
         }
     }
