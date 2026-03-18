@@ -169,11 +169,16 @@ impl AppScreen for EditorScreen {
     fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
         if let AppEvent::Key(key) = event {
             if let Some(combo) = key_event_to_combo(key) {
-                if let Some(ActionShortcuts::ToggleSidebar) =
-                    self.settings.key_bindings.get_action(&combo)
-                {
-                    self.toggle_sidebar();
-                    return EventState::Consumed;
+                match self.settings.key_bindings.get_action(&combo) {
+                    Some(ActionShortcuts::ToggleSidebar) => {
+                        self.toggle_sidebar();
+                        return EventState::Consumed;
+                    }
+                    Some(ActionShortcuts::NewJournal) => {
+                        tx.send(AppMessage::OpenJournal).ok();
+                        return EventState::Consumed;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -280,6 +285,12 @@ impl AppScreen for EditorScreen {
             }
             AppMessage::FocusSidebar => {
                 self.focus_sidebar();
+                None
+            }
+            AppMessage::OpenJournal => {
+                if let Ok((details, _)) = self.vault.journal_entry().await {
+                    self.open_path(details.path, tx).await;
+                }
                 None
             }
             other => Some(other),

@@ -33,6 +33,8 @@ pub enum AppMessage {
     TriggerFullReindex,
     /// Sent by indexing tokio task on completion.
     IndexingDone(Result<Duration, String>),
+    /// Open (or create) today's journal entry and switch to it in the editor.
+    OpenJournal,
 }
 
 /// Convenience alias used throughout the codebase.
