@@ -98,7 +98,7 @@ where
                     switch_screen(app, &tx, Box::new(SettingsScreen::new(app.settings.clone()))).await;
                 }
                 AppMessage::OpenEditor(vault, path) => {
-                    switch_screen(app, &tx, Box::new(EditorScreen::new(Arc::new(vault), path, app.settings.clone()))).await;
+                    switch_screen(app, &tx, Box::new(EditorScreen::new(vault, path, app.settings.clone()))).await;
                 }
                 AppMessage::OpenBrowse(vault, path) => {
                     switch_screen(app, &tx, Box::new(BrowseScreen::new(vault, path, app.settings.clone()))).await;
@@ -114,10 +114,11 @@ where
                     if let Some(AppMessage::OpenPath(path)) = unhandled {
                         if let Some(vault_path) = &app.settings.workspace_dir {
                             let vault = NoteVault::new(vault_path).await.map_err(io::Error::other)?;
+                            let vault = Arc::new(vault);
                             if path.is_note() {
                                 tx.send(AppMessage::OpenEditor(vault, path)).ok();
                             } else {
-                                tx.send(AppMessage::OpenBrowse(Arc::new(vault), path)).ok();
+                                tx.send(AppMessage::OpenBrowse(vault, path)).ok();
                             }
                         } else {
                             tx.send(AppMessage::OpenSettings).ok();
