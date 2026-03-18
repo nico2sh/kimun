@@ -527,6 +527,20 @@ impl NoteVault {
                 message: "Destination path already exists".to_string(),
             }));
         }
+
+        // Update every note that links to `from`: rewrite those links to `to` in both
+        // the file on disk and the DB index.
+        let backlinks = db::get_backlinks(self.vault_db.pool(), &from).await?;
+        for (entry_data, _) in &backlinks {
+            let text = nfs::load_note(&self.workspace_path, &entry_data.path).await?;
+            let (updated_text, changed) =
+                note::content_extractor::replace_note_links(&text, &from, &to);
+            if changed {
+                self.save_note(&entry_data.path, updated_text).await?;
+            }
+        }
+
+        // Rename the file on disk, then update the DB entry for the renamed note.
         nfs::rename_note(&self.workspace_path, &from, &to).await?;
 
         let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
@@ -855,6 +869,116 @@ mod tests {
                 .filter(|l| matches!(l.ltype, note::LinkType::Hashtag))
                 .count()
         );
+    }
+
+    // ---- rename_note: backlink rewriting integration tests ----
+
+    /// Create a small vault with a DB, write two notes, index them, then rename one
+    /// and assert that the other note's content and DB links are updated.
+    async fn setup_vault_with_notes(
+        dir: &std::path::Path,
+    ) -> NoteVault {
+        let vault = NoteVault::new(dir).await.unwrap();
+        vault.init_and_validate().await.unwrap();
+        vault
+    }
+
+    #[tokio::test]
+    async fn rename_note_updates_wikilink_in_backlink() {
+        let dir = TempDir::new().unwrap();
+        let vault = setup_vault_with_notes(dir.path()).await;
+
+        // Create the note that will be renamed
+        vault
+            .save_note(&VaultPath::new("/target.md"), "# Target note")
+            .await
+            .unwrap();
+        // Create a note that links to it via wikilink
+        vault
+            .save_note(
+                &VaultPath::new("/referrer.md"),
+                "# Referrer\nSee [[target]].",
+            )
+            .await
+            .unwrap();
+
+        vault
+            .rename_note(&VaultPath::new("/target.md"), &VaultPath::new("/renamed.md"))
+            .await
+            .unwrap();
+
+        // The referrer file on disk must now use [[renamed]]
+        let updated = nfs::load_note(dir.path(), &VaultPath::new("/referrer.md"))
+            .await
+            .unwrap();
+        assert!(
+            updated.contains("[[renamed]]"),
+            "expected [[renamed]] in: {updated}"
+        );
+        assert!(
+            !updated.contains("[[target]]"),
+            "old wikilink still present in: {updated}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_note_updates_markdown_link_in_backlink() {
+        let dir = TempDir::new().unwrap();
+        let vault = setup_vault_with_notes(dir.path()).await;
+
+        vault
+            .save_note(&VaultPath::new("/target.md"), "# Target note")
+            .await
+            .unwrap();
+        vault
+            .save_note(
+                &VaultPath::new("/referrer.md"),
+                "# Referrer\n[link](/target.md) end.",
+            )
+            .await
+            .unwrap();
+
+        vault
+            .rename_note(&VaultPath::new("/target.md"), &VaultPath::new("/renamed.md"))
+            .await
+            .unwrap();
+
+        let updated = nfs::load_note(dir.path(), &VaultPath::new("/referrer.md"))
+            .await
+            .unwrap();
+        assert!(
+            updated.contains("[link](/renamed.md)"),
+            "expected updated link in: {updated}"
+        );
+        assert!(
+            !updated.contains("/target.md"),
+            "old path still present in: {updated}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_note_does_not_touch_unrelated_notes() {
+        let dir = TempDir::new().unwrap();
+        let vault = setup_vault_with_notes(dir.path()).await;
+
+        vault
+            .save_note(&VaultPath::new("/target.md"), "# Target")
+            .await
+            .unwrap();
+        vault
+            .save_note(&VaultPath::new("/unrelated.md"), "# Unrelated\nNo links here.")
+            .await
+            .unwrap();
+
+        vault
+            .rename_note(&VaultPath::new("/target.md"), &VaultPath::new("/renamed.md"))
+            .await
+            .unwrap();
+
+        let unrelated = nfs::load_note(dir.path(), &VaultPath::new("/unrelated.md"))
+            .await
+            .unwrap();
+        assert_eq!(unrelated, "# Unrelated\nNo links here.");
     }
 
     #[test]
