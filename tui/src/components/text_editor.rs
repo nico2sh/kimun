@@ -18,6 +18,7 @@ pub struct TextEditorComponent {
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
     key_bindings: KeyBindings,
+    last_saved_text: String,
 }
 
 impl TextEditorComponent {
@@ -26,6 +27,7 @@ impl TextEditorComponent {
             text_area: TextArea::default(),
             rect: Rect::default(),
             key_bindings,
+            last_saved_text: String::new(),
         }
     }
 
@@ -36,6 +38,20 @@ impl TextEditorComponent {
     pub fn set_text(&mut self, text: String) {
         let lines = text.lines();
         self.text_area = TextArea::from(lines);
+        let reconstructed = self.get_text();
+        self.mark_saved(reconstructed);
+    }
+
+    pub fn get_text(&self) -> String {
+        self.text_area.lines().join("\n")
+    }
+
+    pub fn mark_saved(&mut self, text: String) {
+        self.last_saved_text = text;
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.get_text() != self.last_saved_text
     }
 }
 
@@ -92,5 +108,53 @@ impl Component for TextEditorComponent {
         self.text_area
             .set_style(Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui()));
         f.render_widget(&self.text_area, rect);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys::KeyBindings;
+
+    fn make_editor() -> TextEditorComponent {
+        TextEditorComponent::new(KeyBindings::empty())
+    }
+
+    #[test]
+    fn fresh_editor_is_not_dirty() {
+        let editor = make_editor();
+        assert!(!editor.is_dirty());
+    }
+
+    #[test]
+    fn after_set_text_not_dirty() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        assert!(!editor.is_dirty());
+    }
+
+    #[test]
+    fn get_text_returns_loaded_content() {
+        let mut editor = make_editor();
+        editor.set_text("line one\nline two".to_string());
+        assert_eq!(editor.get_text(), "line one\nline two");
+    }
+
+    #[test]
+    fn mark_saved_clears_dirty() {
+        let mut editor = make_editor();
+        editor.set_text("initial".to_string());
+        let text = editor.get_text();
+        editor.mark_saved(text.clone() + "x"); // saved state diverges
+        assert!(editor.is_dirty());
+        editor.mark_saved(text); // saved state matches again
+        assert!(!editor.is_dirty());
+    }
+
+    #[test]
+    fn trailing_newline_does_not_cause_false_dirty() {
+        let mut editor = make_editor();
+        editor.set_text("content\n".to_string());
+        assert!(!editor.is_dirty(), "trailing newline should not make editor dirty after load");
     }
 }
