@@ -190,7 +190,7 @@ impl AppScreen for EditorScreen {
         // Mouse events are routed to all components regardless of focus so that
         // clicking anywhere can transfer focus correctly.
         if matches!(event, AppEvent::Mouse(_)) {
-            if self.sidebar.handle_event(event, tx).is_consumed() {
+            if self.sidebar_visible && self.sidebar.handle_event(event, tx).is_consumed() {
                 return EventState::Consumed;
             }
             return self.editor.handle_event(event, tx);
