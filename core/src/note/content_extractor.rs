@@ -180,6 +180,67 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
     (clean_md_text.to_string(), links)
 }
 
+/// Rewrites all links in `md_text` that target `old_path` so they target `new_path` instead.
+///
+/// Handles three link forms:
+/// - WikiLinks: `[[old-name]]` → `[[new-name]]`, `[[old-name|display]]` → `[[new-name|display]]`
+/// - Markdown links by full vault path: `[text](/old/path.md)` → `[text](/new/path.md)`
+/// - Markdown links by filename: `[text](old-name.md)` → `[text](new-name.md)`
+///
+/// Returns `(updated_text, changed)` where `changed` is true when at least one replacement was made.
+pub(crate) fn replace_note_links(
+    md_text: &str,
+    old_path: &VaultPath,
+    new_path: &VaultPath,
+) -> (String, bool) {
+    let old_name = old_path.get_name(); // e.g. "old-title.md"
+    let old_full = old_path.to_string(); // e.g. "/notes/old-title.md"
+    let new_clean = new_path.get_clean_name(); // e.g. "new-title" (no extension)
+    let new_name = new_path.get_name(); // e.g. "new-title.md"
+    let new_full = new_path.to_string(); // e.g. "/notes/new-title.md"
+
+    // Step 1: rewrite wikilinks whose resolved name matches old_path
+    let after_wikilinks = WIKILINK_RX.replace_all(md_text, |caps: &Captures| {
+        let items = &caps["link_text"];
+        let parts: Vec<&str> = items.split('|').collect();
+        let (link, display) = match parts.len() {
+            1 => (parts[0], parts[0]),
+            _ => (parts[0], parts[1]),
+        };
+        if VaultPath::note_path_from(link).get_name() == old_name {
+            if link == display {
+                format!("[[{}]]", new_clean)
+            } else {
+                format!("[[{}|{}]]", new_clean, display)
+            }
+        } else {
+            // Keep unchanged — reconstruct the original form
+            format!("[[{}]]", items)
+        }
+    });
+
+    // Step 2: rewrite markdown links by full vault path or bare filename
+    let after_links = MD_LINK_RX.replace_all(&after_wikilinks, |caps: &Captures| {
+        let bang = &caps["bang"];
+        let text = &caps["text"];
+        let link = caps["link"].trim();
+        if !bang.is_empty() {
+            return format!("![{}]({})", text, link); // image — skip
+        }
+        if link == old_full {
+            format!("[{}]({})", text, new_full)
+        } else if link == old_name {
+            format!("[{}]({})", text, new_name)
+        } else {
+            format!("[{}]({})", text, link)
+        }
+    });
+
+    let result = after_links.to_string();
+    let changed = result != md_text;
+    (result, changed)
+}
+
 /// Process image links in already-converted markdown, calling `resolver` for each image.
 ///
 /// `resolver(alt_text, raw_path) -> (resolved_path_in_markdown, NoteLink)`:
@@ -527,7 +588,91 @@ mod test {
         },
     };
 
-    use super::get_markdown_and_links;
+    use super::{get_markdown_and_links, replace_note_links};
+
+    // ---- replace_note_links tests ----
+
+    #[test]
+    fn replace_wikilink_no_display() {
+        let old = VaultPath::new("/notes/old-note.md");
+        let new = VaultPath::new("/notes/new-note.md");
+        let (result, changed) = replace_note_links("See [[old-note]].", &old, &new);
+        assert!(changed);
+        assert_eq!(result, "See [[new-note]].");
+    }
+
+    #[test]
+    fn replace_wikilink_with_display_text() {
+        let old = VaultPath::new("/notes/old-note.md");
+        let new = VaultPath::new("/notes/new-note.md");
+        let (result, changed) = replace_note_links("See [[old-note|my note]].", &old, &new);
+        assert!(changed);
+        assert_eq!(result, "See [[new-note|my note]].");
+    }
+
+    #[test]
+    fn replace_markdown_link_full_path() {
+        let old = VaultPath::new("/notes/old-note.md");
+        let new = VaultPath::new("/notes/new-note.md");
+        let (result, changed) =
+            replace_note_links("[click](/notes/old-note.md)", &old, &new);
+        assert!(changed);
+        assert_eq!(result, "[click](/notes/new-note.md)");
+    }
+
+    #[test]
+    fn replace_markdown_link_filename_only() {
+        let old = VaultPath::new("/notes/old-note.md");
+        let new = VaultPath::new("/notes/new-note.md");
+        let (result, changed) = replace_note_links("[click](old-note.md)", &old, &new);
+        assert!(changed);
+        assert_eq!(result, "[click](new-note.md)");
+    }
+
+    #[test]
+    fn replace_does_not_touch_unrelated_links() {
+        let old = VaultPath::new("/notes/old-note.md");
+        let new = VaultPath::new("/notes/new-note.md");
+        let text = "[[other-note]] [x](/notes/unrelated.md) [y](unrelated.md)";
+        let (result, changed) = replace_note_links(text, &old, &new);
+        assert!(!changed);
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn replace_does_not_touch_images() {
+        let old = VaultPath::new("/notes/old-note.md");
+        let new = VaultPath::new("/notes/new-note.md");
+        // Images that happen to match the name must not be touched
+        let text = "![old-note.md](old-note.md)";
+        let (result, changed) = replace_note_links(text, &old, &new);
+        assert!(!changed);
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn replace_mixed_content() {
+        let old = VaultPath::new("/notes/old-note.md");
+        let new = VaultPath::new("/archive/new-note.md");
+        let text =
+            "[[old-note]] and [[old-note|read this]] plus [link](/notes/old-note.md) end.";
+        let (result, changed) = replace_note_links(text, &old, &new);
+        assert!(changed);
+        assert_eq!(
+            result,
+            "[[new-note]] and [[new-note|read this]] plus [link](/archive/new-note.md) end."
+        );
+    }
+
+    #[test]
+    fn replace_returns_unchanged_false_when_no_match() {
+        let old = VaultPath::new("/notes/missing.md");
+        let new = VaultPath::new("/notes/also-missing.md");
+        let text = "No references here at all.";
+        let (result, changed) = replace_note_links(text, &old, &new);
+        assert!(!changed);
+        assert_eq!(result, text);
+    }
 
     #[test]
     fn convert_wiki_link() {
