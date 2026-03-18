@@ -7,6 +7,13 @@ edition = "2024"
 name = "kimun"
 path = "src/main.rs"
 
+[profile.release]
+opt-level = "z"      # optimise for size (smaller than "s", smaller than 3)
+lto = true           # cross-crate dead-code elimination
+codegen-units = 1    # single CGU lets LLVM inline across the whole crate
+strip = true         # strip debug symbols from the final binary
+panic = "abort"      # drop unwinding machinery (~10 % size reduction)
+
 [dependencies]
 kimun_core = { path = "../core" }
 
