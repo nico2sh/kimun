@@ -107,8 +107,9 @@ fn default_keybindings() -> KeyBindings {
     kb.batch_add()
         .add(KeyStrike::Tab, ActionShortcuts::FocusEditor);
     kb.batch_add()
-        .with_shift()
-        .add(KeyStrike::Tab, ActionShortcuts::FocusSidebar);
+        .with_ctrl()
+        .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
+        .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor);
 
     kb
 }
@@ -166,7 +167,10 @@ impl AppSettings {
         match toml::from_str::<Theme>(&theme_string) {
             Ok(theme) => Ok(theme),
             Err(e) => {
-                debug!("Failed to deserialize theme file {:?}: {}. Removing.", path, e);
+                debug!(
+                    "Failed to deserialize theme file {:?}: {}. Removing.",
+                    path, e
+                );
                 let _ = fs::remove_file(path);
                 Err(eyre::eyre!("corrupt theme file: {}", e))
             }
@@ -213,9 +217,9 @@ impl AppSettings {
             }
 
             // Try to read and deserialize the theme file
-            match fs::read_to_string(&path).and_then(|s| {
-                toml::from_str::<Theme>(&s).map_err(|e| std::io::Error::other(e))
-            }) {
+            match fs::read_to_string(&path)
+                .and_then(|s| toml::from_str::<Theme>(&s).map_err(|e| std::io::Error::other(e)))
+            {
                 Ok(theme) => themes.push(theme),
                 Err(e) => log::warn!("Skipping theme file {:?}: {}", path, e),
             }
@@ -363,6 +367,9 @@ mod tests {
         let result = AppSettings::load_theme_from_path(&path);
 
         assert!(result.is_err(), "should return Err for corrupt TOML");
-        assert!(!path.exists(), "corrupt file must be removed, not recreated");
+        assert!(
+            !path.exists(),
+            "corrupt file must be removed, not recreated"
+        );
     }
 }
