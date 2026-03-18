@@ -21,8 +21,11 @@ pub struct App {
 }
 
 impl App {
-    pub async fn new() -> eyre::Result<Self> {
-        let settings = AppSettings::load_from_disk()?;
+    pub async fn new(config_path: Option<std::path::PathBuf>) -> eyre::Result<Self> {
+        let settings = match config_path {
+            Some(path) => AppSettings::load_from_file(path)?,
+            None => AppSettings::load_from_disk()?,
+        };
         let vault = if let Some(ref workspace) = settings.workspace_dir {
             NoteVault::new(workspace).await.ok().map(Arc::new)
         } else {
