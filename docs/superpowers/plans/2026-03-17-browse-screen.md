@@ -116,6 +116,7 @@ use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
+use ratatui::layout::{Constraint, Direction, Layout};
 
 use crate::app_screen::AppScreen;
 use crate::components::Component;
@@ -326,7 +327,11 @@ impl AppScreen for BrowseScreen {
     }
 
     fn render(&mut self, f: &mut Frame) {
-        self.sidebar.render(f, f.area(), &self.theme, true);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(60), Constraint::Min(0)])
+            .split(f.area());
+        self.sidebar.render(f, cols[1], &self.theme, true);
     }
 
     async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) -> Option<AppMessage> {
