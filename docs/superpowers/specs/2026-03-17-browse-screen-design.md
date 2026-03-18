@@ -92,11 +92,17 @@ When the user selects a note, the sidebar sends `OpenPath(note_path)`. `BrowseSc
 
 ### `render(&mut self, f: &mut Frame)`
 
+The sidebar is centered horizontally inside the full terminal area. Two `Constraint::Min(0)` columns absorb equal amounts of the leftover space, centering the 60-column sidebar:
+
 ```rust
-self.sidebar.render(f, f.area(), &self.theme, true);
+let cols = Layout::default()
+    .direction(Direction::Horizontal)
+    .constraints([Constraint::Min(0), Constraint::Length(60), Constraint::Min(0)])
+    .split(f.area());
+self.sidebar.render(f, cols[1], &self.theme, true);
 ```
 
-`SidebarComponent` already renders its own directory header, search box, and file list.
+`SidebarComponent` already renders its own directory header, search box, and file list within the given area.
 
 ---
 
