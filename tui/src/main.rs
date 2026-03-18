@@ -5,13 +5,10 @@ pub mod keys;
 pub mod settings;
 pub mod ui;
 
-use std::sync::Arc;
-
 use color_eyre::Result;
 use crossterm::event::{DisableMouseCapture, Event, EventStream};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use futures::StreamExt;
-use kimun_core::NoteVault;
 use ratatui::Terminal;
 use ratatui::crossterm::event::EnableMouseCapture;
 use ratatui::crossterm::execute;
@@ -38,7 +35,7 @@ async fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::new()?;
+    let mut app = App::new().await?;
     run_app(&mut terminal, &mut app).await?;
     disable_raw_mode()?;
     execute!(
@@ -112,9 +109,7 @@ where
                         Some(AppMessage::OpenPath(path))
                     };
                     if let Some(AppMessage::OpenPath(path)) = unhandled {
-                        if let Some(vault_path) = &app.settings.workspace_dir {
-                            let vault = NoteVault::new(vault_path).await.map_err(io::Error::other)?;
-                            let vault = Arc::new(vault);
+                        if let Some(vault) = app.vault.clone() {
                             if path.is_note() {
                                 tx.send(AppMessage::OpenEditor(vault, path)).ok();
                             } else {
@@ -126,6 +121,14 @@ where
                     }
                 }
                 AppMessage::SettingsSaved(new_settings) => {
+                    // Rebuild vault if the workspace path changed.
+                    if new_settings.workspace_dir != app.settings.workspace_dir {
+                        app.vault = if let Some(ref workspace) = new_settings.workspace_dir {
+                            kimun_core::NoteVault::new(workspace).await.ok().map(std::sync::Arc::new)
+                        } else {
+                            None
+                        };
+                    }
                     app.settings = new_settings;
                     switch_screen(app, &tx, Box::new(StartScreen::new(app.settings.clone()))).await;
                 }

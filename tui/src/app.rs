@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use color_eyre::eyre;
+use kimun_core::NoteVault;
 
 use crate::{
     app_screen::{AppScreen, start::StartScreen},
@@ -11,14 +14,24 @@ pub struct App {
     pub current_screen: Option<Box<dyn AppScreen>>,
 
     pub settings: AppSettings,
+
+    /// The active vault. `None` until a workspace path is configured.
+    /// Rebuilt only when the workspace path changes in settings.
+    pub vault: Option<Arc<NoteVault>>,
 }
 
 impl App {
-    pub fn new() -> eyre::Result<Self> {
+    pub async fn new() -> eyre::Result<Self> {
         let settings = AppSettings::load_from_disk()?;
+        let vault = if let Some(ref workspace) = settings.workspace_dir {
+            NoteVault::new(workspace).await.ok().map(Arc::new)
+        } else {
+            None
+        };
         Ok(Self {
             current_screen: Some(Box::new(StartScreen::new(settings.clone()))),
             settings,
+            vault,
         })
     }
 }
