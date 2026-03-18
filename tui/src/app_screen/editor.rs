@@ -72,8 +72,16 @@ impl Drop for EditorScreen {
 
 impl EditorScreen {
     pub async fn open_path(&mut self, path: VaultPath, tx: &AppTx) {
+        if !path.is_note() {
+            tx.send(AppMessage::OpenBrowse(self.vault.clone(), path)).ok();
+            return;
+        }
+
         // Save current note before switching
         self.try_save().await;
+
+        self.settings.add_path_history(&path);
+        self.settings.save_to_disk().ok();
 
         self.path = path.clone();
         let content = self.vault.get_note_text(&self.path).await.unwrap();

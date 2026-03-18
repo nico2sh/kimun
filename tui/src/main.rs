@@ -101,7 +101,7 @@ where
                     switch_screen(app, &tx, Box::new(EditorScreen::new(Arc::new(vault), path, app.settings.clone()))).await;
                 }
                 AppMessage::OpenBrowse(vault, path) => {
-                    switch_screen(app, &tx, Box::new(BrowseScreen::new(Arc::new(vault), path, app.settings.clone()))).await;
+                    switch_screen(app, &tx, Box::new(BrowseScreen::new(vault, path, app.settings.clone()))).await;
                 }
                 AppMessage::OpenPath(path) => {
                     let unhandled = if let Some(screen) = app.current_screen.as_mut() {
@@ -117,7 +117,7 @@ where
                             if path.is_note() {
                                 tx.send(AppMessage::OpenEditor(vault, path)).ok();
                             } else {
-                                tx.send(AppMessage::OpenBrowse(vault, path)).ok();
+                                tx.send(AppMessage::OpenBrowse(Arc::new(vault), path)).ok();
                             }
                         } else {
                             tx.send(AppMessage::OpenSettings).ok();

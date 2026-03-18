@@ -1,4 +1,5 @@
 use kimun_core::{NoteVault, nfs::VaultPath};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use crate::settings::AppSettings;
@@ -17,8 +18,7 @@ pub enum AppMessage {
     /// Accepted deviation: carries NoteVault directly (same as OpenBrowse).
     OpenEditor(NoteVault, VaultPath),
     /// Navigate to the browse screen for the given vault root and directory path.
-    /// Accepted deviation: carries NoteVault directly (same as OpenEditor).
-    OpenBrowse(NoteVault, VaultPath),
+    OpenBrowse(Arc<NoteVault>, VaultPath),
     OpenPath(VaultPath),
     FocusEditor,
     FocusSidebar,
@@ -61,9 +61,9 @@ mod tests {
 
     #[test]
     fn open_browse_variant_exists() {
-        // Fails to compile until OpenBrowse(NoteVault, VaultPath) is added.
+        // Fails to compile until OpenBrowse(Arc<NoteVault>, VaultPath) is added.
         // NoteVault requires a real path at runtime, so we just verify the type compiles.
-        let _: fn(NoteVault, VaultPath) -> AppMessage = AppMessage::OpenBrowse;
+        let _: fn(Arc<NoteVault>, VaultPath) -> AppMessage = AppMessage::OpenBrowse;
     }
 
     #[test]
