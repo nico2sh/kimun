@@ -176,8 +176,19 @@ impl<'k> KeyBindBatch<'k> {
 /// Returns `None` for key codes that have no [`KeyStrike`] mapping (e.g. media keys).
 /// `BackTab` (Shift+Tab) is normalised to `Tab` with the `shift` modifier set.
 pub fn key_event_to_combo(event: &KeyEvent) -> Option<KeyCombo> {
+    // Some terminals deliver Ctrl+letter as raw control characters (e.g. Ctrl+Q → '\x11')
+    // without setting the CONTROL modifier.  Normalise them here so the rest of the
+    // function sees an ordinary letter + an implied ctrl flag.
+    let mut implied_ctrl = false;
     let key = match event.code {
-        KeyCode::Char(c) => match c.to_ascii_lowercase() {
+        KeyCode::Char(c) => {
+            let c = if c as u8 >= 1 && c as u8 <= 26 {
+                implied_ctrl = true;
+                (c as u8 + b'a' - 1) as char
+            } else {
+                c
+            };
+            match c.to_ascii_lowercase() {
             'a' => KeyStrike::KeyA,
             'b' => KeyStrike::KeyB,
             'c' => KeyStrike::KeyC,
@@ -226,7 +237,7 @@ pub fn key_event_to_combo(event: &KeyEvent) -> Option<KeyCombo> {
             '-' => KeyStrike::Minus,
             '=' => KeyStrike::Equal,
             _ => return None,
-        },
+        }},
         KeyCode::Enter => KeyStrike::Enter,
         KeyCode::Backspace => KeyStrike::Backspace,
         KeyCode::Tab | KeyCode::BackTab => KeyStrike::Tab,
@@ -260,7 +271,7 @@ pub fn key_event_to_combo(event: &KeyEvent) -> Option<KeyCombo> {
     };
 
     let mut modifiers = KeyModifiers::default();
-    if event.modifiers.contains(CKeyMods::CONTROL) {
+    if implied_ctrl || event.modifiers.contains(CKeyMods::CONTROL) {
         modifiers.with_ctrl();
     }
     // BackTab arrives as KeyCode::BackTab (no SHIFT bit set on some terminals).

@@ -57,7 +57,6 @@ fn default_keybindings() -> KeyBindings {
     let mut kb = KeyBindings::empty();
     // We use meta on macOS, ctrl on Windows/Linux for desktop-app shortcuts.
     get_kb_buildr_ctrl_meta(&mut kb)
-        .add(KeyStrike::Comma, ActionShortcuts::OpenSettings)
         .add(KeyStrike::Slash, ActionShortcuts::ToggleNoteBrowser)
         .add(KeyStrike::KeyE, ActionShortcuts::SearchNotes)
         .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
@@ -99,6 +98,7 @@ fn default_keybindings() -> KeyBindings {
     // TUI navigation shortcuts (always Ctrl — terminal apps don't use Cmd/Meta).
     kb.batch_add()
         .with_ctrl()
+        .add(KeyStrike::Comma, ActionShortcuts::OpenSettings)
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyB, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyN, ActionShortcuts::SortByName)
@@ -282,8 +282,9 @@ impl AppSettings {
     /// Fills in any actions from `default_keybindings()` that are absent in the loaded config.
     /// Existing user-customised bindings are never overwritten.
     fn merge_missing_default_bindings(&mut self) {
+        let defaults = default_keybindings().to_hashmap();
         let mut current = self.key_bindings.to_hashmap();
-        for (action, combos) in default_keybindings().to_hashmap() {
+        for (action, combos) in defaults {
             current.entry(action).or_insert(combos);
         }
         self.key_bindings = KeyBindings::from_hashmap(current);
