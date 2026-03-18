@@ -11,6 +11,7 @@ use crate::settings::AppSettings;
 pub enum AppMessage {
     Quit,
     Redraw,
+    Autosave,
     OpenSettings,
     /// Navigate to the editor for the given vault root path.
     /// Accepted deviation: carries NoteVault directly (same as OpenBrowse).
@@ -63,5 +64,10 @@ mod tests {
         // Fails to compile until OpenBrowse(NoteVault, VaultPath) is added.
         // NoteVault requires a real path at runtime, so we just verify the type compiles.
         let _: fn(NoteVault, VaultPath) -> AppMessage = AppMessage::OpenBrowse;
+    }
+
+    #[test]
+    fn autosave_variant_exists() {
+        let _msg = AppMessage::Autosave;
     }
 }
