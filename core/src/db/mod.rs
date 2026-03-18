@@ -8,10 +8,26 @@ use std::time::Duration;
 use log::{debug, error};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::{Row, Sqlite, Transaction};
-use search_terms::SearchTerms;
+use search_terms::{OrderBy, SearchTerms};
 
-use crate::nfs::PATH_SEPARATOR;
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
+
+fn row_to_note_entry(row: &sqlx::sqlite::SqliteRow) -> Result<(NoteEntryData, NoteContentData), DBError> {
+    let path: String = row.try_get("path")?;
+    let title: String = row.try_get("title")?;
+    let size: i64 = row.try_get("size")?;
+    let modified: i64 = row.try_get("modified")?;
+    let hash: String = row.try_get("hash")?;
+
+    let note_path = VaultPath::new(&path);
+    let entry = NoteEntryData {
+        path: note_path,
+        size: size as u64,
+        modified_secs: modified as u64,
+    };
+    let content = NoteContentData::new(title, hash.parse().unwrap_or(0));
+    Ok((entry, content))
+}
 
 use super::error::DBError;
 
@@ -265,20 +281,7 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
         return (String::new(), vec![]);
     }
 
-    let mut sql = queries.join(" INTERSECT ");
-
-    // We add at the end the order by clause
-    if !search_terms.order_by.is_empty() {
-        sql = format!("{} ORDER BY ?{}", sql, var_num);
-        params.push(
-            search_terms
-                .order_by
-                .iter()
-                .map(|o| o.to_query_param())
-                .collect::<Vec<String>>()
-                .join(", "),
-        );
-    }
+    let sql = queries.join(" INTERSECT ");
 
     (sql, params)
 }
@@ -292,31 +295,15 @@ pub async fn get_all_notes(
         .fetch_all(pool)
         .await?;
 
-    let mut result = Vec::new();
-    for row in rows {
-        let path: String = row.try_get("path")?;
-        let title: String = row.try_get("title")?;
-        let size: i64 = row.try_get("size")?;
-        let modified: i64 = row.try_get("modified")?;
-        let hash: String = row.try_get("hash")?;
-
-        let note_path = VaultPath::new(&path);
-        let data = NoteEntryData {
-            path: note_path.clone(),
-            size: size as u64,
-            modified_secs: modified as u64,
-        };
-        let det = NoteContentData::new(title, hash.parse().unwrap());
-        result.push((data, det));
-    }
-
-    Ok(result)
+    rows.iter().map(row_to_note_entry).collect()
 }
 
 pub async fn search_terms<S: AsRef<str>>(
     pool: &SqlitePool,
     search_query: S,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    let search_query = search_query.as_ref();
+    let order_by = SearchTerms::from_query_string(search_query).order_by;
     let (query, params) = build_search_sql_query(search_query);
 
     if query.is_empty() {
@@ -333,22 +320,27 @@ pub async fn search_terms<S: AsRef<str>>(
 
     let rows = sql_query.fetch_all(pool).await?;
 
-    let mut result = Vec::new();
-    for row in rows {
-        let path: String = row.try_get("path")?;
-        let title: String = row.try_get("title")?;
-        let size: i64 = row.try_get("size")?;
-        let modified: i64 = row.try_get("modified")?;
-        let hash: String = row.try_get("hash")?;
+    let mut result: Vec<(NoteEntryData, NoteContentData)> = rows.iter().map(row_to_note_entry).collect::<Result<_, _>>()?;
 
-        let note_path = VaultPath::new(&path);
-        let data = NoteEntryData {
-            path: note_path.clone(),
-            size: size as u64,
-            modified_secs: modified as u64,
-        };
-        let det = NoteContentData::new(title, hash.parse().unwrap());
-        result.push((data, det));
+    if !order_by.is_empty() {
+        result.sort_by(|(a_entry, a_content), (b_entry, b_content)| {
+            for ob in &order_by {
+                let ord = match ob {
+                    OrderBy::Title { asc } => {
+                        let cmp = a_content.title.to_lowercase().cmp(&b_content.title.to_lowercase());
+                        if *asc { cmp } else { cmp.reverse() }
+                    }
+                    OrderBy::FileName { asc } => {
+                        let cmp = a_entry.path.to_string().cmp(&b_entry.path.to_string());
+                        if *asc { cmp } else { cmp.reverse() }
+                    }
+                };
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
     }
 
     Ok(result)
@@ -383,25 +375,7 @@ pub async fn search_note_by_name<S: AsRef<str>>(
         .fetch_all(pool)
         .await?;
 
-    let mut result = Vec::new();
-    for row in rows {
-        let path: String = row.try_get("path")?;
-        let title: String = row.try_get("title")?;
-        let size: i64 = row.try_get("size")?;
-        let modified: i64 = row.try_get("modified")?;
-        let hash: String = row.try_get("hash")?;
-
-        let note_path = VaultPath::new(&path);
-        let data = NoteEntryData {
-            path: note_path.clone(),
-            size: size as u64,
-            modified_secs: modified as u64,
-        };
-        let det = NoteContentData::new(title, hash.parse().unwrap());
-        result.push((data, det));
-    }
-
-    Ok(result)
+    rows.iter().map(row_to_note_entry).collect()
 }
 
 pub async fn search_note_by_path(
@@ -409,37 +383,15 @@ pub async fn search_note_by_path(
     path: &VaultPath,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where path = ?";
-    let path_string = path
-        .to_string()
-        .strip_prefix(PATH_SEPARATOR)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| path.to_string());
+    let path_string = path.to_string();
 
     let rows = sqlx::query(sql)
         .bind(&path_string)
         .fetch_all(pool)
         .await?;
 
-    let mut result = Vec::new();
-    for row in rows {
-        let path: String = row.try_get("path")?;
-        let title: String = row.try_get("title")?;
-        let size: i64 = row.try_get("size")?;
-        let modified: i64 = row.try_get("modified")?;
-        let hash: String = row.try_get("hash")?;
-
-        let note_path = VaultPath::new(&path);
-        let data = NoteEntryData {
-            path: note_path.clone(),
-            size: size as u64,
-            modified_secs: modified as u64,
-        };
-        let det = NoteContentData::new(title, hash.parse().unwrap());
-        result.push((data, det));
-    }
-
     // Should always return one or zero
-    Ok(result)
+    rows.iter().map(row_to_note_entry).collect()
 }
 
 pub async fn get_notes(
@@ -458,37 +410,47 @@ pub async fn get_notes(
         .fetch_all(pool)
         .await?;
 
-    let mut result = Vec::new();
-    for row in rows {
-        let path: String = row.try_get("path")?;
-        let title: String = row.try_get("title")?;
-        let size: i64 = row.try_get("size")?;
-        let modified: i64 = row.try_get("modified")?;
-        let hash: String = row.try_get("hash")?;
+    rows.iter().map(row_to_note_entry).collect()
+}
 
-        let note_path = VaultPath::new(&path);
-        let data = NoteEntryData {
-            path: note_path.clone(),
-            size: size as u64,
-            modified_secs: modified as u64,
-        };
-        let det = NoteContentData::new(title, hash.parse().unwrap());
-        result.push((data, det));
-    }
+pub async fn get_backlinks(
+    pool: &SqlitePool,
+    path: &VaultPath,
+) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    // Match notes that link to the full path OR by filename only (wikilinks stored without path)
+    let sql = "SELECT DISTINCT n.path, n.title, n.size, n.modified, n.hash, n.noteName \
+               FROM notes n \
+               JOIN links l ON n.path = l.source \
+               WHERE l.destination = ? OR l.destination = ?";
 
-    Ok(result)
+    let rows = sqlx::query(sql)
+        .bind(path.to_string())
+        .bind(path.get_name())
+        .fetch_all(pool)
+        .await?;
+
+    rows.iter().map(row_to_note_entry).collect()
 }
 
 pub async fn get_notes_sections(
     pool: &SqlitePool,
     path: &VaultPath,
-    _recursive: bool,
+    recursive: bool,
 ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, DBError> {
     let mut result = HashMap::new();
-    let sql = "SELECT path, breadcrumb, text FROM notesContent where path LIKE(? || '%')";
+    let (sql, bind_value) = if path.is_note() {
+        // Exact note path
+        ("SELECT path, breadcrumb, text FROM notesContent WHERE path = ?", path.to_string())
+    } else if recursive {
+        // All notes under this directory tree
+        ("SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%')", path.to_string())
+    } else {
+        // Only notes directly in this directory (basePath join)
+        ("SELECT nc.path, nc.breadcrumb, nc.text FROM notesContent nc JOIN notes n ON nc.path = n.path WHERE n.basePath = ?", path.to_string())
+    };
 
     let rows = sqlx::query(sql)
-        .bind(path.to_string())
+        .bind(bind_value)
         .fetch_all(pool)
         .await?;
 
@@ -513,12 +475,13 @@ pub async fn get_notes_sections(
 
 pub async fn insert_notes(
     tx: &mut Transaction<'_, Sqlite>,
-    notes: &Vec<(NoteEntryData, String)>,
+    notes: &[(NoteEntryData, String)],
 ) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Inserting {} notes", notes.len());
         for (entry_data, text) in notes {
-            insert_note(tx, entry_data, text).await?;
+            let note_details = NoteDetails::new(&entry_data.path, text);
+            insert_note(tx, entry_data, &note_details).await?;
         }
     }
     Ok(())
@@ -526,12 +489,13 @@ pub async fn insert_notes(
 
 pub async fn update_notes(
     tx: &mut Transaction<'_, Sqlite>,
-    notes: &Vec<(NoteEntryData, String)>,
+    notes: &[(NoteEntryData, String)],
 ) -> Result<(), DBError> {
     if !notes.is_empty() {
         debug!("Updating {} notes", notes.len());
         for (entry_data, text) in notes {
-            update_note(tx, entry_data, text).await?;
+            let note_details = NoteDetails::new(&entry_data.path, text);
+            update_note(tx, entry_data, &note_details).await?;
         }
     }
     Ok(())
@@ -539,7 +503,7 @@ pub async fn update_notes(
 
 pub async fn delete_notes(
     tx: &mut Transaction<'_, Sqlite>,
-    paths: &Vec<VaultPath>,
+    paths: &[VaultPath],
 ) -> Result<(), DBError> {
     if !paths.is_empty() {
         for path in paths {
@@ -549,33 +513,32 @@ pub async fn delete_notes(
     Ok(())
 }
 
-pub async fn save_note<S: AsRef<str>>(
+pub async fn save_note(
     pool: &SqlitePool,
     entry_data: &NoteEntryData,
-    text: S,
+    note_details: &NoteDetails,
 ) -> Result<(), DBError> {
     let exists = note_exists(pool, &entry_data.path).await?;
     let mut tx = pool.begin().await?;
     if exists {
-        update_note(&mut tx, entry_data, text).await
+        update_note(&mut tx, entry_data, note_details).await
     } else {
-        insert_note(&mut tx, entry_data, text).await
+        insert_note(&mut tx, entry_data, note_details).await
     }?;
     tx.commit().await?;
     Ok(())
 }
 
-async fn insert_note<S: AsRef<str>>(
+async fn insert_note(
     tx: &mut Transaction<'_, Sqlite>,
     entry_data: &NoteEntryData,
-    text: S,
+    note_details: &NoteDetails,
 ) -> Result<(), DBError> {
     let (parent_path, name) = entry_data.path.get_parent_path();
-    let note_details = NoteDetails::new(&entry_data.path, text);
     let path_string = entry_data.path.to_string();
     let data = note_details.get_content_data();
 
-    if let Err(e) = sqlx::query(
+    sqlx::query(
         "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(&path_string)
@@ -587,11 +550,13 @@ async fn insert_note<S: AsRef<str>>(
     .bind(&name)
     .execute(&mut **tx)
     .await
-    {
+    .map_err(|e| {
         error!("Error inserting note: {}\nDetails: {}", e, note_details);
-    }
+        DBError::DBError(e)
+    })?;
 
-    for chunk in &note_details.get_content_chunks() {
+    let (chunks, links) = note_details.get_chunks_and_links();
+    for chunk in &chunks {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
         sqlx::query("INSERT INTO notesContent (path, breadcrumb, text) VALUES (?, ?, ?)")
@@ -602,8 +567,7 @@ async fn insert_note<S: AsRef<str>>(
             .await?;
     }
 
-    let markdownlinks = note_details.get_markdown_and_links();
-    for link in &markdownlinks.links {
+    for link in &links {
         if let LinkType::Note(path) = &link.ltype {
             sqlx::query("INSERT INTO links (source, destination) VALUES (?, ?)")
                 .bind(&path_string)
@@ -616,12 +580,11 @@ async fn insert_note<S: AsRef<str>>(
     Ok(())
 }
 
-async fn update_note<S: AsRef<str>>(
+async fn update_note(
     tx: &mut Transaction<'_, Sqlite>,
     entry_data: &NoteEntryData,
-    text: S,
+    note_details: &NoteDetails,
 ) -> Result<(), DBError> {
-    let note_details = NoteDetails::new(&entry_data.path, text);
     let data = note_details.get_content_data();
     let title = data.title.clone();
     let hash = data.hash.to_string();
@@ -641,7 +604,8 @@ async fn update_note<S: AsRef<str>>(
         .execute(&mut **tx)
         .await?;
 
-    for chunk in &note_details.get_content_chunks() {
+    let (chunks, links) = note_details.get_chunks_and_links();
+    for chunk in &chunks {
         let breadcrumb = chunk.get_breadcrumb();
         let chunk_text = &chunk.text;
         sqlx::query("INSERT INTO notesContent (path, breadcrumb, text) VALUES (?, ?, ?)")
@@ -657,8 +621,7 @@ async fn update_note<S: AsRef<str>>(
         .execute(&mut **tx)
         .await?;
 
-    let markdownlinks = note_details.get_markdown_and_links();
-    for link in &markdownlinks.links {
+    for link in &links {
         if let LinkType::Note(path) = &link.ltype {
             sqlx::query("INSERT INTO links (source, destination) VALUES (?, ?)")
                 .bind(&path_string)
@@ -685,6 +648,11 @@ async fn delete_note(tx: &mut Transaction<'_, Sqlite>, path: &VaultPath) -> Resu
         .await?;
 
     sqlx::query("DELETE FROM links WHERE source = ?")
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("DELETE FROM links WHERE destination = ?")
         .bind(&path_string)
         .execute(&mut **tx)
         .await?;
@@ -726,9 +694,10 @@ pub async fn rename_note(
         .execute(&mut **tx)
         .await?;
 
+    // Update links that reference the note by filename only (wikilinks without path)
     sqlx::query("UPDATE links SET destination = ? WHERE destination = ?")
-        .bind(&old_note_name)
         .bind(&new_note_name)
+        .bind(&old_note_name)
         .execute(&mut **tx)
         .await?;
 
@@ -793,7 +762,7 @@ pub async fn rename_directory(
 
 pub async fn delete_directories(
     tx: &mut Transaction<'_, Sqlite>,
-    directories: &Vec<VaultPath>,
+    directories: &[VaultPath],
 ) -> Result<(), DBError> {
     if !directories.is_empty() {
         for directory in directories {
@@ -993,11 +962,10 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword or:title");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
-        assert_eq!(params.len(), 2);
+        assert_eq!(params.len(), 1);
         assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "title ASC");
     }
 
     #[test]
@@ -1005,11 +973,10 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword or:-title");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
-        assert_eq!(params.len(), 2);
+        assert_eq!(params.len(), 1);
         assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "title DESC");
     }
 
     #[test]
@@ -1017,11 +984,10 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword or:filename");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
-        assert_eq!(params.len(), 2);
+        assert_eq!(params.len(), 1);
         assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "path ASC");
     }
 
     #[test]
@@ -1029,11 +995,10 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword or:f");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
-        assert_eq!(params.len(), 2);
+        assert_eq!(params.len(), 1);
         assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "path ASC");
     }
 
     #[test]
@@ -1041,11 +1006,10 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword or:t");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
-        assert_eq!(params.len(), 2);
+        assert_eq!(params.len(), 1);
         assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "title ASC");
     }
 
     #[test]
@@ -1053,11 +1017,10 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword ^title ^-filename");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 ORDER BY ?2"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
-        assert_eq!(params.len(), 2);
+        assert_eq!(params.len(), 1);
         assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "title ASC, path DESC");
     }
 
     #[test]
@@ -1065,13 +1028,12 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword >section @file ^title");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ORDER BY ?4"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%')"
         );
-        assert_eq!(params.len(), 4);
+        assert_eq!(params.len(), 3);
         assert_eq!(params[0], "keyword");
         assert_eq!(params[1], "section");
         assert_eq!(params[2], "file");
-        assert_eq!(params[3], "title ASC");
     }
 
     #[test]

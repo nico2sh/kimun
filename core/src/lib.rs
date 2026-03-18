@@ -351,15 +351,69 @@ impl NoteVault {
     //     Ok(result)
     // }
 
-    /// Convenience method to get the directories from the filesystem
+    /// Returns all subdirectories under `path`.
+    /// Non-recursive returns only the immediate children; recursive returns the full tree.
     pub fn get_directories(
         &self,
         path: &VaultPath,
         recursive: bool,
     ) -> Result<Vec<DirectoryDetails>, VaultError> {
-        let result = vec![];
+        Ok(nfs::list_directories(&self.workspace_path, path, recursive)?)
+    }
 
-        Ok(result)
+    /// Converts a note's raw Markdown into rendered Markdown and extracts all links.
+    ///
+    /// - WikiLinks (`[[note]]`) are converted to standard Markdown links.
+    /// - Note links are resolved to vault-relative absolute paths.
+    /// - Hashtags become Markdown links (`[#tag](#tag)`) and are added to the links list.
+    /// - Image paths are resolved to absolute OS paths so renderers can load them directly.
+    ///   Relative image paths are resolved against the note's location in the vault.
+    ///   External image URLs are kept as-is.
+    pub fn get_markdown_and_links(&self, note: &NoteDetails) -> note::MarkdownNote {
+        // Step 1: convert wikilinks, extract note/URL/hashtag links.
+        let note_parent = if note.path.is_note() {
+            note.path.get_parent_path().0
+        } else {
+            note.path.clone()
+        };
+        let (md_text, mut links) =
+            note::content_extractor::get_markdown_and_links(&note.path, &note.raw_text);
+
+        // Step 2: resolve image paths to absolute OS paths.
+        let (md_text, image_links) =
+            note::content_extractor::process_image_links(&md_text, |alt_text, raw_path| {
+                let resolved = if raw_path.starts_with("http://")
+                    || raw_path.starts_with("https://")
+                {
+                    // External URL: keep as-is
+                    raw_path.to_string()
+                } else {
+                    // Vault-relative or note-relative path → absolute OS path
+                    let image_vault_path = if raw_path.starts_with('/') {
+                        VaultPath::new(raw_path)
+                    } else {
+                        note_parent.append(&VaultPath::new(raw_path)).flatten()
+                    };
+                    image_vault_path
+                        .to_pathbuf(&self.workspace_path)
+                        .display()
+                        .to_string()
+                };
+                let link = note::NoteLink::image(&resolved, alt_text, raw_path);
+                (resolved, link)
+            });
+
+        links.extend(image_links);
+        note::MarkdownNote { text: md_text, links }
+    }
+
+    /// Returns all notes that contain a link pointing to `path`.
+    /// Matches both absolute vault paths and bare filename links (wikilinks).
+    pub async fn get_backlinks(
+        &self,
+        path: &VaultPath,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
+        Ok(db::get_backlinks(self.vault_db.pool(), path).await?)
     }
 
     pub async fn create_note<S: AsRef<str>>(
@@ -390,15 +444,15 @@ impl NoteVault {
     ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
         // Save to disk
         let entry_data = nfs::save_note(&self.workspace_path, path, &text).await?;
-        // TODO: Check if we actually need to create details twice
-        let details = entry_data.load_details(&self.workspace_path, path).await?;
-        let result = (entry_data.clone(), details.get_content_data());
-        let text = text.as_ref().to_owned();
 
-        // Save to DB
-        db::save_note(self.vault_db.pool(), &entry_data, text).await?;
+        // Build NoteDetails once from the text already in memory — no re-read from disk
+        let note_details = NoteDetails::new(path, text);
+        let content_data = note_details.get_content_data();
 
-        Ok(result)
+        // Save to DB (reuses the same NoteDetails)
+        db::save_note(self.vault_db.pool(), &entry_data, &note_details).await?;
+
+        Ok((entry_data, content_data))
     }
 
     /// If the string is a path, it looks for a specific note, if it's just a note name
@@ -406,7 +460,7 @@ impl NoteVault {
     pub async fn open_or_search(
         &self,
         path: &VaultPath,
-    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         // We make sure the path is a note path, so we append the extension if doesn't exist
         // let path = VaultPath::note_path_from(&path_or_note);
         debug!("PATH: {}", path);
@@ -418,11 +472,10 @@ impl NoteVault {
 
         if path.is_note_file() {
             debug!("We search by name {}", name);
-            // It's a note name, we look for the note name, not the path
-            db::search_note_by_name(self.vault_db.pool(), name).await
+            Ok(db::search_note_by_name(self.vault_db.pool(), name).await?)
         } else {
             debug!("We search by path {}", path);
-            db::search_note_by_path(self.vault_db.pool(), path).await
+            Ok(db::search_note_by_path(self.vault_db.pool(), path).await?)
         }
     }
 
@@ -437,7 +490,7 @@ impl NoteVault {
 
         // We delete in DB first
         let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
-        db::delete_notes(&mut tx, &vec![path.clone()]).await?;
+        db::delete_notes(&mut tx, &[path.clone()]).await?;
         tx.commit().await.map_err(DBError::from)?;
 
         nfs::delete_note(&self.workspace_path, &path).await?;
@@ -456,7 +509,7 @@ impl NoteVault {
 
         // We delete in DB first
         let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
-        db::delete_directories(&mut tx, &vec![path.clone()]).await?;
+        db::delete_directories(&mut tx, &[path.clone()]).await?;
         tx.commit().await.map_err(DBError::from)?;
 
         nfs::delete_directory(&self.workspace_path, &path).await?;
@@ -687,6 +740,122 @@ mod tests {
     use chrono::NaiveDate;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    // Helper: build a NoteVault pointing at a temp directory (no DB needed for pure-text tests).
+    async fn make_vault(dir: &std::path::Path) -> NoteVault {
+        NoteVault::new(dir).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_markdown_and_links_resolves_relative_image() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+
+        // Note at /directory/note.md, image at ../photo.png  →  /photo.png in vault
+        let note = note::NoteDetails::new(
+            &VaultPath::new("/directory/note.md"),
+            "![alt](../photo.png)",
+        );
+        let md_note = vault.get_markdown_and_links(&note);
+
+        let expected_os_path = dir.path().join("photo.png").display().to_string();
+        assert_eq!(md_note.text, format!("![alt]({})", expected_os_path));
+        assert_eq!(1, md_note.links.len());
+        let link = &md_note.links[0];
+        assert_eq!(
+            link.ltype,
+            note::LinkType::Image(expected_os_path)
+        );
+        assert_eq!(link.text, "alt");
+        assert_eq!(link.raw_link, "../photo.png");
+    }
+
+    #[tokio::test]
+    async fn get_markdown_and_links_resolves_absolute_vault_image() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+
+        // Note anywhere, image at /assets/banner.png (vault-absolute)
+        let note = note::NoteDetails::new(
+            &VaultPath::new("/notes/note.md"),
+            "![banner](/assets/banner.png)",
+        );
+        let md_note = vault.get_markdown_and_links(&note);
+
+        let expected_os_path = dir
+            .path()
+            .join("assets")
+            .join("banner.png")
+            .display()
+            .to_string();
+        assert_eq!(md_note.text, format!("![banner]({})", expected_os_path));
+        assert!(matches!(
+            &md_note.links[0].ltype,
+            note::LinkType::Image(p) if *p == expected_os_path
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_markdown_and_links_keeps_external_image_url() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+
+        let url = "https://example.com/img.png";
+        let note = note::NoteDetails::new(
+            &VaultPath::new("/note.md"),
+            &format!("![remote]({})", url),
+        );
+        let md_note = vault.get_markdown_and_links(&note);
+
+        // URL must be kept verbatim in the output markdown
+        assert_eq!(md_note.text, format!("![remote]({})", url));
+        assert!(matches!(
+            &md_note.links[0].ltype,
+            note::LinkType::Image(p) if p == url
+        ));
+        assert_eq!(md_note.links[0].raw_link, url);
+    }
+
+    #[tokio::test]
+    async fn get_markdown_and_links_mixed_content() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+
+        // Mix: wikilink, note link, image, hashtag
+        let note = note::NoteDetails::new(
+            &VaultPath::new("/note.md"),
+            "[[Other Note]] [link](other.md) ![img](photo.png) #tag",
+        );
+        let md_note = vault.get_markdown_and_links(&note);
+
+        // Image link present
+        assert_eq!(
+            1,
+            md_note
+                .links
+                .iter()
+                .filter(|l| matches!(l.ltype, note::LinkType::Image(_)))
+                .count()
+        );
+        // Note links: wikilink + markdown note link
+        assert_eq!(
+            2,
+            md_note
+                .links
+                .iter()
+                .filter(|l| matches!(l.ltype, note::LinkType::Note(_)))
+                .count()
+        );
+        // Hashtag
+        assert_eq!(
+            1,
+            md_note
+                .links
+                .iter()
+                .filter(|l| matches!(l.ltype, note::LinkType::Hashtag))
+                .count()
+        );
+    }
 
     #[test]
     fn test_index_report_finish() {

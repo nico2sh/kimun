@@ -552,7 +552,7 @@ impl VaultPath {
             .collect()
     }
 
-    pub(super) fn to_pathbuf<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
+    pub fn to_pathbuf<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
         let mut path = workspace_path.as_ref().to_path_buf();
         for p in &self.flatten().slices {
             let slice = p.to_string();
@@ -798,6 +798,29 @@ impl Display for VaultPathSlice {
 
 fn filter_files(dir: &ignore::DirEntry) -> bool {
     !dir.path().starts_with(".")
+}
+
+pub fn list_directories<P: AsRef<Path>>(
+    base_path: P,
+    path: &VaultPath,
+    recursive: bool,
+) -> Result<Vec<super::DirectoryDetails>, FSError> {
+    let base_path = base_path.as_ref();
+    let os_path = path.to_pathbuf(base_path);
+    let walker = WalkBuilder::new(&os_path)
+        .max_depth(if recursive { None } else { Some(1) })
+        .filter_entry(filter_files)
+        .build();
+
+    let mut dirs = Vec::new();
+    for entry in walker.flatten() {
+        let entry_path = entry.path();
+        if entry_path.is_dir() && entry_path != os_path {
+            let vault_path = VaultPath::from_path(base_path, entry_path)?;
+            dirs.push(super::DirectoryDetails { path: vault_path });
+        }
+    }
+    Ok(dirs)
 }
 
 pub fn get_file_walker<P: AsRef<Path>>(
