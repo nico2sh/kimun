@@ -10,11 +10,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
-use crate::app_screen::AppScreen;
+use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
+use crate::components::settings::editor_section::EditorSection;
 use crate::components::settings::indexing_section::IndexingSection;
 use crate::components::settings::theme_picker::ThemePicker;
 use crate::components::settings::vault_section::VaultSection;
@@ -125,6 +126,7 @@ enum SettingsSection {
     Theme,
     Vault,
     Indexing,
+    Editor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -144,6 +146,7 @@ pub struct SettingsScreen {
     theme_picker: ThemePicker,
     vault_section: VaultSection,
     indexing_section: IndexingSection,
+    editor_section: EditorSection,
     pub overlay: Overlay,
     pub pending_save_after_index: bool,
     throbber_state: ThrobberState,
@@ -153,14 +156,16 @@ impl SettingsScreen {
     pub fn new(settings: AppSettings) -> Self {
         let theme = settings.get_theme();
         let themes = settings.theme_list();
-        let active_name = settings.theme.clone();
+        let active_name = settings.get_theme().name.clone();
         let vault_path = settings.workspace_dir.clone();
         let vault_available = vault_path.is_some();
+        let autosave_interval_secs = settings.autosave_interval_secs;
         let initial_settings = settings.clone();
         Self {
             theme_picker: ThemePicker::new(themes, &active_name),
             vault_section: VaultSection::new(vault_path),
             indexing_section: IndexingSection::new(vault_available),
+            editor_section: EditorSection::new(autosave_interval_secs),
             settings,
             initial_settings,
             theme,
@@ -210,6 +215,10 @@ impl SettingsScreen {
 
 #[async_trait]
 impl AppScreen for SettingsScreen {
+    fn get_kind(&self) -> ScreenKind {
+        ScreenKind::Settings
+    }
+
     fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
         // Route to active overlay first.
         match &mut self.overlay {
@@ -390,15 +399,17 @@ impl AppScreen for SettingsScreen {
                         self.section = match self.section {
                             SettingsSection::Vault => SettingsSection::Theme,
                             SettingsSection::Theme => SettingsSection::Indexing,
-                            SettingsSection::Indexing => SettingsSection::Vault,
+                            SettingsSection::Indexing => SettingsSection::Editor,
+                            SettingsSection::Editor => SettingsSection::Vault,
                         };
                         EventState::Consumed
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.section = match self.section {
-                            SettingsSection::Vault => SettingsSection::Indexing,
+                            SettingsSection::Vault => SettingsSection::Editor,
                             SettingsSection::Theme => SettingsSection::Vault,
                             SettingsSection::Indexing => SettingsSection::Theme,
+                            SettingsSection::Editor => SettingsSection::Indexing,
                         };
                         EventState::Consumed
                     }
@@ -422,6 +433,12 @@ impl AppScreen for SettingsScreen {
                         SettingsSection::Vault => self.vault_section.handle_event(&app_event, tx),
                         SettingsSection::Indexing => {
                             self.indexing_section.handle_event(&app_event, tx)
+                        }
+                        SettingsSection::Editor => {
+                            let r = self.editor_section.handle_event(&app_event, tx);
+                            self.settings.autosave_interval_secs =
+                                self.editor_section.autosave_interval_secs;
+                            r
                         }
                     }
                 }
@@ -529,8 +546,9 @@ impl AppScreen for SettingsScreen {
             SettingsSection::Vault => 0,
             SettingsSection::Theme => 1,
             SettingsSection::Indexing => 2,
+            SettingsSection::Editor => 3,
         };
-        let items: Vec<ListItem> = ["Vault", "Theme", "Indexing"]
+        let items: Vec<ListItem> = ["Vault", "Theme", "Indexing", "Editor"]
             .iter()
             .enumerate()
             .map(|(i, name)| {
@@ -563,6 +581,10 @@ impl AppScreen for SettingsScreen {
             }
             SettingsSection::Indexing => {
                 self.indexing_section
+                    .render(f, cols[1], &theme, content_focused)
+            }
+            SettingsSection::Editor => {
+                self.editor_section
                     .render(f, cols[1], &theme, content_focused)
             }
         }

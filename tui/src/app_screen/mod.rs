@@ -10,6 +10,14 @@ use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenKind {
+    Start,
+    Browse,
+    Editor,
+    Settings,
+}
+
 #[async_trait]
 pub trait AppScreen: Send {
     /// Called once when the screen mounts. Send `AppMessage`s through `tx` to
@@ -28,6 +36,8 @@ pub trait AppScreen: Send {
     async fn handle_app_message(&mut self, msg: AppMessage, _tx: &AppTx) -> Option<AppMessage> {
         Some(msg)
     }
+
+    fn get_kind(&self) -> ScreenKind;
 
     /// Called once just before the screen is removed from the app (quit or screen transition).
     /// Default implementation is a no-op.

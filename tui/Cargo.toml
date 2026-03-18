@@ -24,6 +24,7 @@ serde = "1.0.228"
 toml = "0.9.8"
 itertools = "0.14.0"
 log = "0.4.29"
+simplelog = "0.12"
 tokio = { version = "1.50.0", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"

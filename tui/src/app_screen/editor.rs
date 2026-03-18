@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders};
 
-use crate::app_screen::AppScreen;
+use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
@@ -162,6 +162,10 @@ impl EditorScreen {
 
 #[async_trait]
 impl AppScreen for EditorScreen {
+    fn get_kind(&self) -> ScreenKind {
+        ScreenKind::Editor
+    }
+
     async fn on_enter(&mut self, tx: &AppTx) {
         self.open_path(self.path.clone(), tx).await;
     }

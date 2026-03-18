@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use kimun_core::nfs::VaultPath;
 use ratatui::widgets::{Block, Borders};
 
-use crate::app_screen::AppScreen;
+use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
@@ -27,6 +27,10 @@ impl AppScreen for StartScreen {
             .last()
             .map_or_else(|| VaultPath::root(), |p| p.to_owned());
         tx.send(AppMessage::OpenPath(path)).ok();
+    }
+
+    fn get_kind(&self) -> ScreenKind {
+        ScreenKind::Start
     }
 
     fn handle_event(&mut self, _event: &AppEvent, _tx: &AppTx) -> EventState {

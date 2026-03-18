@@ -6,7 +6,10 @@ pub mod settings;
 pub mod ui;
 
 use color_eyre::Result;
-use crossterm::event::{DisableMouseCapture, Event, EventStream};
+use crossterm::event::{
+    DisableMouseCapture, Event, EventStream, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use futures::StreamExt;
 use ratatui::Terminal;
@@ -17,7 +20,7 @@ use ratatui::prelude::{Backend, CrosstermBackend};
 use std::io;
 
 use crate::app::App;
-use crate::app_screen::AppScreen;
+use crate::app_screen::{AppScreen, ScreenKind};
 use crate::app_screen::browse::BrowseScreen;
 use crate::app_screen::editor::EditorScreen;
 use crate::app_screen::settings::SettingsScreen;
@@ -30,14 +33,31 @@ use crate::keys::key_event_to_combo;
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
+    #[cfg(debug_assertions)]
+    {
+        use simplelog::*;
+        let log_file = std::fs::File::create("/tmp/kimun-keys.log").unwrap();
+        WriteLogger::init(LevelFilter::Debug, Config::default(), log_file).unwrap();
+    }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Best-effort: terminals that support the kitty keyboard protocol will honour this
+    // and report Ctrl+symbol combos (e.g. Ctrl+,) correctly. Terminals that don't
+    // support it safely ignore the escape sequence, so we send it unconditionally.
+    let _ = execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+        )
+    );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new().await?;
     run_app(&mut terminal, &mut app).await?;
     disable_raw_mode()?;
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
@@ -159,19 +179,32 @@ where
                 for raw in raw_events {
                     let app_event = match raw {
                         Event::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
+                            log::debug!("KEY: code={:?} mods={:?} kind={:?}", key.code, key.modifiers, key.kind);
                             AppEvent::Key(key)
                         }
                         Event::Mouse(mouse) => AppEvent::Mouse(mouse),
                         _ => continue,
                     };
-                    // Global Ctrl+Q quit — fires before any screen gets the event.
+                    // Global shortcuts — fire before any screen gets the event.
                     if let AppEvent::Key(key) = &app_event {
                         if let Some(combo) = key_event_to_combo(key) {
-                            if app.settings.key_bindings.get_action(&combo)
-                                == Some(ActionShortcuts::Quit)
-                            {
-                                tx.send(AppMessage::Quit).ok();
-                                continue;
+                            log::debug!("COMBO: {} → {:?}", combo, app.settings.key_bindings.get_action(&combo));
+                            match app.settings.key_bindings.get_action(&combo) {
+                                Some(ActionShortcuts::Quit) => {
+                                    tx.send(AppMessage::Quit).ok();
+                                    continue;
+                                }
+                                Some(ActionShortcuts::OpenSettings) => {
+                                    let already_on_settings = app.current_screen
+                                        .as_ref()
+                                        .map(|s| s.get_kind() == ScreenKind::Settings)
+                                        .unwrap_or(false);
+                                    if !already_on_settings {
+                                        tx.send(AppMessage::OpenSettings).ok();
+                                    }
+                                    continue;
+                                }
+                                _ => {}
                             }
                         }
                     }

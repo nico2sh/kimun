@@ -6,21 +6,18 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 
-use crate::app_screen::AppScreen;
+use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 use crate::components::sidebar::SidebarComponent;
-use crate::keys::action_shortcuts::ActionShortcuts;
-use crate::keys::key_event_to_combo;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
 pub struct BrowseScreen {
     vault: Arc<NoteVault>,
     sidebar: SidebarComponent,
-    settings: AppSettings,
     theme: Theme,
     path: VaultPath,
 }
@@ -32,7 +29,6 @@ impl BrowseScreen {
         Self {
             sidebar: SidebarComponent::new(kb, vault.clone()),
             vault,
-            settings,
             theme,
             path,
         }
@@ -56,19 +52,15 @@ impl BrowseScreen {
 
 #[async_trait]
 impl AppScreen for BrowseScreen {
+    fn get_kind(&self) -> ScreenKind {
+        ScreenKind::Browse
+    }
+
     async fn on_enter(&mut self, tx: &AppTx) {
         self.navigate_sidebar(self.path.clone(), tx).await;
     }
 
     fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
-        if let AppEvent::Key(key) = event {
-            if let Some(combo) = key_event_to_combo(key) {
-                if self.settings.key_bindings.get_action(&combo) == Some(ActionShortcuts::OpenSettings) {
-                    tx.send(AppMessage::OpenSettings).ok();
-                    return EventState::Consumed;
-                }
-            }
-        }
         self.sidebar.handle_event(event, tx)
     }
 
@@ -151,9 +143,6 @@ mod tests {
     async fn settings_keybinding_sends_open_settings() {
         let vault = make_vault().await;
         let settings = make_settings_with_defaults();
-        #[cfg(target_os = "macos")]
-        let mods = ratatui::crossterm::event::KeyModifiers::SUPER;
-        #[cfg(not(target_os = "macos"))]
         let mods = ratatui::crossterm::event::KeyModifiers::CONTROL;
 
         let event = AppEvent::Key(ratatui::crossterm::event::KeyEvent {

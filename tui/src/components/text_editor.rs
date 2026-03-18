@@ -61,7 +61,9 @@ impl Component for TextEditorComponent {
             AppEvent::Key(key) => {
                 // Check keybindings for navigation actions.
                 if let Some(combo) = key_event_to_combo(key) {
-                    if let Some(ActionShortcuts::FocusSidebar) = self.key_bindings.get_action(&combo) {
+                    if let Some(ActionShortcuts::FocusSidebar) =
+                        self.key_bindings.get_action(&combo)
+                    {
                         tx.send(AppMessage::FocusSidebar).ok();
                         return EventState::Consumed;
                     }
@@ -102,11 +104,13 @@ impl Component for TextEditorComponent {
                 .fg(theme.bg.to_ratatui())
                 .bg(theme.accent.to_ratatui()),
         );
-        self.text_area.set_selection_style(
-            Style::default().bg(theme.bg_selected.to_ratatui()),
-        );
         self.text_area
-            .set_style(Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui()));
+            .set_selection_style(Style::default().bg(theme.bg_selected.to_ratatui()));
+        self.text_area.set_style(
+            Style::default()
+                .fg(theme.fg.to_ratatui())
+                .bg(theme.bg.to_ratatui()),
+        );
         f.render_widget(&self.text_area, rect);
     }
 }
@@ -155,6 +159,9 @@ mod tests {
     fn trailing_newline_does_not_cause_false_dirty() {
         let mut editor = make_editor();
         editor.set_text("content\n".to_string());
-        assert!(!editor.is_dirty(), "trailing newline should not make editor dirty after load");
+        assert!(
+            !editor.is_dirty(),
+            "trailing newline should not make editor dirty after load"
+        );
     }
 }
