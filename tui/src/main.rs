@@ -50,6 +50,15 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn switch_screen(app: &mut App, tx: &crate::components::app_message::AppTx, new_screen: Box<dyn AppScreen>) {
+    if let Some(current) = app.current_screen.as_mut() {
+        current.on_exit(tx).await;
+    }
+    let mut screen = new_screen;
+    screen.on_enter(tx).await;
+    app.current_screen = Some(screen);
+}
+
 async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
 where
     io::Error: From<B::Error>,
@@ -86,33 +95,13 @@ where
                 }
                 AppMessage::Redraw => {}
                 AppMessage::OpenSettings => {
-                    if let Some(current) = app.current_screen.as_mut() {
-                        current.on_exit(&tx).await;
-                    }
-                    let mut screen: Box<dyn AppScreen> = Box::new(SettingsScreen::new(app.settings.clone()));
-                    screen.on_enter(&tx).await;
-                    app.current_screen = Some(screen);
+                    switch_screen(app, &tx, Box::new(SettingsScreen::new(app.settings.clone()))).await;
                 }
                 AppMessage::OpenEditor(vault, path) => {
-                    if let Some(current) = app.current_screen.as_mut() {
-                        current.on_exit(&tx).await;
-                    }
-                    let mut screen: Box<dyn AppScreen> = Box::new(EditorScreen::new(
-                        Arc::new(vault),
-                        path,
-                        app.settings.clone(),
-                    ));
-                    screen.on_enter(&tx).await;
-                    app.current_screen = Some(screen);
+                    switch_screen(app, &tx, Box::new(EditorScreen::new(Arc::new(vault), path, app.settings.clone()))).await;
                 }
                 AppMessage::OpenBrowse(vault, path) => {
-                    if let Some(current) = app.current_screen.as_mut() {
-                        current.on_exit(&tx).await;
-                    }
-                    let mut screen: Box<dyn AppScreen> =
-                        Box::new(BrowseScreen::new(Arc::new(vault), path, app.settings.clone()));
-                    screen.on_enter(&tx).await;
-                    app.current_screen = Some(screen);
+                    switch_screen(app, &tx, Box::new(BrowseScreen::new(Arc::new(vault), path, app.settings.clone()))).await;
                 }
                 AppMessage::OpenPath(path) => {
                     let unhandled = if let Some(screen) = app.current_screen.as_mut() {
@@ -136,23 +125,11 @@ where
                     }
                 }
                 AppMessage::SettingsSaved(new_settings) => {
-                    if let Some(current) = app.current_screen.as_mut() {
-                        current.on_exit(&tx).await;
-                    }
                     app.settings = new_settings;
-                    let mut screen: Box<dyn AppScreen> =
-                        Box::new(StartScreen::new(app.settings.clone()));
-                    screen.on_enter(&tx).await;
-                    app.current_screen = Some(screen);
+                    switch_screen(app, &tx, Box::new(StartScreen::new(app.settings.clone()))).await;
                 }
                 AppMessage::CloseSettings => {
-                    if let Some(current) = app.current_screen.as_mut() {
-                        current.on_exit(&tx).await;
-                    }
-                    let mut screen: Box<dyn AppScreen> =
-                        Box::new(StartScreen::new(app.settings.clone()));
-                    screen.on_enter(&tx).await;
-                    app.current_screen = Some(screen);
+                    switch_screen(app, &tx, Box::new(StartScreen::new(app.settings.clone()))).await;
                 }
                 other => {
                     if let Some(screen) = app.current_screen.as_mut() {
