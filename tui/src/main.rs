@@ -86,11 +86,17 @@ where
                 }
                 AppMessage::Redraw => {}
                 AppMessage::OpenSettings => {
+                    if let Some(current) = app.current_screen.as_mut() {
+                        current.on_exit(&tx).await;
+                    }
                     let mut screen: Box<dyn AppScreen> = Box::new(SettingsScreen::new(app.settings.clone()));
                     screen.on_enter(&tx).await;
                     app.current_screen = Some(screen);
                 }
                 AppMessage::OpenEditor(vault, path) => {
+                    if let Some(current) = app.current_screen.as_mut() {
+                        current.on_exit(&tx).await;
+                    }
                     let mut screen: Box<dyn AppScreen> = Box::new(EditorScreen::new(
                         Arc::new(vault),
                         path,
@@ -100,6 +106,9 @@ where
                     app.current_screen = Some(screen);
                 }
                 AppMessage::OpenBrowse(vault, path) => {
+                    if let Some(current) = app.current_screen.as_mut() {
+                        current.on_exit(&tx).await;
+                    }
                     let mut screen: Box<dyn AppScreen> =
                         Box::new(BrowseScreen::new(Arc::new(vault), path, app.settings.clone()));
                     screen.on_enter(&tx).await;
@@ -127,6 +136,9 @@ where
                     }
                 }
                 AppMessage::SettingsSaved(new_settings) => {
+                    if let Some(current) = app.current_screen.as_mut() {
+                        current.on_exit(&tx).await;
+                    }
                     app.settings = new_settings;
                     let mut screen: Box<dyn AppScreen> =
                         Box::new(StartScreen::new(app.settings.clone()));
@@ -134,6 +146,9 @@ where
                     app.current_screen = Some(screen);
                 }
                 AppMessage::CloseSettings => {
+                    if let Some(current) = app.current_screen.as_mut() {
+                        current.on_exit(&tx).await;
+                    }
                     let mut screen: Box<dyn AppScreen> =
                         Box::new(StartScreen::new(app.settings.clone()));
                     screen.on_enter(&tx).await;
