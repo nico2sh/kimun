@@ -6,8 +6,6 @@ use crate::settings::AppSettings;
 
 /// Messages screens send to the main loop. All variants must be `Send` so
 /// they can travel through the tokio channel.
-/// Note: `OpenEditor` and `OpenBrowse` carry `NoteVault` directly as an
-/// accepted deviation from keeping data simple — vault construction is cheap.
 #[derive(Debug)]
 pub enum AppMessage {
     Quit,
@@ -15,8 +13,7 @@ pub enum AppMessage {
     Autosave,
     OpenSettings,
     /// Navigate to the editor for the given vault root path.
-    /// Accepted deviation: carries NoteVault directly (same as OpenBrowse).
-    OpenEditor(NoteVault, VaultPath),
+    OpenEditor(Arc<NoteVault>, VaultPath),
     /// Navigate to the browse screen for the given vault root and directory path.
     OpenBrowse(Arc<NoteVault>, VaultPath),
     OpenPath(VaultPath),
