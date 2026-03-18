@@ -34,6 +34,7 @@ pub struct EditorScreen {
     focus: Focus,
     sidebar_visible: bool,
     toggle_key: String,
+    autosave_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl EditorScreen {
@@ -56,12 +57,24 @@ impl EditorScreen {
             focus: Focus::Editor,
             sidebar_visible: true,
             toggle_key,
+            autosave_handle: None,
+        }
+    }
+}
+
+impl Drop for EditorScreen {
+    fn drop(&mut self) {
+        if let Some(handle) = self.autosave_handle.take() {
+            handle.abort();
         }
     }
 }
 
 impl EditorScreen {
     pub async fn open_path(&mut self, path: VaultPath, tx: &AppTx) {
+        // Save current note before switching
+        self.try_save().await;
+
         self.path = path.clone();
         let content = self.vault.get_note_text(&self.path).await.unwrap();
         self.editor.set_text(content);
@@ -76,6 +89,23 @@ impl EditorScreen {
             };
             self.navigate_sidebar(dir, tx).await;
         }
+
+        // Abort any existing timer and spawn a fresh one for the new note.
+        if let Some(h) = self.autosave_handle.take() {
+            h.abort();
+        }
+        let interval_secs = self.settings.autosave_interval_secs;
+        let tx2 = tx.clone();
+        self.autosave_handle = Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                if tx2.send(AppMessage::Autosave).is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     pub async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
@@ -92,6 +122,15 @@ impl EditorScreen {
         });
 
         self.sidebar.start_loading(rx, dir);
+    }
+
+    async fn try_save(&mut self) {
+        if self.editor.is_dirty() {
+            let text = self.editor.get_text();
+            if self.vault.save_note(&self.path, &text).await.is_ok() {
+                self.editor.mark_saved(text);
+            }
+        }
     }
 }
 
@@ -193,8 +232,9 @@ impl AppScreen for EditorScreen {
         };
 
         let editor_border_style = theme.border_style(editor_focused);
+        let editor_title = if self.editor.is_dirty() { "Editor [+]" } else { "Editor" };
         let editor_block = Block::default()
-            .title("Editor")
+            .title(editor_title)
             .borders(Borders::ALL)
             .border_style(editor_border_style)
             .style(theme.base_style());
@@ -214,6 +254,10 @@ impl AppScreen for EditorScreen {
 
     async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) -> Option<AppMessage> {
         match msg {
+            AppMessage::Autosave => {
+                self.try_save().await;
+                None
+            }
             AppMessage::OpenPath(path) => {
                 if path.is_note() {
                     self.open_path(path, tx).await;
@@ -232,5 +276,9 @@ impl AppScreen for EditorScreen {
             }
             other => Some(other),
         }
+    }
+
+    async fn on_exit(&mut self, _tx: &AppTx) {
+        self.try_save().await;
     }
 }
