@@ -12,6 +12,9 @@
       "Bash(sed -i '' '27d' ~/.config/kimun_debug/config.toml)",
       "Bash(sed -i '' 's/FocusEditor = \\\\[\"\" & <Tab>\"\"\\\\]/FocusEditor = [\"\"<Tab>\"\"]/' ~/.config/kimun_debug/config.toml)",
       "Bash(xxd)"
+    ],
+    "additionalDirectories": [
+      "/Users/nhormazabal/development/personal/kimun/docs/superpowers/specs"
     ]
   },
   "enabledPlugins": {
