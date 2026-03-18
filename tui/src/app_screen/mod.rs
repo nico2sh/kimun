@@ -28,6 +28,10 @@ pub trait AppScreen: Send {
     async fn handle_app_message(&mut self, msg: AppMessage, _tx: &AppTx) -> Option<AppMessage> {
         Some(msg)
     }
+
+    /// Called once just before the screen is removed from the app (quit or screen transition).
+    /// Default implementation is a no-op.
+    async fn on_exit(&mut self, _tx: &AppTx) {}
 }
 
 #[cfg(test)]
@@ -53,5 +57,12 @@ mod tests {
         let mut screen = SettingsScreen::new(AppSettings::default());
         let result = screen.handle_app_message(AppMessage::FocusEditor, &tx).await;
         assert!(result.is_some(), "SettingsScreen should not consume FocusEditor");
+    }
+
+    #[tokio::test]
+    async fn on_exit_default_is_noop() {
+        let (tx, _rx) = unbounded_channel();
+        let mut screen = SettingsScreen::new(AppSettings::default());
+        screen.on_exit(&tx).await; // must compile and not panic
     }
 }

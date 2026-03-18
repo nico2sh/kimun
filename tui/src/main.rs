@@ -78,7 +78,12 @@ where
         // Drain all pending messages before drawing.
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                AppMessage::Quit => return Ok(()),
+                AppMessage::Quit => {
+                    if let Some(screen) = app.current_screen.as_mut() {
+                        screen.on_exit(&tx).await;
+                    }
+                    return Ok(());
+                }
                 AppMessage::Redraw => {}
                 AppMessage::OpenSettings => {
                     let mut screen: Box<dyn AppScreen> = Box::new(SettingsScreen::new(app.settings.clone()));
@@ -181,7 +186,6 @@ where
             }
             Some(msg) = rx.recv() => {
                 match msg {
-                    AppMessage::Quit => return Ok(()),
                     AppMessage::Redraw => {} // just loop to redraw
                     other => {
                         // Re-queue for the drain loop at the top of next iteration.
