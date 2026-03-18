@@ -39,6 +39,8 @@ pub struct AppSettings {
     needs_indexing: bool,
     #[serde(default = "default_keybindings")]
     pub key_bindings: KeyBindings,
+    #[serde(default = "default_autosave_interval")]
+    pub autosave_interval_secs: u64,
 }
 
 #[cfg(target_os = "macos")]
@@ -118,6 +120,10 @@ fn yes() -> bool {
     true
 }
 
+fn default_autosave_interval() -> u64 {
+    5
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -126,6 +132,7 @@ impl Default for AppSettings {
             theme: Default::default(),
             needs_indexing: true,
             key_bindings: default_keybindings(),
+            autosave_interval_secs: default_autosave_interval(),
         }
     }
 }
@@ -371,5 +378,25 @@ mod tests {
             !path.exists(),
             "corrupt file must be removed, not recreated"
         );
+    }
+
+    #[test]
+    fn autosave_interval_defaults_to_five() {
+        let settings = AppSettings::default();
+        assert_eq!(settings.autosave_interval_secs, 5);
+    }
+
+    #[test]
+    fn autosave_interval_deserializes_from_toml() {
+        let toml = "autosave_interval_secs = 30\n";
+        let settings: AppSettings = toml::from_str(toml).unwrap();
+        assert_eq!(settings.autosave_interval_secs, 30);
+    }
+
+    #[test]
+    fn autosave_interval_defaults_when_missing_from_toml() {
+        let toml = ""; // no autosave_interval_secs key
+        let settings: AppSettings = toml::from_str(toml).unwrap();
+        assert_eq!(settings.autosave_interval_secs, 5);
     }
 }
