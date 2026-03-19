@@ -12,9 +12,9 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::components::Component;
-use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
+use crate::components::events::{AppTx, InputEvent};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
@@ -366,7 +366,7 @@ impl FileListComponent {
             .unwrap_or_default();
 
             result_tx.send(indices).ok();
-            tx.send(AppMessage::Redraw).ok();
+            tx.send(AppEvent::Redraw).ok();
         });
         self.filter_task = Some(handle);
     }
@@ -437,7 +437,7 @@ impl FileListComponent {
             None => display_idx,
             Some(v) => v[display_idx],
         };
-        tx.send(AppMessage::OpenPath(self.entries[entry_idx].path().clone()))
+        tx.send(AppEvent::OpenPath(self.entries[entry_idx].path().clone()))
             .ok();
     }
 
@@ -465,14 +465,14 @@ impl FileListComponent {
 }
 
 impl Component for FileListComponent {
-    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
+    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
-            AppEvent::Key(key) => {
+            InputEvent::Key(key) => {
                 // Check keybindings first for action shortcuts.
                 if let Some(combo) = key_event_to_combo(key) {
                     match self.key_bindings.get_action(&combo) {
                         Some(ActionShortcuts::FocusEditor) => {
-                            tx.send(AppMessage::FocusEditor).ok();
+                            tx.send(AppEvent::FocusEditor).ok();
                             return EventState::Consumed;
                         }
                         Some(ActionShortcuts::SortByName) => {
@@ -522,7 +522,7 @@ impl Component for FileListComponent {
                     _ => EventState::NotConsumed,
                 }
             }
-            AppEvent::Mouse(mouse) => {
+            InputEvent::Mouse(mouse) => {
                 let r = &self.rendered_rect;
                 let in_bounds = mouse.column >= r.x
                     && mouse.column < r.x + r.width
@@ -533,7 +533,7 @@ impl Component for FileListComponent {
                 }
                 match mouse.kind {
                     MouseEventKind::Down(_) => {
-                        tx.send(AppMessage::FocusSidebar).ok();
+                        tx.send(AppEvent::FocusSidebar).ok();
                         // row 0 is the border/header; list starts at row 1
                         if mouse.row > r.y {
                             let rel_row = mouse.row - r.y - 1;
@@ -617,17 +617,19 @@ impl Component for FileListComponent {
             .any(|e| !matches!(e, FileListEntry::Up { .. }));
         if self.loading && !has_content {
             let loading = Paragraph::new("Loading…")
-                .style(Style::default().fg(theme.fg_muted.to_ratatui()).bg(theme.bg_panel.to_ratatui()))
+                .style(
+                    Style::default()
+                        .fg(theme.fg_muted.to_ratatui())
+                        .bg(theme.bg_panel.to_ratatui()),
+                )
                 .block(make_block());
             f.render_widget(loading, rect);
         } else {
-            let list = List::new(items)
-                .block(make_block())
-                .highlight_style(
-                    Style::default()
-                        .fg(theme.fg_selected.to_ratatui())
-                        .bg(theme.bg_selected.to_ratatui()),
-                );
+            let list = List::new(items).block(make_block()).highlight_style(
+                Style::default()
+                    .fg(theme.fg_selected.to_ratatui())
+                    .bg(theme.bg_selected.to_ratatui()),
+            );
             f.render_stateful_widget(list, rect, &mut self.list_state);
         }
     }
@@ -640,7 +642,7 @@ mod tests {
     use super::*;
 
     fn make_tx() -> AppTx {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
         tx
     }
 
@@ -656,13 +658,19 @@ mod tests {
         list.schedule_filter(tx.clone());
 
         // After scheduling, a task handle must be stored.
-        assert!(list.filter_task.is_some(), "filter_task should be Some after first schedule");
+        assert!(
+            list.filter_task.is_some(),
+            "filter_task should be Some after first schedule"
+        );
 
         // Schedule again — the implementation must abort the old task and store a new handle.
         list.search_query = "note 1".to_string();
         list.schedule_filter(tx.clone());
 
-        assert!(list.filter_task.is_some(), "filter_task should still be Some after re-schedule");
+        assert!(
+            list.filter_task.is_some(),
+            "filter_task should still be Some after re-schedule"
+        );
     }
 
     #[tokio::test]
@@ -678,7 +686,10 @@ mod tests {
         assert!(list.filter_task.is_some());
         list.clear();
         // After clear, the handle should be gone.
-        assert!(list.filter_task.is_none(), "filter_task should be None after clear");
+        assert!(
+            list.filter_task.is_none(),
+            "filter_task should be None after clear"
+        );
     }
 
     fn make_note(filename: &str, title: &str) -> FileListEntry {
@@ -708,9 +719,16 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
-        terminal.draw(|f| {
-            list.render(f, f.area(), &crate::settings::themes::Theme::default(), false);
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                list.render(
+                    f,
+                    f.area(),
+                    &crate::settings::themes::Theme::default(),
+                    false,
+                );
+            })
+            .unwrap();
     }
 
     #[test]

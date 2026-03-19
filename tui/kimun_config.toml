@@ -1,6 +1,6 @@
-last_paths = ["/newnote.md", "/journal/2021-04-07.md"]
+last_paths = ["/newnote.md", "/journal/2021-04-07.md", "/journal/2026-03-19.md"]
 workspace_dir = "/Users/nhormazabal/Documents/Notes"
-theme = ""
+theme = "Catppuccin Mocha"
 autosave_interval_secs = 5
 
 [key_bindings]

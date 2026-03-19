@@ -5,9 +5,10 @@ use ratatui::style::Style;
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::components::Component;
-use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
+use crate::components::events::AppTx;
+use crate::components::events::InputEvent;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
@@ -56,22 +57,22 @@ impl TextEditorComponent {
 }
 
 impl Component for TextEditorComponent {
-    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
+    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
-            AppEvent::Key(key) => {
+            InputEvent::Key(key) => {
                 // Check keybindings for navigation actions.
                 if let Some(combo) = key_event_to_combo(key) {
                     if let Some(ActionShortcuts::FocusSidebar) =
                         self.key_bindings.get_action(&combo)
                     {
-                        tx.send(AppMessage::FocusSidebar).ok();
+                        tx.send(AppEvent::FocusSidebar).ok();
                         return EventState::Consumed;
                     }
                 }
                 self.text_area.input(*key);
                 EventState::Consumed
             }
-            AppEvent::Mouse(mouse) => {
+            InputEvent::Mouse(mouse) => {
                 let r = &self.rect;
                 let in_bounds = mouse.column >= r.x
                     && mouse.column < r.x + r.width
@@ -82,7 +83,7 @@ impl Component for TextEditorComponent {
                 }
                 match mouse.kind {
                     MouseEventKind::Down(_) => {
-                        tx.send(AppMessage::FocusEditor).ok();
+                        tx.send(AppEvent::FocusEditor).ok();
                         let row = mouse.row - r.y;
                         let col = mouse.column - r.x;
                         self.text_area.move_cursor(CursorMove::Jump(row, col));
@@ -93,7 +94,6 @@ impl Component for TextEditorComponent {
                 }
                 EventState::Consumed
             }
-            _ => EventState::NotConsumed,
         }
     }
 

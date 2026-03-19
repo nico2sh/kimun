@@ -4,13 +4,15 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
-use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
-use crate::components::events::AppEvent;
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum IndexAction { Fast, Full }
+pub enum IndexAction {
+    Fast,
+    Full,
+}
 
 pub struct IndexingSection {
     pub selected: IndexAction,
@@ -19,7 +21,10 @@ pub struct IndexingSection {
 
 impl IndexingSection {
     pub fn new(vault_available: bool) -> Self {
-        Self { selected: IndexAction::Fast, vault_available }
+        Self {
+            selected: IndexAction::Fast,
+            vault_available,
+        }
     }
 
     pub fn set_vault_available(&mut self, available: bool) {
@@ -28,11 +33,13 @@ impl IndexingSection {
 }
 
 impl Component for IndexingSection {
-    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
+    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         if !self.vault_available {
             return EventState::NotConsumed;
         }
-        let AppEvent::Key(key) = event else { return EventState::NotConsumed; };
+        let InputEvent::Key(key) = event else {
+            return EventState::NotConsumed;
+        };
         match key.code {
             ratatui::crossterm::event::KeyCode::Right
             | ratatui::crossterm::event::KeyCode::Char('l') => {
@@ -46,8 +53,8 @@ impl Component for IndexingSection {
             }
             ratatui::crossterm::event::KeyCode::Enter => {
                 let msg = match self.selected {
-                    IndexAction::Fast => AppMessage::TriggerFastReindex,
-                    IndexAction::Full => AppMessage::TriggerFullReindex,
+                    IndexAction::Fast => AppEvent::TriggerFastReindex,
+                    IndexAction::Full => AppEvent::TriggerFullReindex,
                 };
                 tx.send(msg).ok();
                 EventState::Consumed
@@ -66,12 +73,25 @@ impl Component for IndexingSection {
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        let fast_label = if self.selected == IndexAction::Fast { "[ Fast Reindex ]" } else { "  Fast Reindex  " };
-        let full_label = if self.selected == IndexAction::Full { "[ Full Reindex ]" } else { "  Full Reindex  " };
-        let dim = if self.vault_available {
-            Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui())
+        let fast_label = if self.selected == IndexAction::Fast {
+            "[ Fast Reindex ]"
         } else {
-            Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui()).add_modifier(Modifier::DIM)
+            "  Fast Reindex  "
+        };
+        let full_label = if self.selected == IndexAction::Full {
+            "[ Full Reindex ]"
+        } else {
+            "  Full Reindex  "
+        };
+        let dim = if self.vault_available {
+            Style::default()
+                .fg(theme.fg.to_ratatui())
+                .bg(theme.bg.to_ratatui())
+        } else {
+            Style::default()
+                .fg(theme.fg.to_ratatui())
+                .bg(theme.bg.to_ratatui())
+                .add_modifier(Modifier::DIM)
         };
 
         let cols = Layout::default()
@@ -86,11 +106,11 @@ impl Component for IndexingSection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, KeyEventKind, KeyEventState};
     use crate::components::events::AppEvent;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
-    fn key(code: KeyCode) -> AppEvent {
-        AppEvent::Key(KeyEvent {
+    fn key(code: KeyCode) -> InputEvent {
+        InputEvent::Key(KeyEvent {
             code,
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -103,16 +123,34 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = IndexingSection::new(false);
         let enter_result = section.handle_event(&key(KeyCode::Enter), &tx);
-        assert!(matches!(enter_result, crate::components::event_state::EventState::NotConsumed));
+        assert!(matches!(
+            enter_result,
+            crate::components::event_state::EventState::NotConsumed
+        ));
         let right_result = section.handle_event(&key(KeyCode::Right), &tx);
-        assert!(matches!(right_result, crate::components::event_state::EventState::NotConsumed));
+        assert!(matches!(
+            right_result,
+            crate::components::event_state::EventState::NotConsumed
+        ));
         let left_result = section.handle_event(&key(KeyCode::Left), &tx);
-        assert!(matches!(left_result, crate::components::event_state::EventState::NotConsumed));
+        assert!(matches!(
+            left_result,
+            crate::components::event_state::EventState::NotConsumed
+        ));
         let l_result = section.handle_event(&key(KeyCode::Char('l')), &tx);
-        assert!(matches!(l_result, crate::components::event_state::EventState::NotConsumed));
+        assert!(matches!(
+            l_result,
+            crate::components::event_state::EventState::NotConsumed
+        ));
         let h_result = section.handle_event(&key(KeyCode::Char('h')), &tx);
-        assert!(matches!(h_result, crate::components::event_state::EventState::NotConsumed));
-        assert!(rx.try_recv().is_err(), "No messages should be sent when vault_available == false");
+        assert!(matches!(
+            h_result,
+            crate::components::event_state::EventState::NotConsumed
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "No messages should be sent when vault_available == false"
+        );
     }
 
     #[test]
@@ -120,11 +158,16 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = IndexingSection::new(false);
         section.handle_event(&key(KeyCode::Enter), &tx);
-        assert!(rx.try_recv().is_err(), "Enter should be blocked when unavailable");
+        assert!(
+            rx.try_recv().is_err(),
+            "Enter should be blocked when unavailable"
+        );
         section.set_vault_available(true);
         section.handle_event(&key(KeyCode::Enter), &tx);
-        let msg = rx.try_recv().expect("Enter should send message after enabling");
-        assert!(matches!(msg, AppMessage::TriggerFastReindex));
+        let msg = rx
+            .try_recv()
+            .expect("Enter should send message after enabling");
+        assert!(matches!(msg, AppEvent::TriggerFastReindex));
     }
 
     #[test]
@@ -151,7 +194,7 @@ mod tests {
         let mut section = IndexingSection::new(true);
         section.handle_event(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("message should be sent");
-        assert!(matches!(msg, AppMessage::TriggerFastReindex));
+        assert!(matches!(msg, AppEvent::TriggerFastReindex));
     }
 
     #[test]
@@ -162,7 +205,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "Right should not send any message");
         section.handle_event(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("message should be sent");
-        assert!(matches!(msg, AppMessage::TriggerFullReindex));
+        assert!(matches!(msg, AppEvent::TriggerFullReindex));
     }
 
     #[test]

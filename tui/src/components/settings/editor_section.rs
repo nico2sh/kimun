@@ -3,9 +3,9 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
-use crate::components::app_message::AppTx;
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
+use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
 const MIN_AUTOSAVE_SECS: u64 = 5;
@@ -18,18 +18,24 @@ pub struct EditorSection {
 
 impl EditorSection {
     pub fn new(autosave_interval_secs: u64) -> Self {
-        Self { autosave_interval_secs }
+        Self {
+            autosave_interval_secs,
+        }
     }
 }
 
 impl Component for EditorSection {
-    fn handle_event(&mut self, event: &AppEvent, _tx: &AppTx) -> EventState {
-        let AppEvent::Key(key) = event else { return EventState::NotConsumed; };
+    fn handle_event(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
+        let InputEvent::Key(key) = event else {
+            return EventState::NotConsumed;
+        };
         match key.code {
             ratatui::crossterm::event::KeyCode::Left
             | ratatui::crossterm::event::KeyCode::Char('h') => {
-                self.autosave_interval_secs =
-                    self.autosave_interval_secs.saturating_sub(STEP).max(MIN_AUTOSAVE_SECS);
+                self.autosave_interval_secs = self
+                    .autosave_interval_secs
+                    .saturating_sub(STEP)
+                    .max(MIN_AUTOSAVE_SECS);
                 EventState::Consumed
             }
             ratatui::crossterm::event::KeyCode::Right
@@ -54,17 +60,17 @@ impl Component for EditorSection {
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
             .split(inner);
 
-        let label = Paragraph::new("Autosave Interval")
-            .style(theme.base_style());
+        let label = Paragraph::new("Autosave Interval").style(theme.base_style());
         f.render_widget(label, rows[0]);
 
-        let value = format!(
-            "  ◀  {}s  ▶   (←/→ to change)",
-            self.autosave_interval_secs
-        );
+        let value = format!("  ◀  {}s  ▶   (←/→ to change)", self.autosave_interval_secs);
         let value_style = if focused {
             ratatui::style::Style::default()
                 .fg(theme.accent.to_ratatui())
@@ -81,10 +87,10 @@ impl Component for EditorSection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, KeyEventKind, KeyEventState};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
-    fn key(code: KeyCode) -> AppEvent {
-        AppEvent::Key(KeyEvent {
+    fn key(code: KeyCode) -> InputEvent {
+        InputEvent::Key(KeyEvent {
             code,
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
