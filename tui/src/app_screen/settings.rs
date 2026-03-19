@@ -18,6 +18,7 @@ use crate::components::settings::editor_section::EditorSection;
 use crate::components::settings::indexing_section::IndexingSection;
 use crate::components::settings::theme_picker::ThemePicker;
 use crate::components::settings::vault_section::VaultSection;
+use crate::components::indexing::{IndexingProgressState, fixed_centered_rect, spawn_running};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -77,37 +78,6 @@ pub enum ConfirmButton {
 pub enum SaveButton {
     Save,
     Discard,
-}
-
-pub enum IndexingProgressState {
-    Running {
-        work: tokio::task::JoinHandle<()>,
-        ticker: tokio::task::JoinHandle<()>,
-    },
-    Done(Duration),
-    Failed(String),
-}
-
-impl Drop for IndexingProgressState {
-    fn drop(&mut self) {
-        if let Self::Running { work, ticker } = self {
-            work.abort();
-            ticker.abort();
-        }
-    }
-}
-
-fn spawn_running(work: tokio::task::JoinHandle<()>, tx: &AppTx) -> IndexingProgressState {
-    let tx2 = tx.clone();
-    let ticker = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            if tx2.send(AppEvent::Redraw).is_err() {
-                break;
-            }
-        }
-    });
-    IndexingProgressState::Running { work, ticker }
 }
 
 pub enum Overlay {
@@ -747,17 +717,6 @@ impl SettingsScreen {
                 }
             }
         }
-    }
-}
-
-fn fixed_centered_rect(width: u16, height: u16, r: Rect) -> Rect {
-    let x = r.x + (r.width.saturating_sub(width)) / 2;
-    let y = r.y + (r.height.saturating_sub(height)) / 2;
-    Rect {
-        x,
-        y,
-        width: width.min(r.width),
-        height: height.min(r.height),
     }
 }
 
