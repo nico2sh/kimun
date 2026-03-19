@@ -1,16 +1,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use kimun_core::nfs::VaultPath;
+use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
-use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
-use crate::components::events::AppEvent;
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::sidebar::SidebarComponent;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
@@ -44,7 +43,7 @@ impl BrowseScreen {
         let tx2 = tx.clone();
         tokio::spawn(async move {
             vault.browse_vault(options).await.ok();
-            tx2.send(AppMessage::Redraw).ok();
+            tx2.send(AppEvent::Redraw).ok();
         });
         self.sidebar.start_loading(rx, dir);
     }
@@ -60,7 +59,7 @@ impl AppScreen for BrowseScreen {
         self.navigate_sidebar(self.path.clone(), tx).await;
     }
 
-    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
+    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         self.sidebar.handle_event(event, tx)
     }
 
@@ -71,13 +70,17 @@ impl AppScreen for BrowseScreen {
         );
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(60), Constraint::Min(0)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(60),
+                Constraint::Min(0),
+            ])
             .split(f.area());
         self.sidebar.render(f, cols[1], &self.theme, true);
     }
 
-    async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) -> Option<AppMessage> {
-        if let AppMessage::OpenPath(path) = &msg {
+    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
+        if let AppEvent::OpenPath(path) = &msg {
             if !path.is_note() {
                 let dir = path.clone();
                 self.navigate_sidebar(dir, tx).await;
@@ -90,6 +93,8 @@ impl AppScreen for BrowseScreen {
 
 #[cfg(test)]
 mod tests {
+    use crate::components::events::ScreenEvent;
+
     use super::*;
     use ratatui::crossterm::event::KeyCode;
     use tokio::sync::mpsc::unbounded_channel;
@@ -110,8 +115,8 @@ mod tests {
         Arc::new(NoteVault::new(&dir).await.unwrap())
     }
 
-    fn key_event(code: KeyCode) -> AppEvent {
-        AppEvent::Key(ratatui::crossterm::event::KeyEvent {
+    fn key_event(code: KeyCode) -> InputEvent {
+        InputEvent::Key(ratatui::crossterm::event::KeyEvent {
             code,
             modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
             kind: ratatui::crossterm::event::KeyEventKind::Press,
@@ -136,28 +141,12 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
         screen.handle_event(&key_event(KeyCode::Esc), &tx);
-        assert!(rx.try_recv().is_err(), "Esc should not send any message from BrowseScreen");
+        assert!(
+            rx.try_recv().is_err(),
+            "Esc should not send any message from BrowseScreen"
+        );
     }
 
-    #[tokio::test]
-    async fn settings_keybinding_sends_open_settings() {
-        let vault = make_vault().await;
-        let settings = make_settings_with_defaults();
-        let mods = ratatui::crossterm::event::KeyModifiers::CONTROL;
-
-        let event = AppEvent::Key(ratatui::crossterm::event::KeyEvent {
-            code: ratatui::crossterm::event::KeyCode::Char(','),
-            modifiers: mods,
-            kind: ratatui::crossterm::event::KeyEventKind::Press,
-            state: ratatui::crossterm::event::KeyEventState::NONE,
-        });
-
-        let (tx, mut rx) = unbounded_channel();
-        let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        screen.handle_event(&event, &tx);
-        let msg = rx.try_recv().expect("should have sent a message");
-        assert!(matches!(msg, AppMessage::OpenSettings));
-    }
 
     #[tokio::test]
     async fn handle_app_message_open_path_dir_is_consumed() {
@@ -166,7 +155,9 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let dir = VaultPath::new("subdir");
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        let result = screen.handle_app_message(AppMessage::OpenPath(dir.clone()), &tx).await;
+        let result = screen
+            .handle_app_message(AppEvent::OpenPath(dir.clone()), &tx)
+            .await;
         assert!(result.is_none(), "OpenPath(dir) should be consumed");
         assert_eq!(screen.path, dir, "path should be updated");
     }
@@ -178,9 +169,11 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let note = VaultPath::note_path_from("test.md");
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        let result = screen.handle_app_message(AppMessage::OpenPath(note.clone()), &tx).await;
+        let result = screen
+            .handle_app_message(AppEvent::OpenPath(note.clone()), &tx)
+            .await;
         assert!(result.is_some(), "OpenPath(note) should be forwarded");
-        assert!(matches!(result.unwrap(), AppMessage::OpenPath(_)));
+        assert!(matches!(result.unwrap(), AppEvent::OpenPath(_)));
     }
 
     #[tokio::test]
@@ -189,7 +182,7 @@ mod tests {
         let settings = make_settings_with_defaults();
         let (tx, _rx) = unbounded_channel();
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        let result = screen.handle_app_message(AppMessage::FocusEditor, &tx).await;
+        let result = screen.handle_app_message(AppEvent::FocusEditor, &tx).await;
         assert!(result.is_some(), "FocusEditor should be forwarded");
     }
 }

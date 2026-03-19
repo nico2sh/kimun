@@ -1,17 +1,16 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use kimun_core::nfs::VaultPath;
+use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
-use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
-use crate::components::events::AppEvent;
+use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -73,7 +72,11 @@ impl Drop for EditorScreen {
 impl EditorScreen {
     pub async fn open_path(&mut self, path: VaultPath, tx: &AppTx) {
         if !path.is_note() {
-            tx.send(AppMessage::OpenBrowse(self.vault.clone(), path)).ok();
+            tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+                self.vault.clone(),
+                path,
+            )))
+            .ok();
             return;
         }
 
@@ -109,7 +112,7 @@ impl EditorScreen {
             interval.tick().await; // skip immediate first tick
             loop {
                 interval.tick().await;
-                if tx2.send(AppMessage::Autosave).is_err() {
+                if tx2.send(AppEvent::Autosave).is_err() {
                     break;
                 }
             }
@@ -126,7 +129,7 @@ impl EditorScreen {
         let tx2 = tx.clone();
         tokio::spawn(async move {
             vault.browse_vault(options).await.ok();
-            tx2.send(AppMessage::Redraw).ok();
+            tx2.send(AppEvent::Redraw).ok();
         });
 
         self.sidebar.start_loading(rx, dir);
@@ -170,8 +173,8 @@ impl AppScreen for EditorScreen {
         self.open_path(self.path.clone(), tx).await;
     }
 
-    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
-        if let AppEvent::Key(key) = event {
+    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        if let InputEvent::Key(key) = event {
             if let Some(combo) = key_event_to_combo(key) {
                 match self.settings.key_bindings.get_action(&combo) {
                     Some(ActionShortcuts::ToggleSidebar) => {
@@ -179,7 +182,7 @@ impl AppScreen for EditorScreen {
                         return EventState::Consumed;
                     }
                     Some(ActionShortcuts::NewJournal) => {
-                        tx.send(AppMessage::OpenJournal).ok();
+                        tx.send(AppEvent::OpenJournal).ok();
                         return EventState::Consumed;
                     }
                     _ => {}
@@ -189,7 +192,7 @@ impl AppScreen for EditorScreen {
 
         // Mouse events are routed to all components regardless of focus so that
         // clicking anywhere can transfer focus correctly.
-        if matches!(event, AppEvent::Mouse(_)) {
+        if matches!(event, InputEvent::Mouse(_)) {
             if self.sidebar_visible && self.sidebar.handle_event(event, tx).is_consumed() {
                 return EventState::Consumed;
             }
@@ -249,7 +252,11 @@ impl AppScreen for EditorScreen {
         };
 
         let editor_border_style = theme.border_style(editor_focused);
-        let editor_title = if self.editor.is_dirty() { "Editor [+]" } else { "Editor" };
+        let editor_title = if self.editor.is_dirty() {
+            "Editor [+]"
+        } else {
+            "Editor"
+        };
         let editor_block = Block::default()
             .title(editor_title)
             .borders(Borders::ALL)
@@ -269,13 +276,13 @@ impl AppScreen for EditorScreen {
         f.render_widget(footer, rows[2]);
     }
 
-    async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) -> Option<AppMessage> {
+    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
         match msg {
-            AppMessage::Autosave => {
+            AppEvent::Autosave => {
                 self.try_save().await;
                 None
             }
-            AppMessage::OpenPath(path) => {
+            AppEvent::OpenPath(path) => {
                 if path.is_note() {
                     self.open_path(path, tx).await;
                 } else {
@@ -283,15 +290,15 @@ impl AppScreen for EditorScreen {
                 }
                 None
             }
-            AppMessage::FocusEditor => {
+            AppEvent::FocusEditor => {
                 self.focus_editor();
                 None
             }
-            AppMessage::FocusSidebar => {
+            AppEvent::FocusSidebar => {
                 self.focus_sidebar();
                 None
             }
-            AppMessage::OpenJournal => {
+            AppEvent::OpenJournal => {
                 if let Ok((details, _)) = self.vault.journal_entry().await {
                     self.open_path(details.path, tx).await;
                 }

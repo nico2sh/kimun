@@ -1,20 +1,20 @@
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
+use crate::settings::themes::Theme;
 use chrono::NaiveDate;
-use kimun_core::{NoteVault, ResultType};
-use kimun_core::nfs::VaultPath;
 use kimun_core::SearchResult;
+use kimun_core::nfs::VaultPath;
+use kimun_core::{NoteVault, ResultType};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
-use crate::settings::themes::Theme;
 
 use crate::components::Component;
-use crate::components::app_message::AppTx;
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
+use crate::components::events::{AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry};
 use crate::keys::KeyBindings;
 
@@ -62,9 +62,12 @@ impl SidebarComponent {
                     {
                         continue;
                     }
-                    let journal_date = self.vault.journal_date(&result.path)
+                    let journal_date = self
+                        .vault
+                        .journal_date(&result.path)
                         .map(format_journal_date);
-                    self.file_list.push_entry(FileListEntry::from_result(result, journal_date));
+                    self.file_list
+                        .push_entry(FileListEntry::from_result(result, journal_date));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -85,7 +88,7 @@ fn format_journal_date(date: NaiveDate) -> String {
 }
 
 impl Component for SidebarComponent {
-    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
+    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         self.file_list.handle_event(event, tx)
     }
 
@@ -94,7 +97,11 @@ impl Component for SidebarComponent {
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ])
             .split(rect);
 
         let border_style = theme.border_style(focused);
@@ -114,8 +121,11 @@ impl Component for SidebarComponent {
         let search_inner = search_block.inner(rows[1]);
         f.render_widget(search_block, rows[1]);
         f.render_widget(
-            Paragraph::new(self.file_list.search_query.as_str())
-                .style(Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg_panel.to_ratatui())),
+            Paragraph::new(self.file_list.search_query.as_str()).style(
+                Style::default()
+                    .fg(theme.fg.to_ratatui())
+                    .bg(theme.bg_panel.to_ratatui()),
+            ),
             search_inner,
         );
 

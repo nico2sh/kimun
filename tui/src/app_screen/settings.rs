@@ -12,9 +12,8 @@ use throbber_widgets_tui::{Throbber, ThrobberState};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
-use crate::components::app_message::{AppMessage, AppTx};
 use crate::components::event_state::EventState;
-use crate::components::events::AppEvent;
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::settings::editor_section::EditorSection;
 use crate::components::settings::indexing_section::IndexingSection;
 use crate::components::settings::theme_picker::ThemePicker;
@@ -103,7 +102,7 @@ fn spawn_running(work: tokio::task::JoinHandle<()>, tx: &AppTx) -> IndexingProgr
     let ticker = tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            if tx2.send(AppMessage::Redraw).is_err() {
+            if tx2.send(AppEvent::Redraw).is_err() {
                 break;
             }
         }
@@ -180,10 +179,8 @@ impl SettingsScreen {
     fn do_save(&mut self, tx: &AppTx) {
         if self.settings.workspace_dir != self.initial_settings.workspace_dir {
             let Some(workspace) = self.settings.workspace_dir.clone() else {
-                tx.send(AppMessage::IndexingDone(
-                    Err("No workspace set".to_string()),
-                ))
-                .ok();
+                tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
+                    .ok();
                 return;
             };
             self.pending_save_after_index = true;
@@ -200,13 +197,13 @@ impl SettingsScreen {
                         .map(|r| r.duration)
                 }
                 .await;
-                tx2.send(AppMessage::IndexingDone(result)).ok();
+                tx2.send(AppEvent::IndexingDone(result)).ok();
             });
             self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
         } else {
             self.settings.save_to_disk().ok();
             let settings = self.settings.clone();
-            tx.send(AppMessage::SettingsSaved(settings)).ok();
+            tx.send(AppEvent::SettingsSaved(settings)).ok();
         }
     }
 }
@@ -219,13 +216,13 @@ impl AppScreen for SettingsScreen {
         ScreenKind::Settings
     }
 
-    fn handle_event(&mut self, event: &AppEvent, tx: &AppTx) -> EventState {
+    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         // Route to active overlay first.
         match &mut self.overlay {
             Overlay::None => {}
 
             Overlay::FileBrowser(fb) => {
-                let AppEvent::Key(key) = event else {
+                let InputEvent::Key(key) = event else {
                     return EventState::NotConsumed;
                 };
                 let offset = if fb.has_parent { 1 } else { 0 };
@@ -282,7 +279,7 @@ impl AppScreen for SettingsScreen {
             }
 
             Overlay::ConfirmFullReindex { focused_button } => {
-                let AppEvent::Key(key) = event else {
+                let InputEvent::Key(key) = event else {
                     return EventState::NotConsumed;
                 };
                 match key.code {
@@ -314,7 +311,7 @@ impl AppScreen for SettingsScreen {
                                         .map(|r| r.duration)
                                 }
                                 .await;
-                                tx2.send(AppMessage::IndexingDone(result)).ok();
+                                tx2.send(AppEvent::IndexingDone(result)).ok();
                             });
                             self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
                         } else {
@@ -327,7 +324,7 @@ impl AppScreen for SettingsScreen {
             }
 
             Overlay::ConfirmSave { focused_button } => {
-                let AppEvent::Key(key) = event else {
+                let InputEvent::Key(key) = event else {
                     return EventState::NotConsumed;
                 };
                 match key.code {
@@ -345,7 +342,7 @@ impl AppScreen for SettingsScreen {
                             self.overlay = Overlay::None;
                             self.do_save(tx);
                         } else {
-                            tx.send(AppMessage::CloseSettings).ok();
+                            tx.send(AppEvent::CloseSettings).ok();
                         }
                     }
                     _ => {}
@@ -359,7 +356,7 @@ impl AppScreen for SettingsScreen {
                         return EventState::Consumed; // block all input while running
                     }
                     IndexingProgressState::Done(_) | IndexingProgressState::Failed(_) => {
-                        let AppEvent::Key(key) = event else {
+                        let InputEvent::Key(key) = event else {
                             return EventState::NotConsumed;
                         };
                         if key.code == KeyCode::Enter || key.code == KeyCode::Esc {
@@ -372,13 +369,13 @@ impl AppScreen for SettingsScreen {
         }
 
         // No active overlay — handle global keys.
-        let AppEvent::Key(key) = event else {
+        let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
         match key.code {
             KeyCode::Esc => {
                 if self.settings == self.initial_settings {
-                    tx.send(AppMessage::CloseSettings).ok();
+                    tx.send(AppEvent::CloseSettings).ok();
                 } else {
                     self.overlay = Overlay::ConfirmSave {
                         focused_button: SaveButton::Save,
@@ -420,7 +417,7 @@ impl AppScreen for SettingsScreen {
                     _ => EventState::NotConsumed,
                 },
                 SettingsFocus::Content => {
-                    let app_event = AppEvent::Key(*key);
+                    let app_event = InputEvent::Key(*key);
                     match self.section {
                         SettingsSection::Theme => {
                             let r = self.theme_picker.handle_event(&app_event, tx);
@@ -446,9 +443,9 @@ impl AppScreen for SettingsScreen {
         }
     }
 
-    async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) -> Option<AppMessage> {
+    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
         match msg {
-            AppMessage::OpenFileBrowser => {
+            AppEvent::OpenFileBrowser => {
                 let starting_dir = self
                     .settings
                     .workspace_dir
@@ -458,14 +455,12 @@ impl AppScreen for SettingsScreen {
                 self.overlay = Overlay::FileBrowser(FileBrowserState::load(starting_dir));
                 None
             }
-            AppMessage::TriggerFastReindex => {
+            AppEvent::TriggerFastReindex => {
                 // Fast reindex starts immediately (no confirmation overlay) — it is a
                 // low-cost incremental operation unlike full reindex.
                 let Some(workspace) = self.settings.workspace_dir.clone() else {
-                    tx.send(AppMessage::IndexingDone(
-                        Err("No workspace set".to_string()),
-                    ))
-                    .ok();
+                    tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
+                        .ok();
                     return None;
                 };
                 let tx2 = tx.clone();
@@ -481,18 +476,18 @@ impl AppScreen for SettingsScreen {
                             .map(|r| r.duration)
                     }
                     .await;
-                    tx2.send(AppMessage::IndexingDone(result)).ok();
+                    tx2.send(AppEvent::IndexingDone(result)).ok();
                 });
                 self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
                 None
             }
-            AppMessage::TriggerFullReindex => {
+            AppEvent::TriggerFullReindex => {
                 self.overlay = Overlay::ConfirmFullReindex {
                     focused_button: ConfirmButton::Cancel,
                 };
                 None
             }
-            AppMessage::IndexingDone(result) => {
+            AppEvent::IndexingDone(result) => {
                 match result {
                     Ok(duration) => {
                         self.settings.report_indexed();
@@ -500,7 +495,7 @@ impl AppScreen for SettingsScreen {
                             self.pending_save_after_index = false;
                             self.settings.save_to_disk().ok();
                             let settings = self.settings.clone();
-                            tx.send(AppMessage::SettingsSaved(settings)).ok();
+                            tx.send(AppEvent::SettingsSaved(settings)).ok();
                         } else {
                             self.overlay =
                                 Overlay::IndexingProgress(IndexingProgressState::Done(duration));
@@ -876,8 +871,8 @@ mod settings_screen_tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
 
-    fn key(code: KeyCode) -> AppEvent {
-        AppEvent::Key(KeyEvent {
+    fn key(code: KeyCode) -> InputEvent {
+        InputEvent::Key(KeyEvent {
             code,
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
@@ -895,7 +890,7 @@ mod settings_screen_tests {
         let mut screen = make_screen();
         screen.handle_event(&key(KeyCode::Esc), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppMessage::CloseSettings));
+        assert!(matches!(msg, AppEvent::CloseSettings));
     }
 
     #[test]
@@ -918,7 +913,7 @@ mod settings_screen_tests {
         };
         screen.handle_event(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppMessage::CloseSettings));
+        assert!(matches!(msg, AppEvent::CloseSettings));
     }
 
     #[test]
@@ -931,7 +926,7 @@ mod settings_screen_tests {
         };
         screen.handle_event(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppMessage::SettingsSaved(_)));
+        assert!(matches!(msg, AppEvent::SettingsSaved(_)));
         assert!(rx.try_recv().is_err());
     }
 
@@ -963,10 +958,10 @@ mod settings_screen_tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppMessage::IndexingDone(Ok(Duration::from_secs(1))), &tx)
+            .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(1))), &tx)
             .await;
         let msg = rx.try_recv().expect("expected SettingsSaved");
-        assert!(matches!(msg, AppMessage::SettingsSaved(_)));
+        assert!(matches!(msg, AppEvent::SettingsSaved(_)));
         assert!(!screen.pending_save_after_index);
     }
 
@@ -980,7 +975,7 @@ mod settings_screen_tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppMessage::IndexingDone(Err("disk error".to_string())), &tx)
+            .handle_app_message(AppEvent::IndexingDone(Err("disk error".to_string())), &tx)
             .await;
         assert!(rx.try_recv().is_err(), "no SettingsSaved when index failed");
         assert!(!screen.pending_save_after_index);
@@ -1000,7 +995,7 @@ mod settings_screen_tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppMessage::IndexingDone(Ok(Duration::from_secs(2))), &tx)
+            .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(2))), &tx)
             .await;
         assert!(
             rx.try_recv().is_err(),
