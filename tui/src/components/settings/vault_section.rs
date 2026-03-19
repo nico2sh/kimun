@@ -23,7 +23,7 @@ impl VaultSection {
 }
 
 impl Component for VaultSection {
-    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
@@ -94,7 +94,7 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        let result = section.handle_event(&key, &tx);
+        let result = section.handle_input(&key, &tx);
         assert!(matches!(
             result,
             crate::components::event_state::EventState::Consumed
@@ -117,7 +117,7 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        let result = section.handle_event(&key, &tx);
+        let result = section.handle_input(&key, &tx);
         assert!(matches!(
             result,
             crate::components::event_state::EventState::Consumed

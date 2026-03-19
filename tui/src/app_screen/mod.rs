@@ -25,7 +25,7 @@ pub trait AppScreen: Send {
 
     /// Handle an input event. Send events through `tx` for navigation or quit.
     /// Returns whether this screen consumed the event.
-    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState;
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState;
 
     fn render(&mut self, f: &mut Frame);
 

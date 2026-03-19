@@ -88,8 +88,8 @@ fn format_journal_date(date: NaiveDate) -> String {
 }
 
 impl Component for SidebarComponent {
-    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        self.file_list.handle_event(event, tx)
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        self.file_list.handle_input(event, tx)
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {

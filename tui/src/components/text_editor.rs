@@ -57,7 +57,7 @@ impl TextEditorComponent {
 }
 
 impl Component for TextEditorComponent {
-    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
             InputEvent::Key(key) => {
                 // Check keybindings for navigation actions.

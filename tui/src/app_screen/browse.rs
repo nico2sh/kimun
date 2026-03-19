@@ -59,8 +59,8 @@ impl AppScreen for BrowseScreen {
         self.navigate_sidebar(self.path.clone(), tx).await;
     }
 
-    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        self.sidebar.handle_event(event, tx)
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        self.sidebar.handle_input(event, tx)
     }
 
     fn render(&mut self, f: &mut Frame) {
@@ -138,13 +138,12 @@ mod tests {
         let settings = make_settings_with_defaults();
         let (tx, mut rx) = unbounded_channel();
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        screen.handle_event(&key_event(KeyCode::Esc), &tx);
+        screen.handle_input(&key_event(KeyCode::Esc), &tx);
         assert!(
             rx.try_recv().is_err(),
             "Esc should not send any message from BrowseScreen"
         );
     }
-
 
     #[tokio::test]
     async fn handle_app_message_open_path_dir_is_consumed() {

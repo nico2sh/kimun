@@ -15,7 +15,7 @@ use crate::settings::themes::Theme;
 pub trait Component {
     /// Handle an event. Send `AppEvent`s through `tx` for app-level effects.
     /// Returns whether this component consumed the event.
-    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         let _ = (event, tx);
         EventState::NotConsumed
     }

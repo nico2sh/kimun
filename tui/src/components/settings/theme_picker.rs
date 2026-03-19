@@ -35,7 +35,7 @@ impl ThemePicker {
 }
 
 impl Component for ThemePicker {
-    fn handle_event(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
@@ -117,7 +117,7 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        picker.handle_event(&key, &tx);
+        picker.handle_input(&key, &tx);
         assert_eq!(picker.selected_theme_name(), "Gruvbox Light");
     }
 
@@ -134,7 +134,7 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        picker.handle_event(&key, &tx);
+        picker.handle_input(&key, &tx);
         assert_eq!(picker.selected_theme_name(), "Catppuccin Mocha");
     }
 
@@ -152,7 +152,7 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        picker.handle_event(&key, &tx);
+        picker.handle_input(&key, &tx);
         assert_eq!(picker.selected_theme_name(), "Gruvbox Dark");
     }
 
@@ -170,7 +170,7 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        picker.handle_event(&key, &tx);
+        picker.handle_input(&key, &tx);
         assert_eq!(picker.selected_theme_name(), "Gruvbox Light");
     }
 
@@ -188,7 +188,7 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        picker.handle_event(&key, &tx);
+        picker.handle_input(&key, &tx);
         assert_eq!(picker.selected_theme_name(), "Catppuccin Mocha");
     }
 

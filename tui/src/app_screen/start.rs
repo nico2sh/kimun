@@ -32,7 +32,7 @@ impl AppScreen for StartScreen {
         ScreenKind::Start
     }
 
-    fn handle_event(&mut self, _event: &InputEvent, _tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, _event: &InputEvent, _tx: &AppTx) -> EventState {
         EventState::NotConsumed
     }
 
