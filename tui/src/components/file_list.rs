@@ -577,7 +577,6 @@ impl Component for FileListComponent {
                     _ => EventState::NotConsumed,
                 }
             }
-            _ => EventState::NotConsumed,
         }
     }
 
