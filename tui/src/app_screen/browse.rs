@@ -93,8 +93,6 @@ impl AppScreen for BrowseScreen {
 
 #[cfg(test)]
 mod tests {
-    use crate::components::events::ScreenEvent;
-
     use super::*;
     use ratatui::crossterm::event::KeyCode;
     use tokio::sync::mpsc::unbounded_channel;
