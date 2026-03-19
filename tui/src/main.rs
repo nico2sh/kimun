@@ -174,12 +174,12 @@ where
                             }
                         }
                         if let Some(screen) = &mut app.current_screen {
-                            screen.handle_event(&InputEvent::Key(key), &tx);
+                            screen.handle_input(&InputEvent::Key(key), &tx);
                         }
                     }
                     InputEvent::Mouse(mouse_event) => {
                         if let Some(screen) = &mut app.current_screen {
-                            screen.handle_event(&InputEvent::Mouse(mouse_event), &tx);
+                            screen.handle_input(&InputEvent::Mouse(mouse_event), &tx);
                         }
                     }
                 }
@@ -248,9 +248,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
 
 #[cfg(test)]
 mod tests {
-    use ratatui::crossterm::event::{
-        KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
-    };
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
 
     use crate::components::events::{AppEvent, ScreenEvent};
@@ -277,8 +275,12 @@ mod tests {
 
         // Simulate the app-level dispatch: on OpenSettings, send OpenScreen(OpenSettings).
         let (tx, mut rx) = unbounded_channel();
-        tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings)).ok();
+        tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings))
+            .ok();
         let msg = rx.try_recv().expect("should have a message");
-        assert!(matches!(msg, AppEvent::OpenScreen(ScreenEvent::OpenSettings)));
+        assert!(matches!(
+            msg,
+            AppEvent::OpenScreen(ScreenEvent::OpenSettings)
+        ));
     }
 }

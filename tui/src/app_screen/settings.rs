@@ -216,7 +216,7 @@ impl AppScreen for SettingsScreen {
         ScreenKind::Settings
     }
 
-    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         // Route to active overlay first.
         match &mut self.overlay {
             Overlay::None => {}
@@ -420,19 +420,19 @@ impl AppScreen for SettingsScreen {
                     let app_event = InputEvent::Key(*key);
                     match self.section {
                         SettingsSection::Theme => {
-                            let r = self.theme_picker.handle_event(&app_event, tx);
+                            let r = self.theme_picker.handle_input(&app_event, tx);
                             // Live theme preview on every navigation step.
                             let name = self.theme_picker.selected_theme_name().to_string();
                             self.settings.set_theme(name);
                             self.theme = self.settings.get_theme();
                             r
                         }
-                        SettingsSection::Vault => self.vault_section.handle_event(&app_event, tx),
+                        SettingsSection::Vault => self.vault_section.handle_input(&app_event, tx),
                         SettingsSection::Indexing => {
-                            self.indexing_section.handle_event(&app_event, tx)
+                            self.indexing_section.handle_input(&app_event, tx)
                         }
                         SettingsSection::Editor => {
-                            let r = self.editor_section.handle_event(&app_event, tx);
+                            let r = self.editor_section.handle_input(&app_event, tx);
                             self.settings.autosave_interval_secs =
                                 self.editor_section.autosave_interval_secs;
                             r
@@ -888,7 +888,7 @@ mod settings_screen_tests {
     fn esc_sends_close_settings_when_no_changes() {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
-        screen.handle_event(&key(KeyCode::Esc), &tx);
+        screen.handle_input(&key(KeyCode::Esc), &tx);
         let msg = rx.try_recv().expect("expected message");
         assert!(matches!(msg, AppEvent::CloseSettings));
     }
@@ -898,7 +898,7 @@ mod settings_screen_tests {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
         screen.settings.set_theme("Gruvbox Light".to_string());
-        screen.handle_event(&key(KeyCode::Esc), &tx);
+        screen.handle_input(&key(KeyCode::Esc), &tx);
         assert!(rx.try_recv().is_err(), "no message should be sent yet");
         assert!(matches!(screen.overlay, Overlay::ConfirmSave { .. }));
     }
@@ -911,7 +911,7 @@ mod settings_screen_tests {
         screen.overlay = Overlay::ConfirmSave {
             focused_button: SaveButton::Discard,
         };
-        screen.handle_event(&key(KeyCode::Enter), &tx);
+        screen.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("expected message");
         assert!(matches!(msg, AppEvent::CloseSettings));
     }
@@ -924,7 +924,7 @@ mod settings_screen_tests {
         screen.overlay = Overlay::ConfirmSave {
             focused_button: SaveButton::Save,
         };
-        screen.handle_event(&key(KeyCode::Enter), &tx);
+        screen.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("expected message");
         assert!(matches!(msg, AppEvent::SettingsSaved(_)));
         assert!(rx.try_recv().is_err());
@@ -940,7 +940,7 @@ mod settings_screen_tests {
         screen.overlay = Overlay::ConfirmSave {
             focused_button: SaveButton::Save,
         };
-        screen.handle_event(&key(KeyCode::Enter), &tx);
+        screen.handle_input(&key(KeyCode::Enter), &tx);
         assert!(screen.pending_save_after_index);
         assert!(matches!(
             screen.overlay,
@@ -1016,7 +1016,7 @@ mod settings_screen_tests {
             work: rt.spawn(async {}),
             ticker: rt.spawn(async {}),
         });
-        screen.handle_event(&key(KeyCode::Esc), &tx);
+        screen.handle_input(&key(KeyCode::Esc), &tx);
         assert!(rx.try_recv().is_err(), "Esc must be blocked while indexing");
     }
 
@@ -1027,7 +1027,7 @@ mod settings_screen_tests {
         screen.overlay = Overlay::ConfirmFullReindex {
             focused_button: ConfirmButton::Cancel,
         };
-        screen.handle_event(&key(KeyCode::Esc), &tx);
+        screen.handle_input(&key(KeyCode::Esc), &tx);
         assert!(matches!(screen.overlay, Overlay::None));
     }
 }

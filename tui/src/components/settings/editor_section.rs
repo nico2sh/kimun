@@ -25,7 +25,7 @@ impl EditorSection {
 }
 
 impl Component for EditorSection {
-    fn handle_event(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, event: &InputEvent, _tx: &AppTx) -> EventState {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
@@ -102,7 +102,7 @@ mod tests {
     fn right_increases_interval_by_step() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = EditorSection::new(10);
-        section.handle_event(&key(KeyCode::Right), &tx);
+        section.handle_input(&key(KeyCode::Right), &tx);
         assert_eq!(section.autosave_interval_secs, 15);
     }
 
@@ -110,7 +110,7 @@ mod tests {
     fn left_decreases_interval_by_step() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = EditorSection::new(10);
-        section.handle_event(&key(KeyCode::Left), &tx);
+        section.handle_input(&key(KeyCode::Left), &tx);
         assert_eq!(section.autosave_interval_secs, 5);
     }
 
@@ -118,7 +118,7 @@ mod tests {
     fn left_clamps_at_min() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = EditorSection::new(5);
-        section.handle_event(&key(KeyCode::Left), &tx);
+        section.handle_input(&key(KeyCode::Left), &tx);
         assert_eq!(section.autosave_interval_secs, MIN_AUTOSAVE_SECS);
     }
 
@@ -126,7 +126,7 @@ mod tests {
     fn right_clamps_at_max() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = EditorSection::new(298);
-        section.handle_event(&key(KeyCode::Right), &tx);
+        section.handle_input(&key(KeyCode::Right), &tx);
         assert_eq!(section.autosave_interval_secs, MAX_AUTOSAVE_SECS);
     }
 
@@ -134,7 +134,7 @@ mod tests {
     fn l_key_increases_interval() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = EditorSection::new(10);
-        section.handle_event(&key(KeyCode::Char('l')), &tx);
+        section.handle_input(&key(KeyCode::Char('l')), &tx);
         assert_eq!(section.autosave_interval_secs, 15);
     }
 
@@ -142,7 +142,7 @@ mod tests {
     fn h_key_decreases_interval() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = EditorSection::new(10);
-        section.handle_event(&key(KeyCode::Char('h')), &tx);
+        section.handle_input(&key(KeyCode::Char('h')), &tx);
         assert_eq!(section.autosave_interval_secs, 5);
     }
 }

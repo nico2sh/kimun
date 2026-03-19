@@ -173,7 +173,7 @@ impl AppScreen for EditorScreen {
         self.open_path(self.path.clone(), tx).await;
     }
 
-    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         if let InputEvent::Key(key) = event {
             if let Some(combo) = key_event_to_combo(key) {
                 match self.settings.key_bindings.get_action(&combo) {
@@ -193,15 +193,15 @@ impl AppScreen for EditorScreen {
         // Mouse events are routed to all components regardless of focus so that
         // clicking anywhere can transfer focus correctly.
         if matches!(event, InputEvent::Mouse(_)) {
-            if self.sidebar_visible && self.sidebar.handle_event(event, tx).is_consumed() {
+            if self.sidebar_visible && self.sidebar.handle_input(event, tx).is_consumed() {
                 return EventState::Consumed;
             }
-            return self.editor.handle_event(event, tx);
+            return self.editor.handle_input(event, tx);
         }
 
         match self.focus {
-            Focus::Sidebar => self.sidebar.handle_event(event, tx),
-            Focus::Editor => self.editor.handle_event(event, tx),
+            Focus::Sidebar => self.sidebar.handle_input(event, tx),
+            Focus::Editor => self.editor.handle_input(event, tx),
         }
     }
 

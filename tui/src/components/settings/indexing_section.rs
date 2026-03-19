@@ -33,7 +33,7 @@ impl IndexingSection {
 }
 
 impl Component for IndexingSection {
-    fn handle_event(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         if !self.vault_available {
             return EventState::NotConsumed;
         }
@@ -122,27 +122,27 @@ mod tests {
     fn not_consumed_when_vault_unavailable() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = IndexingSection::new(false);
-        let enter_result = section.handle_event(&key(KeyCode::Enter), &tx);
+        let enter_result = section.handle_input(&key(KeyCode::Enter), &tx);
         assert!(matches!(
             enter_result,
             crate::components::event_state::EventState::NotConsumed
         ));
-        let right_result = section.handle_event(&key(KeyCode::Right), &tx);
+        let right_result = section.handle_input(&key(KeyCode::Right), &tx);
         assert!(matches!(
             right_result,
             crate::components::event_state::EventState::NotConsumed
         ));
-        let left_result = section.handle_event(&key(KeyCode::Left), &tx);
+        let left_result = section.handle_input(&key(KeyCode::Left), &tx);
         assert!(matches!(
             left_result,
             crate::components::event_state::EventState::NotConsumed
         ));
-        let l_result = section.handle_event(&key(KeyCode::Char('l')), &tx);
+        let l_result = section.handle_input(&key(KeyCode::Char('l')), &tx);
         assert!(matches!(
             l_result,
             crate::components::event_state::EventState::NotConsumed
         ));
-        let h_result = section.handle_event(&key(KeyCode::Char('h')), &tx);
+        let h_result = section.handle_input(&key(KeyCode::Char('h')), &tx);
         assert!(matches!(
             h_result,
             crate::components::event_state::EventState::NotConsumed
@@ -157,13 +157,13 @@ mod tests {
     fn set_vault_available_enables_keys() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = IndexingSection::new(false);
-        section.handle_event(&key(KeyCode::Enter), &tx);
+        section.handle_input(&key(KeyCode::Enter), &tx);
         assert!(
             rx.try_recv().is_err(),
             "Enter should be blocked when unavailable"
         );
         section.set_vault_available(true);
-        section.handle_event(&key(KeyCode::Enter), &tx);
+        section.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx
             .try_recv()
             .expect("Enter should send message after enabling");
@@ -175,7 +175,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = IndexingSection::new(true);
         assert_eq!(section.selected, IndexAction::Fast);
-        section.handle_event(&key(KeyCode::Right), &tx);
+        section.handle_input(&key(KeyCode::Right), &tx);
         assert_eq!(section.selected, IndexAction::Full);
     }
 
@@ -183,8 +183,8 @@ mod tests {
     fn left_cycles_full_to_fast() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = IndexingSection::new(true);
-        section.handle_event(&key(KeyCode::Right), &tx);
-        section.handle_event(&key(KeyCode::Left), &tx);
+        section.handle_input(&key(KeyCode::Right), &tx);
+        section.handle_input(&key(KeyCode::Left), &tx);
         assert_eq!(section.selected, IndexAction::Fast);
     }
 
@@ -192,7 +192,7 @@ mod tests {
     fn enter_on_fast_sends_trigger_fast_reindex() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = IndexingSection::new(true);
-        section.handle_event(&key(KeyCode::Enter), &tx);
+        section.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("message should be sent");
         assert!(matches!(msg, AppEvent::TriggerFastReindex));
     }
@@ -201,9 +201,9 @@ mod tests {
     fn enter_on_full_sends_trigger_full_reindex() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = IndexingSection::new(true);
-        section.handle_event(&key(KeyCode::Right), &tx);
+        section.handle_input(&key(KeyCode::Right), &tx);
         assert!(rx.try_recv().is_err(), "Right should not send any message");
-        section.handle_event(&key(KeyCode::Enter), &tx);
+        section.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("message should be sent");
         assert!(matches!(msg, AppEvent::TriggerFullReindex));
     }
@@ -212,8 +212,8 @@ mod tests {
     fn right_is_idempotent_when_already_full() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = IndexingSection::new(true);
-        section.handle_event(&key(KeyCode::Right), &tx);
-        section.handle_event(&key(KeyCode::Right), &tx);
+        section.handle_input(&key(KeyCode::Right), &tx);
+        section.handle_input(&key(KeyCode::Right), &tx);
         assert_eq!(section.selected, IndexAction::Full);
     }
 }
