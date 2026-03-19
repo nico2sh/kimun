@@ -1,6 +1,7 @@
 pub mod event_state;
 pub mod events;
 pub mod file_list;
+pub mod indexing;
 pub mod settings;
 pub mod sidebar;
 pub mod text_editor;
