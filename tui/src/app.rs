@@ -32,7 +32,7 @@ impl App {
             None
         };
         Ok(Self {
-            current_screen: Some(Box::new(StartScreen::new(settings.clone()))),
+            current_screen: Some(Box::new(StartScreen::new(settings.clone(), vault.clone()))),
             settings,
             vault,
         })
