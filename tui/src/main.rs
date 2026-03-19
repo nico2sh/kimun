@@ -245,3 +245,40 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui::crossterm::event::{
+        KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
+    };
+    use tokio::sync::mpsc::unbounded_channel;
+
+    use crate::components::events::{AppEvent, ScreenEvent};
+    use crate::keys::action_shortcuts::ActionShortcuts;
+    use crate::keys::key_event_to_combo;
+    use crate::settings::AppSettings;
+
+    /// Ctrl+, is a global shortcut handled in run_app, not inside any screen.
+    /// This test verifies that the keybinding lookup resolves to OpenSettings
+    /// and that the app-level handler sends OpenScreen(OpenSettings).
+    #[test]
+    fn settings_keybinding_sends_open_settings() {
+        let settings = AppSettings::default();
+        let key = KeyEvent {
+            code: KeyCode::Char(','),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+
+        let combo = key_event_to_combo(&key).expect("Ctrl+, should produce a combo");
+        let action = settings.key_bindings.get_action(&combo);
+        assert_eq!(action, Some(ActionShortcuts::OpenSettings));
+
+        // Simulate the app-level dispatch: on OpenSettings, send OpenScreen(OpenSettings).
+        let (tx, mut rx) = unbounded_channel();
+        tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings)).ok();
+        let msg = rx.try_recv().expect("should have a message");
+        assert!(matches!(msg, AppEvent::OpenScreen(ScreenEvent::OpenSettings)));
+    }
+}

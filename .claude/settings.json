@@ -11,7 +11,9 @@
       "Read(//Users/nhormazabal/.config/kimun/**)",
       "Bash(sed -i '' '27d' ~/.config/kimun_debug/config.toml)",
       "Bash(sed -i '' 's/FocusEditor = \\\\[\"\" & <Tab>\"\"\\\\]/FocusEditor = [\"\"<Tab>\"\"]/' ~/.config/kimun_debug/config.toml)",
-      "Bash(xxd)"
+      "Bash(xxd)",
+      "mcp__plugin_nr_google-search__raw_http_fetch",
+      "Bash(git stash:*)"
     ],
     "additionalDirectories": [
       "/Users/nhormazabal/development/personal/kimun/docs/superpowers/specs"
