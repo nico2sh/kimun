@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
 pub trait Component {

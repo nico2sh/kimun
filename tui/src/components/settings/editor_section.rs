@@ -4,7 +4,6 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::AppEvent;
 use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
