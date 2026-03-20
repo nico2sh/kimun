@@ -27,7 +27,7 @@ impl BrowseScreen {
         let theme = settings.get_theme();
         let icons = settings.icons();
         Self {
-            sidebar: SidebarComponent::new(kb, vault.clone(), icons),
+            sidebar: SidebarComponent::new(kb, vault.clone(), icons, &settings),
             vault,
             theme,
             path,

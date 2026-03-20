@@ -14,24 +14,33 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
-use crate::components::file_list::{FileListComponent, FileListEntry};
+use crate::components::file_list::{FileListComponent, FileListEntry, SortField, SortOrder};
 use crate::keys::KeyBindings;
 use crate::settings::icons::Icons;
+use crate::settings::AppSettings;
 
 pub struct SidebarComponent {
     current_dir: VaultPath,
     pub file_list: FileListComponent,
     pending_rx: Option<Receiver<SearchResult>>,
     vault: Arc<NoteVault>,
+    default_sort_field: SortField,
+    default_sort_order: SortOrder,
+    journal_sort_field: SortField,
+    journal_sort_order: SortOrder,
 }
 
 impl SidebarComponent {
-    pub fn new(key_bindings: KeyBindings, vault: Arc<NoteVault>, icons: Icons) -> Self {
+    pub fn new(key_bindings: KeyBindings, vault: Arc<NoteVault>, icons: Icons, settings: &AppSettings) -> Self {
         Self {
             current_dir: VaultPath::root(),
             file_list: FileListComponent::new(key_bindings, icons),
             pending_rx: None,
             vault,
+            default_sort_field: SortField::from(settings.default_sort_field),
+            default_sort_order: SortOrder::from(settings.default_sort_order),
+            journal_sort_field: SortField::from(settings.journal_sort_field),
+            journal_sort_order: SortOrder::from(settings.journal_sort_order),
         }
     }
 
@@ -43,6 +52,15 @@ impl SidebarComponent {
         self.current_dir = current_dir.clone();
         self.file_list.clear();
         self.file_list.loading = true;
+
+        // Apply the appropriate sort defaults for this directory.
+        if &current_dir == self.vault.journal_path() {
+            self.file_list.sort_field = self.journal_sort_field;
+            self.file_list.sort_order = self.journal_sort_order;
+        } else {
+            self.file_list.sort_field = self.default_sort_field;
+            self.file_list.sort_order = self.default_sort_order;
+        }
 
         if !current_dir.is_root_or_empty() {
             let parent = current_dir.get_parent_path().0;

@@ -17,6 +17,7 @@ use crate::components::settings::appearance_section::AppearanceSection;
 use crate::components::settings::display_section::DisplaySection;
 use crate::components::settings::editor_section::EditorSection;
 use crate::components::settings::indexing_section::IndexingSection;
+use crate::components::settings::sorting_section::SortingSection;
 use crate::components::settings::vault_section::VaultSection;
 use crate::components::indexing::{
     IndexingProgressState, fixed_centered_rect, render_indexing_overlay, spawn_running,
@@ -97,6 +98,7 @@ enum SettingsSection {
     Vault,
     Appearance,
     Display,
+    Sorting,
     Indexing,
     Editor,
 }
@@ -117,6 +119,7 @@ pub struct SettingsScreen {
     focus: SettingsFocus,
     appearance_section: AppearanceSection,
     display_section: DisplaySection,
+    sorting_section: SortingSection,
     vault_section: VaultSection,
     indexing_section: IndexingSection,
     editor_section: EditorSection,
@@ -138,6 +141,12 @@ impl SettingsScreen {
         Self {
             appearance_section: AppearanceSection::new(themes, &active_name),
             display_section: DisplaySection::new(use_nerd_fonts),
+            sorting_section: SortingSection::new(
+                settings.default_sort_field,
+                settings.default_sort_order,
+                settings.journal_sort_field,
+                settings.journal_sort_order,
+            ),
             vault_section: VaultSection::new(vault_path),
             indexing_section: IndexingSection::new(vault_available),
             editor_section: EditorSection::new(autosave_interval_secs),
@@ -372,7 +381,8 @@ impl AppScreen for SettingsScreen {
                         self.section = match self.section {
                             SettingsSection::Vault => SettingsSection::Appearance,
                             SettingsSection::Appearance => SettingsSection::Display,
-                            SettingsSection::Display => SettingsSection::Indexing,
+                            SettingsSection::Display => SettingsSection::Sorting,
+                            SettingsSection::Sorting => SettingsSection::Indexing,
                             SettingsSection::Indexing => SettingsSection::Editor,
                             SettingsSection::Editor => SettingsSection::Vault,
                         };
@@ -383,7 +393,8 @@ impl AppScreen for SettingsScreen {
                             SettingsSection::Vault => SettingsSection::Editor,
                             SettingsSection::Appearance => SettingsSection::Vault,
                             SettingsSection::Display => SettingsSection::Appearance,
-                            SettingsSection::Indexing => SettingsSection::Display,
+                            SettingsSection::Sorting => SettingsSection::Display,
+                            SettingsSection::Indexing => SettingsSection::Sorting,
                             SettingsSection::Editor => SettingsSection::Indexing,
                         };
                         EventState::Consumed
@@ -408,6 +419,14 @@ impl AppScreen for SettingsScreen {
                         SettingsSection::Display => {
                             let r = self.display_section.handle_input(&app_event, tx);
                             self.settings.use_nerd_fonts = self.display_section.use_nerd_fonts;
+                            r
+                        }
+                        SettingsSection::Sorting => {
+                            let r = self.sorting_section.handle_input(&app_event, tx);
+                            self.settings.default_sort_field = self.sorting_section.default_sort_field;
+                            self.settings.default_sort_order = self.sorting_section.default_sort_order;
+                            self.settings.journal_sort_field = self.sorting_section.journal_sort_field;
+                            self.settings.journal_sort_order = self.sorting_section.journal_sort_order;
                             r
                         }
                         SettingsSection::Vault => self.vault_section.handle_input(&app_event, tx),
@@ -524,10 +543,11 @@ impl AppScreen for SettingsScreen {
             SettingsSection::Vault => 0,
             SettingsSection::Appearance => 1,
             SettingsSection::Display => 2,
-            SettingsSection::Indexing => 3,
-            SettingsSection::Editor => 4,
+            SettingsSection::Sorting => 3,
+            SettingsSection::Indexing => 4,
+            SettingsSection::Editor => 5,
         };
-        let items: Vec<ListItem> = ["Vault", "Appearance", "Display", "Indexing", "Editor"]
+        let items: Vec<ListItem> = ["Vault", "Appearance", "Display", "Sorting", "Indexing", "Editor"]
             .iter()
             .enumerate()
             .map(|(i, name)| {
@@ -556,6 +576,9 @@ impl AppScreen for SettingsScreen {
                 .render(f, cols[1], &theme, content_focused),
             SettingsSection::Display => self
                 .display_section
+                .render(f, cols[1], &theme, content_focused),
+            SettingsSection::Sorting => self
+                .sorting_section
                 .render(f, cols[1], &theme, content_focused),
             SettingsSection::Vault => {
                 self.vault_section
