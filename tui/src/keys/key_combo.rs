@@ -97,6 +97,14 @@ impl KeyCombo {
     pub fn new(modifiers: KeyModifiers, key: KeyStrike) -> Self {
         Self { modifiers, key }
     }
+
+    /// Returns `true` for the only combinations accepted in the config file:
+    /// at least one of ctrl/alt (with optional shift) and a letter key (a–z).
+    pub fn is_valid_binding(&self) -> bool {
+        (self.modifiers.is_ctrl() || self.modifiers.is_alt())
+            && self.key >= KeyStrike::KeyA
+            && self.key <= KeyStrike::KeyZ
+    }
 }
 
 /// Pressed modifier keys.

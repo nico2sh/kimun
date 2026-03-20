@@ -256,20 +256,20 @@ mod tests {
     use crate::keys::key_event_to_combo;
     use crate::settings::AppSettings;
 
-    /// Ctrl+, is a global shortcut handled in run_app, not inside any screen.
+    /// Ctrl+P is the global shortcut for OpenSettings, handled in run_app before any screen.
     /// This test verifies that the keybinding lookup resolves to OpenSettings
     /// and that the app-level handler sends OpenScreen(OpenSettings).
     #[test]
     fn settings_keybinding_sends_open_settings() {
         let settings = AppSettings::default();
         let key = KeyEvent {
-            code: KeyCode::Char(','),
+            code: KeyCode::Char('p'),
             modifiers: KeyModifiers::CONTROL,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         };
 
-        let combo = key_event_to_combo(&key).expect("Ctrl+, should produce a combo");
+        let combo = key_event_to_combo(&key).expect("Ctrl+P should produce a combo");
         let action = settings.key_bindings.get_action(&combo);
         assert_eq!(action, Some(ActionShortcuts::OpenSettings));
 

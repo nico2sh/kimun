@@ -15,6 +15,7 @@ use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::key_strike::KeyStrike;
 use crate::keys::key_event_to_combo;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
@@ -33,7 +34,10 @@ pub struct EditorScreen {
     path: VaultPath,
     focus: Focus,
     sidebar_visible: bool,
+    quit_key: String,
     toggle_key: String,
+    focus_editor_key: String,
+    focus_sidebar_key: String,
     autosave_handle: Option<tokio::task::JoinHandle<()>>,
     key_flash: Option<(String, std::time::Instant)>,
 }
@@ -42,12 +46,18 @@ impl EditorScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: AppSettings) -> Self {
         let kb = settings.key_bindings.clone();
         let theme = settings.get_theme();
-        let toggle_key = kb
-            .to_hashmap()
-            .get(&ActionShortcuts::ToggleSidebar)
-            .and_then(|v| v.first().cloned())
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "^B".to_string());
+        let kb_map = kb.to_hashmap();
+        let first_key = |action: &ActionShortcuts| {
+            kb_map
+                .get(action)
+                .and_then(|v| v.first().cloned())
+                .map(|c| c.to_string())
+                .unwrap_or_default()
+        };
+        let quit_key = first_key(&ActionShortcuts::Quit);
+        let toggle_key = first_key(&ActionShortcuts::ToggleSidebar);
+        let focus_editor_key = first_key(&ActionShortcuts::FocusEditor);
+        let focus_sidebar_key = first_key(&ActionShortcuts::FocusSidebar);
         Self {
             settings,
             theme,
@@ -57,7 +67,10 @@ impl EditorScreen {
             path,
             focus: Focus::Editor,
             sidebar_visible: true,
+            quit_key,
             toggle_key,
+            focus_editor_key,
+            focus_sidebar_key,
             autosave_handle: None,
             key_flash: None,
         }
@@ -179,7 +192,10 @@ impl AppScreen for EditorScreen {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         if let InputEvent::Key(key) = event {
             if let Some(combo) = key_event_to_combo(key) {
-                if combo.modifiers.is_ctrl() || combo.modifiers.is_alt() || combo.modifiers.is_meta_cmd() {
+                if (combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
+                    && combo.key >= KeyStrike::KeyA
+                    && combo.key <= KeyStrike::KeyZ
+                {
                     self.key_flash = Some((combo.to_string(), std::time::Instant::now()));
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
@@ -286,7 +302,10 @@ impl AppScreen for EditorScreen {
 
         let focus_label = if editor_focused { "EDITOR" } else { "SIDEBAR" };
         let mut footer = Block::default()
-            .title(format!("[{focus_label}]  Ctrl+Q: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  {}: Toggle sidebar", self.toggle_key))
+            .title(format!(
+                "[{focus_label}]  {}: Quit  |  {}: Editor  |  {}: Sidebar  |  {}: Toggle sidebar",
+                self.quit_key, self.focus_editor_key, self.focus_sidebar_key, self.toggle_key,
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_ratatui()))
             .style(theme.base_style())
