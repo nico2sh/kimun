@@ -13,9 +13,10 @@ use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::settings::appearance_section::AppearanceSection;
+use crate::components::settings::display_section::DisplaySection;
 use crate::components::settings::editor_section::EditorSection;
 use crate::components::settings::indexing_section::IndexingSection;
-use crate::components::settings::theme_picker::ThemePicker;
 use crate::components::settings::vault_section::VaultSection;
 use crate::components::indexing::{
     IndexingProgressState, fixed_centered_rect, render_indexing_overlay, spawn_running,
@@ -93,8 +94,9 @@ pub enum Overlay {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SettingsSection {
-    Theme,
     Vault,
+    Appearance,
+    Display,
     Indexing,
     Editor,
 }
@@ -113,7 +115,8 @@ pub struct SettingsScreen {
     pub theme: Theme,
     section: SettingsSection,
     focus: SettingsFocus,
-    theme_picker: ThemePicker,
+    appearance_section: AppearanceSection,
+    display_section: DisplaySection,
     vault_section: VaultSection,
     indexing_section: IndexingSection,
     editor_section: EditorSection,
@@ -130,9 +133,11 @@ impl SettingsScreen {
         let vault_path = settings.workspace_dir.clone();
         let vault_available = vault_path.is_some();
         let autosave_interval_secs = settings.autosave_interval_secs;
+        let use_nerd_fonts = settings.use_nerd_fonts;
         let initial_settings = settings.clone();
         Self {
-            theme_picker: ThemePicker::new(themes, &active_name),
+            appearance_section: AppearanceSection::new(themes, &active_name),
+            display_section: DisplaySection::new(use_nerd_fonts),
             vault_section: VaultSection::new(vault_path),
             indexing_section: IndexingSection::new(vault_available),
             editor_section: EditorSection::new(autosave_interval_secs),
@@ -365,8 +370,9 @@ impl AppScreen for SettingsScreen {
                 SettingsFocus::Sidebar => match key.code {
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.section = match self.section {
-                            SettingsSection::Vault => SettingsSection::Theme,
-                            SettingsSection::Theme => SettingsSection::Indexing,
+                            SettingsSection::Vault => SettingsSection::Appearance,
+                            SettingsSection::Appearance => SettingsSection::Display,
+                            SettingsSection::Display => SettingsSection::Indexing,
                             SettingsSection::Indexing => SettingsSection::Editor,
                             SettingsSection::Editor => SettingsSection::Vault,
                         };
@@ -375,8 +381,9 @@ impl AppScreen for SettingsScreen {
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.section = match self.section {
                             SettingsSection::Vault => SettingsSection::Editor,
-                            SettingsSection::Theme => SettingsSection::Vault,
-                            SettingsSection::Indexing => SettingsSection::Theme,
+                            SettingsSection::Appearance => SettingsSection::Vault,
+                            SettingsSection::Display => SettingsSection::Appearance,
+                            SettingsSection::Indexing => SettingsSection::Display,
                             SettingsSection::Editor => SettingsSection::Indexing,
                         };
                         EventState::Consumed
@@ -390,12 +397,17 @@ impl AppScreen for SettingsScreen {
                 SettingsFocus::Content => {
                     let app_event = InputEvent::Key(*key);
                     match self.section {
-                        SettingsSection::Theme => {
-                            let r = self.theme_picker.handle_input(&app_event, tx);
+                        SettingsSection::Appearance => {
+                            let r = self.appearance_section.handle_input(&app_event, tx);
                             // Live theme preview on every navigation step.
-                            let name = self.theme_picker.selected_theme_name().to_string();
+                            let name = self.appearance_section.selected_theme_name().to_string();
                             self.settings.set_theme(name);
                             self.theme = self.settings.get_theme();
+                            r
+                        }
+                        SettingsSection::Display => {
+                            let r = self.display_section.handle_input(&app_event, tx);
+                            self.settings.use_nerd_fonts = self.display_section.use_nerd_fonts;
                             r
                         }
                         SettingsSection::Vault => self.vault_section.handle_input(&app_event, tx),
@@ -510,11 +522,12 @@ impl AppScreen for SettingsScreen {
         let sidebar_focused = self.focus == SettingsFocus::Sidebar;
         let active_idx = match self.section {
             SettingsSection::Vault => 0,
-            SettingsSection::Theme => 1,
-            SettingsSection::Indexing => 2,
-            SettingsSection::Editor => 3,
+            SettingsSection::Appearance => 1,
+            SettingsSection::Display => 2,
+            SettingsSection::Indexing => 3,
+            SettingsSection::Editor => 4,
         };
-        let items: Vec<ListItem> = ["Vault", "Theme", "Indexing", "Editor"]
+        let items: Vec<ListItem> = ["Vault", "Appearance", "Display", "Indexing", "Editor"]
             .iter()
             .enumerate()
             .map(|(i, name)| {
@@ -538,8 +551,11 @@ impl AppScreen for SettingsScreen {
         // Content panel
         let content_focused = self.focus == SettingsFocus::Content;
         match self.section {
-            SettingsSection::Theme => self
-                .theme_picker
+            SettingsSection::Appearance => self
+                .appearance_section
+                .render(f, cols[1], &theme, content_focused),
+            SettingsSection::Display => self
+                .display_section
                 .render(f, cols[1], &theme, content_focused),
             SettingsSection::Vault => {
                 self.vault_section

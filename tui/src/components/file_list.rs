@@ -18,6 +18,7 @@ use crate::components::events::{AppTx, InputEvent};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
+use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -162,10 +163,10 @@ impl FileListEntry {
         }
     }
 
-    fn to_list_item(&self, theme: &Theme) -> ListItem<'static> {
+    fn to_list_item(&self, theme: &Theme, icons: &Icons) -> ListItem<'static> {
         let lines: Vec<Line> = match self {
             Self::Up { .. } => vec![Line::from(Span::styled(
-                "󰁝 [UP] ..",
+                format!("{} [UP] ..", icons.directory_up),
                 Style::default().fg(theme.fg_muted.to_ratatui()),
             ))],
             Self::Note {
@@ -176,13 +177,13 @@ impl FileListEntry {
             } => {
                 let mut lines = vec![];
                 if let Some(date) = journal_date {
-                    lines.push(Line::from(format!("󰃭 {}", title)));
+                    lines.push(Line::from(format!("{} {}", icons.journal, title)));
                     lines.push(Line::from(Span::styled(
                         format!(" {}", date),
                         Style::default().fg(theme.color_journal_date.to_ratatui()),
                     )));
                 } else {
-                    lines.push(Line::from(format!("󰈚 {}", title)));
+                    lines.push(Line::from(format!("{} {}", icons.note, title)));
                 }
                 lines.push(Line::from(Span::styled(
                     format!(" {}", filename),
@@ -193,11 +194,11 @@ impl FileListEntry {
                 lines
             }
             Self::Directory { name, .. } => vec![Line::from(Span::styled(
-                format!("  {}", name),
+                format!("{} {}", icons.directory, name),
                 Style::default().fg(theme.color_directory.to_ratatui()),
             ))],
             Self::Attachment { filename, .. } => vec![Line::from(Span::styled(
-                format!(" {}", filename),
+                format!("{} {}", icons.attachment, filename),
                 Style::default()
                     .add_modifier(Modifier::ITALIC)
                     .fg(theme.fg_secondary.to_ratatui()),
@@ -242,10 +243,12 @@ pub struct FileListComponent {
     pub sort_order: SortOrder,
     // Keybindings
     key_bindings: KeyBindings,
+    // Icons resolved once at construction
+    icons: Icons,
 }
 
 impl FileListComponent {
-    pub fn new(key_bindings: KeyBindings) -> Self {
+    pub fn new(key_bindings: KeyBindings, icons: Icons) -> Self {
         Self {
             entries: Vec::new(),
             loading: false,
@@ -258,6 +261,7 @@ impl FileListComponent {
             sort_field: SortField::Name,
             sort_order: SortOrder::Ascending,
             key_bindings,
+            icons,
         }
     }
 
@@ -596,7 +600,8 @@ impl Component for FileListComponent {
             .enumerate()
             .map(|(i, e)| {
                 let bg = if i % 2 == 0 { bg_even } else { bg_odd };
-                e.to_list_item(theme).style(Style::default().bg(bg))
+                e.to_list_item(theme, &self.icons)
+                    .style(Style::default().bg(bg))
             })
             .collect();
 
@@ -632,6 +637,22 @@ impl Component for FileListComponent {
             f.render_stateful_widget(list, rect, &mut self.list_state);
         }
     }
+
+    fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        [
+            (ActionShortcuts::FocusEditor, "focus editor"),
+            (ActionShortcuts::SortByName, "sort by name"),
+            (ActionShortcuts::SortByTitle, "sort by title"),
+            (ActionShortcuts::SortReverseOrder, "reverse"),
+        ]
+        .iter()
+        .filter_map(|(action, label)| {
+            self.key_bindings
+                .first_combo_for(action)
+                .map(|k| (k, label.to_string()))
+        })
+        .collect()
+    }
 }
 
 #[cfg(test)]
@@ -648,7 +669,7 @@ mod tests {
     #[tokio::test]
     async fn schedule_filter_stores_handle_and_cancels_previous() {
         let tx = make_tx();
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
         for i in 0..20 {
             list.push_entry(make_note(&format!("{i}.md"), &format!("Note {i}")));
         }
@@ -675,7 +696,7 @@ mod tests {
     #[tokio::test]
     async fn clear_aborts_filter_task() {
         let tx = make_tx();
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
         for i in 0..20 {
             list.push_entry(make_note(&format!("{i}.md"), &format!("Note {i}")));
         }
@@ -717,7 +738,7 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
         terminal
             .draw(|f| {
                 list.render(
@@ -735,13 +756,13 @@ mod tests {
         // RED: fails to compile until FileListComponent implements Component.
         // GREEN: compiles once `impl Component for FileListComponent` is added.
         use crate::components::Component;
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
         let _: &mut dyn Component = &mut list;
     }
 
     #[test]
     fn push_entry_does_not_sort() {
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
         list.push_entry(make_note("z.md", "Z Note"));
         list.push_entry(make_note("a.md", "A Note"));
         list.push_entry(make_note("m.md", "M Note"));
@@ -751,7 +772,7 @@ mod tests {
 
     #[test]
     fn finalize_sort_sorts_by_name() {
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty());
+        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
         list.push_entry(make_note("z.md", "Z Note"));
         list.push_entry(make_note("a.md", "A Note"));
         list.push_entry(make_note("m.md", "M Note"));

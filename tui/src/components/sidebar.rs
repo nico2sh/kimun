@@ -16,6 +16,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry};
 use crate::keys::KeyBindings;
+use crate::settings::icons::Icons;
 
 pub struct SidebarComponent {
     current_dir: VaultPath,
@@ -25,10 +26,10 @@ pub struct SidebarComponent {
 }
 
 impl SidebarComponent {
-    pub fn new(key_bindings: KeyBindings, vault: Arc<NoteVault>) -> Self {
+    pub fn new(key_bindings: KeyBindings, vault: Arc<NoteVault>, icons: Icons) -> Self {
         Self {
             current_dir: VaultPath::root(),
-            file_list: FileListComponent::new(key_bindings),
+            file_list: FileListComponent::new(key_bindings, icons),
             pending_rx: None,
             vault,
         }
@@ -89,6 +90,10 @@ fn format_journal_date(date: NaiveDate) -> String {
 impl Component for SidebarComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         self.file_list.handle_input(event, tx)
+    }
+
+    fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        self.file_list.hint_shortcuts()
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {

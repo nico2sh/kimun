@@ -25,8 +25,9 @@ impl BrowseScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: AppSettings) -> Self {
         let kb = settings.key_bindings.clone();
         let theme = settings.get_theme();
+        let icons = settings.icons();
         Self {
-            sidebar: SidebarComponent::new(kb, vault.clone()),
+            sidebar: SidebarComponent::new(kb, vault.clone(), icons),
             vault,
             theme,
             path,

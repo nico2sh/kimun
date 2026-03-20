@@ -6,7 +6,7 @@ use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
@@ -15,9 +15,10 @@ use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
-use crate::keys::key_strike::KeyStrike;
 use crate::keys::key_event_to_combo;
+use crate::keys::key_strike::KeyStrike;
 use crate::settings::AppSettings;
+use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 enum Focus {
@@ -28,6 +29,7 @@ enum Focus {
 pub struct EditorScreen {
     vault: Arc<NoteVault>,
     settings: AppSettings,
+    icons: Icons,
     theme: Theme,
     editor: TextEditorComponent,
     sidebar: SidebarComponent,
@@ -36,8 +38,6 @@ pub struct EditorScreen {
     sidebar_visible: bool,
     quit_key: String,
     toggle_key: String,
-    focus_editor_key: String,
-    focus_sidebar_key: String,
     autosave_handle: Option<tokio::task::JoinHandle<()>>,
     key_flash: Option<(String, std::time::Instant)>,
 }
@@ -56,21 +56,19 @@ impl EditorScreen {
         };
         let quit_key = first_key(&ActionShortcuts::Quit);
         let toggle_key = first_key(&ActionShortcuts::ToggleSidebar);
-        let focus_editor_key = first_key(&ActionShortcuts::FocusEditor);
-        let focus_sidebar_key = first_key(&ActionShortcuts::FocusSidebar);
+        let icons = settings.icons();
         Self {
             settings,
+            icons: icons.clone(),
             theme,
             editor: TextEditorComponent::new(kb.clone()),
-            sidebar: SidebarComponent::new(kb, vault.clone()),
+            sidebar: SidebarComponent::new(kb, vault.clone(), icons),
             vault,
             path,
             focus: Focus::Editor,
             sidebar_visible: true,
             quit_key,
             toggle_key,
-            focus_editor_key,
-            focus_sidebar_key,
             autosave_handle: None,
             key_flash: None,
         }
@@ -303,8 +301,8 @@ impl AppScreen for EditorScreen {
         let focus_label = if editor_focused { "EDITOR" } else { "SIDEBAR" };
         let mut footer = Block::default()
             .title(format!(
-                "[{focus_label}]  {}: Quit  |  {}: Editor  |  {}: Sidebar  |  {}: Toggle sidebar",
-                self.quit_key, self.focus_editor_key, self.focus_sidebar_key, self.toggle_key,
+                "[{focus_label}]  {}: Quit  |  {}: Toggle sidebar",
+                self.quit_key, self.toggle_key,
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_ratatui()))
@@ -313,7 +311,24 @@ impl AppScreen for EditorScreen {
         if let Some((flash, _)) = &self.key_flash {
             footer = footer.title_top(Line::from(format!(" {} ", flash)).right_aligned());
         }
+        let footer_inner = footer.inner(rows[2]);
         f.render_widget(footer, rows[2]);
+
+        // Hints inside the footer's inner area.
+        let hints = match self.focus {
+            Focus::Editor => self.editor.hint_shortcuts(),
+            Focus::Sidebar => self.sidebar.hint_shortcuts(),
+        };
+        let hints_text = hints
+            .iter()
+            .map(|(key, label)| format!("{key}: {label}"))
+            .collect::<Vec<_>>()
+            .join("  |  ");
+        let hints_text = format!(" {} {hints_text}", self.icons.info);
+        f.render_widget(
+            Paragraph::new(hints_text).style(Style::default().fg(theme.fg_secondary.to_ratatui())),
+            footer_inner,
+        );
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
