@@ -57,12 +57,13 @@ impl EditorScreen {
         let quit_key = first_key(&ActionShortcuts::Quit);
         let toggle_key = first_key(&ActionShortcuts::ToggleSidebar);
         let icons = settings.icons();
+        let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &settings);
         Self {
             settings,
-            icons: icons.clone(),
+            icons,
             theme,
-            editor: TextEditorComponent::new(kb.clone()),
-            sidebar: SidebarComponent::new(kb, vault.clone(), icons),
+            editor: TextEditorComponent::new(kb),
+            sidebar,
             vault,
             path,
             focus: Focus::Editor,
@@ -252,7 +253,13 @@ impl AppScreen for EditorScreen {
             .border_style(Style::default().fg(theme.border.to_ratatui()))
             .style(theme.base_style())
             .title_style(Style::default().fg(theme.accent.to_ratatui()));
+        let header_inner = header.inner(rows[0]);
         f.render_widget(header, rows[0]);
+        f.render_widget(
+            Paragraph::new(self.path.to_string())
+                .style(Style::default().fg(theme.fg_secondary.to_ratatui())),
+            header_inner,
+        );
 
         let columns = if self.sidebar_visible {
             Layout::default()

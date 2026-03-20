@@ -20,6 +20,7 @@ use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
+use crate::settings::{SortFieldSetting, SortOrderSetting};
 
 // ---------------------------------------------------------------------------
 // Sort options
@@ -35,6 +36,24 @@ pub enum SortField {
 pub enum SortOrder {
     Ascending,
     Descending,
+}
+
+impl From<SortFieldSetting> for SortField {
+    fn from(s: SortFieldSetting) -> Self {
+        match s {
+            SortFieldSetting::Name => Self::Name,
+            SortFieldSetting::Title => Self::Title,
+        }
+    }
+}
+
+impl From<SortOrderSetting> for SortOrder {
+    fn from(s: SortOrderSetting) -> Self {
+        match s {
+            SortOrderSetting::Ascending => Self::Ascending,
+            SortOrderSetting::Descending => Self::Descending,
+        }
+    }
 }
 
 impl SortField {

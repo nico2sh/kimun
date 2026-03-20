@@ -17,6 +17,24 @@ mod config_dir;
 pub mod icons;
 pub mod themes;
 
+// ---------------------------------------------------------------------------
+// Sort settings types (shared between AppSettings and sorting UI)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortFieldSetting {
+    Name,
+    Title,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrderSetting {
+    Ascending,
+    Descending,
+}
+
 // pub mod theme;
 
 #[cfg(debug_assertions)]
@@ -67,6 +85,14 @@ pub struct AppSettings {
     pub autosave_interval_secs: u64,
     #[serde(default = "default_use_nerd_fonts")]
     pub use_nerd_fonts: bool,
+    #[serde(default = "default_sort_field")]
+    pub default_sort_field: SortFieldSetting,
+    #[serde(default = "default_sort_order")]
+    pub default_sort_order: SortOrderSetting,
+    #[serde(default = "default_journal_sort_field")]
+    pub journal_sort_field: SortFieldSetting,
+    #[serde(default = "default_journal_sort_order")]
+    pub journal_sort_order: SortOrderSetting,
     /// Custom config file path. `None` means use the default location.
     /// Not serialized — it's a runtime-only override.
     #[serde(skip)]
@@ -132,6 +158,22 @@ fn default_use_nerd_fonts() -> bool {
     false
 }
 
+fn default_sort_field() -> SortFieldSetting {
+    SortFieldSetting::Name
+}
+
+fn default_sort_order() -> SortOrderSetting {
+    SortOrderSetting::Ascending
+}
+
+fn default_journal_sort_field() -> SortFieldSetting {
+    SortFieldSetting::Name
+}
+
+fn default_journal_sort_order() -> SortOrderSetting {
+    SortOrderSetting::Descending
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -142,6 +184,10 @@ impl Default for AppSettings {
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
             use_nerd_fonts: false,
+            default_sort_field: default_sort_field(),
+            default_sort_order: default_sort_order(),
+            journal_sort_field: default_journal_sort_field(),
+            journal_sort_order: default_journal_sort_order(),
             config_file: None,
         }
     }

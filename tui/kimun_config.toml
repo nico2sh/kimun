@@ -17,11 +17,15 @@
 #   NewJournal   = ["ctrl+alt&J"]        # Ctrl+Alt+J
 #
 # ─────────────────────────────────────────────────────────────────────────────
-last_paths = ["/newnote.md", "/journal/2021-04-07.md", "/journal/2026-03-19.md"]
+last_paths = ["/journal/2021-04-07.md", "/journal/2026-03-19.md", "/journal/2021-06-11.md", "/journal/2021-06-16.md", "/journal/2021-06-22.md", "/index.md", "/pep.md", "/newnote.md", "/somer.md", "/journal/2026-03-20.md"]
 workspace_dir = "/Users/nhormazabal/Documents/Notes"
 theme = "Nord"
 autosave_interval_secs = 5
 use_nerd_fonts = false
+default_sort_field = "name"
+default_sort_order = "ascending"
+journal_sort_field = "name"
+journal_sort_order = "descending"
 
 [key_bindings]
 Quit = ["ctrl&Q"]
