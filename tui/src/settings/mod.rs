@@ -28,6 +28,29 @@ const THEMES_DIR: &str = "themes";
 
 const LAST_PATH_HISTORY_SIZE: usize = 10;
 
+const CONFIG_HEADER: &str = "\
+# ─── Kimün configuration ────────────────────────────────────────────────────
+#
+# KEY BINDINGS
+# ────────────
+# Supported combinations: ctrl and/or alt (with optional shift) + a letter (a-z).
+# Any combo that does not follow this rule is silently ignored when loaded.
+#
+# Format per action:
+#   ActionName = [\"<modifiers> & <letter>\", ...]
+#
+# Available modifiers (combine with +):  ctrl   alt   shift
+#
+# Examples:
+#   Quit         = [\"ctrl & Q\"]          # Ctrl+Q
+#   SearchNotes  = [\"alt & E\"]           # Alt+E
+#   OpenSettings = [\"ctrl+shift & P\"]    # Ctrl+Shift+P
+#   NewJournal   = [\"ctrl+alt & J\"]      # Ctrl+Alt+J
+#
+# ─────────────────────────────────────────────────────────────────────────────
+";
+
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct AppSettings {
     #[serde(default)]
@@ -60,38 +83,18 @@ fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch<'_> {
 fn default_keybindings() -> KeyBindings {
     let mut kb = KeyBindings::empty();
     // We use meta on macOS, ctrl on Windows/Linux for desktop-app shortcuts.
+    // Only ctrl/alt (with optional shift) + a letter key (a-z) are valid.
     get_kb_buildr_ctrl_meta(&mut kb)
-        .add(KeyStrike::Slash, ActionShortcuts::ToggleNoteBrowser)
+        .add(KeyStrike::KeyF, ActionShortcuts::ToggleNoteBrowser)
         .add(KeyStrike::KeyE, ActionShortcuts::SearchNotes)
         .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
         .add(KeyStrike::KeyY, ActionShortcuts::TogglePreview)
         .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
         .add(KeyStrike::KeyI, ActionShortcuts::Text(TextAction::Italic))
-        .add(
-            KeyStrike::KeyU,
-            ActionShortcuts::Text(TextAction::Underline),
-        )
-        .add(
-            KeyStrike::KeyS,
-            ActionShortcuts::Text(TextAction::Strikethrough),
-        )
+        .add(KeyStrike::KeyU, ActionShortcuts::Text(TextAction::Underline))
+        .add(KeyStrike::KeyS, ActionShortcuts::Text(TextAction::Strikethrough))
         .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Link))
-        .add(
-            KeyStrike::KeyT,
-            ActionShortcuts::Text(TextAction::ToggleHeader),
-        )
-        .add(
-            KeyStrike::Digit1,
-            ActionShortcuts::Text(TextAction::Header(1)),
-        )
-        .add(
-            KeyStrike::Digit2,
-            ActionShortcuts::Text(TextAction::Header(2)),
-        )
-        .add(
-            KeyStrike::Digit3,
-            ActionShortcuts::Text(TextAction::Header(3)),
-        )
+        .add(KeyStrike::KeyT, ActionShortcuts::Text(TextAction::ToggleHeader))
         // =============================
         // We add shift to the modifiers
         // =============================
@@ -101,19 +104,13 @@ fn default_keybindings() -> KeyBindings {
     // TUI navigation shortcuts (always Ctrl — terminal apps don't use Cmd/Meta).
     kb.batch_add()
         .with_ctrl()
-        .add(KeyStrike::Comma, ActionShortcuts::OpenSettings)
+        .add(KeyStrike::KeyP, ActionShortcuts::OpenSettings)
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
         .add(KeyStrike::KeyB, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyN, ActionShortcuts::SortByName)
-        .add(KeyStrike::KeyT, ActionShortcuts::SortByTitle)
-        .add(KeyStrike::KeyR, ActionShortcuts::SortReverseOrder);
-
-    // Tab / Shift+Tab for focus switching (no modifier / shift only).
-    kb.batch_add()
-        .add(KeyStrike::Tab, ActionShortcuts::FocusEditor);
-    kb.batch_add()
-        .with_ctrl()
+        .add(KeyStrike::KeyG, ActionShortcuts::SortByTitle)
+        .add(KeyStrike::KeyR, ActionShortcuts::SortReverseOrder)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor);
 
@@ -252,6 +249,7 @@ impl AppSettings {
         log::debug!("Saving settings to disk");
         let settings_file_path = self.get_config_file_path()?;
         let mut file = File::create(settings_file_path)?;
+        file.write_all(CONFIG_HEADER.as_bytes())?;
         let toml = toml::to_string(&self)?;
         file.write_all(toml.as_bytes())?;
         Ok(())

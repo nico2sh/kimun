@@ -129,7 +129,16 @@ impl KeyBindings {
         let mut kb = KeyBindings::empty();
         for (action, combos) in bindings {
             for combo in combos {
-                kb.bindings.insert(combo.to_owned(), action.to_owned());
+                if combo.is_valid_binding() {
+                    kb.bindings.insert(combo.to_owned(), action.to_owned());
+                } else {
+                    log::warn!(
+                        "Skipping invalid key combo '{}' for action '{}': \
+                         only ctrl/alt (with optional shift) + a letter (a-z) are supported",
+                        combo,
+                        action
+                    );
+                }
             }
         }
         kb
