@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo doc:*)",
+      "Bash(grep -r Title ~/.cargo/registry/src/**/ratatui-0.30.0/src/widgets/block.rs)",
+      "Bash(find ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ratatui-widgets-0.3.0/src -name block* -type f)"
+    ]
+  }
+}
