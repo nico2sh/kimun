@@ -14,6 +14,7 @@ use log::debug;
 
 use crate::keys::KeyBindings;
 mod config_dir;
+pub mod icons;
 pub mod themes;
 
 // pub mod theme;
@@ -42,10 +43,10 @@ const CONFIG_HEADER: &str = "\
 # Available modifiers (combine with +):  ctrl   alt   shift
 #
 # Examples:
-#   Quit         = [\"ctrl & Q\"]          # Ctrl+Q
-#   SearchNotes  = [\"alt & E\"]           # Alt+E
-#   OpenSettings = [\"ctrl+shift & P\"]    # Ctrl+Shift+P
-#   NewJournal   = [\"ctrl+alt & J\"]      # Ctrl+Alt+J
+#   Quit         = [\"ctrl&Q\"]            # Ctrl+Q
+#   SearchNotes  = [\"alt&E\"]             # Alt+E
+#   OpenSettings = [\"ctrl+shift&P\"]      # Ctrl+Shift+P
+#   NewJournal   = [\"ctrl+alt&J\"]        # Ctrl+Alt+J
 #
 # ─────────────────────────────────────────────────────────────────────────────
 ";
@@ -64,6 +65,8 @@ pub struct AppSettings {
     pub key_bindings: KeyBindings,
     #[serde(default = "default_autosave_interval")]
     pub autosave_interval_secs: u64,
+    #[serde(default = "default_use_nerd_fonts")]
+    pub use_nerd_fonts: bool,
     /// Custom config file path. `None` means use the default location.
     /// Not serialized — it's a runtime-only override.
     #[serde(skip)]
@@ -125,6 +128,10 @@ fn default_autosave_interval() -> u64 {
     5
 }
 
+fn default_use_nerd_fonts() -> bool {
+    false
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -134,6 +141,7 @@ impl Default for AppSettings {
             needs_indexing: true,
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
+            use_nerd_fonts: false,
             config_file: None,
         }
     }
@@ -380,6 +388,11 @@ impl AppSettings {
             }
             self.last_paths.push(note_path.to_owned());
         }
+    }
+
+    /// Build the icon set for the current `use_nerd_fonts` setting.
+    pub fn icons(&self) -> icons::Icons {
+        icons::Icons::new(self.use_nerd_fonts)
     }
 
     /// Resolve the active theme by name, falling back to the default.

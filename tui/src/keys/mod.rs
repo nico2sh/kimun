@@ -115,6 +115,14 @@ impl KeyBindings {
         bind
     }
 
+    /// Returns the display string of the first combo bound to `action`, or `None`.
+    pub fn first_combo_for(&self, action: &ActionShortcuts) -> Option<String> {
+        self.bindings
+            .iter()
+            .find(|(_, a)| *a == action)
+            .map(|(combo, _)| combo.to_string())
+    }
+
     pub fn to_hashmap(&self) -> HashMap<ActionShortcuts, Vec<KeyCombo>> {
         let mut bindings: HashMap<ActionShortcuts, Vec<KeyCombo>> = HashMap::new();
         for (combo, action) in &self.bindings {
@@ -319,9 +327,9 @@ mod tests {
             );
         let km_str = toml::to_string(&km).unwrap();
 
-        let expected = r#"TogglePreview = ["ctrl & N"]
-TextEditor-Bold = ["ctrl & H"]
-TextEditor-Header2 = ["ctrl+alt & L"]
+        let expected = r#"TogglePreview = ["ctrl&N"]
+TextEditor-Bold = ["ctrl&H"]
+TextEditor-Header2 = ["ctrl+alt&L"]
 "#
         .to_string();
         assert_eq!(expected, km_str);
@@ -338,8 +346,8 @@ TextEditor-Header2 = ["ctrl+alt & L"]
             .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Bold));
         let km_str = toml::to_string(&km).unwrap();
 
-        let expected = r#"TogglePreview = ["ctrl & N"]
-TextEditor-Bold = ["ctrl & H", "ctrl+alt & L"]
+        let expected = r#"TogglePreview = ["ctrl&N"]
+TextEditor-Bold = ["ctrl&H", "ctrl+alt&L"]
 "#
         .to_string();
         assert_eq!(expected, km_str);

@@ -22,4 +22,10 @@ pub trait Component {
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool);
+
+    /// Context-sensitive shortcut hints shown in the hints bar when this
+    /// component is focused.  Each entry is `(key_display, label)`.
+    fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        vec![]
+    }
 }

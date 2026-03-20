@@ -113,6 +113,20 @@ impl Component for TextEditorComponent {
         );
         f.render_widget(&self.text_area, rect);
     }
+
+    fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        [
+            (ActionShortcuts::FocusSidebar, "focus sidebar"),
+        ]
+        .iter()
+        .filter_map(|(action, label)| {
+            self.key_bindings
+                .first_combo_for(action)
+                .map(|k| (k, label.to_string()))
+        })
+        .collect()
+    }
 }
 
 #[cfg(test)]

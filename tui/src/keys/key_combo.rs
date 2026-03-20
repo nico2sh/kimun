@@ -20,7 +20,7 @@ impl Display for KeyCombo {
         if modif.is_empty() {
             write!(f, "{}", key)
         } else {
-            write!(f, "{} & {}", modif, key)
+            write!(f, "{}&{}", modif, key)
         }
     }
 }
@@ -208,7 +208,7 @@ impl KeyModifiers {
     }
 
     pub fn is_empty(&self) -> bool {
-        !(self.alt || self.ctrl || self.cmd || !self.shift)
+        !self.alt && !self.ctrl && !self.cmd && !self.shift
     }
 
     pub fn with_shift(&mut self) {
@@ -309,9 +309,9 @@ mod tests {
         let kc_ser = kc.to_string();
 
         #[cfg(target_os = "macos")]
-        assert_eq!("ctrl+cmd & N", kc_ser);
+        assert_eq!("ctrl+cmd&N", kc_ser);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!("ctrl+meta & N", kc_ser);
+        assert_eq!("ctrl+meta&N", kc_ser);
     }
 
     #[test]

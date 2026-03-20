@@ -11,24 +11,25 @@
 # Available modifiers (combine with +):  ctrl   alt   shift
 #
 # Examples:
-#   Quit         = ["ctrl & Q"]          # Ctrl+Q
-#   SearchNotes  = ["alt & E"]           # Alt+E
-#   OpenSettings = ["ctrl+shift & P"]    # Ctrl+Shift+P
-#   NewJournal   = ["ctrl+alt & J"]      # Ctrl+Alt+J
+#   Quit         = ["ctrl&Q"]            # Ctrl+Q
+#   SearchNotes  = ["alt&E"]             # Alt+E
+#   OpenSettings = ["ctrl+shift&P"]      # Ctrl+Shift+P
+#   NewJournal   = ["ctrl+alt&J"]        # Ctrl+Alt+J
 #
 # ─────────────────────────────────────────────────────────────────────────────
 last_paths = ["/newnote.md", "/journal/2021-04-07.md", "/journal/2026-03-19.md"]
 workspace_dir = "/Users/nhormazabal/Documents/Notes"
-theme = "Catppuccin Mocha"
+theme = "Nord"
 autosave_interval_secs = 5
+use_nerd_fonts = false
 
 [key_bindings]
-Quit = ["ctrl & Q"]
-OpenSettings = ["ctrl & P"]
-NewJournal = ["ctrl & J"]
-ToggleSidebar = ["ctrl & B"]
-FocusEditor = ["ctrl & L"]
-FocusSidebar = ["ctrl & H"]
-SortByName = ["ctrl & N"]
-SortByTitle = ["ctrl & G"]
-SortReverseOrder = ["ctrl & R"]
+Quit = ["ctrl&Q"]
+OpenSettings = ["ctrl&P"]
+NewJournal = ["ctrl&J"]
+ToggleSidebar = ["ctrl&B"]
+FocusEditor = ["ctrl&L"]
+FocusSidebar = ["ctrl&H"]
+SortByName = ["ctrl&N"]
+SortByTitle = ["ctrl&G"]
+SortReverseOrder = ["ctrl&R"]
