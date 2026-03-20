@@ -187,6 +187,10 @@ impl NoteVault {
         VaultEntry::new(&self.workspace_path, path.to_owned()).await.ok()
     }
 
+    pub fn journal_path(&self) -> &VaultPath {
+        &self.journal_path
+    }
+
     pub async fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
         let (title, note_path) = self.get_todays_journal();
         let content = self.load_or_create_note(&note_path, Some(format!("# {}\n\n", title))).await?;
