@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use kimun_core::NoteVault;
@@ -9,11 +8,15 @@ use throbber_widgets_tui::ThrobberState;
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
-use crate::components::indexing::{IndexingProgressState, fixed_centered_rect, spawn_running};
+use crate::components::indexing::{
+    IndexingProgressState, render_indexing_overlay, spawn_running,
+};
 use crate::settings::AppSettings;
+use crate::settings::themes::Theme;
 
 pub struct StartScreen {
     settings: AppSettings,
+    theme: Theme,
     vault: Option<Arc<NoteVault>>,
     overlay: Option<IndexingProgressState>,
     throbber_state: ThrobberState,
@@ -21,8 +24,10 @@ pub struct StartScreen {
 
 impl StartScreen {
     pub fn new(settings: AppSettings, vault: Option<Arc<NoteVault>>) -> Self {
+        let theme = settings.get_theme();
         Self {
             settings,
+            theme,
             vault,
             overlay: None,
             throbber_state: ThrobberState::default(),
@@ -80,18 +85,14 @@ impl AppScreen for StartScreen {
     }
 
     fn render(&mut self, f: &mut ratatui::Frame) {
-        if matches!(self.overlay, Some(IndexingProgressState::Running { .. })) {
-            self.throbber_state.calc_next();
-            let area = fixed_centered_rect(44, 5, f.area());
-            f.render_widget(ratatui::widgets::Clear, area);
-            let block = ratatui::widgets::Block::default()
-                .title("Indexing")
-                .borders(ratatui::widgets::Borders::ALL);
-            let inner = block.inner(area);
-            f.render_widget(block, area);
-            let throbber = throbber_widgets_tui::Throbber::default()
-                .label("  Initializing vault…");
-            f.render_stateful_widget(throbber, inner, &mut self.throbber_state);
+        if let Some(ref state) = self.overlay {
+            render_indexing_overlay(
+                f,
+                state,
+                &mut self.throbber_state,
+                &self.theme,
+                "Initializing vault…",
+            );
             return;
         }
         let block = ratatui::widgets::Block::default()
@@ -103,6 +104,8 @@ impl AppScreen for StartScreen {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;

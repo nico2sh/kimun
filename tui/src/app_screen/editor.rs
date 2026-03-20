@@ -5,6 +5,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders};
 
 use crate::app_screen::{AppScreen, ScreenKind};
@@ -34,6 +35,7 @@ pub struct EditorScreen {
     sidebar_visible: bool,
     toggle_key: String,
     autosave_handle: Option<tokio::task::JoinHandle<()>>,
+    key_flash: Option<(String, std::time::Instant)>,
 }
 
 impl EditorScreen {
@@ -57,6 +59,7 @@ impl EditorScreen {
             sidebar_visible: true,
             toggle_key,
             autosave_handle: None,
+            key_flash: None,
         }
     }
 }
@@ -176,6 +179,14 @@ impl AppScreen for EditorScreen {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         if let InputEvent::Key(key) = event {
             if let Some(combo) = key_event_to_combo(key) {
+                if combo.modifiers.is_ctrl() || combo.modifiers.is_alt() || combo.modifiers.is_meta_cmd() {
+                    self.key_flash = Some((combo.to_string(), std::time::Instant::now()));
+                    let tx2 = tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        tx2.send(AppEvent::Redraw).ok();
+                    });
+                }
                 match self.settings.key_bindings.get_action(&combo) {
                     Some(ActionShortcuts::ToggleSidebar) => {
                         self.toggle_sidebar();
@@ -266,13 +277,23 @@ impl AppScreen for EditorScreen {
         f.render_widget(editor_block, editor_area);
         self.editor.render(f, editor_inner, theme, editor_focused);
 
+        // Expire stale key flash
+        if let Some((_, instant)) = &self.key_flash {
+            if instant.elapsed() >= std::time::Duration::from_secs(2) {
+                self.key_flash = None;
+            }
+        }
+
         let focus_label = if editor_focused { "EDITOR" } else { "SIDEBAR" };
-        let footer = Block::default()
+        let mut footer = Block::default()
             .title(format!("[{focus_label}]  Ctrl+Q: Quit  |  Tab: Sidebar→Editor  |  Shift+Tab: Editor→Sidebar  |  {}: Toggle sidebar", self.toggle_key))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_ratatui()))
             .style(theme.base_style())
             .title_style(Style::default().fg(theme.fg_secondary.to_ratatui()));
+        if let Some((flash, _)) = &self.key_flash {
+            footer = footer.title_top(Line::from(format!(" {} ", flash)).right_aligned());
+        }
         f.render_widget(footer, rows[2]);
     }
 

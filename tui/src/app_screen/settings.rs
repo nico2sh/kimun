@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use kimun_core::{NoteVault, NotesValidation};
@@ -8,7 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
-use throbber_widgets_tui::{Throbber, ThrobberState};
+use throbber_widgets_tui::ThrobberState;
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
@@ -18,7 +17,9 @@ use crate::components::settings::editor_section::EditorSection;
 use crate::components::settings::indexing_section::IndexingSection;
 use crate::components::settings::theme_picker::ThemePicker;
 use crate::components::settings::vault_section::VaultSection;
-use crate::components::indexing::{IndexingProgressState, fixed_centered_rect, spawn_running};
+use crate::components::indexing::{
+    IndexingProgressState, fixed_centered_rect, render_indexing_overlay, spawn_running,
+};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -678,43 +679,13 @@ impl SettingsScreen {
             }
 
             Overlay::IndexingProgress(state) => {
-                let area = fixed_centered_rect(44, 5, f.area());
-                f.render_widget(Clear, area);
-                let block = Block::default()
-                    .title("Indexing")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.accent.to_ratatui()))
-                    .style(theme.base_style());
-                let inner = block.inner(area);
-                f.render_widget(block, area);
-                match state {
-                    IndexingProgressState::Running { .. } => {
-                        self.throbber_state.calc_next();
-                        let throbber = Throbber::default().label("  Reindex in progress…").style(
-                            Style::default()
-                                .fg(theme.fg.to_ratatui())
-                                .bg(theme.bg.to_ratatui()),
-                        );
-                        f.render_stateful_widget(throbber, inner, &mut self.throbber_state);
-                    }
-                    IndexingProgressState::Done(dur) => {
-                        f.render_widget(
-                            Paragraph::new(format!(
-                                "  ✓  Done in {}s\n\n       [ OK ]",
-                                dur.as_secs()
-                            ))
-                            .style(theme.base_style()),
-                            inner,
-                        );
-                    }
-                    IndexingProgressState::Failed(msg) => {
-                        f.render_widget(
-                            Paragraph::new(format!("  ✗  Error: {}\n\n       [ OK ]", msg))
-                                .style(theme.base_style()),
-                            inner,
-                        );
-                    }
-                }
+                render_indexing_overlay(
+                    f,
+                    state,
+                    &mut self.throbber_state,
+                    theme,
+                    "Reindex in progress…",
+                );
             }
         }
     }
@@ -826,6 +797,8 @@ mod file_browser_tests {
 
 #[cfg(test)]
 mod settings_screen_tests {
+    use std::time::Duration;
+
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
