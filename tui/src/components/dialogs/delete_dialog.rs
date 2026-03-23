@@ -16,16 +16,14 @@ use crate::settings::themes::Theme;
 pub struct DeleteConfirmDialog {
     pub path: VaultPath,
     pub vault: Arc<NoteVault>,
-    pub tx: AppTx,
     pub error: Option<String>,
 }
 
 impl DeleteConfirmDialog {
-    pub fn new(path: VaultPath, vault: Arc<NoteVault>, tx: AppTx) -> Self {
+    pub fn new(path: VaultPath, vault: Arc<NoteVault>) -> Self {
         Self {
             path,
             vault,
-            tx,
             error: None,
         }
     }
@@ -216,7 +214,7 @@ mod tests {
                 .expect("vault creation failed"),
         );
         let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
-        let dialog = DeleteConfirmDialog::new(VaultPath::root(), vault, tx);
+        let dialog = DeleteConfirmDialog::new(VaultPath::root(), vault);
         assert!(dialog.error.is_none());
     }
 
@@ -254,7 +252,7 @@ mod tests {
             };
 
             let vault = Arc::new(vault);
-            let mut dialog = DeleteConfirmDialog::new(VaultPath::root(), vault, tx.clone());
+            let mut dialog = DeleteConfirmDialog::new(VaultPath::root(), vault);
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             let state = dialog.handle_input(key, &tx);
