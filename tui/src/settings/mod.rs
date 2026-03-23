@@ -1,4 +1,3 @@
-use crate::keys::KeyBindBatch;
 use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::keys::key_strike::KeyStrike;
 use crate::settings::config_dir::get_or_create_config_dir;
@@ -62,9 +61,10 @@ const CONFIG_HEADER: &str = "\
 #
 # Examples:
 #   Quit         = [\"ctrl&Q\"]            # Ctrl+Q
-#   SearchNotes  = [\"alt&E\"]             # Alt+E
+#   SearchNotes  = [\"ctrl&E\"]            # Ctrl+E
+#   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
 #   OpenSettings = [\"ctrl+shift&P\"]      # Ctrl+Shift+P
-#   NewJournal   = [\"ctrl+alt&J\"]        # Ctrl+Alt+J
+#   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
 #
 # ─────────────────────────────────────────────────────────────────────────────
 ";
@@ -98,21 +98,9 @@ pub struct AppSettings {
     pub config_file: Option<PathBuf>,
 }
 
-#[cfg(target_os = "macos")]
-fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch<'_> {
-    key_bindings.batch_add().with_meta()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn get_kb_buildr_ctrl_meta(key_bindings: &mut KeyBindings) -> KeyBindBatch<'_> {
-    key_bindings.batch_add().with_ctrl()
-}
-
 fn default_keybindings() -> KeyBindings {
     let mut kb = KeyBindings::empty();
-    // We use meta on macOS, ctrl on Windows/Linux for desktop-app shortcuts.
-    // Only ctrl/alt (with optional shift) + a letter key (a-z) are valid.
-    get_kb_buildr_ctrl_meta(&mut kb)
+    kb.batch_add().with_ctrl()
         .add(KeyStrike::KeyF, ActionShortcuts::ToggleNoteBrowser)
         .add(KeyStrike::KeyE, ActionShortcuts::SearchNotes)
         .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
