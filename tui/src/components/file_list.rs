@@ -103,6 +103,10 @@ pub enum FileListEntry {
         path: VaultPath,
         filename: String,
     },
+    CreateNote {
+        filename: String,
+        path: VaultPath,
+    },
 }
 
 impl FileListEntry {
@@ -139,6 +143,7 @@ impl FileListEntry {
             Self::Note { path, .. } => path,
             Self::Directory { path, .. } => path,
             Self::Attachment { path, .. } => path,
+            Self::CreateNote { path, .. } => path,
         }
     }
 
@@ -150,6 +155,7 @@ impl FileListEntry {
             } => Some(format!("{} {}", title, filename)),
             Self::Directory { name, .. } => Some(name.clone()),
             Self::Attachment { filename, .. } => Some(filename.clone()),
+            Self::CreateNote { filename, .. } => Some(filename.clone()),
         }
     }
 
@@ -165,6 +171,7 @@ impl FileListEntry {
             },
             Self::Directory { name, .. } => name.to_lowercase(),
             Self::Attachment { filename, .. } => filename.to_lowercase(),
+            Self::CreateNote { filename, .. } => filename.to_lowercase(),
         }
     }
 
@@ -221,6 +228,10 @@ impl FileListEntry {
                 Style::default()
                     .add_modifier(Modifier::ITALIC)
                     .fg(theme.fg_secondary.to_ratatui()),
+            ))],
+            Self::CreateNote { filename, .. } => vec![Line::from(Span::styled(
+                format!("+ Create: {}", filename),
+                Style::default().fg(theme.accent.to_ratatui()),
             ))],
         };
         ListItem::new(Text::from(lines))
@@ -289,7 +300,7 @@ impl FileListComponent {
     }
 
     pub fn push_entry(&mut self, entry: FileListEntry) {
-        if matches!(entry, FileListEntry::Attachment { .. }) {
+        if matches!(entry, FileListEntry::Attachment { .. } | FileListEntry::CreateNote { .. }) {
             return;
         }
         self.entries.push(entry);
@@ -305,6 +316,14 @@ impl FileListComponent {
 
     pub fn add_up_entry(&mut self, parent: VaultPath) {
         self.entries.insert(0, FileListEntry::Up { parent });
+        self.list_state.select(Some(0));
+    }
+
+    pub fn prepend_create_entry(&mut self, filename: String) {
+        let path = VaultPath::new(&filename);
+        // Reset any active filter — inserting at 0 would shift all stored indices.
+        self.display_indices = None;
+        self.entries.insert(0, FileListEntry::CreateNote { filename, path });
         self.list_state.select(Some(0));
     }
 
@@ -450,6 +469,15 @@ impl FileListComponent {
         let cur = self.list_state.selected().unwrap_or(0);
         self.list_state
             .select(Some(if cur == 0 { len - 1 } else { cur - 1 }));
+    }
+
+    pub fn selected_entry(&self) -> Option<&FileListEntry> {
+        let display_idx = self.list_state.selected()?;
+        let entry_idx = match &self.display_indices {
+            None => display_idx,
+            Some(v) => *v.get(display_idx)?,
+        };
+        self.entries.get(entry_idx)
     }
 
     fn activate_selected(&self, tx: &AppTx) {
@@ -777,6 +805,47 @@ mod tests {
         use crate::components::Component;
         let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
         let _: &mut dyn Component = &mut list;
+    }
+
+    #[test]
+    fn selected_entry_returns_highlighted_item() {
+        let mut list = FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        );
+        list.push_entry(make_note("a.md", "A"));
+        list.push_entry(make_note("b.md", "B"));
+        // Default selection is index 0
+        let entry = list.selected_entry();
+        assert!(entry.is_some());
+        if let Some(FileListEntry::Note { filename, .. }) = entry {
+            assert_eq!(filename, "a.md");
+        } else {
+            panic!("expected Note entry");
+        }
+    }
+
+    #[test]
+    fn selected_entry_returns_none_when_empty() {
+        let list = FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        );
+        assert!(list.selected_entry().is_none());
+    }
+
+    #[test]
+    fn prepend_create_entry_inserts_at_position_zero() {
+        let mut list = FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        );
+        list.push_entry(make_note("a.md", "A"));
+        list.prepend_create_entry("new-note.md".to_string());
+        assert!(matches!(
+            &list.entries[0],
+            FileListEntry::CreateNote { filename, .. } if filename == "new-note.md"
+        ));
     }
 
     #[test]
