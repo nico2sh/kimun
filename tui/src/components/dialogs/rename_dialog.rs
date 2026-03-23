@@ -53,8 +53,6 @@ pub struct RenameDialog {
     pub validation_task: Option<JoinHandle<()>>,
     /// Receiver end of the one-shot channel used by the validation task.
     pub validation_rx: Option<std::sync::mpsc::Receiver<bool>>,
-    /// Channel for sending app-level events (rename result, errors, close).
-    pub tx: AppTx,
     /// Optional error message surfaced from a failed rename attempt.
     pub error: Option<String>,
 }
@@ -63,7 +61,7 @@ impl RenameDialog {
     /// Create a new `RenameDialog` for `path`.
     ///
     /// The input field is pre-filled with the filename component of `path`.
-    pub fn new(path: VaultPath, vault: Arc<NoteVault>, tx: AppTx) -> Self {
+    pub fn new(path: VaultPath, vault: Arc<NoteVault>) -> Self {
         let (_, filename) = path.get_parent_path();
         Self {
             path,
@@ -72,7 +70,6 @@ impl RenameDialog {
             validation_state: ValidationState::Idle,
             validation_task: None,
             validation_rx: None,
-            tx,
             error: None,
         }
     }
@@ -154,7 +151,7 @@ impl RenameDialog {
                         parent.append(&VaultPath::new(&self.input))
                     };
                     let vault = Arc::clone(&self.vault);
-                    let tx2 = self.tx.clone();
+                    let tx2 = tx.clone();
                     tokio::spawn(async move {
                         let result = if from.is_note() {
                             vault.rename_note(&from, &new_path).await
@@ -457,7 +454,7 @@ mod tests {
         let path = VaultPath::new("notes/projects/kimun.md");
         let (_, expected_filename) = path.get_parent_path();
 
-        let dialog = RenameDialog::new(path, vault, tx);
+        let dialog = RenameDialog::new(path, vault);
         assert_eq!(dialog.input, expected_filename);
     }
 
@@ -481,7 +478,7 @@ mod tests {
             let vault = Arc::new(vault);
             let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
             let mut dialog =
-                RenameDialog::new(VaultPath::new("notes/test.md"), vault, tx.clone());
+                RenameDialog::new(VaultPath::new("notes/test.md"), vault);
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             let state = dialog.handle_input(key, &tx);
