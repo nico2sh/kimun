@@ -12,6 +12,8 @@ use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
+use crate::components::note_browser::NoteBrowserModal;
+use crate::components::note_browser::search_provider::SearchNotesProvider;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -24,6 +26,7 @@ use crate::settings::themes::Theme;
 enum Focus {
     Sidebar,
     Editor,
+    NoteBrowser,
 }
 
 pub struct EditorScreen {
@@ -40,6 +43,7 @@ pub struct EditorScreen {
     toggle_key: String,
     autosave_handle: Option<tokio::task::JoinHandle<()>>,
     key_flash: Option<(String, std::time::Instant)>,
+    note_browser: Option<NoteBrowserModal>,
 }
 
 impl EditorScreen {
@@ -72,6 +76,7 @@ impl EditorScreen {
             toggle_key,
             autosave_handle: None,
             key_flash: None,
+            note_browser: None,
         }
     }
 }
@@ -211,6 +216,23 @@ impl AppScreen for EditorScreen {
                         tx.send(AppEvent::OpenJournal).ok();
                         return EventState::Consumed;
                     }
+                    Some(ActionShortcuts::ToggleNoteBrowser) => {
+                        if self.note_browser.is_some() {
+                            self.note_browser = None;
+                            self.focus = Focus::Editor;
+                        } else {
+                            let provider = SearchNotesProvider::new(self.vault.clone());
+                            self.note_browser = Some(NoteBrowserModal::new(
+                                provider,
+                                self.vault.clone(),
+                                self.settings.key_bindings.clone(),
+                                self.settings.icons(),
+                                tx.clone(),
+                            ));
+                            self.focus = Focus::NoteBrowser;
+                        }
+                        return EventState::Consumed;
+                    }
                     _ => {}
                 }
             }
@@ -228,6 +250,13 @@ impl AppScreen for EditorScreen {
         match self.focus {
             Focus::Sidebar => self.sidebar.handle_input(event, tx),
             Focus::Editor => self.editor.handle_input(event, tx),
+            Focus::NoteBrowser => {
+                if let Some(modal) = &mut self.note_browser {
+                    modal.handle_input(event, tx)
+                } else {
+                    EventState::NotConsumed
+                }
+            }
         }
     }
 
@@ -305,7 +334,11 @@ impl AppScreen for EditorScreen {
             }
         }
 
-        let focus_label = if editor_focused { "EDITOR" } else { "SIDEBAR" };
+        let focus_label = match self.focus {
+            Focus::Editor => "EDITOR",
+            Focus::Sidebar => "SIDEBAR",
+            Focus::NoteBrowser => "NOTE BROWSER",
+        };
         let mut footer = Block::default()
             .title(format!(
                 "[{focus_label}]  {}: Quit  |  {}: Toggle sidebar",
@@ -325,6 +358,11 @@ impl AppScreen for EditorScreen {
         let hints = match self.focus {
             Focus::Editor => self.editor.hint_shortcuts(),
             Focus::Sidebar => self.sidebar.hint_shortcuts(),
+            Focus::NoteBrowser => self
+                .note_browser
+                .as_ref()
+                .map(|m| m.hint_shortcuts())
+                .unwrap_or_default(),
         };
         let hints_text = hints
             .iter()
@@ -336,6 +374,11 @@ impl AppScreen for EditorScreen {
             Paragraph::new(hints_text).style(Style::default().fg(theme.fg_secondary.to_ratatui())),
             footer_inner,
         );
+
+        // Modal overlay — rendered last so it appears on top of everything.
+        if let Some(modal) = &mut self.note_browser {
+            modal.render(f, f.area(), &self.theme, true);
+        }
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
@@ -364,6 +407,11 @@ impl AppScreen for EditorScreen {
                 if let Ok((details, _)) = self.vault.journal_entry().await {
                     self.open_path(details.path, tx).await;
                 }
+                None
+            }
+            AppEvent::CloseNoteBrowser => {
+                self.note_browser = None;
+                self.focus = Focus::Editor;
                 None
             }
             other => Some(other),
