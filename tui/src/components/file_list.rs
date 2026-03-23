@@ -319,11 +319,10 @@ impl FileListComponent {
         self.list_state.select(Some(0));
     }
 
-    pub fn prepend_create_entry(&mut self, filename: String) {
-        let path = VaultPath::new(&filename);
+    pub fn prepend_create_entry(&mut self, entry: FileListEntry) {
         // Reset any active filter — inserting at 0 would shift all stored indices.
         self.display_indices = None;
-        self.entries.insert(0, FileListEntry::CreateNote { filename, path });
+        self.entries.insert(0, entry);
         self.list_state.select(Some(0));
     }
 
@@ -865,7 +864,10 @@ mod tests {
             crate::settings::icons::Icons::new(true),
         );
         list.push_entry(make_note("a.md", "A"));
-        list.prepend_create_entry("new-note.md".to_string());
+        list.prepend_create_entry(FileListEntry::CreateNote {
+            filename: "new-note.md".to_string(),
+            path: VaultPath::new("new-note.md"),
+        });
         assert!(matches!(
             &list.entries[0],
             FileListEntry::CreateNote { filename, .. } if filename == "new-note.md"
