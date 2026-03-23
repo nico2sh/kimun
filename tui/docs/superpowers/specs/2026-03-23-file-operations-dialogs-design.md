@@ -44,6 +44,7 @@ Three keyboard-triggered modal dialogs that let the user delete, rename, or move
 | `src/settings/mod.rs` | Add default bindings `Ctrl+Shift+D/R/M`; update `CONFIG_HEADER` examples |
 | `src/components/events.rs` | Add `ShowDeleteDialog(VaultPath)`, `ShowRenameDialog(VaultPath)`, `ShowMoveDialog(VaultPath)`, `EntryDeleted(VaultPath)`, `EntryRenamed { from: VaultPath, to: VaultPath }`, `EntryMoved { from: VaultPath, to: VaultPath }`, `CloseDialog` |
 | `src/components/file_list.rs` | Intercept `Ctrl+Shift+D/R/M` on selected entry (has `KeyBindings` already) |
+| `src/components/sidebar.rs` | Add `pub fn current_dir(&self) -> &VaultPath` accessor |
 | `src/app_screen/editor.rs` | Intercept `Ctrl+Shift+D/R/M` when editor focused; own `active_dialog`; handle dialog AppEvents; post-op refresh |
 
 ---
@@ -54,23 +55,40 @@ Three keyboard-triggered modal dialogs that let the user delete, rename, or move
 
 `SidebarComponent::handle_input` delegates entirely to `self.file_list.handle_input(event, tx)`. `FileListComponent` already holds a `KeyBindings` field, so the new shortcuts are intercepted there.
 
-When `Ctrl+Shift+D/R/M` is pressed inside `FileListComponent::handle_input` and there is a selected entry that is not `FileListEntry::Up`:
+When `Ctrl+Shift+D/R/M` is pressed inside `FileListComponent::handle_input` and there is a selected entry that is not `FileListEntry::Up`, the three new arms are inserted inside the existing `Some(action)` branch alongside the existing `ActionShortcuts` arms (which end with a `_ => {}` wildcard):
 
 ```rust
-if let Some(entry) = self.selected_entry() {
-    if !matches!(entry, FileListEntry::Up { .. }) {
-        let path = entry.path().clone();
-        match action {
-            ActionShortcuts::DeleteEntry => { tx.send(AppEvent::ShowDeleteDialog(path)).ok(); }
-            ActionShortcuts::RenameEntry => { tx.send(AppEvent::ShowRenameDialog(path)).ok(); }
-            ActionShortcuts::MoveEntry   => { tx.send(AppEvent::ShowMoveDialog(path)).ok(); }
+// Inside the existing Some(action) match in handle_input:
+Some(ActionShortcuts::DeleteEntry) => {
+    if let Some(entry) = self.selected_entry() {
+        if !matches!(entry, FileListEntry::Up { .. }) {
+            tx.send(AppEvent::ShowDeleteDialog(entry.path().clone())).ok();
+            return EventState::Consumed;
         }
-        return EventState::Consumed;
     }
+    EventState::NotConsumed
+}
+Some(ActionShortcuts::RenameEntry) => {
+    if let Some(entry) = self.selected_entry() {
+        if !matches!(entry, FileListEntry::Up { .. }) {
+            tx.send(AppEvent::ShowRenameDialog(entry.path().clone())).ok();
+            return EventState::Consumed;
+        }
+    }
+    EventState::NotConsumed
+}
+Some(ActionShortcuts::MoveEntry) => {
+    if let Some(entry) = self.selected_entry() {
+        if !matches!(entry, FileListEntry::Up { .. }) {
+            tx.send(AppEvent::ShowMoveDialog(entry.path().clone())).ok();
+            return EventState::Consumed;
+        }
+    }
+    EventState::NotConsumed
 }
 ```
 
-If no entry is selected (empty list) or `..` is selected, the event is silently ignored.
+If no entry is selected (empty list) or `..` is selected, `EventState::NotConsumed` is returned.
 
 **Key ordering:** `FileListComponent::handle_input` runs the `key_bindings.get_action(&combo)` check first, before the `KeyCode::Char(c)` fallthrough arm that appends to `search_query`. The new shortcuts must be matched in the `get_action` branch so they are consumed before reaching the char arm. This works correctly as long as the bindings are registered — the implementer must ensure the three new `ActionShortcuts` variants are added to the default keybindings and to the `CONFIG_HEADER`.
 
@@ -440,7 +458,7 @@ When `load_rx` delivers results in `render`, store them in `self.all_dirs` and i
 
 ### Filtering
 
-On each keystroke, run nucleo fuzzy-match against `self.all_dirs` (same `spawn_blocking` pattern as `FileFinderProvider`). `results` is updated with the filtered+ranked list.
+On each keystroke, run nucleo fuzzy-match against `self.all_dirs` (same `spawn_blocking` pattern as `FileFinderProvider`). `results` is updated with the filtered+ranked list. After delivering results from the async task, send `AppEvent::Redraw` so the dialog repaints (same pattern as `FileListComponent::schedule_filter`).
 
 With empty query: `results = all_dirs.clone()` (already sorted alphabetically from `schedule_load`).
 
@@ -527,7 +545,7 @@ async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
         ))).ok();
     } else {
         // Refresh sidebar to reflect the change
-        let dir = self.sidebar.current_dir.clone();
+        let dir = self.sidebar.current_dir().clone();
         self.navigate_sidebar(dir, tx).await;
     }
 }
