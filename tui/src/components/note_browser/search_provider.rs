@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use kimun_core::NoteVault;
-use kimun_core::nfs::NoteEntryData;
+use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
 
 use crate::components::file_list::FileListEntry;
@@ -11,11 +11,12 @@ use super::NoteBrowserProvider;
 
 pub struct SearchNotesProvider {
     vault: Arc<NoteVault>,
+    last_paths: Vec<VaultPath>,
 }
 
 impl SearchNotesProvider {
-    pub fn new(vault: Arc<NoteVault>) -> Self {
-        Self { vault }
+    pub fn new(vault: Arc<NoteVault>, last_paths: Vec<VaultPath>) -> Self {
+        Self { vault, last_paths }
     }
 
     fn into_entry(&self, entry: NoteEntryData, content: NoteContentData) -> FileListEntry {
@@ -39,11 +40,19 @@ impl SearchNotesProvider {
 impl NoteBrowserProvider for SearchNotesProvider {
     async fn load(&self, query: &str) -> Vec<FileListEntry> {
         if query.is_empty() {
-            let mut notes = self.vault.get_all_notes().await.unwrap_or_default();
-            notes.sort_by(|(a, _), (b, _)| b.modified_secs.cmp(&a.modified_secs));
-            notes.truncate(20);
-            notes
+            // Build a lookup map from all indexed notes so we can resolve each
+            // last_path to its full metadata in O(1).
+            let all_notes = self.vault.get_all_notes().await.unwrap_or_default();
+            let mut by_path: std::collections::HashMap<_, _> = all_notes
                 .into_iter()
+                .map(|(entry, content)| (entry.path.clone(), (entry, content)))
+                .collect();
+
+            // last_paths is most-recent-last; iterate in reverse for most-recent-first.
+            self.last_paths
+                .iter()
+                .rev()
+                .filter_map(|path| by_path.remove(path))
                 .map(|(entry, content)| self.into_entry(entry, content))
                 .collect()
         } else {
