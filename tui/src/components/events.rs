@@ -34,6 +34,8 @@ pub enum AppEvent {
     IndexingDone(Result<Duration, String>),
     /// Open (or create) today's journal entry and switch to it in the editor.
     OpenJournal,
+    /// Sent by NoteBrowserModal on Esc or after Enter+open.
+    CloseNoteBrowser,
 }
 
 impl AppEvent {
