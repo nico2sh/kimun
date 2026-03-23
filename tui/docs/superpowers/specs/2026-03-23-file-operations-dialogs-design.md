@@ -7,7 +7,9 @@
 
 ## Overview
 
-Three keyboard-triggered modal dialogs that let the user delete, rename, or move any vault entry (notes, directories, attachments) directly from the sidebar or from the editor. Each operation has a confirmation dialog to prevent accidental data loss. The core library already implements `delete_note`, `delete_directory`, `rename_note`, and `rename_directory` — the TUI just needs the UI layer.
+Three keyboard-triggered modal dialogs that let the user delete, rename, or move vault entries (notes and directories) directly from the sidebar or from the editor. Each operation has a confirmation dialog to prevent accidental data loss. The core library already implements `delete_note`, `delete_directory`, `rename_note`, and `rename_directory` — the TUI just needs the UI layer.
+
+**Attachment scope:** `FileListComponent::push_entry` silently drops `FileListEntry::Attachment` entries, so attachments are never shown in the sidebar file list and cannot be selected. From the editor, `self.path` is always a note. Attachment paths therefore cannot reach any of the three dialogs in this feature. Attachment support is out of scope.
 
 ---
 
@@ -201,7 +203,7 @@ pub struct DeleteConfirmDialog {
 
 ### Async delete
 
-`vault.delete_note` hard-rejects non-`.md` paths and `vault.delete_directory` hard-rejects `.md` paths. Attachments (neither note nor directory) are deleted directly via `std::fs::remove_file` wrapped in `tokio::task::spawn_blocking`, using `vault.path_to_pathbuf(&path)` to resolve the absolute filesystem path.
+`vault.delete_note` hard-rejects non-`.md` paths and `vault.delete_directory` hard-rejects `.md` paths. Since attachment paths are out of scope (see Overview), the delete dialog only handles notes and directories. `VaultPath` has no `is_directory()` method — use `!path.is_note()` for the directory branch.
 
 ```rust
 KeyCode::Enter => {
@@ -209,30 +211,19 @@ KeyCode::Enter => {
     let vault = Arc::clone(&self.vault);
     let tx = self.tx.clone();
     tokio::spawn(async move {
-        let result: Result<(), String> = if path.is_note() {
-            vault.delete_note(&path).await.map_err(|e| e.to_string())
-        } else if path.is_directory() {
-            vault.delete_directory(&path).await.map_err(|e| e.to_string())
+        let result = if path.is_note() {
+            vault.delete_note(&path).await
         } else {
-            // Attachment: direct filesystem removal
-            let abs_path = vault.path_to_pathbuf(&path);
-            tokio::task::spawn_blocking(move || {
-                std::fs::remove_file(&abs_path)
-                    .map_err(|e| e.to_string())
-            })
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()))
+            vault.delete_directory(&path).await
         };
         match result {
             Ok(()) => { tx.send(AppEvent::EntryDeleted(path)).ok(); }
-            Err(e) => { tx.send(AppEvent::DialogError(e)).ok(); }
+            Err(e) => { tx.send(AppEvent::DialogError(e.to_string())).ok(); }
         }
     });
     EventState::Consumed
 }
 ```
-
-> **Implementation note:** `path.is_directory()` is the inverse of `path.is_note()` for non-root paths (a path that does not end with `.md` and is not the root is a directory or attachment). Verify the actual `VaultPath` API — if there is no `is_directory()`, use `!path.is_note()` and add an extra `path_to_pathbuf` existence check to distinguish directory from attachment. Alternatively, call `vault.get_directories(VaultPath::root(), true)` and test membership. This branching detail is resolved at implementation time.
 
 ### Error display
 
@@ -298,7 +289,7 @@ On each `Char` or `Backspace` keystroke, if the input differs from the original 
 1. Abort previous `validation_task`
 2. Build candidate path — construction differs by entry type:
    - Note: `parent_dir.append(&VaultPath::note_path_from(&input))` (appends `.md`)
-   - Directory or attachment: `parent_dir.append(&VaultPath::new(&input))` (no extension added)
+   - Directory: `parent_dir.append(&VaultPath::new(&input))` (no extension added)
 3. Spawn:
    ```rust
    let vault = Arc::clone(&self.vault);
@@ -328,9 +319,11 @@ fn poll_validation(&mut self) {
 
 On `Enter` when `ValidationState::Available`:
 
+Since attachment paths are out of scope, `self.path` is always a note or directory.
+
 ```rust
 let parent = self.path.get_parent_path().0;
-// Use note_path_from only for notes (appends .md); directories and attachments use VaultPath::new.
+// Use note_path_from only for notes (appends .md); directories use VaultPath::new.
 let new_path = if self.path.is_note() {
     parent.append(&VaultPath::note_path_from(&self.input))
 } else {
@@ -363,10 +356,10 @@ pub struct MoveDialog {
     path: VaultPath,
     vault: Arc<NoteVault>,
     search_query: String,
-    dirs_cache: Arc<tokio::sync::OnceCell<Vec<VaultPath>>>,
+    all_dirs: Vec<VaultPath>,           // full list once loaded
     load_task: Option<JoinHandle<()>>,
     load_rx: Option<Receiver<Vec<VaultPath>>>,
-    results: Vec<VaultPath>,
+    results: Vec<VaultPath>,            // filtered view shown in the list
     list_state: ListState,
     tx: AppTx,
     error: Option<String>,
@@ -423,13 +416,13 @@ fn schedule_load(&mut self) {
 }
 ```
 
-The dirs list is cached in `OnceCell` so re-opening the dialog on the same vault instance reuses it.
+When `load_rx` delivers results in `render`, store them in `self.all_dirs` and initialize `self.results = self.all_dirs.clone()`. All subsequent filtering runs against `self.all_dirs`.
 
 ### Filtering
 
-On each keystroke, run nucleo fuzzy-match against the cached dirs list (same `spawn_blocking` pattern as `FileFinderProvider`). `results` is updated with the filtered+ranked list.
+On each keystroke, run nucleo fuzzy-match against `self.all_dirs` (same `spawn_blocking` pattern as `FileFinderProvider`). `results` is updated with the filtered+ranked list.
 
-With empty query: show all directories sorted alphabetically.
+With empty query: `results = all_dirs.clone()` (already sorted alphabetically from `schedule_load`).
 
 ### Navigation
 
@@ -439,10 +432,12 @@ With empty query: show all directories sorted alphabetically.
 
 On `Enter` with a selected directory:
 
+Since attachment paths are out of scope, `self.path` is always a note or directory.
+
 ```rust
 let dest_dir = &self.results[selected_idx];
 let filename = self.path.get_parent_path().1;
-// Use note_path_from only for notes; directories and attachments use VaultPath::new.
+// Use note_path_from only for notes (appends .md); directories use VaultPath::new.
 let new_path = if self.path.is_note() {
     dest_dir.append(&VaultPath::note_path_from(&filename))
 } else {
@@ -496,13 +491,15 @@ AppEvent::CloseDialog => {
 }
 ```
 
-The shared `on_entry_op` helper on `EditorScreen`:
+The shared `on_entry_op` helper on `EditorScreen`. Before navigating away, call `self.try_save(tx).await` to flush any unsaved editor content — the editor may have changes that would be silently discarded if the user deletes or moves the currently open note before saving.
 
 ```rust
 async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
     self.active_dialog = None;
     self.focus = Focus::Editor;
     if from == self.path {
+        // Flush unsaved edits before navigating away
+        self.try_save(tx).await;
         // The currently open note was affected — navigate to parent browse screen
         let parent = self.path.get_parent_path().0;
         tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
@@ -541,6 +538,15 @@ Focus::Dialog => "DIALOG",
 Focus::Dialog => vec![],
 ```
 
+**Mouse events when dialog is open:** `EditorScreen::handle_input` checks `matches!(self.focus, Focus::NoteBrowser)` for mouse routing. Add `Focus::Dialog` to that check so that mouse events are also consumed and not passed to the sidebar or editor while a dialog is open:
+
+```rust
+if matches!(self.focus, Focus::NoteBrowser | Focus::Dialog) {
+    // swallow mouse events
+    return EventState::Consumed;
+}
+```
+
 ---
 
 ## AppEvent additions
@@ -569,6 +575,6 @@ CloseDialog,
 
 - Undo / undo history
 - Multi-select (deleting/moving multiple entries at once)
-- Rename dialog for attachments with extension validation (`.md` enforcement is note-specific; attachments keep their extension)
+- Attachment operations (attachments are not shown in the sidebar file list; see Overview)
 - Move dialog's destination creating new directories on the fly
 - Drag-and-drop
