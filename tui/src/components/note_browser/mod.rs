@@ -207,10 +207,22 @@ impl Component for NoteBrowserModal {
                             if prev == Some(idx) {
                                 // Second click on the same row — open the note.
                                 if let Some(entry) = self.file_list.selected_entry() {
-                                    if !matches!(entry, FileListEntry::CreateNote { .. }) {
-                                        let path = entry.path().clone();
-                                        tx.send(AppEvent::OpenPath(path)).ok();
-                                        tx.send(AppEvent::CloseNoteBrowser).ok();
+                                    match entry {
+                                        FileListEntry::CreateNote { path, .. } => {
+                                            let path = path.clone();
+                                            let vault = Arc::clone(&self.vault);
+                                            let tx = tx.clone();
+                                            tokio::spawn(async move {
+                                                vault.load_or_create_note(&path, None).await.ok();
+                                                tx.send(AppEvent::OpenPath(path)).ok();
+                                                tx.send(AppEvent::CloseNoteBrowser).ok();
+                                            });
+                                        }
+                                        _ => {
+                                            let path = entry.path().clone();
+                                            tx.send(AppEvent::OpenPath(path)).ok();
+                                            tx.send(AppEvent::CloseNoteBrowser).ok();
+                                        }
                                     }
                                 }
                             } else {
@@ -242,8 +254,15 @@ impl Component for NoteBrowserModal {
             KeyCode::Enter => {
                 if let Some(entry) = self.file_list.selected_entry() {
                     match entry {
-                        FileListEntry::CreateNote { .. } => {
-                            // Future: create note from query
+                        FileListEntry::CreateNote { path, .. } => {
+                            let path = path.clone();
+                            let vault = Arc::clone(&self.vault);
+                            let tx = tx.clone();
+                            tokio::spawn(async move {
+                                vault.load_or_create_note(&path, None).await.ok();
+                                tx.send(AppEvent::OpenPath(path)).ok();
+                                tx.send(AppEvent::CloseNoteBrowser).ok();
+                            });
                         }
                         _ => {
                             let path = entry.path().clone();
