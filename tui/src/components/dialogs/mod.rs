@@ -27,8 +27,8 @@ impl ActiveDialog {
 // ---------------------------------------------------------------------------
 
 pub(super) fn centered_rect(percent_x: u16, percent_y: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
-    let popup_height = area.height * percent_y / 100;
-    let popup_width = area.width * percent_x / 100;
+    let popup_height = (area.height as u32 * percent_y as u32 / 100) as u16;
+    let popup_width  = (area.width  as u32 * percent_x as u32 / 100) as u16;
     ratatui::layout::Rect {
         x: area.x + (area.width.saturating_sub(popup_width)) / 2,
         y: area.y + (area.height.saturating_sub(popup_height)) / 2,
