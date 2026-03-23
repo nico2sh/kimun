@@ -365,7 +365,19 @@ let matches: Vec<_> = pattern.match_list(candidates, &mut matcher);
 // results are sorted by score descending
 ```
 
-**No `spawn_blocking` needed** — the filter operates entirely on in-memory data with no I/O. The existing `spawn_blocking` in `file_list.rs` is for a different code path. `provider.load()` is already called inside a `tokio::spawn` by the modal's `schedule_load`, so blocking the async thread briefly for an in-memory nucleo scan is acceptable.
+The `match_list` call must run inside `tokio::task::spawn_blocking` — this is the established pattern in `file_list.rs` (lines 398–408). Even though the data is in-memory, `spawn_blocking` keeps the async executor unblocked. Since `provider.load()` is already called from within a `tokio::spawn`, wrap the nucleo work like this:
+
+```rust
+let matched = tokio::task::spawn_blocking(move || {
+    let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    pattern.match_list(candidates, &mut matcher)
+})
+.await
+.unwrap_or_default();
+```
+
+Where `candidates` is a `Vec<MatchEntry>` (with `AsRef<str>` impl returning the haystack string) and `query` is moved into the closure. See `file_list.rs:382–408` for the exact pattern to follow.
 
 ---
 
