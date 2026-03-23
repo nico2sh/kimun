@@ -269,8 +269,9 @@ impl Component for NoteBrowserModal {
             ),
             search_inner,
         );
-        // Cursor at end of search text
-        let cursor_x = search_inner.x + self.search_query.chars().count() as u16;
+        // Cursor at end of search text, clamped to box width.
+        let cursor_x = (search_inner.x + self.search_query.chars().count() as u16)
+            .min(search_inner.x + search_inner.width.saturating_sub(1));
         f.set_cursor_position((cursor_x, search_inner.y));
 
         // ── List + Preview ────────────────────────────────────────────────
