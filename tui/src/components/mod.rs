@@ -1,3 +1,4 @@
+pub mod dialogs;
 pub mod event_state;
 pub mod events;
 pub mod file_list;
