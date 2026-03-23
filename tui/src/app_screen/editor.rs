@@ -225,6 +225,7 @@ impl AppScreen for EditorScreen {
                         } else {
                             let provider = SearchNotesProvider::new(self.vault.clone(), self.settings.last_paths.clone());
                             self.note_browser = Some(NoteBrowserModal::new(
+                                "Note Browser",
                                 provider,
                                 self.vault.clone(),
                                 self.settings.key_bindings.clone(),
