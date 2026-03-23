@@ -219,7 +219,9 @@ impl AppScreen for EditorScreen {
                     Some(ActionShortcuts::ToggleNoteBrowser) => {
                         if self.note_browser.is_some() {
                             self.note_browser = None;
-                            self.focus = Focus::Editor;
+                            if matches!(self.focus, Focus::NoteBrowser) {
+                                self.focus = Focus::Editor;
+                            }
                         } else {
                             let provider = SearchNotesProvider::new(self.vault.clone());
                             self.note_browser = Some(NoteBrowserModal::new(
@@ -241,6 +243,12 @@ impl AppScreen for EditorScreen {
         // Mouse events are routed to all components regardless of focus so that
         // clicking anywhere can transfer focus correctly.
         if matches!(event, InputEvent::Mouse(_)) {
+            // Modal intercepts all mouse events when open.
+            if matches!(self.focus, Focus::NoteBrowser) {
+                if let Some(modal) = &mut self.note_browser {
+                    return modal.handle_input(event, tx);
+                }
+            }
             if self.sidebar_visible && self.sidebar.handle_input(event, tx).is_consumed() {
                 return EventState::Consumed;
             }
@@ -411,7 +419,9 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::CloseNoteBrowser => {
                 self.note_browser = None;
-                self.focus = Focus::Editor;
+                if matches!(self.focus, Focus::NoteBrowser) {
+                    self.focus = Focus::Editor;
+                }
                 None
             }
             other => Some(other),
