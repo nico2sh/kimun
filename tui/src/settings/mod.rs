@@ -45,7 +45,7 @@ const CONFIG_DIR: &str = "kimun";
 const BASE_CONFIG_FILE: &str = "config.toml";
 const THEMES_DIR: &str = "themes";
 
-const LAST_PATH_HISTORY_SIZE: usize = 10;
+const LAST_PATH_HISTORY_SIZE: usize = 20;
 
 const CONFIG_HEADER: &str = "\
 # ─── Kimün configuration ────────────────────────────────────────────────────
@@ -68,7 +68,6 @@ const CONFIG_HEADER: &str = "\
 #
 # ─────────────────────────────────────────────────────────────────────────────
 ";
-
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct AppSettings {
@@ -120,10 +119,19 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyY, ActionShortcuts::TogglePreview)
         .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
         .add(KeyStrike::KeyI, ActionShortcuts::Text(TextAction::Italic))
-        .add(KeyStrike::KeyU, ActionShortcuts::Text(TextAction::Underline))
-        .add(KeyStrike::KeyS, ActionShortcuts::Text(TextAction::Strikethrough))
+        .add(
+            KeyStrike::KeyU,
+            ActionShortcuts::Text(TextAction::Underline),
+        )
+        .add(
+            KeyStrike::KeyS,
+            ActionShortcuts::Text(TextAction::Strikethrough),
+        )
         .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Link))
-        .add(KeyStrike::KeyT, ActionShortcuts::Text(TextAction::ToggleHeader))
+        .add(
+            KeyStrike::KeyT,
+            ActionShortcuts::Text(TextAction::ToggleHeader),
+        )
         // =============================
         // We add shift to the modifiers
         // =============================
@@ -366,7 +374,8 @@ impl AppSettings {
                 log::warn!(
                     "Config file at {:?} could not be parsed ({}). \
                      Renaming to .corrupt and starting with defaults.",
-                    path, e
+                    path,
+                    e
                 );
                 let corrupt_path = path.with_extension("toml.corrupt");
                 let _ = fs::rename(&path, &corrupt_path);
