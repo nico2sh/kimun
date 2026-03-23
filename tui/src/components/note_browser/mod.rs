@@ -175,10 +175,55 @@ impl NoteBrowserModal {
 
 impl Component for NoteBrowserModal {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
+
+        if let InputEvent::Mouse(mouse) = event {
+            let r = self.file_list.rendered_rect();
+            let in_bounds = mouse.column >= r.x
+                && mouse.column < r.x + r.width
+                && mouse.row >= r.y
+                && mouse.row < r.y + r.height;
+            if !in_bounds {
+                return EventState::NotConsumed;
+            }
+            match mouse.kind {
+                MouseEventKind::Down(_) => {
+                    if mouse.row > r.y {
+                        let rel_row = mouse.row - r.y - 1;
+                        let prev = self.file_list.selected_display_idx();
+                        if let Some(idx) = self.file_list.select_at_visual_row(rel_row) {
+                            if prev == Some(idx) {
+                                // Second click on the same row — open the note.
+                                if let Some(entry) = self.file_list.selected_entry() {
+                                    if !matches!(entry, FileListEntry::CreateNote { .. }) {
+                                        let path = entry.path().clone();
+                                        tx.send(AppEvent::OpenPath(path)).ok();
+                                        tx.send(AppEvent::CloseNoteBrowser).ok();
+                                    }
+                                }
+                            } else {
+                                self.refresh_preview();
+                            }
+                        }
+                    }
+                    EventState::Consumed
+                }
+                MouseEventKind::ScrollUp => {
+                    self.file_list.select_prev();
+                    self.refresh_preview();
+                    EventState::Consumed
+                }
+                MouseEventKind::ScrollDown => {
+                    self.file_list.select_next();
+                    self.refresh_preview();
+                    EventState::Consumed
+                }
+                _ => EventState::Consumed, // consume all other mouse events while modal is open
+            }
+        } else {
         let InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
         match key.code {
             KeyCode::Esc => {
                 tx.send(AppEvent::CloseNoteBrowser).ok();
@@ -225,6 +270,7 @@ impl Component for NoteBrowserModal {
             }
             _ => EventState::NotConsumed,
         }
+        } // end key else branch
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, _focused: bool) {

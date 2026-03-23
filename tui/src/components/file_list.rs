@@ -471,6 +471,24 @@ impl FileListComponent {
             .select(Some(if cur == 0 { len - 1 } else { cur - 1 }));
     }
 
+    pub fn rendered_rect(&self) -> Rect {
+        self.rendered_rect
+    }
+
+    /// Returns the currently selected display index (not entry index).
+    pub fn selected_display_idx(&self) -> Option<usize> {
+        self.list_state.selected()
+    }
+
+    /// Select the entry at `rel_row` (rows from top of the inner list area,
+    /// i.e. after the block border). Returns the selected display index if a
+    /// valid item was found, `None` otherwise.
+    pub fn select_at_visual_row(&mut self, rel_row: u16) -> Option<usize> {
+        let idx = self.display_idx_at_row(rel_row)?;
+        self.list_state.select(Some(idx));
+        Some(idx)
+    }
+
     pub fn selected_entry(&self) -> Option<&FileListEntry> {
         let display_idx = self.list_state.selected()?;
         let entry_idx = match &self.display_indices {
