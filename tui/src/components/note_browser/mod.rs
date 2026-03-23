@@ -19,6 +19,7 @@ use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 pub mod search_provider;
+pub mod file_finder_provider;
 
 // ---------------------------------------------------------------------------
 // NoteBrowserProvider trait
