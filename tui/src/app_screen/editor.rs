@@ -13,6 +13,7 @@ use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::note_browser::NoteBrowserModal;
+use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
@@ -226,6 +227,27 @@ impl AppScreen for EditorScreen {
                             let provider = SearchNotesProvider::new(self.vault.clone(), self.settings.last_paths.clone());
                             self.note_browser = Some(NoteBrowserModal::new(
                                 "Note Browser",
+                                provider,
+                                self.vault.clone(),
+                                self.settings.key_bindings.clone(),
+                                self.settings.icons(),
+                                tx.clone(),
+                            ));
+                            self.focus = Focus::NoteBrowser;
+                        }
+                        return EventState::Consumed;
+                    }
+                    Some(ActionShortcuts::OpenNote) => {
+                        if self.note_browser.is_some() {
+                            self.note_browser = None;
+                            if matches!(self.focus, Focus::NoteBrowser) {
+                                self.focus = Focus::Editor;
+                            }
+                        } else {
+                            let current_dir = self.path.get_parent_path().0;
+                            let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
+                            self.note_browser = Some(NoteBrowserModal::new(
+                                "Find Note",
                                 provider,
                                 self.vault.clone(),
                                 self.settings.key_bindings.clone(),
