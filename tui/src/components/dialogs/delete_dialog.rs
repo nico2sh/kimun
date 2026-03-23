@@ -32,12 +32,12 @@ impl DeleteConfirmDialog {
 
     /// Handle a raw [`KeyEvent`].  Returns [`EventState::Consumed`] for all
     /// keys this dialog acts on; the caller should forward only key events.
-    pub fn handle_input(&mut self, key: KeyEvent, _tx: &AppTx) -> EventState {
+    pub fn handle_input(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
         match key.code {
             KeyCode::Enter => {
                 let path = self.path.clone();
                 let vault = Arc::clone(&self.vault);
-                let tx = self.tx.clone();
+                let tx_clone = tx.clone();
                 tokio::spawn(async move {
                     let result = if path.is_note() {
                         vault.delete_note(&path).await
@@ -46,17 +46,17 @@ impl DeleteConfirmDialog {
                     };
                     match result {
                         Ok(()) => {
-                            tx.send(AppEvent::EntryDeleted(path)).ok();
+                            tx_clone.send(AppEvent::EntryDeleted(path)).ok();
                         }
                         Err(e) => {
-                            tx.send(AppEvent::DialogError(e.to_string())).ok();
+                            tx_clone.send(AppEvent::DialogError(e.to_string())).ok();
                         }
                     }
                 });
                 EventState::Consumed
             }
             KeyCode::Esc => {
-                self.tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseDialog).ok();
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -92,7 +92,6 @@ impl Component for DeleteConfirmDialog {
         f.render_widget(outer_block, popup_area);
 
         // Determine how many rows we need: path + warning + hint + optional error.
-        let error_rows: u16 = if self.error.is_some() { 1 } else { 0 };
         let constraints = if self.error.is_some() {
             vec![
                 Constraint::Length(1), // path
@@ -109,7 +108,6 @@ impl Component for DeleteConfirmDialog {
                 Constraint::Length(1), // hint
             ]
         };
-        let _ = error_rows; // used implicitly via constraints length
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
