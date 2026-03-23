@@ -107,17 +107,25 @@ impl NoteBrowserModal {
         match rx.try_recv() {
             Ok(entries) => {
                 self.file_list.clear();
+                let mut create_entry: Option<FileListEntry> = None;
                 for entry in entries {
-                    self.file_list.push_entry(entry);
+                    if matches!(entry, FileListEntry::CreateNote { .. }) {
+                        create_entry = Some(entry);
+                    } else {
+                        self.file_list.push_entry(entry);
+                    }
+                }
+                if let Some(entry) = create_entry {
+                    self.file_list.prepend_create_entry(entry);
                 }
                 self.load_rx = None;
                 self.load_task = None;
                 self.refresh_preview();
             }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.load_rx = None;
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
