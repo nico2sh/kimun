@@ -18,10 +18,7 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
-use crossterm::event::{
-    DisableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
+use crossterm::event::{DisableMouseCapture, PopKeyboardEnhancementFlags};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use ratatui::Terminal;
 use ratatui::crossterm::event::EnableMouseCapture;
@@ -54,16 +51,6 @@ async fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    // Best-effort: terminals that support the kitty keyboard protocol will honour this
-    // and report Ctrl+symbol combos (e.g. Ctrl+,) correctly. Terminals that don't
-    // support it safely ignore the escape sequence, so we send it unconditionally.
-    let _ = execute!(
-        stdout,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
-        )
-    );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut events = EventHandler::new();
