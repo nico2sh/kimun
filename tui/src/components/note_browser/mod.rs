@@ -41,6 +41,7 @@ pub trait NoteBrowserProvider: Send + Sync {
 // ---------------------------------------------------------------------------
 
 pub struct NoteBrowserModal {
+    title: String,
     search_query: String,
     provider: Arc<dyn NoteBrowserProvider>,
     file_list: FileListComponent,
@@ -57,6 +58,7 @@ pub struct NoteBrowserModal {
 
 impl NoteBrowserModal {
     pub fn new(
+        title: impl Into<String>,
         provider: impl NoteBrowserProvider + 'static,
         vault: Arc<NoteVault>,
         key_bindings: KeyBindings,
@@ -65,6 +67,7 @@ impl NoteBrowserModal {
     ) -> Self {
         let file_list = FileListComponent::new(key_bindings, icons);
         let mut modal = Self {
+            title: title.into(),
             search_query: String::new(),
             provider: Arc::new(provider),
             file_list,
@@ -282,7 +285,7 @@ impl Component for NoteBrowserModal {
         f.render_widget(Clear, popup_rect);
 
         let outer_block = Block::default()
-            .title(" Note Browser ")
+            .title(format!(" {} ", self.title))
             .borders(Borders::ALL)
             .border_style(theme.border_style(true))
             .style(theme.panel_style());
