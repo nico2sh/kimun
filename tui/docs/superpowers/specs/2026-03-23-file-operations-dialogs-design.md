@@ -40,7 +40,7 @@ Three keyboard-triggered modal dialogs that let the user delete, rename, or move
 
 | File | Change |
 |------|--------|
-| `src/keys/action_shortcuts.rs` | Add `DeleteEntry`, `RenameEntry`, `MoveEntry` variants |
+| `src/keys/action_shortcuts.rs` | Add `DeleteEntry`, `RenameEntry`, `MoveEntry` variants with `Display` strings `"DeleteEntry"`, `"RenameEntry"`, `"MoveEntry"` and corresponding `TryFrom<String>` arms |
 | `src/settings/mod.rs` | Add default bindings `Ctrl+Shift+D/R/M`; update `CONFIG_HEADER` examples |
 | `src/components/events.rs` | Add `ShowDeleteDialog(VaultPath)`, `ShowRenameDialog(VaultPath)`, `ShowMoveDialog(VaultPath)`, `EntryDeleted(VaultPath)`, `EntryRenamed { from: VaultPath, to: VaultPath }`, `EntryMoved { from: VaultPath, to: VaultPath }`, `CloseDialog` |
 | `src/components/file_list.rs` | Intercept `Ctrl+Shift+D/R/M` on selected entry (has `KeyBindings` already) |
@@ -71,6 +71,8 @@ if let Some(entry) = self.selected_entry() {
 ```
 
 If no entry is selected (empty list) or `..` is selected, the event is silently ignored.
+
+**Key ordering:** `FileListComponent::handle_input` runs the `key_bindings.get_action(&combo)` check first, before the `KeyCode::Char(c)` fallthrough arm that appends to `search_query`. The new shortcuts must be matched in the `get_action` branch so they are consumed before reaching the char arm. This works correctly as long as the bindings are registered — the implementer must ensure the three new `ActionShortcuts` variants are added to the default keybindings and to the `CONFIG_HEADER`.
 
 ### From the editor (`EditorScreen::handle_input`)
 
@@ -134,7 +136,21 @@ AppEvent::ShowDeleteDialog(path) => {
     self.focus = Focus::Dialog;
     None
 }
-// same pattern for ShowRenameDialog and ShowMoveDialog
+AppEvent::ShowRenameDialog(path) => {
+    self.active_dialog = Some(ActiveDialog::Rename(
+        RenameDialog::new(path, self.vault.clone(), tx.clone())
+    ));
+    self.focus = Focus::Dialog;
+    None
+}
+AppEvent::ShowMoveDialog(path) => {
+    // MoveDialog::new must call self.schedule_load() to start the directory fetch.
+    self.active_dialog = Some(ActiveDialog::Move(
+        MoveDialog::new(path, self.vault.clone(), tx.clone())
+    ));
+    self.focus = Focus::Dialog;
+    None
+}
 ```
 
 `CloseDialog` and post-operation events clear `active_dialog` and restore `Focus::Editor`.
@@ -278,9 +294,13 @@ Validation indicator:
 
 `Enter` is disabled (greyed out, does nothing) unless `ValidationState::Available`.
 
+`Esc` → send `AppEvent::CloseDialog` (same as `DeleteConfirmDialog`).
+
 ### Pre-fill
 
-`input` is pre-filled with `path.get_parent_path().1` (the filename component, e.g. `"kimun.md"`). Initial `ValidationState::Idle` — no check needed until the user types.
+`input` is pre-filled with `path.get_parent_path().1` (the filename component, e.g. `"kimun.md"` for a note, `"projects"` for a directory). Initial `ValidationState::Idle` — no check needed until the user types.
+
+`VaultPath::note_path_from` is idempotent with respect to the `.md` extension: passing `"kimun.md"` returns `"kimun.md"` (not `"kimun.md.md"`), so the full filename is safe to use as pre-fill for notes.
 
 ### Real-time validation
 
@@ -424,9 +444,9 @@ On each keystroke, run nucleo fuzzy-match against `self.all_dirs` (same `spawn_b
 
 With empty query: `results = all_dirs.clone()` (already sorted alphabetically from `schedule_load`).
 
-### Navigation
+### Navigation and key handling
 
-`↑` / `↓` move the `ListState` selection. `Enter` picks the highlighted directory.
+`↑` / `↓` move the `ListState` selection. `Enter` picks the highlighted directory. `Esc` sends `AppEvent::CloseDialog`.
 
 ### Confirmation
 
@@ -491,7 +511,7 @@ AppEvent::CloseDialog => {
 }
 ```
 
-The shared `on_entry_op` helper on `EditorScreen`. Before navigating away, call `self.try_save(tx).await` to flush any unsaved editor content — the editor may have changes that would be silently discarded if the user deletes or moves the currently open note before saving.
+The shared `on_entry_op` helper on `EditorScreen`. Before navigating away, call `self.try_save().await` (existing signature, no arguments) to flush any unsaved editor content — the editor may have changes that would be silently discarded if the user deletes or moves the currently open note before saving.
 
 ```rust
 async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
@@ -499,7 +519,7 @@ async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
     self.focus = Focus::Editor;
     if from == self.path {
         // Flush unsaved edits before navigating away
-        self.try_save(tx).await;
+        self.try_save().await;
         // The currently open note was affected — navigate to parent browse screen
         let parent = self.path.get_parent_path().0;
         tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
