@@ -324,7 +324,7 @@ Validation indicator:
 
 On each `Char` or `Backspace` keystroke, if the input differs from the original filename:
 
-1. Abort previous `validation_task`
+1. Abort previous `validation_task`: call `handle.abort()` on the old `JoinHandle` before dropping it (same pattern as `FileListComponent::schedule_filter`)
 2. Build candidate path — construction differs by entry type:
    - Note: `parent_dir.append(&VaultPath::note_path_from(&input))` (appends `.md`)
    - Directory: `parent_dir.append(&VaultPath::new(&input))` (no extension added)
@@ -544,7 +544,8 @@ async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
             self.vault.clone(), parent
         ))).ok();
     } else {
-        // Refresh sidebar to reflect the change
+        // Refresh sidebar to reflect the change.
+        // Requires `pub fn current_dir(&self) -> &VaultPath` on SidebarComponent (see Modified Files).
         let dir = self.sidebar.current_dir().clone();
         self.navigate_sidebar(dir, tx).await;
     }
