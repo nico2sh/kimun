@@ -41,32 +41,34 @@ Three keyboard-triggered modal dialogs that let the user delete, rename, or move
 | `src/keys/action_shortcuts.rs` | Add `DeleteEntry`, `RenameEntry`, `MoveEntry` variants |
 | `src/settings/mod.rs` | Add default bindings `Ctrl+Shift+D/R/M`; update `CONFIG_HEADER` examples |
 | `src/components/events.rs` | Add `ShowDeleteDialog(VaultPath)`, `ShowRenameDialog(VaultPath)`, `ShowMoveDialog(VaultPath)`, `EntryDeleted(VaultPath)`, `EntryRenamed { from: VaultPath, to: VaultPath }`, `EntryMoved { from: VaultPath, to: VaultPath }`, `CloseDialog` |
-| `src/components/sidebar.rs` | Intercept `Ctrl+Shift+D/R/M` on selected sidebar entry |
+| `src/components/file_list.rs` | Intercept `Ctrl+Shift+D/R/M` on selected entry (has `KeyBindings` already) |
 | `src/app_screen/editor.rs` | Intercept `Ctrl+Shift+D/R/M` when editor focused; own `active_dialog`; handle dialog AppEvents; post-op refresh |
 
 ---
 
 ## Triggering the Dialogs
 
-### From the sidebar (`SidebarComponent::handle_input`)
+### From the sidebar (`FileListComponent::handle_input`)
 
-When `Ctrl+Shift+D/R/M` is pressed and the sidebar has a selected entry:
+`SidebarComponent::handle_input` delegates entirely to `self.file_list.handle_input(event, tx)`. `FileListComponent` already holds a `KeyBindings` field, so the new shortcuts are intercepted there.
+
+When `Ctrl+Shift+D/R/M` is pressed inside `FileListComponent::handle_input` and there is a selected entry that is not `FileListEntry::Up`:
 
 ```rust
-if let Some(entry) = self.file_list.selected_entry() {
-    let path = entry.path().clone();
-    match action {
-        ActionShortcuts::DeleteEntry => tx.send(AppEvent::ShowDeleteDialog(path)).ok(),
-        ActionShortcuts::RenameEntry => tx.send(AppEvent::ShowRenameDialog(path)).ok(),
-        ActionShortcuts::MoveEntry   => tx.send(AppEvent::ShowMoveDialog(path)).ok(),
-    };
-    return EventState::Consumed;
+if let Some(entry) = self.selected_entry() {
+    if !matches!(entry, FileListEntry::Up { .. }) {
+        let path = entry.path().clone();
+        match action {
+            ActionShortcuts::DeleteEntry => { tx.send(AppEvent::ShowDeleteDialog(path)).ok(); }
+            ActionShortcuts::RenameEntry => { tx.send(AppEvent::ShowRenameDialog(path)).ok(); }
+            ActionShortcuts::MoveEntry   => { tx.send(AppEvent::ShowMoveDialog(path)).ok(); }
+        }
+        return EventState::Consumed;
+    }
 }
 ```
 
-If no entry is selected (empty list), the event is silently ignored.
-
-`Up` entries (`FileListEntry::Up`) are excluded — the shortcuts do nothing when `..` is selected.
+If no entry is selected (empty list) or `..` is selected, the event is silently ignored.
 
 ### From the editor (`EditorScreen::handle_input`)
 
@@ -107,6 +109,16 @@ pub enum ActiveDialog {
     Delete(DeleteConfirmDialog),
     Rename(RenameDialog),
     Move(MoveDialog),
+}
+
+impl ActiveDialog {
+    pub fn set_error(&mut self, msg: String) {
+        match self {
+            ActiveDialog::Delete(d) => d.error = Some(msg),
+            ActiveDialog::Rename(d) => d.error = Some(msg),
+            ActiveDialog::Move(d)   => d.error = Some(msg),
+        }
+    }
 }
 ```
 
@@ -189,29 +201,38 @@ pub struct DeleteConfirmDialog {
 
 ### Async delete
 
+`vault.delete_note` hard-rejects non-`.md` paths and `vault.delete_directory` hard-rejects `.md` paths. Attachments (neither note nor directory) are deleted directly via `std::fs::remove_file` wrapped in `tokio::task::spawn_blocking`, using `vault.path_to_pathbuf(&path)` to resolve the absolute filesystem path.
+
 ```rust
 KeyCode::Enter => {
     let path = self.path.clone();
     let vault = Arc::clone(&self.vault);
     let tx = self.tx.clone();
     tokio::spawn(async move {
-        let result = if path.is_note() {
-            vault.delete_note(&path).await
+        let result: Result<(), String> = if path.is_note() {
+            vault.delete_note(&path).await.map_err(|e| e.to_string())
+        } else if path.is_directory() {
+            vault.delete_directory(&path).await.map_err(|e| e.to_string())
         } else {
-            vault.delete_directory(&path).await
+            // Attachment: direct filesystem removal
+            let abs_path = vault.path_to_pathbuf(&path);
+            tokio::task::spawn_blocking(move || {
+                std::fs::remove_file(&abs_path)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
         };
         match result {
             Ok(()) => { tx.send(AppEvent::EntryDeleted(path)).ok(); }
-            Err(e) => { tx.send(AppEvent::DialogError(e.to_string())).ok(); }
+            Err(e) => { tx.send(AppEvent::DialogError(e)).ok(); }
         }
     });
     EventState::Consumed
 }
 ```
 
-Attachments that are not notes and not directories: use `delete_note` (the vault resolves it via filesystem path regardless of `.md` extension check). If `delete_note` returns an error for non-note paths, the error is shown inline.
-
-> **Note:** `vault.delete_note` validates that the path ends with `.md`. For attachment deletion, a separate `vault.delete_attachment` may be needed in the core library, or the dialog can use direct filesystem removal via `std::fs::remove_file` after checking `vault.path_to_pathbuf`. This is an implementation-time decision.
+> **Implementation note:** `path.is_directory()` is the inverse of `path.is_note()` for non-root paths (a path that does not end with `.md` and is not the root is a directory or attachment). Verify the actual `VaultPath` API — if there is no `is_directory()`, use `!path.is_note()` and add an extra `path_to_pathbuf` existence check to distinguish directory from attachment. Alternatively, call `vault.get_directories(VaultPath::root(), true)` and test membership. This branching detail is resolved at implementation time.
 
 ### Error display
 
@@ -275,7 +296,9 @@ Validation indicator:
 On each `Char` or `Backspace` keystroke, if the input differs from the original filename:
 
 1. Abort previous `validation_task`
-2. Build `candidate = parent_dir.append(&VaultPath::note_path_from(&input))`
+2. Build candidate path — construction differs by entry type:
+   - Note: `parent_dir.append(&VaultPath::note_path_from(&input))` (appends `.md`)
+   - Directory or attachment: `parent_dir.append(&VaultPath::new(&input))` (no extension added)
 3. Spawn:
    ```rust
    let vault = Arc::clone(&self.vault);
@@ -307,19 +330,27 @@ On `Enter` when `ValidationState::Available`:
 
 ```rust
 let parent = self.path.get_parent_path().0;
-let new_path = parent.append(&VaultPath::note_path_from(&self.input));
+// Use note_path_from only for notes (appends .md); directories and attachments use VaultPath::new.
+let new_path = if self.path.is_note() {
+    parent.append(&VaultPath::note_path_from(&self.input))
+} else {
+    parent.append(&VaultPath::new(&self.input))
+};
 let vault = Arc::clone(&self.vault);
 let tx = self.tx.clone();
 let old_path = self.path.clone();
 tokio::spawn(async move {
-    match vault.rename_note(&old_path, &new_path).await {
+    let result = if old_path.is_note() {
+        vault.rename_note(&old_path, &new_path).await
+    } else {
+        vault.rename_directory(&old_path, &new_path).await
+    };
+    match result {
         Ok(()) => { tx.send(AppEvent::EntryRenamed { from: old_path, to: new_path }).ok(); }
         Err(e) => { tx.send(AppEvent::DialogError(e.to_string())).ok(); }
     }
 });
 ```
-
-For directories: `vault.rename_directory(&old_path, &new_path)`.
 
 ---
 
@@ -366,9 +397,31 @@ pub struct MoveDialog {
 
 On construction, `schedule_load()` is called immediately. It spawns a task that:
 
-1. Fetches all directories from the vault. Uses `vault.get_directories()` — or, if that method is synchronous, wraps it in `tokio::task::spawn_blocking`.
-2. The root directory (`/`) is prepended to the list as the vault root option.
+1. Fetches all directories from the vault. `vault.get_directories(path, recursive)` is **synchronous** and returns `Result<Vec<DirectoryDetails>, VaultError>`. Call it with `(VaultPath::root(), true)` to get the full tree, wrapped in `tokio::task::spawn_blocking`. Map results to `Vec<VaultPath>` via `details.path`.
+2. The root directory (`VaultPath::root()`) is prepended to the list as the vault root option.
 3. Results sent via `mpsc::channel`, polled in `render` → stored in `results`.
+
+```rust
+fn schedule_load(&mut self) {
+    let vault = Arc::clone(&self.vault);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            vault.get_directories(&VaultPath::root(), true)
+        })
+        .await;
+        if let Ok(Ok(dirs)) = result {
+            let mut paths: Vec<VaultPath> = std::iter::once(VaultPath::root())
+                .chain(dirs.into_iter().map(|d| d.path))
+                .collect();
+            paths.sort();
+            tx.send(paths).ok();
+        }
+    });
+    self.load_task = Some(handle);
+    self.load_rx = Some(rx);
+}
+```
 
 The dirs list is cached in `OnceCell` so re-opening the dialog on the same vault instance reuses it.
 
@@ -389,35 +442,68 @@ On `Enter` with a selected directory:
 ```rust
 let dest_dir = &self.results[selected_idx];
 let filename = self.path.get_parent_path().1;
-let new_path = dest_dir.append(&VaultPath::note_path_from(&filename));
+// Use note_path_from only for notes; directories and attachments use VaultPath::new.
+let new_path = if self.path.is_note() {
+    dest_dir.append(&VaultPath::note_path_from(&filename))
+} else {
+    dest_dir.append(&VaultPath::new(&filename))
+};
 let vault = Arc::clone(&self.vault);
 let tx = self.tx.clone();
 let old_path = self.path.clone();
 tokio::spawn(async move {
-    match vault.rename_note(&old_path, &new_path).await {
+    let result = if old_path.is_note() {
+        vault.rename_note(&old_path, &new_path).await
+    } else {
+        vault.rename_directory(&old_path, &new_path).await
+    };
+    match result {
         Ok(()) => { tx.send(AppEvent::EntryMoved { from: old_path, to: new_path }).ok(); }
         Err(e) => { tx.send(AppEvent::DialogError(e.to_string())).ok(); }
     }
 });
 ```
 
-For directories: `vault.rename_directory`. The destination for a directory move is `dest_dir.append(&VaultPath::new(&dirname))`.
-
 ---
 
 ## Post-Operation Behavior
 
-`EditorScreen::handle_app_message` handles the result events:
+`EditorScreen::handle_app_message` handles the result events. The three variants cannot share a single `|` match arm because they mix a tuple variant (`EntryDeleted(path)`) with struct variants (`EntryRenamed { from, .. }`, `EntryMoved { from, .. }`). Use three separate arms that each extract the `from` path and call shared logic:
 
 ```rust
-AppEvent::EntryDeleted(path) |
-AppEvent::EntryRenamed { from: path, .. } |
-AppEvent::EntryMoved { from: path, .. } => {
+AppEvent::EntryDeleted(path) => {
+    self.on_entry_op(path, tx).await;
+    None
+}
+AppEvent::EntryRenamed { from, .. } => {
+    self.on_entry_op(from, tx).await;
+    None
+}
+AppEvent::EntryMoved { from, .. } => {
+    self.on_entry_op(from, tx).await;
+    None
+}
+AppEvent::DialogError(msg) => {
+    if let Some(dialog) = &mut self.active_dialog {
+        dialog.set_error(msg);
+    }
+    None
+}
+AppEvent::CloseDialog => {
     self.active_dialog = None;
     self.focus = Focus::Editor;
+    None
+}
+```
 
-    if path == self.path {
-        // The currently open note was affected — go to browse screen
+The shared `on_entry_op` helper on `EditorScreen`:
+
+```rust
+async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
+    self.active_dialog = None;
+    self.focus = Focus::Editor;
+    if from == self.path {
+        // The currently open note was affected — navigate to parent browse screen
         let parent = self.path.get_parent_path().0;
         tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
             self.vault.clone(), parent
@@ -427,25 +513,8 @@ AppEvent::EntryMoved { from: path, .. } => {
         let dir = self.sidebar.current_dir.clone();
         self.navigate_sidebar(dir, tx).await;
     }
-    None
-}
-
-AppEvent::DialogError(msg) => {
-    // Forward to active dialog for inline display
-    if let Some(dialog) = &mut self.active_dialog {
-        dialog.set_error(msg);
-    }
-    None
-}
-
-AppEvent::CloseDialog => {
-    self.active_dialog = None;
-    self.focus = Focus::Editor;
-    None
 }
 ```
-
-For `EntryRenamed` and `EntryMoved`, the `path` matched against `self.path` is the `from` path.
 
 ---
 
@@ -460,6 +529,16 @@ enum Focus {
     NoteBrowser,
     Dialog,
 }
+```
+
+`editor.rs` has exhaustive `match self.focus` expressions for `focus_label` (the label shown in the status bar) and `hints` (keyboard hint list). Add `Focus::Dialog` arms to both:
+
+```rust
+// focus_label
+Focus::Dialog => "DIALOG",
+
+// hints — return empty: the dialog itself renders its own key hints
+Focus::Dialog => vec![],
 ```
 
 ---
