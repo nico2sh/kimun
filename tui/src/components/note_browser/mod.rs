@@ -209,13 +209,11 @@ impl Component for NoteBrowserModal {
                     EventState::Consumed
                 }
                 MouseEventKind::ScrollUp => {
-                    self.file_list.select_prev();
-                    self.refresh_preview();
+                    self.file_list.scroll_up();
                     EventState::Consumed
                 }
                 MouseEventKind::ScrollDown => {
-                    self.file_list.select_next();
-                    self.refresh_preview();
+                    self.file_list.scroll_down();
                     EventState::Consumed
                 }
                 _ => EventState::Consumed, // consume all other mouse events while modal is open
