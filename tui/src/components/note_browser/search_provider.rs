@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::NaiveDate;
 use kimun_core::NoteVault;
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
 
 use crate::components::file_list::FileListEntry;
-use super::NoteBrowserProvider;
+use super::{NoteBrowserProvider, format_journal_date};
 
 pub struct SearchNotesProvider {
     vault: Arc<NoteVault>,
@@ -65,8 +64,4 @@ impl NoteBrowserProvider for SearchNotesProvider {
                 .collect()
         }
     }
-}
-
-fn format_journal_date(date: NaiveDate) -> String {
-    date.format("%A, %B %-d, %Y").to_string()
 }

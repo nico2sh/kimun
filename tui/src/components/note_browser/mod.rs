@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use async_trait::async_trait;
+use chrono::NaiveDate;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
@@ -399,4 +400,12 @@ mod tests {
         let area = Rect { x: 0, y: 0, width: 5, height: 5 };
         let _ = centered_rect(80, 75, area);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+pub(super) fn format_journal_date(date: NaiveDate) -> String {
+    date.format("%A, %B %-d, %Y").to_string()
 }
