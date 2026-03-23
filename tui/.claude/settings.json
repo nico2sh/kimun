@@ -9,7 +9,8 @@
       "Read(//Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/brainstorming/**)",
       "Read(//Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/**)",
       "Read(//Users/nhormazabal/.claude/plugins/**)",
-      "Bash(bash /Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/brainstorming/scripts/start-server.sh --project-dir /Users/nhormazabal/development/personal/kimun/tui)"
+      "Bash(bash /Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/brainstorming/scripts/start-server.sh --project-dir /Users/nhormazabal/development/personal/kimun/tui)",
+      "Bash(grep -A 5 'name = \"\"tokio\"\"' /Users/nhormazabal/development/personal/kimun/tui/Cargo.lock)"
     ],
     "additionalDirectories": [
       "/Users/nhormazabal/development/personal/kimun/core/src"
