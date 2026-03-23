@@ -65,6 +65,9 @@ const CONFIG_HEADER: &str = "\
 #   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
 #   OpenSettings = [\"ctrl+shift&P\"]      # Ctrl+Shift+P
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
+#   DeleteEntry  = [\"ctrl+shift&D\"]      # Ctrl+Shift+D
+#   RenameEntry  = [\"ctrl+shift&R\"]      # Ctrl+Shift+R
+#   MoveEntry    = [\"ctrl+shift&M\"]      # Ctrl+Shift+M
 #
 # ─────────────────────────────────────────────────────────────────────────────
 ";
@@ -138,6 +141,14 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyR, ActionShortcuts::SortReverseOrder)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor);
+
+    // File operation shortcuts (Ctrl+Shift+D/R/M).
+    kb.batch_add()
+        .with_ctrl()
+        .with_shift()
+        .add(KeyStrike::KeyD, ActionShortcuts::DeleteEntry)
+        .add(KeyStrike::KeyR, ActionShortcuts::RenameEntry)
+        .add(KeyStrike::KeyM, ActionShortcuts::MoveEntry);
 
     kb
 }
