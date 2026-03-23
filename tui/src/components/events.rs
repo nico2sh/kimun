@@ -36,6 +36,24 @@ pub enum AppEvent {
     OpenJournal,
     /// Sent by NoteBrowserModal on Esc or after Enter+open.
     CloseNoteBrowser,
+
+    // ── File-operation dialog messages ───────────────────────────────────────
+    /// Request to show the delete confirmation dialog for the given entry.
+    ShowDeleteDialog(VaultPath),
+    /// Request to show the rename dialog for the given entry.
+    ShowRenameDialog(VaultPath),
+    /// Request to show the move dialog for the given entry.
+    ShowMoveDialog(VaultPath),
+    /// Confirmation that the given entry was successfully deleted.
+    EntryDeleted(VaultPath),
+    /// Confirmation that an entry was successfully renamed.
+    EntryRenamed { from: VaultPath, to: VaultPath },
+    /// Confirmation that an entry was successfully moved.
+    EntryMoved { from: VaultPath, to: VaultPath },
+    /// A dialog operation failed; carries a human-readable error message.
+    DialogError(String),
+    /// Dismiss the currently visible dialog without taking action.
+    CloseDialog,
 }
 
 impl AppEvent {
@@ -64,3 +82,22 @@ pub enum ScreenEvent {
 
 /// Convenience alias used throughout the codebase.
 pub type AppTx = UnboundedSender<AppEvent>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn _assert_new_variants_exist(e: AppEvent) {
+        match e {
+            AppEvent::ShowDeleteDialog(_) => {}
+            AppEvent::ShowRenameDialog(_) => {}
+            AppEvent::ShowMoveDialog(_) => {}
+            AppEvent::EntryDeleted(_) => {}
+            AppEvent::EntryRenamed { from: _, to: _ } => {}
+            AppEvent::EntryMoved { from: _, to: _ } => {}
+            AppEvent::DialogError(_) => {}
+            AppEvent::CloseDialog => {}
+            _ => {}
+        }
+    }
+}
