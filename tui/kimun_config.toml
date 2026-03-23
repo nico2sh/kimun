@@ -17,7 +17,7 @@
 #   NewJournal   = ["ctrl+alt&J"]        # Ctrl+Alt+J
 #
 # ─────────────────────────────────────────────────────────────────────────────
-last_paths = ["/journal/2021-04-07.md", "/journal/2026-03-19.md", "/journal/2021-06-11.md", "/journal/2021-06-16.md", "/journal/2021-06-22.md", "/index.md", "/pep.md", "/newnote.md", "/somer.md", "/journal/2026-03-20.md"]
+last_paths = ["/journal/2021-06-11.md", "/journal/2021-06-16.md", "/journal/2021-06-22.md", "/index.md", "/pep.md", "/newnote.md", "/somer.md", "/journal/2026-03-20.md", "/journal/2023-11-08.md", "/journal/2026-03-23.md"]
 workspace_dir = "/Users/nhormazabal/Documents/Notes"
 theme = "Nord"
 autosave_interval_secs = 5
@@ -30,6 +30,7 @@ journal_sort_order = "descending"
 [key_bindings]
 Quit = ["ctrl&Q"]
 OpenSettings = ["ctrl&P"]
+ToggleNoteBrowser = ["ctrl&F"]
 NewJournal = ["ctrl&J"]
 ToggleSidebar = ["ctrl&B"]
 FocusEditor = ["ctrl&L"]
