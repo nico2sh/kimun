@@ -12,12 +12,13 @@
 #
 # Examples:
 #   Quit         = ["ctrl&Q"]            # Ctrl+Q
-#   SearchNotes  = ["alt&E"]             # Alt+E
+#   SearchNotes  = ["ctrl&E"]            # Ctrl+E
+#   OpenNote     = ["ctrl&O"]            # Ctrl+O  (fuzzy file finder)
 #   OpenSettings = ["ctrl+shift&P"]      # Ctrl+Shift+P
-#   NewJournal   = ["ctrl+alt&J"]        # Ctrl+Alt+J
+#   NewJournal   = ["ctrl&J"]            # Ctrl+J
 #
 # ─────────────────────────────────────────────────────────────────────────────
-last_paths = ["/journal/2021-06-11.md", "/journal/2021-06-16.md", "/journal/2021-06-22.md", "/index.md", "/pep.md", "/newnote.md", "/somer.md", "/journal/2026-03-20.md", "/journal/2023-11-08.md", "/journal/2026-03-23.md"]
+last_paths = ["/journal/2021-06-11.md", "/journal/2021-06-16.md", "/journal/2021-06-22.md", "/index.md", "/pep.md", "/newnote.md", "/somer.md", "/journal/2026-03-20.md", "/journal/2023-11-08.md", "/note in the root.md", "/journal/2026-03-23.md"]
 workspace_dir = "/Users/nhormazabal/Documents/Notes"
 theme = "Nord"
 autosave_interval_secs = 5
@@ -31,7 +32,15 @@ journal_sort_order = "descending"
 Quit = ["ctrl&Q"]
 OpenSettings = ["ctrl&P"]
 ToggleNoteBrowser = ["ctrl&F"]
+SearchNotes = ["ctrl&E"]
+OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
+TogglePreview = ["ctrl&Y"]
+TextEditor-Italic = ["ctrl&I"]
+TextEditor-Image = ["ctrl+shift&L"]
+TextEditor-ToggleHeader = ["ctrl&T"]
+TextEditor-Underline = ["ctrl&U"]
+TextEditor-Strikethrough = ["ctrl&S"]
 ToggleSidebar = ["ctrl&B"]
 FocusEditor = ["ctrl&L"]
 FocusSidebar = ["ctrl&H"]
