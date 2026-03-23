@@ -452,6 +452,31 @@ impl FileListComponent {
         });
     }
 
+    pub fn scroll_up(&mut self) {
+        let offset = self.list_state.offset();
+        if offset > 0 {
+            *self.list_state.offset_mut() = offset - 1;
+            if let Some(sel) = self.list_state.selected() {
+                if sel > 0 {
+                    self.list_state.select(Some(sel - 1));
+                }
+            }
+        }
+    }
+
+    pub fn scroll_down(&mut self) {
+        let len = self.display_len();
+        let offset = self.list_state.offset();
+        if len > 0 && offset + 1 < len {
+            *self.list_state.offset_mut() = offset + 1;
+            if let Some(sel) = self.list_state.selected() {
+                if sel + 1 < len {
+                    self.list_state.select(Some(sel + 1));
+                }
+            }
+        }
+    }
+
     pub fn select_next(&mut self) {
         let len = self.display_len();
         if len == 0 {
@@ -617,30 +642,11 @@ impl Component for FileListComponent {
                         EventState::Consumed
                     }
                     MouseEventKind::ScrollUp => {
-                        let offset = self.list_state.offset();
-                        if offset > 0 {
-                            *self.list_state.offset_mut() = offset - 1;
-                            // Move selection with the viewport so it stays at the same visual row.
-                            if let Some(sel) = self.list_state.selected() {
-                                if sel > 0 {
-                                    self.list_state.select(Some(sel - 1));
-                                }
-                            }
-                        }
+                        self.scroll_up();
                         EventState::Consumed
                     }
                     MouseEventKind::ScrollDown => {
-                        let len = self.display_len();
-                        let offset = self.list_state.offset();
-                        if len > 0 && offset + 1 < len {
-                            *self.list_state.offset_mut() = offset + 1;
-                            // Move selection with the viewport so it stays at the same visual row.
-                            if let Some(sel) = self.list_state.selected() {
-                                if sel + 1 < len {
-                                    self.list_state.select(Some(sel + 1));
-                                }
-                            }
-                        }
+                        self.scroll_down();
                         EventState::Consumed
                     }
                     _ => EventState::NotConsumed,
