@@ -223,7 +223,7 @@ impl AppScreen for EditorScreen {
                                 self.focus = Focus::Editor;
                             }
                         } else {
-                            let provider = SearchNotesProvider::new(self.vault.clone());
+                            let provider = SearchNotesProvider::new(self.vault.clone(), self.settings.last_paths.clone());
                             self.note_browser = Some(NoteBrowserModal::new(
                                 provider,
                                 self.vault.clone(),
