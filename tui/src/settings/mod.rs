@@ -65,9 +65,7 @@ const CONFIG_HEADER: &str = "\
 #   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
 #   OpenSettings = [\"ctrl+shift&P\"]      # Ctrl+Shift+P
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
-#   DeleteEntry  = [\"ctrl+shift&D\"]      # Ctrl+Shift+D
-#   RenameEntry  = [\"ctrl+shift&R\"]      # Ctrl+Shift+R
-#   MoveEntry    = [\"ctrl+shift&M\"]      # Ctrl+Shift+M
+#   FileOperations = [\"F2\"]              # F2  (open file-ops menu: delete/rename/move)
 #
 # ─────────────────────────────────────────────────────────────────────────────
 ";
@@ -142,13 +140,9 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor);
 
-    // File operation shortcuts (Ctrl+Shift+D/R/M).
+    // File operations menu (F2 — no modifier, reliable in all terminals).
     kb.batch_add()
-        .with_ctrl()
-        .with_shift()
-        .add(KeyStrike::KeyD, ActionShortcuts::DeleteEntry)
-        .add(KeyStrike::KeyR, ActionShortcuts::RenameEntry)
-        .add(KeyStrike::KeyM, ActionShortcuts::MoveEntry);
+        .add(KeyStrike::F2, ActionShortcuts::FileOperations);
 
     kb
 }
