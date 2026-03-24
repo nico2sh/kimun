@@ -224,7 +224,7 @@ impl MoveDialog {
             }
             KeyCode::Enter => {
                 if let Some(selected_idx) = self.list_state.selected() {
-                    if !self.results.is_empty() {
+                    if selected_idx < self.results.len() {
                         let from = self.path.clone();
                         let dest_dir = self.results[selected_idx].clone();
                         let filename = from.get_parent_path().1;
