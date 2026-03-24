@@ -44,6 +44,10 @@ impl SidebarComponent {
         }
     }
 
+    pub fn current_dir(&self) -> &VaultPath {
+        &self.current_dir
+    }
+
     pub fn is_empty(&self) -> bool {
         self.file_list.is_empty()
     }
