@@ -220,6 +220,15 @@ impl AppScreen for EditorScreen {
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         if let InputEvent::Key(key) = event {
+            // F2 is hardcoded — it cannot go through the keybindings hashmap because
+            // `is_valid_binding()` only accepts ctrl/alt + letter, which silently drops F-keys.
+            if key.code == ratatui::crossterm::event::KeyCode::F(2)
+                && matches!(self.focus, Focus::Editor)
+            {
+                tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
+                return EventState::Consumed;
+            }
+
             if let Some(combo) = key_event_to_combo(key) {
                 if (combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
                     && combo.key >= KeyStrike::KeyA
@@ -280,10 +289,6 @@ impl AppScreen for EditorScreen {
                             ));
                             self.focus = Focus::NoteBrowser;
                         }
-                        return EventState::Consumed;
-                    }
-                    Some(ActionShortcuts::FileOperations) if matches!(self.focus, Focus::Editor) => {
-                        tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
                         return EventState::Consumed;
                     }
                     _ => {}
