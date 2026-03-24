@@ -173,6 +173,9 @@ impl EditorScreen {
         self.active_dialog = None;
         self.focus = Focus::Editor;
         if from == self.path {
+            if let Some(h) = self.autosave_handle.take() {
+                h.abort();
+            }
             self.try_save().await;
             let parent = self.path.get_parent_path().0;
             tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
@@ -299,8 +302,12 @@ impl AppScreen for EditorScreen {
         // Mouse events are routed to all components regardless of focus so that
         // clicking anywhere can transfer focus correctly.
         if matches!(event, InputEvent::Mouse(_)) {
-            // Modal intercepts all mouse events when open.
-            if matches!(self.focus, Focus::NoteBrowser | Focus::Dialog) {
+            // Dialog swallows all mouse events while open.
+            if matches!(self.focus, Focus::Dialog) {
+                return EventState::Consumed;
+            }
+            // Note browser modal intercepts all mouse events when open.
+            if matches!(self.focus, Focus::NoteBrowser) {
                 if let Some(modal) = &mut self.note_browser {
                     return modal.handle_input(event, tx);
                 }
