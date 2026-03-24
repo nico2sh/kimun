@@ -5,7 +5,7 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::components::Component;
@@ -75,12 +75,12 @@ impl Component for DeleteConfirmDialog {
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
-        let popup_area = super::centered_rect(60, 40, rect);
+        // Fixed size: 46 wide × 10 tall (9 when no error, but 10 accommodates the error row)
+        let height = if self.error.is_some() { 10 } else { 9 };
+        let popup_area = super::fixed_centered_rect(46, height, rect);
 
-        // Clear the area so whatever is rendered behind the dialog doesn't bleed through.
         f.render_widget(Clear, popup_area);
 
-        // Outer block with title and border.
         let outer_block = Block::default()
             .title(" Delete ")
             .borders(Borders::ALL)
@@ -89,71 +89,68 @@ impl Component for DeleteConfirmDialog {
         let inner = outer_block.inner(popup_area);
         f.render_widget(outer_block, popup_area);
 
-        // Determine how many rows we need: path + warning + hint + optional error.
-        let constraints = if self.error.is_some() {
-            vec![
-                Constraint::Length(1), // path
-                Constraint::Length(1), // warning
-                Constraint::Min(0),    // padding
-                Constraint::Length(1), // hint
-                Constraint::Length(1), // error
-            ]
-        } else {
-            vec![
-                Constraint::Length(1), // path
-                Constraint::Length(1), // warning
-                Constraint::Min(0),    // padding
-                Constraint::Length(1), // hint
-            ]
-        };
+        // ── Layout ────────────────────────────────────────────────────────────
+        // Row 0: spacer
+        // Row 1: path
+        // Row 2: separator
+        // Row 3: warning "This cannot be undone."
+        // Row 4: spacer
+        // Row 5: hint  [Enter: Delete]  [Esc: Cancel]
+        // Row 6: error (optional)
+        // Row 7: remainder
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(constraints)
+            .constraints([
+                Constraint::Length(1), // 0: spacer
+                Constraint::Length(1), // 1: path
+                Constraint::Length(1), // 2: separator
+                Constraint::Length(1), // 3: warning
+                Constraint::Length(1), // 4: spacer
+                Constraint::Length(1), // 5: hint
+                Constraint::Length(1), // 6: error (may be unused)
+                Constraint::Min(0),    // 7: remainder
+            ])
             .split(inner);
 
-        // Row 0: path being deleted.
-        let path_str = self.path.to_string();
-        f.render_widget(
-            Paragraph::new(format!("  {path_str}")).style(
-                Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg_panel.to_ratatui()),
-            ),
-            rows[0],
-        );
+        let bg = theme.bg_panel.to_ratatui();
+        let fg = theme.fg.to_ratatui();
+        let fg_muted = theme.fg_muted.to_ratatui();
 
-        // Row 1: warning text.
+        // Row 1: path
         f.render_widget(
-            Paragraph::new("  This cannot be undone.").style(
-                Style::default()
-                    .fg(Color::Red)
-                    .bg(theme.bg_panel.to_ratatui()),
-            ),
+            Paragraph::new(format!("  {}", self.path))
+                .style(Style::default().fg(fg).bg(bg)),
             rows[1],
         );
 
-        // Row 2 is padding (Min(0)), handled by layout.
+        // Row 2: separator
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(fg_muted))
+            .style(Style::default().bg(bg))
+            .render(rows[2], f.buffer_mut());
 
-        // Row 3: hint line.
-        let hint_idx = rows.len() - 1 - if self.error.is_some() { 1 } else { 0 };
+        // Row 3: warning
         f.render_widget(
-            Paragraph::new("  [Enter: Delete]  [Esc: Cancel]").style(
-                Style::default()
-                    .fg(theme.fg_muted.to_ratatui())
-                    .bg(theme.bg_panel.to_ratatui()),
-            ),
-            rows[hint_idx],
+            Paragraph::new("  This cannot be undone.")
+                .style(Style::default().fg(Color::Red).bg(bg)),
+            rows[3],
         );
 
-        // Row 4 (optional): error message.
+        // Row 5: hint
+        f.render_widget(
+            Paragraph::new("  [Enter] Delete   [Esc] Cancel")
+                .style(Style::default().fg(fg_muted).bg(bg)),
+            rows[5],
+        );
+
+        // Row 6: error (optional)
         if let Some(msg) = &self.error {
-            let error_idx = rows.len() - 1;
             f.render_widget(
-                Paragraph::new(format!("  Error: {msg}")).style(
-                    Style::default()
-                        .fg(Color::Red)
-                        .bg(theme.bg_panel.to_ratatui()),
-                ),
-                rows[error_idx],
+                Paragraph::new(format!("  Error: {msg}"))
+                    .style(Style::default().fg(Color::Red).bg(bg)),
+                rows[6],
             );
         }
     }

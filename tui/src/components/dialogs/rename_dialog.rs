@@ -5,7 +5,7 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use tokio::task::JoinHandle;
 
@@ -205,12 +205,14 @@ impl Component for RenameDialog {
         // Drain the validation channel before rendering so the UI is current.
         self.poll_validation();
 
-        let popup_area = super::centered_rect(60, 50, rect);
+        // Fixed size: 50 wide; height depends on whether there is an error row.
+        // Border(2) + spacer + path + separator + label + input(3) + validation
+        //           + spacer + hint [+ error] = 11 or 12.
+        let height = if self.error.is_some() { 13 } else { 12 };
+        let popup_area = super::fixed_centered_rect(50, height, rect);
 
-        // Backdrop: clear whatever is rendered behind the popup.
         f.render_widget(Clear, popup_area);
 
-        // Outer block.
         let outer_block = Block::default()
             .title(" Rename ")
             .borders(Borders::ALL)
@@ -221,54 +223,48 @@ impl Component for RenameDialog {
 
         // ── Vertical layout inside the block ─────────────────────────────────
         //
-        // Row 0: label "CURRENT PATH"
-        // Row 1: current path value
-        // Row 2: spacer
-        // Row 3: label "NEW NAME"
-        // Row 4: input field (height 3 for bordered box)
-        // Row 5: validation status text
-        // Row 6: padding
+        // Row 0: spacer
+        // Row 1: current path
+        // Row 2: separator
+        // Row 3: "NEW NAME" label
+        // Row 4: input field (height 3, bordered)
+        // Row 5: validation status
+        // Row 6: spacer
         // Row 7: hint line
         // Row 8 (optional): error line
 
-        let mut constraints = vec![
-            Constraint::Length(1), // 0: label
-            Constraint::Length(1), // 1: current path
-            Constraint::Length(1), // 2: spacer
-            Constraint::Length(1), // 3: label
-            Constraint::Length(3), // 4: input field (bordered)
-            Constraint::Length(1), // 5: validation status
-            Constraint::Min(0),    // 6: padding
-            Constraint::Length(1), // 7: hint
-        ];
-        if self.error.is_some() {
-            constraints.push(Constraint::Length(1)); // 8: error
-        }
-
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(constraints)
+            .constraints([
+                Constraint::Length(1), // 0: spacer
+                Constraint::Length(1), // 1: path
+                Constraint::Length(1), // 2: separator
+                Constraint::Length(1), // 3: "NEW NAME" label
+                Constraint::Length(3), // 4: input field (bordered)
+                Constraint::Length(1), // 5: validation status
+                Constraint::Length(1), // 6: spacer
+                Constraint::Length(1), // 7: hint
+                Constraint::Min(0),    // 8: remainder / error
+            ])
             .split(inner);
 
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
         let fg_muted = theme.fg_muted.to_ratatui();
 
-        // Row 0: "CURRENT PATH" label (muted).
-        f.render_widget(
-            Paragraph::new("  CURRENT PATH")
-                .style(Style::default().fg(fg_muted).bg(bg)),
-            rows[0],
-        );
-
-        // Row 1: actual path string.
+        // Row 1: path.
         f.render_widget(
             Paragraph::new(format!("  {}", self.path))
                 .style(Style::default().fg(fg).bg(bg)),
             rows[1],
         );
 
-        // Row 2: blank spacer — nothing to render.
+        // Row 2: separator.
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(fg_muted))
+            .style(Style::default().bg(bg))
+            .render(rows[2], f.buffer_mut());
 
         // Row 3: "NEW NAME" label.
         f.render_widget(
@@ -279,17 +275,15 @@ impl Component for RenameDialog {
 
         // Row 4: input field with cursor and validation indicator.
         //
-        // We split row 4 horizontally: [input_area | indicator (3 cols)].
-        let input_row = rows[4];
+        // Split horizontally: [input_area | indicator (3 cols)].
         let input_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Min(1),    // input field
                 Constraint::Length(3), // validation indicator
             ])
-            .split(input_row);
+            .split(rows[4]);
 
-        // Bordered input.
         let input_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(fg_muted))
@@ -302,24 +296,14 @@ impl Component for RenameDialog {
             input_inner,
         );
 
-        // Validation indicator glyph (vertically centred in the 3-row area).
+        // Validation indicator glyph, centred vertically in the 3-row area.
         let (indicator_text, indicator_style) = match self.validation_state {
             ValidationState::Idle => ("   ", Style::default()),
-            ValidationState::Pending => (
-                " \u{231b} ", // ⌛
-                Style::default().fg(fg_muted),
-            ),
-            ValidationState::Available => (
-                " \u{2713} ", // ✓
-                Style::default().fg(Color::Green),
-            ),
-            ValidationState::Taken => (
-                " \u{2717} ", // ✗
-                Style::default().fg(Color::Red),
-            ),
+            ValidationState::Pending => (" \u{231b} ", Style::default().fg(fg_muted)),
+            ValidationState::Available => (" \u{2713} ", Style::default().fg(Color::Green)),
+            ValidationState::Taken => (" \u{2717} ", Style::default().fg(Color::Red)),
         };
-        // Centre the indicator in the 3-row space by putting it in the middle row.
-        let indicator_chunks = Layout::default()
+        let indicator_rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),
@@ -328,68 +312,44 @@ impl Component for RenameDialog {
             ])
             .split(input_chunks[1]);
         f.render_widget(
-            Paragraph::new(indicator_text)
-                .style(indicator_style.bg(bg)),
-            indicator_chunks[1],
+            Paragraph::new(indicator_text).style(indicator_style.bg(bg)),
+            indicator_rows[1],
         );
 
         // Row 5: validation status text.
         let (status_text, status_style) = match self.validation_state {
             ValidationState::Idle => ("", Style::default()),
-            ValidationState::Pending => (
-                "  Checking...",
-                Style::default().fg(fg_muted).bg(bg),
-            ),
-            ValidationState::Available => (
-                "  Available",
-                Style::default().fg(Color::Green).bg(bg),
-            ),
-            ValidationState::Taken => (
-                "  Already exists",
-                Style::default().fg(Color::Red).bg(bg),
-            ),
+            ValidationState::Pending => ("  Checking...", Style::default().fg(fg_muted).bg(bg)),
+            ValidationState::Available => ("  Available", Style::default().fg(Color::Green).bg(bg)),
+            ValidationState::Taken => ("  Already exists", Style::default().fg(Color::Red).bg(bg)),
         };
-        f.render_widget(
-            Paragraph::new(status_text).style(status_style),
-            rows[5],
-        );
+        f.render_widget(Paragraph::new(status_text).style(status_style), rows[5]);
 
-        // Row 7: hint line.  Dim the Enter hint unless rename is available.
+        // Row 7: hint.  Dim the Enter part unless rename is available.
         let enter_style = if matches!(self.validation_state, ValidationState::Available) {
             Style::default().fg(fg).bg(bg)
         } else {
-            Style::default()
-                .fg(fg_muted)
-                .bg(bg)
-                .add_modifier(Modifier::DIM)
+            Style::default().fg(fg_muted).bg(bg).add_modifier(Modifier::DIM)
         };
-        let hint_idx = rows.len() - 1 - usize::from(self.error.is_some());
-        // Render the two parts of the hint separately so we can style them
-        // independently.
         let hint_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(16), // "[Enter: Rename] "
-                Constraint::Min(1),     // "[Esc: Cancel]"
+                Constraint::Length(17), // "  [Enter] Rename "
+                Constraint::Min(1),     // "  [Esc] Cancel"
             ])
-            .split(rows[hint_idx]);
+            .split(rows[7]);
+        f.render_widget(Paragraph::new("  [Enter] Rename").style(enter_style), hint_chunks[0]);
         f.render_widget(
-            Paragraph::new("  [Enter: Rename]").style(enter_style),
-            hint_chunks[0],
-        );
-        f.render_widget(
-            Paragraph::new("  [Esc: Cancel]")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(fg_muted).bg(bg)),
             hint_chunks[1],
         );
 
         // Row 8 (optional): error message.
         if let Some(msg) = &self.error {
-            let error_idx = rows.len() - 1;
             f.render_widget(
                 Paragraph::new(format!("  Error: {msg}"))
                     .style(Style::default().fg(Color::Red).bg(bg)),
-                rows[error_idx],
+                rows[8],
             );
         }
     }

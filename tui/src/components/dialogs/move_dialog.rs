@@ -17,6 +17,21 @@ use crate::components::events::{AppEvent, AppTx};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
+// DestValidation
+// ---------------------------------------------------------------------------
+
+pub enum DestValidation {
+    /// No directory selected yet.
+    Idle,
+    /// Existence check in progress.
+    Pending,
+    /// Destination is free — move can proceed.
+    Available,
+    /// A file with the same name already exists at the destination.
+    Taken,
+}
+
+// ---------------------------------------------------------------------------
 // MoveDialog
 // ---------------------------------------------------------------------------
 
@@ -48,6 +63,12 @@ pub struct MoveDialog {
     pub results: Vec<VaultPath>,
     /// Selection state for the ratatui `List` widget.
     pub list_state: ListState,
+    /// Result of the most-recent destination existence check.
+    pub dest_validation: DestValidation,
+    /// Handle to the running validation task so we can abort it on selection change.
+    pub validation_task: Option<JoinHandle<()>>,
+    /// Receiver end of the one-shot channel used by the validation task.
+    pub validation_rx: Option<std::sync::mpsc::Receiver<bool>>,
     /// Optional error message surfaced from a failed move attempt.
     pub error: Option<String>,
 }
@@ -68,6 +89,9 @@ impl MoveDialog {
             filter_rx: None,
             results: vec![],
             list_state: ListState::default(),
+            dest_validation: DestValidation::Idle,
+            validation_task: None,
+            validation_rx: None,
             error: None,
         };
         dialog.schedule_load();
@@ -100,11 +124,9 @@ impl MoveDialog {
         self.load_rx = Some(rx);
     }
 
-    /// Poll the load channel (non-blocking).  Call this at the start of every
-    /// `render()` so the directory list is populated as soon as loading
-    /// completes.
-    fn poll_load(&mut self) {
-        let Some(rx) = &self.load_rx else { return };
+    /// Poll the load channel (non-blocking). Returns true if dirs were received.
+    fn poll_load_inner(&mut self) -> bool {
+        let Some(rx) = &self.load_rx else { return false };
         if let Ok(dirs) = rx.try_recv() {
             self.all_dirs = dirs;
             self.results = self.all_dirs.clone();
@@ -113,6 +135,14 @@ impl MoveDialog {
             if self.list_state.selected().is_none() && !self.results.is_empty() {
                 self.list_state.select(Some(0));
             }
+            return true;
+        }
+        false
+    }
+
+    fn poll_load(&mut self, tx: &AppTx) {
+        if self.poll_load_inner() {
+            self.spawn_validation(tx);
         }
     }
 
@@ -172,10 +202,9 @@ impl MoveDialog {
         self.filter_rx = Some(frx);
     }
 
-    /// Poll the filter channel (non-blocking).  Call this at the start of
-    /// every `render()` so the list updates as soon as filtering completes.
-    fn poll_filter(&mut self) {
-        let Some(rx) = &self.filter_rx else { return };
+    /// Poll the filter channel (non-blocking). Returns true if results were received.
+    fn poll_filter_inner(&mut self) -> bool {
+        let Some(rx) = &self.filter_rx else { return false };
         if let Ok(strs) = rx.try_recv() {
             self.results = strs.iter().map(|s| VaultPath::new(s)).collect();
             self.filter_rx = None;
@@ -185,6 +214,72 @@ impl MoveDialog {
             } else {
                 self.list_state.select(None);
             }
+            self.dest_validation = DestValidation::Idle;
+            return true;
+        }
+        false
+    }
+
+    fn poll_filter(&mut self, tx: &AppTx) {
+        if self.poll_filter_inner() {
+            self.spawn_validation(tx);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Destination validation helpers
+    // -----------------------------------------------------------------------
+
+    /// Abort any in-flight validation task and start a new one for the
+    /// currently selected directory.  Resets to `Idle` when nothing is selected.
+    fn spawn_validation(&mut self, tx: &AppTx) {
+        if let Some(handle) = self.validation_task.take() {
+            handle.abort();
+        }
+        self.validation_rx = None;
+
+        let Some(idx) = self.list_state.selected() else {
+            self.dest_validation = DestValidation::Idle;
+            return;
+        };
+        let Some(dest_dir) = self.results.get(idx).cloned() else {
+            self.dest_validation = DestValidation::Idle;
+            return;
+        };
+
+        let from = self.path.clone();
+        let vault = Arc::clone(&self.vault);
+        let (vtx, vrx) = std::sync::mpsc::channel();
+        let tx_redraw = tx.clone();
+
+        let handle = tokio::spawn(async move {
+            let filename = from.get_parent_path().1;
+            let candidate = if from.is_note() {
+                dest_dir.append(&VaultPath::note_path_from(&filename))
+            } else {
+                dest_dir.append(&VaultPath::new(&filename))
+            };
+            let exists = vault.exists(&candidate).await.is_some();
+            vtx.send(!exists).ok(); // true = available
+            tx_redraw.send(AppEvent::Redraw).ok();
+        });
+
+        self.validation_task = Some(handle);
+        self.validation_rx = Some(vrx);
+        self.dest_validation = DestValidation::Pending;
+    }
+
+    /// Poll the validation channel (non-blocking).  Call at the start of `render()`.
+    fn poll_validation(&mut self) {
+        let Some(rx) = &self.validation_rx else { return };
+        if let Ok(available) = rx.try_recv() {
+            self.dest_validation = if available {
+                DestValidation::Available
+            } else {
+                DestValidation::Taken
+            };
+            self.validation_rx = None;
+            self.validation_task = None;
         }
     }
 
@@ -199,6 +294,7 @@ impl MoveDialog {
             KeyCode::Up => {
                 if let Some(idx) = self.list_state.selected() {
                     self.list_state.select(Some(idx.saturating_sub(1)));
+                    self.spawn_validation(tx);
                 }
                 EventState::Consumed
             }
@@ -209,20 +305,26 @@ impl MoveDialog {
                         .selected()
                         .map_or(0, |i| (i + 1).min(self.results.len() - 1));
                     self.list_state.select(Some(next));
+                    self.spawn_validation(tx);
                 }
                 EventState::Consumed
             }
             KeyCode::Char(c) => {
                 self.search_query.push(c);
                 self.schedule_filter(tx);
+                self.dest_validation = DestValidation::Idle;
                 EventState::Consumed
             }
             KeyCode::Backspace => {
                 self.search_query.pop();
                 self.schedule_filter(tx);
+                self.dest_validation = DestValidation::Idle;
                 EventState::Consumed
             }
             KeyCode::Enter => {
+                if matches!(self.dest_validation, DestValidation::Taken) {
+                    return EventState::Consumed;
+                }
                 if let Some(selected_idx) = self.list_state.selected() {
                     if selected_idx < self.results.len() {
                         let from = self.path.clone();
@@ -277,6 +379,10 @@ impl Component for MoveDialog {
         event: &crate::components::events::InputEvent,
         tx: &AppTx,
     ) -> EventState {
+        // Drain async channels here (where tx is available) to trigger validation.
+        self.poll_load(tx);
+        self.poll_filter(tx);
+
         let crate::components::events::InputEvent::Key(key) = event else {
             return EventState::NotConsumed;
         };
@@ -284,11 +390,11 @@ impl Component for MoveDialog {
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
-        // Drain async channels before rendering so the UI reflects latest state.
-        self.poll_load();
-        self.poll_filter();
+        self.poll_load_inner();
+        self.poll_filter_inner();
+        self.poll_validation();
 
-        let popup_area = super::centered_rect(70, 60, rect);
+        let popup_area = super::centered_rect(50, 60, rect);
 
         // Backdrop: clear whatever is rendered behind the popup.
         f.render_widget(Clear, popup_area);
@@ -314,8 +420,9 @@ impl Component for MoveDialog {
         // Row 3: "DESTINATION" label (muted)
         // Row 4: search input field (height 3, bordered)
         // Row 5: directory list (fills available space)
-        // Row 6: hint line
-        // Row 7 (optional): error line
+        // Row 6: validation status
+        // Row 7: hint line
+        // Row 8 (optional): error line
 
         let mut constraints = vec![
             Constraint::Length(1), // 0: "MOVING" label
@@ -324,10 +431,11 @@ impl Component for MoveDialog {
             Constraint::Length(1), // 3: "DESTINATION" label
             Constraint::Length(3), // 4: search input (bordered box)
             Constraint::Min(3),    // 5: directory list
-            Constraint::Length(1), // 6: hint line
+            Constraint::Length(1), // 6: validation status
+            Constraint::Length(1), // 7: hint line
         ];
         if self.error.is_some() {
-            constraints.push(Constraint::Length(1)); // 7: error
+            constraints.push(Constraint::Length(1)); // 8: error
         }
 
         let rows = Layout::default()
@@ -409,46 +517,47 @@ impl Component for MoveDialog {
 
         f.render_stateful_widget(list, rows[5], &mut self.list_state);
 
-        // Row 6: hint line.  Dim the "Enter: Move here" part when no item is selected.
-        let has_selection = self
-            .list_state
-            .selected()
-            .is_some_and(|i| i < self.results.len());
+        // Row 6: validation status.
+        let (status_text, status_style) = match self.dest_validation {
+            DestValidation::Idle => ("", Style::default().bg(bg)),
+            DestValidation::Pending => ("  Checking...", Style::default().fg(fg_muted).bg(bg)),
+            DestValidation::Available => ("  Available", Style::default().fg(Color::Green).bg(bg)),
+            DestValidation::Taken => ("  Already exists", Style::default().fg(Color::Red).bg(bg)),
+        };
+        f.render_widget(Paragraph::new(status_text).style(status_style), rows[6]);
 
-        let enter_style = if has_selection {
+        // Row 7: hint line.  Dim Enter when there's no valid selection.
+        let can_move = matches!(self.dest_validation, DestValidation::Available);
+        let enter_style = if can_move {
             Style::default().fg(fg).bg(bg)
         } else {
-            Style::default()
-                .fg(fg_muted)
-                .bg(bg)
-                .add_modifier(Modifier::DIM)
+            Style::default().fg(fg_muted).bg(bg).add_modifier(Modifier::DIM)
         };
 
+        let hint_idx = rows.len() - 1 - usize::from(self.error.is_some());
         let hint_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(20), // "[Enter: Move here]  "
-                Constraint::Min(1),     // "[Esc: Cancel]"
+                Constraint::Length(20), // "  [Enter] Move here"
+                Constraint::Min(1),     // "  [Esc] Cancel"
             ])
-            .split(rows[rows.len() - 1 - usize::from(self.error.is_some())]);
+            .split(rows[hint_idx]);
 
         f.render_widget(
-            Paragraph::new("  [Enter: Move here]").style(enter_style),
+            Paragraph::new("  [Enter] Move here").style(enter_style),
             hint_chunks[0],
         );
         f.render_widget(
-            Paragraph::new("  [Esc: Cancel]")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(fg_muted).bg(bg)),
             hint_chunks[1],
         );
 
-        // Row 7 (optional): error message.
+        // Row 8 (optional): error message.
         if let Some(msg) = &self.error {
-            let error_idx = rows.len() - 1;
             f.render_widget(
                 Paragraph::new(format!("  Error: {msg}"))
                     .style(Style::default().fg(Color::Red).bg(bg)),
-                rows[error_idx],
+                rows[rows.len() - 1],
             );
         }
     }
