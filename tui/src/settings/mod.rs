@@ -51,8 +51,10 @@ const CONFIG_HEADER: &str = "\
 #
 # KEY BINDINGS
 # ────────────
-# Supported combinations: ctrl and/or alt (with optional shift) + a letter (a-z).
-# Any combo that does not follow this rule is silently ignored when loaded.
+# Supported combinations:
+#   - ctrl and/or alt (with optional shift) + a letter (a-z)
+#   - bare F-key (F1–F12, no modifier required)
+# Any combo that does not follow these rules is silently ignored when loaded.
 #
 # Format per action:
 #   ActionName = [\"<modifiers> & <letter>\", ...]
