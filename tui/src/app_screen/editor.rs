@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
+use crate::components::dialogs::{ActiveDialog, DeleteConfirmDialog, MoveDialog, RenameDialog};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::note_browser::NoteBrowserModal;
@@ -28,6 +29,7 @@ enum Focus {
     Sidebar,
     Editor,
     NoteBrowser,
+    Dialog,
 }
 
 pub struct EditorScreen {
@@ -45,6 +47,7 @@ pub struct EditorScreen {
     autosave_handle: Option<tokio::task::JoinHandle<()>>,
     key_flash: Option<(String, std::time::Instant)>,
     note_browser: Option<NoteBrowserModal>,
+    active_dialog: Option<ActiveDialog>,
 }
 
 impl EditorScreen {
@@ -78,6 +81,7 @@ impl EditorScreen {
             autosave_handle: None,
             key_flash: None,
             note_browser: None,
+            active_dialog: None,
         }
     }
 }
@@ -162,6 +166,23 @@ impl EditorScreen {
             if self.vault.save_note(&self.path, &text).await.is_ok() {
                 self.editor.mark_saved(text);
             }
+        }
+    }
+
+    async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
+        self.active_dialog = None;
+        self.focus = Focus::Editor;
+        if from == self.path {
+            self.try_save().await;
+            let parent = self.path.get_parent_path().0;
+            tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+                self.vault.clone(),
+                parent,
+            )))
+            .ok();
+        } else {
+            let dir = self.sidebar.current_dir().clone();
+            self.navigate_sidebar(dir, tx).await;
         }
     }
 }
@@ -258,6 +279,18 @@ impl AppScreen for EditorScreen {
                         }
                         return EventState::Consumed;
                     }
+                    Some(ActionShortcuts::DeleteEntry) if matches!(self.focus, Focus::Editor) => {
+                        tx.send(AppEvent::ShowDeleteDialog(self.path.clone())).ok();
+                        return EventState::Consumed;
+                    }
+                    Some(ActionShortcuts::RenameEntry) if matches!(self.focus, Focus::Editor) => {
+                        tx.send(AppEvent::ShowRenameDialog(self.path.clone())).ok();
+                        return EventState::Consumed;
+                    }
+                    Some(ActionShortcuts::MoveEntry) if matches!(self.focus, Focus::Editor) => {
+                        tx.send(AppEvent::ShowMoveDialog(self.path.clone())).ok();
+                        return EventState::Consumed;
+                    }
                     _ => {}
                 }
             }
@@ -267,7 +300,7 @@ impl AppScreen for EditorScreen {
         // clicking anywhere can transfer focus correctly.
         if matches!(event, InputEvent::Mouse(_)) {
             // Modal intercepts all mouse events when open.
-            if matches!(self.focus, Focus::NoteBrowser) {
+            if matches!(self.focus, Focus::NoteBrowser | Focus::Dialog) {
                 if let Some(modal) = &mut self.note_browser {
                     return modal.handle_input(event, tx);
                 }
@@ -284,6 +317,17 @@ impl AppScreen for EditorScreen {
             Focus::NoteBrowser => {
                 if let Some(modal) = &mut self.note_browser {
                     modal.handle_input(event, tx)
+                } else {
+                    EventState::NotConsumed
+                }
+            }
+            Focus::Dialog => {
+                if let Some(dialog) = &mut self.active_dialog {
+                    match dialog {
+                        ActiveDialog::Delete(d) => Component::handle_input(d, event, tx),
+                        ActiveDialog::Rename(d) => Component::handle_input(d, event, tx),
+                        ActiveDialog::Move(d) => Component::handle_input(d, event, tx),
+                    }
                 } else {
                     EventState::NotConsumed
                 }
@@ -369,6 +413,7 @@ impl AppScreen for EditorScreen {
             Focus::Editor => "EDITOR",
             Focus::Sidebar => "SIDEBAR",
             Focus::NoteBrowser => "NOTE BROWSER",
+            Focus::Dialog => "DIALOG",
         };
         let mut footer = Block::default()
             .title(format!(
@@ -394,6 +439,7 @@ impl AppScreen for EditorScreen {
                 .as_ref()
                 .map(|m| m.hint_shortcuts())
                 .unwrap_or_default(),
+            Focus::Dialog => vec![],
         };
         let hints_text = hints
             .iter()
@@ -409,6 +455,15 @@ impl AppScreen for EditorScreen {
         // Modal overlay — rendered last so it appears on top of everything.
         if let Some(modal) = &mut self.note_browser {
             modal.render(f, f.area(), &self.theme, true);
+        }
+
+        // Dialog overlay — rendered after the note browser so it appears on top.
+        if let Some(dialog) = &mut self.active_dialog {
+            match dialog {
+                ActiveDialog::Delete(d) => d.render(f, f.area(), &self.theme, true),
+                ActiveDialog::Rename(d) => d.render(f, f.area(), &self.theme, true),
+                ActiveDialog::Move(d) => d.render(f, f.area(), &self.theme, true),
+            }
         }
     }
 
@@ -447,11 +502,79 @@ impl AppScreen for EditorScreen {
                 }
                 None
             }
+            AppEvent::ShowDeleteDialog(path) => {
+                self.active_dialog = Some(ActiveDialog::Delete(
+                    DeleteConfirmDialog::new(path, self.vault.clone()),
+                ));
+                self.focus = Focus::Dialog;
+                None
+            }
+            AppEvent::ShowRenameDialog(path) => {
+                self.active_dialog = Some(ActiveDialog::Rename(
+                    RenameDialog::new(path, self.vault.clone()),
+                ));
+                self.focus = Focus::Dialog;
+                None
+            }
+            AppEvent::ShowMoveDialog(path) => {
+                self.active_dialog = Some(ActiveDialog::Move(
+                    MoveDialog::new(path, self.vault.clone()),
+                ));
+                self.focus = Focus::Dialog;
+                None
+            }
+            AppEvent::EntryDeleted(path) => {
+                self.on_entry_op(path, tx).await;
+                None
+            }
+            AppEvent::EntryRenamed { from, .. } => {
+                self.on_entry_op(from, tx).await;
+                None
+            }
+            AppEvent::EntryMoved { from, .. } => {
+                self.on_entry_op(from, tx).await;
+                None
+            }
+            AppEvent::DialogError(msg) => {
+                if let Some(dialog) = &mut self.active_dialog {
+                    dialog.set_error(msg);
+                }
+                None
+            }
+            AppEvent::CloseDialog => {
+                self.active_dialog = None;
+                self.focus = Focus::Editor;
+                None
+            }
             other => Some(other),
         }
     }
 
     async fn on_exit(&mut self, _tx: &AppTx) {
         self.try_save().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Compile-time test: verifies that `Focus::Dialog` variant exists and that
+    /// `ActiveDialog` is importable in this module.  No runtime setup needed.
+    #[test]
+    fn focus_dialog_variant_and_active_dialog_compile() {
+        // If `Focus::Dialog` or `ActiveDialog` variants are missing this will
+        // fail to compile, catching regressions at test time.
+        let focus = Focus::Dialog;
+        let label = match focus {
+            Focus::Editor => "EDITOR",
+            Focus::Sidebar => "SIDEBAR",
+            Focus::NoteBrowser => "NOTE BROWSER",
+            Focus::Dialog => "DIALOG",
+        };
+        assert_eq!(label, "DIALOG");
+
+        // Verify ActiveDialog variants are accessible.
+        fn _accepts_active_dialog(_d: Option<ActiveDialog>) {}
     }
 }
