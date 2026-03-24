@@ -5,7 +5,7 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::components::Component;
@@ -16,21 +16,25 @@ use crate::settings::themes::Theme;
 pub struct DeleteConfirmDialog {
     pub path: VaultPath,
     pub vault: Arc<NoteVault>,
+    /// Pre-computed `"  {path}"` for zero-allocation rendering.
+    pub path_display: String,
     pub error: Option<String>,
 }
 
 impl DeleteConfirmDialog {
     pub fn new(path: VaultPath, vault: Arc<NoteVault>) -> Self {
+        let path_display = format!("  {}", path);
         Self {
             path,
             vault,
+            path_display,
             error: None,
         }
     }
 
     /// Handle a raw [`KeyEvent`].  Returns [`EventState::Consumed`] for all
     /// keys this dialog acts on; the caller should forward only key events.
-    pub fn handle_input(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
+    pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
         match key.code {
             KeyCode::Enter => {
                 let path = self.path.clone();
@@ -63,17 +67,6 @@ impl DeleteConfirmDialog {
 }
 
 impl Component for DeleteConfirmDialog {
-    fn handle_input(
-        &mut self,
-        event: &crate::components::events::InputEvent,
-        tx: &AppTx,
-    ) -> EventState {
-        let crate::components::events::InputEvent::Key(key) = event else {
-            return EventState::NotConsumed;
-        };
-        self.handle_input(*key, tx)
-    }
-
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         // Fixed size: 46 wide × 10 tall (9 when no error, but 10 accommodates the error row)
         let height = if self.error.is_some() { 10 } else { 9 };
@@ -118,18 +111,10 @@ impl Component for DeleteConfirmDialog {
         let fg_muted = theme.fg_muted.to_ratatui();
 
         // Row 1: path
-        f.render_widget(
-            Paragraph::new(format!("  {}", self.path))
-                .style(Style::default().fg(fg).bg(bg)),
-            rows[1],
-        );
+        super::render_path_row(f, rows[1], &self.path_display, fg, bg);
 
         // Row 2: separator
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(fg_muted))
-            .style(Style::default().bg(bg))
-            .render(rows[2], f.buffer_mut());
+        super::render_separator(f, rows[2], fg_muted, bg);
 
         // Row 3: warning
         f.render_widget(
@@ -147,11 +132,7 @@ impl Component for DeleteConfirmDialog {
 
         // Row 6: error (optional)
         if let Some(msg) = &self.error {
-            f.render_widget(
-                Paragraph::new(format!("  Error: {msg}"))
-                    .style(Style::default().fg(Color::Red).bg(bg)),
-                rows[6],
-            );
+            super::render_error_row(f, rows[6], msg, bg);
         }
     }
 }
@@ -252,7 +233,7 @@ mod tests {
             let mut dialog = DeleteConfirmDialog::new(VaultPath::root(), vault);
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-            let state = dialog.handle_input(key, &tx);
+            let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
             let event = rx.try_recv().expect("expected AppEvent::CloseDialog");

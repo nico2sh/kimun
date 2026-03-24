@@ -2,7 +2,7 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::crossterm::event::KeyCode;
 
 use crate::components::Component;
@@ -29,18 +29,19 @@ use crate::settings::themes::Theme;
 pub struct FileOpsMenuDialog {
     /// The vault entry this menu was opened for.
     pub path: VaultPath,
-    /// Unused error field — present for `ActiveDialog::set_error` compatibility.
-    pub error: Option<String>,
+    /// Pre-computed `"  {path}"` for zero-allocation rendering.
+    pub path_display: String,
 }
 
 impl FileOpsMenuDialog {
     pub fn new(path: VaultPath) -> Self {
-        Self { path, error: None }
+        let path_display = format!("  {}", path);
+        Self { path, path_display }
     }
 
     /// Handle a raw key event. Returns `Consumed` for all recognised keys so
     /// the event never leaks to the underlying panel.
-    pub fn handle_input(
+    pub fn handle_key(
         &mut self,
         key: ratatui::crossterm::event::KeyEvent,
         tx: &AppTx,
@@ -72,17 +73,6 @@ impl FileOpsMenuDialog {
 // ---------------------------------------------------------------------------
 
 impl Component for FileOpsMenuDialog {
-    fn handle_input(
-        &mut self,
-        event: &crate::components::events::InputEvent,
-        tx: &AppTx,
-    ) -> EventState {
-        let crate::components::events::InputEvent::Key(key) = event else {
-            return EventState::NotConsumed;
-        };
-        self.handle_input(*key, tx)
-    }
-
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         // Fixed size: 46 wide × 9 tall
         // Border (2) + spacer + path + separator + actions + spacer + hint + spacer = 9 inner rows → 11 total
@@ -127,18 +117,10 @@ impl Component for FileOpsMenuDialog {
         let fg_accent = theme.fg_selected.to_ratatui();
 
         // Row 1: path
-        f.render_widget(
-            Paragraph::new(format!("  {}", self.path))
-                .style(Style::default().fg(fg).bg(bg)),
-            rows[1],
-        );
+        super::render_path_row(f, rows[1], &self.path_display, fg, bg);
 
         // Row 2: separator
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(fg_muted))
-            .style(Style::default().bg(bg))
-            .render(rows[2], f.buffer_mut());
+        super::render_separator(f, rows[2], fg_muted, bg);
 
         // Row 3: action shortcuts — key letter highlighted, description muted
         //
@@ -210,7 +192,7 @@ mod tests {
             let mut dialog = FileOpsMenuDialog::new(VaultPath::new("notes/test.md"));
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-            let state = dialog.handle_input(key, &tx);
+            let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
             let event = rx.try_recv().expect("expected AppEvent::CloseDialog");
@@ -230,7 +212,7 @@ mod tests {
             let mut dialog = FileOpsMenuDialog::new(path.clone());
 
             let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
-            let state = dialog.handle_input(key, &tx);
+            let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
             let event = rx.try_recv().expect("expected AppEvent::ShowDeleteDialog");
@@ -250,7 +232,7 @@ mod tests {
             let mut dialog = FileOpsMenuDialog::new(path.clone());
 
             let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-            let state = dialog.handle_input(key, &tx);
+            let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
             let event = rx.try_recv().expect("expected AppEvent::ShowRenameDialog");
@@ -270,7 +252,7 @@ mod tests {
             let mut dialog = FileOpsMenuDialog::new(path.clone());
 
             let key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
-            let state = dialog.handle_input(key, &tx);
+            let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
             let event = rx.try_recv().expect("expected AppEvent::ShowMoveDialog");

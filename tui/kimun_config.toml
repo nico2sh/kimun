@@ -21,7 +21,7 @@
 #   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
 #
 # ─────────────────────────────────────────────────────────────────────────────
-last_paths = ["/journal/2021-06-11.md", "/journal/2021-06-16.md", "/journal/2021-06-22.md", "/index.md", "/pep.md", "/somer.md", "/journal/2026-03-20.md", "/journal/2023-11-08.md", "/note in the root.md", "/journal/2026-03-23.md", "/newnote.md", "/journal/2026-03-24.md"]
+last_paths = ["/journal/2021-06-11.md", "/journal/2021-06-16.md", "/journal/2021-06-22.md", "/index.md", "/pep.md", "/somer.md", "/journal/2026-03-20.md", "/journal/2023-11-08.md", "/note in the root.md", "/journal/2026-03-23.md", "/journal/2026-03-24.md", "/newnote.md", "/note_in_root.md"]
 workspace_dir = "/Users/nhormazabal/Documents/Notes"
 theme = "Nord"
 autosave_interval_secs = 5

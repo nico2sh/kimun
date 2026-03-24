@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
-use crate::components::dialogs::{ActiveDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog};
+use crate::components::dialogs::{ActiveDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog, ValidationState};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::note_browser::NoteBrowserModal;
@@ -25,7 +25,7 @@ use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum Focus {
     Sidebar,
     Editor,
@@ -115,8 +115,19 @@ impl EditorScreen {
         self.settings.save_to_disk().ok();
 
         self.path = path.clone();
-        let content = self.vault.get_note_text(&self.path).await.unwrap();
-        self.editor.set_text(content);
+        match self.vault.get_note_text(&self.path).await {
+            Ok(content) => self.editor.set_text(content),
+            Err(e) => {
+                log::error!("Failed to read note {}: {e}", self.path);
+                let parent = self.path.get_parent_path().0;
+                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+                    self.vault.clone(),
+                    parent,
+                )))
+                .ok();
+                return;
+            }
+        }
 
         // Only load the sidebar on first open (when it has no entries yet).
         // Selecting a note while browsing should not reload the sidebar.
@@ -172,9 +183,13 @@ impl EditorScreen {
         }
     }
 
-    async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
+    fn restore_focus(&mut self) {
         self.active_dialog = None;
         self.focus = self.pre_dialog_focus.take().unwrap_or(Focus::Editor);
+    }
+
+    async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
+        self.restore_focus();
         if from == self.path {
             if let Some(h) = self.autosave_handle.take() {
                 h.abort();
@@ -332,12 +347,7 @@ impl AppScreen for EditorScreen {
             }
             Focus::Dialog => {
                 if let Some(dialog) = &mut self.active_dialog {
-                    match dialog {
-                        ActiveDialog::Menu(d)   => Component::handle_input(d, event, tx),
-                        ActiveDialog::Delete(d) => Component::handle_input(d, event, tx),
-                        ActiveDialog::Rename(d) => Component::handle_input(d, event, tx),
-                        ActiveDialog::Move(d)   => Component::handle_input(d, event, tx),
-                    }
+                    dialog.handle_input(event, tx)
                 } else {
                     EventState::NotConsumed
                 }
@@ -469,12 +479,7 @@ impl AppScreen for EditorScreen {
 
         // Dialog overlay — rendered after the note browser so it appears on top.
         if let Some(dialog) = &mut self.active_dialog {
-            match dialog {
-                ActiveDialog::Menu(d)   => d.render(f, f.area(), &self.theme, true),
-                ActiveDialog::Delete(d) => d.render(f, f.area(), &self.theme, true),
-                ActiveDialog::Rename(d) => d.render(f, f.area(), &self.theme, true),
-                ActiveDialog::Move(d)   => d.render(f, f.area(), &self.theme, true),
-            }
+            dialog.render(f, f.area(), &self.theme, true);
         }
     }
 
@@ -514,7 +519,7 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::ShowFileOpsMenu(path) => {
-                self.pre_dialog_focus = Some(self.focus.clone());
+                self.pre_dialog_focus = Some(self.focus);
                 self.active_dialog = Some(ActiveDialog::Menu(
                     FileOpsMenuDialog::new(path),
                 ));
@@ -537,9 +542,56 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::ShowMoveDialog(path) => {
                 self.active_dialog = Some(ActiveDialog::Move(
-                    MoveDialog::new(path, self.vault.clone()),
+                    MoveDialog::new(path, self.vault.clone(), tx),
                 ));
                 self.focus = Focus::Dialog;
+                None
+            }
+            AppEvent::RenameValidation { available } => {
+                if let Some(ActiveDialog::Rename(d)) = &mut self.active_dialog {
+                    d.validation_state = if available {
+                        ValidationState::Available
+                    } else {
+                        ValidationState::Taken
+                    };
+                    d.validation_task = None;
+                }
+                None
+            }
+            AppEvent::MoveDirectoriesLoaded(paths) => {
+                if let Some(ActiveDialog::Move(d)) = &mut self.active_dialog {
+                    d.all_dirs = paths;
+                    d.filtered = None;
+                    d.load_task = None;
+                    if d.list_state.selected().is_none() && !d.results().is_empty() {
+                        d.list_state.select(Some(0));
+                    }
+                    d.spawn_validation(tx);
+                }
+                None
+            }
+            AppEvent::MoveFilterResults(paths) => {
+                if let Some(ActiveDialog::Move(d)) = &mut self.active_dialog {
+                    d.filter_task = None;
+                    d.filtered = Some(paths);
+                    if !d.results().is_empty() {
+                        d.list_state.select(Some(0));
+                    } else {
+                        d.list_state.select(None);
+                    }
+                    d.spawn_validation(tx);
+                }
+                None
+            }
+            AppEvent::MoveDestValidation { available } => {
+                if let Some(ActiveDialog::Move(d)) = &mut self.active_dialog {
+                    d.dest_validation = if available {
+                        ValidationState::Available
+                    } else {
+                        ValidationState::Taken
+                    };
+                    d.validation_task = None;
+                }
                 None
             }
             AppEvent::EntryDeleted(path) => {
@@ -561,8 +613,7 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::CloseDialog => {
-                self.active_dialog = None;
-                self.focus = self.pre_dialog_focus.take().unwrap_or(Focus::Editor);
+                self.restore_focus();
                 None
             }
             other => Some(other),
