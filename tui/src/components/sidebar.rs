@@ -137,7 +137,15 @@ impl Component for SidebarComponent {
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
+        let header_inner = header.inner(rows[0]);
         f.render_widget(header, rows[0]);
+        f.render_widget(
+            Paragraph::new(format!("{} notes", self.file_list.note_count()))
+                .style(Style::default()
+                    .fg(theme.fg_muted.to_ratatui())
+                    .bg(theme.bg_panel.to_ratatui())),
+            header_inner,
+        );
 
         let search_block = Block::default()
             .title(" Search")
