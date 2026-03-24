@@ -38,6 +38,8 @@ pub enum AppEvent {
     CloseNoteBrowser,
 
     // ── File-operation dialog messages ───────────────────────────────────────
+    /// Request to show the file-operations menu (delete / rename / move).
+    ShowFileOpsMenu(VaultPath),
     /// Request to show the delete confirmation dialog for the given entry.
     ShowDeleteDialog(VaultPath),
     /// Request to show the rename dialog for the given entry.

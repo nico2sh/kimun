@@ -21,9 +21,7 @@ pub enum ActionShortcuts {
     SortByTitle,
     SortReverseOrder,
     // File operations
-    DeleteEntry,
-    RenameEntry,
-    MoveEntry,
+    FileOperations,
 }
 
 impl Display for ActionShortcuts {
@@ -43,9 +41,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::SortByName => "SortByName".to_string(),
             ActionShortcuts::SortByTitle => "SortByTitle".to_string(),
             ActionShortcuts::SortReverseOrder => "SortReverseOrder".to_string(),
-            ActionShortcuts::DeleteEntry => "DeleteEntry".to_string(),
-            ActionShortcuts::RenameEntry => "RenameEntry".to_string(),
-            ActionShortcuts::MoveEntry => "MoveEntry".to_string(),
+            ActionShortcuts::FileOperations => "FileOperations".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -69,9 +65,7 @@ impl TryFrom<String> for ActionShortcuts {
             "SortByName" => ActionShortcuts::SortByName,
             "SortByTitle" => ActionShortcuts::SortByTitle,
             "SortReverseOrder" => ActionShortcuts::SortReverseOrder,
-            "DeleteEntry" => ActionShortcuts::DeleteEntry,
-            "RenameEntry" => ActionShortcuts::RenameEntry,
-            "MoveEntry" => ActionShortcuts::MoveEntry,
+            "FileOperations" => ActionShortcuts::FileOperations,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -98,29 +92,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delete_entry_roundtrip() {
-        assert_eq!(ActionShortcuts::DeleteEntry.to_string(), "DeleteEntry");
+    fn file_operations_roundtrip() {
+        assert_eq!(ActionShortcuts::FileOperations.to_string(), "FileOperations");
         assert_eq!(
-            ActionShortcuts::try_from("DeleteEntry".to_string()),
-            Ok(ActionShortcuts::DeleteEntry)
-        );
-    }
-
-    #[test]
-    fn rename_entry_roundtrip() {
-        assert_eq!(ActionShortcuts::RenameEntry.to_string(), "RenameEntry");
-        assert_eq!(
-            ActionShortcuts::try_from("RenameEntry".to_string()),
-            Ok(ActionShortcuts::RenameEntry)
-        );
-    }
-
-    #[test]
-    fn move_entry_roundtrip() {
-        assert_eq!(ActionShortcuts::MoveEntry.to_string(), "MoveEntry");
-        assert_eq!(
-            ActionShortcuts::try_from("MoveEntry".to_string()),
-            Ok(ActionShortcuts::MoveEntry)
+            ActionShortcuts::try_from("FileOperations".to_string()),
+            Ok(ActionShortcuts::FileOperations)
         );
     }
 }

@@ -581,28 +581,10 @@ impl Component for FileListComponent {
                             self.set_sort(self.sort_field, order, tx.clone());
                             return EventState::Consumed;
                         }
-                        Some(ActionShortcuts::DeleteEntry) => {
+                        Some(ActionShortcuts::FileOperations) => {
                             if let Some(entry) = self.selected_entry() {
                                 if !matches!(entry, FileListEntry::Up { .. }) {
-                                    tx.send(AppEvent::ShowDeleteDialog(entry.path().clone())).ok();
-                                    return EventState::Consumed;
-                                }
-                            }
-                            return EventState::NotConsumed;
-                        }
-                        Some(ActionShortcuts::RenameEntry) => {
-                            if let Some(entry) = self.selected_entry() {
-                                if !matches!(entry, FileListEntry::Up { .. }) {
-                                    tx.send(AppEvent::ShowRenameDialog(entry.path().clone())).ok();
-                                    return EventState::Consumed;
-                                }
-                            }
-                            return EventState::NotConsumed;
-                        }
-                        Some(ActionShortcuts::MoveEntry) => {
-                            if let Some(entry) = self.selected_entry() {
-                                if !matches!(entry, FileListEntry::Up { .. }) {
-                                    tx.send(AppEvent::ShowMoveDialog(entry.path().clone())).ok();
+                                    tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone())).ok();
                                     return EventState::Consumed;
                                 }
                             }
@@ -921,29 +903,25 @@ mod tests {
         assert_eq!(entry_filenames(&list), vec!["a.md", "m.md", "z.md"]);
     }
 
-    fn make_keybindings_with_delete() -> crate::keys::KeyBindings {
+    fn make_keybindings_with_file_ops() -> crate::keys::KeyBindings {
         use crate::keys::key_strike::KeyStrike;
         let mut kb = crate::keys::KeyBindings::empty();
         kb.batch_add()
-            .with_ctrl()
-            .with_shift()
-            .add(KeyStrike::KeyD, crate::keys::action_shortcuts::ActionShortcuts::DeleteEntry)
-            .add(KeyStrike::KeyR, crate::keys::action_shortcuts::ActionShortcuts::RenameEntry)
-            .add(KeyStrike::KeyM, crate::keys::action_shortcuts::ActionShortcuts::MoveEntry);
+            .add(KeyStrike::F2, crate::keys::action_shortcuts::ActionShortcuts::FileOperations);
         kb
     }
 
     #[tokio::test]
-    async fn delete_shortcut_sends_show_delete_dialog() {
+    async fn f2_sends_show_file_ops_menu() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use crate::components::events::InputEvent;
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-        let kb = make_keybindings_with_delete();
+        let kb = make_keybindings_with_file_ops();
         let mut list = FileListComponent::new(kb, crate::settings::icons::Icons::new(true));
         list.push_entry(make_note("test.md", "Test Note"));
 
-        let key_event = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let key_event = KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE);
         let input = InputEvent::Key(key_event);
         let result = list.handle_input(&input, &tx);
 
@@ -953,74 +931,26 @@ mod tests {
             result
         );
 
-        let event = rx.try_recv().expect("expected an event to be sent");
+        let event = rx.try_recv().expect("expected ShowFileOpsMenu to be sent");
         assert!(
-            matches!(event, AppEvent::ShowDeleteDialog(_)),
-            "expected ShowDeleteDialog but got {:?}",
+            matches!(event, AppEvent::ShowFileOpsMenu(_)),
+            "expected ShowFileOpsMenu but got {:?}",
             event
         );
     }
 
     #[tokio::test]
-    async fn rename_shortcut_sends_show_rename_dialog() {
+    async fn file_ops_not_consumed_for_up_entry() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use crate::components::events::InputEvent;
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-        let kb = make_keybindings_with_delete();
-        let mut list = FileListComponent::new(kb, crate::settings::icons::Icons::new(true));
-        list.push_entry(make_note("test.md", "Test Note"));
-
-        let key_event = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-        let input = InputEvent::Key(key_event);
-        let result = list.handle_input(&input, &tx);
-
-        assert!(matches!(result, EventState::Consumed));
-
-        let event = rx.try_recv().expect("expected an event to be sent");
-        assert!(
-            matches!(event, AppEvent::ShowRenameDialog(_)),
-            "expected ShowRenameDialog but got {:?}",
-            event
-        );
-    }
-
-    #[tokio::test]
-    async fn move_shortcut_sends_show_move_dialog() {
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        use crate::components::events::InputEvent;
-
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-        let kb = make_keybindings_with_delete();
-        let mut list = FileListComponent::new(kb, crate::settings::icons::Icons::new(true));
-        list.push_entry(make_note("test.md", "Test Note"));
-
-        let key_event = KeyEvent::new(KeyCode::Char('M'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-        let input = InputEvent::Key(key_event);
-        let result = list.handle_input(&input, &tx);
-
-        assert!(matches!(result, EventState::Consumed));
-
-        let event = rx.try_recv().expect("expected an event to be sent");
-        assert!(
-            matches!(event, AppEvent::ShowMoveDialog(_)),
-            "expected ShowMoveDialog but got {:?}",
-            event
-        );
-    }
-
-    #[tokio::test]
-    async fn file_op_shortcuts_not_consumed_for_up_entry() {
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        use crate::components::events::InputEvent;
-
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
-        let kb = make_keybindings_with_delete();
+        let kb = make_keybindings_with_file_ops();
         let mut list = FileListComponent::new(kb, crate::settings::icons::Icons::new(true));
         list.add_up_entry(VaultPath::root());
         // Up entry is selected (index 0)
 
-        let key_event = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let key_event = KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE);
         let input = InputEvent::Key(key_event);
         let result = list.handle_input(&input, &tx);
 

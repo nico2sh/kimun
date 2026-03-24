@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
-use crate::components::dialogs::{ActiveDialog, DeleteConfirmDialog, MoveDialog, RenameDialog};
+use crate::components::dialogs::{ActiveDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::note_browser::NoteBrowserModal;
@@ -282,16 +282,8 @@ impl AppScreen for EditorScreen {
                         }
                         return EventState::Consumed;
                     }
-                    Some(ActionShortcuts::DeleteEntry) if matches!(self.focus, Focus::Editor) => {
-                        tx.send(AppEvent::ShowDeleteDialog(self.path.clone())).ok();
-                        return EventState::Consumed;
-                    }
-                    Some(ActionShortcuts::RenameEntry) if matches!(self.focus, Focus::Editor) => {
-                        tx.send(AppEvent::ShowRenameDialog(self.path.clone())).ok();
-                        return EventState::Consumed;
-                    }
-                    Some(ActionShortcuts::MoveEntry) if matches!(self.focus, Focus::Editor) => {
-                        tx.send(AppEvent::ShowMoveDialog(self.path.clone())).ok();
+                    Some(ActionShortcuts::FileOperations) if matches!(self.focus, Focus::Editor) => {
+                        tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
                         return EventState::Consumed;
                     }
                     _ => {}
@@ -331,9 +323,10 @@ impl AppScreen for EditorScreen {
             Focus::Dialog => {
                 if let Some(dialog) = &mut self.active_dialog {
                     match dialog {
+                        ActiveDialog::Menu(d)   => Component::handle_input(d, event, tx),
                         ActiveDialog::Delete(d) => Component::handle_input(d, event, tx),
                         ActiveDialog::Rename(d) => Component::handle_input(d, event, tx),
-                        ActiveDialog::Move(d) => Component::handle_input(d, event, tx),
+                        ActiveDialog::Move(d)   => Component::handle_input(d, event, tx),
                     }
                 } else {
                     EventState::NotConsumed
@@ -467,9 +460,10 @@ impl AppScreen for EditorScreen {
         // Dialog overlay — rendered after the note browser so it appears on top.
         if let Some(dialog) = &mut self.active_dialog {
             match dialog {
+                ActiveDialog::Menu(d)   => d.render(f, f.area(), &self.theme, true),
                 ActiveDialog::Delete(d) => d.render(f, f.area(), &self.theme, true),
                 ActiveDialog::Rename(d) => d.render(f, f.area(), &self.theme, true),
-                ActiveDialog::Move(d) => d.render(f, f.area(), &self.theme, true),
+                ActiveDialog::Move(d)   => d.render(f, f.area(), &self.theme, true),
             }
         }
     }
@@ -507,6 +501,13 @@ impl AppScreen for EditorScreen {
                 if matches!(self.focus, Focus::NoteBrowser) {
                     self.focus = Focus::Editor;
                 }
+                None
+            }
+            AppEvent::ShowFileOpsMenu(path) => {
+                self.active_dialog = Some(ActiveDialog::Menu(
+                    FileOpsMenuDialog::new(path),
+                ));
+                self.focus = Focus::Dialog;
                 None
             }
             AppEvent::ShowDeleteDialog(path) => {

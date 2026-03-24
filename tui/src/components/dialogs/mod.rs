@@ -1,12 +1,15 @@
 pub use delete_dialog::DeleteConfirmDialog;
 pub use rename_dialog::RenameDialog;
 pub use move_dialog::MoveDialog;
+pub use file_ops_menu::FileOpsMenuDialog;
 
 pub mod delete_dialog;
 pub mod rename_dialog;
 pub mod move_dialog;
+pub mod file_ops_menu;
 
 pub enum ActiveDialog {
+    Menu(FileOpsMenuDialog),
     Delete(DeleteConfirmDialog),
     Rename(RenameDialog),
     Move(MoveDialog),
@@ -15,6 +18,7 @@ pub enum ActiveDialog {
 impl ActiveDialog {
     pub fn set_error(&mut self, msg: String) {
         match self {
+            ActiveDialog::Menu(_)    => {} // menu has no error state
             ActiveDialog::Delete(d) => d.error = Some(msg),
             ActiveDialog::Rename(d) => d.error = Some(msg),
             ActiveDialog::Move(d)   => d.error = Some(msg),
