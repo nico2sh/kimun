@@ -41,13 +41,16 @@ impl EventHandler {
             tokio::select! {
                 biased;
                 Some(msg) = self.rx.recv() => return msg,
-                Some(Ok(event)) = self.crossterm_stream.next() => match event {
-                    CrosstermEvent::Key(key) if key.kind != KeyEventKind::Release => {
-                        return AppEvent::Input(InputEvent::Key(key));
+                Some(Ok(event)) = self.crossterm_stream.next() => {
+                    log::debug!("RAW EVENT: {:?}", event);
+                    match event {
+                        CrosstermEvent::Key(key) if key.kind != KeyEventKind::Release => {
+                            return AppEvent::Input(InputEvent::Key(key));
+                        }
+                        CrosstermEvent::Mouse(mouse) => return AppEvent::Input(InputEvent::Mouse(mouse)),
+                        _ => continue,
                     }
-                    CrosstermEvent::Mouse(mouse) => return AppEvent::Input(InputEvent::Mouse(mouse)),
-                    _ => continue,
-                },
+                }
             }
         }
     }
