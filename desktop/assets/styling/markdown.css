@@ -1,0 +1,63 @@
+.markdown {
+  margin: 8px;
+  overflow-y: auto;
+}
+
+.markdown code {
+  white-space: pre-wrap;
+  border: 1px solid var(--border-light);
+}
+
+.markdown ul {
+  list-style: circle inside;
+  padding-left: 20px;
+  margin-bottom: 5px;
+}
+
+.markdown li ul {
+  margin-bottom: 5px;
+  padding-left: 20px;
+}
+
+.code-block {
+  display: block;
+  overflow: auto;
+}
+
+.markdown h1 {
+  margin: 16px 0;
+}
+
+.markdown h2 {
+  margin: 14px 0;
+}
+
+.markdown h3,
+.markdown h4 {
+  margin: 12px 0;
+}
+
+.markdown h5,
+.markdown h6 {
+  margin: 10px 0;
+}
+
+.markdown p {
+  margin-bottom: 10px;
+}
+
+.markdown a {
+  color: inherit;
+  text-decoration: inherit;
+  border-bottom: 1px solid;
+}
+
+.note-link,
+.attachment-link {
+  cursor: pointer;
+  border-bottom: 1px solid;
+}
+
+.note-link {
+  border-bottom-style: dashed;
+}

@@ -443,6 +443,21 @@ impl FileListComponent {
         }
     }
 
+    /// Number of entries currently visible in the list (respects active filter).
+    pub fn len(&self) -> usize {
+        self.display_len()
+    }
+
+    /// Number of note entries currently visible (excludes directories, Up, attachments).
+    pub fn note_count(&self) -> usize {
+        match &self.display_indices {
+            None => self.entries.iter().filter(|e| matches!(e, FileListEntry::Note { .. })).count(),
+            Some(indices) => indices.iter()
+                .filter(|&&i| matches!(self.entries.get(i), Some(FileListEntry::Note { .. })))
+                .count(),
+        }
+    }
+
     fn reset_selection(&mut self) {
         self.list_state.select(if self.display_len() > 0 {
             Some(0)
