@@ -220,19 +220,17 @@ impl AppScreen for EditorScreen {
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         if let InputEvent::Key(key) = event {
-            // F2 is hardcoded — it cannot go through the keybindings hashmap because
-            // `is_valid_binding()` only accepts ctrl/alt + letter, which silently drops F-keys.
-            if key.code == ratatui::crossterm::event::KeyCode::F(2)
-                && matches!(self.focus, Focus::Editor)
-            {
-                tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
-                return EventState::Consumed;
-            }
-
             if let Some(combo) = key_event_to_combo(key) {
-                if (combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
-                    && combo.key >= KeyStrike::KeyA
-                    && combo.key <= KeyStrike::KeyZ
+                let is_fkey = matches!(
+                    combo.key,
+                    KeyStrike::F1  | KeyStrike::F2  | KeyStrike::F3  | KeyStrike::F4
+                    | KeyStrike::F5  | KeyStrike::F6  | KeyStrike::F7  | KeyStrike::F8
+                    | KeyStrike::F9  | KeyStrike::F10 | KeyStrike::F11 | KeyStrike::F12
+                );
+                if is_fkey
+                    || ((combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
+                        && combo.key >= KeyStrike::KeyA
+                        && combo.key <= KeyStrike::KeyZ)
                 {
                     self.key_flash = Some((combo.to_string(), std::time::Instant::now()));
                     let tx2 = tx.clone();
@@ -289,6 +287,10 @@ impl AppScreen for EditorScreen {
                             ));
                             self.focus = Focus::NoteBrowser;
                         }
+                        return EventState::Consumed;
+                    }
+                    Some(ActionShortcuts::FileOperations) if matches!(self.focus, Focus::Editor) => {
+                        tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
                         return EventState::Consumed;
                     }
                     _ => {}
