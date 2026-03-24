@@ -25,6 +25,7 @@ use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
+#[derive(Clone)]
 enum Focus {
     Sidebar,
     Editor,
@@ -48,6 +49,7 @@ pub struct EditorScreen {
     key_flash: Option<(String, std::time::Instant)>,
     note_browser: Option<NoteBrowserModal>,
     active_dialog: Option<ActiveDialog>,
+    pre_dialog_focus: Option<Focus>,
 }
 
 impl EditorScreen {
@@ -82,6 +84,7 @@ impl EditorScreen {
             key_flash: None,
             note_browser: None,
             active_dialog: None,
+            pre_dialog_focus: None,
         }
     }
 }
@@ -171,7 +174,7 @@ impl EditorScreen {
 
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
         self.active_dialog = None;
-        self.focus = Focus::Editor;
+        self.focus = self.pre_dialog_focus.take().unwrap_or(Focus::Editor);
         if from == self.path {
             if let Some(h) = self.autosave_handle.take() {
                 h.abort();
@@ -511,6 +514,7 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::ShowFileOpsMenu(path) => {
+                self.pre_dialog_focus = Some(self.focus.clone());
                 self.active_dialog = Some(ActiveDialog::Menu(
                     FileOpsMenuDialog::new(path),
                 ));
@@ -558,7 +562,7 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::CloseDialog => {
                 self.active_dialog = None;
-                self.focus = Focus::Editor;
+                self.focus = self.pre_dialog_focus.take().unwrap_or(Focus::Editor);
                 None
             }
             other => Some(other),
