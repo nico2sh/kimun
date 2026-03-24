@@ -135,9 +135,14 @@ impl KeyBindings {
 
     pub fn from_hashmap(bindings: HashMap<ActionShortcuts, Vec<KeyCombo>>) -> KeyBindings {
         let mut kb = KeyBindings::empty();
+        for (action, combos) in &bindings {
+            log::debug!("from_hashmap: action={} combos={:?}", action, combos);
+        }
         for (action, combos) in bindings {
             for combo in combos {
-                if combo.is_valid_binding() {
+                let valid = combo.is_valid_binding();
+                log::debug!("from_hashmap: combo='{}' key={:?} modifiers={:?} valid={}", combo, combo.key, combo.modifiers, valid);
+                if valid {
                     kb.bindings.insert(combo.to_owned(), action.to_owned());
                 } else {
                     log::warn!(
