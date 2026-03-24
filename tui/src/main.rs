@@ -18,12 +18,15 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
-use crossterm::event::{DisableMouseCapture, PopKeyboardEnhancementFlags};
+use crossterm::event::{
+    DisableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use ratatui::Terminal;
 use ratatui::crossterm::event::EnableMouseCapture;
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
+use ratatui::crossterm::terminal::{EnterAlternateScreen, enable_raw_mode, supports_keyboard_enhancement};
 use ratatui::prelude::{Backend, CrosstermBackend};
 use std::io;
 
@@ -51,6 +54,17 @@ async fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Enable enhanced keyboard protocol when the terminal supports it (e.g. Kitty, WezTerm).
+    // This is required to correctly receive F-keys and other special keys in those terminals.
+    if supports_keyboard_enhancement().unwrap_or(false) {
+        let _ = execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+            )
+        );
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut events = EventHandler::new();
