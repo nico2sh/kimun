@@ -508,4 +508,41 @@ mod tests {
         let settings: AppSettings = toml::from_str(toml).unwrap();
         assert_eq!(settings.autosave_interval_secs, 5);
     }
+
+    /// Verify the full load path: TOML with FileOperations = ["F2"] → keybinding lookup.
+    #[test]
+    fn f2_file_operations_survives_toml_deserialize() {
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let toml = r#"
+[key_bindings]
+FileOperations = ["F2"]
+"#;
+        let settings: AppSettings = toml::from_str(toml).unwrap();
+        let f2 = KeyCombo::new(KeyModifiers::default(), KeyStrike::F2);
+        let action = settings.key_bindings.get_action(&f2);
+        assert_eq!(action, Some(ActionShortcuts::FileOperations),
+            "F2 should survive deserialization and map to FileOperations");
+    }
+
+    /// Verify merge_missing_default_bindings adds F2 when absent from config.
+    #[test]
+    fn merge_adds_f2_when_absent() {
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        // Settings with no FileOperations binding
+        let toml = r#"
+[key_bindings]
+Quit = ["ctrl&Q"]
+"#;
+        let mut settings: AppSettings = toml::from_str(toml).unwrap();
+        settings.merge_missing_default_bindings();
+
+        let f2 = KeyCombo::new(KeyModifiers::default(), KeyStrike::F2);
+        let action = settings.key_bindings.get_action(&f2);
+        assert_eq!(action, Some(ActionShortcuts::FileOperations),
+            "merge_missing_default_bindings should add F2 → FileOperations");
+    }
 }
