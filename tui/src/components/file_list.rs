@@ -723,6 +723,7 @@ impl Component for FileListComponent {
             (ActionShortcuts::SortByName, "sort by name"),
             (ActionShortcuts::SortByTitle, "sort by title"),
             (ActionShortcuts::SortReverseOrder, "reverse"),
+            (ActionShortcuts::FileOperations, "file ops"),
         ]
         .iter()
         .filter_map(|(action, label)| {
