@@ -166,12 +166,6 @@ impl OrderBy {
         }
     }
 
-    pub fn to_query_param(&self) -> String {
-        match self {
-            OrderBy::Title { asc } => format!("title {}", if *asc { "ASC" } else { "DESC" }),
-            OrderBy::FileName { asc } => format!("path {}", if *asc { "ASC" } else { "DESC" }),
-        }
-    }
 }
 
 #[derive(Default, Debug)]
