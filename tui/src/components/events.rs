@@ -56,6 +56,16 @@ pub enum AppEvent {
     DialogError(String),
     /// Dismiss the currently visible dialog without taking action.
     CloseDialog,
+
+    // ── Dialog async result messages ─────────────────────────────────────────
+    /// Rename dialog: name availability check result.
+    RenameValidation { available: bool },
+    /// Move dialog: directory list has loaded.
+    MoveDirectoriesLoaded(Vec<VaultPath>),
+    /// Move dialog: fuzzy filter results are ready.
+    MoveFilterResults(Vec<VaultPath>),
+    /// Move dialog: destination existence check result.
+    MoveDestValidation { available: bool },
 }
 
 impl AppEvent {

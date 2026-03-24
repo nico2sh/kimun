@@ -4,31 +4,17 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use tokio::task::JoinHandle;
 
 use crate::components::Component;
+use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::settings::themes::Theme;
-
-// ---------------------------------------------------------------------------
-// ValidationState
-// ---------------------------------------------------------------------------
-
-/// Tracks the current state of the async name-availability check.
-pub enum ValidationState {
-    /// No check has been triggered yet (initial state).
-    Idle,
-    /// A check is in progress.
-    Pending,
-    /// The chosen name is available (does not already exist).
-    Available,
-    /// The chosen name is already taken.
-    Taken,
-}
 
 // ---------------------------------------------------------------------------
 // RenameDialog
@@ -45,14 +31,14 @@ pub struct RenameDialog {
     pub path: VaultPath,
     /// Shared reference to the vault for existence checks and the rename op.
     pub vault: Arc<NoteVault>,
+    /// Pre-computed `"  {path}"` for zero-allocation rendering.
+    pub path_display: String,
     /// Current text in the input field.
     pub input: String,
     /// Result of the most-recent validation check.
     pub validation_state: ValidationState,
     /// Handle to the running validation task so we can abort it on new input.
     pub validation_task: Option<JoinHandle<()>>,
-    /// Receiver end of the one-shot channel used by the validation task.
-    pub validation_rx: Option<std::sync::mpsc::Receiver<bool>>,
     /// Optional error message surfaced from a failed rename attempt.
     pub error: Option<String>,
 }
@@ -63,13 +49,14 @@ impl RenameDialog {
     /// The input field is pre-filled with the filename component of `path`.
     pub fn new(path: VaultPath, vault: Arc<NoteVault>) -> Self {
         let (_, filename) = path.get_parent_path();
+        let path_display = format!("  {}", path);
         Self {
             path,
             vault,
+            path_display,
             input: filename,
             validation_state: ValidationState::Idle,
             validation_task: None,
-            validation_rx: None,
             error: None,
         }
     }
@@ -78,24 +65,11 @@ impl RenameDialog {
     // Validation helpers
     // -----------------------------------------------------------------------
 
-    /// Poll the validation channel (non-blocking).  Call this at the start of
-    /// every `render()` so the UI reflects the latest result.
-    fn poll_validation(&mut self) {
-        let Some(rx) = &self.validation_rx else { return };
-        if let Ok(available) = rx.try_recv() {
-            self.validation_state = if available {
-                ValidationState::Available
-            } else {
-                ValidationState::Taken
-            };
-            self.validation_rx = None;
-            self.validation_task = None;
-        }
-    }
-
     /// Abort any in-flight validation task and spawn a new one for the
-    /// current value of `self.input`.
-    fn spawn_validation(&mut self) {
+    /// current value of `self.input`.  The result is sent as
+    /// [`AppEvent::RenameValidation`] so that state updates happen in
+    /// `handle_app_message` rather than in `render`.
+    fn spawn_validation(&mut self, tx: &AppTx) {
         // Abort the previous task if it is still running.
         if let Some(handle) = self.validation_task.take() {
             handle.abort();
@@ -104,7 +78,7 @@ impl RenameDialog {
         let vault = Arc::clone(&self.vault);
         let input = self.input.clone();
         let path = self.path.clone();
-        let (vtx, vrx) = std::sync::mpsc::channel();
+        let tx_clone = tx.clone();
 
         let handle = tokio::spawn(async move {
             let parent = path.get_parent_path().0;
@@ -115,11 +89,10 @@ impl RenameDialog {
             };
             let exists = vault.exists(&candidate).await.is_some();
             // `true` means the name is *available* (does not exist yet).
-            vtx.send(!exists).ok();
+            tx_clone.send(AppEvent::RenameValidation { available: !exists }).ok();
         });
 
         self.validation_task = Some(handle);
-        self.validation_rx = Some(vrx);
         self.validation_state = ValidationState::Pending;
     }
 
@@ -129,20 +102,20 @@ impl RenameDialog {
 
     /// Handle a raw [`KeyEvent`].  Returns [`EventState::Consumed`] for keys
     /// this dialog acts on; callers should forward only key events.
-    pub fn handle_input(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
+    pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
         match key.code {
             KeyCode::Char(c) => {
                 self.input.push(c);
-                self.spawn_validation();
+                self.spawn_validation(tx);
                 EventState::Consumed
             }
             KeyCode::Backspace => {
                 self.input.pop();
-                self.spawn_validation();
+                self.spawn_validation(tx);
                 EventState::Consumed
             }
             KeyCode::Enter => {
-                if matches!(self.validation_state, ValidationState::Available) {
+                if self.validation_state == ValidationState::Available {
                     let from = self.path.clone();
                     let parent = from.get_parent_path().0;
                     let new_path = if from.is_note() {
@@ -190,21 +163,7 @@ impl RenameDialog {
 // ---------------------------------------------------------------------------
 
 impl Component for RenameDialog {
-    fn handle_input(
-        &mut self,
-        event: &crate::components::events::InputEvent,
-        tx: &AppTx,
-    ) -> EventState {
-        let crate::components::events::InputEvent::Key(key) = event else {
-            return EventState::NotConsumed;
-        };
-        self.handle_input(*key, tx)
-    }
-
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
-        // Drain the validation channel before rendering so the UI is current.
-        self.poll_validation();
-
         // Fixed size: 50 wide; height depends on whether there is an error row.
         // Border(2) + spacer + path + separator + label + input(3) + validation
         //           + spacer + hint [+ error] = 11 or 12.
@@ -253,18 +212,10 @@ impl Component for RenameDialog {
         let fg_muted = theme.fg_muted.to_ratatui();
 
         // Row 1: path.
-        f.render_widget(
-            Paragraph::new(format!("  {}", self.path))
-                .style(Style::default().fg(fg).bg(bg)),
-            rows[1],
-        );
+        super::render_path_row(f, rows[1], &self.path_display, fg, bg);
 
         // Row 2: separator.
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(fg_muted))
-            .style(Style::default().bg(bg))
-            .render(rows[2], f.buffer_mut());
+        super::render_separator(f, rows[2], fg_muted, bg);
 
         // Row 3: "NEW NAME" label.
         f.render_widget(
@@ -291,8 +242,11 @@ impl Component for RenameDialog {
         let input_inner = input_block.inner(input_chunks[0]);
         f.render_widget(input_block, input_chunks[0]);
         f.render_widget(
-            Paragraph::new(format!("{}_", self.input))
-                .style(Style::default().fg(fg).bg(bg)),
+            Paragraph::new(Line::from(vec![
+                Span::raw(self.input.as_str()),
+                Span::raw("_"),
+            ]))
+            .style(Style::default().fg(fg).bg(bg)),
             input_inner,
         );
 
@@ -326,31 +280,15 @@ impl Component for RenameDialog {
         f.render_widget(Paragraph::new(status_text).style(status_style), rows[5]);
 
         // Row 7: hint.  Dim the Enter part unless rename is available.
-        let enter_style = if matches!(self.validation_state, ValidationState::Available) {
-            Style::default().fg(fg).bg(bg)
-        } else {
-            Style::default().fg(fg_muted).bg(bg).add_modifier(Modifier::DIM)
-        };
-        let hint_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(17), // "  [Enter] Rename "
-                Constraint::Min(1),     // "  [Esc] Cancel"
-            ])
-            .split(rows[7]);
-        f.render_widget(Paragraph::new("  [Enter] Rename").style(enter_style), hint_chunks[0]);
-        f.render_widget(
-            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(fg_muted).bg(bg)),
-            hint_chunks[1],
+        super::render_confirm_hint(
+            f, rows[7], "  [Enter] Rename",
+            self.validation_state == ValidationState::Available,
+            fg, fg_muted, bg,
         );
 
         // Row 8 (optional): error message.
         if let Some(msg) = &self.error {
-            f.render_widget(
-                Paragraph::new(format!("  Error: {msg}"))
-                    .style(Style::default().fg(Color::Red).bg(bg)),
-                rows[8],
-            );
+            super::render_error_row(f, rows[8], msg, bg);
         }
     }
 }
@@ -441,7 +379,7 @@ mod tests {
                 RenameDialog::new(VaultPath::new("notes/test.md"), vault);
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-            let state = dialog.handle_input(key, &tx);
+            let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
             let event = rx.try_recv().expect("expected AppEvent::CloseDialog");
