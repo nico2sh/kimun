@@ -1,10 +1,8 @@
-mod content_extractor;
+pub(crate) mod content_extractor;
 
 use std::fmt::Display;
 
-use content_extractor::{
-    extract_title, get_content_chunks, get_content_data, get_markdown_and_links,
-};
+use content_extractor::{extract_title, get_chunks_and_links, get_content_chunks, get_content_data};
 
 use crate::nfs::VaultPath;
 
@@ -34,15 +32,6 @@ impl NoteDetails {
         extract_title(text)
     }
 
-    // Returns the text and the links contained
-    // The wikilinks are converted to markdown links, although only note links are allowed
-    // External URLs needs to be created as markdown links. Always including the http(s)
-    // Note links can be either Markdown or Wikilinks
-    pub fn get_markdown_and_links(&self) -> MarkdownNote {
-        let (text, links) = get_markdown_and_links(&self.path, &self.raw_text);
-        MarkdownNote { text, links }
-    }
-
     pub fn get_title(&self) -> String {
         Self::get_title_from_text(&self.raw_text)
     }
@@ -53,6 +42,11 @@ impl NoteDetails {
 
     pub fn get_content_chunks(&self) -> Vec<ContentChunk> {
         get_content_chunks(&self.raw_text)
+    }
+
+    /// Returns both content chunks and links in one call, avoiding two separate parses.
+    pub fn get_chunks_and_links(&self) -> (Vec<ContentChunk>, Vec<NoteLink>) {
+        get_chunks_and_links(&self.path, &self.raw_text)
     }
 }
 
@@ -105,6 +99,10 @@ impl ContentChunk {
 pub enum LinkType {
     Note(VaultPath),
     Attachment(VaultPath),
+    /// Image link with its resolved path.
+    /// For vault images: absolute OS path (e.g. `/home/user/vault/images/photo.png`).
+    /// For external images: the original URL.
+    Image(String),
     Url,
     Hashtag,
 }
@@ -152,6 +150,21 @@ impl NoteLink {
             ltype: LinkType::Hashtag,
             text: tag_text.clone(),
             raw_link: format!("#{}", tag_text),
+        }
+    }
+    /// Image link.
+    /// `resolved_path`: absolute OS path for vault images, original URL for external images.
+    /// `alt_text`: the alt text from the markdown `![alt_text](...)`.
+    /// `raw_link`: the original path/URL as written in the note.
+    pub fn image<S: AsRef<str>, T: AsRef<str>, U: AsRef<str>>(
+        resolved_path: S,
+        alt_text: T,
+        raw_link: U,
+    ) -> Self {
+        Self {
+            ltype: LinkType::Image(resolved_path.as_ref().to_string()),
+            text: alt_text.as_ref().to_string(),
+            raw_link: raw_link.as_ref().to_string(),
         }
     }
 }

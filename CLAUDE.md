@@ -311,7 +311,7 @@ curl -X POST http://localhost:7573/api/answer \
 
 - Rust edition 2021 (core/desktop) and 2024 (rag)
 - Use `VaultPath` type (not raw `PathBuf`) for all vault-relative paths
-- Database operations in core use rusqlite with bundled SQLite
+- Database operations in core use sqlx with SQLite (tokio runtime)
 - Desktop uses Dioxus signals for reactive state
 - RAG uses Tokio async runtime throughout
 - Error handling: `anyhow::Result` in RAG, custom error types (`VaultError`, `DBError`, `FSError`) in core

@@ -1,4 +1,24 @@
 {
+  "permissions": {
+    "allow": [
+      "Read(//Users/nhormazabal/.config/kimun_debug/**)",
+      "Read(//Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/writing-plans/**)",
+      "Read(//Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/subagent-driven-development/**)",
+      "Read(//Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/requesting-code-review/**)",
+      "Bash(git -C /Users/nhormazabal/development/personal/kimun add tui/src/components/settings/vault_section.rs)",
+      "Bash(git -C:*)",
+      "Bash(cargo clippy:*)",
+      "Read(//Users/nhormazabal/.config/kimun/**)",
+      "Bash(sed -i '' '27d' ~/.config/kimun_debug/config.toml)",
+      "Bash(sed -i '' 's/FocusEditor = \\\\[\"\" & <Tab>\"\"\\\\]/FocusEditor = [\"\"<Tab>\"\"]/' ~/.config/kimun_debug/config.toml)",
+      "Bash(xxd)",
+      "mcp__plugin_nr_google-search__raw_http_fetch",
+      "Bash(git stash:*)"
+    ],
+    "additionalDirectories": [
+      "/Users/nhormazabal/development/personal/kimun/docs/superpowers/specs"
+    ]
+  },
   "enabledPlugins": {
     "rust-analyzer-lsp@claude-plugins-official": true
   }
