@@ -1,0 +1,104 @@
+<h2>Dialog Mockups</h2>
+<p class="subtitle">All three operations — Delete, Rename, Move. Click any to select.</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="delete" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup" style="font-family:monospace;font-size:12px;">
+        <div class="mockup-header"> Delete </div>
+        <div class="mockup-body" style="padding:14px 16px;background:#1e1e2e;min-height:140px;">
+          <div style="color:#888;font-size:11px;margin-bottom:6px;">Are you sure you want to delete:</div>
+          <div style="background:#313244;border-left:3px solid #f38ba8;padding:6px 10px;color:#cdd6f4;margin-bottom:14px;word-break:break-all;">notes/projects/kimun.md</div>
+          <div style="color:#a6adc8;font-size:11px;margin-bottom:14px;">This cannot be undone.</div>
+          <div style="display:flex;gap:10px;">
+            <div style="background:#f38ba8;color:#1e1e2e;padding:4px 14px;font-weight:bold;border-radius:2px;">Enter: Delete</div>
+            <div style="background:#313244;color:#cdd6f4;padding:4px 14px;border-radius:2px;">Esc: Cancel</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Delete — Ctrl+Shift+D</h3>
+      <p>Shows full path. Enter to confirm, Esc to cancel. Works on notes, directories, and attachments.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="rename" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup" style="font-family:monospace;font-size:12px;">
+        <div class="mockup-header"> Rename </div>
+        <div class="mockup-body" style="padding:14px 16px;background:#1e1e2e;min-height:140px;">
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">CURRENT PATH</div>
+          <div style="color:#a6adc8;margin-bottom:12px;word-break:break-all;">notes/projects/kimun.md</div>
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">NEW NAME</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <div style="flex:1;background:#313244;border:1px solid #89b4fa;padding:5px 8px;color:#cdd6f4;">kimun-tui.md<span style="opacity:0.5">|</span></div>
+            <div style="color:#a6e3a1;font-size:16px;">✓</div>
+          </div>
+          <div style="color:#a6e3a1;font-size:11px;margin-bottom:12px;">Available</div>
+          <div style="display:flex;gap:10px;">
+            <div style="background:#89b4fa;color:#1e1e2e;padding:4px 14px;font-weight:bold;border-radius:2px;">Enter: Rename</div>
+            <div style="background:#313244;color:#cdd6f4;padding:4px 14px;border-radius:2px;">Esc: Cancel</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Rename — Ctrl+Shift+R</h3>
+      <p>Pre-filled with current filename. Real-time validation as you type: ✓ available, ✗ already exists. Enter blocked when name is taken.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="move" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup" style="font-family:monospace;font-size:12px;">
+        <div class="mockup-header"> Move </div>
+        <div class="mockup-body" style="padding:14px 16px;background:#1e1e2e;min-height:140px;">
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">MOVING</div>
+          <div style="color:#a6adc8;margin-bottom:10px;word-break:break-all;">notes/projects/kimun.md</div>
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">DESTINATION</div>
+          <div style="background:#313244;border:1px solid #89b4fa;padding:5px 8px;color:#cdd6f4;margin-bottom:6px;">arch<span style="opacity:0.5">|</span></div>
+          <div style="background:#181825;border:1px solid #45475a;padding:2px 0;margin-bottom:8px;">
+            <div style="padding:3px 8px;background:#45475a;color:#cdd6f4;">📁 archive</div>
+            <div style="padding:3px 8px;color:#888;">📁 archive/old</div>
+            <div style="padding:3px 8px;color:#888;">📁 articles</div>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <div style="background:#89b4fa;color:#1e1e2e;padding:4px 14px;font-weight:bold;border-radius:2px;">Enter: Move here</div>
+            <div style="background:#313244;color:#cdd6f4;padding:4px 14px;border-radius:2px;">Esc: Cancel</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Move — Ctrl+Shift+M</h3>
+      <p>Fuzzy directory finder. Type to filter all vault dirs, ↑↓ to navigate results. Enter picks highlighted dir and moves the file.</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <h3>Rename — name already exists</h3>
+  <p class="subtitle">Inline validation blocks confirmation when name is taken</p>
+  <div style="max-width:420px;font-family:monospace;font-size:12px;">
+    <div class="mockup">
+      <div class="mockup-header"> Rename </div>
+      <div class="mockup-body" style="padding:14px 16px;background:#1e1e2e;">
+        <div style="color:#888;font-size:11px;margin-bottom:4px;">CURRENT PATH</div>
+        <div style="color:#a6adc8;margin-bottom:12px;">notes/projects/kimun.md</div>
+        <div style="color:#888;font-size:11px;margin-bottom:4px;">NEW NAME</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <div style="flex:1;background:#313244;border:1px solid #f38ba8;padding:5px 8px;color:#cdd6f4;">kimun-core.md<span style="opacity:0.5">|</span></div>
+          <div style="color:#f38ba8;font-size:16px;">✗</div>
+        </div>
+        <div style="color:#f38ba8;font-size:11px;margin-bottom:12px;">Already exists</div>
+        <div style="display:flex;gap:10px;">
+          <div style="background:#585b70;color:#a6adc8;padding:4px 14px;border-radius:2px;cursor:not-allowed;">Enter: Rename</div>
+          <div style="background:#313244;color:#cdd6f4;padding:4px 14px;border-radius:2px;">Esc: Cancel</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
