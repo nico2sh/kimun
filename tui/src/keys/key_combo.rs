@@ -98,12 +98,29 @@ impl KeyCombo {
         Self { modifiers, key }
     }
 
-    /// Returns `true` for the only combinations accepted in the config file:
-    /// at least one of ctrl/alt (with optional shift) and a letter key (a–z).
+    /// Returns `true` for combinations accepted in the config file:
+    /// - ctrl/alt (with optional shift) + a letter key (a–z), **or**
+    /// - a bare F-key (F1–F12, no modifier required)
     pub fn is_valid_binding(&self) -> bool {
-        (self.modifiers.is_ctrl() || self.modifiers.is_alt())
+        let is_letter_combo = (self.modifiers.is_ctrl() || self.modifiers.is_alt())
             && self.key >= KeyStrike::KeyA
-            && self.key <= KeyStrike::KeyZ
+            && self.key <= KeyStrike::KeyZ;
+        let is_fkey = matches!(
+            self.key,
+            KeyStrike::F1
+                | KeyStrike::F2
+                | KeyStrike::F3
+                | KeyStrike::F4
+                | KeyStrike::F5
+                | KeyStrike::F6
+                | KeyStrike::F7
+                | KeyStrike::F8
+                | KeyStrike::F9
+                | KeyStrike::F10
+                | KeyStrike::F11
+                | KeyStrike::F12
+        );
+        is_letter_combo || is_fkey
     }
 }
 
