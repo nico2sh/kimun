@@ -561,6 +561,18 @@ impl Component for FileListComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
             InputEvent::Key(key) => {
+                // F2 is hardcoded — it cannot survive the keybindings hashmap because
+                // `is_valid_binding()` only accepts ctrl/alt + letter, silently dropping F-keys.
+                if key.code == KeyCode::F(2) {
+                    if let Some(entry) = self.selected_entry() {
+                        if !matches!(entry, FileListEntry::Up { .. }) {
+                            tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone())).ok();
+                            return EventState::Consumed;
+                        }
+                    }
+                    return EventState::NotConsumed;
+                }
+
                 // Check keybindings first for action shortcuts.
                 if let Some(combo) = key_event_to_combo(key) {
                     match self.key_bindings.get_action(&combo) {
@@ -580,15 +592,6 @@ impl Component for FileListComponent {
                             let order = self.sort_order.toggle();
                             self.set_sort(self.sort_field, order, tx.clone());
                             return EventState::Consumed;
-                        }
-                        Some(ActionShortcuts::FileOperations) => {
-                            if let Some(entry) = self.selected_entry() {
-                                if !matches!(entry, FileListEntry::Up { .. }) {
-                                    tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone())).ok();
-                                    return EventState::Consumed;
-                                }
-                            }
-                            return EventState::NotConsumed;
                         }
                         _ => {}
                     }
