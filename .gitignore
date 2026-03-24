@@ -11,3 +11,4 @@
 kimun.app
 **/.DS_Store
 **/*.log
+*.sqlite
