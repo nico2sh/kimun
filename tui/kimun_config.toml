@@ -2,8 +2,10 @@
 #
 # KEY BINDINGS
 # ────────────
-# Supported combinations: ctrl and/or alt (with optional shift) + a letter (a-z).
-# Any combo that does not follow this rule is silently ignored when loaded.
+# Supported combinations:
+#   - ctrl and/or alt (with optional shift) + a letter (a-z)
+#   - bare F-key (F1–F12, no modifier required)
+# Any combo that does not follow these rules is silently ignored when loaded.
 #
 # Format per action:
 #   ActionName = ["<modifiers> & <letter>", ...]
@@ -16,9 +18,10 @@
 #   OpenNote     = ["ctrl&O"]            # Ctrl+O  (fuzzy file finder)
 #   OpenSettings = ["ctrl+shift&P"]      # Ctrl+Shift+P
 #   NewJournal   = ["ctrl&J"]            # Ctrl+J
+#   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
 #
 # ─────────────────────────────────────────────────────────────────────────────
-last_paths = ["/journal/2021-06-11.md", "/journal/2021-06-16.md", "/journal/2021-06-22.md", "/index.md", "/pep.md", "/newnote.md", "/somer.md", "/journal/2026-03-20.md", "/journal/2023-11-08.md", "/note in the root.md", "/journal/2026-03-23.md"]
+last_paths = ["/journal/2021-06-11.md", "/journal/2021-06-16.md", "/journal/2021-06-22.md", "/pep.md", "/newnote.md", "/somer.md", "/journal/2026-03-20.md", "/journal/2023-11-08.md", "/note in the root.md", "/journal/2026-03-23.md", "/index.md", "/newnot.md", "/journal/2026-03-24.md", "/books/note2.md", "/books/radical candor.md", "/note.md"]
 workspace_dir = "/Users/nhormazabal/Documents/Notes"
 theme = "Nord"
 autosave_interval_secs = 5
