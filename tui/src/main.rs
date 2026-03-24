@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     #[cfg(debug_assertions)]
     {
         use simplelog::*;
-        let log_file = std::fs::File::create("/tmp/kimun.log").unwrap();
+        let log_file = std::fs::File::create("kimun.log").unwrap();
         WriteLogger::init(LevelFilter::Debug, Config::default(), log_file).unwrap();
     }
     enable_raw_mode()?;
