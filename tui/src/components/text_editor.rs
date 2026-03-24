@@ -118,6 +118,7 @@ impl Component for TextEditorComponent {
         use crate::keys::action_shortcuts::ActionShortcuts;
         [
             (ActionShortcuts::FocusSidebar, "focus sidebar"),
+            (ActionShortcuts::FileOperations, "file ops"),
         ]
         .iter()
         .filter_map(|(action, label)| {

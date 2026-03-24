@@ -142,7 +142,7 @@ impl KeyBindings {
                 } else {
                     log::warn!(
                         "Skipping invalid key combo '{}' for action '{}': \
-                         only ctrl/alt (with optional shift) + a letter (a-z) are supported",
+                         only ctrl/alt (with optional shift) + a letter (a-z), or bare F1–F12 are supported",
                         combo,
                         action
                     );
