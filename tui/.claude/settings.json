@@ -10,10 +10,21 @@
       "Read(//Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/**)",
       "Read(//Users/nhormazabal/.claude/plugins/**)",
       "Bash(bash /Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/brainstorming/scripts/start-server.sh --project-dir /Users/nhormazabal/development/personal/kimun/tui)",
-      "Bash(grep -A 5 'name = \"\"tokio\"\"' /Users/nhormazabal/development/personal/kimun/tui/Cargo.lock)"
+      "Bash(grep -A 5 'name = \"\"tokio\"\"' /Users/nhormazabal/development/personal/kimun/tui/Cargo.lock)",
+      "Read(//Users/nhormazabal/development/personal/kimun/**)",
+      "Bash(git check-ignore:*)",
+      "Bash(git worktree:*)",
+      "Bash(git -C /Users/nhormazabal/development/personal/kimun/tui/.worktrees/file-operations-dialogs diff HEAD~1 HEAD)",
+      "Bash(cargo clippy:*)",
+      "Bash(git -C /Users/nhormazabal/development/personal/kimun/tui/.worktrees/file-operations-dialogs add tui/src/components/dialogs/delete_dialog.rs)",
+      "Bash(git -C:*)",
+      "Read(//Users/nhormazabal/.config/kimun/**)",
+      "Read(//Users/nhormazabal/.config/kimun_debug/**)",
+      "Read(//Users/nhormazabal/**)"
     ],
     "additionalDirectories": [
-      "/Users/nhormazabal/development/personal/kimun/core/src"
+      "/Users/nhormazabal/development/personal/kimun/core/src",
+      "/Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/65103-1774273863"
     ]
   }
 }

@@ -46,6 +46,23 @@
 - `src/components/events.rs` — add seven new variants to `AppEvent`
 
 **Steps:**
+- [ ] Write a test (in `src/components/events.rs` `#[cfg(test)]` mod or a nearby test file) that exhaustively pattern-matches on all new variants to confirm they compile:
+  ```rust
+  fn _assert_new_variants_exist(e: AppEvent) {
+      match e {
+          AppEvent::ShowDeleteDialog(_) => {}
+          AppEvent::ShowRenameDialog(_) => {}
+          AppEvent::ShowMoveDialog(_) => {}
+          AppEvent::EntryDeleted(_) => {}
+          AppEvent::EntryRenamed { from: _, to: _ } => {}
+          AppEvent::EntryMoved { from: _, to: _ } => {}
+          AppEvent::DialogError(_) => {}
+          AppEvent::CloseDialog => {}
+          _ => {}
+      }
+  }
+  ```
+- [ ] Verify test fails (compile error): `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
 - [ ] Implement: add the following variants to the `AppEvent` enum:
   ```rust
   ShowDeleteDialog(VaultPath),
@@ -72,6 +89,25 @@
 - `src/components/mod.rs` — add `pub mod dialogs;`
 
 **Steps:**
+- [ ] Create the three stub files **first** (before any submodule declarations, or `cargo check` will fail). Each stub must define a minimal struct with `pub error: Option<String>` so `set_error` compiles:
+  - `src/components/dialogs/delete_dialog.rs`:
+    ```rust
+    pub struct DeleteConfirmDialog {
+        pub error: Option<String>,
+    }
+    ```
+  - `src/components/dialogs/rename_dialog.rs`:
+    ```rust
+    pub struct RenameDialog {
+        pub error: Option<String>,
+    }
+    ```
+  - `src/components/dialogs/move_dialog.rs`:
+    ```rust
+    pub struct MoveDialog {
+        pub error: Option<String>,
+    }
+    ```
 - [ ] Implement `src/components/dialogs/mod.rs` with:
   ```rust
   pub use delete_dialog::DeleteConfirmDialog;
@@ -97,7 +133,7 @@
       }
   }
   ```
-  Also copy `centered_rect` from `src/components/note_browser/mod.rs` as a private `fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect` helper in this module. Create stub files `delete_dialog.rs`, `rename_dialog.rs`, `move_dialog.rs` (empty structs with `pub error: Option<String>` field so `set_error` compiles). Register `pub mod dialogs;` in `src/components/mod.rs`.
+  Also copy `centered_rect` from `src/components/note_browser/mod.rs` as a **`pub(super) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect`** helper in this module (must be `pub(super)` so child submodules can call it via `super::centered_rect(...)`). Register `pub mod dialogs;` in `src/components/mod.rs`.
 - [ ] Verify builds: `cd /Users/nhormazabal/development/personal/kimun/tui && cargo check`
 - [ ] Run full test suite: `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
 - [ ] Commit: `git commit -m "feat: scaffold dialogs module with ActiveDialog enum"`
@@ -116,9 +152,21 @@
 pub struct DeleteConfirmDialog {
     pub path: VaultPath,
     pub vault: Arc<NoteVault>,
-    pub tx: AppTx,
+    pub tx: AppTx,   // AppTx is the existing type alias defined in src/components/events.rs
     pub error: Option<String>,
 }
+```
+
+**Constructor:**
+```rust
+pub fn new(path: VaultPath, vault: Arc<NoteVault>, tx: AppTx) -> Self {
+    Self { path, vault, tx, error: None }
+}
+```
+
+**Input handler signature** (same pattern as other components in the codebase):
+```rust
+pub fn handle_input(&mut self, key: KeyEvent, tx: &AppTx) -> EventState
 ```
 
 **Layout** (60% x, 40% y via `centered_rect`):
@@ -139,8 +187,11 @@ If `error` is `Some`, render an extra red line below the hint row.
 - `Enter` — spawn async delete task (see snippet below), return `EventState::Consumed`
 - `Esc` — send `AppEvent::CloseDialog`, return `EventState::Consumed`
 
-**Async delete:**
+**Async delete** — uses existing codebase APIs (confirmed in spec):
 ```rust
+// VaultPath::is_note(&self) -> bool
+// NoteVault::delete_note(&self, path: &VaultPath) -> Result<(), VaultError>  (async)
+// NoteVault::delete_directory(&self, path: &VaultPath) -> Result<(), VaultError>  (async)
 KeyCode::Enter => {
     let path = self.path.clone();
     let vault = Arc::clone(&self.vault);
@@ -163,7 +214,7 @@ KeyCode::Enter => {
 **Steps:**
 - [ ] Write test: `DeleteConfirmDialog::new(VaultPath::root(), vault_arc, tx)` does not panic (minimal smoke test — requires a fake `Arc<NoteVault>` or integration test setup; if a real vault is not available, gate behind `#[ignore]` and document)
 - [ ] Verify test fails (or is ignored): `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
-- [ ] Implement full `DeleteConfirmDialog` in `src/components/dialogs/delete_dialog.rs`: `new()`, `handle_input()`, `render()` using `super::centered_rect(60, 40, area)` with a `Clear` widget backdrop, `Block` with "Delete" title, path display, confirmation text, hint line, and optional error line in red
+- [ ] Implement full `DeleteConfirmDialog` in `src/components/dialogs/delete_dialog.rs`: `new()`, `handle_input()`, and implement the `Component` trait with `fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool)` — use `super::centered_rect(60, 40, rect)` with a `Clear` widget backdrop, `Block` with "Delete" title, path display, confirmation text, hint line, and optional error line in red
 - [ ] Verify tests pass: `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
 - [ ] Commit: `git commit -m "feat: implement DeleteConfirmDialog"`
 
@@ -223,11 +274,19 @@ Validation indicator: `⌛` for `Pending`, `✓` (green) for `Available`, `✗` 
 - `Enter` when not `Available` — return `EventState::Consumed` (do nothing, hint is greyed)
 - `Esc` — send `AppEvent::CloseDialog`
 
-**Validation spawn pattern:**
+**Validation spawn pattern** (`candidate` is built from current `input`):
 ```rust
 let vault = Arc::clone(&self.vault);
+let input = self.input.clone();
+let path = self.path.clone();
 let (vtx, vrx) = std::sync::mpsc::channel();
 let handle = tokio::spawn(async move {
+    let parent = path.get_parent_path().0;
+    let candidate = if path.is_note() {
+        parent.append(&VaultPath::note_path_from(&input))
+    } else {
+        parent.append(&VaultPath::new(&input))
+    };
     let exists = vault.exists(&candidate).await.is_some();
     vtx.send(!exists).ok(); // true = available
 });
@@ -248,21 +307,34 @@ fn poll_validation(&mut self) {
 }
 ```
 
-**Confirmation on Enter:**
+**Confirmation on Enter** — uses existing vault API (`rename_note`/`rename_directory` both take `(&VaultPath, &VaultPath)`, are async, return `Result<(), VaultError>`):
 ```rust
-let parent = self.path.get_parent_path().0;
-let new_path = if self.path.is_note() {
+let from = self.path.clone();
+let parent = from.get_parent_path().0;
+let new_path = if from.is_note() {
     parent.append(&VaultPath::note_path_from(&self.input))
 } else {
     parent.append(&VaultPath::new(&self.input))
 };
-// spawn rename_note or rename_directory, send EntryRenamed or DialogError
+let vault = Arc::clone(&self.vault);
+let tx2 = self.tx.clone();
+tokio::spawn(async move {
+    let result = if from.is_note() {
+        vault.rename_note(&from, &new_path).await
+    } else {
+        vault.rename_directory(&from, &new_path).await
+    };
+    match result {
+        Ok(()) => { tx2.send(AppEvent::EntryRenamed { from, to: new_path }).ok(); }
+        Err(e) => { tx2.send(AppEvent::DialogError(e.to_string())).ok(); }
+    }
+});
 ```
 
 **Steps:**
 - [ ] Write test: `RenameDialog::new(some_note_path, vault_arc, tx)` pre-fills `input` with the filename component and does not panic
 - [ ] Verify test fails (or is ignored): `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
-- [ ] Implement full `RenameDialog` in `src/components/dialogs/rename_dialog.rs`: `new()`, `handle_input()`, `poll_validation()`, `render()`
+- [ ] Implement full `RenameDialog` in `src/components/dialogs/rename_dialog.rs`: `new()`, `handle_input()`, `poll_validation()`, and implement the `Component` trait with `fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool)` — call `poll_validation()` at the start of render, use `super::centered_rect(60, 50, rect)` with a `Clear` backdrop
 - [ ] Verify tests pass: `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
 - [ ] Commit: `git commit -m "feat: implement RenameDialog with live validation"`
 
@@ -284,6 +356,8 @@ pub struct MoveDialog {
     pub all_dirs: Vec<VaultPath>,
     pub load_task: Option<JoinHandle<()>>,
     pub load_rx: Option<Receiver<Vec<VaultPath>>>,
+    pub filter_task: Option<JoinHandle<()>>,
+    pub filter_rx: Option<Receiver<Vec<String>>>,
     pub results: Vec<VaultPath>,
     pub list_state: ListState,
     pub tx: AppTx,
@@ -334,9 +408,68 @@ fn schedule_load(&mut self) {
 }
 ```
 
-When `load_rx` delivers results in `render()`, store them in `self.all_dirs` and set `self.results = self.all_dirs.clone()`.
+**`poll_load()`** called at the start of `render()`:
+```rust
+fn poll_load(&mut self) {
+    let Some(rx) = &self.load_rx else { return };
+    if let Ok(dirs) = rx.try_recv() {
+        self.all_dirs = dirs;
+        self.results = self.all_dirs.clone();
+        self.load_rx = None;
+        self.load_task = None;
+    }
+}
+```
 
-**Filtering** — same `spawn_blocking` + nucleo pattern as `FileListComponent::schedule_filter` (abort previous task, spawn new, send `AppEvent::Redraw` after delivering results). With empty query: `results = all_dirs.clone()`.
+**`schedule_filter()`** — nucleo fuzzy filter over `all_dirs`:
+```rust
+fn schedule_filter(&mut self, tx: AppTx) {
+    if let Some(handle) = self.filter_task.take() { handle.abort(); }
+    if self.search_query.is_empty() {
+        self.results = self.all_dirs.clone();
+        return;
+    }
+    let query = self.search_query.clone();
+    let items: Vec<String> = self.all_dirs.iter().map(|p| p.to_string()).collect();
+    let (ftx, frx) = std::sync::mpsc::channel();
+    let handle = tokio::spawn(async move {
+        let results = tokio::task::spawn_blocking(move || {
+            let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
+            let query_chars: Vec<char> = query.chars().collect();
+            let pattern = nucleo::pattern::Pattern::parse(
+                &query,
+                nucleo::pattern::CaseMatching::Ignore,
+                nucleo::pattern::Normalization::Smart,
+            );
+            let mut matched: Vec<(u32, String)> = items.into_iter()
+                .filter_map(|item| {
+                    let mut buf = Vec::new();
+                    let haystack = nucleo::Utf32String::from(item.as_str());
+                    pattern.score(haystack.slice(..), &mut matcher, &mut buf)
+                        .map(|score| (score, item))
+                })
+                .collect();
+            matched.sort_by(|a, b| b.0.cmp(&a.0));
+            matched.into_iter().map(|(_, s)| s).collect::<Vec<_>>()
+        }).await.unwrap_or_default();
+        ftx.send(results).ok();
+        tx.send(AppEvent::Redraw).ok();
+    });
+    self.filter_task = Some(handle);
+    self.filter_rx = Some(frx);
+}
+```
+**`poll_filter()`** called at the start of `render()` alongside `poll_load()`:
+```rust
+fn poll_filter(&mut self) {
+    let Some(rx) = &self.filter_rx else { return };
+    if let Ok(strs) = rx.try_recv() {
+        self.results = strs.iter().map(|s| VaultPath::new(s)).collect();
+        self.filter_rx = None;
+        self.filter_task = None;
+    }
+}
+```
 
 **Key handling:**
 - `Up` / `Down` — move `list_state` selection
@@ -344,22 +477,35 @@ When `load_rx` delivers results in `render()`, store them in `self.all_dirs` and
 - `Enter` with a selected result — spawn move task (see confirmation below), return `EventState::Consumed`
 - `Esc` — send `AppEvent::CloseDialog`
 
-**Confirmation on Enter:**
+**Confirmation on Enter** — uses `rename_note`/`rename_directory` for move (same vault API):
 ```rust
-let dest_dir = &self.results[selected_idx];
-let filename = self.path.get_parent_path().1;
-let new_path = if self.path.is_note() {
+let from = self.path.clone();
+let dest_dir = self.results[selected_idx].clone();
+let filename = from.get_parent_path().1;
+let new_path = if from.is_note() {
     dest_dir.append(&VaultPath::note_path_from(&filename))
 } else {
     dest_dir.append(&VaultPath::new(&filename))
 };
-// spawn rename_note or rename_directory, send EntryMoved or DialogError
+let vault = Arc::clone(&self.vault);
+let tx2 = self.tx.clone();
+tokio::spawn(async move {
+    let result = if from.is_note() {
+        vault.rename_note(&from, &new_path).await
+    } else {
+        vault.rename_directory(&from, &new_path).await
+    };
+    match result {
+        Ok(()) => { tx2.send(AppEvent::EntryMoved { from, to: new_path }).ok(); }
+        Err(e) => { tx2.send(AppEvent::DialogError(e.to_string())).ok(); }
+    }
+});
 ```
 
 **Steps:**
 - [ ] Write test: `MoveDialog::new(some_path, vault_arc, tx)` initializes `results` as empty (load not yet complete) and does not panic
 - [ ] Verify test fails (or is ignored): `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
-- [ ] Implement full `MoveDialog` in `src/components/dialogs/move_dialog.rs`: `new()`, `schedule_load()`, `schedule_filter()`, `handle_input()`, `render()`
+- [ ] Implement full `MoveDialog` in `src/components/dialogs/move_dialog.rs`: `new()`, `schedule_load()`, `poll_load()`, `schedule_filter()`, `poll_filter()`, `handle_input()`, and implement the `Component` trait with `fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool)` — call `poll_load()` and `poll_filter()` at the start of render, use `super::centered_rect(70, 60, rect)` with a `Clear` backdrop
 - [ ] Verify tests pass: `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
 - [ ] Commit: `git commit -m "feat: implement MoveDialog with fuzzy directory picker"`
 
@@ -563,7 +709,29 @@ Some(ActionShortcuts::MoveEntry) => {
      }
      ```
 
+**Context notes:**
+- All `AppEvent` variants used here (`ShowDeleteDialog`, `ShowRenameDialog`, `ShowMoveDialog`, `EntryDeleted`, `EntryRenamed`, `EntryMoved`, `DialogError`, `CloseDialog`) were added to `src/components/events.rs` in Task 2.
+- `ActiveDialog::set_error` was implemented in Task 3 (`src/components/dialogs/mod.rs`).
+- `navigate_sidebar` is an existing async method on `EditorScreen`: `async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx)`.
+- `VaultPath` is not `Copy`. In the `handle_app_message` arms, `from` is moved out of the enum by the destructuring `{ from, .. }` — pass it directly to `on_entry_op` (no `.clone()` needed since it's only used once). Updated arms:
+  ```rust
+  AppEvent::EntryDeleted(path) => {
+      self.on_entry_op(path, tx).await;
+      None
+  }
+  AppEvent::EntryRenamed { from, .. } => {
+      self.on_entry_op(from, tx).await;
+      None
+  }
+  AppEvent::EntryMoved { from, .. } => {
+      self.on_entry_op(from, tx).await;
+      None
+  }
+  ```
+
 **Steps:**
+- [ ] Write a test: construct a mock channel, call `handle_app_message` with `AppEvent::ShowDeleteDialog(some_path)`, assert `active_dialog` is `Some(ActiveDialog::Delete(...))` and `focus` is `Focus::Dialog`. Gate behind `#[ignore]` if `EditorScreen::new()` requires full setup.
+- [ ] Verify test fails: `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
 - [ ] Implement all changes listed above in `src/app_screen/editor.rs`; add necessary `use` imports for `ActiveDialog`, `DeleteConfirmDialog`, `RenameDialog`, `MoveDialog`
 - [ ] Verify builds: `cd /Users/nhormazabal/development/personal/kimun/tui && cargo check`
 - [ ] Run full test suite: `cd /Users/nhormazabal/development/personal/kimun/tui && cargo test`
