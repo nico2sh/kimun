@@ -83,10 +83,22 @@ impl MarkdownEditorView {
 
         // Draw terminal cursor when focused
         if focused {
-            let (cursor_vrow, visual_col) = self.layout.logical_to_visual(cursor.0, cursor.1);
+            let (cursor_vrow, _raw_col) = self.layout.logical_to_visual(cursor.0, cursor.1);
             if cursor_vrow >= scroll && cursor_vrow < scroll + height {
+                let vl = &self.layout.visual_lines()[cursor_vrow];
+                let logical_line = lines.get(cursor.0).map(|s| s.as_str()).unwrap_or("");
+                let force_raw = self.cursor_code_block
+                    .as_ref()
+                    .map_or(false, |r| r.contains(&cursor.0));
+                let rendered_col = MarkdownSpanner::rendered_cursor_col(
+                    logical_line,
+                    vl.start_col,
+                    cursor.1,
+                    vl.is_first_visual_line,
+                    force_raw,
+                );
                 f.set_cursor_position(Position {
-                    x: rect.x + visual_col as u16,
+                    x: rect.x + rendered_col as u16,
                     y: rect.y + (cursor_vrow - scroll) as u16,
                 });
             }

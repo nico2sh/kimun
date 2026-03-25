@@ -226,6 +226,68 @@ impl MarkdownSpanner {
         }
         spans
     }
+
+    /// Returns how many rendered (displayed) characters precede `cursor_col` within this visual line.
+    /// This accounts for hidden markdown sigils so the terminal cursor is placed correctly.
+    pub fn rendered_cursor_col(
+        logical_line: &str,
+        visual_start_col: usize,
+        cursor_col: usize,
+        is_first_visual_line: bool,
+        force_raw: bool,
+    ) -> usize {
+        // Force-raw: all chars shown, col is direct offset
+        if force_raw {
+            return cursor_col.saturating_sub(visual_start_col);
+        }
+        // HR: whole line replaced with rule, cursor column irrelevant
+        let trimmed = logical_line.trim();
+        if is_first_visual_line && matches!(trimmed, "---" | "***" | "___") {
+            return cursor_col.saturating_sub(visual_start_col);
+        }
+
+        let elements = Self::parse_elements(logical_line);
+        let logical_chars: Vec<char> = logical_line.chars().collect();
+        let content_vis = Self::content_positions(logical_line);
+
+        // Innermost element at a position
+        let elem_at = |pos: usize| -> Option<usize> {
+            elements.iter().enumerate().rev()
+                .find(|(_, e)| e.start_char <= pos && pos < e.end_char)
+                .map(|(i, _)| i)
+        };
+        // Which element the cursor expands (if any)
+        let expanded: Option<usize> = elem_at(cursor_col);
+
+        // Heading sigil end (first content char of heading)
+        let heading_sigil_end: Option<usize> = if is_first_visual_line {
+            elements.iter().find(|e| matches!(e.kind,
+                ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3))
+                .map(|e| {
+                    let mut first_content = e.start_char;
+                    for i in e.start_char..e.end_char {
+                        if i < content_vis.len() && content_vis[i] {
+                            first_content = i;
+                            break;
+                        }
+                    }
+                    first_content
+                })
+        } else {
+            None
+        };
+
+        // Count characters from visual_start_col to cursor_col that are actually emitted
+        let end = cursor_col.min(logical_chars.len());
+        (visual_start_col..end).filter(|&pos| {
+            let is_content = pos < content_vis.len() && content_vis[pos];
+            let in_heading_sigil = heading_sigil_end.map_or(false, |s_end| pos < s_end);
+            let in_expanded_elem = expanded.map_or(false, |i| {
+                elements[i].start_char <= pos && pos < elements[i].end_char
+            });
+            is_content || in_heading_sigil || in_expanded_elem
+        }).count()
+    }
 }
 
 fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -> Style {
