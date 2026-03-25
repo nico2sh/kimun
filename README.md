@@ -4,7 +4,7 @@ A terminal-based notes app focused on simplicity and powerful search.
 
 Notes are plain Markdown files stored in a directory you own. Kimün indexes them into a local SQLite database for fast full-text and structured search.
 
-> Although by no means this has been vibe coded — the core has been written manually — there is a good chunk of AI-assisted code (using Claude) with manual reviews. Mostly for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the core of more complex stuff. Use AI as a tool, not as a replacement.
+> Small disclaimer: Although by no means this has been vibe coded — the core has been written manually — there is a good chunk of AI-assisted code (using Claude) with manual reviews. Mostly for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the foundations of more complex stuff, especially on the UI side. Use AI as a tool, not as a replacement.
 
 ## Installation
 
