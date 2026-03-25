@@ -1,5 +1,5 @@
 [package]
-name = "tui"
+name = "kimun"
 version = "0.1.0"
 edition = "2024"
 
@@ -15,7 +15,7 @@ strip = true      # strip debug symbols from the final binary
 panic = "abort"   # drop unwinding machinery (~10 % size reduction)
 
 [dependencies]
-kimun_core = { path = "../core" }
+kimun_core = { path = "../core", version = "0.1.0" }
 
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
@@ -33,3 +33,4 @@ ratatui-textarea = { version = "0.8.0", features = ["search"] }
 nucleo = "0.5"
 throbber-widgets-tui = "0.11"
 chrono = "0.4"
+pulldown-cmark = "0.13"

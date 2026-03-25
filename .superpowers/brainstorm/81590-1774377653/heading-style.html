@@ -1,0 +1,67 @@
+<h2>Heading rendering style</h2>
+<p class="subtitle">Terminal can't change font size — how should headings look when rendered?</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-family:monospace;font-size:13px;background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:6px;line-height:1.9">
+        <div style="color:#cba6f7;font-weight:bold">My Main Title</div>
+        <div style="color:#89b4fa;font-weight:bold;margin-top:2px">A Section</div>
+        <div style="color:#74c7ec;font-weight:bold;margin-top:2px">A Subsection</div>
+        <div style="margin-top:8px;color:#cdd6f4">Normal paragraph text follows here with some content that wraps onto the next line when too long.</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Color hierarchy</h3>
+      <p>Each heading level gets a distinct color. No <code>#</code> prefix shown, just styled text.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-family:monospace;font-size:13px;background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:6px;line-height:1.9">
+        <div style="color:#cba6f7;font-weight:bold">█ My Main Title</div>
+        <div style="color:#89b4fa;font-weight:bold;margin-top:2px">▌ A Section</div>
+        <div style="color:#74c7ec;margin-top:2px">· A Subsection</div>
+        <div style="margin-top:8px;color:#cdd6f4">Normal paragraph text follows here with some content that wraps onto the next line when too long.</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Symbol + color</h3>
+      <p>A small symbol prefix (█ ▌ ·) signals the heading level, plus color. Adds visual weight without extra space.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-family:monospace;font-size:13px;background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:6px;line-height:1.9">
+        <div style="color:#cba6f7;font-weight:bold">My Main Title</div>
+        <div style="color:#cba6f7">━━━━━━━━━━━━━━</div>
+        <div style="color:#89b4fa;font-weight:bold;margin-top:6px">A Section</div>
+        <div style="color:#89b4fa">──────────</div>
+        <div style="margin-top:6px;color:#cdd6f4">Normal paragraph text follows here with some content that wraps onto the next line when too long.</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Underline rule</h3>
+      <p>Heading text followed by a full-width rule line (─── or ═══). Classic document feel.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="d" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-family:monospace;font-size:13px;background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:6px;line-height:1.9">
+        <div style="color:#585b70;font-weight:bold">#&nbsp;<span style="color:#cba6f7">My Main Title</span></div>
+        <div style="color:#585b70;font-weight:bold;margin-top:2px">##&nbsp;<span style="color:#89b4fa">A Section</span></div>
+        <div style="color:#585b70;margin-top:2px">###&nbsp;<span style="color:#74c7ec">A Subsection</span></div>
+        <div style="margin-top:8px;color:#cdd6f4">Normal paragraph text follows here with some content that wraps onto the next line when too long.</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>D — Dimmed sigil + color</h3>
+      <p>The <code>#</code> markers stay visible but dimmed. Heading text is colored. Feels closer to raw markdown but still styled.</p>
+    </div>
+  </div>
+
+</div>
