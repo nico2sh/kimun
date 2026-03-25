@@ -191,7 +191,7 @@ mod tests {
                 .await
                 .expect("vault creation failed"),
         );
-        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
         let dialog = DeleteConfirmDialog::new(VaultPath::root(), vault);
         assert!(dialog.error.is_none());
     }

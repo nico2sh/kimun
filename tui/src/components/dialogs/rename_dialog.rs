@@ -348,7 +348,7 @@ mod tests {
                 .expect("vault creation failed"),
         );
 
-        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
         let path = VaultPath::new("notes/projects/kimun.md");
         let (_, expected_filename) = path.get_parent_path();
 
