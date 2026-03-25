@@ -64,8 +64,5 @@ jobs:
             ${{ runner.os }}-${{ matrix.target }}-target-
 
       # Run test suite for core and tui packages
-      - name: Run core tests
-        run: cargo test --verbose --manifest-path core/Cargo.toml -- --test-threads 1
-
-      - name: Run tui tests
-        run: cargo test --verbose --manifest-path tui/Cargo.toml -- --test-threads 1
+      - name: Run tests
+        run: cargo test --verbose --workspace --exclude kimun_rag -- --test-threads 1
