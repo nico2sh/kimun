@@ -3172,6 +3172,7 @@ dependencies = [
  "kimun_core",
  "log",
  "nucleo",
+ "pulldown-cmark",
  "ratatui",
  "ratatui-textarea",
  "serde",
