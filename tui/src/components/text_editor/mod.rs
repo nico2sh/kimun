@@ -1,3 +1,7 @@
+pub mod markdown;
+pub mod view;
+pub mod word_wrap;
+
 use ratatui::Frame;
 use ratatui::crossterm::event::MouseEventKind;
 use ratatui::layout::Rect;
