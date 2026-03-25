@@ -9,6 +9,8 @@
 **/*.rs.bk
 
 kimun.app
+docs/
+**/.claude/
 **/.DS_Store
 **/*.log
 *.sqlite
