@@ -2,6 +2,8 @@
 name = "kimun"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal-based notes application"
+license = "MIT"
 
 [[bin]]
 name = "kimun"

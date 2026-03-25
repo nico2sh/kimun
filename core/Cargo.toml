@@ -3,6 +3,8 @@ name = "kimun_core"
 version = "0.1.0"
 authors = ["Nico Hormazábal <mail@nico2sh.com>"]
 edition = "2021"
+description = "Core library for the Kimün notes application"
+license = "MIT"
 
 [dependencies]
 ##############
