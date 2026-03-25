@@ -1352,6 +1352,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "kimun"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "clap",
+ "color-eyre",
+ "crossterm 0.29.0",
+ "futures",
+ "itertools",
+ "kimun_core",
+ "log",
+ "nucleo",
+ "pulldown-cmark",
+ "ratatui",
+ "ratatui-textarea",
+ "serde",
+ "simplelog",
+ "throbber-widgets-tui",
+ "tokio",
+ "toml 1.0.7+spec-1.1.0",
+]
+
+[[package]]
 name = "kimun_core"
 version = "0.1.0"
 dependencies = [
@@ -3156,30 +3180,6 @@ dependencies = [
  "sharded-slab",
  "thread_local",
  "tracing-core",
-]
-
-[[package]]
-name = "tui"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "clap",
- "color-eyre",
- "crossterm 0.29.0",
- "futures",
- "itertools",
- "kimun_core",
- "log",
- "nucleo",
- "pulldown-cmark",
- "ratatui",
- "ratatui-textarea",
- "serde",
- "simplelog",
- "throbber-widgets-tui",
- "tokio",
- "toml 1.0.7+spec-1.1.0",
 ]
 
 [[package]]
