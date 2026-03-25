@@ -27,26 +27,99 @@ pub struct ParsedLine {
     pub elements: Vec<Element>,
     /// Per-char visibility: `true` = this char is rendered content (not a markdown sigil).
     pub content_vis: Vec<bool>,
+    /// Per-char: `true` = this char falls within any element's char range.
+    /// Enables O(1) `in_any_element` without iterating `elements`.
+    elem_vis: Vec<bool>,
+    /// Per-char element index, 1-based (0 = no element). Enables O(1) `elem_at`.
+    /// Stored as `u8`; supports up to 255 elements per line (far more than any real line).
+    elem_index: Vec<u8>,
 }
 
 impl ParsedLine {
+    /// Single pulldown-cmark pass that builds `elements`, `content_vis`, `elem_vis`,
+    /// and `elem_index` together, halving the parse cost vs. two separate passes.
     pub fn parse(line: &str) -> Self {
-        Self {
-            elements: MarkdownSpanner::parse_elements(line),
-            content_vis: MarkdownSpanner::content_positions(line),
+        let total = line.chars().count();
+        let mut content_vis = vec![false; total];
+        let mut elements: Vec<Element> = Vec::new();
+        let mut stack: Vec<(usize, ElementKind)> = Vec::new();
+
+        let parser = Parser::new_ext(line, PARSER_OPTIONS);
+        for (event, range) in parser.into_offset_iter() {
+            let sc = line[..range.start].chars().count();
+            let ec = line[..range.end].chars().count();
+            match event {
+                Event::Start(Tag::Strong) => stack.push((sc, ElementKind::Bold)),
+                Event::End(TagEnd::Strong) => if let Some((s, k)) = stack.pop() {
+                    elements.push(Element { start_char: s, end_char: ec, kind: k });
+                },
+                Event::Start(Tag::Emphasis) => stack.push((sc, ElementKind::Italic)),
+                Event::End(TagEnd::Emphasis) => if let Some((s, k)) = stack.pop() {
+                    elements.push(Element { start_char: s, end_char: ec, kind: k });
+                },
+                Event::Start(Tag::Link { .. }) => stack.push((sc, ElementKind::Link)),
+                Event::End(TagEnd::Link) => if let Some((s, k)) = stack.pop() {
+                    elements.push(Element { start_char: s, end_char: ec, kind: k });
+                },
+                Event::Code(ref code_text) => {
+                    // Mark only the code text chars as visible (exclude backtick sigils).
+                    let code_len = code_text.chars().count();
+                    let range_char_len = line[range.start..range.end].chars().count();
+                    let sigil_each = range_char_len.saturating_sub(code_len) / 2;
+                    let cs = sc + sigil_each;
+                    for i in cs..(cs + code_len) {
+                        if i < total { content_vis[i] = true; }
+                    }
+                    elements.push(Element { start_char: sc, end_char: ec, kind: ElementKind::InlineCode });
+                }
+                Event::Start(Tag::Heading { level, .. }) => {
+                    let kind = match level {
+                        HeadingLevel::H1 => ElementKind::HeadingH1,
+                        HeadingLevel::H2 => ElementKind::HeadingH2,
+                        _ => ElementKind::HeadingH3,
+                    };
+                    stack.push((sc, kind));
+                }
+                Event::End(TagEnd::Heading(_)) => if let Some((s, k)) = stack.pop() {
+                    elements.push(Element { start_char: s, end_char: ec, kind: k });
+                },
+                Event::Start(Tag::BlockQuote(_)) => stack.push((sc, ElementKind::Blockquote)),
+                Event::End(TagEnd::BlockQuote(_)) => if let Some((s, k)) = stack.pop() {
+                    elements.push(Element { start_char: s, end_char: ec, kind: k });
+                },
+                Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
+                    for i in sc..ec { if i < total { content_vis[i] = true; } }
+                }
+                _ => {}
+            }
         }
+
+        // Build O(1) lookup bitmasks from the collected element ranges.
+        let mut elem_vis = vec![false; total];
+        let mut elem_index = vec![0u8; total];
+        for (i, e) in elements.iter().enumerate() {
+            let tag = (i + 1).min(255) as u8; // 1-based; 0 reserved for "no element"
+            for pos in e.start_char..e.end_char {
+                if pos < total {
+                    elem_vis[pos] = true;
+                    elem_index[pos] = tag;
+                }
+            }
+        }
+
+        Self { elements, content_vis, elem_vis, elem_index }
     }
 
-    /// Innermost element index at `pos`, or `None`.
+    /// Element index at `pos`, or `None`. O(1) via precomputed `elem_index`.
     pub fn elem_at(&self, pos: usize) -> Option<usize> {
-        self.elements.iter().enumerate().rev()
-            .find(|(_, e)| e.start_char <= pos && pos < e.end_char)
-            .map(|(i, _)| i)
+        self.elem_index.get(pos).and_then(|&tag| {
+            if tag == 0 { None } else { Some((tag as usize) - 1) }
+        })
     }
 
-    /// Whether `pos` falls inside any tracked element.
+    /// Whether `pos` falls inside any tracked element. O(1) via precomputed `elem_vis`.
     pub fn in_any_element(&self, pos: usize) -> bool {
-        self.elements.iter().any(|e| e.start_char <= pos && pos < e.end_char)
+        self.elem_vis.get(pos).copied().unwrap_or(false)
     }
 
     /// Returns the char offset of the first *content* char inside a heading element
@@ -231,12 +304,7 @@ impl MarkdownSpanner {
         let content_vis = &parsed.content_vis;
         let content_char_count = content.chars().count();
 
-        let elem_at = |pos: usize| -> Option<usize> {
-            elements.iter().enumerate().rev()
-                .find(|(_, e)| e.start_char <= pos && pos < e.end_char)
-                .map(|(i, _)| i)
-        };
-        let expanded: Option<usize> = cursor_col.and_then(|c| elem_at(c));
+        let expanded: Option<usize> = cursor_col.and_then(|c| parsed.elem_at(c));
 
         let heading_sigil_end: Option<usize> = if is_first_visual_line {
             parsed.heading_sigil_end()
@@ -277,7 +345,7 @@ impl MarkdownSpanner {
             let in_expanded_elem = expanded.map_or(false, |i| {
                 elements[i].start_char <= pos && pos < elements[i].end_char
             });
-            let this_elem = elem_at(pos);
+            let this_elem = parsed.elem_at(pos);
             let emit = is_content || in_heading_sigil || in_list_sigil || in_expanded_elem
                 || this_elem.is_none();
             if !emit {
