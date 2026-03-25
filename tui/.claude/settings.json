@@ -20,11 +20,24 @@
       "Bash(git -C:*)",
       "Read(//Users/nhormazabal/.config/kimun/**)",
       "Read(//Users/nhormazabal/.config/kimun_debug/**)",
-      "Read(//Users/nhormazabal/**)"
+      "Read(//Users/nhormazabal/**)",
+      "Bash(mkdir -p docs/superpowers/specs)",
+      "Bash(bash /Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/brainstorming/scripts/start-server.sh --project-dir /Users/nhormazabal/development/personal/kimun)",
+      "Bash(grep -r CursorMove ~/.cargo/registry/src/**/ratatui-textarea*/src/)",
+      "Read(//dev/**)",
+      "Bash(find /Users/nhormazabal/.cargo/registry/src -path */ratatui-0.30* -name *.rs)",
+      "Bash(grep -r \"pulldown\" /Users/nhormazabal/development/personal/kimun/*/Cargo.toml)",
+      "Bash(grep -r \"comrak\" /Users/nhormazabal/development/personal/kimun/*/Cargo.toml)",
+      "Bash(wc -l src/components/text_editor/*.rs)",
+      "Bash(wc -l /Users/nhormazabal/development/personal/kimun/tui/src/components/text_editor/*.rs)",
+      "Bash(grep -E \"test |tests$\")"
     ],
     "additionalDirectories": [
       "/Users/nhormazabal/development/personal/kimun/core/src",
-      "/Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/65103-1774273863"
+      "/Users/nhormazabal/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/65103-1774273863",
+      "/Users/nhormazabal/development/personal/kimun/.superpowers/brainstorm/81590-1774377653",
+      "/Users/nhormazabal/development/personal/kimun/docs/superpowers/specs",
+      "/Users/nhormazabal/development/personal/kimun/docs/superpowers/plans"
     ]
   }
 }
