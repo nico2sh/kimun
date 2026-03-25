@@ -77,7 +77,7 @@ jobs:
 
       # Build the TUI binary
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --manifest-path tui/Cargo.toml
+        run: cargo build --release --target ${{ matrix.target }} --bin kimun
 
       # Copy binary to dist/
       - name: Create distribution directory
@@ -113,7 +113,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Publish kimun_core to crates.io
-        run: cargo publish --manifest-path core/Cargo.toml
+        run: cargo publish -p kimun_core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -122,7 +122,7 @@ jobs:
         run: sleep 30
 
       - name: Publish kimun to crates.io
-        run: cargo publish --manifest-path tui/Cargo.toml
+        run: cargo publish -p kimun
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
