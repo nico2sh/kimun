@@ -3,6 +3,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use crate::settings::themes::Theme;
 
+/// Shared parser options used by all pulldown-cmark call sites in this module.
+const PARSER_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Element {
     pub start_char: usize,
@@ -16,11 +19,64 @@ pub enum ElementKind {
     HeadingH1, HeadingH2, HeadingH3, Blockquote,
 }
 
+/// Pre-parsed result for a single logical line.
+/// Build once per frame via `ParsedLine::parse`, then reuse across render, cursor,
+/// wrap-width, and click-mapping calls to avoid redundant pulldown-cmark invocations.
+#[derive(Debug, Clone)]
+pub struct ParsedLine {
+    pub elements: Vec<Element>,
+    /// Per-char visibility: `true` = this char is rendered content (not a markdown sigil).
+    pub content_vis: Vec<bool>,
+}
+
+impl ParsedLine {
+    pub fn parse(line: &str) -> Self {
+        Self {
+            elements: MarkdownSpanner::parse_elements(line),
+            content_vis: MarkdownSpanner::content_positions(line),
+        }
+    }
+
+    /// Innermost element index at `pos`, or `None`.
+    pub fn elem_at(&self, pos: usize) -> Option<usize> {
+        self.elements.iter().enumerate().rev()
+            .find(|(_, e)| e.start_char <= pos && pos < e.end_char)
+            .map(|(i, _)| i)
+    }
+
+    /// Whether `pos` falls inside any tracked element.
+    pub fn in_any_element(&self, pos: usize) -> bool {
+        self.elements.iter().any(|e| e.start_char <= pos && pos < e.end_char)
+    }
+
+    /// Returns the char offset of the first *content* char inside a heading element
+    /// (i.e. the end of the "# " / "## " / "### " sigil region), or `None` if this
+    /// line has no heading element.
+    ///
+    /// Defaults to `e.end_char` so that a heading with no content text (e.g. `"#"`) is
+    /// fully treated as sigil — fixes the F-02 bug where `e.start_char` was used.
+    pub fn heading_sigil_end(&self) -> Option<usize> {
+        self.elements.iter()
+            .find(|e| matches!(e.kind,
+                ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3))
+            .map(|e| {
+                let mut first_content = e.end_char; // default: all chars are sigil
+                for i in e.start_char..e.end_char {
+                    if i < self.content_vis.len() && self.content_vis[i] {
+                        first_content = i;
+                        break;
+                    }
+                }
+                first_content
+            })
+    }
+}
+
 pub struct MarkdownSpanner;
 
 impl MarkdownSpanner {
     pub fn parse_elements(line: &str) -> Vec<Element> {
-        let parser = Parser::new_ext(line, Options::ENABLE_STRIKETHROUGH);
+        let parser = Parser::new_ext(line, PARSER_OPTIONS);
         let mut elements = Vec::new();
         let mut stack: Vec<(usize, ElementKind)> = Vec::new();
         for (event, range) in parser.into_offset_iter() {
@@ -62,51 +118,92 @@ impl MarkdownSpanner {
     }
 
     /// Compute which char positions in `line` are "content" (not markdown sigils).
-    /// Returns a Vec<bool> of length line.chars().count() where true = visible content.
-    fn content_positions(line: &str) -> Vec<bool> {
+    pub fn content_positions(line: &str) -> Vec<bool> {
         let total = line.chars().count();
         let mut visible = vec![false; total];
-        let parser = Parser::new_ext(line, Options::ENABLE_STRIKETHROUGH);
+        let parser = Parser::new_ext(line, PARSER_OPTIONS);
         for (event, range) in parser.into_offset_iter() {
             match &event {
                 Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
                     let sc = line[..range.start].chars().count();
                     let ec = line[..range.end].chars().count();
                     for i in sc..ec {
-                        if i < total {
-                            visible[i] = true;
-                        }
+                        if i < total { visible[i] = true; }
                     }
                 }
                 Event::Code(code_text) => {
-                    // range includes backtick delimiters; the content is just the inner text.
-                    // Find the content by scanning inward from range boundaries.
                     let range_sc = line[..range.start].chars().count();
                     let code_len = code_text.chars().count();
-                    // The content occupies `code_len` chars; the rest are backtick delimiters.
-                    // Opening backtick(s) are at the start of the range; content follows.
                     let range_char_len = line[range.start..range.end].chars().count();
                     let sigil_each = (range_char_len - code_len) / 2;
                     let content_start = range_sc + sigil_each;
                     let content_end = content_start + code_len;
                     for i in content_start..content_end {
-                        if i < total {
-                            visible[i] = true;
-                        }
+                        if i < total { visible[i] = true; }
                     }
                 }
-                // For headings, the "# " prefix is not a Text event but we want to keep it
-                // as sigil (handled separately in render via is_sigil logic).
-                // The heading content text events will mark their chars as visible.
                 _ => {}
             }
         }
         visible
     }
 
+    // ── Public API ────────────────────────────────────────────────────────────
+
     pub fn render<'a>(
         content: &'a str,
         logical_line: &'a str,
+        visual_start_col: usize,
+        cursor_col: Option<usize>,
+        is_first_visual_line: bool,
+        force_raw: bool,
+        available_width: u16,
+        theme: &Theme,
+    ) -> Vec<Span<'a>> {
+        let parsed = ParsedLine::parse(logical_line);
+        Self::render_with(content, logical_line, &parsed, visual_start_col, cursor_col,
+            is_first_visual_line, force_raw, available_width, theme)
+    }
+
+    pub fn rendered_cursor_col(
+        logical_line: &str,
+        visual_start_col: usize,
+        cursor_col: usize,
+        is_first_visual_line: bool,
+        force_raw: bool,
+    ) -> usize {
+        let parsed = ParsedLine::parse(logical_line);
+        Self::rendered_cursor_col_with(logical_line, &parsed, visual_start_col, cursor_col,
+            is_first_visual_line, force_raw)
+    }
+
+    pub fn visible_positions(
+        logical_line: &str,
+        cursor_col: Option<usize>,
+        force_raw: bool,
+    ) -> Vec<bool> {
+        let parsed = ParsedLine::parse(logical_line);
+        Self::visible_positions_with(logical_line, &parsed, cursor_col, force_raw)
+    }
+
+    pub fn rendered_col_to_logical(
+        logical_line: &str,
+        visual_start_col: usize,
+        rendered_col: usize,
+        is_first_visual_line: bool,
+        force_raw: bool,
+    ) -> usize {
+        let parsed = ParsedLine::parse(logical_line);
+        Self::rendered_col_to_logical_with(logical_line, &parsed, visual_start_col, rendered_col,
+            is_first_visual_line, force_raw)
+    }
+
+    // ── `_with` variants: accept pre-parsed `&ParsedLine` ────────────────────
+
+    pub fn render_with<'a>(
+        content: &'a str,
+        logical_line: &'a str,
+        parsed: &ParsedLine,
         visual_start_col: usize,
         cursor_col: Option<usize>,
         is_first_visual_line: bool,
@@ -130,44 +227,29 @@ impl MarkdownSpanner {
             return vec![Span::styled(content, Style::default().fg(theme.fg_secondary.to_ratatui()))];
         }
 
-        let elements = Self::parse_elements(logical_line);
+        let elements = &parsed.elements;
+        let content_vis = &parsed.content_vis;
         let logical_chars: Vec<char> = logical_line.chars().collect();
         let visual_end_col = (visual_start_col + content.chars().count()).min(logical_chars.len());
-        let content_vis = Self::content_positions(logical_line);
 
-        // Innermost element index at a logical char position
         let elem_at = |pos: usize| -> Option<usize> {
             elements.iter().enumerate().rev()
                 .find(|(_, e)| e.start_char <= pos && pos < e.end_char)
                 .map(|(i, _)| i)
         };
-        // Which element the cursor sits inside (for expand)
         let expanded: Option<usize> = cursor_col.and_then(|c| elem_at(c));
 
-        // For headings, we keep the sigil ("# ", "## ", etc.) characters visible
-        // but style them as muted. Determine if this line starts with a heading element.
         let heading_sigil_end: Option<usize> = if is_first_visual_line {
-            elements.iter().find(|e| matches!(e.kind,
-                ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3))
-                .map(|e| {
-                    // Find the first content char within the heading element
-                    let mut first_content = e.start_char;
-                    for i in e.start_char..e.end_char {
-                        if i < content_vis.len() && content_vis[i] {
-                            first_content = i;
-                            break;
-                        }
-                    }
-                    first_content
-                })
+            parsed.heading_sigil_end()
+        } else {
+            None
+        };
+        let list_sigil_end: Option<usize> = if is_first_visual_line {
+            detect_list_marker(logical_line)
         } else {
             None
         };
 
-        // Walk visual region, emitting spans
-        // For each char position in [visual_start_col, visual_end_col):
-        // - if not expanded and not content and not heading sigil: skip (don't emit)
-        // - else emit with appropriate style
         let mut spans: Vec<Span<'a>> = Vec::new();
         let mut seg_chars: Vec<char> = Vec::new();
         let mut seg_elem: Option<usize> = None;
@@ -175,8 +257,7 @@ impl MarkdownSpanner {
         let mut seg_is_expanded = false;
 
         let flush = |seg_chars: &mut Vec<char>, seg_elem: Option<usize>,
-                     seg_is_sigil: bool, seg_is_expanded: bool, spans: &mut Vec<Span<'a>>,
-                     elements: &[Element], theme: &Theme| {
+                     seg_is_sigil: bool, seg_is_expanded: bool, spans: &mut Vec<Span<'a>>| {
             if seg_chars.is_empty() { return; }
             let seg: String = seg_chars.drain(..).collect();
             let style = if seg_is_expanded {
@@ -190,36 +271,31 @@ impl MarkdownSpanner {
         for pos in visual_start_col..visual_end_col {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.map_or(false, |end| pos < end);
+            let in_list_sigil = list_sigil_end.map_or(false, |end| pos < end);
             let in_expanded_elem = expanded.map_or(false, |i| {
                 elements[i].start_char <= pos && pos < elements[i].end_char
             });
-
-            // Determine if this char should be emitted
-            let emit = is_content || in_heading_sigil || in_expanded_elem;
+            let this_elem = elem_at(pos);
+            let emit = is_content || in_heading_sigil || in_list_sigil || in_expanded_elem
+                || this_elem.is_none();
             if !emit {
-                // Flush current segment before skipping
-                flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans, &elements, theme);
+                flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
                 seg_elem = None;
                 seg_is_sigil = false;
                 seg_is_expanded = false;
                 continue;
             }
-
-            let this_elem = elem_at(pos);
             let this_is_expanded = in_expanded_elem;
-            let this_is_sigil = in_heading_sigil && !is_content && !in_expanded_elem;
-
-            // If element or sigil status changes, flush
+            let this_is_sigil = (in_heading_sigil || in_list_sigil) && !is_content && !in_expanded_elem;
             if this_elem != seg_elem || this_is_sigil != seg_is_sigil || this_is_expanded != seg_is_expanded {
-                flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans, &elements, theme);
+                flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
                 seg_elem = this_elem;
                 seg_is_sigil = this_is_sigil;
                 seg_is_expanded = this_is_expanded;
             }
             seg_chars.push(logical_chars[pos]);
         }
-        // Flush remaining
-        flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans, &elements, theme);
+        flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
 
         if spans.is_empty() {
             spans.push(Span::styled(content, Style::default().fg(theme.fg.to_ratatui())));
@@ -227,72 +303,158 @@ impl MarkdownSpanner {
         spans
     }
 
-    /// Returns how many rendered (displayed) characters precede `cursor_col` within this visual line.
-    /// This accounts for hidden markdown sigils so the terminal cursor is placed correctly.
-    pub fn rendered_cursor_col(
+    pub fn rendered_cursor_col_with(
         logical_line: &str,
+        parsed: &ParsedLine,
         visual_start_col: usize,
         cursor_col: usize,
         is_first_visual_line: bool,
         force_raw: bool,
     ) -> usize {
-        // Force-raw: all chars shown, col is direct offset
         if force_raw {
             return cursor_col.saturating_sub(visual_start_col);
         }
-        // HR: whole line replaced with rule, cursor column irrelevant
         let trimmed = logical_line.trim();
         if is_first_visual_line && matches!(trimmed, "---" | "***" | "___") {
             return cursor_col.saturating_sub(visual_start_col);
         }
 
-        let elements = Self::parse_elements(logical_line);
+        let elements = &parsed.elements;
+        let content_vis = &parsed.content_vis;
         let logical_chars: Vec<char> = logical_line.chars().collect();
-        let content_vis = Self::content_positions(logical_line);
 
-        // Innermost element at a position
-        let elem_at = |pos: usize| -> Option<usize> {
-            elements.iter().enumerate().rev()
-                .find(|(_, e)| e.start_char <= pos && pos < e.end_char)
-                .map(|(i, _)| i)
-        };
-        // Which element the cursor expands (if any)
-        let expanded: Option<usize> = elem_at(cursor_col);
-
-        // Heading sigil end (first content char of heading)
+        let expanded: Option<usize> = parsed.elem_at(cursor_col);
         let heading_sigil_end: Option<usize> = if is_first_visual_line {
-            elements.iter().find(|e| matches!(e.kind,
-                ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3))
-                .map(|e| {
-                    let mut first_content = e.start_char;
-                    for i in e.start_char..e.end_char {
-                        if i < content_vis.len() && content_vis[i] {
-                            first_content = i;
-                            break;
-                        }
-                    }
-                    first_content
-                })
+            parsed.heading_sigil_end()
+        } else {
+            None
+        };
+        let list_sigil_end: Option<usize> = if is_first_visual_line {
+            detect_list_marker(logical_line)
         } else {
             None
         };
 
-        // Count characters from visual_start_col to cursor_col that are actually emitted
         let end = cursor_col.min(logical_chars.len());
         (visual_start_col..end).filter(|&pos| {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.map_or(false, |s_end| pos < s_end);
+            let in_list_sigil = list_sigil_end.map_or(false, |s_end| pos < s_end);
             let in_expanded_elem = expanded.map_or(false, |i| {
                 elements[i].start_char <= pos && pos < elements[i].end_char
             });
-            is_content || in_heading_sigil || in_expanded_elem
+            let in_any_element = parsed.in_any_element(pos);
+            is_content || in_heading_sigil || in_list_sigil || in_expanded_elem || !in_any_element
         }).count()
     }
+
+    pub fn visible_positions_with(
+        logical_line: &str,
+        parsed: &ParsedLine,
+        cursor_col: Option<usize>,
+        force_raw: bool,
+    ) -> Vec<bool> {
+        let total = logical_line.chars().count();
+        if total == 0 {
+            return vec![];
+        }
+        if force_raw {
+            return vec![true; total];
+        }
+        let trimmed = logical_line.trim();
+        if matches!(trimmed, "---" | "***" | "___") {
+            return vec![true; total];
+        }
+
+        let content_vis = &parsed.content_vis;
+        let expanded: Option<&Element> = cursor_col.and_then(|c| {
+            parsed.elements.iter().rev().find(|e| e.start_char <= c && c < e.end_char)
+        });
+        let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
+        let list_sigil_end = detect_list_marker(logical_line);
+
+        (0..total)
+            .map(|pos| {
+                let is_content = pos < content_vis.len() && content_vis[pos];
+                let in_heading_sigil = heading_sigil_end.map_or(false, |end| pos < end);
+                let in_list_sigil = list_sigil_end.map_or(false, |end| pos < end);
+                let in_any_element = parsed.in_any_element(pos);
+                let in_expanded = expanded
+                    .map_or(false, |e| e.start_char <= pos && pos < e.end_char);
+                is_content || in_heading_sigil || in_list_sigil || in_expanded || !in_any_element
+            })
+            .collect()
+    }
+
+    pub fn rendered_col_to_logical_with(
+        logical_line: &str,
+        parsed: &ParsedLine,
+        visual_start_col: usize,
+        rendered_col: usize,
+        is_first_visual_line: bool,
+        force_raw: bool,
+    ) -> usize {
+        if force_raw {
+            return visual_start_col + rendered_col;
+        }
+        let trimmed = logical_line.trim();
+        if is_first_visual_line && matches!(trimmed, "---" | "***" | "___") {
+            return visual_start_col + rendered_col;
+        }
+
+        let content_vis = &parsed.content_vis;
+        let logical_chars: Vec<char> = logical_line.chars().collect();
+        let heading_sigil_end: Option<usize> = if is_first_visual_line {
+            parsed.heading_sigil_end()
+        } else {
+            None
+        };
+        let list_sigil_end: Option<usize> = if is_first_visual_line {
+            detect_list_marker(logical_line)
+        } else {
+            None
+        };
+
+        let mut rendered_count = 0;
+        for pos in visual_start_col..logical_chars.len() {
+            if rendered_count == rendered_col {
+                return pos;
+            }
+            let is_content = pos < content_vis.len() && content_vis[pos];
+            let in_heading_sigil = heading_sigil_end.map_or(false, |end| pos < end);
+            let in_list_sigil = list_sigil_end.map_or(false, |end| pos < end);
+            let in_any_element = parsed.in_any_element(pos);
+            if is_content || in_heading_sigil || in_list_sigil || !in_any_element {
+                rendered_count += 1;
+            }
+        }
+        logical_chars.len()
+    }
+}
+
+/// Returns the length (in chars) of the list marker prefix, or None if not a list line.
+fn detect_list_marker(line: &str) -> Option<usize> {
+    if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
+        return Some(2);
+    }
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
+        return Some(i + 2);
+    }
+    None
 }
 
 fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -> Style {
     match kind {
-        None => Style::default().fg(theme.fg.to_ratatui()),
+        None => if is_sigil_region {
+            Style::default().fg(theme.fg_muted.to_ratatui())
+        } else {
+            Style::default().fg(theme.fg.to_ratatui())
+        },
         Some(ElementKind::Bold) =>
             Style::default().fg(theme.accent.to_ratatui()).add_modifier(Modifier::BOLD),
         Some(ElementKind::Italic) =>
@@ -406,5 +568,72 @@ mod tests {
     fn continuation_line_no_hash() {
         let s = MarkdownSpanner::render("cont","# T cont",2,None,false,false,40,&t());
         assert!(!text(&s).contains('#'));
+    }
+    #[test]
+    fn unordered_list_shows_marker() {
+        let s = MarkdownSpanner::render("- item","- item",0,None,true,false,40,&t());
+        assert!(text(&s).starts_with("- "), "expected '- item', got '{}'", text(&s));
+        assert!(text(&s).contains("item"));
+    }
+    #[test]
+    fn ordered_list_shows_marker() {
+        let s = MarkdownSpanner::render("1. item","1. item",0,None,true,false,40,&t());
+        assert!(text(&s).starts_with("1. "), "expected '1. item', got '{}'", text(&s));
+    }
+    #[test]
+    fn empty_heading_shows_hash_sigil() {
+        let line = "# ";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert!(text(&s).contains('#'), "hash sigil should render in empty heading");
+        let col = MarkdownSpanner::rendered_cursor_col(line, 0, 1, true, false);
+        assert_eq!(col, 1, "cursor after '#' should be at rendered col 1");
+    }
+    #[test]
+    fn empty_heading_hash_only_shows() {
+        let line = "#";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert!(text(&s).contains('#'));
+        let col = MarkdownSpanner::rendered_cursor_col(line, 0, 1, true, false);
+        assert_eq!(col, 1);
+    }
+    #[test]
+    fn trailing_spaces_are_rendered() {
+        let line = "hello   ";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "hello   ");
+    }
+    #[test]
+    fn trailing_spaces_cursor_col_correct() {
+        let line = "hello   ";
+        let col = MarkdownSpanner::rendered_cursor_col(line, 0, 7, true, false);
+        assert_eq!(col, 7);
+    }
+    #[test]
+    fn list_marker_on_continuation_line_hidden() {
+        let s = MarkdownSpanner::render("cont","- cont",2,None,false,false,40,&t());
+        assert!(!text(&s).starts_with("- "));
+    }
+    #[test]
+    fn parsed_line_heading_sigil_end_empty_heading() {
+        // "#" alone: no content chars, sigil_end should equal e.end_char (1)
+        let p = ParsedLine::parse("#");
+        assert_eq!(p.heading_sigil_end(), Some(1));
+    }
+    #[test]
+    fn parsed_line_heading_sigil_end_with_content() {
+        // "# T": sigil is "# " (2 chars), first content at pos 2
+        let p = ParsedLine::parse("# T");
+        assert_eq!(p.heading_sigil_end(), Some(2));
+    }
+    #[test]
+    fn parsed_line_reuse_matches_individual() {
+        let line = "**hello** world";
+        let parsed = ParsedLine::parse(line);
+        let s1 = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s2 = MarkdownSpanner::render_with(line, line, &parsed, 0, None, true, false, 40, &t());
+        assert_eq!(
+            s1.iter().map(|s| s.content.as_ref()).collect::<String>(),
+            s2.iter().map(|s| s.content.as_ref()).collect::<String>(),
+        );
     }
 }
