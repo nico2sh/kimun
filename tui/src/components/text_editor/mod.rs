@@ -5,8 +5,9 @@ pub mod word_wrap;
 use ratatui::Frame;
 use ratatui::crossterm::event::MouseEventKind;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui_textarea::{CursorMove, TextArea};
+
+use self::view::MarkdownEditorView;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
@@ -24,6 +25,7 @@ pub struct TextEditorComponent {
     rect: Rect,
     key_bindings: KeyBindings,
     last_saved_text: String,
+    view: MarkdownEditorView,
 }
 
 impl TextEditorComponent {
@@ -33,6 +35,7 @@ impl TextEditorComponent {
             rect: Rect::default(),
             key_bindings,
             last_saved_text: String::new(),
+            view: MarkdownEditorView::new(),
         }
     }
 
@@ -88,9 +91,10 @@ impl Component for TextEditorComponent {
                 match mouse.kind {
                     MouseEventKind::Down(_) => {
                         tx.send(AppEvent::FocusEditor).ok();
-                        let row = mouse.row - r.y;
-                        let col = mouse.column - r.x;
-                        self.text_area.move_cursor(CursorMove::Jump(row, col));
+                        let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
+                        let vcol = (mouse.column - r.x) as usize;
+                        let (lrow, lcol) = self.view.visual_to_logical_u16(vrow, vcol);
+                        self.text_area.move_cursor(CursorMove::Jump(lrow, lcol));
                     }
                     _ => {
                         self.text_area.input(*mouse);
@@ -101,21 +105,12 @@ impl Component for TextEditorComponent {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
+    fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.rect = rect;
-        self.text_area.set_cursor_style(
-            Style::default()
-                .fg(theme.bg.to_ratatui())
-                .bg(theme.accent.to_ratatui()),
-        );
-        self.text_area
-            .set_selection_style(Style::default().bg(theme.bg_selected.to_ratatui()));
-        self.text_area.set_style(
-            Style::default()
-                .fg(theme.fg.to_ratatui())
-                .bg(theme.bg.to_ratatui()),
-        );
-        f.render_widget(&self.text_area, rect);
+        let lines: Vec<String> = self.text_area.lines().to_vec();
+        let cursor = self.text_area.cursor();
+        self.view.update(&lines, cursor, rect);
+        self.view.render(f, rect, theme, focused);
     }
 
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
