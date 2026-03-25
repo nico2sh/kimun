@@ -1,150 +1,156 @@
 # Kimün
 
-A notes app. Focus on simplicity, but powerful on searchability.
+A terminal-based notes app focused on simplicity and powerful search.
 
-Although by no means this has been vibe coded, as most of the core has been manually written, there's a fair contribution of AI assisted code (using Claude). Most of the cases for tedious refactors (migrate from rusqlite to sqlx), data structures I'm too lazy to code myself (Sparse Vector) or CSS, as CSS is terribly hard. Use AI as a tool, not as a replacement.
+Notes are plain Markdown files stored in a directory you own. Kimün indexes them into a local SQLite database for fast full-text and structured search.
 
-Components
+> Although by no means this has been vibe coded — the core has been written manually — there is a good chunk of AI-assisted code (using Claude) with manual reviews. Mostly for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the core of more complex stuff. Use AI as a tool, not as a replacement.
 
-- **Desktop App**: The main Dioxus-based note-taking application
-- **RAG Server**: A standalone HTTP server for semantic search and AI-powered Q&A over your notes (see [rag/README.md](rag/README.md))
+## Installation
 
-## Searching
+```sh
+cargo install kimun
+```
 
-One cool feature of Kimün is that has a powerful but simple search syntax using Markdown features.
-Open the search box with `ctrl+s` in Windows/Linux or `cmd+s` in MacOS, in the searchbox you can put any search term and will look into the content and path of the notes.
+On first launch, Kimün will open the Settings screen so you can set your notes directory. It will create a `kimun.sqlite` file in the root of your notes directory.
 
-### Search free text
+## Configuration
 
-Anything you put on the search box will search in both the content and the file name. You can use `*` as a wildcard and the search ignores case and special characters.
-As an example, if you have three notes called `note1.md`, `note2.md` and `note3.md`, all three of them containing the text "Kimün", all the following search queries will return all three notes:
+The config file is created automatically on first run:
 
-* `Kimün`
-* `KIMÜN`
-* `kimün`
-* `kimu*`
-* `*imün`
-* `*imu*`
-* `note*`
+- **Linux / macOS:** `~/.config/kimun/kimun_config.toml`
+- **Windows:** `%USERPROFILE%\kimun\kimun_config.toml`
 
-### Narrowing the search to specific files
+You can also pass a custom config path:
 
-You can limit the search to specific files using the `@` prefix or `at:`. Both produce the same effect and ignores the file extension. In the example above, the search term `@note1` or `at:note1` will only return the note `note1.md`.
-You can then combine file names and text search terms to narrow the results.
+```sh
+kimun --config /path/to/my-config.toml
+```
 
-### Narrowing to sections
+## How it works
 
-Additionally you can use the Markdown's document structure to find notes within sections. Each section is defined by a markdown header, and the keyword/prefix to search within section is `>` or `in:`. Both produce the same effect.
+Kimün opens in a terminal UI with a few screens:
 
-### Putting all together
+- **Browse** — file tree navigator for a directory
+- **Editor** — Markdown editor with a file browser pane
+- **Settings** — configure your notes directory, theme, key bindings, and more
 
-Let's pretend you have these notes:
+Your notes directory is called the **workspace**. Kimün creates a `kimun.sqlite` file at the workspace root to store the search index. Everything else is plain `.md` files — no lock-in.
 
-> tasks.md
+## Search
+
+Open search with `Ctrl+E`. The search box looks across note content and file paths.
+
+### Free text
+
+Searches both content and filenames. Case-insensitive, diacritics ignored, `*` wildcard supported.
+
+```
+kimun          → matches "Kimün", "KIMÜN", "kimun", etc.
+kimu*          → matches anything starting with "kimu"
+*meeting*      → matches any note containing "meeting" anywhere
+```
+
+### Filter by filename — `@` or `at:`
+
+```
+@tasks         → only notes whose filename contains "tasks"
+at:tasks       → same
+```
+
+### Filter by section — `>` or `in:`
+
+Sections are defined by Markdown headers (`#`, `##`, etc.). The search term must appear within that section.
+
+```
+>personal      → only content under a "Personal" heading
+in:personal    → same
+```
+
+### Combine filters
+
+Filters compose freely:
+
+```
+@tasks >work report       → in a file called "tasks", under a "Work" section, containing "report"
+>personal kimun           → any note with "kimun" under a "Personal" section
+@thoughts kimun           → a file called "thoughts" containing "kimun"
+screen*                   → matches "screenshot", "screens", etc.
+```
+
+### Example
+
+Given these notes:
+
+**tasks.md**
 
 ```markdown
 # Work
-
 ## TODO
-
 * Talk with Bill
 * Finish the report
 
 # Personal
-
 * Make the search in Kimün awesome
 * Buy groceries
-* Take screenshots of the app
 ```
 
-> projects.md
+**projects.md**
 
 ```markdown
 # Projects
-
-Here is a list of projects I'm working on.
-
 ## Personal
-
-Personal Projects
-
 ### Kimün
-
 The simple but great note taking app!
-
-#### Features
-* Powerful search
-* You own the note files
-* Markdown!
-
-### Semtag
-
-A bash script to generate Semantic Version tags on git releases
-
-#### Features
-* Bash! Runs almost everywhere
-* Uses git tags
-* Includes the commits in the commit comment
 ```
 
-> personal-thoughts.md
+| Search               | Returns                                     |
+| -------------------- | ------------------------------------------- |
+| `kimun`            | `projects.md`, `tasks.md`               |
+| `>personal kimun`  | `projects.md`, `tasks.md`               |
+| `>personal report` | `tasks.md`                                |
+| `@tasks >work`     | `tasks.md`                                |
+| `screen*`          | any note with "screenshot", "screens", etc. |
 
-```markdown
-# My thoughts
-* I prefer to keep the notes in one app and task management on a different one, so the above example doesn't reflect my own workflow with Kimün
-* I can use the journal note names with dates to limit the search to specific years by searching by filename and content
-```
+## Key bindings
 
-> general-thoughts.md
+Default bindings (all configurable in the config file):
 
-```markdown
-# Random thoughts
-* I think this is definitively the year of Linux Desktop
-* I'm intentionally not putting the name of the app in this one for the example
-* I like wide screens
-```
+| Action                               | Default    |
+| ------------------------------------ | ---------- |
+| Quit                                 | `Ctrl+Q` |
+| Settings                             | `Ctrl+P` |
+| Search notes                         | `Ctrl+E` |
+| Open note (fuzzy finder)             | `Ctrl+O` |
+| Toggle note browser                  | `Ctrl+F` |
+| Toggle preview                       | `Ctrl+Y` |
+| New journal entry                    | `Ctrl+J` |
+| Toggle sidebar                       | `Ctrl+B` |
+| Focus editor                         | `Ctrl+L` |
+| Focus sidebar                        | `Ctrl+H` |
+| Sort by name                         | `Ctrl+N` |
+| Sort by title                        | `Ctrl+G` |
+| Reverse sort order                   | `Ctrl+R` |
+| File operations (rename/move/delete) | `F2`     |
+| Bold                                 | `Ctrl+B` |
+| Italic                               | `Ctrl+I` |
+| Strikethrough                        | `Ctrl+S` |
+| Toggle header                        | `Ctrl+T` |
 
-If I do a search, it will return:
+## Roadmap
 
-| Search term         | Result                                                | Notes                                                                                        |
-| ------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `kimun`           | `projects.md` `tasks.md` `personal-thoughts.md` | All three notes contains Kimün, the dieresis is ignored                                     |
-| `>personal kimun` | `projects.md` `tasks.md`                          | Only these two notes have the search term under "Personal"                                   |
-| `@thoughts`       | `personal-thougts.md` `general-thougts.md`        | We look for a file whose name contains "thoughts"                                            |
-| `@thoughts kimun` | `personal-thougts.md`                               | We look for a file called "thoughts" containing "Kimun"                                      |
-| `screen*`         | `tasks.md` `general-thougts.md`                   | "tasks.md" contains the word "screenshot", "general-thoughts.md" contains the word "screens" |
-
-## Short-term roadmap
-
-Here are the items I want to fix immediately to consider this usable. Then will focus on other cool features:
-
-* [X] Search under titles/sections in Markdown
-* [X] Change sort search results
-* [X] Add title to the note editor
-* [ ] Command Palette
-* [ ] Display key shortcuts on Command Palette and help modal
-* [ ] Resolve relative paths on links
-* [X] Modals showing progress in the settings when reindexing
-* [ ] Backlinks display
-* [ ] Inline tags and search by tag (like `#important`)
-* [ ] Shortcuts for text format (bold, italic)
-* [ ] Shortcuts for inserting links
-* [ ] Paste images in note
-* [ ] Calendar to browse journal
-* [ ] Auto continue format lists while typing (hitting enter on a list element creates a new element)
-* [ ] Multiple Workspaces
-* [X] File Management
-  * [X] Delete note
-  * [X] Delete directory
-  * [X] Move note
-  * [X] Rename note
-  * [X] Move Directory
-  * [X] Rename Directory
-
-### Rendering
-
-* [X] Display path to the note preview
-* [ ] Properly resolve local paths for images
-* [X] Enable wikilinks in render
-* [X] Navigate notes with links in render
-* [ ] Make tags clickable
+- [ ] Command palette
+- [ ] Display key shortcuts in command palette and help modal
+- [ ] Backlinks panel
+- [ ] Inline tags and search by tag (`#important`)
+- [ ] Resolve relative paths on links and images
+- [ ] Paste images into notes
+- [ ] Calendar view for journal browsing
+- [ ] Auto-continue list formatting on Enter
+- [ ] Multiple workspaces
+- [X] Search under Markdown sections
+- [X] File management (create, rename, move, delete notes and directories)
+- [X] Autosave
+- [X] Wikilinks in preview
+- [X] Navigate notes via links in preview
+- [ ] Embed neoVim as an option

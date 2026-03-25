@@ -1,5 +1,7 @@
 # Kimun RAG Server
 
+**This is an experimental project.**
+
 A high-performance Retrieval-Augmented Generation (RAG) server for querying your personal knowledge base with semantic search and AI-powered answers.
 
 ## Features
@@ -253,6 +255,7 @@ Response:
 ```
 
 **Features:**
+
 - Accepts multiple documents in a single request
 - Each document includes its content hash for incremental indexing
 - Automatically skips unchanged documents (same hash)
@@ -328,11 +331,11 @@ X-API-Key: sk-ant-your-api-key-here
 
 **Context Window Sizes:**
 
-| Size | Documents | Use Case | Performance |
-|------|-----------|----------|-------------|
-| `"small"` | 10 | Quick lookups, simple questions | Fastest response |
-| `"medium"` | 20 | Balanced queries (default) | Standard response |
-| `"large"` | 40 | Comprehensive analysis | Thorough but slower |
+| Size         | Documents | Use Case                        | Performance         |
+| ------------ | --------- | ------------------------------- | ------------------- |
+| `"small"`  | 10        | Quick lookups, simple questions | Fastest response    |
+| `"medium"` | 20        | Balanced queries (default)      | Standard response   |
+| `"large"`  | 40        | Comprehensive analysis          | Thorough but slower |
 
 **Supported LLM providers:**
 
@@ -481,6 +484,7 @@ top_k = 20      # Default context size (can be overridden per request)
 ```
 
 **Note**: The global `top_k` setting can be overridden per request using the `context_size` parameter:
+
 - `context_size: "small"` → 10 documents (regardless of config)
 - `context_size: "medium"` → 20 documents (default)
 - `context_size: "large"` → 40 documents (regardless of config)
@@ -533,6 +537,7 @@ This allows dynamic context window sizing without restarting the server.
    ```
 
    Where N is determined by `context_size` parameter:
+
    - `"small"` → 10 results
    - `"medium"` → 20 results (default)
    - `"large"` → 40 results
@@ -556,6 +561,7 @@ This allows dynamic context window sizing without restarting the server.
 5. **SQLite for development** - Simpler setup, good for <10k notes
 
 **Context Size Guidelines:**
+
 - Quick lookups/definitions → `"small"` (10 docs, ~200ms faster)
 - General Q&A → `"medium"` (20 docs, balanced)
 - Research/analysis → `"large"` (40 docs, more thorough)

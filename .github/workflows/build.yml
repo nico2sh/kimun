@@ -21,29 +21,25 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: windows
             artifact_suffix: ""
-            target_path: "windows/app"
-            package-type: msi
+            binary: kimun.exe
           - name: MacOS Build x64
             os: macos-latest
             target: x86_64-apple-darwin
             artifact: macos
             artifact_suffix: _intel
-            target_path: "macos"
-            package-type: dmg
+            binary: kimun
           - name: MacOS Build arm64
             os: macos-latest
             target: aarch64-apple-darwin
             artifact: macos
             artifact_suffix: _apple_silicon
-            target_path: "macos"
-            package-type: dmg
+            binary: kimun
           - name: Linux Build
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: linux
             artifact_suffix: ""
-            target_path: "linux/app"
-            package-type: appimage
+            binary: kimun
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: "-C target-cpu=native"
@@ -79,56 +75,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-target-
 
-      - name: Cache Dioxus CLI
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/dx
-          key: ${{ runner.os }}-dx-0.7.3
-          restore-keys: |
-            ${{ runner.os }}-dx-
+      # Build the TUI binary
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin kimun
 
-      # Install platform-specific dependencies
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev \
-            pkg-config \
-            build-essential
-
-      # Install Dioxus CLI for building/bundling
-      - name: Install Dioxus CLI
-        uses: taiki-e/install-action@v2
-        with:
-          tool: dioxus-cli@0.7.3
-
-      # Build and package application
+      # Copy binary to dist/
       - name: Create distribution directory
         run: mkdir -p dist
         shell: bash
 
-      # Windows: Build binary only (bundling not fully supported)
-      - name: Build for Windows
-        if: runner.os == 'Windows'
-        run: |
-          cd desktop && \
-          dx bundle --release --target ${{ matrix.target }} && \
-          cp -r target/dx/kimun/release/${{ matrix.target_path}}/* ../dist/
-        shell: bash
-
-      # macOS and Linux: Create platform-specific bundles
-      - name: Bundle for macOS/Linux
-        if: runner.os != 'Windows'
-        run: |
-          cd desktop && \
-          dx bundle --release --platform ${{ matrix.artifact }} --target ${{ matrix.target }} --package-types ${{ matrix.package-type }} --out-dir "bundle/${{ matrix.target_path }}" && \
-          cp -r bundle/${{ matrix.target_path }}/* ../dist/
+      - name: Copy binary to dist
+        run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/
         shell: bash
 
       # Extract version and upload build artifacts
@@ -136,7 +93,7 @@ jobs:
         uses: SebRollen/toml-action@v1.2.0
         id: read_toml
         with:
-          file: "desktop/Cargo.toml"
+          file: "tui/Cargo.toml"
           field: "package.version"
 
       - name: Upload build artifacts
@@ -144,6 +101,30 @@ jobs:
         with:
           name: Kimun ${{ steps.read_toml.outputs.value }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
           path: dist
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish kimun_core to crates.io
+        run: cargo publish -p kimun_core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Wait a moment for crates.io to index kimun_core before publishing kimun
+      - name: Wait for crates.io to index kimun_core
+        run: sleep 30
+
+      - name: Publish kimun to crates.io
+        run: cargo publish -p kimun
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   create-release:
     needs: build
@@ -159,7 +140,7 @@ jobs:
         uses: SebRollen/toml-action@v1.2.0
         id: read_version
         with:
-          file: "desktop/Cargo.toml"
+          file: "tui/Cargo.toml"
           field: "package.version"
 
       - name: Download all artifacts
@@ -178,7 +159,6 @@ jobs:
           for dir in */; do
             dirname="${dir%/}"
 
-            # Extract platform info from artifact name
             if [[ "$dirname" == *"windows"* ]]; then
               PLATFORM="windows-x64"
               ARCHIVE_NAME="kimun-${VERSION}-${PLATFORM}.zip"
@@ -219,23 +199,25 @@ jobs:
           body: |
             ## Download Kimun ${{ steps.read_version.outputs.value }}
 
-            ### Installation Instructions
+            Kimun is a terminal-based notes application. Download the binary for your platform and place it somewhere on your `$PATH`.
 
-            **Windows:**
+            ### Downloads
+
+            **Windows (x64):**
             - Download `kimun-${{ steps.read_version.outputs.value }}-windows-x64.zip`
-            - Extract and run the MSI installer
+            - Extract and run `kimun.exe`
 
             **macOS (Intel):**
             - Download `kimun-${{ steps.read_version.outputs.value }}-macos-x64.tar.gz`
-            - Extract and open the DMG file
+            - Extract and run `kimun`
 
             **macOS (Apple Silicon):**
             - Download `kimun-${{ steps.read_version.outputs.value }}-macos-arm64.tar.gz`
-            - Extract and open the DMG file
+            - Extract and run `kimun`
 
-            **Linux:**
+            **Linux (x64):**
             - Download `kimun-${{ steps.read_version.outputs.value }}-linux-x64.tar.gz`
-            - Extract and run the AppImage
+            - Extract and run `kimun`
 
             ### Verify Downloads
             See `checksums-sha256.txt` for SHA-256 checksums to verify your download.
