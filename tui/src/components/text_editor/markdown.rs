@@ -229,8 +229,7 @@ impl MarkdownSpanner {
 
         let elements = &parsed.elements;
         let content_vis = &parsed.content_vis;
-        let logical_chars: Vec<char> = logical_line.chars().collect();
-        let visual_end_col = (visual_start_col + content.chars().count()).min(logical_chars.len());
+        let content_char_count = content.chars().count();
 
         let elem_at = |pos: usize| -> Option<usize> {
             elements.iter().enumerate().rev()
@@ -251,15 +250,15 @@ impl MarkdownSpanner {
         };
 
         let mut spans: Vec<Span<'a>> = Vec::new();
-        let mut seg_chars: Vec<char> = Vec::new();
+        let mut seg_str: String = String::new();
         let mut seg_elem: Option<usize> = None;
         let mut seg_is_sigil = false;
         let mut seg_is_expanded = false;
 
-        let flush = |seg_chars: &mut Vec<char>, seg_elem: Option<usize>,
+        let flush = |seg_str: &mut String, seg_elem: Option<usize>,
                      seg_is_sigil: bool, seg_is_expanded: bool, spans: &mut Vec<Span<'a>>| {
-            if seg_chars.is_empty() { return; }
-            let seg: String = seg_chars.drain(..).collect();
+            if seg_str.is_empty() { return; }
+            let seg = std::mem::take(seg_str);
             let style = if seg_is_expanded {
                 Style::default().fg(theme.fg_muted.to_ratatui())
             } else {
@@ -268,7 +267,10 @@ impl MarkdownSpanner {
             spans.push(Span::styled(seg, style));
         };
 
-        for pos in visual_start_col..visual_end_col {
+        for (pos, ch) in logical_line.chars().enumerate()
+            .skip(visual_start_col)
+            .take(content_char_count)
+        {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.map_or(false, |end| pos < end);
             let in_list_sigil = list_sigil_end.map_or(false, |end| pos < end);
@@ -279,7 +281,7 @@ impl MarkdownSpanner {
             let emit = is_content || in_heading_sigil || in_list_sigil || in_expanded_elem
                 || this_elem.is_none();
             if !emit {
-                flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
+                flush(&mut seg_str, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
                 seg_elem = None;
                 seg_is_sigil = false;
                 seg_is_expanded = false;
@@ -288,14 +290,14 @@ impl MarkdownSpanner {
             let this_is_expanded = in_expanded_elem;
             let this_is_sigil = (in_heading_sigil || in_list_sigil) && !is_content && !in_expanded_elem;
             if this_elem != seg_elem || this_is_sigil != seg_is_sigil || this_is_expanded != seg_is_expanded {
-                flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
+                flush(&mut seg_str, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
                 seg_elem = this_elem;
                 seg_is_sigil = this_is_sigil;
                 seg_is_expanded = this_is_expanded;
             }
-            seg_chars.push(logical_chars[pos]);
+            seg_str.push(ch);
         }
-        flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
+        flush(&mut seg_str, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
 
         if spans.is_empty() {
             spans.push(Span::styled(content, Style::default().fg(theme.fg.to_ratatui())));
@@ -321,7 +323,7 @@ impl MarkdownSpanner {
 
         let elements = &parsed.elements;
         let content_vis = &parsed.content_vis;
-        let logical_chars: Vec<char> = logical_line.chars().collect();
+        let logical_char_count = logical_line.chars().count();
 
         let expanded: Option<usize> = parsed.elem_at(cursor_col);
         let heading_sigil_end: Option<usize> = if is_first_visual_line {
@@ -335,7 +337,7 @@ impl MarkdownSpanner {
             None
         };
 
-        let end = cursor_col.min(logical_chars.len());
+        let end = cursor_col.min(logical_char_count);
         (visual_start_col..end).filter(|&pos| {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.map_or(false, |s_end| pos < s_end);
@@ -403,7 +405,7 @@ impl MarkdownSpanner {
         }
 
         let content_vis = &parsed.content_vis;
-        let logical_chars: Vec<char> = logical_line.chars().collect();
+        let logical_char_count = logical_line.chars().count();
         let heading_sigil_end: Option<usize> = if is_first_visual_line {
             parsed.heading_sigil_end()
         } else {
@@ -416,7 +418,7 @@ impl MarkdownSpanner {
         };
 
         let mut rendered_count = 0;
-        for pos in visual_start_col..logical_chars.len() {
+        for pos in visual_start_col..logical_char_count {
             if rendered_count == rendered_col {
                 return pos;
             }
@@ -428,7 +430,7 @@ impl MarkdownSpanner {
                 rendered_count += 1;
             }
         }
-        logical_chars.len()
+        logical_char_count
     }
 }
 

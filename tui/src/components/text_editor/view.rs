@@ -17,9 +17,21 @@ pub struct MarkdownEditorView {
     /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
     /// invocations across `render()`, cursor placement, and click mapping.
     parsed_cache: Vec<ParsedLine>,
-    /// Last `edit_generation` value seen from `TextEditorComponent`. Used to skip the
-    /// expensive lines clone and parse-cache rebuild on idle frames where nothing changed.
+    /// Last `edit_generation` seen — gates the lines clone and parse-cache rebuild.
     last_seen_generation: u64,
+    /// Generation/width/cursor at which the layout was last computed.
+    /// Used to skip `WordWrapLayout::compute()` when nothing affecting wrap has changed:
+    /// horizontal cursor movement within the same element (or plain text) is free.
+    last_layout_generation: u64,
+    last_layout_width: u16,
+    last_layout_cursor: (usize, usize),
+    /// Visual row of the cursor, cached after layout so `render()` doesn't call
+    /// `logical_to_visual` a second time.
+    cursor_vrow: usize,
+    /// Per-line rendered-position bitmask, cached between layout recomputes.
+    /// Only the two cursor rows (old and new) are rebuilt when just the cursor row changes;
+    /// all rows are rebuilt when content or width changes.
+    rendered_cache: Vec<Vec<bool>>,
 }
 
 impl MarkdownEditorView {
@@ -32,13 +44,18 @@ impl MarkdownEditorView {
             cursor_code_block: None,
             parsed_cache: Vec::new(),
             last_seen_generation: u64::MAX, // force rebuild on first update
+            last_layout_generation: u64::MAX,
+            last_layout_width: 0,
+            last_layout_cursor: (usize::MAX, usize::MAX),
+            cursor_vrow: 0,
+            rendered_cache: Vec::new(),
         }
     }
 
     pub fn update(&mut self, lines: &[String], cursor: (usize, usize), rect: Rect, generation: u64) {
         if rect.height == 0 { return; }
 
-        // Only clone lines and rebuild the parse cache when content actually changed.
+        // Gate 1: content changed — rebuild parse cache and snapshots.
         if generation != self.last_seen_generation {
             self.lines_snapshot = lines.to_vec();
             self.cursor_code_block = Self::find_code_block(lines, cursor.0);
@@ -48,22 +65,62 @@ impl MarkdownEditorView {
 
         self.cursor_snapshot = cursor;
 
-        let rendered: Vec<Vec<bool>> = lines.iter()
-            .enumerate()
-            .map(|(i, l)| {
-                let force_raw = self.is_in_code_block(i);
-                let cursor_col = if i == cursor.0 { Some(cursor.1) } else { None };
-                MarkdownSpanner::visible_positions_with(l, &self.parsed_cache[i], cursor_col, force_raw)
-            })
-            .collect();
-        self.layout = WordWrapLayout::compute(lines, rect.width, &rendered);
+        // Gate 2: layout rebuild.
+        // Skip when content, width, and the *effective element expansion* are all unchanged.
+        // Horizontal cursor movement within the same element (or plain text with no elements)
+        // does not change any wrap boundary — no recompute needed.
+        let new_expanded = self.parsed_cache.get(cursor.0).and_then(|p| p.elem_at(cursor.1));
+        let old_expanded = self.parsed_cache.get(self.last_layout_cursor.0)
+            .and_then(|p| p.elem_at(self.last_layout_cursor.1));
+        let need_layout = generation != self.last_layout_generation
+            || rect.width != self.last_layout_width
+            || cursor.0 != self.last_layout_cursor.0
+            || new_expanded != old_expanded;
 
-        let cursor_vrow = self.layout.logical_to_visual(cursor.0, cursor.1).0;
+        if need_layout {
+            // Rebuild rendered-position masks. Full rebuild when content changed;
+            // partial rebuild (only the two cursor rows) when only the cursor row moved.
+            let content_changed = generation != self.last_layout_generation;
+            let width_changed = rect.width != self.last_layout_width;
+            if content_changed || self.rendered_cache.len() != lines.len() {
+                // Full rebuild — content or line count changed.
+                self.rendered_cache = lines.iter()
+                    .enumerate()
+                    .map(|(i, l)| {
+                        let force_raw = self.is_in_code_block(i);
+                        let cursor_col = if i == cursor.0 { Some(cursor.1) } else { None };
+                        MarkdownSpanner::visible_positions_with(l, &self.parsed_cache[i], cursor_col, force_raw)
+                    })
+                    .collect();
+            } else if !width_changed {
+                // Partial rebuild — only the two rows whose cursor_col argument changed.
+                let old_row = self.last_layout_cursor.0;
+                let new_row = cursor.0;
+                for row in [old_row, new_row] {
+                    if let Some(l) = lines.get(row) {
+                        if let Some(p) = self.parsed_cache.get(row) {
+                            let force_raw = self.is_in_code_block(row);
+                            let cursor_col = if row == new_row { Some(cursor.1) } else { None };
+                            self.rendered_cache[row] =
+                                MarkdownSpanner::visible_positions_with(l, p, cursor_col, force_raw);
+                        }
+                    }
+                }
+            }
+            // Width-only change: masks are width-independent; reuse rendered_cache as-is.
+            self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
+            self.last_layout_generation = generation;
+            self.last_layout_width = rect.width;
+            self.last_layout_cursor = cursor;
+        }
+
+        // Cache cursor_vrow for render() — avoids a second logical_to_visual call.
+        self.cursor_vrow = self.layout.logical_to_visual(cursor.0, cursor.1).0;
         let height = rect.height as usize;
-        if cursor_vrow < self.visual_scroll_offset {
-            self.visual_scroll_offset = cursor_vrow;
-        } else if cursor_vrow >= self.visual_scroll_offset + height {
-            self.visual_scroll_offset = cursor_vrow - height + 1;
+        if self.cursor_vrow < self.visual_scroll_offset {
+            self.visual_scroll_offset = self.cursor_vrow;
+        } else if self.cursor_vrow >= self.visual_scroll_offset + height {
+            self.visual_scroll_offset = self.cursor_vrow - height + 1;
         }
     }
 
@@ -120,7 +177,7 @@ impl MarkdownEditorView {
 
         // Draw terminal cursor when focused
         if focused {
-            let (cursor_vrow, _raw_col) = self.layout.logical_to_visual(cursor.0, cursor.1);
+            let cursor_vrow = self.cursor_vrow;
             if cursor_vrow >= scroll && cursor_vrow < scroll + height {
                 let vl = &self.layout.visual_lines()[cursor_vrow];
                 let logical_line = lines.get(cursor.0).map(|s| s.as_str()).unwrap_or("");
@@ -283,6 +340,36 @@ mod tests {
         let lines = vec!["hello".to_string(), "**bold**".to_string()];
         v.update(&lines, (0, 0), rect(10), 1);
         assert_eq!(v.parsed_cache.len(), 2);
+    }
+
+    #[test]
+    fn layout_skipped_on_horizontal_cursor_move_in_plain_text() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec!["hello world".to_string()];
+        v.update(&lines, (0, 0), rect(40), 1);
+        let layout_gen_after_first = v.last_layout_generation;
+        // Move cursor right — same row, no elements, same generation → layout must be skipped.
+        v.update(&lines, (0, 5), rect(40), 1);
+        assert_eq!(v.last_layout_cursor, (0, 0), "layout cursor unchanged = layout was skipped");
+        assert_eq!(v.last_layout_generation, layout_gen_after_first);
+    }
+
+    #[test]
+    fn layout_recomputed_on_row_change() {
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..3).map(|i| format!("line{}", i)).collect();
+        v.update(&lines, (0, 0), rect(40), 1);
+        v.update(&lines, (1, 0), rect(40), 1); // cursor moves to row 1
+        assert_eq!(v.last_layout_cursor.0, 1, "layout recomputed on row change");
+    }
+
+    #[test]
+    fn layout_recomputed_on_width_change() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec!["hello world foo bar".to_string()];
+        v.update(&lines, (0, 0), rect(40), 1);
+        v.update(&lines, (0, 0), Rect { x: 0, y: 0, width: 10, height: 10 }, 1);
+        assert_eq!(v.last_layout_width, 10);
     }
 
     #[test]
