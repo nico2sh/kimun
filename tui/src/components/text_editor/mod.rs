@@ -26,6 +26,9 @@ pub struct TextEditorComponent {
     key_bindings: KeyBindings,
     last_saved_text: String,
     view: MarkdownEditorView,
+    /// Incremented on every mutating input event. Passed to `view.update()` so the view
+    /// can skip the expensive lines clone and parse-cache rebuild on idle frames.
+    edit_generation: u64,
 }
 
 impl TextEditorComponent {
@@ -36,6 +39,7 @@ impl TextEditorComponent {
             key_bindings,
             last_saved_text: String::new(),
             view: MarkdownEditorView::new(),
+            edit_generation: 0,
         }
     }
 
@@ -77,6 +81,7 @@ impl Component for TextEditorComponent {
                     }
                 }
                 self.text_area.input(*key);
+                self.edit_generation = self.edit_generation.wrapping_add(1);
                 EventState::Consumed
             }
             InputEvent::Mouse(mouse) => {
@@ -93,11 +98,13 @@ impl Component for TextEditorComponent {
                         tx.send(AppEvent::FocusEditor).ok();
                         let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
                         let vcol = (mouse.column - r.x) as usize;
-                        let (lrow, lcol) = self.view.visual_to_logical_u16(vrow, vcol);
+                        let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
                         self.text_area.move_cursor(CursorMove::Jump(lrow, lcol));
+                        self.edit_generation = self.edit_generation.wrapping_add(1);
                     }
                     _ => {
                         self.text_area.input(*mouse);
+                        self.edit_generation = self.edit_generation.wrapping_add(1);
                     }
                 }
                 EventState::Consumed
@@ -107,9 +114,8 @@ impl Component for TextEditorComponent {
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.rect = rect;
-        let lines: Vec<String> = self.text_area.lines().to_vec();
         let cursor = self.text_area.cursor();
-        self.view.update(&lines, cursor, rect);
+        self.view.update(self.text_area.lines(), cursor, rect, self.edit_generation);
         self.view.render(f, rect, theme, focused);
     }
 
