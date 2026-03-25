@@ -9,7 +9,7 @@ Notes are plain Markdown files stored in a directory you own. Kimün indexes the
 ## Installation
 
 ```sh
-cargo install kimun
+cargo install kimun-notes
 ```
 
 On first launch, Kimün will open the Settings screen so you can set your notes directory. It will create a `kimun.sqlite` file in the root of your notes directory.
