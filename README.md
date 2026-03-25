@@ -153,3 +153,4 @@ Default bindings (all configurable in the config file):
 - [X] Autosave
 - [X] Wikilinks in preview
 - [X] Navigate notes via links in preview
+- [ ] Embed neoVim as an option
