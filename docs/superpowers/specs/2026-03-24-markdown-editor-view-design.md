@@ -27,6 +27,7 @@ The `TextArea` from `ratatui_textarea` is retained as the input/cursor model. A 
 | `**bold**` | Bold + accent color | Yes — shows `**bold**` |
 | `*italic*` / `_italic_` | Italic + secondary color | Yes |
 | `` `code` `` | Distinct bg color, monospace | Yes |
+| ` ```lang ``` ` (fenced code block) | All lines in block rendered with distinct bg; opening/closing fences dimmed | Yes — entire block shows raw when cursor is inside it |
 | `[text](url)` | Underlined text, url dimmed | Yes — shows `[text](url)` |
 | `# Heading` | Dimmed `#` sigil + colored bold text | Yes — shows `# Heading` |
 | `## Heading` | Dimmed `##` + colored text (level 2 color) | Yes |
@@ -38,6 +39,8 @@ The `TextArea` from `ratatui_textarea` is retained as the input/cursor model. A 
 ### Expand granularity
 
 Element-level: only the specific markdown element whose character range contains the cursor column expands. Other elements on the same line remain rendered. The cursor must be on the same logical line and within `[element_start_char, element_end_char]` (character-count space).
+
+**Exception — fenced code blocks:** these span multiple logical lines. When the cursor is anywhere inside a fenced code block (between the opening ` ``` ` fence line and the closing ` ``` ` fence line, inclusive), all lines of the block expand to raw text. This is the only case where expand scope exceeds a single logical line.
 
 ### Heading style
 
@@ -116,6 +119,9 @@ impl MarkdownSpanner {
     /// `cursor_col` is `Some(col)` only when cursor's logical row matches; `col` is in logical_line char space.
     /// `is_first_visual_line` — true when this is the first visual line for the logical row
     ///   (block-level prefixes such as `#` and `>` are only rendered on the first visual line).
+    /// `force_raw` — when true, the entire line is emitted as plain (unstyled) text regardless
+    ///   of markdown content. Used when the cursor is inside a fenced code block, causing all
+    ///   lines in that block to expand to raw.
     /// Lifetime `'a` is tied to `content` and `logical_line` to allow borrowing substrings.
     pub fn render<'a>(
         content: &'a str,
@@ -123,6 +129,8 @@ impl MarkdownSpanner {
         visual_start_col: usize,
         cursor_col: Option<usize>,
         is_first_visual_line: bool,
+        force_raw: bool,
+        available_width: u16,  // used to fill HR (`─` × width); passed from rect.width in MarkdownEditorView
         theme: &'a Theme,
     ) -> Vec<Span<'a>>;
 }
@@ -152,6 +160,9 @@ pub struct MarkdownEditorView {
     // Cached from last update() call — avoids passing lines/cursor twice per frame.
     lines_snapshot: Vec<String>,
     cursor_snapshot: (usize, usize),
+    // Row range of the fenced code block the cursor is inside, if any.
+    // Used to expand all lines in that block when rendering.
+    cursor_code_block: Option<Range<usize>>,  // logical row range [open_fence..=close_fence]
 }
 
 impl MarkdownEditorView {
@@ -160,6 +171,8 @@ impl MarkdownEditorView {
     /// Call once per frame before render. Unconditionally recomputes layout on
     /// every call — notes are small, correctness trumps micro-optimization.
     /// Adjusts scroll to keep cursor visible. Guards against rect.height == 0.
+    /// Also scans lines to detect whether the cursor sits inside a fenced code block,
+    /// storing the result in `cursor_code_block`.
     pub fn update(&mut self, lines: &[String], cursor: (usize, usize), rect: Rect);
 
     /// Render the editor content into `rect` using data cached by the last `update()`.
@@ -221,7 +234,8 @@ InputEvent::Key → TextArea.input(key)
            → for vrow in [scroll_offset .. scroll_offset + rect.height]:
                VisualLine { logical_row, start_col, content, is_first_visual_line }
                cursor_col = if logical_row == cursor.0 { Some(cursor.1) } else { None }
-               spans = MarkdownSpanner::render(content, lines[logical_row], start_col, cursor_col, is_first_visual_line, theme)
+               force_raw = cursor_code_block.as_ref().map_or(false, |r| r.contains(&logical_row))
+               spans = MarkdownSpanner::render(content, lines[logical_row], start_col, cursor_col, is_first_visual_line, force_raw, rect.width, theme)
            → Paragraph::new(Text::from(lines_as_spans))
            → f.set_cursor_position(visual position)
 ```
