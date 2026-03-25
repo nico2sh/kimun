@@ -1,8 +1,12 @@
 use std::ops::Range;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::{Line, Text};
+use ratatui::widgets::Paragraph;
+use ratatui::layout::Position;
 use crate::settings::themes::Theme;
 use super::word_wrap::WordWrapLayout;
+use super::markdown::MarkdownSpanner;
 
 pub struct MarkdownEditorView {
     pub layout: WordWrapLayout,
@@ -40,7 +44,53 @@ impl MarkdownEditorView {
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        todo!()
+        if rect.height == 0 { return; }
+        let lines = &self.lines_snapshot;
+        let cursor = self.cursor_snapshot;
+        let scroll = self.visual_scroll_offset;
+        let height = rect.height as usize;
+        let vlines = self.layout.visual_lines();
+
+        let visible: Vec<Line> = vlines
+            .iter()
+            .skip(scroll)
+            .take(height)
+            .map(|vl| {
+                let cursor_col = if vl.logical_row == cursor.0 { Some(cursor.1) } else { None };
+                let force_raw = self.cursor_code_block
+                    .as_ref()
+                    .map_or(false, |r| r.contains(&vl.logical_row));
+                let logical_line = lines.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
+                let spans = MarkdownSpanner::render(
+                    &vl.content,
+                    logical_line,
+                    vl.start_col,
+                    cursor_col,
+                    vl.is_first_visual_line,
+                    force_raw,
+                    rect.width,
+                    theme,
+                );
+                Line::from(spans)
+            })
+            .collect();
+
+        f.render_widget(
+            Paragraph::new(Text::from(visible))
+                .style(theme.base_style()),
+            rect,
+        );
+
+        // Draw terminal cursor when focused
+        if focused {
+            let (cursor_vrow, visual_col) = self.layout.logical_to_visual(cursor.0, cursor.1);
+            if cursor_vrow >= scroll && cursor_vrow < scroll + height {
+                f.set_cursor_position(Position {
+                    x: rect.x + visual_col as u16,
+                    y: rect.y + (cursor_vrow - scroll) as u16,
+                });
+            }
+        }
     }
 
     /// Convert mouse visual position (relative to rect, scroll-adjusted) to
