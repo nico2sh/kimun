@@ -121,8 +121,8 @@ jobs:
       - name: Wait for crates.io to index kimun_core
         run: sleep 30
 
-      - name: Publish kimun to crates.io
-        run: cargo publish -p kimun
+      - name: Publish kimun-notes to crates.io
+        run: cargo publish -p kimun-notes
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

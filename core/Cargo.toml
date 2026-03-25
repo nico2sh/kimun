@@ -5,6 +5,8 @@ authors = ["Nico Hormazábal <mail@nico2sh.com>"]
 edition = "2021"
 description = "Core library for the Kimün notes application"
 license = "MIT"
+repository = "https://github.com/nico2sh/kimun"
+readme = "README.md"
 
 [dependencies]
 ##############
