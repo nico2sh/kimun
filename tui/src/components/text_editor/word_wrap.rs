@@ -93,6 +93,9 @@ impl WordWrapLayout {
 
     /// Convert logical (row, col) to (visual_row, visual_col).
     pub fn logical_to_visual(&self, row: usize, col: usize) -> (usize, usize) {
+        // Clamp row to the last logical row present in the layout.
+        let last_logical = self.visual_lines.last().map(|vl| vl.logical_row).unwrap_or(0);
+        let row = row.min(last_logical);
         // Find the last visual line for `row` whose start_col <= col.
         let vrow = self.visual_lines
             .iter()
