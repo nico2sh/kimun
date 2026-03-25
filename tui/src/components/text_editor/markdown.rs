@@ -132,7 +132,8 @@ impl MarkdownSpanner {
 
         let elements = Self::parse_elements(logical_line);
         let logical_chars: Vec<char> = logical_line.chars().collect();
-        let visual_end_col = visual_start_col + content.chars().count();
+        let visual_end_col = (visual_start_col + content.chars().count()).min(logical_chars.len());
+        let content_vis = Self::content_positions(logical_line);
 
         // Innermost element index at a logical char position
         let elem_at = |pos: usize| -> Option<usize> {
@@ -142,17 +143,6 @@ impl MarkdownSpanner {
         };
         // Which element the cursor sits inside (for expand)
         let expanded: Option<usize> = cursor_col.and_then(|c| elem_at(c));
-
-        // If we're in expanded mode, just emit the raw content
-        if expanded.is_some() {
-            // All chars are shown raw with fg_muted style — but we need to
-            // emit only the visual region
-            let seg: String = logical_chars[visual_start_col..visual_end_col].iter().collect();
-            return vec![Span::styled(seg, Style::default().fg(theme.fg_muted.to_ratatui()))];
-        }
-
-        // No cursor / no expansion: compute content positions for sigil hiding
-        let content_vis = Self::content_positions(logical_line);
 
         // For headings, we keep the sigil ("# ", "## ", etc.) characters visible
         // but style them as muted. Determine if this line starts with a heading element.
@@ -182,43 +172,54 @@ impl MarkdownSpanner {
         let mut seg_chars: Vec<char> = Vec::new();
         let mut seg_elem: Option<usize> = None;
         let mut seg_is_sigil = false;
+        let mut seg_is_expanded = false;
 
         let flush = |seg_chars: &mut Vec<char>, seg_elem: Option<usize>,
-                     seg_is_sigil: bool, spans: &mut Vec<Span<'a>>,
+                     seg_is_sigil: bool, seg_is_expanded: bool, spans: &mut Vec<Span<'a>>,
                      elements: &[Element], theme: &Theme| {
             if seg_chars.is_empty() { return; }
             let seg: String = seg_chars.drain(..).collect();
-            let style = span_style(seg_elem.map(|i| elements[i].kind), seg_is_sigil, theme);
+            let style = if seg_is_expanded {
+                Style::default().fg(theme.fg_muted.to_ratatui())
+            } else {
+                span_style(seg_elem.map(|i| elements[i].kind), seg_is_sigil, theme)
+            };
             spans.push(Span::styled(seg, style));
         };
 
         for pos in visual_start_col..visual_end_col {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.map_or(false, |end| pos < end);
+            let in_expanded_elem = expanded.map_or(false, |i| {
+                elements[i].start_char <= pos && pos < elements[i].end_char
+            });
 
             // Determine if this char should be emitted
-            let emit = is_content || in_heading_sigil;
+            let emit = is_content || in_heading_sigil || in_expanded_elem;
             if !emit {
                 // Flush current segment before skipping
-                flush(&mut seg_chars, seg_elem, seg_is_sigil, &mut spans, &elements, theme);
+                flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans, &elements, theme);
                 seg_elem = None;
                 seg_is_sigil = false;
+                seg_is_expanded = false;
                 continue;
             }
 
             let this_elem = elem_at(pos);
-            let this_is_sigil = in_heading_sigil && !is_content;
+            let this_is_expanded = in_expanded_elem;
+            let this_is_sigil = in_heading_sigil && !is_content && !in_expanded_elem;
 
             // If element or sigil status changes, flush
-            if this_elem != seg_elem || this_is_sigil != seg_is_sigil {
-                flush(&mut seg_chars, seg_elem, seg_is_sigil, &mut spans, &elements, theme);
+            if this_elem != seg_elem || this_is_sigil != seg_is_sigil || this_is_expanded != seg_is_expanded {
+                flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans, &elements, theme);
                 seg_elem = this_elem;
                 seg_is_sigil = this_is_sigil;
+                seg_is_expanded = this_is_expanded;
             }
             seg_chars.push(logical_chars[pos]);
         }
         // Flush remaining
-        flush(&mut seg_chars, seg_elem, seg_is_sigil, &mut spans, &elements, theme);
+        flush(&mut seg_chars, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans, &elements, theme);
 
         if spans.is_empty() {
             spans.push(Span::styled(content, Style::default().fg(theme.fg.to_ratatui())));
@@ -243,10 +244,16 @@ fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -
         } else {
             Style::default().fg(theme.accent.to_ratatui()).add_modifier(Modifier::BOLD)
         },
-        Some(ElementKind::HeadingH2) =>
-            Style::default().fg(theme.fg.to_ratatui()).add_modifier(Modifier::BOLD),
-        Some(ElementKind::HeadingH3) =>
-            Style::default().fg(theme.fg_secondary.to_ratatui()),
+        Some(ElementKind::HeadingH2) => if is_sigil_region {
+            Style::default().fg(theme.fg_muted.to_ratatui())
+        } else {
+            Style::default().fg(theme.fg.to_ratatui()).add_modifier(Modifier::BOLD)
+        },
+        Some(ElementKind::HeadingH3) => if is_sigil_region {
+            Style::default().fg(theme.fg_muted.to_ratatui())
+        } else {
+            Style::default().fg(theme.fg_secondary.to_ratatui())
+        },
         Some(ElementKind::Blockquote) =>
             Style::default().fg(theme.fg_secondary.to_ratatui()),
     }
