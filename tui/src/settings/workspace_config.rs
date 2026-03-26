@@ -71,7 +71,7 @@ impl WorkspaceConfig {
 
         // Set as current if it's the first workspace
         if self.workspaces.len() == 1 {
-            self.global.current_workspace = name;
+            self.global.current_workspace = name.clone();
         }
 
         Ok(())
@@ -83,5 +83,25 @@ impl WorkspaceConfig {
 
     pub fn get_workspace(&self, name: &str) -> Option<&WorkspaceEntry> {
         self.workspaces.get(name)
+    }
+
+    pub fn from_phase1_migration(
+        workspace_dir: PathBuf,
+        theme: String,
+        last_paths: Vec<String>,
+    ) -> Self {
+        let mut config = Self::new_empty();
+        config.global.theme = theme;
+
+        let entry = WorkspaceEntry {
+            path: workspace_dir,
+            last_paths,
+            created: Utc::now(),
+        };
+
+        config.workspaces.insert("default".to_string(), entry);
+        config.global.current_workspace = "default".to_string();
+
+        config
     }
 }

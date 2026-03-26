@@ -151,12 +151,20 @@ async fn test_cli_custom_config() {
     write_config(&config_path, workspace_dir.path());
 
     // Verify the config is honoured: settings loaded from the custom path
-    // should point to our temp workspace.
+    // should point to our temp workspace via Phase 2 workspace_config after migration.
     let settings =
         AppSettings::load_from_file(config_path.clone()).expect("settings should load");
+    let ws_config = settings
+        .workspace_config
+        .as_ref()
+        .expect("--config flag should load settings from the specified file");
+    let default_ws = ws_config
+        .workspaces
+        .get("default")
+        .expect("should have 'default' workspace after migration");
     assert_eq!(
-        settings.workspace_dir.as_deref(),
-        Some(workspace_dir.path()),
+        default_ws.path.as_path(),
+        workspace_dir.path(),
         "--config flag should load settings from the specified file"
     );
 
