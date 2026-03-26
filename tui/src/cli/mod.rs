@@ -1,6 +1,7 @@
 // tui/src/cli/mod.rs
 pub mod commands;
 pub mod output;
+pub mod json_output;
 
 use clap::Subcommand;
 use color_eyre::eyre::Result;
