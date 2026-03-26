@@ -8,23 +8,6 @@ pub enum OutputFormat {
     Text,
 }
 
-/// Format note entries as text output
-pub fn format_note_entries_text(entries: &[(NoteEntryData, NoteContentData)]) -> String {
-    let mut output = String::new();
-
-    for (entry_data, content_data) in entries {
-        let path = entry_data.path.to_string();
-        let title = format!("\"{}\"", content_data.title);
-        let size = entry_data.size;
-        let modified_secs = entry_data.modified_secs;
-
-        output.push_str(&format!("{}\t{}\t{}\t{}", path, title, size, modified_secs));
-        output.push('\n');
-    }
-
-    output
-}
-
 /// Format note entries as text with journal date detection
 pub fn format_note_entries_text_with_journal(
     vault: &kimun_core::NoteVault,

@@ -44,8 +44,8 @@ use crate::keys::key_event_to_combo;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
     color_eyre::install()?;
+    let cli = Cli::parse();
     #[cfg(debug_assertions)]
     {
         use simplelog::*;
