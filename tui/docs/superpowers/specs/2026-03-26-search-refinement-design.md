@@ -45,44 +45,184 @@ pub struct SearchTerms {
 ```
 
 **Parsing Logic Enhancement:**
-- Extend `ElementType` enum with exclusion variants
-- Modify `extract_and_consume` to handle `-` prefixed terms
-- Categorize terms into positive/negative collections during parsing
+
+**Extended ElementType enum:**
+```rust
+enum ElementType {
+    Invalid,
+    Term,
+    In,
+    At,
+    Path,
+    OrderBy { asc: bool },
+    // New exclusion variants
+    ExcludedTerm,
+    ExcludedIn,
+    ExcludedAt,
+    ExcludedPath,
+}
+```
+
+**Enhanced `extract_and_consume` logic:**
+```rust
+impl QueryTermExtractor {
+    fn extract_and_consume<S: AsRef<str>>(query: S) -> QueryTermExtractor {
+        let query = query.as_ref().trim();
+
+        // Check for exclusion prefixes first (compound prefixes)
+        if query.starts_with("in:-") || query.starts_with(">-") {
+            // Handle >-title or in:-title (excluded breadcrumb)
+            let remaining = query.strip_prefix("in:-").unwrap_or_else(||
+                query.strip_prefix(">-").unwrap_or(query));
+            return Self::parse_term(ElementType::ExcludedIn, remaining);
+        }
+
+        if query.starts_with("at:-") || query.starts_with("@-") {
+            // Handle @-filename or at:-filename (excluded filename)
+            let remaining = query.strip_prefix("at:-").unwrap_or_else(||
+                query.strip_prefix("@-").unwrap_or(query));
+            return Self::parse_term(ElementType::ExcludedAt, remaining);
+        }
+
+        if query.starts_with("pt:-") || query.starts_with("/-") {
+            // Handle /-path or pt:-path (excluded path)
+            let remaining = query.strip_prefix("pt:-").unwrap_or_else(||
+                query.strip_prefix("/-").unwrap_or(query));
+            return Self::parse_term(ElementType::ExcludedPath, remaining);
+        }
+
+        // Check for simple exclusion prefix
+        if query.starts_with("-") && !query.starts_with("--") {
+            // Handle -term (excluded content term)
+            let remaining = query.strip_prefix("-").unwrap_or(query);
+            // Avoid false positives: "-" alone or "- " should be treated as regular terms
+            if !remaining.is_empty() && !remaining.starts_with(" ") {
+                return Self::parse_term(ElementType::ExcludedTerm, remaining);
+            }
+        }
+
+        // Existing prefix logic (in:, >, at:, @, pt:, /, ^:, ^)
+        // ... (unchanged existing code) ...
+    }
+}
+```
+
+**Term categorization during parsing:**
+```rust
+match qp.el_type {
+    ElementType::Term => terms.push(qp.term),
+    ElementType::In => breadcrumb.push(qp.term),
+    ElementType::At => filename.push(qp.term),
+    ElementType::Path => path.push(qp.term),
+    ElementType::OrderBy { asc } => {
+        if let Some(o) = OrderBy::from_term(&qp.term, asc) {
+            order_by.push(o);
+        }
+    }
+    // New exclusion handling
+    ElementType::ExcludedTerm => excluded_terms.push(qp.term),
+    ElementType::ExcludedIn => excluded_breadcrumb.push(qp.term),
+    ElementType::ExcludedAt => excluded_filename.push(qp.term),
+    ElementType::ExcludedPath => excluded_path.push(qp.term),
+    ElementType::Invalid => {}
+}
+```
 
 ### Database Integration (`core/src/db/mod.rs`)
 
-**FTS4-Aware Query Building:**
-- **Content/Title Search:** Combine positive and negative terms into FTS4 expressions
-- **Filename/Path Search:** Generate separate `NOT LIKE` clauses for exclusions
-- **Query Combination:** Use existing `INTERSECT` approach to combine results
+**FTS4 Table Structure:**
+```sql
+CREATE VIRTUAL TABLE notesContent USING fts4(path, breadcrumb, text)
+```
 
-**Enhanced `build_search_sql_query` function:**
+**Current Query Building Pattern:**
+- Each search type generates a separate `SELECT` query with `WHERE` clause
+- All queries are combined using `INTERSECT`
+- Parameters are properly bound using `?` placeholders
+
+**Enhanced Query Building for Exclusions:**
 ```rust
-// For FTS4 queries (terms, breadcrumb)
+// Content search (searches ALL FTS4 columns: path, breadcrumb, text)
 if !search_terms.terms.is_empty() || !search_terms.excluded_terms.is_empty() {
-    let mut fts_terms = search_terms.terms.clone();
-    for excluded in &search_terms.excluded_terms {
-        fts_terms.push(format!("-{}", excluded));
+    let mut fts_query_parts = vec![];
+
+    // Add positive terms
+    if !search_terms.terms.is_empty() {
+        fts_query_parts.push(search_terms.terms.join(" "));
     }
-    // Use: notesContent MATCH ?
-    // With: "meeting project -cancelled"
+
+    // Add excluded terms with FTS4 - prefix
+    for excluded in &search_terms.excluded_terms {
+        fts_query_parts.push(format!("-{}", excluded));
+    }
+
+    let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
+    queries.push(terms_sql);
+    params.push(fts_query_parts.join(" "));
+    var_num += 1;
 }
 
-// For LIKE queries (filename, path)
+// Breadcrumb/title search (targets breadcrumb column specifically)
+if !search_terms.breadcrumb.is_empty() || !search_terms.excluded_breadcrumb.is_empty() {
+    let mut fts_query_parts = vec![];
+
+    // Add positive breadcrumb terms
+    if !search_terms.breadcrumb.is_empty() {
+        fts_query_parts.push(search_terms.breadcrumb.join(" "));
+    }
+
+    // Add excluded breadcrumb terms
+    for excluded in &search_terms.excluded_breadcrumb {
+        fts_query_parts.push(format!("-{}", excluded));
+    }
+
+    let terms_sql = format!("{} WHERE notesContent.breadcrumb MATCH ?{}", base_sql, var_num);
+    queries.push(terms_sql);
+    params.push(fts_query_parts.join(" "));
+    var_num += 1;
+}
+
+// Filename search (LIKE-based with manual exclusion)
 if !search_terms.filename.is_empty() || !search_terms.excluded_filename.is_empty() {
-    let mut conditions = vec![];
+    let mut positive_conditions = vec![];
+    let mut negative_conditions = vec![];
 
-    // Positive conditions
+    // Positive filename conditions
     for filename in search_terms.filename {
-        conditions.push("notes.noteName LIKE ('%' || ? || '%')");
+        if !filename.is_empty() {
+            positive_conditions.push(format!("notes.noteName LIKE ('%' || ?{} || '%')", var_num));
+            params.push(filename);
+            var_num += 1;
+        }
     }
 
-    // Negative conditions
+    // Negative filename conditions
     for excluded in search_terms.excluded_filename {
-        conditions.push("notes.noteName NOT LIKE ('%' || ? || '%')");
+        if !excluded.is_empty() {
+            negative_conditions.push(format!("notes.noteName NOT LIKE ('%' || ?{} || '%')", var_num));
+            params.push(excluded);
+            var_num += 1;
+        }
     }
 
-    // Combine: WHERE (positive OR positive) AND (NOT negative AND NOT negative)
+    // Combine conditions: (pos1 OR pos2 OR ...) AND (NOT neg1 AND NOT neg2 AND ...)
+    let mut where_parts = vec![];
+    if !positive_conditions.is_empty() {
+        where_parts.push(format!("({})", positive_conditions.join(" OR ")));
+    }
+    if !negative_conditions.is_empty() {
+        where_parts.push(format!("({})", negative_conditions.join(" AND ")));
+    }
+
+    // Handle edge case: only exclusions (should match everything except excluded)
+    let final_where = if positive_conditions.is_empty() && !negative_conditions.is_empty() {
+        negative_conditions.join(" AND ")
+    } else {
+        where_parts.join(" AND ")
+    };
+
+    let terms_sql = format!("{} WHERE {}", base_sql, final_where);
+    queries.push(terms_sql);
 }
 ```
 
@@ -102,34 +242,48 @@ if !search_terms.filename.is_empty() || !search_terms.excluded_filename.is_empty
    ```
 
 2. **Build SQL Components:**
-   - **Content FTS:** `notesContent MATCH "meeting -cancelled"`
+   - **Content FTS (all columns):** `notesContent MATCH "meeting -cancelled"`
    - **Filename LIKE:** `notes.noteName LIKE '%2024%'`
-   - **Title FTS:** `notesContent.breadcrumb MATCH "-draft"`
+   - **Title FTS (breadcrumb only):** `notesContent.breadcrumb MATCH "-draft"`
 
 3. **Combine with INTERSECT:**
    ```sql
-   (SELECT ... WHERE notesContent MATCH "meeting -cancelled")
+   (SELECT DISTINCT notes.path, title, size, modified, hash, noteName
+    FROM notesContent JOIN notes ON notesContent.path = notes.path
+    WHERE notesContent MATCH "meeting -cancelled")
    INTERSECT
-   (SELECT ... WHERE notes.noteName LIKE '%2024%')
+   (SELECT DISTINCT notes.path, title, size, modified, hash, noteName
+    FROM notesContent JOIN notes ON notesContent.path = notes.path
+    WHERE notes.noteName LIKE '%2024%')
    INTERSECT
-   (SELECT ... WHERE notesContent.breadcrumb MATCH "-draft")
+   (SELECT DISTINCT notes.path, title, size, modified, hash, noteName
+    FROM notesContent JOIN notes ON notesContent.path = notes.path
+    WHERE notesContent.breadcrumb MATCH "-draft")
    ```
 
 ### FTS4 Integration Details
 
-**Native FTS4 Exclusion:**
+**FTS4 Table Structure:**
+- Virtual table: `notesContent(path, breadcrumb, text)`
+- Content search (`terms`): Searches ALL columns (path, breadcrumb, text)
+- Title search (`breadcrumb`): Searches breadcrumb column specifically using `notesContent.breadcrumb MATCH`
+
+**Native FTS4 Exclusion Behavior:**
 - FTS4 supports `-term` syntax natively for efficient exclusion
 - Exclusions are processed at index level (faster than post-filtering)
 - Works with phrase matching: `-"cancelled meeting"`
+- **Important**: `notesContent MATCH "meeting -cancelled"` excludes "cancelled" from ALL columns (path, breadcrumb, text)
+- **Important**: `notesContent.breadcrumb MATCH "-draft"` excludes "draft" from breadcrumb column only
 
-**Query Construction:**
-- Combine positive and negative terms: `["meeting", "project", "-cancelled"]` → `"meeting project -cancelled"`
-- FTS4 handles operator precedence and optimization automatically
-- Maintains compatibility with existing FTS4 features
+**Query Construction Examples:**
+- Content exclusion: `"meeting project -cancelled"` (excludes cancelled from any column)
+- Title exclusion: `"-draft"` on breadcrumb column (excludes draft from titles only)
+- Mixed terms: Content query gets positive terms + exclusions, title query gets separate exclusions
 
-**Fallback for Complex Cases:**
-- If FTS4 query becomes malformed, gracefully fall back to positive-only search
-- Log warnings for debugging but maintain user experience
+**FTS4 Syntax Validation:**
+- SQLite FTS4 returns empty results for malformed queries (no crashes)
+- Common valid patterns: `"term1 term2 -excluded"`, `"-excluded1 -excluded2"`
+- Invalid patterns handled gracefully: malformed quotes, unrecognized operators
 
 ### Manual Exclusion for LIKE Queries
 
@@ -180,11 +334,23 @@ SELECT ... WHERE
 
 ### Backward Compatibility
 
-**Guaranteed Compatibility:**
-- All existing queries produce identical results
-- No changes to CLI command syntax or TUI search interface
-- Parser handles existing edge cases exactly as before
+**Guaranteed Identical Behavior:**
+- All existing search queries without `-` prefixes produce identical results
+- No changes to CLI command syntax (`kimun search "query"`) or TUI search interface
 - Performance characteristics remain the same for non-exclusion queries
+- Existing error handling behavior preserved
+
+**Edge Case Handling:**
+- `meeting -` (trailing dash): Treated as search for literal "meeting -" (current behavior)
+- `"meeting-cancelled"` (quoted with dash): Searches for exact phrase "meeting-cancelled" (no exclusion parsing)
+- `-` (dash alone): Treated as literal search term (current behavior)
+- `--term` (double dash): Treated as literal "--term" search (current behavior)
+
+**Parser Precedence Rules:**
+1. Quoted strings are parsed literally (no exclusion detection inside quotes)
+2. Compound prefixes checked before simple prefixes (`>-` before `>` and `-`)
+3. Exclusion prefixes require non-empty terms (`>-` alone is treated as literal `>-`)
+4. Whitespace handling follows existing patterns
 
 **Migration Safety:**
 - No database schema changes required
@@ -200,10 +366,10 @@ SELECT ... WHERE
 - Native SQLite optimization for exclusion queries
 - Scales well with vault size (O(log n) index lookups)
 
-**Benchmarking Targets:**
-- Small vaults (<1000 notes): Sub-100ms response
-- Medium vaults (1000-10000 notes): Sub-500ms response
-- Large vaults (10000+ notes): Sub-2s response
+**Performance Expectations:**
+- Small vaults (<1000 notes): Minimal impact over current search performance
+- Medium vaults (1000-10000 notes): Should remain responsive for typical queries
+- Large vaults (10000+ notes): Performance depends on exclusion complexity and result set size
 
 **Optimization Strategies:**
 - FTS4 exclusions are inherently efficient
@@ -218,9 +384,9 @@ SELECT ... WHERE
 - Result sets are typically smaller due to exclusions
 
 **Large Exclusion Lists:**
-- Multiple exclusions like `-a -b -c -d -e` scale linearly
-- FTS4 handles complex boolean expressions efficiently
-- Practical limit: ~50 exclusion terms before performance degradation
+- Multiple exclusions like `-a -b -c -d -e` scale with FTS4 query complexity
+- FTS4 handles boolean expressions efficiently at the index level
+- Performance testing needed to determine practical limits for exclusion count
 
 ## Testing Strategy
 
