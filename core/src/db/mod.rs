@@ -221,8 +221,23 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     Ok(())
 }
 
-pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
-    let search_terms = SearchTerms::from_query_string(query);
+fn add_exclusion_conditions(
+    excluded_terms: &[String],
+    var_num: &mut usize,
+    exclusion_conditions: &mut Vec<String>,
+    params: &mut Vec<String>,
+) {
+    for excluded in excluded_terms {
+        exclusion_conditions.push(format!(
+            "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
+            var_num
+        ));
+        params.push(excluded.clone());
+        *var_num += 1;
+    }
+}
+
+fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<String>) {
     let mut var_num = 1;
     let base_sql = "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
     let mut params = vec![];
@@ -239,14 +254,7 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
             } else {
                 // Mixed positive + exclusions: use NOT IN subqueries to avoid FTS4 path column bug
                 let mut exclusion_conditions = vec![];
-                for excluded in &search_terms.excluded_terms {
-                    exclusion_conditions.push(format!(
-                        "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
-                        var_num
-                    ));
-                    params.push(excluded.clone());
-                    var_num += 1;
-                }
+                add_exclusion_conditions(&search_terms.excluded_terms, &mut var_num, &mut exclusion_conditions, &mut params);
 
                 let terms_sql = format!(
                     "{} WHERE notesContent MATCH ?{} AND {}",
@@ -262,14 +270,7 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
             // Exclusion-only content query: FTS4 doesn't support pure exclusions
             // Use NOT IN approach with subquery for each excluded term
             let mut exclusion_conditions = vec![];
-            for excluded in &search_terms.excluded_terms {
-                exclusion_conditions.push(format!(
-                    "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
-                    var_num
-                ));
-                params.push(excluded.clone());
-                var_num += 1;
-            }
+            add_exclusion_conditions(&search_terms.excluded_terms, &mut var_num, &mut exclusion_conditions, &mut params);
 
             // Use base_sql to get all notes, then exclude matching ones
             let terms_sql = format!("{} WHERE {}", base_sql, exclusion_conditions.join(" AND "));
@@ -326,18 +327,18 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
         let mut positive_conditions = vec![];
         let mut negative_conditions = vec![];
 
-        for filename in search_terms.filename {
+        for filename in &search_terms.filename {
             if !filename.is_empty() {
                 positive_conditions.push(format!("notes.noteName LIKE ('%' || ?{} || '%')", var_num));
-                params.push(filename);
+                params.push(filename.clone());
                 var_num += 1;
             }
         }
 
-        for excluded in search_terms.excluded_filename {
+        for excluded in &search_terms.excluded_filename {
             if !excluded.is_empty() {
                 negative_conditions.push(format!("notes.noteName NOT LIKE ('%' || ?{} || '%')", var_num));
-                params.push(excluded);
+                params.push(excluded.clone());
                 var_num += 1;
             }
         }
@@ -360,7 +361,7 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
         let mut positive_conditions = vec![];
         let mut negative_conditions = vec![];
 
-        for path in search_terms.path {
+        for path in &search_terms.path {
             if !path.is_empty() {
                 match path.strip_suffix("/") {
                     Some(absolute) => {
@@ -376,7 +377,7 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
             }
         }
 
-        for excluded in search_terms.excluded_path {
+        for excluded in &search_terms.excluded_path {
             if !excluded.is_empty() {
                 match excluded.strip_suffix("/") {
                     Some(absolute) => {
@@ -417,6 +418,11 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
     (sql, params)
 }
 
+pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
+    let search_terms = SearchTerms::from_query_string(query);
+    build_search_sql_query_inner(&search_terms)
+}
+
 pub async fn get_all_notes(
     pool: &SqlitePool,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
@@ -434,8 +440,9 @@ pub async fn search_terms<S: AsRef<str>>(
     search_query: S,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let search_query = search_query.as_ref();
-    let order_by = SearchTerms::from_query_string(search_query).order_by;
-    let (query, params) = build_search_sql_query(search_query);
+    let search_terms = SearchTerms::from_query_string(search_query);
+    let (query, params) = build_search_sql_query_inner(&search_terms);
+    let order_by = search_terms.order_by;
 
     if query.is_empty() {
         debug!("No query provided");
