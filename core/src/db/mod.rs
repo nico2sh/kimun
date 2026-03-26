@@ -221,6 +221,50 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     Ok(())
 }
 
+fn combine_conditions(positive: Vec<String>, negative: Vec<String>) -> Option<String> {
+    match (positive.is_empty(), negative.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(positive.join(" OR ")),
+        (true, false) => Some(negative.join(" AND ")),
+        (false, false) => Some(format!(
+            "({}) AND ({})",
+            positive.join(" OR "),
+            negative.join(" AND ")
+        )),
+    }
+}
+
+fn build_like_conditions(
+    positive_terms: &[String],
+    negative_terms: &[String],
+    pos_condition_fn: impl Fn(usize) -> String,
+    neg_condition_fn: impl Fn(usize) -> String,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    push_term_fn: impl Fn(&String) -> String,
+) -> Option<String> {
+    let mut positive_conditions = vec![];
+    let mut negative_conditions = vec![];
+
+    for term in positive_terms {
+        if !term.is_empty() {
+            positive_conditions.push(pos_condition_fn(*var_num));
+            params.push(push_term_fn(term));
+            *var_num += 1;
+        }
+    }
+
+    for term in negative_terms {
+        if !term.is_empty() {
+            negative_conditions.push(neg_condition_fn(*var_num));
+            params.push(push_term_fn(term));
+            *var_num += 1;
+        }
+    }
+
+    combine_conditions(positive_conditions, negative_conditions)
+}
+
 fn add_exclusion_conditions(
     excluded_terms: &[String],
     var_num: &mut usize,
@@ -324,38 +368,18 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
         }
     }
     if !search_terms.filename.is_empty() || !search_terms.excluded_filename.is_empty() {
-        let mut positive_conditions = vec![];
-        let mut negative_conditions = vec![];
-
-        for filename in &search_terms.filename {
-            if !filename.is_empty() {
-                positive_conditions.push(format!("notes.noteName LIKE ('%' || ?{} || '%')", var_num));
-                params.push(filename.clone());
-                var_num += 1;
-            }
+        if let Some(final_where) = build_like_conditions(
+            &search_terms.filename,
+            &search_terms.excluded_filename,
+            |n| format!("notes.noteName LIKE ('%' || ?{} || '%')", n),
+            |n| format!("notes.noteName NOT LIKE ('%' || ?{} || '%')", n),
+            &mut var_num,
+            &mut params,
+            |t| t.clone(),
+        ) {
+            let terms_sql = format!("{} WHERE {}", base_sql, final_where);
+            queries.push(terms_sql);
         }
-
-        for excluded in &search_terms.excluded_filename {
-            if !excluded.is_empty() {
-                negative_conditions.push(format!("notes.noteName NOT LIKE ('%' || ?{} || '%')", var_num));
-                params.push(excluded.clone());
-                var_num += 1;
-            }
-        }
-
-        let final_where = match (positive_conditions.is_empty(), negative_conditions.is_empty()) {
-            (false, false) => format!(
-                "({}) AND ({})",
-                positive_conditions.join(" OR "),
-                negative_conditions.join(" AND ")
-            ),
-            (false, true) => positive_conditions.join(" OR "),
-            (true, false) => negative_conditions.join(" AND "),
-            (true, true) => unreachable!(),
-        };
-
-        let terms_sql = format!("{} WHERE {}", base_sql, final_where);
-        queries.push(terms_sql);
     }
     if !search_terms.path.is_empty() || !search_terms.excluded_path.is_empty() {
         let mut positive_conditions = vec![];
@@ -393,19 +417,10 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
             }
         }
 
-        let final_where = match (positive_conditions.is_empty(), negative_conditions.is_empty()) {
-            (false, false) => format!(
-                "({}) AND ({})",
-                positive_conditions.join(" OR "),
-                negative_conditions.join(" AND ")
-            ),
-            (false, true) => positive_conditions.join(" OR "),
-            (true, false) => negative_conditions.join(" AND "),
-            (true, true) => unreachable!(),
-        };
-
-        let terms_sql = format!("{} WHERE {}", base_sql, final_where);
-        queries.push(terms_sql);
+        if let Some(final_where) = combine_conditions(positive_conditions, negative_conditions) {
+            let terms_sql = format!("{} WHERE {}", base_sql, final_where);
+            queries.push(terms_sql);
+        }
     }
 
     if queries.is_empty() {
