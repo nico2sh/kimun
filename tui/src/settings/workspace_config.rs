@@ -3,6 +3,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
+pub enum WorkspaceConfigError {
+    DuplicateWorkspace {
+        name: String,
+        existing_path: PathBuf,
+    },
+}
+
+impl std::fmt::Display for WorkspaceConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorkspaceConfigError::DuplicateWorkspace { name, existing_path } => {
+                write!(f, "Workspace '{}' already exists at {:?}", name, existing_path)
+            }
+        }
+    }
+}
+
+impl std::error::Error for WorkspaceConfigError {}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GlobalConfig {
     pub current_workspace: String,
@@ -33,13 +53,12 @@ impl WorkspaceConfig {
         }
     }
 
-    pub fn add_workspace(&mut self, name: String, path: PathBuf) -> Result<(), String> {
+    pub fn add_workspace(&mut self, name: String, path: PathBuf) -> Result<(), WorkspaceConfigError> {
         if self.workspaces.contains_key(&name) {
-            return Err(format!(
-                "Workspace '{}' already exists at {:?}",
-                name,
-                self.workspaces[&name].path
-            ));
+            return Err(WorkspaceConfigError::DuplicateWorkspace {
+                name: name.clone(),
+                existing_path: self.workspaces[&name].path.clone(),
+            });
         }
 
         let entry = WorkspaceEntry {
