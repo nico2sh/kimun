@@ -227,20 +227,83 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
     let base_sql = "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
     let mut params = vec![];
     let mut queries = vec![];
-    if !search_terms.terms.is_empty() {
-        let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
-        queries.push(terms_sql);
-        params.push(search_terms.terms.join(" "));
-        var_num += 1;
+    if !search_terms.terms.is_empty() || !search_terms.excluded_terms.is_empty() {
+        if !search_terms.terms.is_empty() {
+            // Positive content terms: create query with all positive terms + exclusions
+            let mut fts_query_parts = vec![search_terms.terms.join(" ")];
+
+            // Add excluded terms with FTS4 - prefix
+            for excluded in &search_terms.excluded_terms {
+                fts_query_parts.push(format!("-{}", excluded));
+            }
+
+            let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
+            queries.push(terms_sql);
+            params.push(fts_query_parts.join(" "));
+            var_num += 1;
+        } else if !search_terms.excluded_terms.is_empty() {
+            // Exclusion-only content query: FTS4 doesn't support pure exclusions
+            // Use NOT IN approach with subquery for each excluded term
+            let mut exclusion_conditions = vec![];
+            for excluded in &search_terms.excluded_terms {
+                exclusion_conditions.push(format!(
+                    "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
+                    var_num
+                ));
+                params.push(excluded.clone());
+                var_num += 1;
+            }
+
+            // Use base_sql to get all notes, then exclude matching ones
+            let terms_sql = format!("{} WHERE {}", base_sql, exclusion_conditions.join(" AND "));
+            queries.push(terms_sql);
+        }
     }
-    if !search_terms.breadcrumb.is_empty() {
-        let terms_sql = format!(
-            "{} WHERE notesContent.breadcrumb MATCH ?{}",
-            base_sql, var_num
-        );
-        queries.push(terms_sql);
-        params.push(search_terms.breadcrumb.join(" "));
-        var_num += 1;
+    if !search_terms.breadcrumb.is_empty() || !search_terms.excluded_breadcrumb.is_empty() {
+        if !search_terms.breadcrumb.is_empty() {
+            if search_terms.excluded_breadcrumb.is_empty() {
+                // Positive-only breadcrumb terms: use column-specific MATCH syntax
+                let terms_sql = format!(
+                    "{} WHERE notesContent.breadcrumb MATCH ?{}",
+                    base_sql, var_num
+                );
+                queries.push(terms_sql);
+                params.push(search_terms.breadcrumb.join(" "));
+                var_num += 1;
+            } else {
+                // Positive breadcrumb terms with exclusions: use column-prefix syntax in notesContent MATCH
+                let mut breadcrumb_parts = vec![];
+
+                // Add positive breadcrumb terms with column prefix
+                for breadcrumb in &search_terms.breadcrumb {
+                    breadcrumb_parts.push(format!("breadcrumb: {}", breadcrumb));
+                }
+
+                // Add excluded breadcrumb terms with column prefix
+                for excluded in &search_terms.excluded_breadcrumb {
+                    breadcrumb_parts.push(format!("breadcrumb: -{}", excluded));
+                }
+
+                let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
+                queries.push(terms_sql);
+                params.push(breadcrumb_parts.join(" "));
+                var_num += 1;
+            }
+        } else if !search_terms.excluded_breadcrumb.is_empty() {
+            // Exclusion-only breadcrumb query: use NOT IN approach for breadcrumb column
+            let mut exclusion_conditions = vec![];
+            for excluded in &search_terms.excluded_breadcrumb {
+                exclusion_conditions.push(format!(
+                    "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
+                    var_num
+                ));
+                params.push(format!("breadcrumb: {}", excluded));
+                var_num += 1;
+            }
+
+            let terms_sql = format!("{} WHERE {}", base_sql, exclusion_conditions.join(" AND "));
+            queries.push(terms_sql);
+        }
     }
     if !search_terms.filename.is_empty() {
         let mut conditions = vec![];
@@ -1064,5 +1127,40 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "keyword");
         assert_eq!(params[1], "section");
+    }
+
+    #[test]
+    fn test_fts4_mixed_exclusion_sql_generation() {
+        let (sql, params) = build_search_sql_query("meeting -cancelled");
+
+        assert!(sql.contains("notesContent MATCH"));
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "meeting -cancelled");
+
+        // Should generate single query with combined positive and negative terms
+        assert!(sql.contains("SELECT DISTINCT"));
+    }
+
+    #[test]
+    fn test_exclusion_only_sql_generation() {
+        // Critical test: exclusion-only queries MUST use NOT IN, not pure FTS4 MATCH
+        let (sql, params) = build_search_sql_query("-cancelled");
+
+        // Should NOT contain pure FTS4 exclusion (which is invalid)
+        assert!(!sql.contains("MATCH \"-cancelled\""));
+        // Should use NOT IN subquery approach
+        assert!(sql.contains("NOT IN"));
+        assert!(sql.contains("SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"));
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "cancelled");
+    }
+
+    #[test]
+    fn test_breadcrumb_exclusion_sql_generation() {
+        let (sql, params) = build_search_sql_query(">project >-draft");
+
+        assert!(sql.contains("notesContent MATCH"));
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], "breadcrumb: project breadcrumb: -draft");
     }
 }
