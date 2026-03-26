@@ -30,138 +30,70 @@ struct QueryTermExtractor {
     remainder: String,
 }
 
+// Table of (long_prefix, short_prefix, element_type_tag) for non-special prefix types.
+// Excluded variants must come before their positive counterparts so longer prefixes match first.
+type PrefixEntry = (&'static str, &'static str, fn() -> ElementType);
+
+fn prefix_table() -> [PrefixEntry; 6] {
+    [
+        ("in:-", ">-", || ElementType::ExcludedIn),
+        ("at:-", "@-", || ElementType::ExcludedAt),
+        ("pt:-", "/-", || ElementType::ExcludedPath),
+        ("in:", ">",  || ElementType::In),
+        ("at:", "@",  || ElementType::At),
+        ("pt:", "/",  || ElementType::Path),
+    ]
+}
+
+fn detect_prefix(query: &str) -> Option<(ElementType, &str)> {
+    for (long, short, make_type) in prefix_table() {
+        if let Some(remaining) = query.strip_prefix(long).or_else(|| query.strip_prefix(short)) {
+            return Some((make_type(), remaining));
+        }
+    }
+    None
+}
+
 impl QueryTermExtractor {
     fn extract_and_consume<S: AsRef<str>>(query: S) -> QueryTermExtractor {
         let query = query.as_ref().trim();
-        let in_prefix = format!("{}:", IN_LETTER);
-        let at_prefix = format!("{}:", AT_LETTER);
-        let order_prefix = format!("{}:", ORDER_LETTER);
-        let path_prefix = format!("{}:", PATH_LETTER);
-        let excluded_in_prefix = format!("{}:-", IN_LETTER);
-        let excluded_at_prefix = format!("{}:-", AT_LETTER);
-        let excluded_path_prefix = format!("{}:-", PATH_LETTER);
-        let excluded_in_short = format!("{}-", IN_CHAR);
-        let excluded_at_short = format!("{}-", AT_CHAR);
-        let excluded_path_short = format!("{}-", PATH_CHAR);
 
-        let (element_type, remaining) = if query.starts_with(&excluded_in_prefix) {
-            (
-                ElementType::ExcludedIn,
-                query
-                    .strip_prefix(&excluded_in_prefix)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&excluded_in_short) {
-            (
-                ElementType::ExcludedIn,
-                query
-                    .strip_prefix(&excluded_in_short)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&excluded_at_prefix) {
-            (
-                ElementType::ExcludedAt,
-                query
-                    .strip_prefix(&excluded_at_prefix)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&excluded_at_short) {
-            (
-                ElementType::ExcludedAt,
-                query
-                    .strip_prefix(&excluded_at_short)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&excluded_path_prefix) {
-            (
-                ElementType::ExcludedPath,
-                query
-                    .strip_prefix(&excluded_path_prefix)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&excluded_path_short) {
-            (
-                ElementType::ExcludedPath,
-                query
-                    .strip_prefix(&excluded_path_short)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
+        let (element_type, remaining) = if let Some((el_type, remaining)) = detect_prefix(query) {
+            (el_type, remaining.to_string())
         } else if query.starts_with("-") {
             // Handle excluded terms (simple `-term` syntax)
             (
                 ElementType::ExcludedTerm,
-                query
-                    .strip_prefix("-")
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&in_prefix) {
-            (
-                ElementType::In,
-                query
-                    .strip_prefix(&in_prefix)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(IN_CHAR) {
-            (
-                ElementType::In,
-                query
-                    .strip_prefix(IN_CHAR)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&at_prefix) {
-            (
-                ElementType::At,
-                query
-                    .strip_prefix(&at_prefix)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(AT_CHAR) {
-            (
-                ElementType::At,
-                query
-                    .strip_prefix(AT_CHAR)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&order_prefix) {
-            let desc_prefix = format!("{order_prefix}-");
-            let (asc, prefix) = if query.starts_with(&desc_prefix) {
-                (false, desc_prefix)
-            } else {
-                (true, order_prefix)
-            };
-
-            (
-                ElementType::OrderBy { asc },
-                query.strip_prefix(&prefix).unwrap_or(query).to_string(),
-            )
-        } else if query.starts_with(ORDER_CHAR) {
-            let desc_prefix = format!("{ORDER_CHAR}-");
-            let (asc, prefix) = if query.starts_with(&desc_prefix) {
-                (false, desc_prefix.as_str())
-            } else {
-                (true, ORDER_CHAR)
-            };
-
-            (
-                ElementType::OrderBy { asc },
-                query.strip_prefix(prefix).unwrap_or(query).to_string(),
-            )
-        } else if query.starts_with(&path_prefix) {
-            (
-                ElementType::Path,
-                query
-                    .strip_prefix(&path_prefix)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(PATH_CHAR) {
-            (
-                ElementType::Path,
-                query
-                    .strip_prefix(PATH_CHAR)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+                query.strip_prefix("-").unwrap().to_string(),
             )
         } else {
-            (ElementType::Term, query.to_string())
+            // Handle OrderBy (special case with asc/desc sub-detection)
+            let order_prefix = format!("{}:", ORDER_LETTER);
+            if query.starts_with(&order_prefix) {
+                let desc_prefix = format!("{order_prefix}-");
+                let (asc, prefix) = if query.starts_with(&desc_prefix) {
+                    (false, desc_prefix)
+                } else {
+                    (true, order_prefix)
+                };
+                (
+                    ElementType::OrderBy { asc },
+                    query.strip_prefix(&prefix).unwrap_or(query).to_string(),
+                )
+            } else if query.starts_with(ORDER_CHAR) {
+                let desc_prefix = format!("{ORDER_CHAR}-");
+                let (asc, prefix) = if query.starts_with(&desc_prefix) {
+                    (false, desc_prefix.as_str())
+                } else {
+                    (true, ORDER_CHAR)
+                };
+                (
+                    ElementType::OrderBy { asc },
+                    query.strip_prefix(prefix).unwrap_or(query).to_string(),
+                )
+            } else {
+                (ElementType::Term, query.to_string())
+            }
         };
 
         let (sep_char, mut term) = if remaining.starts_with('"') {
