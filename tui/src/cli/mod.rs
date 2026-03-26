@@ -32,12 +32,18 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
         None => AppSettings::load_from_disk()?,
     };
 
-    let workspace = match settings.workspace_dir {
-        Some(dir) => dir,
-        None => {
+    let workspace = if let Some(dir) = settings.workspace_dir {
+        dir
+    } else if let Some(ref ws_config) = settings.workspace_config {
+        if let Some(entry) = ws_config.get_current_workspace() {
+            entry.path.clone()
+        } else {
             eprintln!("Error: No workspace configured. Run 'kimun' to set up a workspace.");
             std::process::exit(1);
         }
+    } else {
+        eprintln!("Error: No workspace configured. Run 'kimun' to set up a workspace.");
+        std::process::exit(1);
     };
 
     // Create vault
