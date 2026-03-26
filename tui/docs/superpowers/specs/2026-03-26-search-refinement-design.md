@@ -70,47 +70,72 @@ impl QueryTermExtractor {
         let query = query.as_ref().trim();
 
         // Check for exclusion prefixes first (compound prefixes)
-        if query.starts_with("in:-") {
-            // Handle in:-title (excluded breadcrumb)
-            let remaining = query.strip_prefix("in:-").unwrap();
-            return Self::parse_term(ElementType::ExcludedIn, remaining);
-        }
-        if query.starts_with(">-") {
-            // Handle >-title (excluded breadcrumb)
-            let remaining = query.strip_prefix(">-").unwrap();
-            return Self::parse_term(ElementType::ExcludedIn, remaining);
-        }
+        let in_exclude_prefix = "in:-";
+        let at_exclude_prefix = "at:-";
+        let path_exclude_prefix = "pt:-";
 
-        if query.starts_with("at:-") {
-            // Handle at:-filename (excluded filename)
-            let remaining = query.strip_prefix("at:-").unwrap();
-            return Self::parse_term(ElementType::ExcludedAt, remaining);
-        }
-        if query.starts_with("@-") {
-            // Handle @-filename (excluded filename)
-            let remaining = query.strip_prefix("@-").unwrap();
-            return Self::parse_term(ElementType::ExcludedAt, remaining);
-        }
-
-        if query.starts_with("pt:-") {
-            // Handle pt:-path (excluded path)
-            let remaining = query.strip_prefix("pt:-").unwrap();
-            return Self::parse_term(ElementType::ExcludedPath, remaining);
-        }
-        if query.starts_with("/-") {
-            // Handle /-path (excluded path)
-            let remaining = query.strip_prefix("/-").unwrap();
-            return Self::parse_term(ElementType::ExcludedPath, remaining);
-        }
-
-        // Check for simple exclusion prefix
-        if query.starts_with("-") && !query.starts_with("--") {
+        let (element_type, remaining) = if query.starts_with(&in_exclude_prefix) {
+            (
+                ElementType::ExcludedIn,
+                query
+                    .strip_prefix(&in_exclude_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(">-") {
+            (
+                ElementType::ExcludedIn,
+                query
+                    .strip_prefix(">-")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&at_exclude_prefix) {
+            (
+                ElementType::ExcludedAt,
+                query
+                    .strip_prefix(&at_exclude_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("@-") {
+            (
+                ElementType::ExcludedAt,
+                query
+                    .strip_prefix("@-")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&path_exclude_prefix) {
+            (
+                ElementType::ExcludedPath,
+                query
+                    .strip_prefix(&path_exclude_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("/-") {
+            (
+                ElementType::ExcludedPath,
+                query
+                    .strip_prefix("/-")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("-") && !query.starts_with("--") {
             // Handle -term (excluded content term)
-            let remaining = query.strip_prefix("-").unwrap_or(query);
+            let remaining = query
+                .strip_prefix("-")
+                .map_or_else(|| query.to_string(), |s| s.to_string());
             // Avoid false positives: "-" alone or "- " should be treated as regular terms
             if !remaining.is_empty() && !remaining.starts_with(" ") {
-                return Self::parse_term(ElementType::ExcludedTerm, remaining);
+                (ElementType::ExcludedTerm, remaining)
+            } else {
+                (ElementType::Term, query.to_string())
             }
+        } else {
+            // Fall through to existing prefix logic (in:, >, at:, @, pt:, /, ^:, ^)
+            // ... (continue with existing code) ...
+        };
+
+        // If we detected an exclusion prefix, validate and parse the term
+        if !matches!(element_type, ElementType::Term) {
+            // Continue with term extraction using existing parsing logic
+            // ... (existing quote handling and term extraction) ...
         }
 
         // Existing prefix logic (in:, >, at:, @, pt:, /, ^:, ^)
@@ -202,17 +227,20 @@ if !search_terms.terms.is_empty() || !search_terms.excluded_terms.is_empty() {
         params.push(fts_query_parts.join(" "));
         var_num += 1;
     } else if !search_terms.excluded_terms.is_empty() {
-        // Exclusion-only content query: match all then exclude
-        let mut exclusion_parts = vec![];
+        // Exclusion-only content query: FTS4 doesn't support pure exclusions
+        // Use NOT IN approach with subquery for excluded terms
+        let mut exclusion_conditions = vec![];
         for excluded in &search_terms.excluded_terms {
-            exclusion_parts.push(format!("-{}", excluded));
+            exclusion_conditions.push(format!(
+                "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
+                var_num
+            ));
+            params.push(excluded.clone());
+            var_num += 1;
         }
 
-        // Use FTS4 exclusion syntax - this will match documents that don't contain excluded terms
-        let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
+        let terms_sql = format!("{} WHERE {}", base_sql, exclusion_conditions.join(" AND "));
         queries.push(terms_sql);
-        params.push(exclusion_parts.join(" "));
-        var_num += 1;
     }
 }
 
@@ -220,28 +248,36 @@ if !search_terms.terms.is_empty() || !search_terms.excluded_terms.is_empty() {
 if !search_terms.breadcrumb.is_empty() || !search_terms.excluded_breadcrumb.is_empty() {
     if !search_terms.breadcrumb.is_empty() {
         // Positive breadcrumb terms: create query with positive terms + exclusions
-        let mut fts_query_parts = vec![search_terms.breadcrumb.join(" ")];
+        let mut breadcrumb_parts = vec![];
 
-        // Add excluded breadcrumb terms
-        for excluded in &search_terms.excluded_breadcrumb {
-            fts_query_parts.push(format!("-{}", excluded));
+        // Add positive breadcrumb terms with column prefix
+        for breadcrumb in &search_terms.breadcrumb {
+            breadcrumb_parts.push(format!("breadcrumb: {}", breadcrumb));
         }
 
-        let terms_sql = format!("{} WHERE notesContent.breadcrumb MATCH ?{}", base_sql, var_num);
+        // Add excluded breadcrumb terms with column prefix
+        for excluded in &search_terms.excluded_breadcrumb {
+            breadcrumb_parts.push(format!("breadcrumb: -{}", excluded));
+        }
+
+        let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
         queries.push(terms_sql);
-        params.push(fts_query_parts.join(" "));
+        params.push(breadcrumb_parts.join(" "));
         var_num += 1;
     } else if !search_terms.excluded_breadcrumb.is_empty() {
-        // Exclusion-only breadcrumb query: exclude from breadcrumb column
-        let mut exclusion_parts = vec![];
+        // Exclusion-only breadcrumb query: use NOT IN approach for breadcrumb column
+        let mut exclusion_conditions = vec![];
         for excluded in &search_terms.excluded_breadcrumb {
-            exclusion_parts.push(format!("-{}", excluded));
+            exclusion_conditions.push(format!(
+                "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH 'breadcrumb: ' || ?{})",
+                var_num
+            ));
+            params.push(excluded.clone());
+            var_num += 1;
         }
 
-        let terms_sql = format!("{} WHERE notesContent.breadcrumb MATCH ?{}", base_sql, var_num);
+        let terms_sql = format!("{} WHERE {}", base_sql, exclusion_conditions.join(" AND "));
         queries.push(terms_sql);
-        params.push(exclusion_parts.join(" "));
-        var_num += 1;
     }
 }
 
@@ -328,8 +364,8 @@ if !search_terms.filename.is_empty() || !search_terms.excluded_filename.is_empty
 
 **FTS4 Table Structure:**
 - Virtual table: `notesContent(path, breadcrumb, text)`
-- Content search (`terms`): Uses `notesContent MATCH` which searches ALL columns (path, breadcrumb, text)
-- Title search (`breadcrumb`): Uses `notesContent.breadcrumb MATCH` which searches breadcrumb column only
+- Content search (`terms`): Uses `notesContent MATCH 'term'` which searches ALL columns (path, breadcrumb, text)
+- Title search (`breadcrumb`): Uses `notesContent MATCH 'breadcrumb: term'` which searches breadcrumb column only
 
 **Native FTS4 Exclusion Behavior:**
 - FTS4 supports `-term` syntax natively for efficient exclusion
@@ -337,10 +373,10 @@ if !search_terms.filename.is_empty() || !search_terms.excluded_filename.is_empty
 - Works with phrase matching: `-"cancelled meeting"`
 
 **Critical Exclusion Scope:**
-- **Content exclusions**: `notesContent MATCH "meeting -cancelled"` will exclude "cancelled" from ALL columns (path, breadcrumb, text), not just text content
-- **Title exclusions**: `notesContent.breadcrumb MATCH "project -draft"` will exclude "draft" from breadcrumb column only
-- **Exclusion-only queries**: `notesContent MATCH "-cancelled"` returns documents that don't contain "cancelled" in any column
-- **Column-specific exclusion-only**: `notesContent.breadcrumb MATCH "-draft"` returns documents where breadcrumb doesn't contain "draft"
+- **Content exclusions with positive terms**: `notesContent MATCH "meeting -cancelled"` will exclude "cancelled" from ALL columns while requiring "meeting"
+- **Title exclusions with positive terms**: `notesContent MATCH "breadcrumb: project breadcrumb: -draft"` excludes "draft" from breadcrumb while requiring "project"
+- **FTS4 Limitation**: Pure exclusion queries like `MATCH "-cancelled"` are NOT valid FTS4 syntax and will cause errors
+- **Exclusion-only workaround**: Use `NOT IN` subqueries for exclusion-only searches
 
 **Query Construction Examples:**
 - Content exclusion: `"meeting project -cancelled"` (excludes cancelled from any column)
@@ -348,10 +384,10 @@ if !search_terms.filename.is_empty() || !search_terms.excluded_filename.is_empty
 - Mixed terms: Content query gets positive terms + exclusions, title query gets separate exclusions
 
 **Exclusion-Only Query Handling:**
-- `>-draft` (title exclusion only): `notesContent.breadcrumb MATCH "-draft"` returns all documents where breadcrumb doesn't contain "draft"
-- `-cancelled` (content exclusion only): `notesContent MATCH "-cancelled"` returns all documents where no column contains "cancelled"
-- Multiple exclusions: `>-draft >-private` becomes `notesContent.breadcrumb MATCH "-draft -private"`
-- **INTERSECT behavior**: Exclusion-only queries generate valid queries that get intersected normally with other search types
+- `>-draft` (title exclusion only): Uses `NOT IN` subquery to exclude documents where breadcrumb contains "draft"
+- `-cancelled` (content exclusion only): Uses `NOT IN` subquery to exclude documents where any column contains "cancelled"
+- Multiple exclusions: Multiple `NOT IN` conditions combined with `AND`
+- **INTERSECT behavior**: `NOT IN` queries generate valid SQL that gets intersected normally with other search types
 
 **FTS4 Syntax Validation:**
 - SQLite FTS4 returns empty results for malformed queries (no crashes)
