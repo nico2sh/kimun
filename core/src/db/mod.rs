@@ -305,37 +305,88 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
             queries.push(terms_sql);
         }
     }
-    if !search_terms.filename.is_empty() {
-        let mut conditions = vec![];
+    if !search_terms.filename.is_empty() || !search_terms.excluded_filename.is_empty() {
+        let mut positive_conditions = vec![];
+        let mut negative_conditions = vec![];
+
         for filename in search_terms.filename {
             if !filename.is_empty() {
-                conditions.push(format!("notes.noteName LIKE ('%' || ?{} || '%')", var_num));
+                positive_conditions.push(format!("notes.noteName LIKE ('%' || ?{} || '%')", var_num));
                 params.push(filename);
                 var_num += 1;
             }
         }
-        let terms_sql = format!("{} WHERE {}", base_sql, conditions.join(" OR "));
+
+        for excluded in search_terms.excluded_filename {
+            if !excluded.is_empty() {
+                negative_conditions.push(format!("notes.noteName NOT LIKE ('%' || ?{} || '%')", var_num));
+                params.push(excluded);
+                var_num += 1;
+            }
+        }
+
+        let final_where = match (positive_conditions.is_empty(), negative_conditions.is_empty()) {
+            (false, false) => format!(
+                "({}) AND ({})",
+                positive_conditions.join(" OR "),
+                negative_conditions.join(" AND ")
+            ),
+            (false, true) => positive_conditions.join(" OR "),
+            (true, false) => negative_conditions.join(" AND "),
+            (true, true) => unreachable!(),
+        };
+
+        let terms_sql = format!("{} WHERE {}", base_sql, final_where);
         queries.push(terms_sql);
     }
-    if !search_terms.path.is_empty() {
-        let mut conditions = vec![];
+    if !search_terms.path.is_empty() || !search_terms.excluded_path.is_empty() {
+        let mut positive_conditions = vec![];
+        let mut negative_conditions = vec![];
+
         for path in search_terms.path {
             if !path.is_empty() {
                 match path.strip_suffix("/") {
                     Some(absolute) => {
-                        conditions.push(format!("notes.basePath = ('/' || ?{})", var_num));
+                        positive_conditions.push(format!("notes.basePath = ('/' || ?{})", var_num));
                         params.push(absolute.to_string());
                     }
                     None => {
-                        conditions
-                            .push(format!("notes.basePath LIKE ('/' || ?{} || '%')", var_num));
+                        positive_conditions.push(format!("notes.basePath LIKE ('/' || ?{} || '%')", var_num));
                         params.push(path.to_string());
                     }
                 }
                 var_num += 1;
             }
         }
-        let terms_sql = format!("{} WHERE {}", base_sql, conditions.join(" OR "));
+
+        for excluded in search_terms.excluded_path {
+            if !excluded.is_empty() {
+                match excluded.strip_suffix("/") {
+                    Some(absolute) => {
+                        negative_conditions.push(format!("notes.basePath != ('/' || ?{})", var_num));
+                        params.push(absolute.to_string());
+                    }
+                    None => {
+                        negative_conditions.push(format!("notes.basePath NOT LIKE ('/' || ?{} || '%')", var_num));
+                        params.push(excluded.to_string());
+                    }
+                }
+                var_num += 1;
+            }
+        }
+
+        let final_where = match (positive_conditions.is_empty(), negative_conditions.is_empty()) {
+            (false, false) => format!(
+                "({}) AND ({})",
+                positive_conditions.join(" OR "),
+                negative_conditions.join(" AND ")
+            ),
+            (false, true) => positive_conditions.join(" OR "),
+            (true, false) => negative_conditions.join(" AND "),
+            (true, true) => unreachable!(),
+        };
+
+        let terms_sql = format!("{} WHERE {}", base_sql, final_where);
         queries.push(terms_sql);
     }
 
@@ -1162,5 +1213,45 @@ mod tests {
         assert!(sql.contains("notesContent MATCH"));
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], "breadcrumb: project breadcrumb: -draft");
+    }
+
+    #[test]
+    fn test_like_exclusion_sql_generation() {
+        let (sql, params) = build_search_sql_query("@2024 @-draft");
+
+        // Should generate filename query with positive and negative conditions
+        assert!(sql.contains("notes.noteName LIKE"));
+        assert!(sql.contains("notes.noteName NOT LIKE"));
+        assert!(params.contains(&"2024".to_string()));
+        assert!(params.contains(&"draft".to_string()));
+    }
+
+    #[test]
+    fn test_exclusion_only_like_query() {
+        let (sql, params) = build_search_sql_query("@-draft @-temp");
+
+        // Exclusion-only should still generate valid WHERE clause
+        assert!(sql.contains("notes.noteName NOT LIKE"));
+        assert!(!sql.contains("notes.noteName LIKE ('%'")); // No positive conditions
+        assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn test_path_exclusion_sql_generation() {
+        let (sql, params) = build_search_sql_query("/projects /-archive");
+
+        assert!(sql.contains("notes.basePath LIKE"));
+        assert!(sql.contains("notes.basePath NOT LIKE"));
+        assert!(params.contains(&"projects".to_string()));
+        assert!(params.contains(&"archive".to_string()));
+    }
+
+    #[test]
+    fn test_exclusion_only_path_query() {
+        let (sql, params) = build_search_sql_query("/-draft /-temp");
+
+        assert!(sql.contains("notes.basePath NOT LIKE"));
+        assert!(!sql.contains("notes.basePath LIKE ('/'"));
+        assert_eq!(params.len(), 2);
     }
 }
