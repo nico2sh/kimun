@@ -37,9 +37,12 @@ impl QueryTermExtractor {
         let at_prefix = format!("{}:", AT_LETTER);
         let order_prefix = format!("{}:", ORDER_LETTER);
         let path_prefix = format!("{}:", PATH_LETTER);
-        let excluded_in_prefix = format!("-{}:", IN_LETTER);
-        let excluded_at_prefix = format!("-{}:", AT_LETTER);
-        let excluded_path_prefix = format!("-{}:", PATH_LETTER);
+        let excluded_in_prefix = format!("{}:-", IN_LETTER);
+        let excluded_at_prefix = format!("{}:-", AT_LETTER);
+        let excluded_path_prefix = format!("{}:-", PATH_LETTER);
+        let excluded_in_short = format!("{}-", IN_CHAR);
+        let excluded_at_short = format!("{}-", AT_CHAR);
+        let excluded_path_short = format!("{}-", PATH_CHAR);
 
         let (element_type, remaining) = if query.starts_with(&excluded_in_prefix) {
             (
@@ -48,18 +51,11 @@ impl QueryTermExtractor {
                     .strip_prefix(&excluded_in_prefix)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
-        } else if query.starts_with("-in:") {
+        } else if query.starts_with(&excluded_in_short) {
             (
                 ElementType::ExcludedIn,
                 query
-                    .strip_prefix("-in:")
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with("-") && query.starts_with(&format!("-{}", IN_CHAR)) {
-            (
-                ElementType::ExcludedIn,
-                query
-                    .strip_prefix(&format!("-{}", IN_CHAR))
+                    .strip_prefix(&excluded_in_short)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
         } else if query.starts_with(&excluded_at_prefix) {
@@ -69,18 +65,11 @@ impl QueryTermExtractor {
                     .strip_prefix(&excluded_at_prefix)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
-        } else if query.starts_with("-at:") {
+        } else if query.starts_with(&excluded_at_short) {
             (
                 ElementType::ExcludedAt,
                 query
-                    .strip_prefix("-at:")
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with("-") && query.starts_with(&format!("-{}", AT_CHAR)) {
-            (
-                ElementType::ExcludedAt,
-                query
-                    .strip_prefix(&format!("-{}", AT_CHAR))
+                    .strip_prefix(&excluded_at_short)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
         } else if query.starts_with(&excluded_path_prefix) {
@@ -90,18 +79,11 @@ impl QueryTermExtractor {
                     .strip_prefix(&excluded_path_prefix)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
-        } else if query.starts_with("-pt:") {
+        } else if query.starts_with(&excluded_path_short) {
             (
                 ElementType::ExcludedPath,
                 query
-                    .strip_prefix("-pt:")
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with("-") && query.starts_with(&format!("-{}", PATH_CHAR)) {
-            (
-                ElementType::ExcludedPath,
-                query
-                    .strip_prefix(&format!("-{}", PATH_CHAR))
+                    .strip_prefix(&excluded_path_short)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
         } else if query.starts_with("-") {
@@ -442,5 +424,15 @@ mod tests {
         // Note: excluded_terms field doesn't exist yet - test will fail compilation
         assert_eq!(search_terms.excluded_terms, vec!["cancelled"]);
         assert!(search_terms.breadcrumb.is_empty());
+    }
+
+    #[test]
+    fn test_compound_exclusion_prefixes() {
+        let search_terms = SearchTerms::from_query_string(">-draft in:-private @-temp /-secret");
+        assert!(search_terms.terms.is_empty());
+        assert!(search_terms.breadcrumb.is_empty());
+        assert_eq!(search_terms.excluded_breadcrumb, vec!["draft", "private"]);
+        assert_eq!(search_terms.excluded_filename, vec!["temp"]);
+        assert_eq!(search_terms.excluded_path, vec!["secret"]);
     }
 }
