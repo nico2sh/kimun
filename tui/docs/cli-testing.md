@@ -172,6 +172,38 @@ kimun notes --format text
 kimun search hello --format text
 ```
 
+#### Exclusion Operator Testing
+
+Test exclusion operators with various combinations:
+
+```bash
+# Basic content exclusion
+kimun search "meeting -cancelled"
+
+# Title exclusion
+kimun search ">project >-draft"
+
+# Filename exclusion
+kimun search "@2024 @-temp"
+
+# Path exclusion
+kimun search "/docs /-private"
+
+# Exclusion-only queries
+kimun search "-cancelled"
+kimun search ">-draft"
+
+# Complex combinations
+kimun search "meeting @2024 -cancelled >-draft /docs"
+```
+
+**Expected Behavior:**
+- Content exclusions filter out notes containing excluded terms
+- Title exclusions work on note titles/breadcrumbs only
+- Filename exclusions work on note filenames only
+- Path exclusions work on note path prefixes
+- Exclusion-only queries return all notes except those matching excluded terms
+
 ### Testing Configuration
 
 #### Custom Config File
