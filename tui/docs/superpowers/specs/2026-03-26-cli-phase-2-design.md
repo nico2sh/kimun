@@ -26,6 +26,7 @@ kimun workspace list                            # List all workspaces
 kimun workspace use <name>                      # Switch active workspace
 kimun workspace rename <old-name> <new-name>   # Rename workspace
 kimun workspace remove <name>                   # Remove workspace
+kimun workspace reindex [<name>]                # Rebuild search index for workspace
 
 # Content Operations (enhanced from Phase 1)
 kimun search <query> [--format json|text] [--workspace <name>] [--include-backlinks]
@@ -124,6 +125,25 @@ kimun workspace remove old-workspace
 
 **Active workspace handling:** If removing the currently active workspace (`current_workspace`), the command errors and requires the user to switch to another workspace first, preventing config corruption.
 
+**Reindexing:**
+```bash
+kimun workspace reindex                   # Reindex current workspace
+kimun workspace reindex work              # Reindex specific workspace
+```
+
+**Behavior:**
+- Clears existing search index and rebuilds from scratch
+- Scans all `.md` files in workspace directory recursively
+- Updates database with current file metadata and content
+- Reports progress for large workspaces (e.g., "Indexed 150/1000 files...")
+- Validates workspace existence and database integrity before starting
+- **Error handling:** If workspace path is missing or inaccessible, error with helpful message
+
+**Use cases:**
+- Corrupted search index recovery
+- After bulk file operations outside of Kimün
+- When search results seem outdated or incomplete
+
 **Validation:**
 - Verifies workspace path still exists before switching
 - Validates workspace database integrity
@@ -186,7 +206,7 @@ Both `search` and `notes` commands support `--format json` with comprehensive da
 - `content` - Full markdown content
 - `size` - File size in bytes
 - `modified` - Last modified timestamp (Unix epoch)
-- `created` - File creation timestamp (Unix epoch) - **Phase 2.1 Addition:** Requires DB schema migration to add `created` column
+- `created` - File creation timestamp (Unix epoch) - **Phase 2.1 Addition:** Requires DB schema migration to add `created` column. In Phase 2.0, defaults to `modified` timestamp value when database lacks `created` column.
 - `hash` - Content hash serialized as lowercase hex string (converted from internal u64)
 - `journal_date` - ISO date if note is detected as journal entry (optional)
 
@@ -232,6 +252,12 @@ kimun search "project" --format json | jq -r '.notes[].content' | wc -w
 ### Configuration Management
 
 **Config Migration Strategy:**
+- **Phase 1 config format:**
+  ```toml
+  workspace_dir = "/Users/user/notes"
+  theme = "dark"
+  # Other Phase 1 settings...
+  ```
 - **Detection mechanism:** If config contains top-level `workspace_dir` key (Phase 1), migrate by creating `[workspaces.default]` entry and removing `workspace_dir`
 - **Version marking:** Add `config_version = 2` field to Phase 2 configs for unambiguous future detection
 - Seamless migration of existing single workspace to "default" named workspace
@@ -277,7 +303,7 @@ kimun search "project" --format json | jq -r '.notes[].content' | wc -w
 3. Enhanced output system with JSON support for existing commands
 
 ### Phase 2.2: Advanced Features
-1. Workspace maintenance commands (`rename`, `remove`)
+1. Workspace maintenance commands (`rename`, `remove`, `reindex`)
 2. Rich metadata extraction (tags, links, backlinks, headers)
 3. Database schema migration for `created` timestamps
 4. Performance optimization for large workspaces
