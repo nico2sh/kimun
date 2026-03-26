@@ -2,3 +2,6 @@
 pub mod search;
 pub mod notes;
 pub mod workspace;
+
+// Re-export for convenience
+pub use workspace::WorkspaceSubcommand;
