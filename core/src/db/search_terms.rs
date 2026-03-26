@@ -37,8 +37,82 @@ impl QueryTermExtractor {
         let at_prefix = format!("{}:", AT_LETTER);
         let order_prefix = format!("{}:", ORDER_LETTER);
         let path_prefix = format!("{}:", PATH_LETTER);
+        let excluded_in_prefix = format!("-{}:", IN_LETTER);
+        let excluded_at_prefix = format!("-{}:", AT_LETTER);
+        let excluded_path_prefix = format!("-{}:", PATH_LETTER);
 
-        let (element_type, remaining) = if query.starts_with(&in_prefix) {
+        let (element_type, remaining) = if query.starts_with(&excluded_in_prefix) {
+            (
+                ElementType::ExcludedIn,
+                query
+                    .strip_prefix(&excluded_in_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("-in:") {
+            (
+                ElementType::ExcludedIn,
+                query
+                    .strip_prefix("-in:")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("-") && query.starts_with(&format!("-{}", IN_CHAR)) {
+            (
+                ElementType::ExcludedIn,
+                query
+                    .strip_prefix(&format!("-{}", IN_CHAR))
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&excluded_at_prefix) {
+            (
+                ElementType::ExcludedAt,
+                query
+                    .strip_prefix(&excluded_at_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("-at:") {
+            (
+                ElementType::ExcludedAt,
+                query
+                    .strip_prefix("-at:")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("-") && query.starts_with(&format!("-{}", AT_CHAR)) {
+            (
+                ElementType::ExcludedAt,
+                query
+                    .strip_prefix(&format!("-{}", AT_CHAR))
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&excluded_path_prefix) {
+            (
+                ElementType::ExcludedPath,
+                query
+                    .strip_prefix(&excluded_path_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("-pt:") {
+            (
+                ElementType::ExcludedPath,
+                query
+                    .strip_prefix("-pt:")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("-") && query.starts_with(&format!("-{}", PATH_CHAR)) {
+            (
+                ElementType::ExcludedPath,
+                query
+                    .strip_prefix(&format!("-{}", PATH_CHAR))
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with("-") {
+            // Handle excluded terms (simple `-term` syntax)
+            (
+                ElementType::ExcludedTerm,
+                query
+                    .strip_prefix("-")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&in_prefix) {
             (
                 ElementType::In,
                 query
