@@ -18,6 +18,10 @@ enum ElementType {
     At,
     Path,
     OrderBy { asc: bool },
+    ExcludedTerm,
+    ExcludedIn,
+    ExcludedAt,
+    ExcludedPath,
 }
 
 struct QueryTermExtractor {
@@ -175,6 +179,10 @@ pub struct SearchTerms {
     pub order_by: Vec<OrderBy>,
     pub filename: Vec<String>,
     pub path: Vec<String>,
+    pub excluded_terms: Vec<String>,
+    pub excluded_breadcrumb: Vec<String>,
+    pub excluded_filename: Vec<String>,
+    pub excluded_path: Vec<String>,
 }
 
 impl SearchTerms {
@@ -185,6 +193,10 @@ impl SearchTerms {
         let mut filename = vec![];
         let mut order_by = vec![];
         let mut path = vec![];
+        let mut excluded_terms = vec![];
+        let mut excluded_breadcrumb = vec![];
+        let mut excluded_filename = vec![];
+        let mut excluded_path = vec![];
         while !query.is_empty() {
             let qp = QueryTermExtractor::extract_and_consume(query);
             query = qp.remainder;
@@ -199,6 +211,10 @@ impl SearchTerms {
                 }
                 ElementType::Invalid => {}
                 ElementType::Path => path.push(qp.term),
+                ElementType::ExcludedTerm => excluded_terms.push(qp.term),
+                ElementType::ExcludedIn => excluded_breadcrumb.push(qp.term),
+                ElementType::ExcludedAt => excluded_filename.push(qp.term),
+                ElementType::ExcludedPath => excluded_path.push(qp.term),
             }
         }
 
@@ -208,6 +224,10 @@ impl SearchTerms {
             order_by,
             terms,
             path,
+            excluded_terms,
+            excluded_breadcrumb,
+            excluded_filename,
+            excluded_path,
         }
     }
 }
@@ -338,5 +358,15 @@ mod tests {
         assert!(filename.contains(&"directory".to_string()));
         assert_eq!(1, path.len());
         assert!(path.contains(&"basedirectory".to_string()));
+    }
+
+    #[test]
+    fn test_basic_exclusion_parsing() {
+        // Test parsing basic exclusion syntax
+        let search_terms = SearchTerms::from_query_string("meeting -cancelled");
+        assert_eq!(search_terms.terms, vec!["meeting"]);
+        // Note: excluded_terms field doesn't exist yet - test will fail compilation
+        assert_eq!(search_terms.excluded_terms, vec!["cancelled"]);
+        assert!(search_terms.breadcrumb.is_empty());
     }
 }
