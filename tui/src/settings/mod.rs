@@ -15,6 +15,7 @@ use crate::keys::KeyBindings;
 mod config_dir;
 pub mod icons;
 pub mod themes;
+pub mod workspace_config;
 
 // ---------------------------------------------------------------------------
 // Sort settings types (shared between AppSettings and sorting UI)
