@@ -28,13 +28,13 @@ kimun workspace rename <old-name> <new-name>   # Rename workspace
 kimun workspace remove <name>                   # Remove workspace
 
 # Content Operations (enhanced from Phase 1)
-kimun search <query> [--format json|text] [--workspace <name>]
-kimun notes [--path <prefix>] [--format json|text] [--workspace <name>]
+kimun search <query> [--format json|text] [--workspace <name>] [--include-backlinks]
+kimun notes [--path <prefix>] [--format json|text] [--workspace <name>] [--include-backlinks]
 
-# Configuration Management
-kimun config get [<key>]                       # Get config value(s)
-kimun config set <key> <value>                 # Set config value
-kimun config list                              # List all configuration
+# Configuration Management (Future Phase 3)
+# kimun config get [<key>]                     # Get config value(s) - Deferred to Phase 3
+# kimun config set <key> <value>               # Set config value - Deferred to Phase 3
+# kimun config list                            # List all configuration - Deferred to Phase 3
 ```
 
 ### Global Flags
@@ -48,6 +48,7 @@ kimun config list                              # List all configuration
 - **Command reorganization:** Workspace operations now grouped under `workspace` subcommand
 - **Configuration changes:** New multi-workspace config format (migration handled automatically)
 - **Output behavior:** JSON format provides significantly richer data structure
+- **Backward compatibility:** `--format text` remains the default for all commands; existing invocations without `--format` continue to produce identical tab-delimited output
 
 ## Multi-Workspace Configuration
 
@@ -91,8 +92,13 @@ Each workspace maintains complete isolation:
 **Creation:**
 ```bash
 kimun workspace init ~/my-notes --name personal
-kimun workspace init ~/work                      # Creates "default" if none exists
+kimun workspace init ~/work                      # Creates "default" if no workspaces exist
 ```
+
+**Naming behavior:**
+- If `--name` is provided, use the specified name
+- If `--name` is omitted and no workspaces exist, use "default"
+- If `--name` is omitted and workspaces already exist, error requiring explicit naming
 
 **Behavior:**
 - Validates target path exists or creates directory structure
@@ -110,6 +116,13 @@ kimun workspace init ~/work                      # Creates "default" if none exi
 kimun workspace use work
 kimun workspace list              # Shows current workspace marked with *
 ```
+
+**Removal:**
+```bash
+kimun workspace remove old-workspace
+```
+
+**Active workspace handling:** If removing the currently active workspace (`current_workspace`), the command errors and requires the user to switch to another workspace first, preventing config corruption.
 
 **Validation:**
 - Verifies workspace path still exists before switching
@@ -173,14 +186,14 @@ Both `search` and `notes` commands support `--format json` with comprehensive da
 - `content` - Full markdown content
 - `size` - File size in bytes
 - `modified` - Last modified timestamp (Unix epoch)
-- `created` - File creation timestamp (Unix epoch)
-- `hash` - Content hash for change detection
+- `created` - File creation timestamp (Unix epoch) - **Phase 2.1 Addition:** Requires DB schema migration to add `created` column
+- `hash` - Content hash serialized as lowercase hex string (converted from internal u64)
 - `journal_date` - ISO date if note is detected as journal entry (optional)
 
 **Rich metadata extraction:**
-- `tags` - Extracted hashtags and YAML frontmatter tags
+- `tags` - Extracted hashtags (#tag) and YAML frontmatter tags (parsed from `tags:` and `tag:` keys, supporting both list and space-separated string formats)
 - `links` - All markdown links and references found in content
-- `backlinks` - Other notes that reference this note
+- `backlinks` - Other notes that reference this note (opt-in via `--include-backlinks` flag due to performance cost)
 - `headers` - Structured list of markdown headers with levels
 
 ### Text Format Preservation
@@ -219,7 +232,8 @@ kimun search "project" --format json | jq -r '.notes[].content' | wc -w
 ### Configuration Management
 
 **Config Migration Strategy:**
-- Automatic detection of Phase 1 vs Phase 2 config format
+- **Detection mechanism:** If config contains top-level `workspace_dir` key (Phase 1), migrate by creating `[workspaces.default]` entry and removing `workspace_dir`
+- **Version marking:** Add `config_version = 2` field to Phase 2 configs for unambiguous future detection
 - Seamless migration of existing single workspace to "default" named workspace
 - Preserve all existing settings during migration
 - Migration happens on first Phase 2 CLI invocation
@@ -239,9 +253,9 @@ kimun search "project" --format json | jq -r '.notes[].content' | wc -w
 
 **Content Extraction Pipeline:**
 - Reuse existing note parsing logic from core
-- Enhanced metadata extraction (tags, links, headers)
-- Backlink computation via existing vault index
-- Lazy evaluation for expensive operations (backlinks, content parsing)
+- Enhanced metadata extraction (tags from hashtags and YAML frontmatter, links, headers)
+- Backlink computation via batched query (`WHERE target IN (...)` across all result paths) when `--include-backlinks` flag is used
+- Performance optimization: backlinks are opt-in due to O(N) query cost for large result sets
 
 ### Error Handling Strategy
 
@@ -265,7 +279,7 @@ kimun search "project" --format json | jq -r '.notes[].content' | wc -w
 ### Phase 2.2: Advanced Features
 1. Workspace maintenance commands (`rename`, `remove`)
 2. Rich metadata extraction (tags, links, backlinks, headers)
-3. Configuration management commands
+3. Database schema migration for `created` timestamps
 4. Performance optimization for large workspaces
 
 ## Success Criteria
