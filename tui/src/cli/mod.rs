@@ -43,6 +43,9 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
     // Create vault
     let vault = NoteVault::new(&workspace).await?;
 
+    // Initialize and validate the vault database
+    vault.init_and_validate().await?;
+
     match command {
         CliCommand::Search { query, format } => {
             commands::search::run(&vault, &query, format).await
