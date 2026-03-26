@@ -6,6 +6,7 @@ use kimun_core::note::NoteContentData;
 #[derive(ValueEnum, Clone)]
 pub enum OutputFormat {
     Text,
+    Json,
 }
 
 /// Format note entries as text with journal date detection
