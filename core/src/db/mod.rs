@@ -229,18 +229,35 @@ pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) 
     let mut queries = vec![];
     if !search_terms.terms.is_empty() || !search_terms.excluded_terms.is_empty() {
         if !search_terms.terms.is_empty() {
-            // Positive content terms: create query with all positive terms + exclusions
-            let mut fts_query_parts = vec![search_terms.terms.join(" ")];
+            // Positive content terms
+            if search_terms.excluded_terms.is_empty() {
+                // No exclusions: simple FTS4 MATCH
+                let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
+                queries.push(terms_sql);
+                params.push(search_terms.terms.join(" "));
+                var_num += 1;
+            } else {
+                // Mixed positive + exclusions: use NOT IN subqueries to avoid FTS4 path column bug
+                let mut exclusion_conditions = vec![];
+                for excluded in &search_terms.excluded_terms {
+                    exclusion_conditions.push(format!(
+                        "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
+                        var_num
+                    ));
+                    params.push(excluded.clone());
+                    var_num += 1;
+                }
 
-            // Add excluded terms with FTS4 - prefix
-            for excluded in &search_terms.excluded_terms {
-                fts_query_parts.push(format!("-{}", excluded));
+                let terms_sql = format!(
+                    "{} WHERE notesContent MATCH ?{} AND {}",
+                    base_sql,
+                    var_num,
+                    exclusion_conditions.join(" AND ")
+                );
+                queries.push(terms_sql);
+                params.push(search_terms.terms.join(" "));
+                var_num += 1;
             }
-
-            let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
-            queries.push(terms_sql);
-            params.push(fts_query_parts.join(" "));
-            var_num += 1;
         } else if !search_terms.excluded_terms.is_empty() {
             // Exclusion-only content query: FTS4 doesn't support pure exclusions
             // Use NOT IN approach with subquery for each excluded term
@@ -1184,11 +1201,15 @@ mod tests {
     fn test_fts4_mixed_exclusion_sql_generation() {
         let (sql, params) = build_search_sql_query("meeting -cancelled");
 
+        // Should use NOT IN subquery approach instead of FTS4 native exclusion
         assert!(sql.contains("notesContent MATCH"));
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "meeting -cancelled");
+        assert!(sql.contains("NOT IN"));
+        assert!(sql.contains("SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"));
+        // params: first is the excluded term (NOT IN subquery), second is the positive term
+        assert_eq!(params.len(), 2);
+        assert!(params.contains(&"cancelled".to_string()));
+        assert!(params.contains(&"meeting".to_string()));
 
-        // Should generate single query with combined positive and negative terms
         assert!(sql.contains("SELECT DISTINCT"));
     }
 
