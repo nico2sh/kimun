@@ -2,14 +2,8 @@ use std::vec;
 
 use log::debug;
 
-const IN_CHAR: &str = ">";
-const IN_LETTER: &str = "in";
-const AT_CHAR: &str = "@";
-const AT_LETTER: &str = "at";
 const ORDER_CHAR: &str = "^";
 const ORDER_LETTER: &str = "or";
-const PATH_CHAR: &str = "/";
-const PATH_LETTER: &str = "pt";
 
 enum ElementType {
     Invalid,

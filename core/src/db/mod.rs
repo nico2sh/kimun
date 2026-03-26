@@ -46,6 +46,7 @@ pub enum DBStatus {
     Ready,
     Outdated,
     NotValid,
+    #[allow(dead_code)]
     FileNotFound,
 }
 
@@ -433,7 +434,8 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
     (sql, params)
 }
 
-pub fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
+#[allow(dead_code)]
+fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
     let search_terms = SearchTerms::from_query_string(query);
     build_search_sql_query_inner(&search_terms)
 }
