@@ -17,8 +17,9 @@ pub fn extract_tags(content: &str) -> Vec<String> {
     // Extract hashtags from content
     let hashtag_regex = Regex::new(r"#([a-zA-Z0-9_-]+)").unwrap();
     for capture in hashtag_regex.captures_iter(content) {
-        let tag = capture[1].to_string();
-        tags.insert(tag);
+        if let Some(tag) = capture.get(1) {
+            tags.insert(tag.as_str().to_string());
+        }
     }
 
     let mut result: Vec<String> = tags.into_iter().collect();
@@ -33,14 +34,18 @@ pub fn extract_links(content: &str) -> Vec<String> {
     let link_regex = Regex::new(r"!?\[([^\]]*)\]\(([^)]+)\)").unwrap();
     for capture in link_regex.captures_iter(content) {
         let pos = capture.get(0).map(|m| m.start()).unwrap_or(0);
-        matches.push((pos, capture[2].to_string()));
+        if let Some(url) = capture.get(2) {
+            matches.push((pos, url.as_str().to_string()));
+        }
     }
 
     // Wikilinks [[page]]
     let wikilink_regex = Regex::new(r"\[\[([^\]]+)\]\]").unwrap();
     for capture in wikilink_regex.captures_iter(content) {
         let pos = capture.get(0).map(|m| m.start()).unwrap_or(0);
-        matches.push((pos, capture[1].to_string()));
+        if let Some(page) = capture.get(1) {
+            matches.push((pos, page.as_str().to_string()));
+        }
     }
 
     matches.sort_by_key(|(pos, _)| *pos);
@@ -53,9 +58,11 @@ pub fn extract_headers(content: &str) -> Vec<JsonHeader> {
 
     for line in content.lines() {
         if let Some(capture) = header_regex.captures(line) {
-            let level = capture[1].len() as u32;
-            let text = capture[2].trim().to_string();
-            headers.push(JsonHeader { text, level });
+            if let (Some(level_match), Some(text_match)) = (capture.get(1), capture.get(2)) {
+                let level = level_match.as_str().len() as u32;
+                let text = text_match.as_str().trim().to_string();
+                headers.push(JsonHeader { text, level });
+            }
         }
     }
 
