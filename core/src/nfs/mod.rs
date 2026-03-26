@@ -47,7 +47,7 @@ pub enum EntryData {
     Attachment,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct NoteEntryData {
     pub path: VaultPath,
     // File size, for fast check
