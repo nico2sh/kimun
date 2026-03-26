@@ -37,6 +37,42 @@ Kimün opens in a terminal UI with a few screens:
 
 Your notes directory is called the **workspace**. Kimün creates a `kimun.sqlite` file at the workspace root to store the search index. Everything else is plain `.md` files — no lock-in.
 
+## Command Line Interface
+
+Kimün also provides a CLI for quick operations from the terminal:
+
+### Search notes
+
+```sh
+kimun search "your search query"
+```
+
+Search works the same as in the TUI - supports free text, filters, and all search features described below.
+
+### List notes
+
+```sh
+kimun notes                           # List all notes
+kimun notes --path "journal/"         # Filter by path prefix
+```
+
+### Custom config
+
+```sh
+kimun --config /path/to/config.toml search "query"
+kimun --config /path/to/config.toml notes
+```
+
+### Initial Setup
+
+**Important:** The CLI requires an initial workspace setup. If you haven't used Kimün before:
+
+1. Run `kimun` (without arguments) to open the TUI
+2. Configure your workspace directory in Settings
+3. The CLI will then work with your configured workspace
+
+The CLI will show an error if no workspace is configured, directing you to run the TUI first.
+
 ## Search
 
 Open search with `Ctrl+E`. The search box looks across note content and file paths.
