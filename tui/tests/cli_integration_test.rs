@@ -280,22 +280,10 @@ async fn test_cli_search_compound_exclusions() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
 
-    setup_exclusion_test_vault(&workspace_dir).await;
+    let vault = setup_exclusion_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    // Test title exclusion
-    let result = run_cli(
-        CliCommand::Search {
-            query: ">project >-draft".to_string(),
-            format: OutputFormat::Text,
-        },
-        Some(config_path.clone()),
-    )
-    .await;
-
-    assert!(result.is_ok(), "title exclusion should succeed: {:?}", result);
-
-    // Test filename exclusion
+    // Test filename exclusion: @project @-draft
     let result = run_cli(
         CliCommand::Search {
             query: "@project @-draft".to_string(),
@@ -306,6 +294,62 @@ async fn test_cli_search_compound_exclusions() {
     .await;
 
     assert!(result.is_ok(), "filename exclusion should succeed: {:?}", result);
+
+    // Validate directly against vault: "project-final" should appear, "project-draft" should not
+    let search_results = vault
+        .search_notes("@project @-draft")
+        .await
+        .expect("direct search should work");
+
+    let paths: Vec<String> = search_results
+        .iter()
+        .map(|(entry, _)| entry.path.to_string())
+        .collect();
+
+    assert!(
+        paths.contains(&"/project-final.md".to_string()),
+        "Should find project-final note; found: {:?}",
+        paths
+    );
+    assert!(
+        !paths.contains(&"/project-draft.md".to_string()),
+        "Should exclude project-draft note; found: {:?}",
+        paths
+    );
+
+    // Test filename exclusion: @final @-draft (another combination)
+    let result = run_cli(
+        CliCommand::Search {
+            query: "@final @-draft".to_string(),
+            format: OutputFormat::Text,
+        },
+        Some(config_path.clone()),
+    )
+    .await;
+
+    assert!(result.is_ok(), "filename exclusion with final should succeed: {:?}", result);
+
+    // Validate directly against vault: "project-final" should appear
+    let search_results = vault
+        .search_notes("@final @-draft")
+        .await
+        .expect("direct search should work");
+
+    let paths: Vec<String> = search_results
+        .iter()
+        .map(|(entry, _)| entry.path.to_string())
+        .collect();
+
+    assert!(
+        paths.contains(&"/project-final.md".to_string()),
+        "Should find project-final note; found: {:?}",
+        paths
+    );
+    assert!(
+        !paths.contains(&"/project-draft.md".to_string()),
+        "Should exclude project-draft note; found: {:?}",
+        paths
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +362,7 @@ async fn test_cli_search_exclusion_only() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
 
-    setup_exclusion_test_vault(&workspace_dir).await;
+    let vault = setup_exclusion_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
     // Test pure content exclusion
@@ -333,6 +377,29 @@ async fn test_cli_search_exclusion_only() {
 
     assert!(result.is_ok(), "exclusion-only search should succeed: {:?}", result);
 
+    // Validate directly against vault: "cancelled-meeting" should be excluded
+    let search_results = vault
+        .search_notes("-cancelled")
+        .await
+        .expect("direct search should work");
+
+    let paths: Vec<String> = search_results
+        .iter()
+        .map(|(entry, _)| entry.path.to_string())
+        .collect();
+
+    assert!(
+        !paths.contains(&"/cancelled-meeting.md".to_string()),
+        "Should exclude cancelled-meeting note; found: {:?}",
+        paths
+    );
+    // Should still find other notes
+    assert!(
+        !paths.is_empty(),
+        "Should find other notes when excluding cancelled; found: {:?}",
+        paths
+    );
+
     // Test pure title exclusion
     let result = run_cli(
         CliCommand::Search {
@@ -344,4 +411,27 @@ async fn test_cli_search_exclusion_only() {
     .await;
 
     assert!(result.is_ok(), "title exclusion-only should succeed: {:?}", result);
+
+    // Validate directly against vault: "project-draft" should be excluded
+    let search_results = vault
+        .search_notes(">-draft")
+        .await
+        .expect("direct search should work");
+
+    let paths: Vec<String> = search_results
+        .iter()
+        .map(|(entry, _)| entry.path.to_string())
+        .collect();
+
+    assert!(
+        !paths.contains(&"/project-draft.md".to_string()),
+        "Should exclude project-draft note; found: {:?}",
+        paths
+    );
+    // Should still find other notes
+    assert!(
+        !paths.is_empty(),
+        "Should find other notes when excluding draft title; found: {:?}",
+        paths
+    );
 }
