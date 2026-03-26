@@ -9,6 +9,7 @@ use color_eyre::eyre::Result;
 use crate::settings::AppSettings;
 use kimun_core::NoteVault;
 use output::OutputFormat;
+use commands::workspace::WorkspaceSubcommand;
 
 #[derive(Subcommand)]
 pub enum CliCommand {
@@ -25,10 +26,24 @@ pub enum CliCommand {
         #[arg(long, value_enum, default_value = "text")]
         format: OutputFormat,
     },
+    /// Manage workspaces
+    Workspace {
+        #[command(subcommand)]
+        subcommand: WorkspaceSubcommand,
+    },
 }
 
 pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf>) -> Result<()> {
-    // Load settings to get workspace
+    // For workspace commands we need mutable settings and handle them separately
+    if let CliCommand::Workspace { subcommand } = command {
+        let mut settings = match config_path {
+            Some(path) => AppSettings::load_from_file(path)?,
+            None => AppSettings::load_from_disk()?,
+        };
+        return commands::workspace::run(subcommand, &mut settings).await;
+    }
+
+    // Load settings to get workspace for search/notes commands
     let settings = match config_path {
         Some(path) => AppSettings::load_from_file(path)?,
         None => AppSettings::load_from_disk()?,
@@ -61,5 +76,6 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
         CliCommand::Notes { path, format } => {
             commands::notes::run(&vault, path.as_deref(), format).await
         }
+        CliCommand::Workspace { .. } => unreachable!("handled above"),
     }
 }
