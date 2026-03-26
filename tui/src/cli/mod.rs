@@ -25,9 +25,12 @@ pub enum CliCommand {
     },
 }
 
-pub async fn run_cli(command: CliCommand) -> Result<()> {
+pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf>) -> Result<()> {
     // Load settings to get workspace
-    let settings = AppSettings::load_from_disk()?;
+    let settings = match config_path {
+        Some(path) => AppSettings::load_from_file(path)?,
+        None => AppSettings::load_from_disk()?,
+    };
 
     let workspace = match settings.workspace_dir {
         Some(dir) => dir,

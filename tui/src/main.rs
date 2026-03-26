@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     // Check if CLI subcommand was provided
     if let Some(command) = cli.command {
         // CLI mode - run command and exit
-        return crate::cli::run_cli(command).await;
+        return crate::cli::run_cli(command, cli.config).await;
     }
 
     // TUI mode continues below...
