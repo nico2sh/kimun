@@ -2,6 +2,7 @@
 pub mod commands;
 pub mod output;
 pub mod json_output;
+pub mod metadata_extractor;
 
 use clap::Subcommand;
 use color_eyre::eyre::Result;

@@ -4,6 +4,7 @@ use kimun_core::note::NoteContentData;
 use kimun_core::nfs::VaultPath;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use crate::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JsonHeader {
@@ -80,6 +81,10 @@ pub fn format_notes_with_content_as_json(
             // Get content from the map, or empty string if not found
             let content = content_lookup.get(&path_str).cloned().unwrap_or_default();
 
+            let tags = extract_tags(&content);
+            let links = extract_links(&content);
+            let headers = extract_headers(&content);
+
             JsonNoteEntry {
                 path: path_with_ext,
                 title: content_data.title.clone(),
@@ -87,9 +92,9 @@ pub fn format_notes_with_content_as_json(
                 size: entry_data.size,
                 modified: entry_data.modified_secs,
                 hash: format!("{:x}", content_data.hash),
-                tags: None,
-                links: None,
-                headers: None,
+                tags: Some(tags),
+                links: Some(links),
+                headers: Some(headers),
             }
         })
         .collect();
