@@ -1,5 +1,6 @@
 pub mod app;
 pub mod app_screen;
+pub mod cli;
 pub mod components;
 pub mod event_handler;
 pub mod keys;
