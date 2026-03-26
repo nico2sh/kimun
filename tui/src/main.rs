@@ -17,6 +17,9 @@ struct Cli {
     /// Path to a custom config file
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<crate::cli::CliCommand>,
 }
 
 use crossterm::event::{
@@ -46,6 +49,14 @@ use crate::keys::key_event_to_combo;
 async fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
+
+    // Check if CLI subcommand was provided
+    if let Some(command) = cli.command {
+        // CLI mode - run command and exit
+        return crate::cli::run_cli(command).await;
+    }
+
+    // TUI mode continues below...
     #[cfg(debug_assertions)]
     {
         use simplelog::*;
