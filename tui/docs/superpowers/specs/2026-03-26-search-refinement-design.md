@@ -69,16 +69,29 @@ impl QueryTermExtractor {
     fn extract_and_consume<S: AsRef<str>>(query: S) -> QueryTermExtractor {
         let query = query.as_ref().trim();
 
-        // Check for exclusion prefixes first (compound prefixes)
+        // Enhanced prefix checking following existing pattern
+        // Check exclusion prefixes in order of length (longest first, like existing code)
         let in_exclude_prefix = "in:-";
         let at_exclude_prefix = "at:-";
         let path_exclude_prefix = "pt:-";
+        let in_prefix = "in:";
+        let at_prefix = "at:";
+        let order_prefix = "or:";
+        let path_prefix = "pt:";
 
         let (element_type, remaining) = if query.starts_with(&in_exclude_prefix) {
             (
                 ElementType::ExcludedIn,
                 query
                     .strip_prefix(&in_exclude_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&in_prefix) {
+            // Existing positive in: logic
+            (
+                ElementType::In,
+                query
+                    .strip_prefix(&in_prefix)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
         } else if query.starts_with(">-") {
@@ -88,11 +101,27 @@ impl QueryTermExtractor {
                     .strip_prefix(">-")
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
+        } else if query.starts_with(">") {
+            // Existing positive > logic
+            (
+                ElementType::In,
+                query
+                    .strip_prefix(">")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
         } else if query.starts_with(&at_exclude_prefix) {
             (
                 ElementType::ExcludedAt,
                 query
                     .strip_prefix(&at_exclude_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&at_prefix) {
+            // Existing positive at: logic
+            (
+                ElementType::At,
+                query
+                    .strip_prefix(&at_prefix)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
         } else if query.starts_with("@-") {
@@ -102,11 +131,30 @@ impl QueryTermExtractor {
                     .strip_prefix("@-")
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
+        } else if query.starts_with("@") {
+            // Existing positive @ logic
+            (
+                ElementType::At,
+                query
+                    .strip_prefix("@")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&order_prefix) {
+            // Existing order logic (unchanged)
+            // ... order by parsing logic ...
         } else if query.starts_with(&path_exclude_prefix) {
             (
                 ElementType::ExcludedPath,
                 query
                     .strip_prefix(&path_exclude_prefix)
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
+        } else if query.starts_with(&path_prefix) {
+            // Existing positive pt: logic
+            (
+                ElementType::Path,
+                query
+                    .strip_prefix(&path_prefix)
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
         } else if query.starts_with("/-") {
@@ -116,8 +164,16 @@ impl QueryTermExtractor {
                     .strip_prefix("/-")
                     .map_or_else(|| query.to_string(), |s| s.to_string()),
             )
+        } else if query.starts_with("/") {
+            // Existing positive / logic
+            (
+                ElementType::Path,
+                query
+                    .strip_prefix("/")
+                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+            )
         } else if query.starts_with("-") && !query.starts_with("--") {
-            // Handle -term (excluded content term)
+            // Handle -term (excluded content term) - check last to avoid conflicts
             let remaining = query
                 .strip_prefix("-")
                 .map_or_else(|| query.to_string(), |s| s.to_string());
@@ -128,15 +184,11 @@ impl QueryTermExtractor {
                 (ElementType::Term, query.to_string())
             }
         } else {
-            // Fall through to existing prefix logic (in:, >, at:, @, pt:, /, ^:, ^)
-            // ... (continue with existing code) ...
+            (ElementType::Term, query.to_string())
         };
 
-        // If we detected an exclusion prefix, validate and parse the term
-        if !matches!(element_type, ElementType::Term) {
-            // Continue with term extraction using existing parsing logic
-            // ... (existing quote handling and term extraction) ...
-        }
+        // Continue with existing quote handling and term extraction logic
+        // ... (rest follows existing parsing pattern) ...
 
         // Existing prefix logic (in:, >, at:, @, pt:, /, ^:, ^)
         // ... (unchanged existing code) ...
@@ -269,10 +321,10 @@ if !search_terms.breadcrumb.is_empty() || !search_terms.excluded_breadcrumb.is_e
         let mut exclusion_conditions = vec![];
         for excluded in &search_terms.excluded_breadcrumb {
             exclusion_conditions.push(format!(
-                "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH 'breadcrumb: ' || ?{})",
+                "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
                 var_num
             ));
-            params.push(excluded.clone());
+            params.push(format!("breadcrumb: {}", excluded));
             var_num += 1;
         }
 
