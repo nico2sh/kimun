@@ -4,7 +4,7 @@
 // These tests follow the TDD approach: written before implementation.
 
 use kimun_notes::cli::{run_cli, CliCommand};
-use kimun_notes::cli::commands::workspace::WorkspaceSubcommand;
+use kimun_notes::cli::commands::WorkspaceSubcommand;
 use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
