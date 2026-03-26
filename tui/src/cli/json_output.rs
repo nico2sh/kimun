@@ -28,6 +28,7 @@ pub struct JsonNoteEntry {
     pub content: String,
     pub size: u64,
     pub modified: u64,
+    pub hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,6 +86,7 @@ pub fn format_notes_with_content_as_json(
                 content,
                 size: entry_data.size,
                 modified: entry_data.modified_secs,
+                hash: format!("{:x}", content_data.hash),
                 tags: None,
                 links: None,
                 headers: None,
