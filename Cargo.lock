@@ -1351,6 +1351,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "ratatui-textarea",
+ "regex",
  "serde",
  "serde_json",
  "simplelog",
