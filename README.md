@@ -103,6 +103,35 @@ Sections are defined by Markdown headers (`#`, `##`, etc.). The search term must
 in:personal    → same
 ```
 
+### Exclusion Operators — `-` prefix
+
+Use `-` prefix to exclude terms from search results:
+
+```sh
+# Exclude specific content
+kimun search "meeting -cancelled"
+
+# Exclude from titles
+kimun search ">project >-draft"
+
+# Exclude from filenames
+kimun search "@2024 @-temp"
+
+# Exclude from paths
+kimun search "/docs /-private"
+
+# Exclusion-only searches
+kimun search "-cancelled"        # All notes except those containing "cancelled"
+kimun search ">-draft"          # All notes except those with "draft" in title
+```
+
+**Exclusion operators work with:**
+- Content search: `-term` excludes from note content
+- Title search: `>-term` or `in:-term` excludes from note titles
+- Filename search: `@-term` or `at:-term` excludes from filenames
+- Path search: `/-term` or `pt:-term` excludes from paths
+- All operators can be combined in a single query
+
 ### Combine filters
 
 Filters compose freely:
@@ -112,6 +141,8 @@ Filters compose freely:
 >personal kimun           → any note with "kimun" under a "Personal" section
 @thoughts kimun           → a file called "thoughts" containing "kimun"
 screen*                   → matches "screenshot", "screens", etc.
+meeting -cancelled        → notes with "meeting" but not "cancelled"
+@2024 >-draft             → files from 2024 that don't have "draft" in title
 ```
 
 ### Example
