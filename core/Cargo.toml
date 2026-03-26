@@ -13,10 +13,10 @@ readme = "README.md"
 # Core Notes #
 ##############
 ## Serialization
-serde = { version = "1.0", features = ["derive"] }
-toml = "0.9"
+serde = { workspace = true }
+toml = { workspace = true }
 ## Debug
-log = "0.4"
+log = { workspace = true }
 env_logger = "0.11"
 ## Error Handling
 thiserror = "2.0"
@@ -29,13 +29,13 @@ twox-hash = "2.1"
 ## Regular Expressions
 regex = "1.12"
 # Markdown parsing
-pulldown-cmark = "0.13"
-chrono = "0.4"
+pulldown-cmark = { workspace = true }
+chrono = { workspace = true }
 crossbeam-channel = "0.5"
 futures-channel = "0.3"
 futures-util = "0.3"
 ## Async stuff
-tokio = { version = "1.42", features = ["full"] }
+tokio = { workspace = true }
 async-recursion = "1.1"
 
 [dev-dependencies]
