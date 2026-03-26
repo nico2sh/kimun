@@ -176,3 +176,172 @@ async fn test_cli_custom_config() {
         result
     );
 }
+
+// ---------------------------------------------------------------------------
+// Exclusion operator helpers
+// ---------------------------------------------------------------------------
+
+/// Create a temporary vault with notes designed for exclusion testing.
+async fn setup_exclusion_test_vault(dir: &TempDir) -> NoteVault {
+    let vault = NoteVault::new(dir.path()).await.expect("failed to create vault");
+    vault.init_and_validate().await.expect("failed to init vault");
+
+    vault
+        .create_note(
+            &VaultPath::note_path_from("weekly-meeting"),
+            "# Weekly Meeting\n\nRegular team meeting notes.",
+        )
+        .await
+        .expect("failed to create meeting note");
+
+    vault
+        .create_note(
+            &VaultPath::note_path_from("cancelled-meeting"),
+            "# Cancelled Meeting\n\nThis meeting was cancelled.",
+        )
+        .await
+        .expect("failed to create cancelled note");
+
+    vault
+        .create_note(
+            &VaultPath::note_path_from("project-draft"),
+            "# Project Draft\n\nDraft version of project proposal.",
+        )
+        .await
+        .expect("failed to create draft note");
+
+    vault
+        .create_note(
+            &VaultPath::note_path_from("project-final"),
+            "# Project Final\n\nFinal version of project proposal.",
+        )
+        .await
+        .expect("failed to create final note");
+
+    vault.recreate_index().await.expect("failed to recreate index");
+    vault
+}
+
+// ---------------------------------------------------------------------------
+// test_cli_search_basic_exclusions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_cli_search_basic_exclusions() {
+    let workspace_dir = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+
+    let vault = setup_exclusion_test_vault(&workspace_dir).await;
+    write_config(&config_path, workspace_dir.path());
+
+    // Test content exclusion via CLI
+    let result = run_cli(
+        CliCommand::Search {
+            query: "meeting -cancelled".to_string(),
+            format: OutputFormat::Text,
+        },
+        Some(config_path.clone()),
+    )
+    .await;
+
+    assert!(result.is_ok(), "search with exclusion should succeed: {:?}", result);
+
+    // Validate directly against vault: "weekly-meeting" should appear, "cancelled-meeting" should not
+    let search_results = vault
+        .search_notes("meeting -cancelled")
+        .await
+        .expect("direct search should work");
+
+    let paths: Vec<String> = search_results
+        .iter()
+        .map(|(entry, _)| entry.path.to_string())
+        .collect();
+
+    assert!(
+        paths.contains(&"/weekly-meeting.md".to_string()),
+        "Should find weekly-meeting note; found: {:?}",
+        paths
+    );
+    assert!(
+        !paths.contains(&"/cancelled-meeting.md".to_string()),
+        "Should exclude cancelled-meeting note; found: {:?}",
+        paths
+    );
+}
+
+// ---------------------------------------------------------------------------
+// test_cli_search_compound_exclusions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_cli_search_compound_exclusions() {
+    let workspace_dir = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+
+    setup_exclusion_test_vault(&workspace_dir).await;
+    write_config(&config_path, workspace_dir.path());
+
+    // Test title exclusion
+    let result = run_cli(
+        CliCommand::Search {
+            query: ">project >-draft".to_string(),
+            format: OutputFormat::Text,
+        },
+        Some(config_path.clone()),
+    )
+    .await;
+
+    assert!(result.is_ok(), "title exclusion should succeed: {:?}", result);
+
+    // Test filename exclusion
+    let result = run_cli(
+        CliCommand::Search {
+            query: "@project @-draft".to_string(),
+            format: OutputFormat::Text,
+        },
+        Some(config_path.clone()),
+    )
+    .await;
+
+    assert!(result.is_ok(), "filename exclusion should succeed: {:?}", result);
+}
+
+// ---------------------------------------------------------------------------
+// test_cli_search_exclusion_only
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_cli_search_exclusion_only() {
+    let workspace_dir = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+
+    setup_exclusion_test_vault(&workspace_dir).await;
+    write_config(&config_path, workspace_dir.path());
+
+    // Test pure content exclusion
+    let result = run_cli(
+        CliCommand::Search {
+            query: "-cancelled".to_string(),
+            format: OutputFormat::Text,
+        },
+        Some(config_path.clone()),
+    )
+    .await;
+
+    assert!(result.is_ok(), "exclusion-only search should succeed: {:?}", result);
+
+    // Test pure title exclusion
+    let result = run_cli(
+        CliCommand::Search {
+            query: ">-draft".to_string(),
+            format: OutputFormat::Text,
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_ok(), "title exclusion-only should succeed: {:?}", result);
+}
