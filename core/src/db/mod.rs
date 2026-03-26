@@ -434,7 +434,7 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
     (sql, params)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
     let search_terms = SearchTerms::from_query_string(query);
     build_search_sql_query_inner(&search_terms)
