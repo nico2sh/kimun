@@ -137,13 +137,20 @@ pub async fn format_notes_as_json(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let workspace_path = vault.workspace_path.to_string_lossy().to_string();
 
-    // Fetch actual content for each note to enable metadata extraction
-    let mut content_map = Vec::new();
-    for (entry_data, _) in entries {
-        if let Ok(content) = vault.get_note_text(&entry_data.path).await {
-            content_map.push((entry_data.path.clone(), content));
-        }
-    }
+    // Fetch actual content for each note concurrently to enable metadata extraction
+    let content_futures: Vec<_> = entries
+        .iter()
+        .map(|(entry_data, _)| async {
+            let path = entry_data.path.clone();
+            match vault.get_note_text(&path).await {
+                Ok(content) => Some((path, content)),
+                Err(_) => None,
+            }
+        })
+        .collect();
+
+    let content_results = futures::future::join_all(content_futures).await;
+    let content_map: Vec<_> = content_results.into_iter().flatten().collect();
 
     format_notes_with_content_as_json(
         vault,
