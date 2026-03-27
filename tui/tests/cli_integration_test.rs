@@ -467,3 +467,43 @@ async fn test_cli_search_exclusion_only() {
         paths
     );
 }
+
+#[tokio::test]
+async fn test_paths_format_path_with_spaces() {
+    let dir = TempDir::new().unwrap();
+    let vault = NoteVault::new(dir.path()).await.unwrap();
+    vault.init_and_validate().await.unwrap();
+
+    // Create two notes whose paths contain spaces
+    vault
+        .create_note(
+            &VaultPath::note_path_from("notes/first note"),
+            "# First\n\nContent.",
+        )
+        .await
+        .unwrap();
+    vault
+        .create_note(
+            &VaultPath::note_path_from("notes/second note"),
+            "# Second\n\nContent.",
+        )
+        .await
+        .unwrap();
+    vault.recreate_index().await.unwrap();
+
+    let config_path = dir.path().join("config.toml");
+    write_config(&config_path, dir.path());
+
+    // Both notes listed without error — the Paths arm prints one line per note
+    // regardless of spaces in the path (println! emits a single \n per entry)
+    let result = run_cli(
+        CliCommand::Notes {
+            path: Some("notes/".to_string()),
+            format: OutputFormat::Paths,
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_ok());
+}
