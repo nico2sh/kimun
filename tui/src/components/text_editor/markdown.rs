@@ -94,6 +94,22 @@ impl ParsedLine {
             }
         }
 
+        // pulldown-cmark strips trailing whitespace from heading Text events, so those
+        // spaces never appear in Event::Text and are left false in content_vis. Mark them
+        // as content so the editor keeps them visible and cursor mapping stays correct.
+        let chars: Vec<char> = line.chars().collect();
+        for e in &elements {
+            if matches!(e.kind, ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3) {
+                for i in (e.start_char..e.end_char).rev() {
+                    if i < total && matches!(chars[i], ' ' | '\t') {
+                        content_vis[i] = true;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
         // Build O(1) lookup bitmasks from the collected element ranges.
         let mut elem_vis = vec![false; total];
         let mut elem_index = vec![0u8; total];
@@ -665,6 +681,19 @@ mod tests {
         assert!(text(&s).contains('#'));
         let col = MarkdownSpanner::rendered_cursor_col(line, 0, 1, true, false);
         assert_eq!(col, 1);
+    }
+    #[test]
+    fn heading_trailing_spaces_are_rendered() {
+        let line = "# Hello   ";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "# Hello   ", "trailing spaces in heading should render");
+    }
+    #[test]
+    fn heading_trailing_spaces_cursor_col_correct() {
+        let line = "# Hello   ";
+        // cursor at logical pos 9 (last trailing space): positions 0..9 all emit → rendered col 9
+        let col = MarkdownSpanner::rendered_cursor_col(line, 0, 9, true, false);
+        assert_eq!(col, 9, "cursor in trailing space of heading should map to rendered col 9");
     }
     #[test]
     fn trailing_spaces_are_rendered() {
