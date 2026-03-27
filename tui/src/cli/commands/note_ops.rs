@@ -62,11 +62,6 @@ pub async fn run(
                 Some(std::io::BufReader::new(std::io::stdin().lock()))
             };
             let resolved = resolve_show_paths(paths, reader)?;
-            if resolved.is_empty() {
-                return Err(color_eyre::eyre::eyre!(
-                    "No paths provided — pass paths as arguments or pipe from stdin"
-                ));
-            }
             run_show(vault, &resolved, quick_note_path, format, workspace_name).await
         }
     }
@@ -198,12 +193,17 @@ fn resolve_show_paths<R: std::io::BufRead>(
     }
     match reader {
         Some(r) => {
-            let paths: Vec<String> = r
+            let paths: Result<Vec<String>, _> = r
                 .lines()
-                .filter_map(|l| l.ok())
-                .map(|l| l.trim().to_owned())
-                .filter(|l| !l.is_empty())
+                .filter(|l| l.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(true))
+                .map(|l| l.map(|s| s.trim().to_owned()))
                 .collect();
+            let paths = paths.map_err(|e| color_eyre::eyre::eyre!("Failed to read stdin: {}", e))?;
+            if paths.is_empty() {
+                return Err(color_eyre::eyre::eyre!(
+                    "No paths provided — pass paths as arguments or pipe from stdin"
+                ));
+            }
             Ok(paths)
         }
         None => Err(color_eyre::eyre::eyre!(
@@ -422,8 +422,10 @@ mod tests {
     fn test_resolve_show_paths_all_blank_stdin_returns_empty() {
         let input = b"\n  \n\t\n";
         let reader = Cursor::new(input.as_ref());
-        let result = resolve_show_paths(vec![], Some(reader)).unwrap();
-        assert!(result.is_empty());
+        let result = resolve_show_paths(vec![], Some(reader));
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("No paths provided"), "got: {}", msg);
     }
 
     #[test]
