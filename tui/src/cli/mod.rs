@@ -49,18 +49,18 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
         None => AppSettings::load_from_disk()?,
     };
 
-    let workspace = if let Some(dir) = settings.workspace_dir {
-        dir
+    // Determine workspace path and name
+    let (workspace, workspace_name) = if let Some(dir) = settings.workspace_dir {
+        (dir, "default".to_string())
     } else if let Some(ref ws_config) = settings.workspace_config {
         if let Some(entry) = ws_config.get_current_workspace() {
-            entry.path.clone()
+            let name = ws_config.global.current_workspace.clone();
+            (entry.path.clone(), name)
         } else {
-            eprintln!("Error: No workspace configured. Run 'kimun' to set up a workspace.");
-            std::process::exit(1);
+            return Err(color_eyre::eyre::eyre!("No workspace configured. Run 'kimun' to set up a workspace."));
         }
     } else {
-        eprintln!("Error: No workspace configured. Run 'kimun' to set up a workspace.");
-        std::process::exit(1);
+        return Err(color_eyre::eyre::eyre!("No workspace configured. Run 'kimun' to set up a workspace."));
     };
 
     // Create vault
@@ -71,10 +71,10 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
 
     match command {
         CliCommand::Search { query, format } => {
-            commands::search::run(&vault, &query, format).await
+            commands::search::run(&vault, &query, format, &workspace_name, false).await
         }
         CliCommand::Notes { path, format } => {
-            commands::notes::run(&vault, path.as_deref(), format).await
+            commands::notes::run(&vault, path.as_deref(), format, &workspace_name, false).await
         }
         CliCommand::Workspace { .. } => unreachable!("handled above"),
     }

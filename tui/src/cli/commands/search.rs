@@ -4,7 +4,13 @@ use kimun_core::NoteVault;
 use crate::cli::output::{OutputFormat, format_note_entries_text_with_journal};
 use crate::cli::json_output::format_notes_as_json;
 
-pub async fn run(vault: &NoteVault, query: &str, format: OutputFormat) -> Result<()> {
+pub async fn run(
+    vault: &NoteVault,
+    query: &str,
+    format: OutputFormat,
+    workspace_name: &str,
+    _include_backlinks: bool,
+) -> Result<()> {
     let results = vault.search_notes(query).await?;
 
     match format {
@@ -13,14 +19,14 @@ pub async fn run(vault: &NoteVault, query: &str, format: OutputFormat) -> Result
             print!("{}", output);
         }
         OutputFormat::Json => {
-            let workspace_path = vault.workspace_path.to_string_lossy().to_string();
             let json_output = format_notes_as_json(
+                vault,
                 &results,
-                "default",
-                &workspace_path,
+                workspace_name,
                 Some(query),
-                false
-            )?;
+                false, // is_listing
+            ).await
+            .map_err(|e| color_eyre::eyre::eyre!("JSON formatting error: {}", e))?;
             print!("{}", json_output);
         }
     }

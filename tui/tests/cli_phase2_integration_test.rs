@@ -258,12 +258,11 @@ async fn test_json_output_multi_workspace() {
     vault.init_and_validate().await.unwrap();
 
     let results = vault.search_notes("test").await.unwrap();
-    let workspace_path = workspace_dir.path().to_string_lossy().to_string();
 
     let json_str = kimun_notes::cli::json_output::format_notes_as_json(
+        &vault,
         &results,
         "test-workspace",
-        &workspace_path,
         Some("test"),
         false, // is_listing
     ).await
@@ -274,7 +273,7 @@ async fn test_json_output_multi_workspace() {
 
     // Verify workspace metadata is included
     assert_eq!(json["metadata"]["workspace"], "test-workspace");
-    assert_eq!(json["metadata"]["workspace_path"], workspace_path);
+    assert_eq!(json["metadata"]["workspace_path"], workspace_dir.path().to_string_lossy().to_string());
     assert_eq!(json["metadata"]["query"], "test");
     assert!(!json["metadata"]["is_listing"].as_bool().unwrap());
 
