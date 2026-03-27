@@ -6,8 +6,10 @@ use kimun_notes::cli::{run_cli, CliCommand};
 use kimun_notes::cli::commands::NoteSubcommand;
 use tempfile::TempDir;
 
-/// Helper: write a minimal Phase 2 config with a single workspace pointing at `workspace_dir`.
-fn write_config(config_path: &std::path::Path, workspace_dir: &std::path::Path) {
+/// Helper: write a minimal Phase 2 config and initialise the vault index.
+/// The `note` CLI command only calls `validate()` (not `validate_and_init()`) for speed,
+/// so tests must pre-initialise the vault themselves.
+async fn write_config(config_path: &std::path::Path, workspace_dir: &std::path::Path) {
     let content = format!(
         r#"config_version = 2
 [global]
@@ -22,6 +24,8 @@ created = "2026-01-01T00:00:00Z"
         workspace_dir.display()
     );
     std::fs::write(config_path, content).unwrap();
+    let vault = kimun_core::NoteVault::new(workspace_dir).await.unwrap();
+    vault.validate_and_init().await.unwrap();
 }
 
 // --- note create ---
@@ -31,7 +35,7 @@ async fn test_note_create_creates_new_note() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     let result = run_cli(
         CliCommand::Note {
@@ -57,7 +61,7 @@ async fn test_note_create_fails_if_note_exists() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     // Pre-create the note
     std::fs::write(workspace_dir.path().join("existing.md"), "# Existing").unwrap();
@@ -99,6 +103,8 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
+    kimun_core::NoteVault::new(workspace_dir.path()).await.unwrap()
+        .validate_and_init().await.unwrap();
 
     let result = run_cli(
         CliCommand::Note {
@@ -137,6 +143,8 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
+    kimun_core::NoteVault::new(workspace_dir.path()).await.unwrap()
+        .validate_and_init().await.unwrap();
 
     let result = run_cli(
         CliCommand::Note {
@@ -161,7 +169,7 @@ async fn test_note_append_creates_if_not_exists() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     let result = run_cli(
         CliCommand::Note {
@@ -186,7 +194,7 @@ async fn test_note_append_appends_to_existing() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     std::fs::write(workspace_dir.path().join("log.md"), "# Log\n\nFirst entry").unwrap();
 
@@ -212,7 +220,7 @@ async fn test_note_append_empty_content_is_noop() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     std::fs::write(workspace_dir.path().join("original.md"), "# Original").unwrap();
 
@@ -239,7 +247,7 @@ async fn test_note_journal_creates_todays_entry() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     let result = run_cli(
         CliCommand::Note {
@@ -267,7 +275,7 @@ async fn test_note_journal_appends_to_existing_entry() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let journal_dir = workspace_dir.path().join("journal");
@@ -298,7 +306,7 @@ async fn test_note_journal_empty_content_is_noop() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let journal_dir = workspace_dir.path().join("journal");
@@ -328,7 +336,7 @@ async fn test_note_show_text_returns_ok() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     std::fs::write(
         workspace_dir.path().join("my-note.md"),
@@ -354,7 +362,7 @@ async fn test_note_show_missing_note_fails() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     // Pre-create an unrelated note so the vault initializes cleanly;
     // the test target ("does-not-exist") is intentionally absent.
@@ -379,7 +387,7 @@ async fn test_note_show_json_returns_ok() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     std::fs::write(
         workspace_dir.path().join("json-note.md"),
@@ -405,7 +413,7 @@ async fn test_note_show_multiple_notes_ok() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     std::fs::write(workspace_dir.path().join("note-a.md"), "# Note A").unwrap();
     std::fs::write(workspace_dir.path().join("note-b.md"), "# Note B").unwrap();
@@ -440,7 +448,7 @@ async fn test_note_show_format_paths_returns_error() {
         .unwrap();
 
     let config_path = dir.path().join("config.toml");
-    write_config(&config_path, dir.path());
+    write_config(&config_path, dir.path()).await;
 
     let result = run_cli(
         CliCommand::Note {
@@ -467,7 +475,7 @@ async fn test_note_show_partial_failure_returns_err() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
-    write_config(&config_path, workspace_dir.path());
+    write_config(&config_path, workspace_dir.path()).await;
 
     std::fs::write(workspace_dir.path().join("exists.md"), "# Exists").unwrap();
 
