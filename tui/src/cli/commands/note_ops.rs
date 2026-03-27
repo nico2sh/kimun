@@ -5,7 +5,6 @@
 use clap::Subcommand;
 use color_eyre::eyre::Result;
 use kimun_core::{NoteVault, error::VaultError};
-use kimun_core::nfs::VaultPath;
 
 #[derive(Subcommand, Debug)]
 pub enum NoteSubcommand {
@@ -57,7 +56,7 @@ async fn run_create(
     use crate::cli::helpers::resolve_note_path;
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
-    let text = resolve_content(content);
+    let text = resolve_content(content)?;
 
     vault.create_note(&vault_path, &text).await.map_err(|e| {
         match &e {
@@ -82,7 +81,7 @@ async fn run_append(
     use kimun_core::error::FSError;
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
-    let text = resolve_content(content);
+    let text = resolve_content(content)?;
 
     if text.is_empty() {
         return Ok(());
@@ -116,12 +115,13 @@ async fn run_append(
 }
 
 async fn run_journal(vault: &NoteVault, content: Option<String>) -> Result<()> {
-    let text = resolve_content(content);
+    let text = resolve_content(content)?;
 
     if text.is_empty() {
         return Ok(());
     }
 
+    // journal_entry() handles create-if-absent internally, so no TOCTOU retry needed here.
     let (details, existing) = vault.journal_entry().await
         .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
 
@@ -135,18 +135,20 @@ async fn run_journal(vault: &NoteVault, content: Option<String>) -> Result<()> {
 
 /// Returns content from the Option, or reads from stdin if not a TTY.
 /// Returns an empty string if content is None and stdin is a TTY.
-fn resolve_content(content: Option<String>) -> String {
+/// Propagates I/O errors from stdin.
+fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<String> {
     use std::io::IsTerminal;
     match content {
-        Some(c) => c,
+        Some(c) => Ok(c),
         None => {
             if std::io::stdin().is_terminal() {
-                String::new()
+                Ok(String::new())
             } else {
                 use std::io::Read;
                 let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf).unwrap_or(0);
-                buf.trim_end_matches('\n').to_string()
+                std::io::stdin().read_to_string(&mut buf)
+                    .map_err(|e| color_eyre::eyre::eyre!("Failed to read stdin: {}", e))?;
+                Ok(buf.trim_end_matches(|c| c == '\n' || c == '\r').to_string())
             }
         }
     }
