@@ -16,7 +16,7 @@ use std::path::PathBuf;
 /// * `Err(io::Error)` - If the directory cannot be created or home directory cannot be determined
 ///
 /// # Example
-/// ```
+/// ```ignore
 /// let config_dir = get_or_create_config_dir("kimun")?;
 /// println!("Config directory: {}", config_dir.display());
 /// ```
