@@ -4,7 +4,6 @@ use kimun_core::note::NoteContentData;
 use kimun_core::nfs::VaultPath;
 use kimun_core::NoteVault;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use crate::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -53,8 +52,17 @@ pub struct JsonOutput {
     pub notes: Vec<JsonNoteEntry>,
 }
 
-/// Format note entries with their content as JSON output (async, supports vault operations)
-pub async fn format_notes_with_content_as_json(
+/// Appends `.md` to a path string if it does not already end with it.
+pub fn ensure_md_extension(path: &str) -> String {
+    if path.ends_with(".md") {
+        path.to_owned()
+    } else {
+        format!("{}.md", path)
+    }
+}
+
+/// Format note entries with their content as JSON output.
+pub fn format_notes_with_content_as_json(
     vault: &NoteVault,
     entries: &[(NoteEntryData, NoteContentData)],
     content_map: &[(VaultPath, String)],
@@ -62,14 +70,7 @@ pub async fn format_notes_with_content_as_json(
     workspace_path: &str,
     query: Option<&str>,
     is_listing: bool,
-    _include_backlinks: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    // Build a map for quick content lookup
-    let content_lookup: HashMap<String, String> = content_map
-        .iter()
-        .map(|(path, content)| (path.to_string(), content.clone()))
-        .collect();
-
     let output_metadata = JsonOutputMetadata {
         workspace: workspace_name.to_string(),
         workspace_path: workspace_path.to_string(),
@@ -83,18 +84,18 @@ pub async fn format_notes_with_content_as_json(
         .iter()
         .map(|(entry_data, content_data)| {
             let path_str = entry_data.path.to_string();
-            let path_with_ext = if path_str.ends_with(".md") {
-                path_str.clone()
-            } else {
-                format!("{}.md", path_str)
-            };
+            let path_with_ext = ensure_md_extension(&path_str);
 
-            // Get content from the map, or empty string if not found
-            let content = content_lookup.get(&path_str).cloned().unwrap_or_default();
+            // Find content by linear scan — note counts are small enough that a HashMap is wasteful
+            let content: &str = content_map
+                .iter()
+                .find(|(p, _)| p.to_string() == path_str)
+                .map(|(_, c)| c.as_str())
+                .unwrap_or("");
 
-            let tags = extract_tags(&content);
-            let links = extract_links(&content);
-            let headers = extract_headers(&content);
+            let tags = extract_tags(content);
+            let links = extract_links(content);
+            let headers = extract_headers(content);
 
             // Detect journal date using vault
             let journal_date = vault
@@ -104,13 +105,10 @@ pub async fn format_notes_with_content_as_json(
             // Use modified as created (fallback until created timestamp is tracked separately)
             let created = entry_data.modified_secs;
 
-            // TODO: implement backlinks when include_backlinks is true
-            // For now, backlinks are not included regardless of the flag
-
             JsonNoteEntry {
                 path: path_with_ext,
                 title: content_data.title.clone(),
-                content,
+                content: content.to_owned(),
                 size: entry_data.size,
                 modified: entry_data.modified_secs,
                 created,
@@ -163,7 +161,5 @@ pub async fn format_notes_as_json(
         &workspace_path,
         query,
         is_listing,
-        false,
     )
-    .await
 }

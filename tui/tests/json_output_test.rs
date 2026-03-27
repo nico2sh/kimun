@@ -34,8 +34,7 @@ async fn json_output_includes_required_fields() {
         workspace_dir.path().to_str().unwrap(),
         Some("test query"),
         false, // is_listing
-        false, // include_backlinks
-    ).await.unwrap();
+    ).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
