@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use color_eyre::eyre::Result;
 use kimun_core::NoteVault;
-use kimun_core::nfs::VaultPath;
+use kimun_core::nfs::{VaultPath, PATH_SEPARATOR};
 use crate::settings::AppSettings;
 
 /// Load settings from either a specific config file path or the default location.
@@ -71,15 +71,21 @@ pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
 /// - Otherwise → relative, joined with quick_note_path using PATH_SEPARATOR
 /// - VaultPath::note_path_from normalizes path and ensures .md extension
 pub fn resolve_note_path(input: &str, quick_note_path: &str) -> Result<VaultPath> {
-    use kimun_core::nfs::PATH_SEPARATOR;
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(color_eyre::eyre::eyre!("Note path cannot be empty"));
+        return Err(color_eyre::eyre::eyre!("Note path cannot be empty or whitespace-only"));
+    }
+    if trimmed == PATH_SEPARATOR.to_string() {
+        return Err(color_eyre::eyre::eyre!("Note path cannot be the root separator alone"));
     }
     let raw = if trimmed.starts_with(PATH_SEPARATOR) {
         trimmed.to_string()
     } else {
-        let base = quick_note_path.trim_end_matches(PATH_SEPARATOR);
+        let base = if quick_note_path.trim().is_empty() {
+            VaultPath::root().to_string()
+        } else {
+            quick_note_path.trim_end_matches(PATH_SEPARATOR).to_string()
+        };
         format!("{}{}{}", base, PATH_SEPARATOR, trimmed)
     };
     Ok(VaultPath::note_path_from(&raw))
