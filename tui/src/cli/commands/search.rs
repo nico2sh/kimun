@@ -20,9 +20,7 @@ pub async fn run(
         }
         OutputFormat::Paths => {
             for (entry_data, _) in &results {
-                let s = entry_data.path.to_string();
-                let bare = s.strip_suffix(".md").unwrap_or(&s);
-                println!("{}", bare);
+                println!("{}", entry_data.path.to_bare_string());
             }
         }
         OutputFormat::Json => {
@@ -43,17 +41,17 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+    use kimun_core::nfs::VaultPath;
+
     #[test]
     fn test_paths_strip_md_suffix() {
-        let with_ext = "projects/my-note.md";
-        let bare = with_ext.strip_suffix(".md").unwrap_or(with_ext);
-        assert_eq!(bare, "projects/my-note");
+        let path = VaultPath::new("projects/my-note.md");
+        assert_eq!(path.to_bare_string(), "projects/my-note");
     }
 
     #[test]
     fn test_paths_no_md_suffix_unchanged() {
-        let no_ext = "projects/my-note";
-        let bare = no_ext.strip_suffix(".md").unwrap_or(no_ext);
-        assert_eq!(bare, "projects/my-note");
+        let path = VaultPath::new("projects/my-note");
+        assert_eq!(path.to_bare_string(), "projects/my-note");
     }
 }
