@@ -469,6 +469,45 @@ async fn test_cli_search_exclusion_only() {
 }
 
 #[tokio::test]
+async fn test_notes_paths_format_returns_bare_paths() {
+    let dir = TempDir::new().unwrap();
+    let _vault = setup_test_vault(&dir).await;
+    let config_path = dir.path().join("config.toml");
+    write_config(&config_path, dir.path());
+
+    let result = run_cli(
+        CliCommand::Notes {
+            path: None,
+            format: OutputFormat::Paths,
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_paths_format_empty_results() {
+    let dir = TempDir::new().unwrap();
+    let _vault = setup_test_vault(&dir).await;
+    let config_path = dir.path().join("config.toml");
+    write_config(&config_path, dir.path());
+
+    // Path filter that matches nothing — zero results is not an error
+    let result = run_cli(
+        CliCommand::Notes {
+            path: Some("nonexistent/prefix".to_string()),
+            format: OutputFormat::Paths,
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
 async fn test_paths_format_path_with_spaces() {
     let dir = TempDir::new().unwrap();
     let vault = NoteVault::new(dir.path()).await.unwrap();
