@@ -337,6 +337,9 @@ async fn run_show(
         ));
     }
 
+    // Output whatever was found — the JSON/text is valid for the notes that succeeded.
+    // had_errors (non-zero exit) signals that some notes were missing; those were
+    // already reported to stderr in the loop above.
     match acc {
         Accumulator::Text(entries) => {
             let sep = format!("\n{}\n\n", NOTE_SEPARATOR);
