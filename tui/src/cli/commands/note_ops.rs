@@ -6,6 +6,8 @@ use clap::Subcommand;
 use color_eyre::eyre::Result;
 use kimun_core::{NoteVault, error::VaultError};
 
+const NOTE_SEPARATOR: &str = "================================================================================";
+
 #[derive(Subcommand, Debug)]
 pub enum NoteSubcommand {
     /// Create a new note (fails if the note already exists)
@@ -144,14 +146,181 @@ async fn run_journal(vault: &NoteVault, content: Option<String>) -> Result<()> {
     Ok(())
 }
 
+fn format_note_show_text(
+    path: &kimun_core::nfs::VaultPath,
+    content: &str,
+    title: &str,
+    tags: &[String],
+    links: &[String],
+    backlinks: &[String],
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Path:      {}\n", path));
+    if !title.is_empty() {
+        out.push_str(&format!("Title:     {}\n", title));
+    }
+    if !tags.is_empty() {
+        out.push_str(&format!("Tags:      {}\n", tags.join(" ")));
+    }
+    if !links.is_empty() {
+        out.push_str(&format!("Links:     {}\n", links.join(", ")));
+    }
+    if !backlinks.is_empty() {
+        out.push_str(&format!("Backlinks: {}\n", backlinks.join(", ")));
+    }
+    out.push_str("---\n");
+    out.push_str(content);
+    out
+}
+
 async fn run_show(
-    _vault: &NoteVault,
-    _path_inputs: &[String],
-    _quick_note_path: &str,
-    _format: crate::cli::output::OutputFormat,
-    _workspace_name: &str,
+    vault: &NoteVault,
+    path_inputs: &[String],
+    quick_note_path: &str,
+    format: crate::cli::output::OutputFormat,
+    workspace_name: &str,
 ) -> Result<()> {
-    todo!("note show not yet implemented")
+    use crate::cli::helpers::resolve_note_path;
+    use crate::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
+    use crate::cli::json_output::{JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata};
+    use crate::cli::output::OutputFormat;
+    use kimun_core::nfs::NoteEntryData;
+    use kimun_core::error::{VaultError, FSError};
+    use chrono::Utc;
+    use std::time::UNIX_EPOCH;
+
+    let mut text_entries: Vec<String> = Vec::new();
+    let mut json_entries: Vec<JsonNoteEntry> = Vec::new();
+    let mut had_errors = false;
+
+    for input in path_inputs {
+        let vault_path = match resolve_note_path(input, quick_note_path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                had_errors = true;
+                continue;
+            }
+        };
+
+        let note_details = match vault.load_note(&vault_path).await {
+            Ok(nd) => nd,
+            Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
+                eprintln!("Error: Note not found: {}", vault_path);
+                had_errors = true;
+                continue;
+            }
+            Err(e) => return Err(color_eyre::eyre::eyre!("{}", e)),
+        };
+
+        let content = note_details.raw_text.clone();
+        let content_data = note_details.get_content_data();
+
+        let meta = tokio::fs::metadata(vault.path_to_pathbuf(&vault_path))
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+        let modified_secs = meta
+            .modified()
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
+            .unwrap_or(0);
+        let entry_data = NoteEntryData {
+            path: vault_path.clone(),
+            size: meta.len(),
+            modified_secs,
+        };
+
+        let backlink_results = vault
+            .get_backlinks(&vault_path)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+        let backlink_paths: Vec<String> = backlink_results
+            .iter()
+            .map(|(e, _)| e.path.to_string())
+            .collect();
+
+        match format {
+            OutputFormat::Text => {
+                let tags = extract_tags(&content);
+                let links = extract_links(&content);
+                let text = format_note_show_text(
+                    &vault_path,
+                    &content,
+                    &content_data.title,
+                    &tags,
+                    &links,
+                    &backlink_paths,
+                );
+                text_entries.push(text);
+            }
+            OutputFormat::Json => {
+                let tags = extract_tags(&content);
+                let links = extract_links(&content);
+                let headers = extract_headers(&content);
+                let journal_date = vault
+                    .journal_date(&vault_path)
+                    .map(|d| d.format("%Y-%m-%d").to_string());
+                let path_str = vault_path.to_string();
+                let path_with_ext = if path_str.ends_with(".md") {
+                    path_str.clone()
+                } else {
+                    format!("{}.md", path_str)
+                };
+                json_entries.push(JsonNoteEntry {
+                    path: path_with_ext,
+                    title: content_data.title.clone(),
+                    content: content.clone(),
+                    size: entry_data.size,
+                    modified: entry_data.modified_secs,
+                    created: entry_data.modified_secs,
+                    hash: format!("{:x}", content_data.hash),
+                    journal_date,
+                    metadata: JsonNoteMetadata { tags, links, headers },
+                    backlinks: if backlink_paths.is_empty() {
+                        None
+                    } else {
+                        Some(backlink_paths)
+                    },
+                });
+            }
+        }
+    }
+
+    if text_entries.is_empty() && json_entries.is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "No notes found — all specified paths were missing"
+        ));
+    }
+
+    match format {
+        OutputFormat::Text => {
+            let sep = format!("\n{}\n\n", NOTE_SEPARATOR);
+            print!("{}", text_entries.join(&sep));
+        }
+        OutputFormat::Json => {
+            let output = JsonOutput {
+                metadata: JsonOutputMetadata {
+                    workspace: workspace_name.to_string(),
+                    workspace_path: vault.workspace_path.to_string_lossy().to_string(),
+                    total_results: json_entries.len(),
+                    query: None,
+                    is_listing: false,
+                    generated_at: Utc::now().to_rfc3339(),
+                },
+                notes: json_entries,
+            };
+            print!(
+                "{}",
+                serde_json::to_string(&output)
+                    .map_err(|e| color_eyre::eyre::eyre!("{}", e))?
+            );
+        }
+    }
+
+    if had_errors {
+        return Err(color_eyre::eyre::eyre!("One or more notes could not be found"));
+    }
+
+    Ok(())
 }
 
 /// Returns content from the Option, or reads from stdin if not a TTY.
