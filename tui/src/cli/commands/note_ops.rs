@@ -194,11 +194,13 @@ async fn run_show(
     enum Accumulator {
         Text(Vec<String>),
         Json(Vec<JsonNoteEntry>),
+        Paths,
     }
 
     let mut acc = match format {
         OutputFormat::Text => Accumulator::Text(Vec::new()),
         OutputFormat::Json => Accumulator::Json(Vec::new()),
+        OutputFormat::Paths => Accumulator::Paths,
     };
     let mut had_errors = false;
 
@@ -247,6 +249,11 @@ async fn run_show(
                     &backlink_paths,
                 ));
             }
+            Accumulator::Paths => {
+                let s = vault_path.to_string();
+                let bare = s.strip_suffix(".md").unwrap_or(&s);
+                println!("{}", bare);
+            }
             Accumulator::Json(entries) => {
                 let meta = tokio::fs::metadata(vault.path_to_pathbuf(&vault_path))
                     .await
@@ -285,6 +292,7 @@ async fn run_show(
     let is_empty = match &acc {
         Accumulator::Text(v) => v.is_empty(),
         Accumulator::Json(v) => v.is_empty(),
+        Accumulator::Paths => false,
     };
     if is_empty {
         return Err(color_eyre::eyre::eyre!(
@@ -296,6 +304,9 @@ async fn run_show(
         Accumulator::Text(entries) => {
             let sep = format!("\n{}\n\n", NOTE_SEPARATOR);
             print!("{}", entries.join(&sep));
+        }
+        Accumulator::Paths => {
+            // paths already printed inline during iteration
         }
         Accumulator::Json(notes) => {
             let output = JsonOutput {

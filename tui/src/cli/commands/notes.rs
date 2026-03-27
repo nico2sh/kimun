@@ -25,6 +25,13 @@ pub async fn run(
             let output = format_note_entries_text_with_journal(vault, &results);
             print!("{}", output);
         }
+        OutputFormat::Paths => {
+            for (entry_data, _) in &results {
+                let s = entry_data.path.to_string();
+                let bare = s.strip_suffix(".md").unwrap_or(&s);
+                println!("{}", bare);
+            }
+        }
         OutputFormat::Json => {
             let json_output = format_notes_as_json(
                 vault,

@@ -7,6 +7,7 @@ use kimun_core::note::NoteContentData;
 pub enum OutputFormat {
     Text,
     Json,
+    Paths,
 }
 
 /// Format note entries as text with journal date detection

@@ -361,6 +361,30 @@ async fn test_cli_search_compound_exclusions() {
 }
 
 // ---------------------------------------------------------------------------
+// test_search_paths_format_returns_bare_paths
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_search_paths_format_returns_bare_paths() {
+    let dir = TempDir::new().unwrap();
+    let _vault = setup_test_vault(&dir).await;
+    let config_path = dir.path().join("config.toml");
+    write_config(&config_path, dir.path());
+
+    // "hello" matches the hello note — just verify no error
+    let result = run_cli(
+        CliCommand::Search {
+            query: "hello".to_string(),
+            format: OutputFormat::Paths,
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_ok());
+}
+
+// ---------------------------------------------------------------------------
 // test_cli_search_exclusion_only
 // ---------------------------------------------------------------------------
 
