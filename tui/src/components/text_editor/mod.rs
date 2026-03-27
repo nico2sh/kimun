@@ -50,6 +50,7 @@ impl TextEditorComponent {
     pub fn set_text(&mut self, text: String) {
         let lines = text.lines();
         self.text_area = TextArea::from(lines);
+        self.edit_generation = self.edit_generation.wrapping_add(1);
         let reconstructed = self.get_text();
         self.mark_saved(reconstructed);
     }

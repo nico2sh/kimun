@@ -116,7 +116,10 @@ impl EditorScreen {
 
         self.path = path.clone();
         match self.vault.get_note_text(&self.path).await {
-            Ok(content) => self.editor.set_text(content),
+            Ok(content) => {
+                self.editor.set_text(content);
+                tx.send(AppEvent::Redraw).ok();
+            }
             Err(e) => {
                 log::error!("Failed to read note {}: {e}", self.path);
                 let parent = self.path.get_parent_path().0;
