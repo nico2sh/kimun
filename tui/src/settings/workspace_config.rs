@@ -34,6 +34,14 @@ pub struct WorkspaceEntry {
     pub path: PathBuf,
     pub last_paths: Vec<String>,
     pub created: DateTime<Utc>,
+    #[serde(default)]
+    pub quick_note_path: Option<String>,
+}
+
+impl WorkspaceEntry {
+    pub fn quick_note_path(&self) -> String {
+        self.quick_note_path.clone().unwrap_or_else(|| kimun_core::nfs::VaultPath::root().to_string())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -65,6 +73,7 @@ impl WorkspaceConfig {
             path,
             last_paths: Vec::new(),
             created: Utc::now(),
+            quick_note_path: None,
         };
 
         self.workspaces.insert(name.clone(), entry);
@@ -97,6 +106,7 @@ impl WorkspaceConfig {
             path: workspace_dir,
             last_paths,
             created: Utc::now(),
+            quick_note_path: None,
         };
 
         config.workspaces.insert("default".to_string(), entry);

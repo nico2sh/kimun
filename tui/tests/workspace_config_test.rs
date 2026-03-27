@@ -18,6 +18,7 @@ fn workspace_config_serializes_to_toml() {
                 created: chrono::DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z")
                     .unwrap()
                     .with_timezone(&Utc),
+                quick_note_path: None,
             },
         )]),
     };
