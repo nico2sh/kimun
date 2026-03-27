@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use chrono::Utc;
 use kimun_core::nfs::NoteEntryData;
 use kimun_core::note::NoteContentData;
@@ -80,18 +81,18 @@ pub fn format_notes_with_content_as_json(
         generated_at: Utc::now().to_rfc3339(),
     };
 
+    let content_lookup: HashMap<String, &str> = content_map
+        .iter()
+        .map(|(p, c)| (p.to_string(), c.as_str()))
+        .collect();
+
     let notes = entries
         .iter()
         .map(|(entry_data, content_data)| {
             let path_str = entry_data.path.to_string();
             let path_with_ext = ensure_md_extension(&path_str);
 
-            // Find content by linear scan — note counts are small enough that a HashMap is wasteful
-            let content: &str = content_map
-                .iter()
-                .find(|(p, _)| p.to_string() == path_str)
-                .map(|(_, c)| c.as_str())
-                .unwrap_or("");
+            let content: &str = content_lookup.get(&path_str).copied().unwrap_or("");
 
             let tags = extract_tags(content);
             let links = extract_links(content);
