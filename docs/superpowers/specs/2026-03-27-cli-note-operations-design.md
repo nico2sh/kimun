@@ -70,8 +70,8 @@ A shared helper `resolve_note_path(input: &str, quick_note_path: &str) -> Result
 
 1. Strip leading/trailing whitespace from input
 2. If the trimmed input is empty → return an error: `"Note path cannot be empty"`
-3. If trimmed input starts with `/` → treat as absolute: `VaultPath::note_path_from(input)`
-4. Otherwise → join with `quick_note_path`: `VaultPath::note_path_from(format!("{}/{}", quick_note_path, input))`
+3. If trimmed input starts with `PATH_SEPARATOR` → treat as absolute: `VaultPath::note_path_from(input)`
+4. Otherwise → join with `quick_note_path` using `PATH_SEPARATOR`: `VaultPath::note_path_from(format!("{}{}{}", quick_note_path, PATH_SEPARATOR, input))`
 5. `VaultPath::note_path_from` normalizes the path and ensures `.md` extension — so `dir/note` and `dir/note.md` both resolve to `dir/note.md`
 
 ## CLI Command Structure
