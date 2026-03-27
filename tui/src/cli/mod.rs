@@ -58,7 +58,9 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
                     commands::note_ops::run(subcommand, &vault, &quick_note_path, &workspace_name)
                         .await
                 }
-                status => Err(eyre!("{}", status)),
+                status => Err(eyre!(
+                    "Workspace index is not ready ({status}).\nRun `kimun workspace reindex` to initialise it."
+                )),
             }
         }
         CliCommand::Search { query, format } => {
