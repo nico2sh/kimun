@@ -32,6 +32,7 @@ pub enum NoteSubcommand {
     /// Show note content and metadata (read one or more notes)
     Show {
         /// One or more note paths (relative to quick_note_path or absolute from vault root)
+        #[arg(required = true)]
         paths: Vec<String>,
         #[arg(long, value_enum, default_value = "text")]
         format: crate::cli::output::OutputFormat,
