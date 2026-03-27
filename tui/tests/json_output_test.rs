@@ -1,9 +1,15 @@
 use kimun_notes::cli::json_output::format_notes_with_content_as_json;
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
+use kimun_core::NoteVault;
+use tempfile::TempDir;
 
-#[test]
-fn json_output_includes_required_fields() {
+#[tokio::test]
+async fn json_output_includes_required_fields() {
+    let workspace_dir = TempDir::new().unwrap();
+    let vault = NoteVault::new(workspace_dir.path()).await.unwrap();
+    vault.init_and_validate().await.unwrap();
+
     let entries = vec![(
         NoteEntryData {
             path: VaultPath::note_path_from("test/note"),
@@ -21,13 +27,15 @@ fn json_output_includes_required_fields() {
     ];
 
     let json_str = format_notes_with_content_as_json(
+        &vault,
         &entries,
         &content_map,
         "test-workspace",
-        "/path/to/workspace",
+        workspace_dir.path().to_str().unwrap(),
         Some("test query"),
-        false
-    ).unwrap();
+        false, // is_listing
+        false, // include_backlinks
+    ).await.unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
@@ -43,4 +51,10 @@ fn json_output_includes_required_fields() {
     assert_eq!(note["content"], "# Test Note\n\nContent here");
     assert_eq!(note["size"], 1024);
     assert_eq!(note["modified"], 1711454400);
+
+    // Check nested metadata structure
+    assert!(note["metadata"].is_object());
+    assert!(note["metadata"]["tags"].is_array());
+    assert!(note["metadata"]["links"].is_array());
+    assert!(note["metadata"]["headers"].is_array());
 }

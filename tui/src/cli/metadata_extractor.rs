@@ -1,6 +1,28 @@
 use crate::cli::json_output::JsonHeader;
 use regex::Regex;
 use std::collections::HashSet;
+use std::sync::OnceLock;
+
+// Compile regexes once using OnceLock for better performance
+fn hashtag_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"#([a-zA-Z0-9_-]+)").unwrap())
+}
+
+fn link_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"!?\[([^\]]*)\]\(([^)]+)\)").unwrap())
+}
+
+fn wikilink_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"\[\[([^\]]+)\]\]").unwrap())
+}
+
+fn header_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"^(#{1,6})\s+(.+)$").unwrap())
+}
 
 pub fn extract_tags(content: &str) -> Vec<String> {
     let mut tags: HashSet<String> = HashSet::new();
@@ -15,8 +37,7 @@ pub fn extract_tags(content: &str) -> Vec<String> {
     }
 
     // Extract hashtags from content
-    let hashtag_regex = Regex::new(r"#([a-zA-Z0-9_-]+)").unwrap();
-    for capture in hashtag_regex.captures_iter(content) {
+    for capture in hashtag_regex().captures_iter(content) {
         if let Some(tag) = capture.get(1) {
             tags.insert(tag.as_str().to_string());
         }
@@ -31,8 +52,7 @@ pub fn extract_links(content: &str) -> Vec<String> {
     let mut matches: Vec<(usize, String)> = Vec::new();
 
     // Markdown links [text](url) - including image links ![text](url)
-    let link_regex = Regex::new(r"!?\[([^\]]*)\]\(([^)]+)\)").unwrap();
-    for capture in link_regex.captures_iter(content) {
+    for capture in link_regex().captures_iter(content) {
         let pos = capture.get(0).map(|m| m.start()).unwrap_or(0);
         if let Some(url) = capture.get(2) {
             matches.push((pos, url.as_str().to_string()));
@@ -40,8 +60,7 @@ pub fn extract_links(content: &str) -> Vec<String> {
     }
 
     // Wikilinks [[page]]
-    let wikilink_regex = Regex::new(r"\[\[([^\]]+)\]\]").unwrap();
-    for capture in wikilink_regex.captures_iter(content) {
+    for capture in wikilink_regex().captures_iter(content) {
         let pos = capture.get(0).map(|m| m.start()).unwrap_or(0);
         if let Some(page) = capture.get(1) {
             matches.push((pos, page.as_str().to_string()));
@@ -54,10 +73,9 @@ pub fn extract_links(content: &str) -> Vec<String> {
 
 pub fn extract_headers(content: &str) -> Vec<JsonHeader> {
     let mut headers: Vec<JsonHeader> = Vec::new();
-    let header_regex = Regex::new(r"^(#{1,6})\s+(.+)$").unwrap();
 
     for line in content.lines() {
-        if let Some(capture) = header_regex.captures(line) {
+        if let Some(capture) = header_regex().captures(line) {
             if let (Some(level_match), Some(text_match)) = (capture.get(1), capture.get(2)) {
                 let level = level_match.as_str().len() as u32;
                 let text = text_match.as_str().trim().to_string();
@@ -97,30 +115,62 @@ fn extract_frontmatter(content: &str) -> Option<String> {
 
 fn extract_frontmatter_tags(frontmatter: &str) -> Option<Vec<String>> {
     let mut tags: Vec<String> = Vec::new();
+    let mut in_tags_block = false;
 
     for line in frontmatter.lines() {
         let line = line.trim();
 
-        // Handle "tags: [tag1, tag2]" format
+        // Handle "tags: [tag1, tag2]" format (inline array)
         if let Some(tags_str) = line.strip_prefix("tags:") {
-            let cleaned = tags_str.trim()
-                .strip_prefix('[')
-                .and_then(|s| s.strip_suffix(']'))
-                .unwrap_or(tags_str.trim());
+            let trimmed = tags_str.trim();
 
-            for tag in cleaned.split(',') {
-                let clean_tag = tag.trim()
+            // Check if this is an inline array format
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                let cleaned = trimmed.strip_prefix('[')
+                    .and_then(|s| s.strip_suffix(']'))
+                    .unwrap_or(trimmed);
+
+                for tag in cleaned.split(',') {
+                    let clean_tag = tag.trim()
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"'))
+                        .or_else(|| tag.trim().strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                        .unwrap_or(tag.trim());
+
+                    if !clean_tag.is_empty() {
+                        tags.push(clean_tag.to_string());
+                    }
+                }
+            }
+            // Check if this is the start of a block sequence (no content after colon, or just empty)
+            else if trimmed.is_empty() {
+                in_tags_block = true;
+            }
+            // Single tag on same line as "tags:"
+            else {
+                let clean_tag = trimmed
                     .strip_prefix('"')
                     .and_then(|s| s.strip_suffix('"'))
-                    .or_else(|| tag.trim().strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-                    .unwrap_or(tag.trim());
+                    .unwrap_or(trimmed);
+                if !clean_tag.is_empty() {
+                    tags.push(clean_tag.to_string());
+                }
+            }
+        }
+        // Handle YAML block sequence format (tags: \n  - tag1 \n  - tag2)
+        else if in_tags_block && line.starts_with('-') {
+            if let Some(tag_str) = line.strip_prefix('-') {
+                let clean_tag = tag_str.trim()
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .or_else(|| tag_str.trim().strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                    .unwrap_or(tag_str.trim());
 
                 if !clean_tag.is_empty() {
                     tags.push(clean_tag.to_string());
                 }
             }
         }
-
         // Handle "tag: value" format (single tag)
         else if let Some(tag_str) = line.strip_prefix("tag:") {
             let clean_tag = tag_str.trim()
@@ -131,6 +181,10 @@ fn extract_frontmatter_tags(frontmatter: &str) -> Option<Vec<String>> {
             if !clean_tag.is_empty() {
                 tags.push(clean_tag.to_string());
             }
+        }
+        // Exit tags block if we encounter a new YAML key or empty line
+        else if in_tags_block && (line.contains(':') || line.is_empty()) {
+            in_tags_block = false;
         }
     }
 
