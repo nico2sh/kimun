@@ -26,7 +26,7 @@ pub struct WorkspaceEntry {
 ```
 
 - Default when absent from TOML: `None` → resolved as `/` (vault root)
-- Add helper: `fn quick_note_path(&self) -> &str` returning the inner value or `"/"`
+- Add helper: `fn quick_note_path(&self) -> String` returning the inner value or `VaultPath::root().to_string()` (so the root character is defined by `VaultPath`, not hardcoded)
 - No migration needed — `#[serde(default)]` handles existing TOML files cleanly
 
 TOML example:
