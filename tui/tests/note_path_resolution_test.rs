@@ -59,3 +59,17 @@ fn test_quick_note_path_root_default() {
     let path = resolve_note_path("my-note", "/").unwrap();
     assert_eq!(path.to_string(), "/my-note.md");
 }
+
+// resolve_note_path: empty quick_note_path uses root
+#[test]
+fn test_empty_quick_note_path_uses_root() {
+    let path = resolve_note_path("my-note", "").unwrap();
+    assert_eq!(path.to_string(), "/my-note.md");
+}
+
+// resolve_note_path: bare separator returns error
+#[test]
+fn test_root_separator_only_returns_error() {
+    let result = resolve_note_path("/", "/inbox");
+    assert!(result.is_err(), "bare separator should return an error");
+}
