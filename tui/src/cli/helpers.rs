@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use color_eyre::eyre::Result;
 use kimun_core::NoteVault;
+use kimun_core::nfs::VaultPath;
 use crate::settings::AppSettings;
 
 /// Load settings from either a specific config file path or the default location.
@@ -60,6 +61,28 @@ pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
         }
     }
     root
+}
+
+/// Resolve a user-provided note path string into a VaultPath.
+///
+/// Rules:
+/// - Empty or whitespace-only input → error
+/// - Starts with PATH_SEPARATOR → absolute from vault root (quick_note_path ignored)
+/// - Otherwise → relative, joined with quick_note_path using PATH_SEPARATOR
+/// - VaultPath::note_path_from normalizes path and ensures .md extension
+pub fn resolve_note_path(input: &str, quick_note_path: &str) -> Result<VaultPath> {
+    use kimun_core::nfs::PATH_SEPARATOR;
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(color_eyre::eyre::eyre!("Note path cannot be empty"));
+    }
+    let raw = if trimmed.starts_with(PATH_SEPARATOR) {
+        trimmed.to_string()
+    } else {
+        let base = quick_note_path.trim_end_matches(PATH_SEPARATOR);
+        format!("{}{}{}", base, PATH_SEPARATOR, trimmed)
+    };
+    Ok(VaultPath::note_path_from(&raw))
 }
 
 /// Create and initialize a vault from workspace configuration.
