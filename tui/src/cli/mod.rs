@@ -48,11 +48,11 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
 
     // Note commands need settings for quick_note_path
     if let CliCommand::Note { subcommand } = command {
-        let (settings, workspace_path, _workspace_name) = load_and_resolve_workspace(config_path)?;
+        let (settings, workspace_path, workspace_name) = load_and_resolve_workspace(config_path)?;
         let quick_note_path = resolve_quick_note_path(&settings);
         let vault = kimun_core::NoteVault::new(&workspace_path).await?;
         vault.init_and_validate().await?;
-        return commands::note_ops::run(subcommand, &vault, &quick_note_path).await;
+        return commands::note_ops::run(subcommand, &vault, &quick_note_path, &workspace_name).await;
     }
 
     // Search and Notes commands

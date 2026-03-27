@@ -3,7 +3,7 @@ use clap::ValueEnum;
 use kimun_core::nfs::NoteEntryData;
 use kimun_core::note::NoteContentData;
 
-#[derive(ValueEnum, Clone)]
+#[derive(ValueEnum, Clone, Debug)]
 pub enum OutputFormat {
     Text,
     Json,
