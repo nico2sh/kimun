@@ -183,15 +183,23 @@ async fn run_show(
 ) -> Result<()> {
     use crate::cli::helpers::resolve_note_path;
     use crate::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
-    use crate::cli::json_output::{JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata};
+    use crate::cli::json_output::{JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata, ensure_md_extension};
     use crate::cli::output::OutputFormat;
     use kimun_core::nfs::NoteEntryData;
     use kimun_core::error::{VaultError, FSError};
     use chrono::Utc;
     use std::time::UNIX_EPOCH;
 
-    let mut text_entries: Vec<String> = Vec::new();
-    let mut json_entries: Vec<JsonNoteEntry> = Vec::new();
+    // One accumulator per format — only the active one is ever populated.
+    enum Accumulator {
+        Text(Vec<String>),
+        Json(Vec<JsonNoteEntry>),
+    }
+
+    let mut acc = match format {
+        OutputFormat::Text => Accumulator::Text(Vec::new()),
+        OutputFormat::Json => Accumulator::Json(Vec::new()),
+    };
     let mut had_errors = false;
 
     for input in path_inputs {
@@ -214,21 +222,8 @@ async fn run_show(
             Err(e) => return Err(color_eyre::eyre::eyre!("{}", e)),
         };
 
-        let content = note_details.raw_text.clone();
+        let content = &note_details.raw_text;
         let content_data = note_details.get_content_data();
-
-        let meta = tokio::fs::metadata(vault.path_to_pathbuf(&vault_path))
-            .await
-            .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-        let modified_secs = meta
-            .modified()
-            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
-            .unwrap_or(0);
-        let entry_data = NoteEntryData {
-            path: vault_path.clone(),
-            size: meta.len(),
-            modified_secs,
-        };
 
         let backlink_results = vault
             .get_backlinks(&vault_path)
@@ -239,75 +234,80 @@ async fn run_show(
             .map(|(e, _)| e.path.to_string())
             .collect();
 
-        match format {
-            OutputFormat::Text => {
-                let tags = extract_tags(&content);
-                let links = extract_links(&content);
-                let text = format_note_show_text(
+        match &mut acc {
+            Accumulator::Text(entries) => {
+                let tags = extract_tags(content);
+                let links = extract_links(content);
+                entries.push(format_note_show_text(
                     &vault_path,
-                    &content,
+                    content,
                     &content_data.title,
                     &tags,
                     &links,
                     &backlink_paths,
-                );
-                text_entries.push(text);
+                ));
             }
-            OutputFormat::Json => {
-                let tags = extract_tags(&content);
-                let links = extract_links(&content);
-                let headers = extract_headers(&content);
+            Accumulator::Json(entries) => {
+                let meta = tokio::fs::metadata(vault.path_to_pathbuf(&vault_path))
+                    .await
+                    .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+                let modified_secs = meta
+                    .modified()
+                    .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
+                    .unwrap_or(0);
+                let entry_data = NoteEntryData {
+                    path: vault_path.clone(),
+                    size: meta.len(),
+                    modified_secs,
+                };
+                let tags = extract_tags(content);
+                let links = extract_links(content);
+                let headers = extract_headers(content);
                 let journal_date = vault
                     .journal_date(&vault_path)
                     .map(|d| d.format("%Y-%m-%d").to_string());
-                let path_str = vault_path.to_string();
-                let path_with_ext = if path_str.ends_with(".md") {
-                    path_str.clone()
-                } else {
-                    format!("{}.md", path_str)
-                };
-                json_entries.push(JsonNoteEntry {
-                    path: path_with_ext,
+                entries.push(JsonNoteEntry {
+                    path: ensure_md_extension(&vault_path.to_string()),
                     title: content_data.title.clone(),
                     content: content.clone(),
                     size: entry_data.size,
                     modified: entry_data.modified_secs,
-                    created: entry_data.modified_secs,
+                    created: entry_data.modified_secs, // TODO: track actual creation time
                     hash: format!("{:x}", content_data.hash),
                     journal_date,
                     metadata: JsonNoteMetadata { tags, links, headers },
-                    backlinks: if backlink_paths.is_empty() {
-                        None
-                    } else {
-                        Some(backlink_paths)
-                    },
+                    backlinks: if backlink_paths.is_empty() { None } else { Some(backlink_paths) },
                 });
             }
         }
     }
 
-    if text_entries.is_empty() && json_entries.is_empty() {
+    let is_empty = match &acc {
+        Accumulator::Text(v) => v.is_empty(),
+        Accumulator::Json(v) => v.is_empty(),
+    };
+    if is_empty {
         return Err(color_eyre::eyre::eyre!(
             "No notes found — all specified paths were missing"
         ));
     }
 
-    match format {
-        OutputFormat::Text => {
+    match acc {
+        Accumulator::Text(entries) => {
             let sep = format!("\n{}\n\n", NOTE_SEPARATOR);
-            print!("{}", text_entries.join(&sep));
+            print!("{}", entries.join(&sep));
         }
-        OutputFormat::Json => {
+        Accumulator::Json(notes) => {
             let output = JsonOutput {
                 metadata: JsonOutputMetadata {
                     workspace: workspace_name.to_string(),
                     workspace_path: vault.workspace_path.to_string_lossy().to_string(),
-                    total_results: json_entries.len(),
+                    total_results: notes.len(),
                     query: None,
                     is_listing: false,
                     generated_at: Utc::now().to_rfc3339(),
                 },
-                notes: json_entries,
+                notes,
             };
             print!(
                 "{}",
