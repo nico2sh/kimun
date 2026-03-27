@@ -32,7 +32,6 @@ pub enum NoteSubcommand {
     /// Show note content and metadata (read one or more notes)
     Show {
         /// One or more note paths (relative to quick_note_path or absolute from vault root)
-        #[arg(required = true)]
         paths: Vec<String>,
         #[arg(long, value_enum, default_value = "text")]
         format: crate::cli::output::OutputFormat,
@@ -56,7 +55,14 @@ pub async fn run(
             run_journal(vault, content).await
         }
         NoteSubcommand::Show { paths, format } => {
-            run_show(vault, &paths, quick_note_path, format, workspace_name).await
+            use std::io::IsTerminal;
+            let reader = if std::io::stdin().is_terminal() {
+                None
+            } else {
+                Some(std::io::BufReader::new(std::io::stdin().lock()))
+            };
+            let resolved = resolve_show_paths(paths, reader)?;
+            run_show(vault, &resolved, quick_note_path, format, workspace_name).await
         }
     }
 }
@@ -172,6 +178,33 @@ fn format_note_show_text(
     out.push_str("---\n");
     out.push_str(content);
     out
+}
+
+/// Resolves the effective path list for `note show`.
+/// - If `args` is non-empty, returns it directly (reader is ignored).
+/// - If `args` is empty and `reader` is `Some`, reads non-blank trimmed lines from it.
+/// - If `args` is empty and `reader` is `None` (TTY), returns an error.
+fn resolve_show_paths<R: std::io::BufRead>(
+    args: Vec<String>,
+    reader: Option<R>,
+) -> color_eyre::eyre::Result<Vec<String>> {
+    if !args.is_empty() {
+        return Ok(args);
+    }
+    match reader {
+        Some(r) => {
+            let paths: Vec<String> = r
+                .lines()
+                .filter_map(|l| l.ok())
+                .map(|l| l.trim().to_owned())
+                .filter(|l| !l.is_empty())
+                .collect();
+            Ok(paths)
+        }
+        None => Err(color_eyre::eyre::eyre!(
+            "No paths provided — pass paths as arguments or pipe from stdin"
+        )),
+    }
 }
 
 async fn run_show(
@@ -349,5 +382,50 @@ fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<String> 
                 Ok(buf.trim_end_matches(|c| c == '\n' || c == '\r').to_string())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_show_paths;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_resolve_show_paths_uses_args_when_given() {
+        let args = vec!["projects/foo".to_string(), "inbox/bar".to_string()];
+        let result = resolve_show_paths(args.clone(), None::<Cursor<&[u8]>>).unwrap();
+        assert_eq!(result, args);
+    }
+
+    #[test]
+    fn test_resolve_show_paths_reads_from_reader() {
+        let input = b"projects/foo\ninbox/bar\n";
+        let reader = Cursor::new(input.as_ref());
+        let result = resolve_show_paths(vec![], Some(reader)).unwrap();
+        assert_eq!(result, vec!["projects/foo", "inbox/bar"]);
+    }
+
+    #[test]
+    fn test_resolve_show_paths_skips_blank_lines() {
+        let input = b"projects/foo\n\n  \ninbox/bar\n";
+        let reader = Cursor::new(input.as_ref());
+        let result = resolve_show_paths(vec![], Some(reader)).unwrap();
+        assert_eq!(result, vec!["projects/foo", "inbox/bar"]);
+    }
+
+    #[test]
+    fn test_resolve_show_paths_all_blank_stdin_returns_empty() {
+        let input = b"\n  \n\t\n";
+        let reader = Cursor::new(input.as_ref());
+        let result = resolve_show_paths(vec![], Some(reader)).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_show_paths_no_args_no_reader_errors() {
+        let result = resolve_show_paths(vec![], None::<Cursor<&[u8]>>);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("No paths provided"), "got: {}", msg);
     }
 }
