@@ -39,7 +39,7 @@ pub struct WorkspaceEntry {
 }
 
 impl WorkspaceEntry {
-    pub fn quick_note_path(&self) -> String {
+    pub fn effective_quick_note_path(&self) -> String {
         self.quick_note_path.clone().unwrap_or_else(|| kimun_core::nfs::VaultPath::root().to_string())
     }
 }
