@@ -62,6 +62,11 @@ pub async fn run(
                 Some(std::io::BufReader::new(std::io::stdin().lock()))
             };
             let resolved = resolve_show_paths(paths, reader)?;
+            if resolved.is_empty() {
+                return Err(color_eyre::eyre::eyre!(
+                    "No paths provided — pass paths as arguments or pipe from stdin"
+                ));
+            }
             run_show(vault, &resolved, quick_note_path, format, workspace_name).await
         }
     }
