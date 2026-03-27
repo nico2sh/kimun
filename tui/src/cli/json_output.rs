@@ -43,6 +43,8 @@ pub struct JsonNoteEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub journal_date: Option<String>,
     pub metadata: JsonNoteMetadata,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backlinks: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -119,6 +121,7 @@ pub async fn format_notes_with_content_as_json(
                     links,
                     headers,
                 },
+                backlinks: None,
             }
         })
         .collect();
