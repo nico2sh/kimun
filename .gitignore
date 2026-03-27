@@ -9,7 +9,7 @@
 **/*.rs.bk
 
 kimun.app
-docs/
+docs/book/
 **/.claude/
 **/.superpowers/
 **/.DS_Store
