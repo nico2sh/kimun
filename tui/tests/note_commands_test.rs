@@ -320,3 +320,130 @@ async fn test_note_journal_empty_content_is_noop() {
     let content = std::fs::read_to_string(&journal_file).unwrap();
     assert_eq!(content, format!("# {}", today), "content should be unchanged on empty journal");
 }
+
+// --- note show ---
+
+#[tokio::test]
+async fn test_note_show_text_returns_ok() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    write_config(&config_path, workspace_dir.path());
+
+    std::fs::write(
+        workspace_dir.path().join("my-note.md"),
+        "# My Note\n\nHello world",
+    ).unwrap();
+
+    let result = run_cli(
+        CliCommand::Note {
+            subcommand: NoteSubcommand::Show {
+                paths: vec!["my-note".to_string()],
+                format: kimun_notes::cli::output::OutputFormat::Text,
+            },
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_ok(), "note show should succeed: {:?}", result);
+}
+
+#[tokio::test]
+async fn test_note_show_missing_note_fails() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    write_config(&config_path, workspace_dir.path());
+
+    // Pre-create an unrelated note so the vault initializes cleanly;
+    // the test target ("does-not-exist") is intentionally absent.
+    std::fs::write(workspace_dir.path().join("unrelated.md"), "# Unrelated").unwrap();
+
+    let result = run_cli(
+        CliCommand::Note {
+            subcommand: NoteSubcommand::Show {
+                paths: vec!["does-not-exist".to_string()],
+                format: kimun_notes::cli::output::OutputFormat::Text,
+            },
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_err(), "note show on missing note should fail");
+}
+
+#[tokio::test]
+async fn test_note_show_json_returns_ok() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    write_config(&config_path, workspace_dir.path());
+
+    std::fs::write(
+        workspace_dir.path().join("json-note.md"),
+        "# JSON Note\n\nsome content",
+    ).unwrap();
+
+    let result = run_cli(
+        CliCommand::Note {
+            subcommand: NoteSubcommand::Show {
+                paths: vec!["json-note".to_string()],
+                format: kimun_notes::cli::output::OutputFormat::Json,
+            },
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_ok(), "note show --format json should succeed: {:?}", result);
+}
+
+#[tokio::test]
+async fn test_note_show_multiple_notes_ok() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    write_config(&config_path, workspace_dir.path());
+
+    std::fs::write(workspace_dir.path().join("note-a.md"), "# Note A").unwrap();
+    std::fs::write(workspace_dir.path().join("note-b.md"), "# Note B").unwrap();
+
+    let result = run_cli(
+        CliCommand::Note {
+            subcommand: NoteSubcommand::Show {
+                paths: vec!["note-a".to_string(), "note-b".to_string()],
+                format: kimun_notes::cli::output::OutputFormat::Text,
+            },
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_ok(), "note show with multiple notes should succeed: {:?}", result);
+}
+
+#[tokio::test]
+async fn test_note_show_partial_failure_returns_err() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    write_config(&config_path, workspace_dir.path());
+
+    std::fs::write(workspace_dir.path().join("exists.md"), "# Exists").unwrap();
+
+    // One valid, one missing — should return Err (partial failure)
+    let result = run_cli(
+        CliCommand::Note {
+            subcommand: NoteSubcommand::Show {
+                paths: vec!["exists".to_string(), "missing".to_string()],
+                format: kimun_notes::cli::output::OutputFormat::Text,
+            },
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_err(), "partial failure should return Err");
+}
