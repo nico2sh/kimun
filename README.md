@@ -39,39 +39,89 @@ Your notes directory is called the **workspace**. Kimün creates a `kimun.sqlite
 
 ## Command Line Interface
 
-Kimün also provides a CLI for quick operations from the terminal:
+Kimün provides a powerful CLI for quick operations and multi-workspace management:
 
-### Search notes
+### Multi-Workspace Management
 
-```sh
-kimun search "your search query"
-```
-
-Search works the same as in the TUI - supports free text, filters, and all search features described below.
-
-### List notes
+Kimün supports multiple workspaces, each with its own notes directory and isolated content:
 
 ```sh
-kimun notes                           # List all notes
-kimun notes --path "journal/"         # Filter by path prefix
+# Initialize a new workspace
+kimun workspace init --name work /path/to/work/notes
+kimun workspace init --name personal /path/to/personal/notes
+
+# List all workspaces
+kimun workspace list
+
+# Switch between workspaces
+kimun workspace use work
+kimun workspace use personal
+
+# Manage workspaces
+kimun workspace rename old-name new-name
+kimun workspace remove old-workspace
+kimun workspace reindex work                    # Rebuild search index
 ```
 
-### Custom config
+### Search Notes
+
+```sh
+kimun search "your search query"                # Search in current workspace
+kimun search "meeting -cancelled"               # Use exclusion operators
+kimun search "@project >-draft"                 # Combine filename and title filters
+```
+
+Search works the same as in the TUI and supports all search features described below.
+
+### List Notes
+
+```sh
+kimun notes                                     # List all notes in current workspace
+kimun notes --path "journal/"                   # Filter by path prefix
+```
+
+### JSON Output
+
+Both search and notes commands support JSON output for automation and scripting:
+
+```sh
+kimun search "query" --format json             # Rich JSON with metadata
+kimun notes --format json                       # Structured note listing
+```
+
+JSON output includes comprehensive metadata:
+- Note content, title, size, timestamps
+- Extracted tags, links, and headers
+- Journal date detection
+- Workspace context
+
+Example with jq for processing:
+```sh
+# Find all notes with "rust" tag
+kimun search "rust" --format json | jq '.notes[] | select(.metadata.tags[] == "rust")'
+
+# Get note titles and paths
+kimun notes --format json | jq '.notes[] | {title, path}'
+
+# Count notes by workspace
+kimun notes --format json | jq '.metadata | {workspace, total_results}'
+```
+
+### Custom Config
 
 ```sh
 kimun --config /path/to/config.toml search "query"
-kimun --config /path/to/config.toml notes
+kimun --config /path/to/config.toml workspace list
 ```
 
 ### Initial Setup
 
-**Important:** The CLI requires an initial workspace setup. If you haven't used Kimün before:
+The CLI automatically creates workspace configuration on first use. For new installations:
 
-1. Run `kimun` (without arguments) to open the TUI
-2. Configure your workspace directory in Settings
-3. The CLI will then work with your configured workspace
+1. **Option A - CLI First:** `kimun workspace init --name default /path/to/notes`
+2. **Option B - TUI First:** Run `kimun` (TUI) to configure through the Settings screen
 
-The CLI will show an error if no workspace is configured, directing you to run the TUI first.
+Legacy single-workspace configurations are automatically migrated to the new multi-workspace format.
 
 ## Search
 
@@ -214,7 +264,7 @@ Default bindings (all configurable in the config file):
 - [ ] Paste images into notes
 - [ ] Calendar view for journal browsing
 - [ ] Auto-continue list formatting on Enter
-- [ ] Multiple workspaces
+- [X] Multiple workspaces
 - [X] Search under Markdown sections
 - [X] File management (create, rename, move, delete notes and directories)
 - [X] Autosave
