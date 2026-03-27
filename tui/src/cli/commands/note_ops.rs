@@ -27,12 +27,20 @@ pub enum NoteSubcommand {
         /// Text to append (reads from stdin if omitted and stdin is not a TTY)
         content: Option<String>,
     },
+    /// Show note content and metadata (read one or more notes)
+    Show {
+        /// One or more note paths (relative to quick_note_path or absolute from vault root)
+        paths: Vec<String>,
+        #[arg(long, value_enum, default_value = "text")]
+        format: crate::cli::output::OutputFormat,
+    },
 }
 
 pub async fn run(
     subcommand: NoteSubcommand,
     vault: &NoteVault,
     quick_note_path: &str,
+    workspace_name: &str,
 ) -> Result<()> {
     match subcommand {
         NoteSubcommand::Create { path, content } => {
@@ -43,6 +51,9 @@ pub async fn run(
         }
         NoteSubcommand::Journal { content } => {
             run_journal(vault, content).await
+        }
+        NoteSubcommand::Show { paths, format } => {
+            run_show(vault, &paths, quick_note_path, format, workspace_name).await
         }
     }
 }
@@ -131,6 +142,16 @@ async fn run_journal(vault: &NoteVault, content: Option<String>) -> Result<()> {
 
     println!("Note saved: {}", details.path);
     Ok(())
+}
+
+async fn run_show(
+    _vault: &NoteVault,
+    _path_inputs: &[String],
+    _quick_note_path: &str,
+    _format: crate::cli::output::OutputFormat,
+    _workspace_name: &str,
+) -> Result<()> {
+    todo!("note show not yet implemented")
 }
 
 /// Returns content from the Option, or reads from stdin if not a TTY.
