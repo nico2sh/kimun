@@ -202,19 +202,20 @@ Then add the function:
 ///
 /// Rules:
 /// - Empty or whitespace-only input → error
-/// - Starts with "/" → absolute from vault root (quick_note_path ignored)
+/// - Starts with PATH_SEPARATOR → absolute from vault root (quick_note_path ignored)
 /// - Otherwise → relative, joined with quick_note_path
 /// - VaultPath::note_path_from normalizes path and ensures .md extension
 pub fn resolve_note_path(input: &str, quick_note_path: &str) -> color_eyre::eyre::Result<VaultPath> {
+    use kimun_core::nfs::PATH_SEPARATOR;
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(color_eyre::eyre::eyre!("Note path cannot be empty"));
     }
-    let raw = if trimmed.starts_with('/') {
+    let raw = if trimmed.starts_with(PATH_SEPARATOR) {
         trimmed.to_string()
     } else {
-        let base = quick_note_path.trim_end_matches('/');
-        format!("{}/{}", base, trimmed)
+        let base = quick_note_path.trim_end_matches(PATH_SEPARATOR);
+        format!("{}{}{}", base, PATH_SEPARATOR, trimmed)
     };
     Ok(VaultPath::note_path_from(&raw))
 }
