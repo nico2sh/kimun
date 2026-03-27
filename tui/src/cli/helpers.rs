@@ -101,7 +101,7 @@ pub async fn create_and_init_vault(
     let (_settings, workspace_path, workspace_name) = load_and_resolve_workspace(config_path)?;
 
     let vault = NoteVault::new(&workspace_path).await?;
-    vault.init_and_validate().await?;
+    vault.validate_and_init().await?;
 
     Ok((vault, workspace_name))
 }

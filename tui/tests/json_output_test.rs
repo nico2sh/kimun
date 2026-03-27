@@ -8,7 +8,7 @@ use tempfile::TempDir;
 async fn json_output_includes_required_fields() {
     let workspace_dir = TempDir::new().unwrap();
     let vault = NoteVault::new(workspace_dir.path()).await.unwrap();
-    vault.init_and_validate().await.unwrap();
+    vault.validate_and_init().await.unwrap();
 
     let entries = vec![(
         NoteEntryData {

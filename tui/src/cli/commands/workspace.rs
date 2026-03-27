@@ -129,7 +129,7 @@ async fn run_init(
     let vault = NoteVault::new(&canonical_path).await.map_err(|e| {
         eyre!("Failed to create vault at {}: {}", canonical_path.display(), e)
     })?;
-    vault.init_and_validate().await.map_err(|e| {
+    vault.validate_and_init().await.map_err(|e| {
         eyre!("Failed to initialize vault database: {}", e)
     })?;
 
