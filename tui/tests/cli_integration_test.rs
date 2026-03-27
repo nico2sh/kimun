@@ -10,7 +10,7 @@ async fn setup_test_vault(dir: &TempDir) -> NoteVault {
     let vault = NoteVault::new(dir.path()).await.expect("failed to create vault");
 
     // Initialize DB schema before creating notes
-    vault.init_and_validate().await.expect("failed to init vault");
+    vault.validate_and_init().await.expect("failed to init vault");
 
     // Create a couple of test notes
     vault
@@ -192,7 +192,7 @@ async fn test_cli_custom_config() {
 /// Create a temporary vault with notes designed for exclusion testing.
 async fn setup_exclusion_test_vault(dir: &TempDir) -> NoteVault {
     let vault = NoteVault::new(dir.path()).await.expect("failed to create vault");
-    vault.init_and_validate().await.expect("failed to init vault");
+    vault.validate_and_init().await.expect("failed to init vault");
 
     vault
         .create_note(
@@ -511,7 +511,7 @@ async fn test_paths_format_empty_results() {
 async fn test_paths_format_path_with_spaces() {
     let dir = TempDir::new().unwrap();
     let vault = NoteVault::new(dir.path()).await.unwrap();
-    vault.init_and_validate().await.unwrap();
+    vault.validate_and_init().await.unwrap();
 
     // Create two notes whose paths contain spaces
     vault

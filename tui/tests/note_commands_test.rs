@@ -430,7 +430,7 @@ async fn test_note_show_format_paths_returns_error() {
     use kimun_core::nfs::VaultPath;
     let dir = TempDir::new().unwrap();
     let vault = kimun_core::NoteVault::new(dir.path()).await.unwrap();
-    vault.init_and_validate().await.unwrap();
+    vault.validate_and_init().await.unwrap();
     vault
         .create_note(
             &VaultPath::note_path_from("test/note"),

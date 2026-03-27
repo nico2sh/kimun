@@ -42,7 +42,7 @@ impl AppScreen for StartScreen {
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
                 let result = vault
-                    .init_and_validate()
+                    .validate_and_init()
                     .await
                     .map_err(|e| e.to_string())
                     .map(|r| r.duration);

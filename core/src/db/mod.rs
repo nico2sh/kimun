@@ -2,17 +2,20 @@
 mod search_terms;
 
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use log::{debug, error};
+use search_terms::{OrderBy, SearchTerms};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::{Row, Sqlite, Transaction};
-use search_terms::{OrderBy, SearchTerms};
 
 use crate::note::{ContentChunk, LinkType, NoteContentData, NoteDetails};
 
-fn row_to_note_entry(row: &sqlx::sqlite::SqliteRow) -> Result<(NoteEntryData, NoteContentData), DBError> {
+fn row_to_note_entry(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<(NoteEntryData, NoteContentData), DBError> {
     let path: String = row.try_get("path")?;
     let title: String = row.try_get("title")?;
     let size: i64 = row.try_get("size")?;
@@ -42,12 +45,30 @@ pub(super) struct VaultDB {
     pool: SqlitePool,
 }
 
+#[derive(PartialEq)]
 pub enum DBStatus {
     Ready,
     Outdated,
     NotValid,
     #[allow(dead_code)]
     FileNotFound,
+}
+
+impl DBStatus {
+    pub fn is_ready(&self) -> bool {
+        DBStatus::Ready.eq(self)
+    }
+}
+
+impl Display for DBStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DBStatus::Ready => write!(f, "DB is Ready"),
+            DBStatus::Outdated => write!(f, "DB is an old version, needs to be rebuilt"),
+            DBStatus::NotValid => write!(f, "DB file is not valid"),
+            DBStatus::FileNotFound => write!(f, "No DB file found"),
+        }
+    }
 }
 
 impl VaultDB {
@@ -79,18 +100,17 @@ impl VaultDB {
     pub async fn check_db(&self) -> Result<DBStatus, DBError> {
         debug!("Checking the DB");
 
-        let version: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM appData WHERE name = 'version'"
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .or_else(|e| {
-            // If the table doesn't exist, return FileNotFound
-            if e.to_string().contains("no such table") {
-                return Ok(None);
-            }
-            Err(e)
-        })?;
+        let version: Option<String> =
+            sqlx::query_scalar("SELECT value FROM appData WHERE name = 'version'")
+                .fetch_optional(&self.pool)
+                .await
+                .or_else(|e| {
+                    // If the table doesn't exist, return FileNotFound
+                    if e.to_string().contains("no such table") {
+                        return Ok(None);
+                    }
+                    Err(e)
+                })?;
 
         match version {
             Some(v) => {
@@ -139,7 +159,7 @@ async fn delete_db(pool: &SqlitePool) -> Result<(), DBError> {
         // Can't use params for tables or columns, so we use format!
         let drop_query = format!("DROP TABLE '{}'", table);
         match sqlx::query(&drop_query).execute(pool).await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => {
                 if table.contains("_") {
                     // Some virtual tables are automatically deleted
@@ -162,7 +182,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
         "CREATE TABLE appData (
             name TEXT PRIMARY KEY,
             value TEXT
-        )"
+        )",
     )
     .execute(&mut *tx)
     .await?;
@@ -186,7 +206,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
             modified INTEGER,
             basePath TEXT,
             noteName TEXT
-        )"
+        )",
     )
     .execute(&mut *tx)
     .await?;
@@ -195,14 +215,14 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
         "CREATE TABLE links (
             source TEXT,
             destination TEXT
-        )"
+        )",
     )
     .execute(&mut *tx)
     .await?;
 
     sqlx::query(
         "CREATE INDEX backlinks
-            ON links(destination)"
+            ON links(destination)",
     )
     .execute(&mut *tx)
     .await?;
@@ -212,7 +232,7 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
             path,
             breadcrumb,
             text
-        )"
+        )",
     )
     .execute(&mut *tx)
     .await?;
@@ -299,7 +319,12 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
             } else {
                 // Mixed positive + exclusions: use NOT IN subqueries to avoid FTS4 path column bug
                 let mut exclusion_conditions = vec![];
-                add_exclusion_conditions(&search_terms.excluded_terms, &mut var_num, &mut exclusion_conditions, &mut params);
+                add_exclusion_conditions(
+                    &search_terms.excluded_terms,
+                    &mut var_num,
+                    &mut exclusion_conditions,
+                    &mut params,
+                );
 
                 let terms_sql = format!(
                     "{} WHERE notesContent MATCH ?{} AND {}",
@@ -315,7 +340,12 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
             // Exclusion-only content query: FTS4 doesn't support pure exclusions
             // Use NOT IN approach with subquery for each excluded term
             let mut exclusion_conditions = vec![];
-            add_exclusion_conditions(&search_terms.excluded_terms, &mut var_num, &mut exclusion_conditions, &mut params);
+            add_exclusion_conditions(
+                &search_terms.excluded_terms,
+                &mut var_num,
+                &mut exclusion_conditions,
+                &mut params,
+            );
 
             // Use base_sql to get all notes, then exclude matching ones
             let terms_sql = format!("{} WHERE {}", base_sql, exclusion_conditions.join(" AND "));
@@ -394,7 +424,8 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
                         params.push(absolute.to_string());
                     }
                     None => {
-                        positive_conditions.push(format!("notes.basePath LIKE ('/' || ?{} || '%')", var_num));
+                        positive_conditions
+                            .push(format!("notes.basePath LIKE ('/' || ?{} || '%')", var_num));
                         params.push(path.to_string());
                     }
                 }
@@ -406,11 +437,15 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
             if !excluded.is_empty() {
                 match excluded.strip_suffix("/") {
                     Some(absolute) => {
-                        negative_conditions.push(format!("notes.basePath != ('/' || ?{})", var_num));
+                        negative_conditions
+                            .push(format!("notes.basePath != ('/' || ?{})", var_num));
                         params.push(absolute.to_string());
                     }
                     None => {
-                        negative_conditions.push(format!("notes.basePath NOT LIKE ('/' || ?{} || '%')", var_num));
+                        negative_conditions.push(format!(
+                            "notes.basePath NOT LIKE ('/' || ?{} || '%')",
+                            var_num
+                        ));
                         params.push(excluded.to_string());
                     }
                 }
@@ -445,9 +480,7 @@ pub async fn get_all_notes(
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let query = "SELECT DISTINCT path, title, size, modified, hash, noteName FROM notes";
 
-    let rows = sqlx::query(query)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(query).fetch_all(pool).await?;
 
     rows.iter().map(row_to_note_entry).collect()
 }
@@ -475,19 +508,33 @@ pub async fn search_terms<S: AsRef<str>>(
 
     let rows = sql_query.fetch_all(pool).await?;
 
-    let mut result: Vec<(NoteEntryData, NoteContentData)> = rows.iter().map(row_to_note_entry).collect::<Result<_, _>>()?;
+    let mut result: Vec<(NoteEntryData, NoteContentData)> = rows
+        .iter()
+        .map(row_to_note_entry)
+        .collect::<Result<_, _>>()?;
 
     if !order_by.is_empty() {
         result.sort_by(|(a_entry, a_content), (b_entry, b_content)| {
             for ob in &order_by {
                 let ord = match ob {
                     OrderBy::Title { asc } => {
-                        let cmp = a_content.title.to_lowercase().cmp(&b_content.title.to_lowercase());
-                        if *asc { cmp } else { cmp.reverse() }
+                        let cmp = a_content
+                            .title
+                            .to_lowercase()
+                            .cmp(&b_content.title.to_lowercase());
+                        if *asc {
+                            cmp
+                        } else {
+                            cmp.reverse()
+                        }
                     }
                     OrderBy::FileName { asc } => {
                         let cmp = a_entry.path.to_string().cmp(&b_entry.path.to_string());
-                        if *asc { cmp } else { cmp.reverse() }
+                        if *asc {
+                            cmp
+                        } else {
+                            cmp.reverse()
+                        }
                     }
                 };
                 if ord != std::cmp::Ordering::Equal {
@@ -525,10 +572,7 @@ pub async fn search_note_by_name<S: AsRef<str>>(
     let name = name.as_ref().to_lowercase();
     let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where noteName = ?";
 
-    let rows = sqlx::query(sql)
-        .bind(&name)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(sql).bind(&name).fetch_all(pool).await?;
 
     rows.iter().map(row_to_note_entry).collect()
 }
@@ -540,10 +584,7 @@ pub async fn search_note_by_path(
     let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where path = ?";
     let path_string = path.to_string();
 
-    let rows = sqlx::query(sql)
-        .bind(&path_string)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(sql).bind(&path_string).fetch_all(pool).await?;
 
     // Should always return one or zero
     rows.iter().map(row_to_note_entry).collect()
@@ -595,19 +636,22 @@ pub async fn get_notes_sections(
     let mut result = HashMap::new();
     let (sql, bind_value) = if path.is_note() {
         // Exact note path
-        ("SELECT path, breadcrumb, text FROM notesContent WHERE path = ?", path.to_string())
+        (
+            "SELECT path, breadcrumb, text FROM notesContent WHERE path = ?",
+            path.to_string(),
+        )
     } else if recursive {
         // All notes under this directory tree
-        ("SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%')", path.to_string())
+        (
+            "SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%')",
+            path.to_string(),
+        )
     } else {
         // Only notes directly in this directory (basePath join)
         ("SELECT nc.path, nc.breadcrumb, nc.text FROM notesContent nc JOIN notes n ON nc.path = n.path WHERE n.basePath = ?", path.to_string())
     };
 
-    let rows = sqlx::query(sql)
-        .bind(bind_value)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(sql).bind(bind_value).fetch_all(pool).await?;
 
     for row in rows {
         let path: String = row.try_get("path")?;
@@ -898,12 +942,14 @@ pub async fn rename_directory(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE links SET source = ? || SUBSTR(source, LENGTH(?) + 1) WHERE source LIKE (? || '%')")
-        .bind(&to)
-        .bind(&from)
-        .bind(&from)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        "UPDATE links SET source = ? || SUBSTR(source, LENGTH(?) + 1) WHERE source LIKE (? || '%')",
+    )
+    .bind(&to)
+    .bind(&from)
+    .bind(&from)
+    .execute(&mut **tx)
+    .await?;
 
     sqlx::query("UPDATE links SET destination = ? || SUBSTR(destination, LENGTH(?) + 1) WHERE destination LIKE (? || '%')")
         .bind(&to)
@@ -950,7 +996,6 @@ async fn delete_directory(
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1228,7 +1273,9 @@ mod tests {
         // Should use NOT IN subquery approach instead of FTS4 native exclusion
         assert!(sql.contains("notesContent MATCH"));
         assert!(sql.contains("NOT IN"));
-        assert!(sql.contains("SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"));
+        assert!(sql.contains(
+            "SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"
+        ));
         // params: first is the excluded term (NOT IN subquery), second is the positive term
         assert_eq!(params.len(), 2);
         assert!(params.contains(&"cancelled".to_string()));
@@ -1246,7 +1293,9 @@ mod tests {
         assert!(!sql.contains("MATCH \"-cancelled\""));
         // Should use NOT IN subquery approach
         assert!(sql.contains("NOT IN"));
-        assert!(sql.contains("SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"));
+        assert!(sql.contains(
+            "SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"
+        ));
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], "cancelled");
     }
