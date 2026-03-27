@@ -221,7 +221,7 @@ async fn run_show(
 ) -> Result<()> {
     use crate::cli::helpers::resolve_note_path;
     use crate::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
-    use crate::cli::json_output::{JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata, ensure_md_extension};
+    use crate::cli::json_output::{JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata};
     use crate::cli::output::OutputFormat;
     use kimun_core::nfs::NoteEntryData;
     use kimun_core::error::{VaultError, FSError};
@@ -312,7 +312,7 @@ async fn run_show(
                     .journal_date(&vault_path)
                     .map(|d| d.format("%Y-%m-%d").to_string());
                 entries.push(JsonNoteEntry {
-                    path: ensure_md_extension(&vault_path.to_string()),
+                    path: vault_path.to_string_with_ext(),
                     title: content_data.title.clone(),
                     content: content.clone(),
                     size: entry_data.size,

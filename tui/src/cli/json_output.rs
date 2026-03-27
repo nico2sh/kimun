@@ -90,7 +90,7 @@ pub fn format_notes_with_content_as_json(
         .iter()
         .map(|(entry_data, content_data)| {
             let path_str = entry_data.path.to_string();
-            let path_with_ext = ensure_md_extension(&path_str);
+            let path_with_ext = entry_data.path.to_string_with_ext();
 
             let content: &str = content_lookup.get(&path_str).copied().unwrap_or("");
 

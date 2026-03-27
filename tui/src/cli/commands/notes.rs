@@ -27,9 +27,7 @@ pub async fn run(
         }
         OutputFormat::Paths => {
             for (entry_data, _) in &results {
-                let s = entry_data.path.to_string();
-                let bare = s.strip_suffix(".md").unwrap_or(&s);
-                println!("{}", bare);
+                println!("{}", entry_data.path.to_bare_string());
             }
         }
         OutputFormat::Json => {
