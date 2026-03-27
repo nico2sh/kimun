@@ -112,7 +112,8 @@ impl EditorScreen {
         self.try_save().await;
 
         self.settings.add_path_history(&path);
-        self.settings.save_to_disk().ok();
+        let settings_snapshot = self.settings.clone();
+        tokio::spawn(async move { settings_snapshot.save_to_disk().ok(); });
 
         self.path = path.clone();
         match self.vault.get_note_text(&self.path).await {
@@ -170,7 +171,9 @@ impl EditorScreen {
         let vault = self.vault.clone();
         let tx2 = tx.clone();
         tokio::spawn(async move {
-            vault.browse_vault(options).await.ok();
+            if let Err(e) = vault.browse_vault(options).await {
+                log::error!("browse_vault failed: {e}");
+            }
             tx2.send(AppEvent::Redraw).ok();
         });
 

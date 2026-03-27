@@ -1,7 +1,7 @@
+use crate::settings::themes::Theme;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
-use crate::settings::themes::Theme;
 
 /// Shared parser options used by all pulldown-cmark call sites in this module.
 const PARSER_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
@@ -15,8 +15,14 @@ pub struct Element {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ElementKind {
-    Bold, Italic, InlineCode, Link,
-    HeadingH1, HeadingH2, HeadingH3, Blockquote,
+    Bold,
+    Italic,
+    InlineCode,
+    Link,
+    HeadingH1,
+    HeadingH2,
+    HeadingH3,
+    Blockquote,
 }
 
 /// Pre-parsed result for a single logical line.
@@ -50,17 +56,35 @@ impl ParsedLine {
             let ec = line[..range.end].chars().count();
             match event {
                 Event::Start(Tag::Strong) => stack.push((sc, ElementKind::Bold)),
-                Event::End(TagEnd::Strong) => if let Some((s, k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
+                Event::End(TagEnd::Strong) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
                 Event::Start(Tag::Emphasis) => stack.push((sc, ElementKind::Italic)),
-                Event::End(TagEnd::Emphasis) => if let Some((s, k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
+                Event::End(TagEnd::Emphasis) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
                 Event::Start(Tag::Link { .. }) => stack.push((sc, ElementKind::Link)),
-                Event::End(TagEnd::Link) => if let Some((s, k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
+                Event::End(TagEnd::Link) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
                 Event::Code(ref code_text) => {
                     // Mark only the code text chars as visible (exclude backtick sigils).
                     let code_len = code_text.chars().count();
@@ -68,9 +92,15 @@ impl ParsedLine {
                     let sigil_each = range_char_len.saturating_sub(code_len) / 2;
                     let cs = sc + sigil_each;
                     for i in cs..(cs + code_len) {
-                        if i < total { content_vis[i] = true; }
+                        if i < total {
+                            content_vis[i] = true;
+                        }
                     }
-                    elements.push(Element { start_char: sc, end_char: ec, kind: ElementKind::InlineCode });
+                    elements.push(Element {
+                        start_char: sc,
+                        end_char: ec,
+                        kind: ElementKind::InlineCode,
+                    });
                 }
                 Event::Start(Tag::Heading { level, .. }) => {
                     let kind = match level {
@@ -80,15 +110,31 @@ impl ParsedLine {
                     };
                     stack.push((sc, kind));
                 }
-                Event::End(TagEnd::Heading(_)) => if let Some((s, k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
+                Event::End(TagEnd::Heading(_)) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
                 Event::Start(Tag::BlockQuote(_)) => stack.push((sc, ElementKind::Blockquote)),
-                Event::End(TagEnd::BlockQuote(_)) => if let Some((s, k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
+                Event::End(TagEnd::BlockQuote(_)) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
                 Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
-                    for i in sc..ec { if i < total { content_vis[i] = true; } }
+                    for i in sc..ec {
+                        if i < total {
+                            content_vis[i] = true;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -97,14 +143,15 @@ impl ParsedLine {
         // pulldown-cmark strips trailing whitespace from heading Text events, so those
         // spaces never appear in Event::Text and are left false in content_vis. Mark them
         // as content so the editor keeps them visible and cursor mapping stays correct.
-        let chars: Vec<char> = line.chars().collect();
         for e in &elements {
-            if matches!(e.kind, ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3) {
+            if matches!(
+                e.kind,
+                ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
+            ) {
                 for i in (e.start_char..e.end_char).rev() {
-                    if i < total && matches!(chars[i], ' ' | '\t') {
-                        content_vis[i] = true;
-                    } else {
-                        break;
+                    match line.chars().nth(i) {
+                        Some(c) if matches!(c, ' ' | '\t') => content_vis[i] = true,
+                        _ => break,
                     }
                 }
             }
@@ -123,13 +170,22 @@ impl ParsedLine {
             }
         }
 
-        Self { elements, content_vis, elem_vis, elem_index }
+        Self {
+            elements,
+            content_vis,
+            elem_vis,
+            elem_index,
+        }
     }
 
     /// Element index at `pos`, or `None`. O(1) via precomputed `elem_index`.
     pub fn elem_at(&self, pos: usize) -> Option<usize> {
         self.elem_index.get(pos).and_then(|&tag| {
-            if tag == 0 { None } else { Some((tag as usize) - 1) }
+            if tag == 0 {
+                None
+            } else {
+                Some((tag as usize) - 1)
+            }
         })
     }
 
@@ -145,9 +201,14 @@ impl ParsedLine {
     /// Defaults to `e.end_char` so that a heading with no content text (e.g. `"#"`) is
     /// fully treated as sigil — fixes the F-02 bug where `e.start_char` was used.
     pub fn heading_sigil_end(&self) -> Option<usize> {
-        self.elements.iter()
-            .find(|e| matches!(e.kind,
-                ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3))
+        self.elements
+            .iter()
+            .find(|e| {
+                matches!(
+                    e.kind,
+                    ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
+                )
+            })
             .map(|e| {
                 let mut first_content = e.end_char; // default: all chars are sigil
                 for i in e.start_char..e.end_char {
@@ -164,6 +225,7 @@ impl ParsedLine {
 pub struct MarkdownSpanner;
 
 impl MarkdownSpanner {
+    #[cfg(test)]
     pub fn parse_elements(line: &str) -> Vec<Element> {
         let parser = Parser::new_ext(line, PARSER_OPTIONS);
         let mut elements = Vec::new();
@@ -173,18 +235,40 @@ impl MarkdownSpanner {
             let ec = line[..range.end].chars().count();
             match event {
                 Event::Start(Tag::Strong) => stack.push((sc, ElementKind::Bold)),
-                Event::End(TagEnd::Strong) => if let Some((s,k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
+                Event::End(TagEnd::Strong) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
                 Event::Start(Tag::Emphasis) => stack.push((sc, ElementKind::Italic)),
-                Event::End(TagEnd::Emphasis) => if let Some((s,k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
+                Event::End(TagEnd::Emphasis) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
                 Event::Start(Tag::Link { .. }) => stack.push((sc, ElementKind::Link)),
-                Event::End(TagEnd::Link) => if let Some((s,k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
-                Event::Code(_) => elements.push(Element { start_char: sc, end_char: ec, kind: ElementKind::InlineCode }),
+                Event::End(TagEnd::Link) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
+                Event::Code(_) => elements.push(Element {
+                    start_char: sc,
+                    end_char: ec,
+                    kind: ElementKind::InlineCode,
+                }),
                 Event::Start(Tag::Heading { level, .. }) => {
                     let kind = match level {
                         HeadingLevel::H1 => ElementKind::HeadingH1,
@@ -193,52 +277,34 @@ impl MarkdownSpanner {
                     };
                     stack.push((sc, kind));
                 }
-                Event::End(TagEnd::Heading(_)) => if let Some((s,k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
+                Event::End(TagEnd::Heading(_)) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
                 Event::Start(Tag::BlockQuote(_)) => stack.push((sc, ElementKind::Blockquote)),
-                Event::End(TagEnd::BlockQuote(_)) => if let Some((s,k)) = stack.pop() {
-                    elements.push(Element { start_char: s, end_char: ec, kind: k });
-                },
+                Event::End(TagEnd::BlockQuote(_)) => {
+                    if let Some((s, k)) = stack.pop() {
+                        elements.push(Element {
+                            start_char: s,
+                            end_char: ec,
+                            kind: k,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
         elements
     }
 
-    /// Compute which char positions in `line` are "content" (not markdown sigils).
-    pub fn content_positions(line: &str) -> Vec<bool> {
-        let total = line.chars().count();
-        let mut visible = vec![false; total];
-        let parser = Parser::new_ext(line, PARSER_OPTIONS);
-        for (event, range) in parser.into_offset_iter() {
-            match &event {
-                Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
-                    let sc = line[..range.start].chars().count();
-                    let ec = line[..range.end].chars().count();
-                    for i in sc..ec {
-                        if i < total { visible[i] = true; }
-                    }
-                }
-                Event::Code(code_text) => {
-                    let range_sc = line[..range.start].chars().count();
-                    let code_len = code_text.chars().count();
-                    let range_char_len = line[range.start..range.end].chars().count();
-                    let sigil_each = (range_char_len - code_len) / 2;
-                    let content_start = range_sc + sigil_each;
-                    let content_end = content_start + code_len;
-                    for i in content_start..content_end {
-                        if i < total { visible[i] = true; }
-                    }
-                }
-                _ => {}
-            }
-        }
-        visible
-    }
+    // ── Public API (parse-on-the-fly wrappers, used in tests only) ───────────
 
-    // ── Public API ────────────────────────────────────────────────────────────
-
+    #[cfg(test)]
     pub fn render<'a>(
         content: &'a str,
         logical_line: &'a str,
@@ -250,10 +316,20 @@ impl MarkdownSpanner {
         theme: &Theme,
     ) -> Vec<Span<'a>> {
         let parsed = ParsedLine::parse(logical_line);
-        Self::render_with(content, logical_line, &parsed, visual_start_col, cursor_col,
-            is_first_visual_line, force_raw, available_width, theme)
+        Self::render_with(
+            content,
+            logical_line,
+            &parsed,
+            visual_start_col,
+            cursor_col,
+            is_first_visual_line,
+            force_raw,
+            available_width,
+            theme,
+        )
     }
 
+    #[cfg(test)]
     pub fn rendered_cursor_col(
         logical_line: &str,
         visual_start_col: usize,
@@ -262,10 +338,17 @@ impl MarkdownSpanner {
         force_raw: bool,
     ) -> usize {
         let parsed = ParsedLine::parse(logical_line);
-        Self::rendered_cursor_col_with(logical_line, &parsed, visual_start_col, cursor_col,
-            is_first_visual_line, force_raw)
+        Self::rendered_cursor_col_with(
+            logical_line,
+            &parsed,
+            visual_start_col,
+            cursor_col,
+            is_first_visual_line,
+            force_raw,
+        )
     }
 
+    #[cfg(test)]
     pub fn visible_positions(
         logical_line: &str,
         cursor_col: Option<usize>,
@@ -275,6 +358,7 @@ impl MarkdownSpanner {
         Self::visible_positions_with(logical_line, &parsed, cursor_col, force_raw)
     }
 
+    #[cfg(test)]
     pub fn rendered_col_to_logical(
         logical_line: &str,
         visual_start_col: usize,
@@ -283,8 +367,14 @@ impl MarkdownSpanner {
         force_raw: bool,
     ) -> usize {
         let parsed = ParsedLine::parse(logical_line);
-        Self::rendered_col_to_logical_with(logical_line, &parsed, visual_start_col, rendered_col,
-            is_first_visual_line, force_raw)
+        Self::rendered_col_to_logical_with(
+            logical_line,
+            &parsed,
+            visual_start_col,
+            rendered_col,
+            is_first_visual_line,
+            force_raw,
+        )
     }
 
     // ── `_with` variants: accept pre-parsed `&ParsedLine` ────────────────────
@@ -304,7 +394,10 @@ impl MarkdownSpanner {
         let trimmed = logical_line.trim();
         if is_first_visual_line && matches!(trimmed, "---" | "***" | "___") {
             if cursor_col.is_some() {
-                return vec![Span::styled(content, Style::default().fg(theme.fg_muted.to_ratatui()))];
+                return vec![Span::styled(
+                    content,
+                    Style::default().fg(theme.fg_muted.to_ratatui()),
+                )];
             }
             return vec![Span::styled(
                 "─".repeat(available_width as usize),
@@ -313,7 +406,10 @@ impl MarkdownSpanner {
         }
         // Force-raw (inside fenced code block)
         if force_raw {
-            return vec![Span::styled(content, Style::default().fg(theme.fg_secondary.to_ratatui()))];
+            return vec![Span::styled(
+                content,
+                Style::default().fg(theme.fg_secondary.to_ratatui()),
+            )];
         }
 
         let elements = &parsed.elements;
@@ -339,9 +435,14 @@ impl MarkdownSpanner {
         let mut seg_is_sigil = false;
         let mut seg_is_expanded = false;
 
-        let flush = |seg_str: &mut String, seg_elem: Option<usize>,
-                     seg_is_sigil: bool, seg_is_expanded: bool, spans: &mut Vec<Span<'a>>| {
-            if seg_str.is_empty() { return; }
+        let flush = |seg_str: &mut String,
+                     seg_elem: Option<usize>,
+                     seg_is_sigil: bool,
+                     seg_is_expanded: bool,
+                     spans: &mut Vec<Span<'a>>| {
+            if seg_str.is_empty() {
+                return;
+            }
             let seg = std::mem::take(seg_str);
             let style = if seg_is_expanded {
                 Style::default().fg(theme.fg_muted.to_ratatui())
@@ -351,7 +452,9 @@ impl MarkdownSpanner {
             spans.push(Span::styled(seg, style));
         };
 
-        for (pos, ch) in logical_line.chars().enumerate()
+        for (pos, ch) in logical_line
+            .chars()
+            .enumerate()
             .skip(visual_start_col)
             .take(content_char_count)
         {
@@ -362,29 +465,57 @@ impl MarkdownSpanner {
                 elements[i].start_char <= pos && pos < elements[i].end_char
             });
             let this_elem = parsed.elem_at(pos);
-            let emit = is_content || in_heading_sigil || in_list_sigil || in_expanded_elem
+            let emit = is_content
+                || in_heading_sigil
+                || in_list_sigil
+                || in_expanded_elem
                 || this_elem.is_none();
             if !emit {
-                flush(&mut seg_str, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
+                flush(
+                    &mut seg_str,
+                    seg_elem,
+                    seg_is_sigil,
+                    seg_is_expanded,
+                    &mut spans,
+                );
                 seg_elem = None;
                 seg_is_sigil = false;
                 seg_is_expanded = false;
                 continue;
             }
             let this_is_expanded = in_expanded_elem;
-            let this_is_sigil = (in_heading_sigil || in_list_sigil) && !is_content && !in_expanded_elem;
-            if this_elem != seg_elem || this_is_sigil != seg_is_sigil || this_is_expanded != seg_is_expanded {
-                flush(&mut seg_str, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
+            let this_is_sigil =
+                (in_heading_sigil || in_list_sigil) && !is_content && !in_expanded_elem;
+            if this_elem != seg_elem
+                || this_is_sigil != seg_is_sigil
+                || this_is_expanded != seg_is_expanded
+            {
+                flush(
+                    &mut seg_str,
+                    seg_elem,
+                    seg_is_sigil,
+                    seg_is_expanded,
+                    &mut spans,
+                );
                 seg_elem = this_elem;
                 seg_is_sigil = this_is_sigil;
                 seg_is_expanded = this_is_expanded;
             }
             seg_str.push(ch);
         }
-        flush(&mut seg_str, seg_elem, seg_is_sigil, seg_is_expanded, &mut spans);
+        flush(
+            &mut seg_str,
+            seg_elem,
+            seg_is_sigil,
+            seg_is_expanded,
+            &mut spans,
+        );
 
         if spans.is_empty() {
-            spans.push(Span::styled(content, Style::default().fg(theme.fg.to_ratatui())));
+            spans.push(Span::styled(
+                content,
+                Style::default().fg(theme.fg.to_ratatui()),
+            ));
         }
         spans
     }
@@ -422,16 +553,22 @@ impl MarkdownSpanner {
         };
 
         let end = cursor_col.min(logical_char_count);
-        (visual_start_col..end).filter(|&pos| {
-            let is_content = pos < content_vis.len() && content_vis[pos];
-            let in_heading_sigil = heading_sigil_end.map_or(false, |s_end| pos < s_end);
-            let in_list_sigil = list_sigil_end.map_or(false, |s_end| pos < s_end);
-            let in_expanded_elem = expanded.map_or(false, |i| {
-                elements[i].start_char <= pos && pos < elements[i].end_char
-            });
-            let in_any_element = parsed.in_any_element(pos);
-            is_content || in_heading_sigil || in_list_sigil || in_expanded_elem || !in_any_element
-        }).count()
+        (visual_start_col..end)
+            .filter(|&pos| {
+                let is_content = pos < content_vis.len() && content_vis[pos];
+                let in_heading_sigil = heading_sigil_end.map_or(false, |s_end| pos < s_end);
+                let in_list_sigil = list_sigil_end.map_or(false, |s_end| pos < s_end);
+                let in_expanded_elem = expanded.map_or(false, |i| {
+                    elements[i].start_char <= pos && pos < elements[i].end_char
+                });
+                let in_any_element = parsed.in_any_element(pos);
+                is_content
+                    || in_heading_sigil
+                    || in_list_sigil
+                    || in_expanded_elem
+                    || !in_any_element
+            })
+            .count()
     }
 
     pub fn visible_positions_with(
@@ -453,9 +590,7 @@ impl MarkdownSpanner {
         }
 
         let content_vis = &parsed.content_vis;
-        let expanded: Option<&Element> = cursor_col.and_then(|c| {
-            parsed.elements.iter().rev().find(|e| e.start_char <= c && c < e.end_char)
-        });
+        let expanded: Option<usize> = cursor_col.and_then(|c| parsed.elem_at(c));
         let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
         let list_sigil_end = detect_list_marker(logical_line);
 
@@ -465,8 +600,9 @@ impl MarkdownSpanner {
                 let in_heading_sigil = heading_sigil_end.map_or(false, |end| pos < end);
                 let in_list_sigil = list_sigil_end.map_or(false, |end| pos < end);
                 let in_any_element = parsed.in_any_element(pos);
-                let in_expanded = expanded
-                    .map_or(false, |e| e.start_char <= pos && pos < e.end_char);
+                let in_expanded = expanded.map_or(false, |i| {
+                    parsed.elements[i].start_char <= pos && pos < parsed.elements[i].end_char
+                });
                 is_content || in_heading_sigil || in_list_sigil || in_expanded || !in_any_element
             })
             .collect()
@@ -536,36 +672,51 @@ fn detect_list_marker(line: &str) -> Option<usize> {
 
 fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -> Style {
     match kind {
-        None => if is_sigil_region {
-            Style::default().fg(theme.fg_muted.to_ratatui())
-        } else {
-            Style::default().fg(theme.fg.to_ratatui())
-        },
-        Some(ElementKind::Bold) =>
-            Style::default().fg(theme.accent.to_ratatui()).add_modifier(Modifier::BOLD),
-        Some(ElementKind::Italic) =>
-            Style::default().fg(theme.fg_secondary.to_ratatui()).add_modifier(Modifier::ITALIC),
-        Some(ElementKind::InlineCode) =>
-            Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg_selected.to_ratatui()),
-        Some(ElementKind::Link) =>
-            Style::default().fg(theme.accent.to_ratatui()).add_modifier(Modifier::UNDERLINED),
-        Some(ElementKind::HeadingH1) => if is_sigil_region {
-            Style::default().fg(theme.fg_muted.to_ratatui())
-        } else {
-            Style::default().fg(theme.accent.to_ratatui()).add_modifier(Modifier::BOLD)
-        },
-        Some(ElementKind::HeadingH2) => if is_sigil_region {
-            Style::default().fg(theme.fg_muted.to_ratatui())
-        } else {
-            Style::default().fg(theme.fg.to_ratatui()).add_modifier(Modifier::BOLD)
-        },
-        Some(ElementKind::HeadingH3) => if is_sigil_region {
-            Style::default().fg(theme.fg_muted.to_ratatui())
-        } else {
-            Style::default().fg(theme.fg_secondary.to_ratatui())
-        },
-        Some(ElementKind::Blockquote) =>
-            Style::default().fg(theme.fg_secondary.to_ratatui()),
+        None => {
+            if is_sigil_region {
+                Style::default().fg(theme.fg_muted.to_ratatui())
+            } else {
+                Style::default().fg(theme.fg.to_ratatui())
+            }
+        }
+        Some(ElementKind::Bold) => Style::default()
+            .fg(theme.accent.to_ratatui())
+            .add_modifier(Modifier::BOLD),
+        Some(ElementKind::Italic) => Style::default()
+            .fg(theme.fg_secondary.to_ratatui())
+            .add_modifier(Modifier::ITALIC),
+        Some(ElementKind::InlineCode) => Style::default()
+            .fg(theme.fg.to_ratatui())
+            .bg(theme.bg_selected.to_ratatui()),
+        Some(ElementKind::Link) => Style::default()
+            .fg(theme.accent.to_ratatui())
+            .add_modifier(Modifier::UNDERLINED),
+        Some(ElementKind::HeadingH1) => {
+            if is_sigil_region {
+                Style::default().fg(theme.fg_muted.to_ratatui())
+            } else {
+                Style::default()
+                    .fg(theme.accent.to_ratatui())
+                    .add_modifier(Modifier::BOLD)
+            }
+        }
+        Some(ElementKind::HeadingH2) => {
+            if is_sigil_region {
+                Style::default().fg(theme.fg_muted.to_ratatui())
+            } else {
+                Style::default()
+                    .fg(theme.fg.to_ratatui())
+                    .add_modifier(Modifier::BOLD)
+            }
+        }
+        Some(ElementKind::HeadingH3) => {
+            if is_sigil_region {
+                Style::default().fg(theme.fg_muted.to_ratatui())
+            } else {
+                Style::default().fg(theme.fg_secondary.to_ratatui())
+            }
+        }
+        Some(ElementKind::Blockquote) => Style::default().fg(theme.fg_secondary.to_ratatui()),
     }
 }
 
@@ -573,8 +724,12 @@ fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -
 mod tests {
     use super::*;
     use ratatui::style::Modifier;
-    fn t() -> Theme { Theme::default() }
-    fn text(spans: &[Span]) -> String { spans.iter().map(|s| s.content.as_ref()).collect() }
+    fn t() -> Theme {
+        Theme::default()
+    }
+    fn text(spans: &[Span]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
 
     #[test]
     fn parse_bold_range() {
@@ -584,93 +739,134 @@ mod tests {
     }
     #[test]
     fn parse_italic() {
-        assert!(MarkdownSpanner::parse_elements("*hi*").iter().any(|e| e.kind == ElementKind::Italic));
+        assert!(
+            MarkdownSpanner::parse_elements("*hi*")
+                .iter()
+                .any(|e| e.kind == ElementKind::Italic)
+        );
     }
     #[test]
     fn parse_inline_code() {
-        assert!(MarkdownSpanner::parse_elements("`x`").iter().any(|e| e.kind == ElementKind::InlineCode));
+        assert!(
+            MarkdownSpanner::parse_elements("`x`")
+                .iter()
+                .any(|e| e.kind == ElementKind::InlineCode)
+        );
     }
     #[test]
     fn parse_link() {
-        assert!(MarkdownSpanner::parse_elements("[t](u)").iter().any(|e| e.kind == ElementKind::Link));
+        assert!(
+            MarkdownSpanner::parse_elements("[t](u)")
+                .iter()
+                .any(|e| e.kind == ElementKind::Link)
+        );
     }
     #[test]
     fn parse_h1() {
-        assert!(MarkdownSpanner::parse_elements("# T").iter().any(|e| e.kind == ElementKind::HeadingH1));
+        assert!(
+            MarkdownSpanner::parse_elements("# T")
+                .iter()
+                .any(|e| e.kind == ElementKind::HeadingH1)
+        );
     }
     #[test]
     fn parse_h2() {
-        assert!(MarkdownSpanner::parse_elements("## T").iter().any(|e| e.kind == ElementKind::HeadingH2));
+        assert!(
+            MarkdownSpanner::parse_elements("## T")
+                .iter()
+                .any(|e| e.kind == ElementKind::HeadingH2)
+        );
     }
     #[test]
     fn parse_h3() {
-        assert!(MarkdownSpanner::parse_elements("### T").iter().any(|e| e.kind == ElementKind::HeadingH3));
+        assert!(
+            MarkdownSpanner::parse_elements("### T")
+                .iter()
+                .any(|e| e.kind == ElementKind::HeadingH3)
+        );
     }
     #[test]
     fn force_raw_no_styling() {
-        let s = MarkdownSpanner::render("**x**","**x**",0,None,true,true,40,&t());
+        let s = MarkdownSpanner::render("**x**", "**x**", 0, None, true, true, 40, &t());
         assert_eq!(text(&s), "**x**");
-        assert!(!s.iter().any(|sp| sp.style.add_modifier.contains(Modifier::BOLD)));
+        assert!(
+            !s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::BOLD))
+        );
     }
     #[test]
     fn plain_text_passthrough() {
-        let s = MarkdownSpanner::render("hi","hi",0,None,true,false,40,&t());
+        let s = MarkdownSpanner::render("hi", "hi", 0, None, true, false, 40, &t());
         assert_eq!(text(&s), "hi");
     }
     #[test]
     fn bold_without_cursor_hides_markers() {
-        let s = MarkdownSpanner::render("**bold**","**bold**",0,None,true,false,40,&t());
+        let s = MarkdownSpanner::render("**bold**", "**bold**", 0, None, true, false, 40, &t());
         assert_eq!(text(&s), "bold");
-        assert!(s.iter().any(|sp| sp.style.add_modifier.contains(Modifier::BOLD)));
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::BOLD))
+        );
     }
     #[test]
     fn bold_cursor_inside_shows_raw() {
-        let s = MarkdownSpanner::render("**bold**","**bold**",0,Some(3),true,false,40,&t());
+        let s = MarkdownSpanner::render("**bold**", "**bold**", 0, Some(3), true, false, 40, &t());
         assert_eq!(text(&s), "**bold**");
     }
     #[test]
     fn bold_cursor_outside_stays_rendered() {
         let line = "hello **bold** world";
-        let s = MarkdownSpanner::render(line,line,0,Some(1),true,false,40,&t());
+        let s = MarkdownSpanner::render(line, line, 0, Some(1), true, false, 40, &t());
         assert!(!text(&s).contains("**"));
     }
     #[test]
     fn italic_cursor_inside_shows_raw() {
-        let s = MarkdownSpanner::render("*hi*","*hi*",0,Some(1),true,false,40,&t());
+        let s = MarkdownSpanner::render("*hi*", "*hi*", 0, Some(1), true, false, 40, &t());
         assert_eq!(text(&s), "*hi*");
     }
     #[test]
     fn inline_code_hides_backticks() {
-        let s = MarkdownSpanner::render("`x`","`x`",0,None,true,false,40,&t());
+        let s = MarkdownSpanner::render("`x`", "`x`", 0, None, true, false, 40, &t());
         assert_eq!(text(&s), "x");
     }
     #[test]
     fn h1_first_line_contains_hash() {
-        let s = MarkdownSpanner::render("# T","# T",0,None,true,false,40,&t());
+        let s = MarkdownSpanner::render("# T", "# T", 0, None, true, false, 40, &t());
         assert!(text(&s).contains('#'));
         assert!(text(&s).contains('T'));
     }
     #[test]
     fn continuation_line_no_hash() {
-        let s = MarkdownSpanner::render("cont","# T cont",2,None,false,false,40,&t());
+        let s = MarkdownSpanner::render("cont", "# T cont", 2, None, false, false, 40, &t());
         assert!(!text(&s).contains('#'));
     }
     #[test]
     fn unordered_list_shows_marker() {
-        let s = MarkdownSpanner::render("- item","- item",0,None,true,false,40,&t());
-        assert!(text(&s).starts_with("- "), "expected '- item', got '{}'", text(&s));
+        let s = MarkdownSpanner::render("- item", "- item", 0, None, true, false, 40, &t());
+        assert!(
+            text(&s).starts_with("- "),
+            "expected '- item', got '{}'",
+            text(&s)
+        );
         assert!(text(&s).contains("item"));
     }
     #[test]
     fn ordered_list_shows_marker() {
-        let s = MarkdownSpanner::render("1. item","1. item",0,None,true,false,40,&t());
-        assert!(text(&s).starts_with("1. "), "expected '1. item', got '{}'", text(&s));
+        let s = MarkdownSpanner::render("1. item", "1. item", 0, None, true, false, 40, &t());
+        assert!(
+            text(&s).starts_with("1. "),
+            "expected '1. item', got '{}'",
+            text(&s)
+        );
     }
     #[test]
     fn empty_heading_shows_hash_sigil() {
         let line = "# ";
         let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
-        assert!(text(&s).contains('#'), "hash sigil should render in empty heading");
+        assert!(
+            text(&s).contains('#'),
+            "hash sigil should render in empty heading"
+        );
         let col = MarkdownSpanner::rendered_cursor_col(line, 0, 1, true, false);
         assert_eq!(col, 1, "cursor after '#' should be at rendered col 1");
     }
@@ -686,14 +882,21 @@ mod tests {
     fn heading_trailing_spaces_are_rendered() {
         let line = "# Hello   ";
         let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
-        assert_eq!(text(&s), "# Hello   ", "trailing spaces in heading should render");
+        assert_eq!(
+            text(&s),
+            "# Hello   ",
+            "trailing spaces in heading should render"
+        );
     }
     #[test]
     fn heading_trailing_spaces_cursor_col_correct() {
         let line = "# Hello   ";
         // cursor at logical pos 9 (last trailing space): positions 0..9 all emit → rendered col 9
         let col = MarkdownSpanner::rendered_cursor_col(line, 0, 9, true, false);
-        assert_eq!(col, 9, "cursor in trailing space of heading should map to rendered col 9");
+        assert_eq!(
+            col, 9,
+            "cursor in trailing space of heading should map to rendered col 9"
+        );
     }
     #[test]
     fn trailing_spaces_are_rendered() {
@@ -709,7 +912,7 @@ mod tests {
     }
     #[test]
     fn list_marker_on_continuation_line_hidden() {
-        let s = MarkdownSpanner::render("cont","- cont",2,None,false,false,40,&t());
+        let s = MarkdownSpanner::render("cont", "- cont", 2, None, false, false, 40, &t());
         assert!(!text(&s).starts_with("- "));
     }
     #[test]
