@@ -103,7 +103,7 @@ use kimun_notes::cli::helpers::resolve_note_path;
 
 // resolve_note_path: relative path joined with quick_note_path
 #[test]
-fn test_relative_path_joined_with_quick_note_path() {
+fn test_relative_path_joined_with_effective_quick_note_path() {
     let path = resolve_note_path("my-note", "/inbox").unwrap();
     assert_eq!(path.to_string(), "/inbox/my-note.md");
 }
@@ -124,7 +124,7 @@ fn test_explicit_md_extension_not_doubled() {
 
 // resolve_note_path: absolute path (leading /) ignores quick_note_path
 #[test]
-fn test_absolute_path_ignores_quick_note_path() {
+fn test_absolute_path_ignores_effective_quick_note_path() {
     let path = resolve_note_path("/projects/idea", "/inbox").unwrap();
     assert_eq!(path.to_string(), "/projects/idea.md");
 }
@@ -181,7 +181,7 @@ pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
     // Phase 2: workspace_config
     if let Some(ref ws_config) = settings.workspace_config {
         if let Some(entry) = ws_config.get_current_workspace() {
-            return entry.quick_note_path();
+            return entry.effective_quick_note_path();
         }
     }
     root
@@ -340,7 +340,7 @@ async fn test_note_create_fails_if_note_exists() {
 }
 
 #[tokio::test]
-async fn test_note_create_uses_quick_note_path() {
+async fn test_note_create_uses_effective_quick_note_path() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
@@ -379,7 +379,7 @@ quick_note_path = "/inbox"
 }
 
 #[tokio::test]
-async fn test_note_create_absolute_path_ignores_quick_note_path() {
+async fn test_note_create_absolute_path_ignores_effective_quick_note_path() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
