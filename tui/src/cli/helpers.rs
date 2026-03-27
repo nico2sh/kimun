@@ -75,7 +75,7 @@ pub fn resolve_note_path(input: &str, quick_note_path: &str) -> Result<VaultPath
     if trimmed.is_empty() {
         return Err(color_eyre::eyre::eyre!("Note path cannot be empty or whitespace-only"));
     }
-    if trimmed == PATH_SEPARATOR.to_string() {
+    if trimmed.len() == 1 && trimmed.starts_with(PATH_SEPARATOR) {
         return Err(color_eyre::eyre::eyre!("Note path cannot be the root separator alone"));
     }
     let raw = if trimmed.starts_with(PATH_SEPARATOR) {
