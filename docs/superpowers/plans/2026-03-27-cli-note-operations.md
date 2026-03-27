@@ -62,8 +62,8 @@ Below the closing brace of the struct, add an `impl` block (or add to an existin
 
 ```rust
 impl WorkspaceEntry {
-    pub fn quick_note_path(&self) -> &str {
-        self.quick_note_path.as_deref().unwrap_or("/")
+    pub fn quick_note_path(&self) -> String {
+        self.quick_note_path.clone().unwrap_or_else(|| kimun_core::nfs::VaultPath::root().to_string())
     }
 }
 ```
@@ -171,19 +171,20 @@ In `tui/src/cli/helpers.rs`, add after the existing `load_and_resolve_workspace`
 
 ```rust
 /// Returns the configured quick_note_path for the active workspace.
-/// Falls back to "/" for Phase 1 workspaces (no WorkspaceEntry) or if not configured.
+/// Falls back to VaultPath::root() for Phase 1 workspaces (no WorkspaceEntry) or if not configured.
 pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
+    let root = kimun_core::nfs::VaultPath::root().to_string();
     // Phase 1 legacy: workspace_dir only, no WorkspaceEntry
     if settings.workspace_dir.is_some() {
-        return "/".to_string();
+        return root;
     }
     // Phase 2: workspace_config
     if let Some(ref ws_config) = settings.workspace_config {
         if let Some(entry) = ws_config.get_current_workspace() {
-            return entry.quick_note_path().to_string();
+            return entry.quick_note_path();
         }
     }
-    "/".to_string()
+    root
 }
 ```
 
