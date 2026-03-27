@@ -26,7 +26,16 @@ impl App {
             Some(path) => AppSettings::load_from_file(path)?,
             None => AppSettings::load_from_disk()?,
         };
-        let vault = if let Some(ref workspace) = settings.workspace_dir {
+        // Phase 1 configs store the workspace in `workspace_dir`.
+        // Phase 2 configs store it in `workspace_config[current_workspace].path`.
+        let workspace_path = settings.workspace_dir.clone().or_else(|| {
+            settings
+                .workspace_config
+                .as_ref()
+                .and_then(|wc| wc.get_current_workspace())
+                .map(|entry| entry.path.clone())
+        });
+        let vault = if let Some(ref workspace) = workspace_path {
             NoteVault::new(workspace).await.ok().map(Arc::new)
         } else {
             None
