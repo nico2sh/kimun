@@ -425,6 +425,44 @@ async fn test_note_show_multiple_notes_ok() {
 }
 
 #[tokio::test]
+async fn test_note_show_format_paths_returns_error() {
+    use kimun_notes::cli::output::OutputFormat;
+    use kimun_core::nfs::VaultPath;
+    let dir = TempDir::new().unwrap();
+    let vault = kimun_core::NoteVault::new(dir.path()).await.unwrap();
+    vault.init_and_validate().await.unwrap();
+    vault
+        .create_note(
+            &VaultPath::note_path_from("test/note"),
+            "# Test\n\nContent.",
+        )
+        .await
+        .unwrap();
+
+    let config_path = dir.path().join("config.toml");
+    write_config(&config_path, dir.path());
+
+    let result = run_cli(
+        CliCommand::Note {
+            subcommand: NoteSubcommand::Show {
+                paths: vec!["test/note".to_string()],
+                format: OutputFormat::Paths,
+            },
+        },
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("--format paths is not valid for note show"),
+        "got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
 async fn test_note_show_partial_failure_returns_err() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
