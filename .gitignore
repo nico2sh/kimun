@@ -12,7 +12,10 @@ kimun.app
 docs/book/
 **/.claude/
 **/.superpowers/
+docs/superpowers/
+memory/
 **/.DS_Store
 **/*.log
 *.sqlite
 tui/kimun_config.toml
+docs/public/
