@@ -1,5 +1,5 @@
 +++
 title = "Guides"
-weight = 20
+weight = 3
 sort_by = "weight"
 +++
