@@ -127,7 +127,8 @@ impl Component for TextEditorComponent {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.rect = rect;
         let cursor = self.text_area.cursor();
-        self.view.update(self.text_area.lines(), cursor, rect, self.edit_generation);
+        self.view
+            .update(self.text_area.lines(), cursor, rect, self.edit_generation);
         self.view.render(f, rect, theme, focused);
     }
 
