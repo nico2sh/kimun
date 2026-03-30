@@ -1,12 +1,14 @@
 [book]
 title = "Kimün"
-authors = []
+authors = ["Nico Hormazábal"]
 language = "en"
 src = "src"
 
 [output.html]
 git-repository-url = "https://github.com/nico2sh/kimun"
 edit-url-template = "https://github.com/nico2sh/kimun/edit/main/docs/src/{path}"
+default-theme = "kimun"
+preferred-dark-theme = "kimun-dark"
 
 [output.html.search]
 enable = true
