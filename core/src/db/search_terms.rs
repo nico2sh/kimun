@@ -2,14 +2,8 @@ use std::vec;
 
 use log::debug;
 
-const IN_CHAR: &str = ">";
-const IN_LETTER: &str = "in";
-const AT_CHAR: &str = "@";
-const AT_LETTER: &str = "at";
 const ORDER_CHAR: &str = "^";
 const ORDER_LETTER: &str = "or";
-const PATH_CHAR: &str = "/";
-const PATH_LETTER: &str = "pt";
 
 enum ElementType {
     Invalid,
@@ -18,6 +12,10 @@ enum ElementType {
     At,
     Path,
     OrderBy { asc: bool },
+    ExcludedTerm,
+    ExcludedIn,
+    ExcludedAt,
+    ExcludedPath,
 }
 
 struct QueryTermExtractor {
@@ -26,82 +24,70 @@ struct QueryTermExtractor {
     remainder: String,
 }
 
+// Table of (long_prefix, short_prefix, element_type_tag) for non-special prefix types.
+// Excluded variants must come before their positive counterparts so longer prefixes match first.
+type PrefixEntry = (&'static str, &'static str, fn() -> ElementType);
+
+fn prefix_table() -> [PrefixEntry; 6] {
+    [
+        ("in:-", ">-", || ElementType::ExcludedIn),
+        ("at:-", "@-", || ElementType::ExcludedAt),
+        ("pt:-", "/-", || ElementType::ExcludedPath),
+        ("in:", ">",  || ElementType::In),
+        ("at:", "@",  || ElementType::At),
+        ("pt:", "/",  || ElementType::Path),
+    ]
+}
+
+fn detect_prefix(query: &str) -> Option<(ElementType, &str)> {
+    for (long, short, make_type) in prefix_table() {
+        if let Some(remaining) = query.strip_prefix(long).or_else(|| query.strip_prefix(short)) {
+            return Some((make_type(), remaining));
+        }
+    }
+    None
+}
+
 impl QueryTermExtractor {
     fn extract_and_consume<S: AsRef<str>>(query: S) -> QueryTermExtractor {
         let query = query.as_ref().trim();
-        let in_prefix = format!("{}:", IN_LETTER);
-        let at_prefix = format!("{}:", AT_LETTER);
-        let order_prefix = format!("{}:", ORDER_LETTER);
-        let path_prefix = format!("{}:", PATH_LETTER);
 
-        let (element_type, remaining) = if query.starts_with(&in_prefix) {
+        let (element_type, remaining) = if let Some((el_type, remaining)) = detect_prefix(query) {
+            (el_type, remaining.to_string())
+        } else if query.starts_with("-") {
+            // Handle excluded terms (simple `-term` syntax)
             (
-                ElementType::In,
-                query
-                    .strip_prefix(&in_prefix)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(IN_CHAR) {
-            (
-                ElementType::In,
-                query
-                    .strip_prefix(IN_CHAR)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&at_prefix) {
-            (
-                ElementType::At,
-                query
-                    .strip_prefix(&at_prefix)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(AT_CHAR) {
-            (
-                ElementType::At,
-                query
-                    .strip_prefix(AT_CHAR)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(&order_prefix) {
-            let desc_prefix = format!("{order_prefix}-");
-            let (asc, prefix) = if query.starts_with(&desc_prefix) {
-                (false, desc_prefix)
-            } else {
-                (true, order_prefix)
-            };
-
-            (
-                ElementType::OrderBy { asc },
-                query.strip_prefix(&prefix).unwrap_or(query).to_string(),
-            )
-        } else if query.starts_with(ORDER_CHAR) {
-            let desc_prefix = format!("{ORDER_CHAR}-");
-            let (asc, prefix) = if query.starts_with(&desc_prefix) {
-                (false, desc_prefix.as_str())
-            } else {
-                (true, ORDER_CHAR)
-            };
-
-            (
-                ElementType::OrderBy { asc },
-                query.strip_prefix(prefix).unwrap_or(query).to_string(),
-            )
-        } else if query.starts_with(&path_prefix) {
-            (
-                ElementType::Path,
-                query
-                    .strip_prefix(&path_prefix)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
-            )
-        } else if query.starts_with(PATH_CHAR) {
-            (
-                ElementType::Path,
-                query
-                    .strip_prefix(PATH_CHAR)
-                    .map_or_else(|| query.to_string(), |s| s.to_string()),
+                ElementType::ExcludedTerm,
+                query.strip_prefix("-").unwrap().to_string(),
             )
         } else {
-            (ElementType::Term, query.to_string())
+            // Handle OrderBy (special case with asc/desc sub-detection)
+            let order_prefix = format!("{}:", ORDER_LETTER);
+            if query.starts_with(&order_prefix) {
+                let desc_prefix = format!("{order_prefix}-");
+                let (asc, prefix) = if query.starts_with(&desc_prefix) {
+                    (false, desc_prefix)
+                } else {
+                    (true, order_prefix)
+                };
+                (
+                    ElementType::OrderBy { asc },
+                    query.strip_prefix(&prefix).unwrap_or(query).to_string(),
+                )
+            } else if query.starts_with(ORDER_CHAR) {
+                let desc_prefix = format!("{ORDER_CHAR}-");
+                let (asc, prefix) = if query.starts_with(&desc_prefix) {
+                    (false, desc_prefix.as_str())
+                } else {
+                    (true, ORDER_CHAR)
+                };
+                (
+                    ElementType::OrderBy { asc },
+                    query.strip_prefix(prefix).unwrap_or(query).to_string(),
+                )
+            } else {
+                (ElementType::Term, query.to_string())
+            }
         };
 
         let (sep_char, mut term) = if remaining.starts_with('"') {
@@ -175,6 +161,10 @@ pub struct SearchTerms {
     pub order_by: Vec<OrderBy>,
     pub filename: Vec<String>,
     pub path: Vec<String>,
+    pub excluded_terms: Vec<String>,
+    pub excluded_breadcrumb: Vec<String>,
+    pub excluded_filename: Vec<String>,
+    pub excluded_path: Vec<String>,
 }
 
 impl SearchTerms {
@@ -185,6 +175,10 @@ impl SearchTerms {
         let mut filename = vec![];
         let mut order_by = vec![];
         let mut path = vec![];
+        let mut excluded_terms = vec![];
+        let mut excluded_breadcrumb = vec![];
+        let mut excluded_filename = vec![];
+        let mut excluded_path = vec![];
         while !query.is_empty() {
             let qp = QueryTermExtractor::extract_and_consume(query);
             query = qp.remainder;
@@ -199,6 +193,10 @@ impl SearchTerms {
                 }
                 ElementType::Invalid => {}
                 ElementType::Path => path.push(qp.term),
+                ElementType::ExcludedTerm => excluded_terms.push(qp.term),
+                ElementType::ExcludedIn => excluded_breadcrumb.push(qp.term),
+                ElementType::ExcludedAt => excluded_filename.push(qp.term),
+                ElementType::ExcludedPath => excluded_path.push(qp.term),
             }
         }
 
@@ -208,6 +206,10 @@ impl SearchTerms {
             order_by,
             terms,
             path,
+            excluded_terms,
+            excluded_breadcrumb,
+            excluded_filename,
+            excluded_path,
         }
     }
 }
@@ -338,5 +340,25 @@ mod tests {
         assert!(filename.contains(&"directory".to_string()));
         assert_eq!(1, path.len());
         assert!(path.contains(&"basedirectory".to_string()));
+    }
+
+    #[test]
+    fn test_basic_exclusion_parsing() {
+        // Test parsing basic exclusion syntax
+        let search_terms = SearchTerms::from_query_string("meeting -cancelled");
+        assert_eq!(search_terms.terms, vec!["meeting"]);
+        // Note: excluded_terms field doesn't exist yet - test will fail compilation
+        assert_eq!(search_terms.excluded_terms, vec!["cancelled"]);
+        assert!(search_terms.breadcrumb.is_empty());
+    }
+
+    #[test]
+    fn test_compound_exclusion_prefixes() {
+        let search_terms = SearchTerms::from_query_string(">-draft in:-private @-temp /-secret");
+        assert!(search_terms.terms.is_empty());
+        assert!(search_terms.breadcrumb.is_empty());
+        assert_eq!(search_terms.excluded_breadcrumb, vec!["draft", "private"]);
+        assert_eq!(search_terms.excluded_filename, vec!["temp"]);
+        assert_eq!(search_terms.excluded_path, vec!["secret"]);
     }
 }

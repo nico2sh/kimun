@@ -140,31 +140,19 @@ impl MarkdownEditorView {
                 let cursor_col = if vl.logical_row == cursor.0 { Some(cursor.1) } else { None };
                 let force_raw = self.is_in_code_block(vl.logical_row);
                 let logical_line = lines.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
-                let parsed = self.parsed_cache.get(vl.logical_row);
+                let parsed = &self.parsed_cache[vl.logical_row];
                 let content = vl.content(logical_line);
-                let spans = match parsed {
-                    Some(p) => MarkdownSpanner::render_with(
-                        content,
-                        logical_line,
-                        p,
-                        vl.start_col,
-                        cursor_col,
-                        vl.is_first_visual_line,
-                        force_raw,
-                        rect.width,
-                        theme,
-                    ),
-                    None => MarkdownSpanner::render(
-                        content,
-                        logical_line,
-                        vl.start_col,
-                        cursor_col,
-                        vl.is_first_visual_line,
-                        force_raw,
-                        rect.width,
-                        theme,
-                    ),
-                };
+                let spans = MarkdownSpanner::render_with(
+                    content,
+                    logical_line,
+                    parsed,
+                    vl.start_col,
+                    cursor_col,
+                    vl.is_first_visual_line,
+                    force_raw,
+                    rect.width,
+                    theme,
+                );
                 Line::from(spans)
             })
             .collect();
@@ -182,16 +170,10 @@ impl MarkdownEditorView {
                 let vl = &self.layout.visual_lines()[cursor_vrow];
                 let logical_line = lines.get(cursor.0).map(|s| s.as_str()).unwrap_or("");
                 let force_raw = self.is_in_code_block(cursor.0);
-                let rendered_col = match self.parsed_cache.get(cursor.0) {
-                    Some(p) => MarkdownSpanner::rendered_cursor_col_with(
-                        logical_line, p, vl.start_col, cursor.1,
-                        vl.is_first_visual_line, force_raw,
-                    ),
-                    None => MarkdownSpanner::rendered_cursor_col(
-                        logical_line, vl.start_col, cursor.1,
-                        vl.is_first_visual_line, force_raw,
-                    ),
-                };
+                let rendered_col = MarkdownSpanner::rendered_cursor_col_with(
+                    logical_line, &self.parsed_cache[cursor.0], vl.start_col, cursor.1,
+                    vl.is_first_visual_line, force_raw,
+                );
                 f.set_cursor_position(Position {
                     x: rect.x + rendered_col as u16,
                     y: rect.y + (cursor_vrow - scroll) as u16,
@@ -215,16 +197,10 @@ impl MarkdownEditorView {
         let vl = &vlines[vrow];
         let logical_line = self.lines_snapshot.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
         let force_raw = self.is_in_code_block(vl.logical_row);
-        let logical_col = match self.parsed_cache.get(vl.logical_row) {
-            Some(p) => MarkdownSpanner::rendered_col_to_logical_with(
-                logical_line, p, vl.start_col, vcol,
-                vl.is_first_visual_line, force_raw,
-            ),
-            None => MarkdownSpanner::rendered_col_to_logical(
-                logical_line, vl.start_col, vcol,
-                vl.is_first_visual_line, force_raw,
-            ),
-        };
+        let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
+            logical_line, &self.parsed_cache[vl.logical_row], vl.start_col, vcol,
+            vl.is_first_visual_line, force_raw,
+        );
         let row = vl.logical_row.min(u16::MAX as usize) as u16;
         let col = logical_col.min(u16::MAX as usize) as u16;
         (row, col)

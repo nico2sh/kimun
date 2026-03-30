@@ -1,4 +1,4 @@
-mod db;
+pub mod db;
 pub mod error;
 pub mod nfs;
 pub mod note;
@@ -20,7 +20,7 @@ use nfs::{visitor::NoteListVisitorBuilder, NoteEntryData, VaultEntry, VaultPath}
 use note::{ContentChunk, NoteContentData, NoteDetails};
 use utilities::path_to_string;
 
-use crate::nfs::DirectoryEntryData;
+use crate::{db::DBStatus, nfs::DirectoryEntryData};
 
 pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
 
@@ -88,6 +88,12 @@ impl NoteVault {
         Ok(note_vault)
     }
 
+    pub async fn validate(&self) -> Result<DBStatus, VaultError> {
+        self.vault_db
+            .check_db()
+            .await
+            .map_err(|e| VaultError::DBError(e))
+    }
     /// On init and validate it verifies the DB index to make sure:
     ///
     /// 1. It exists
@@ -97,9 +103,9 @@ impl NoteVault {
     /// Then does a quick scan of the workspace directory to update the index if there are new or
     /// missing notes.
     /// This can be slow on large vaults.
-    pub async fn init_and_validate(&self) -> Result<IndexReport, VaultError> {
+    pub async fn validate_and_init(&self) -> Result<IndexReport, VaultError> {
         debug!("Initializing DB and validating it");
-        let db_result = self.vault_db.check_db().await;
+        let db_result = self.validate().await;
         match db_result {
             Ok(check_res) => {
                 match check_res {
@@ -154,7 +160,8 @@ impl NoteVault {
         debug!("Initializing DB from Vault request");
         db::init_db(self.vault_db.pool()).await?;
         debug!("Tables created, creating index");
-        self.int_index_notes(index_report, NotesValidation::Full).await
+        self.int_index_notes(index_report, NotesValidation::Full)
+            .await
     }
 
     /// Traverses the whole vault directory and verifies the notes to
@@ -166,7 +173,10 @@ impl NoteVault {
     /// NotesValidation::Fast Checks the size of the file to identify if the note has changed and
     /// then update the DB entry.
     /// NotesValidation::None Checks if the note exists or not.
-    pub async fn index_notes(&self, validation_mode: NotesValidation) -> Result<IndexReport, VaultError> {
+    pub async fn index_notes(
+        &self,
+        validation_mode: NotesValidation,
+    ) -> Result<IndexReport, VaultError> {
         let index_report = IndexReport::new();
         self.int_index_notes(index_report, validation_mode).await
     }
@@ -177,14 +187,22 @@ impl NoteVault {
         validation_mode: NotesValidation,
     ) -> Result<IndexReport, VaultError> {
         let workspace_path = self.workspace_path.clone();
-        create_index_for(&workspace_path, self.vault_db.pool(), &VaultPath::root(), validation_mode).await?;
+        create_index_for(
+            &workspace_path,
+            self.vault_db.pool(),
+            &VaultPath::root(),
+            validation_mode,
+        )
+        .await?;
         index_report.finish();
         debug!("TIME: {}", index_report.duration.as_secs());
         Ok(index_report)
     }
 
     pub async fn exists(&self, path: &VaultPath) -> Option<VaultEntry> {
-        VaultEntry::new(&self.workspace_path, path.to_owned()).await.ok()
+        VaultEntry::new(&self.workspace_path, path.to_owned())
+            .await
+            .ok()
     }
 
     pub fn journal_path(&self) -> &VaultPath {
@@ -193,7 +211,9 @@ impl NoteVault {
 
     pub async fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
         let (title, note_path) = self.get_todays_journal();
-        let content = self.load_or_create_note(&note_path, Some(format!("# {}\n\n", title))).await?;
+        let content = self
+            .load_or_create_note(&note_path, Some(format!("# {}\n\n", title)))
+            .await?;
         let details = NoteDetails::new(&note_path, &content);
         Ok((details, content))
     }
@@ -295,7 +315,8 @@ impl NoteVault {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
 
-        let cached_notes = db::get_notes(self.vault_db.pool(), &options.path, options.recursive).await?;
+        let cached_notes =
+            db::get_notes(self.vault_db.pool(), &options.path, options.recursive).await?;
 
         let mut builder = NoteListVisitorBuilder::new(
             &self.workspace_path,
@@ -362,7 +383,11 @@ impl NoteVault {
         path: &VaultPath,
         recursive: bool,
     ) -> Result<Vec<DirectoryDetails>, VaultError> {
-        Ok(nfs::list_directories(&self.workspace_path, path, recursive)?)
+        Ok(nfs::list_directories(
+            &self.workspace_path,
+            path,
+            recursive,
+        )?)
     }
 
     /// Converts a note's raw Markdown into rendered Markdown and extracts all links.
@@ -386,29 +411,31 @@ impl NoteVault {
         // Step 2: resolve image paths to absolute OS paths.
         let (md_text, image_links) =
             note::content_extractor::process_image_links(&md_text, |alt_text, raw_path| {
-                let resolved = if raw_path.starts_with("http://")
-                    || raw_path.starts_with("https://")
-                {
-                    // External URL: keep as-is
-                    raw_path.to_string()
-                } else {
-                    // Vault-relative or note-relative path → absolute OS path
-                    let image_vault_path = if raw_path.starts_with('/') {
-                        VaultPath::new(raw_path)
+                let resolved =
+                    if raw_path.starts_with("http://") || raw_path.starts_with("https://") {
+                        // External URL: keep as-is
+                        raw_path.to_string()
                     } else {
-                        note_parent.append(&VaultPath::new(raw_path)).flatten()
+                        // Vault-relative or note-relative path → absolute OS path
+                        let image_vault_path = if raw_path.starts_with('/') {
+                            VaultPath::new(raw_path)
+                        } else {
+                            note_parent.append(&VaultPath::new(raw_path)).flatten()
+                        };
+                        image_vault_path
+                            .to_pathbuf(&self.workspace_path)
+                            .display()
+                            .to_string()
                     };
-                    image_vault_path
-                        .to_pathbuf(&self.workspace_path)
-                        .display()
-                        .to_string()
-                };
                 let link = note::NoteLink::image(&resolved, alt_text, raw_path);
                 (resolved, link)
             });
 
         links.extend(image_links);
-        note::MarkdownNote { text: md_text, links }
+        note::MarkdownNote {
+            text: md_text,
+            links,
+        }
     }
 
     /// Returns all notes that contain a link pointing to `path`.
@@ -432,7 +459,10 @@ impl NoteVault {
         }
     }
 
-    pub async fn create_directory(&self, path: &VaultPath) -> Result<DirectoryEntryData, VaultError> {
+    pub async fn create_directory(
+        &self,
+        path: &VaultPath,
+    ) -> Result<DirectoryEntryData, VaultError> {
         if self.exists(path).await.is_none() {
             let ded = nfs::create_directory(&self.workspace_path, path).await?;
             Ok(ded)
@@ -554,7 +584,11 @@ impl NoteVault {
         Ok(())
     }
 
-    pub async fn rename_directory(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+    pub async fn rename_directory(
+        &self,
+        from: &VaultPath,
+        to: &VaultPath,
+    ) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
 
@@ -731,8 +765,13 @@ async fn create_index_for<P: AsRef<Path> + Send>(
     let walker = nfs::get_file_walker(workspace_path, path, false);
 
     let cached_notes = db::get_notes(pool, path, false).await?;
-    let mut builder =
-        NoteListVisitorBuilder::new(workspace_path, validation_mode, cached_notes, None, tokio::runtime::Handle::current());
+    let mut builder = NoteListVisitorBuilder::new(
+        workspace_path,
+        validation_mode,
+        cached_notes,
+        None,
+        tokio::runtime::Handle::current(),
+    );
     walker.visit(&mut builder);
     let notes_to_add = builder.get_notes_to_add();
     let notes_to_delete = builder.get_notes_to_delete();
@@ -780,10 +819,7 @@ mod tests {
         assert_eq!(md_note.text, format!("![alt]({})", expected_os_path));
         assert_eq!(1, md_note.links.len());
         let link = &md_note.links[0];
-        assert_eq!(
-            link.ltype,
-            note::LinkType::Image(expected_os_path)
-        );
+        assert_eq!(link.ltype, note::LinkType::Image(expected_os_path));
         assert_eq!(link.text, "alt");
         assert_eq!(link.raw_link, "../photo.png");
     }
@@ -819,10 +855,8 @@ mod tests {
         let vault = make_vault(dir.path()).await;
 
         let url = "https://example.com/img.png";
-        let note = note::NoteDetails::new(
-            &VaultPath::new("/note.md"),
-            &format!("![remote]({})", url),
-        );
+        let note =
+            note::NoteDetails::new(&VaultPath::new("/note.md"), &format!("![remote]({})", url));
         let md_note = vault.get_markdown_and_links(&note);
 
         // URL must be kept verbatim in the output markdown
@@ -879,11 +913,9 @@ mod tests {
 
     /// Create a small vault with a DB, write two notes, index them, then rename one
     /// and assert that the other note's content and DB links are updated.
-    async fn setup_vault_with_notes(
-        dir: &std::path::Path,
-    ) -> NoteVault {
+    async fn setup_vault_with_notes(dir: &std::path::Path) -> NoteVault {
         let vault = NoteVault::new(dir).await.unwrap();
-        vault.init_and_validate().await.unwrap();
+        vault.validate_and_init().await.unwrap();
         vault
     }
 
@@ -907,7 +939,10 @@ mod tests {
             .unwrap();
 
         vault
-            .rename_note(&VaultPath::new("/target.md"), &VaultPath::new("/renamed.md"))
+            .rename_note(
+                &VaultPath::new("/target.md"),
+                &VaultPath::new("/renamed.md"),
+            )
             .await
             .unwrap();
 
@@ -943,7 +978,10 @@ mod tests {
             .unwrap();
 
         vault
-            .rename_note(&VaultPath::new("/target.md"), &VaultPath::new("/renamed.md"))
+            .rename_note(
+                &VaultPath::new("/target.md"),
+                &VaultPath::new("/renamed.md"),
+            )
             .await
             .unwrap();
 
@@ -970,12 +1008,18 @@ mod tests {
             .await
             .unwrap();
         vault
-            .save_note(&VaultPath::new("/unrelated.md"), "# Unrelated\nNo links here.")
+            .save_note(
+                &VaultPath::new("/unrelated.md"),
+                "# Unrelated\nNo links here.",
+            )
             .await
             .unwrap();
 
         vault
-            .rename_note(&VaultPath::new("/target.md"), &VaultPath::new("/renamed.md"))
+            .rename_note(
+                &VaultPath::new("/target.md"),
+                &VaultPath::new("/renamed.md"),
+            )
             .await
             .unwrap();
 

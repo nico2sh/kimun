@@ -2,6 +2,7 @@ use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::keys::key_strike::KeyStrike;
 use crate::settings::config_dir::get_or_create_config_dir;
 use crate::settings::themes::Theme;
+use crate::settings::workspace_config::WorkspaceConfig;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -15,6 +16,7 @@ use crate::keys::KeyBindings;
 mod config_dir;
 pub mod icons;
 pub mod themes;
+pub mod workspace_config;
 
 // ---------------------------------------------------------------------------
 // Sort settings types (shared between AppSettings and sorting UI)
@@ -74,9 +76,19 @@ const CONFIG_HEADER: &str = "\
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct AppSettings {
+    // Phase 2 config
+    #[serde(default)]
+    pub config_version: u32,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub workspace_config: Option<WorkspaceConfig>,
+
+    // Legacy Phase 1 fields (for migration detection)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<PathBuf>,
     #[serde(default)]
     pub last_paths: Vec<VaultPath>,
-    pub workspace_dir: Option<PathBuf>,
+
+    // Preserved fields
     #[serde(default)]
     pub theme: String,
     #[serde(skip, default = "yes")]
@@ -180,6 +192,8 @@ fn default_journal_sort_order() -> SortOrderSetting {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            config_version: 0,
+            workspace_config: None,
             last_paths: vec![],
             workspace_dir: None,
             theme: Default::default(),
@@ -361,7 +375,45 @@ impl AppSettings {
         File::open(&path)?.read_to_string(&mut toml_str)?;
         match toml::from_str::<AppSettings>(&toml_str) {
             Ok(mut setting) => {
-                setting.config_file = Some(path);
+                setting.config_file = Some(path.clone());
+
+                // Check if migration is needed (Phase 1 -> Phase 2)
+                if setting.workspace_dir.is_some() && setting.workspace_config.is_none() {
+                    log::info!("Migrating Phase 1 config to Phase 2 format");
+
+                    let workspace_dir = setting.workspace_dir.take().unwrap();
+                    let theme = if setting.theme.is_empty() {
+                        "dark".to_string()
+                    } else {
+                        setting.theme.clone()
+                    };
+                    let last_paths: Vec<String> = setting
+                        .last_paths
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect();
+
+                    // Validate workspace directory still exists
+                    if !workspace_dir.exists() {
+                        return Err(eyre::eyre!(
+                            "Cannot migrate: workspace directory {} no longer exists",
+                            workspace_dir.display()
+                        ));
+                    }
+
+                    setting.workspace_config = Some(WorkspaceConfig::from_phase1_migration(
+                        workspace_dir,
+                        theme,
+                        last_paths,
+                    ));
+                    setting.config_version = 2;
+                    setting.last_paths.clear();
+                    setting.theme.clear(); // Will use theme from workspace_config.global
+
+                    // Save migrated config
+                    setting.save_to_disk()?;
+                }
+
                 setting.merge_missing_default_bindings();
                 Ok(setting)
             }
