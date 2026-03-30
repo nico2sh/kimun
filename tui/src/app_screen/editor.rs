@@ -111,7 +111,10 @@ impl EditorScreen {
         }
 
         // Note reference — look it up in the vault.
-        let path = kimun_core::nfs::VaultPath::note_path_from(&target);
+        // Strip any `#fragment` suffix before resolving (e.g. `notes/design.md#goals`
+        // should resolve to `notes/design.md`, not `notes/design.md#goals.md`).
+        let target_clean = target.split('#').next().unwrap_or(&target).trim_end();
+        let path = kimun_core::nfs::VaultPath::note_path_from(target_clean);
         match self.vault.open_or_search(&path).await {
             Ok(results) if results.is_empty() => {
                 self.key_flash = Some((
