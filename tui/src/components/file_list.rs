@@ -63,6 +63,13 @@ impl SortField {
             Self::Title => 'T',
         }
     }
+
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Name => Self::Title,
+            Self::Title => Self::Name,
+        }
+    }
 }
 
 impl SortOrder {
@@ -85,6 +92,7 @@ impl SortOrder {
 // FileListEntry
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub enum FileListEntry {
     Up {
         parent: VaultPath,
@@ -583,12 +591,9 @@ impl Component for FileListComponent {
                             tx.send(AppEvent::FocusEditor).ok();
                             return EventState::Consumed;
                         }
-                        Some(ActionShortcuts::SortByName) => {
-                            self.set_sort(SortField::Name, self.sort_order, tx.clone());
-                            return EventState::Consumed;
-                        }
-                        Some(ActionShortcuts::SortByTitle) => {
-                            self.set_sort(SortField::Title, self.sort_order, tx.clone());
+                        Some(ActionShortcuts::CycleSortField) => {
+                            let field = self.sort_field.cycle();
+                            self.set_sort(field, self.sort_order, tx.clone());
                             return EventState::Consumed;
                         }
                         Some(ActionShortcuts::SortReverseOrder) => {
@@ -623,12 +628,17 @@ impl Component for FileListComponent {
                         EventState::Consumed
                     }
                     KeyCode::Char(c) => {
-                        if key.modifiers.contains(KeyModifiers::SHIFT) {
-                            self.search_query.push(c.to_ascii_uppercase());
-                        } else {
-                            self.search_query.push(c);
+                        let non_shift = key.modifiers - KeyModifiers::SHIFT;
+                        if non_shift.is_empty() {
+                            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                self.search_query.push(c.to_ascii_uppercase());
+                            } else {
+                                self.search_query.push(c);
+                            }
+                            self.schedule_filter(tx.clone());
                         }
-                        self.schedule_filter(tx.clone());
+                        // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
+                        // from leaking a character into the search box.
                         EventState::Consumed
                     }
                     KeyCode::Backspace => {
@@ -735,8 +745,7 @@ impl Component for FileListComponent {
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
         [
             (ActionShortcuts::FocusEditor, "focus editor"),
-            (ActionShortcuts::SortByName, "sort by name"),
-            (ActionShortcuts::SortByTitle, "sort by title"),
+            (ActionShortcuts::CycleSortField, "cycle sort"),
             (ActionShortcuts::SortReverseOrder, "reverse"),
             (ActionShortcuts::FileOperations, "file ops"),
         ]

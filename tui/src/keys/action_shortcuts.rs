@@ -17,11 +17,12 @@ pub enum ActionShortcuts {
     ToggleSidebar,
     FocusEditor,
     FocusSidebar,
-    SortByName,
-    SortByTitle,
+    CycleSortField,
     SortReverseOrder,
     // File operations
     FileOperations,
+    // Editor link navigation
+    FollowLink,
 }
 
 impl Display for ActionShortcuts {
@@ -38,10 +39,10 @@ impl Display for ActionShortcuts {
             ActionShortcuts::ToggleSidebar => "ToggleSidebar".to_string(),
             ActionShortcuts::FocusEditor => "FocusEditor".to_string(),
             ActionShortcuts::FocusSidebar => "FocusSidebar".to_string(),
-            ActionShortcuts::SortByName => "SortByName".to_string(),
-            ActionShortcuts::SortByTitle => "SortByTitle".to_string(),
+            ActionShortcuts::CycleSortField => "CycleSortField".to_string(),
             ActionShortcuts::SortReverseOrder => "SortReverseOrder".to_string(),
             ActionShortcuts::FileOperations => "FileOperations".to_string(),
+            ActionShortcuts::FollowLink => "FollowLink".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -62,10 +63,10 @@ impl TryFrom<String> for ActionShortcuts {
             "ToggleSidebar" => ActionShortcuts::ToggleSidebar,
             "FocusEditor" => ActionShortcuts::FocusEditor,
             "FocusSidebar" => ActionShortcuts::FocusSidebar,
-            "SortByName" => ActionShortcuts::SortByName,
-            "SortByTitle" => ActionShortcuts::SortByTitle,
+            "CycleSortField" => ActionShortcuts::CycleSortField,
             "SortReverseOrder" => ActionShortcuts::SortReverseOrder,
             "FileOperations" => ActionShortcuts::FileOperations,
+            "FollowLink" => ActionShortcuts::FollowLink,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {

@@ -3,20 +3,9 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-// Compile regexes once using OnceLock for better performance
 fn hashtag_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| Regex::new(r"#([a-zA-Z0-9_-]+)").unwrap())
-}
-
-fn link_regex() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| Regex::new(r"!?\[([^\]]*)\]\(([^)]+)\)").unwrap())
-}
-
-fn wikilink_regex() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| Regex::new(r"\[\[([^\]]+)\]\]").unwrap())
 }
 
 fn header_regex() -> &'static Regex {
@@ -49,26 +38,10 @@ pub fn extract_tags(content: &str) -> Vec<String> {
 }
 
 pub fn extract_links(content: &str) -> Vec<String> {
-    let mut matches: Vec<(usize, String)> = Vec::new();
-
-    // Markdown links [text](url) - including image links ![text](url)
-    for capture in link_regex().captures_iter(content) {
-        let pos = capture.get(0).map(|m| m.start()).unwrap_or(0);
-        if let Some(url) = capture.get(2) {
-            matches.push((pos, url.as_str().to_string()));
-        }
-    }
-
-    // Wikilinks [[page]]
-    for capture in wikilink_regex().captures_iter(content) {
-        let pos = capture.get(0).map(|m| m.start()).unwrap_or(0);
-        if let Some(page) = capture.get(1) {
-            matches.push((pos, page.as_str().to_string()));
-        }
-    }
-
-    matches.sort_by_key(|(pos, _)| *pos);
-    matches.into_iter().map(|(_, link)| link).collect()
+    kimun_core::note::link_char_spans(content)
+        .into_iter()
+        .map(|span| span.target)
+        .collect()
 }
 
 pub fn extract_headers(content: &str) -> Vec<JsonHeader> {
