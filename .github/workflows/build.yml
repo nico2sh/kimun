@@ -266,3 +266,50 @@ jobs:
             release-artifacts/checksums-sha256.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-homebrew:
+    needs: create-release
+    runs-on: ubuntu-latest
+    # Skip pre-releases (alpha, beta, rc tags contain a hyphen).
+    if: ${{ !contains(github.ref_name, '-') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download checksums from release
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          curl -fsSL \
+            "https://github.com/nico2sh/kimun/releases/download/${GITHUB_REF_NAME}/checksums-sha256.txt" \
+            -o checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      - name: Generate Homebrew formula
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          SHA256_MACOS_ARM64=$(grep "macos-arm64.tar.gz" checksums-sha256.txt | awk '{print $1}')
+          SHA256_MACOS_X64=$(grep "macos-x64.tar.gz"    checksums-sha256.txt | awk '{print $1}')
+          SHA256_LINUX_X64=$(grep "linux-x64.tar.gz"    checksums-sha256.txt | awk '{print $1}')
+
+          sed \
+            -e "s/{{VERSION}}/${VERSION}/g" \
+            -e "s/{{SHA256_MACOS_ARM64}}/${SHA256_MACOS_ARM64}/g" \
+            -e "s/{{SHA256_MACOS_X64}}/${SHA256_MACOS_X64}/g" \
+            -e "s/{{SHA256_LINUX_X64}}/${SHA256_LINUX_X64}/g" \
+            .github/homebrew/formula.rb.tmpl > kimun.rb
+
+          echo "Generated formula:"
+          cat kimun.rb
+
+      - name: Push formula to tap
+        run: |
+          git clone "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/nico2sh/homebrew-kimun.git" tap
+          mkdir -p tap/Formula
+          cp kimun.rb tap/Formula/kimun.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/kimun.rb
+          git commit -m "kimun ${GITHUB_REF_NAME}"
+          git push
