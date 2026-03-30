@@ -35,7 +35,11 @@ zola serve docs/
 
 ## Releasing
 
-Releases are automated via `release.sh`, which uses [`semtag`](./semtag) to determine the next version.
+Releases are automated via `release.sh`, which uses [`semtag`](./semtag) to determine the next version. Requires [`cargo-edit`](https://github.com/killercup/cargo-edit):
+
+```sh
+cargo install cargo-edit
+```
 
 ```sh
 ./release.sh           # auto scope (minor or patch based on diff size)
