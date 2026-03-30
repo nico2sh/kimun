@@ -36,6 +36,14 @@ pub enum SortOrderSetting {
     Descending,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorBackendSetting {
+    #[default]
+    Textarea,
+    Nvim,
+}
+
 // pub mod theme;
 
 #[cfg(debug_assertions)]
@@ -99,6 +107,10 @@ pub struct AppSettings {
     pub autosave_interval_secs: u64,
     #[serde(default = "default_use_nerd_fonts")]
     pub use_nerd_fonts: bool,
+    #[serde(default)]
+    pub editor_backend: EditorBackendSetting,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nvim_path: Option<std::path::PathBuf>,
     #[serde(default = "default_sort_field")]
     pub default_sort_field: SortFieldSetting,
     #[serde(default = "default_sort_order")]
@@ -201,6 +213,8 @@ impl Default for AppSettings {
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
             use_nerd_fonts: false,
+            editor_backend: EditorBackendSetting::Textarea,
+            nvim_path: None,
             default_sort_field: default_sort_field(),
             default_sort_order: default_sort_order(),
             journal_sort_field: default_journal_sort_field(),
@@ -596,5 +610,23 @@ Quit = ["ctrl&Q"]
         let action = settings.key_bindings.get_action(&f2);
         assert_eq!(action, Some(ActionShortcuts::FileOperations),
             "merge_missing_default_bindings should add F2 → FileOperations");
+    }
+}
+
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+
+    #[test]
+    fn default_backend_is_textarea() {
+        let settings = AppSettings::default();
+        assert!(matches!(settings.editor_backend, EditorBackendSetting::Textarea));
+    }
+
+    #[test]
+    fn nvim_backend_round_trips_toml() {
+        let toml = "editor_backend = \"nvim\"\n";
+        let parsed: AppSettings = toml::from_str(toml).unwrap();
+        assert!(matches!(parsed.editor_backend, EditorBackendSetting::Nvim));
     }
 }
