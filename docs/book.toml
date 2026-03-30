@@ -5,9 +5,8 @@ language = "en"
 src = "src"
 
 [output.html]
-# TODO: fill in actual GitHub owner/repo before enabling
-# git-repository-url = "https://github.com/<owner>/kimun"
-# edit-url-template = "https://github.com/<owner>/kimun/edit/main/docs/src/{path}"
+git-repository-url = "https://github.com/nico2sh/kimun"
+edit-url-template = "https://github.com/nico2sh/kimun/edit/main/docs/src/{path}"
 
 [output.html.search]
 enable = true
