@@ -77,6 +77,11 @@ impl TextEditorComponent {
         }
     }
 
+    /// Returns the buffer lines for direct access.
+    ///
+    /// For the Textarea backend, returns the live lines.
+    /// For the Nvim backend, returns an empty slice — use `get_text()` instead,
+    /// which reads from the snapshot.
     pub fn lines(&self) -> &[String] {
         match &self.backend {
             BackendState::Textarea(ta) => ta.lines(),
@@ -127,16 +132,17 @@ impl TextEditorComponent {
     /// Returns the raw link target under the cursor, or `None` if the cursor
     /// is not inside a wikilink or markdown link span.
     pub fn link_at_cursor(&self) -> Option<String> {
-        let (row, col) = match &self.backend {
-            BackendState::Textarea(ta) => ta.cursor(),
-            BackendState::Nvim(nvim) => {
-                nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).cursor
+        let (row, col, line) = match &self.backend {
+            BackendState::Textarea(ta) => {
+                let (row, col) = ta.cursor();
+                let line = ta.lines().get(row)?.to_string();
+                (row, col, line)
             }
-        };
-        let line = match &self.backend {
-            BackendState::Textarea(ta) => ta.lines().get(row)?.to_string(),
             BackendState::Nvim(nvim) => {
-                nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).lines.get(row)?.to_string()
+                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                let (row, col) = snap.cursor;
+                let line = snap.lines.get(row)?.to_string();
+                (row, col, line)
             }
         };
         kimun_core::note::link_char_spans(&line)
