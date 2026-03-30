@@ -1,3 +1,4 @@
+pub mod backend;
 pub mod markdown;
 pub mod nvim_rpc;
 pub mod snapshot;
