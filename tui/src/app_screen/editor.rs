@@ -10,7 +10,9 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
-use crate::components::dialogs::{ActiveDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog, ValidationState};
+use crate::components::dialogs::{
+    ActiveDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog, ValidationState,
+};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::note_browser::NoteBrowserModal;
@@ -43,6 +45,7 @@ pub struct EditorScreen {
     path: VaultPath,
     focus: Focus,
     sidebar_visible: bool,
+    settings_key: String,
     quit_key: String,
     toggle_key: String,
     autosave_handle: Option<tokio::task::JoinHandle<()>>,
@@ -65,6 +68,7 @@ impl EditorScreen {
                 .unwrap_or_default()
         };
         let quit_key = first_key(&ActionShortcuts::Quit);
+        let settings_key = first_key(&ActionShortcuts::OpenSettings);
         let toggle_key = first_key(&ActionShortcuts::ToggleSidebar);
         let icons = settings.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &settings);
@@ -78,6 +82,7 @@ impl EditorScreen {
             path,
             focus: Focus::Editor,
             sidebar_visible: true,
+            settings_key,
             quit_key,
             toggle_key,
             autosave_handle: None,
@@ -102,10 +107,7 @@ impl EditorScreen {
         // External URL — hand off to the OS browser/handler.
         if target.starts_with("http://") || target.starts_with("https://") {
             if let Err(e) = open::that_detached(&target) {
-                self.key_flash = Some((
-                    format!("Cannot open URL: {e}"),
-                    std::time::Instant::now(),
-                ));
+                self.key_flash = Some((format!("Cannot open URL: {e}"), std::time::Instant::now()));
             }
             return;
         }
@@ -117,10 +119,7 @@ impl EditorScreen {
         let path = kimun_core::nfs::VaultPath::note_path_from(target_clean);
         match self.vault.open_or_search(&path).await {
             Ok(results) if results.is_empty() => {
-                self.key_flash = Some((
-                    format!("Not found: {target}"),
-                    std::time::Instant::now(),
-                ));
+                self.key_flash = Some((format!("Not found: {target}"), std::time::Instant::now()));
             }
             Ok(mut results) if results.len() == 1 => {
                 let (entry, _) = results.remove(0);
@@ -141,10 +140,7 @@ impl EditorScreen {
                 self.focus = Focus::NoteBrowser;
             }
             Err(e) => {
-                self.key_flash = Some((
-                    format!("Link error: {e}"),
-                    std::time::Instant::now(),
-                ));
+                self.key_flash = Some((format!("Link error: {e}"), std::time::Instant::now()));
             }
         }
     }
@@ -164,7 +160,9 @@ impl EditorScreen {
 
         self.settings.add_path_history(&path);
         let settings_snapshot = self.settings.clone();
-        tokio::spawn(async move { settings_snapshot.save_to_disk().ok(); });
+        tokio::spawn(async move {
+            settings_snapshot.save_to_disk().ok();
+        });
 
         self.path = path.clone();
         match self.vault.get_note_text(&self.path).await {
@@ -298,9 +296,18 @@ impl AppScreen for EditorScreen {
             if let Some(combo) = key_event_to_combo(key) {
                 let is_fkey = matches!(
                     combo.key,
-                    KeyStrike::F1  | KeyStrike::F2  | KeyStrike::F3  | KeyStrike::F4
-                    | KeyStrike::F5  | KeyStrike::F6  | KeyStrike::F7  | KeyStrike::F8
-                    | KeyStrike::F9  | KeyStrike::F10 | KeyStrike::F11 | KeyStrike::F12
+                    KeyStrike::F1
+                        | KeyStrike::F2
+                        | KeyStrike::F3
+                        | KeyStrike::F4
+                        | KeyStrike::F5
+                        | KeyStrike::F6
+                        | KeyStrike::F7
+                        | KeyStrike::F8
+                        | KeyStrike::F9
+                        | KeyStrike::F10
+                        | KeyStrike::F11
+                        | KeyStrike::F12
                 );
                 if is_fkey
                     || ((combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
@@ -330,7 +337,10 @@ impl AppScreen for EditorScreen {
                                 self.focus = Focus::Editor;
                             }
                         } else {
-                            let provider = SearchNotesProvider::new(self.vault.clone(), self.settings.last_paths.clone());
+                            let provider = SearchNotesProvider::new(
+                                self.vault.clone(),
+                                self.settings.last_paths.clone(),
+                            );
                             self.note_browser = Some(NoteBrowserModal::new(
                                 "Note Browser",
                                 provider,
@@ -364,7 +374,9 @@ impl AppScreen for EditorScreen {
                         }
                         return EventState::Consumed;
                     }
-                    Some(ActionShortcuts::FileOperations) if matches!(self.focus, Focus::Editor) => {
+                    Some(ActionShortcuts::FileOperations)
+                        if matches!(self.focus, Focus::Editor) =>
+                    {
                         tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
                         return EventState::Consumed;
                     }
@@ -500,8 +512,8 @@ impl AppScreen for EditorScreen {
         };
         let mut footer = Block::default()
             .title(format!(
-                "[{focus_label}]  {}: Quit  |  {}: Toggle sidebar",
-                self.quit_key, self.toggle_key,
+                "[{focus_label}]  {}: Quit  |  {}: Preferences |  {}: Toggle sidebar",
+                self.quit_key, self.settings_key, self.toggle_key,
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_ratatui()))
@@ -588,30 +600,32 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::ShowFileOpsMenu(path) => {
                 self.pre_dialog_focus = Some(self.focus);
-                self.active_dialog = Some(ActiveDialog::Menu(
-                    FileOpsMenuDialog::new(path),
-                ));
+                self.active_dialog = Some(ActiveDialog::Menu(FileOpsMenuDialog::new(path)));
                 self.focus = Focus::Dialog;
                 None
             }
             AppEvent::ShowDeleteDialog(path) => {
-                self.active_dialog = Some(ActiveDialog::Delete(
-                    DeleteConfirmDialog::new(path, self.vault.clone()),
-                ));
+                self.active_dialog = Some(ActiveDialog::Delete(DeleteConfirmDialog::new(
+                    path,
+                    self.vault.clone(),
+                )));
                 self.focus = Focus::Dialog;
                 None
             }
             AppEvent::ShowRenameDialog(path) => {
-                self.active_dialog = Some(ActiveDialog::Rename(
-                    RenameDialog::new(path, self.vault.clone()),
-                ));
+                self.active_dialog = Some(ActiveDialog::Rename(RenameDialog::new(
+                    path,
+                    self.vault.clone(),
+                )));
                 self.focus = Focus::Dialog;
                 None
             }
             AppEvent::ShowMoveDialog(path) => {
-                self.active_dialog = Some(ActiveDialog::Move(
-                    MoveDialog::new(path, self.vault.clone(), tx),
-                ));
+                self.active_dialog = Some(ActiveDialog::Move(MoveDialog::new(
+                    path,
+                    self.vault.clone(),
+                    tx,
+                )));
                 self.focus = Focus::Dialog;
                 None
             }
