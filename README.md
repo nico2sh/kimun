@@ -33,6 +33,26 @@ To browse the docs locally with search:
 zola serve docs/
 ```
 
+## Releasing
+
+Releases are automated via `release.sh`, which uses [`semtag`](./semtag) to determine the next version.
+
+```sh
+./release.sh           # auto scope (minor or patch based on diff size)
+./release.sh -s patch  # force patch bump
+./release.sh -s minor  # force minor bump
+./release.sh -s major  # force major bump
+```
+
+The script will:
+1. Calculate the next version from git history
+2. Bump the version in `tui/Cargo.toml` (kimun-notes)
+3. Commit the change and push a version tag
+
+The tag triggers the CI workflow, which publishes to crates.io — skipping any crate whose current version is already published.
+
+**Releasing `kimun_core`:** Core is versioned independently. Update `core/Cargo.toml` and the `kimun_core` entry in the root `Cargo.toml` `[workspace.dependencies]` manually, commit, then run `./release.sh` as usual.
+
 ## Roadmap
 
 - [ ] Command palette
