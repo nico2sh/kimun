@@ -1,4 +1,4 @@
-# Docs workflow: Build and deploy mdbook documentation to GitHub Pages
+# Docs workflow: Build and deploy Zola documentation to GitHub Pages
 # Triggered on pushes to main that touch docs/
 on:
   push:
@@ -34,18 +34,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install mdbook
+      - name: Install Zola
         uses: taiki-e/install-action@v2
         with:
-          tool: mdbook
+          tool: zola
 
       - name: Build docs
-        run: mdbook build docs/
+        run: zola build
+        working-directory: docs/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/book/
+          path: docs/public/
 
       - name: Deploy to GitHub Pages
         id: deployment
