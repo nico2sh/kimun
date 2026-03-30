@@ -98,6 +98,54 @@ impl Drop for EditorScreen {
 }
 
 impl EditorScreen {
+    async fn follow_link(&mut self, target: String, tx: &AppTx) {
+        // External URL — hand off to the OS browser/handler.
+        if target.starts_with("http://") || target.starts_with("https://") {
+            if let Err(e) = open::that_detached(&target) {
+                self.key_flash = Some((
+                    format!("Cannot open URL: {e}"),
+                    std::time::Instant::now(),
+                ));
+            }
+            return;
+        }
+
+        // Note reference — look it up in the vault.
+        let path = kimun_core::nfs::VaultPath::note_path_from(&target);
+        match self.vault.open_or_search(&path).await {
+            Ok(results) if results.is_empty() => {
+                self.key_flash = Some((
+                    format!("Not found: {target}"),
+                    std::time::Instant::now(),
+                ));
+            }
+            Ok(mut results) if results.len() == 1 => {
+                let (entry, _) = results.remove(0);
+                self.open_path(entry.path, tx).await;
+            }
+            Ok(results) => {
+                // Multiple matches — show picker.
+                use crate::components::note_browser::link_results_provider::LinkResultsProvider;
+                let provider = LinkResultsProvider::from_results(results);
+                self.note_browser = Some(NoteBrowserModal::new(
+                    format!("Follow: {target}"),
+                    provider,
+                    self.vault.clone(),
+                    self.settings.key_bindings.clone(),
+                    self.settings.icons(),
+                    tx.clone(),
+                ));
+                self.focus = Focus::NoteBrowser;
+            }
+            Err(e) => {
+                self.key_flash = Some((
+                    format!("Link error: {e}"),
+                    std::time::Instant::now(),
+                ));
+            }
+        }
+    }
+
     pub async fn open_path(&mut self, path: VaultPath, tx: &AppTx) {
         if !path.is_note() {
             tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
@@ -317,6 +365,12 @@ impl AppScreen for EditorScreen {
                         tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
                         return EventState::Consumed;
                     }
+                    Some(ActionShortcuts::FollowLink) if matches!(self.focus, Focus::Editor) => {
+                        if let Some(target) = self.editor.link_at_cursor() {
+                            tx.send(AppEvent::FollowLink(target)).ok();
+                        }
+                        return EventState::Consumed;
+                    }
                     _ => {}
                 }
             }
@@ -498,6 +552,7 @@ impl AppScreen for EditorScreen {
             AppEvent::OpenPath(path) => {
                 if path.is_note() {
                     self.open_path(path, tx).await;
+                    self.focus_editor();
                 } else {
                     self.navigate_sidebar(path, tx).await;
                 }
@@ -522,6 +577,10 @@ impl AppScreen for EditorScreen {
                 if matches!(self.focus, Focus::NoteBrowser) {
                     self.focus = Focus::Editor;
                 }
+                None
+            }
+            AppEvent::FollowLink(target) => {
+                self.follow_link(target, tx).await;
                 None
             }
             AppEvent::ShowFileOpsMenu(path) => {

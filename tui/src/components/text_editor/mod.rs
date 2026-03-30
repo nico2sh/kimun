@@ -66,6 +66,17 @@ impl TextEditorComponent {
     pub fn is_dirty(&self) -> bool {
         self.get_text() != self.last_saved_text
     }
+
+    /// Returns the raw link target under the cursor, or `None` if the cursor
+    /// is not inside a wikilink or markdown link span.
+    pub fn link_at_cursor(&self) -> Option<String> {
+        let (row, col) = self.text_area.cursor();
+        let line = self.text_area.lines().get(row)?;
+        kimun_core::note::link_char_spans(line)
+            .into_iter()
+            .find(|s| s.start <= col && col < s.end)
+            .map(|s| s.target)
+    }
 }
 
 impl Component for TextEditorComponent {
