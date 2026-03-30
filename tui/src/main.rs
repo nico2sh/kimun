@@ -1,5 +1,6 @@
 pub mod app;
 pub mod app_screen;
+pub mod cli;
 pub mod components;
 pub mod event_handler;
 pub mod keys;
@@ -16,6 +17,9 @@ struct Cli {
     /// Path to a custom config file
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<crate::cli::CliCommand>,
 }
 
 use crossterm::event::{
@@ -43,8 +47,16 @@ use crate::keys::key_event_to_combo;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
     color_eyre::install()?;
+    let cli = Cli::parse();
+
+    // Check if CLI subcommand was provided
+    if let Some(command) = cli.command {
+        // CLI mode - run command and exit
+        return crate::cli::run_cli(command, cli.config).await;
+    }
+
+    // TUI mode continues below...
     #[cfg(debug_assertions)]
     {
         use simplelog::*;

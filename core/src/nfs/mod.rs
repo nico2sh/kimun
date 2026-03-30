@@ -47,7 +47,7 @@ pub enum EntryData {
     Attachment,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct NoteEntryData {
     pub path: VaultPath,
     // File size, for fast check
@@ -524,6 +524,28 @@ impl VaultPath {
             name.to_string()
         } else {
             name
+        }
+    }
+
+    /// Returns the full vault path as a string with the note extension stripped.
+    /// E.g. `/projects/rust-notes.md` → `/projects/rust-notes`
+    /// If the path does not end with the note extension, returns it unchanged.
+    pub fn to_bare_string(&self) -> String {
+        let s = self.to_string();
+        s.strip_suffix(NOTE_EXTENSION)
+            .map(|bare| bare.to_owned())
+            .unwrap_or(s)
+    }
+
+    /// Returns the full vault path as a string, ensuring it ends with the note extension.
+    /// E.g. `/projects/rust-notes` → `/projects/rust-notes.md`
+    /// If the path already ends with the extension, returns it unchanged.
+    pub fn to_string_with_ext(&self) -> String {
+        let s = self.to_string();
+        if s.ends_with(NOTE_EXTENSION) {
+            s
+        } else {
+            format!("{}{}", s, NOTE_EXTENSION)
         }
     }
 

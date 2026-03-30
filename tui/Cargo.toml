@@ -1,6 +1,6 @@
 [package]
 name = "kimun-notes"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A terminal-based notes application"
 license = "MIT"
@@ -11,30 +11,32 @@ repository = "https://github.com/nico2sh/kimun"
 name = "kimun"
 path = "src/main.rs"
 
-[profile.release]
-opt-level = "z"   # optimise for size (smaller than "s", smaller than 3)
-lto = true        # cross-crate dead-code elimination
-codegen-units = 1 # single CGU lets LLVM inline across the whole crate
-strip = true      # strip debug symbols from the final binary
-panic = "abort"   # drop unwinding machinery (~10 % size reduction)
+[lib]
+name = "kimun_notes"
+path = "src/lib.rs"
 
 [dependencies]
-kimun_core = { path = "../core", version = "0.1.0" }
+kimun_core = { workspace = true }
 
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 ratatui = { version = "0.30.0", features = ["serde"] }
-serde = "1.0.228"
-toml = "1.0.7"
+serde = { workspace = true }
+toml = { workspace = true }
 itertools = "0.14.0"
-log = "0.4.29"
+log = { workspace = true }
 simplelog = "0.12"
-tokio = { version = "1.50.0", features = ["full"] }
+tokio = { workspace = true }
 async-trait = "0.1"
 futures = "0.3"
 ratatui-textarea = { version = "0.8.0", features = ["search"] }
 nucleo = "0.5"
 throbber-widgets-tui = "0.11"
-chrono = "0.4"
-pulldown-cmark = "0.13"
+chrono = { workspace = true }
+pulldown-cmark = { workspace = true }
+serde_json = "1.0"
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -61,7 +61,7 @@ pub struct MarkdownNote {
 /// so it is not a good idea to calculate it every time the content
 /// has changed, but better lazy get it when needed and cache it somewhere
 /// (like the DB) for search and access.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct NoteContentData {
     pub title: String,
     pub hash: u64,

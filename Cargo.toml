@@ -1,9 +1,21 @@
 [workspace]
-members = [
-    "core",
-    "tui",
-]
-exclude = [
-    "rag",
-]
+members = ["core", "tui"]
+exclude = ["rag"]
 resolver = "2"
+
+[profile.release]
+opt-level = "z"   # optimise for size (smaller than "s", smaller than 3)
+lto = true        # cross-crate dead-code elimination
+codegen-units = 1 # single CGU lets LLVM inline across the whole crate
+strip = true      # strip debug symbols from the final binary
+panic = "abort"   # drop unwinding machinery (~10 % size reduction)
+
+[workspace.dependencies]
+kimun_core = { path = "core", version = "0.2.0" }
+
+serde = { version = "1.0", features = ["derive"] }
+toml = "1.0.7"
+log = "0.4"
+tokio = { version = "1.50.0", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+pulldown-cmark = "0.13"

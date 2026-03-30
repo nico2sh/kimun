@@ -9,9 +9,10 @@
 **/*.rs.bk
 
 kimun.app
-docs/
+docs/book/
 **/.claude/
 **/.superpowers/
 **/.DS_Store
 **/*.log
 *.sqlite
+tui/kimun_config.toml
