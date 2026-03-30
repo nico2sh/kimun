@@ -1,0 +1,18 @@
+base_url = "https://nico2sh.github.io/kimun"
+title = "Kimün"
+theme = "easydocs"
+compile_sass = true
+build_search_index = true
+
+[markdown]
+# Note: Zola 0.22+ uses [markdown.highlighting] instead of the deprecated highlight_code = true
+
+[markdown.highlighting]
+theme = "base16-ocean-dark"
+
+[extra]
+repo_url = "https://github.com/nico2sh/kimun"
+edit_url = "https://github.com/nico2sh/kimun/edit/main/docs/content"
+logo = "/img/kimun-small.png"
+easydocs_logo_always_clickable = true
+easydocs_heading_threshold = 2
