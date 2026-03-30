@@ -102,7 +102,7 @@ jobs:
           name: Kimun ${{ steps.read_toml.outputs.value }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
           path: dist
 
-  publish:
+  publish-core:
     needs: build
     runs-on: ubuntu-latest
 
@@ -112,22 +112,74 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Read kimun_core version
+        uses: SebRollen/toml-action@v1.2.0
+        id: core_version
+        with:
+          file: "core/Cargo.toml"
+          field: "package.version"
+
+      - name: Check if kimun_core is already published
+        id: core_check
+        run: |
+          VERSION="${{ steps.core_version.outputs.value }}"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/kimun_core/${VERSION}")
+          if [ "$STATUS" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "kimun_core ${VERSION} already published, skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "kimun_core ${VERSION} not yet published, will publish."
+          fi
+
       - name: Publish kimun_core to crates.io
+        if: steps.core_check.outputs.skip == 'false'
         run: cargo publish -p kimun_core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      # Wait a moment for crates.io to index kimun_core before publishing kimun
-      - name: Wait for crates.io to index kimun_core
+  publish-tui:
+    needs: publish-core
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read kimun-notes version
+        uses: SebRollen/toml-action@v1.2.0
+        id: tui_version
+        with:
+          file: "tui/Cargo.toml"
+          field: "package.version"
+
+      - name: Check if kimun-notes is already published
+        id: tui_check
+        run: |
+          VERSION="${{ steps.tui_version.outputs.value }}"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/kimun-notes/${VERSION}")
+          if [ "$STATUS" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "kimun-notes ${VERSION} already published, skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "kimun-notes ${VERSION} not yet published, will publish."
+          fi
+
+      - name: Wait for crates.io to index kimun_core (if it was just published)
+        if: steps.tui_check.outputs.skip == 'false'
         run: sleep 30
 
       - name: Publish kimun-notes to crates.io
+        if: steps.tui_check.outputs.skip == 'false'
         run: cargo publish -p kimun-notes
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   create-release:
-    needs: build
+    needs: [build, publish-tui]
     runs-on: ubuntu-latest
     permissions:
       contents: write
