@@ -1,0 +1,49 @@
+# Docs workflow: Build and deploy mdbook documentation to GitHub Pages
+# Triggered on pushes to main that touch docs/
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+  workflow_dispatch:
+
+name: docs
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and Deploy Docs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install mdbook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
+      - name: Build docs
+        run: mdbook build docs/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
