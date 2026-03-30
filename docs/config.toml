@@ -8,7 +8,7 @@ build_search_index = true
 # Note: Zola 0.22+ uses [markdown.highlighting] instead of the deprecated highlight_code = true
 
 [markdown.highlighting]
-theme = "base16-ocean-dark"
+theme = "ayu-dark"
 
 [extra]
 repo_url = "https://github.com/nico2sh/kimun"
