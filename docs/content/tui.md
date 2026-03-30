@@ -45,7 +45,7 @@ The Settings screen lets you configure Kimün's behavior and appearance:
 - **Key bindings:** Customize keyboard shortcuts for any action
 - **Other preferences:** Autosave interval, font settings, and more
 
-All settings are stored in your config file (see [Configuration Reference](./configuration.md) for details).
+All settings are stored in your config file (see [Configuration Reference](@/configuration.md) for details).
 
 ## Navigation Patterns
 
@@ -73,7 +73,7 @@ All settings are stored in your config file (see [Configuration Reference](./con
 
 ## Key Bindings
 
-Default bindings (all configurable via the [Configuration Reference](./configuration.md)):
+Default bindings (all configurable via the [Configuration Reference](@/configuration.md)):
 
 | Action | Default Binding |
 |--------|-----------------|
@@ -106,4 +106,4 @@ This dual purpose allows efficient use of keyboard space while maintaining logic
 
 ## Customizing Key Bindings
 
-All key bindings are fully customizable through your config file. See the [Configuration Reference](./configuration.md) for instructions on how to rebind actions and create custom keyboard shortcuts.
+All key bindings are fully customizable through your config file. See the [Configuration Reference](@/configuration.md) for instructions on how to rebind actions and create custom keyboard shortcuts.
