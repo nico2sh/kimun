@@ -1,4 +1,5 @@
 pub mod markdown;
+pub mod snapshot;
 pub mod view;
 pub mod word_wrap;
 
