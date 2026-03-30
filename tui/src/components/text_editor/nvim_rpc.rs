@@ -1,3 +1,10 @@
+use std::collections::HashMap;
+use std::io::Write;
+use std::process::{ChildStdin, ChildStdout};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Convert a crossterm `KeyEvent` to a Neovim key string suitable for `nvim_feedkeys`.
@@ -42,6 +49,123 @@ pub fn key_event_to_nvim_string(key: &KeyEvent) -> Option<String> {
     };
 
     Some(base.to_string())
+}
+
+/// Minimal msgpack-RPC client for `nvim --embed`.
+///
+/// Spawns a background reader thread that routes responses to callers waiting on
+/// `std::sync::mpsc` channels. Fire-and-forget requests use `send()`; requests
+/// that need a response use `call_blocking()`, which blocks the calling thread.
+#[derive(Clone)]
+pub struct NvimRpc {
+    stdin: Arc<Mutex<ChildStdin>>,
+    pending: Arc<Mutex<HashMap<u32, mpsc::Sender<Result<rmpv::Value, String>>>>>,
+    msg_id: Arc<AtomicU32>,
+}
+
+impl NvimRpc {
+    /// Create an `NvimRpc` from stdin/stdout of a spawned `nvim --embed` process,
+    /// with a shared `is_dead` flag set to `true` when the reader thread exits (nvim died).
+    ///
+    /// Starts the background reader thread immediately.
+    pub fn new_with_dead_signal(
+        stdin: ChildStdin,
+        stdout: ChildStdout,
+        is_dead: Arc<AtomicBool>,
+    ) -> Self {
+        let stdin = Arc::new(Mutex::new(stdin));
+        let pending: Arc<Mutex<HashMap<u32, mpsc::Sender<_>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_reader = pending.clone();
+
+        std::thread::Builder::new()
+            .name("nvim-rpc-reader".into())
+            .spawn(move || {
+                let mut reader = std::io::BufReader::new(stdout);
+                loop {
+                    match rmpv::decode::read_value(&mut reader) {
+                        Ok(value) => {
+                            let Some(arr) = value.as_array() else { continue };
+                            let msg_type =
+                                arr.first().and_then(|v| v.as_i64()).unwrap_or(-1);
+                            // Response: [1, msg_id, error, result]
+                            if msg_type == 1 && arr.len() >= 4 {
+                                let id = arr[1].as_u64().unwrap_or(0) as u32;
+                                let err = &arr[2];
+                                let result = arr[3].clone();
+                                let outcome = if err.is_nil() {
+                                    Ok(result)
+                                } else {
+                                    Err(format!("{err}"))
+                                };
+                                let mut p = pending_reader.lock().unwrap();
+                                if let Some(tx) = p.remove(&id) {
+                                    let _ = tx.send(outcome);
+                                }
+                            }
+                            // Notifications (type 2) are ignored.
+                        }
+                        Err(e) => {
+                            log::debug!("nvim RPC reader exiting: {e}");
+                            is_dead.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                    }
+                }
+            })
+            .expect("failed to spawn nvim-rpc-reader thread");
+
+        Self {
+            stdin,
+            pending,
+            msg_id: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn write_msg(&self, msg: &rmpv::Value) -> Result<(), String> {
+        let mut stdin = self.stdin.lock().unwrap();
+        rmpv::encode::write_value(&mut *stdin, msg)
+            .map_err(|e| format!("msgpack encode: {e}"))?;
+        stdin.flush().map_err(|e| format!("stdin flush: {e}"))?;
+        Ok(())
+    }
+
+    /// Send a request without waiting for a response (fire and forget).
+    pub fn send(&self, method: &str, params: Vec<rmpv::Value>) {
+        let id = self.msg_id.fetch_add(1, Ordering::Relaxed);
+        let msg = rmpv::Value::Array(vec![
+            rmpv::Value::Integer(0.into()),
+            rmpv::Value::Integer(id.into()),
+            rmpv::Value::String(method.into()),
+            rmpv::Value::Array(params),
+        ]);
+        if let Err(e) = self.write_msg(&msg) {
+            log::debug!("nvim send error ({method}): {e}");
+        }
+    }
+
+    /// Send a request and block until the response arrives (up to 5 seconds).
+    pub fn call_blocking(
+        &self,
+        method: &str,
+        params: Vec<rmpv::Value>,
+    ) -> Result<rmpv::Value, String> {
+        let id = self.msg_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel();
+        {
+            let mut p = self.pending.lock().unwrap();
+            p.insert(id, tx);
+        }
+        let msg = rmpv::Value::Array(vec![
+            rmpv::Value::Integer(0.into()),
+            rmpv::Value::Integer(id.into()),
+            rmpv::Value::String(method.into()),
+            rmpv::Value::Array(params),
+        ]);
+        self.write_msg(&msg)?;
+        rx.recv_timeout(Duration::from_secs(5))
+            .map_err(|_| format!("timeout waiting for {method} response"))?
+    }
 }
 
 #[cfg(test)]
