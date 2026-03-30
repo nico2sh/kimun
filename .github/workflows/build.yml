@@ -88,18 +88,10 @@ jobs:
         run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/
         shell: bash
 
-      # Extract version and upload build artifacts
-      - name: Read version from Cargo.toml
-        uses: SebRollen/toml-action@v1.2.0
-        id: read_toml
-        with:
-          file: "tui/Cargo.toml"
-          field: "package.version"
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kimun ${{ steps.read_toml.outputs.value }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
+          name: Kimun ${{ github.ref_name }} (${{ matrix.artifact }}${{ matrix.artifact_suffix }})
           path: dist
 
   publish-core:
@@ -112,17 +104,22 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Read kimun_core version
-        uses: SebRollen/toml-action@v1.2.0
-        id: core_version
-        with:
-          file: "core/Cargo.toml"
-          field: "package.version"
+      - name: Install cargo-edit (provides cargo set-version)
+        run: cargo install cargo-edit --locked
+
+      # The tag (e.g. v0.3.1) is the single source of truth for the version.
+      # Stamp it into Cargo.toml so crates.io always sees the tag version.
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cargo set-version -p kimun_core "$VERSION"
+          # Keep the workspace dep declaration in sync so kimun-notes can resolve it.
+          cargo set-version -p kimun_core "$VERSION" --manifest-path Cargo.toml 2>/dev/null || true
 
       - name: Check if kimun_core is already published
         id: core_check
         run: |
-          VERSION="${{ steps.core_version.outputs.value }}"
+          VERSION="${GITHUB_REF_NAME#v}"
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/kimun_core/${VERSION}")
           if [ "$STATUS" = "200" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -148,17 +145,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Read kimun-notes version
-        uses: SebRollen/toml-action@v1.2.0
-        id: tui_version
-        with:
-          file: "tui/Cargo.toml"
-          field: "package.version"
+      - name: Install cargo-edit (provides cargo set-version)
+        run: cargo install cargo-edit --locked
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cargo set-version -p kimun-notes "$VERSION"
 
       - name: Check if kimun-notes is already published
         id: tui_check
         run: |
-          VERSION="${{ steps.tui_version.outputs.value }}"
+          VERSION="${GITHUB_REF_NAME#v}"
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/kimun-notes/${VERSION}")
           if [ "$STATUS" = "200" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -188,13 +186,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read version from Cargo.toml
-        uses: SebRollen/toml-action@v1.2.0
-        id: read_version
-        with:
-          file: "tui/Cargo.toml"
-          field: "package.version"
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -206,7 +197,7 @@ jobs:
       - name: Create compressed archives with consistent naming
         run: |
           cd release-artifacts
-          VERSION="${{ steps.read_version.outputs.value }}"
+          VERSION="${GITHUB_REF_NAME#v}"
 
           for dir in */; do
             dirname="${dir%/}"
@@ -244,31 +235,31 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Kimun ${{ steps.read_version.outputs.value }}
+          name: Kimun ${{ github.ref_name }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           body: |
-            ## Download Kimun ${{ steps.read_version.outputs.value }}
+            ## Download Kimun ${{ github.ref_name }}
 
             Kimun is a terminal-based notes application. Download the binary for your platform and place it somewhere on your `$PATH`.
 
             ### Downloads
 
             **Windows (x64):**
-            - Download `kimun-${{ steps.read_version.outputs.value }}-windows-x64.zip`
+            - Download `kimun-${{ github.ref_name }}-windows-x64.zip`
             - Extract and run `kimun.exe`
 
             **macOS (Intel):**
-            - Download `kimun-${{ steps.read_version.outputs.value }}-macos-x64.tar.gz`
+            - Download `kimun-${{ github.ref_name }}-macos-x64.tar.gz`
             - Extract and run `kimun`
 
             **macOS (Apple Silicon):**
-            - Download `kimun-${{ steps.read_version.outputs.value }}-macos-arm64.tar.gz`
+            - Download `kimun-${{ github.ref_name }}-macos-arm64.tar.gz`
             - Extract and run `kimun`
 
             **Linux (x64):**
-            - Download `kimun-${{ steps.read_version.outputs.value }}-linux-x64.tar.gz`
+            - Download `kimun-${{ github.ref_name }}-linux-x64.tar.gz`
             - Extract and run `kimun`
 
             ### Verify Downloads
