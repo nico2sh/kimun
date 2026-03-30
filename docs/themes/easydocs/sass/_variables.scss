@@ -1,21 +1,23 @@
 $baseline: 1.5rem;
 
-$background:#f9f9f9;
-$color:#222;
+// Kimun dark palette
+$background: #1A1816;
+$color: #E8E4DC;
+$links: #82BAD5;
+$hover-links: #F9C844;
+$visited-links: #82BAD5;
 
-$links: #00f;
-$hover-links:#c00;
-$visited-links:#009;
-
-$font-size: 1.125rem;
-$font-family: Segoe UI,system-ui,-apple-system,sans-serif;
+// Typography
+$font-size: 1.0625rem;
+$font-family: 'Inter', 'Inter Variable', system-ui, -apple-system, sans-serif;
 $line-height: 1.75;
-$code_font: 400 1.125rem/1.75 SFMono-Regular,Consolas,Liberation Mono,Menlo,monospace;
+$code_font: 400 0.9375rem/1.75 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
 
-$quote-bg: #dcdcdc;
-$quote-border: #808080 8px solid;
-$quote-alert-note-color: #1863b6;
-$quote-alert-tip-color: #10712b;
-$quote-alert-important-color: #7544d0;
-$quote-alert-warning-color: #915f00;
-$quote-alert-caution-color: #bf1626;
+// UI elements
+$quote-bg: #28241E;
+$quote-border: #F9C844 4px solid;
+$quote-alert-note-color: #82BAD5;
+$quote-alert-tip-color: #5ACB5A;
+$quote-alert-important-color: #ab7df8;
+$quote-alert-warning-color: #F9C844;
+$quote-alert-caution-color: #E85070;
