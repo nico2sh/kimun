@@ -72,11 +72,12 @@ impl EditorScreen {
         let toggle_key = first_key(&ActionShortcuts::ToggleSidebar);
         let icons = settings.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &settings);
+        let editor = TextEditorComponent::new(kb, &settings);
         Self {
             settings,
             icons,
             theme,
-            editor: TextEditorComponent::new(kb),
+            editor,
             sidebar,
             vault,
             path,
