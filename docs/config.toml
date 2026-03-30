@@ -13,6 +13,7 @@ theme = "ayu-dark"
 [extra]
 repo_url = "https://github.com/nico2sh/kimun"
 edit_url = "https://github.com/nico2sh/kimun/edit/main/docs/content"
-logo = "/img/kimun-small.png"
+logo = "/img/kimun.png"
+favicon = "/img/kimun-small.png"
 easydocs_logo_always_clickable = true
 easydocs_heading_threshold = 2
