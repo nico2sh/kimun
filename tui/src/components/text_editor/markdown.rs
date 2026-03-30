@@ -23,6 +23,7 @@ pub enum ElementKind {
     HeadingH2,
     HeadingH3,
     Blockquote,
+    WikiLink,
 }
 
 /// Pre-parsed result for a single logical line.
@@ -156,6 +157,9 @@ impl ParsedLine {
                 }
             }
         }
+
+        // Detect wikilinks ([[target]]) which pulldown-cmark treats as plain text.
+        detect_wikilinks(line, &mut content_vis, &mut elements);
 
         // Build O(1) lookup bitmasks from the collected element ranges.
         let mut elem_vis = vec![false; total];
@@ -299,6 +303,8 @@ impl MarkdownSpanner {
                 _ => {}
             }
         }
+        let mut dummy_vis = vec![true; line.chars().count()];
+        detect_wikilinks(line, &mut dummy_vis, &mut elements);
         elements
     }
 
@@ -654,6 +660,30 @@ impl MarkdownSpanner {
     }
 }
 
+/// Appends `WikiLink` elements for every `[[...]]` span in `line` and unsets
+/// `content_vis` for the `[[` and `]]` bracket sigils.
+fn detect_wikilinks(line: &str, content_vis: &mut Vec<bool>, elements: &mut Vec<Element>) {
+    use kimun_core::note::{link_char_spans, LinkSpanKind};
+    for span in link_char_spans(line) {
+        if span.kind != LinkSpanKind::WikiLink {
+            continue;
+        }
+        // The inner text was marked as content by pulldown-cmark's Text event;
+        // unmark the `[[` and `]]` bracket sigils.
+        let close = span.end - 2;
+        for pos in [span.start, span.start + 1, close, close + 1] {
+            if pos < content_vis.len() {
+                content_vis[pos] = false;
+            }
+        }
+        elements.push(Element {
+            start_char: span.start,
+            end_char: span.end,
+            kind: ElementKind::WikiLink,
+        });
+    }
+}
+
 /// Returns the length (in chars) of the list marker prefix, or None if not a list line.
 fn detect_list_marker(line: &str) -> Option<usize> {
     if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
@@ -717,6 +747,9 @@ fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -
             }
         }
         Some(ElementKind::Blockquote) => Style::default().fg(theme.fg_secondary.to_ratatui()),
+        Some(ElementKind::WikiLink) => Style::default()
+            .fg(theme.color_directory.to_ratatui())
+            .add_modifier(Modifier::UNDERLINED),
     }
 }
 
@@ -937,5 +970,61 @@ mod tests {
             s1.iter().map(|s| s.content.as_ref()).collect::<String>(),
             s2.iter().map(|s| s.content.as_ref()).collect::<String>(),
         );
+    }
+
+    // ── WikiLink tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_wikilink() {
+        let e = MarkdownSpanner::parse_elements("[[My Note]]");
+        let wl = e.iter().find(|x| x.kind == ElementKind::WikiLink).unwrap();
+        assert_eq!((wl.start_char, wl.end_char), (0, 11));
+    }
+
+    #[test]
+    fn wikilink_without_cursor_hides_brackets() {
+        let line = "[[My Note]]";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "My Note");
+        assert!(s
+            .iter()
+            .any(|sp| sp.style.add_modifier.contains(Modifier::UNDERLINED)));
+    }
+
+    #[test]
+    fn wikilink_cursor_inside_shows_brackets() {
+        let line = "[[My Note]]";
+        // cursor at pos 4 (inside "My Note")
+        let s = MarkdownSpanner::render(line, line, 0, Some(4), true, false, 40, &t());
+        assert_eq!(text(&s), "[[My Note]]");
+    }
+
+    #[test]
+    fn wikilink_cursor_outside_hides_brackets() {
+        let line = "hello [[My Note]] world";
+        let s = MarkdownSpanner::render(line, line, 0, Some(1), true, false, 40, &t());
+        assert!(!text(&s).contains("[["));
+        assert!(!text(&s).contains("]]"));
+    }
+
+    #[test]
+    fn wikilink_mid_sentence() {
+        let line = "See [[Topic]] for details";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "See Topic for details");
+    }
+
+    #[test]
+    fn wikilink_cursor_col_accounts_for_brackets() {
+        // "[[Hi]]" — cursor at pos 2 ('H') is inside the element, so it expands.
+        // Rendered col counts pos 0 ('['), pos 1 ('[') as visible (expanded sigils) → col = 2.
+        let col = MarkdownSpanner::rendered_cursor_col("[[Hi]]", 0, 2, true, false);
+        assert_eq!(col, 2);
+
+        // Cursor outside the wikilink (pos 0 on a plain-text line before it):
+        // "See [[Hi]] x" with cursor at pos 0 — wikilink not expanded, brackets hidden.
+        // pos 0 ('S') is plain text, rendered col = 0.
+        let col2 = MarkdownSpanner::rendered_cursor_col("See [[Hi]] x", 0, 0, true, false);
+        assert_eq!(col2, 0);
     }
 }
