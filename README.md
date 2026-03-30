@@ -18,20 +18,16 @@ cargo install kimun-notes
 
 ## Documentation
 
-Full documentation is available in [`docs/`](docs/src/SUMMARY.md):
+Full documentation is available in [`docs/`](docs/content):
 
-- [Installation](docs/src/installation.md)
-- [Configuration](docs/src/configuration.md)
-- [Workspaces](docs/src/workspaces.md)
-- [TUI](docs/src/tui.md)
-- [CLI](docs/src/cli.md)
-- [Search syntax](docs/src/search.md)
-- [Guides](docs/src/guides/)
+- [Getting Started](docs/content/getting-started/)
+- [Using Kimün](docs/content/using-kimun/)
+- [Guides](docs/content/guides/)
 
 To browse the docs locally with search:
 ```sh
-cargo install mdbook
-mdbook serve docs/
+# Install Zola: https://www.getzola.org/documentation/getting-started/installation/
+zola serve docs/
 ```
 
 ## Roadmap
