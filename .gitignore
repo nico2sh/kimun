@@ -23,3 +23,4 @@ memory/
 *.sqlite
 tui/kimun_config.toml
 docs/public/
+.worktrees/
