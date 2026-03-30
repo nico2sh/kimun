@@ -86,28 +86,25 @@ impl TextEditorComponent {
             .map(|s| s.target)
     }
 
-    /// Copy selected text to the system clipboard and clear the selection.
+    /// Copy selected text to the system clipboard.
     fn copy_selection_to_clipboard(&mut self) {
         let Some(((sr, sc), (er, ec))) = self.text_area.selection_range() else {
             return;
         };
         let lines = self.text_area.lines();
         let text = if sr == er {
-            lines[sr][sc..ec].to_string()
+            lines[sr].get(sc..ec).unwrap_or("").to_string()
         } else {
-            let mut parts = vec![lines[sr][sc..].to_string()];
+            let mut parts = vec![lines[sr].get(sc..).unwrap_or("").to_string()];
             for row in (sr + 1)..er {
                 parts.push(lines[row].to_string());
             }
-            parts.push(lines[er][..ec].to_string());
+            parts.push(lines[er].get(..ec).unwrap_or("").to_string());
             parts.join("\n")
         };
         if let Some(cb) = &mut self.clipboard {
             let _ = cb.set_text(text);
         }
-        self.text_area.cancel_selection();
-        self.selection = None;
-        self.edit_generation = self.edit_generation.wrapping_add(1);
     }
 
     /// Paste text from the system clipboard at the cursor, replacing any active selection.
@@ -129,6 +126,7 @@ impl TextEditorComponent {
         self.text_area.insert_str(&text);
         self.selection = self.text_area.selection_range();
         self.edit_generation = self.edit_generation.wrapping_add(1);
+        // Note: selection is synced here because paste is an early-exit path in handle_input.
     }
 }
 
@@ -175,6 +173,7 @@ impl Component for TextEditorComponent {
                 }
                 match mouse.kind {
                     MouseEventKind::Down(MouseButton::Right) => {
+                        tx.send(AppEvent::FocusEditor).ok();
                         self.copy_selection_to_clipboard();
                     }
                     MouseEventKind::Down(_) => {
@@ -185,23 +184,19 @@ impl Component for TextEditorComponent {
                         let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
                         self.text_area.move_cursor(CursorMove::Jump(lrow, lcol));
                         self.text_area.start_selection();
-                        self.edit_generation = self.edit_generation.wrapping_add(1);
-                        self.selection = self.text_area.selection_range();
                     }
                     MouseEventKind::Drag(_) => {
                         let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
                         let vcol = (mouse.column - r.x) as usize;
                         let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
                         self.text_area.move_cursor(CursorMove::Jump(lrow, lcol));
-                        self.edit_generation = self.edit_generation.wrapping_add(1);
-                        self.selection = self.text_area.selection_range();
                     }
                     _ => {
                         self.text_area.input(*mouse);
-                        self.edit_generation = self.edit_generation.wrapping_add(1);
-                        self.selection = self.text_area.selection_range();
                     }
                 }
+                self.selection = self.text_area.selection_range();
+                self.edit_generation = self.edit_generation.wrapping_add(1);
                 EventState::Consumed
             }
         }

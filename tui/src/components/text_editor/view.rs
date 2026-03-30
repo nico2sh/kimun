@@ -1,4 +1,5 @@
 use std::ops::Range;
+use unicode_width::UnicodeWidthStr;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Text};
@@ -34,7 +35,7 @@ pub struct MarkdownEditorView {
     rendered_cache: Vec<Vec<bool>>,
     /// Current selection range in logical (row, byte-col) coordinates.
     /// `None` when no selection is active.
-    pub selection: Option<((usize, usize), (usize, usize))>,
+    selection: Option<((usize, usize), (usize, usize))>,
 }
 
 impl MarkdownEditorView {
@@ -181,7 +182,8 @@ impl MarkdownEditorView {
                                 vl.is_first_visual_line, force_raw,
                             )
                         } else {
-                            usize::MAX
+                            // Entire line is selected; use a sentinel larger than any line width.
+                            u16::MAX as usize
                         };
                         apply_selection_highlight(spans, start_rendered..end_rendered, theme)
                     } else {
@@ -276,6 +278,19 @@ impl Default for MarkdownEditorView {
     fn default() -> Self { Self::new() }
 }
 
+/// Returns the byte offset into `s` after consuming exactly `target_width` display columns.
+/// If `target_width` exceeds the string's display width, returns `s.len()`.
+fn byte_offset_for_display_width(s: &str, target_width: usize) -> usize {
+    let mut consumed = 0usize;
+    for (byte_pos, ch) in s.char_indices() {
+        if consumed >= target_width {
+            return byte_pos;
+        }
+        consumed += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+    s.len()
+}
+
 /// Re-style spans to apply `bg_selected` over the given rendered-column range.
 ///
 /// `sel_cols` is a range of rendered (screen) column offsets within the visual line.
@@ -296,8 +311,8 @@ fn apply_selection_highlight<'a>(
 
     for span in spans {
         let content: &str = &span.content;
-        let span_len = content.chars().count();
-        let span_end = col + span_len;
+        let span_width = content.width();
+        let span_end = col + span_width;
 
         let overlap_start = sel_cols.start.max(col);
         let overlap_end = sel_cols.end.min(span_end);
@@ -306,17 +321,13 @@ fn apply_selection_highlight<'a>(
             // No overlap — emit as-is.
             result.push(span);
         } else {
-            // Convert char-index offsets (relative to start of span) to byte offsets.
-            let prefix_chars = overlap_start - col;
-            let selected_chars = overlap_end - overlap_start;
+            // Walk grapheme clusters by display width to find byte boundaries.
+            let prefix_width = overlap_start - col;
+            let selected_width = overlap_end - overlap_start;
 
-            let mut char_iter = content.char_indices();
-            let prefix_byte = char_iter.nth(prefix_chars).map(|(b, _)| b).unwrap_or(content.len());
-            let selected_byte_start = prefix_byte;
-            let selected_byte_end = char_iter
-                .nth(selected_chars.saturating_sub(1))
-                .map(|(b, c)| b + c.len_utf8())
-                .unwrap_or(content.len());
+            let prefix_byte = byte_offset_for_display_width(content, prefix_width);
+            let selected_byte_end =
+                byte_offset_for_display_width(&content[prefix_byte..], selected_width) + prefix_byte;
 
             // Prefix (before selection)
             if prefix_byte > 0 {
@@ -327,7 +338,7 @@ fn apply_selection_highlight<'a>(
             }
             // Selected portion
             result.push(ratatui::text::Span::styled(
-                content[selected_byte_start..selected_byte_end].to_string(),
+                content[prefix_byte..selected_byte_end].to_string(),
                 span.style.bg(highlight_bg),
             ));
             // Suffix (after selection)
