@@ -22,6 +22,8 @@ pub enum ActionShortcuts {
     SortReverseOrder,
     // File operations
     FileOperations,
+    // Editor link navigation
+    FollowLink,
 }
 
 impl Display for ActionShortcuts {
@@ -42,6 +44,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::SortByTitle => "SortByTitle".to_string(),
             ActionShortcuts::SortReverseOrder => "SortReverseOrder".to_string(),
             ActionShortcuts::FileOperations => "FileOperations".to_string(),
+            ActionShortcuts::FollowLink => "FollowLink".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -66,6 +69,7 @@ impl TryFrom<String> for ActionShortcuts {
             "SortByTitle" => ActionShortcuts::SortByTitle,
             "SortReverseOrder" => ActionShortcuts::SortReverseOrder,
             "FileOperations" => ActionShortcuts::FileOperations,
+            "FollowLink" => ActionShortcuts::FollowLink,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {

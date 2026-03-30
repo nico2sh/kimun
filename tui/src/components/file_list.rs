@@ -85,6 +85,7 @@ impl SortOrder {
 // FileListEntry
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub enum FileListEntry {
     Up {
         parent: VaultPath,

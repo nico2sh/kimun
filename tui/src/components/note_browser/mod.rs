@@ -20,6 +20,7 @@ use crate::settings::themes::Theme;
 
 pub mod search_provider;
 pub mod file_finder_provider;
+pub mod link_results_provider;
 
 // ---------------------------------------------------------------------------
 // NoteBrowserProvider trait
