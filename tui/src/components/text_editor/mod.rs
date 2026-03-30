@@ -29,6 +29,7 @@ macro_rules! cursor_move {
     }};
 }
 
+use self::backend::BackendState;
 use self::view::MarkdownEditorView;
 
 use crate::components::Component;
@@ -39,10 +40,11 @@ use crate::components::events::InputEvent;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
+use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
 pub struct TextEditorComponent {
-    text_area: TextArea<'static>,
+    backend: BackendState,
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
     key_bindings: KeyBindings,
@@ -51,17 +53,20 @@ pub struct TextEditorComponent {
     /// Incremented on every mutating input event. Passed to `view.update()` so the view
     /// can skip the expensive lines clone and parse-cache rebuild on idle frames.
     edit_generation: u64,
-    /// Current selection range in logical (row, byte-col) coordinates, kept in sync with
-    /// `text_area.selection_range()` after every input event.
+    /// Current selection range in logical (row, byte-col) coordinates.
+    /// Only tracked for the Textarea backend; always `None` for Nvim.
     selection: Option<((usize, usize), (usize, usize))>,
     /// System clipboard handle. `None` if the clipboard is unavailable (e.g. headless CI).
     clipboard: Option<Clipboard>,
 }
 
 impl TextEditorComponent {
-    pub fn new(key_bindings: KeyBindings) -> Self {
+    pub fn new(key_bindings: KeyBindings, settings: &AppSettings) -> Self {
         Self {
-            text_area: TextArea::default(),
+            backend: BackendState::from_settings(
+                &settings.editor_backend,
+                settings.nvim_path.as_ref(),
+            ),
             rect: Rect::default(),
             key_bindings,
             last_saved_text: String::new(),
@@ -73,35 +78,68 @@ impl TextEditorComponent {
     }
 
     pub fn lines(&self) -> &[String] {
-        self.text_area.lines()
+        match &self.backend {
+            BackendState::Textarea(ta) => ta.lines(),
+            BackendState::Nvim(_) => &[],
+        }
     }
 
     pub fn set_text(&mut self, text: String) {
-        let lines = text.lines();
-        self.text_area = TextArea::from(lines);
+        match &mut self.backend {
+            BackendState::Textarea(ta) => {
+                let lines = text.lines();
+                *ta = TextArea::from(lines);
+            }
+            BackendState::Nvim(nvim) => {
+                nvim.set_text(&text);
+            }
+        }
         self.edit_generation = self.edit_generation.wrapping_add(1);
         let reconstructed = self.get_text();
         self.mark_saved(reconstructed);
     }
 
     pub fn get_text(&self) -> String {
-        self.text_area.lines().join("\n")
+        match &self.backend {
+            BackendState::Textarea(ta) => ta.lines().join("\n"),
+            BackendState::Nvim(nvim) => {
+                nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).lines.join("\n")
+            }
+        }
     }
 
     pub fn mark_saved(&mut self, text: String) {
+        if let BackendState::Nvim(nvim) = &self.backend {
+            nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).dirty = false;
+        }
         self.last_saved_text = text;
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.get_text() != self.last_saved_text
+        match &self.backend {
+            BackendState::Textarea(_) => self.get_text() != self.last_saved_text,
+            BackendState::Nvim(nvim) => {
+                nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).dirty
+            }
+        }
     }
 
     /// Returns the raw link target under the cursor, or `None` if the cursor
     /// is not inside a wikilink or markdown link span.
     pub fn link_at_cursor(&self) -> Option<String> {
-        let (row, col) = self.text_area.cursor();
-        let line = self.text_area.lines().get(row)?;
-        kimun_core::note::link_char_spans(line)
+        let (row, col) = match &self.backend {
+            BackendState::Textarea(ta) => ta.cursor(),
+            BackendState::Nvim(nvim) => {
+                nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).cursor
+            }
+        };
+        let line = match &self.backend {
+            BackendState::Textarea(ta) => ta.lines().get(row)?.to_string(),
+            BackendState::Nvim(nvim) => {
+                nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).lines.get(row)?.to_string()
+            }
+        };
+        kimun_core::note::link_char_spans(&line)
             .into_iter()
             .find(|s| s.start <= col && col < s.end)
             .map(|s| s.target)
@@ -109,20 +147,22 @@ impl TextEditorComponent {
 
     /// Copy selected text to the system clipboard.
     fn copy_selection_to_clipboard(&mut self) {
-        let Some(((sr, sc), (er, ec))) = self.text_area.selection_range() else {
-            return;
-        };
-        let lines = self.text_area.lines();
-        let text = if sr == er {
-            lines[sr].get(sc..ec).unwrap_or("").to_string()
-        } else {
-            let mut parts = vec![lines[sr].get(sc..).unwrap_or("").to_string()];
-            for row in (sr + 1)..er {
-                parts.push(lines[row].to_string());
+        // Scope the borrow of self.backend so self.clipboard can be borrowed after.
+        let text = {
+            let BackendState::Textarea(ta) = &self.backend else { return };
+            let Some(((sr, sc), (er, ec))) = ta.selection_range() else { return };
+            let lines = ta.lines();
+            if sr == er {
+                lines[sr].get(sc..ec).unwrap_or("").to_string()
+            } else {
+                let mut parts = vec![lines[sr].get(sc..).unwrap_or("").to_string()];
+                for row in (sr + 1)..er {
+                    parts.push(lines[row].to_string());
+                }
+                parts.push(lines[er].get(..ec).unwrap_or("").to_string());
+                parts.join("\n")
             }
-            parts.push(lines[er].get(..ec).unwrap_or("").to_string());
-            parts.join("\n")
-        };
+        }; // borrow of self.backend ends here
         if let Some(cb) = &mut self.clipboard {
             let _ = cb.set_text(text);
         }
@@ -130,31 +170,64 @@ impl TextEditorComponent {
 
     /// Paste text from the system clipboard at the cursor, replacing any active selection.
     fn paste_from_clipboard(&mut self) {
+        // Get text from clipboard first (releasing that borrow), then access backend.
         let text = match &mut self.clipboard {
             Some(cb) => match cb.get_text() {
-                Ok(t) => t,
-                Err(_) => return,
+                Ok(t) if !t.is_empty() => t,
+                _ => return,
             },
             None => return,
         };
-        if text.is_empty() {
-            return;
+        if let BackendState::Textarea(ta) = &mut self.backend {
+            if ta.selection_range().is_some() {
+                ta.cut();
+            }
+            ta.insert_str(&text);
+            self.selection = ta.selection_range();
+            self.edit_generation = self.edit_generation.wrapping_add(1);
         }
-        // If a selection is active, delete it first.
-        if self.text_area.selection_range().is_some() {
-            self.text_area.cut();
-        }
-        self.text_area.insert_str(&text);
-        self.selection = self.text_area.selection_range();
-        self.edit_generation = self.edit_generation.wrapping_add(1);
-        // Note: selection is synced here because paste is an early-exit path in handle_input.
     }
 }
 
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        use std::sync::atomic::Ordering;
+
+        // If Nvim process died, fall back to Textarea with last known content.
+        // Extract fallback text first (scoping the borrow), then reassign self.backend.
+        let fallback_text = if let BackendState::Nvim(nvim) = &self.backend {
+            if nvim.is_dead.load(Ordering::SeqCst) {
+                Some(nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).lines.join("\n"))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(text) = fallback_text {
+            log::warn!("nvim process died; falling back to textarea backend");
+            self.backend = BackendState::Textarea(TextArea::from(text.lines()));
+        }
+
         match event {
             InputEvent::Key(key) => {
+                // Nvim backend: forward all keys directly, except FocusSidebar which kimun handles.
+                if let BackendState::Nvim(nvim) = &self.backend {
+                    if let Some(combo) = key_event_to_combo(key) {
+                        if let Some(ActionShortcuts::FocusSidebar) =
+                            self.key_bindings.get_action(&combo)
+                        {
+                            tx.send(AppEvent::FocusSidebar).ok();
+                            return EventState::Consumed;
+                        }
+                    }
+                    nvim.handle_key(key);
+                    self.edit_generation = self.edit_generation.wrapping_add(1);
+                    return EventState::Consumed;
+                }
+
+                // Textarea backend: original logic below.
+
                 // System clipboard shortcuts — intercept before passing to textarea.
                 if key.modifiers == KeyModifiers::CONTROL {
                     match key.code {
@@ -170,44 +243,42 @@ impl Component for TextEditorComponent {
                     }
                 }
 
+                // Extract ta for all remaining textarea operations.
+                let BackendState::Textarea(ta) = &mut self.backend else {
+                    unreachable!("already handled Nvim branch above")
+                };
+
                 // macOS-style navigation shortcuts not handled by ratatui-textarea.
-                //
-                // Alt+Left/Right (Option key on macOS) — word jump.
-                // ratatui-textarea handles Alt+b/f but not Alt+Arrow, so we map them here.
-                //
-                // Super+Arrow (Cmd key on macOS) — line/document navigation.
-                // Most terminal emulators on macOS do NOT forward the Cmd modifier; if
-                // they do (e.g. via kitty/iTerm configured key bindings) this catches it.
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 let handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
                     (KeyModifiers::ALT, KeyCode::Left) => {
-                        cursor_move!(self.text_area, CursorMove::WordBack, shift);
+                        cursor_move!(ta, CursorMove::WordBack, shift);
                         true
                     }
                     (KeyModifiers::ALT, KeyCode::Right) => {
-                        cursor_move!(self.text_area, CursorMove::WordForward, shift);
+                        cursor_move!(ta, CursorMove::WordForward, shift);
                         true
                     }
                     (KeyModifiers::SUPER, KeyCode::Left) => {
-                        cursor_move!(self.text_area, CursorMove::Head, shift);
+                        cursor_move!(ta, CursorMove::Head, shift);
                         true
                     }
                     (KeyModifiers::SUPER, KeyCode::Right) => {
-                        cursor_move!(self.text_area, CursorMove::End, shift);
+                        cursor_move!(ta, CursorMove::End, shift);
                         true
                     }
                     (KeyModifiers::SUPER, KeyCode::Up) => {
-                        cursor_move!(self.text_area, CursorMove::Top, shift);
+                        cursor_move!(ta, CursorMove::Top, shift);
                         true
                     }
                     (KeyModifiers::SUPER, KeyCode::Down) => {
-                        cursor_move!(self.text_area, CursorMove::Bottom, shift);
+                        cursor_move!(ta, CursorMove::Bottom, shift);
                         true
                     }
                     _ => false,
                 };
                 if handled {
-                    self.selection = self.text_area.selection_range();
+                    self.selection = ta.selection_range();
                     self.edit_generation = self.edit_generation.wrapping_add(1);
                     return EventState::Consumed;
                 }
@@ -221,12 +292,16 @@ impl Component for TextEditorComponent {
                         return EventState::Consumed;
                     }
                 }
-                self.text_area.input(*key);
-                self.selection = self.text_area.selection_range();
+                ta.input(*key);
+                self.selection = ta.selection_range();
                 self.edit_generation = self.edit_generation.wrapping_add(1);
                 EventState::Consumed
             }
             InputEvent::Mouse(mouse) => {
+                // Mouse is only handled for the Textarea backend.
+                let BackendState::Textarea(_) = &self.backend else {
+                    return EventState::NotConsumed;
+                };
                 let r = &self.rect;
                 let in_bounds = mouse.column >= r.x
                     && mouse.column < r.x + r.width
@@ -235,31 +310,43 @@ impl Component for TextEditorComponent {
                 if !in_bounds {
                     return EventState::NotConsumed;
                 }
+                // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
+                    tx.send(AppEvent::FocusEditor).ok();
+                    self.copy_selection_to_clipboard();
+                    self.selection = if let BackendState::Textarea(ta) = &self.backend {
+                        ta.selection_range()
+                    } else {
+                        None
+                    };
+                    self.edit_generation = self.edit_generation.wrapping_add(1);
+                    return EventState::Consumed;
+                }
+                // Now extract ta for remaining mouse operations.
+                let BackendState::Textarea(ta) = &mut self.backend else {
+                    unreachable!()
+                };
                 match mouse.kind {
-                    MouseEventKind::Down(MouseButton::Right) => {
-                        tx.send(AppEvent::FocusEditor).ok();
-                        self.copy_selection_to_clipboard();
-                    }
                     MouseEventKind::Down(_) => {
                         tx.send(AppEvent::FocusEditor).ok();
-                        self.text_area.cancel_selection();
+                        ta.cancel_selection();
                         let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
                         let vcol = (mouse.column - r.x) as usize;
                         let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
-                        self.text_area.move_cursor(CursorMove::Jump(lrow, lcol));
-                        self.text_area.start_selection();
+                        ta.move_cursor(CursorMove::Jump(lrow, lcol));
+                        ta.start_selection();
                     }
                     MouseEventKind::Drag(_) => {
                         let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
                         let vcol = (mouse.column - r.x) as usize;
                         let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
-                        self.text_area.move_cursor(CursorMove::Jump(lrow, lcol));
+                        ta.move_cursor(CursorMove::Jump(lrow, lcol));
                     }
                     _ => {
-                        self.text_area.input(*mouse);
+                        ta.input(*mouse);
                     }
                 }
-                self.selection = self.text_area.selection_range();
+                self.selection = ta.selection_range();
                 self.edit_generation = self.edit_generation.wrapping_add(1);
                 EventState::Consumed
             }
@@ -268,9 +355,20 @@ impl Component for TextEditorComponent {
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.rect = rect;
-        let cursor = self.text_area.cursor();
-        self.view
-            .update(self.text_area.lines(), cursor, rect, self.edit_generation, self.selection);
+        match &self.backend {
+            BackendState::Textarea(ta) => {
+                let cursor = ta.cursor();
+                let lines = ta.lines();
+                self.view.update(lines, cursor, rect, self.edit_generation, self.selection);
+            }
+            BackendState::Nvim(nvim) => {
+                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                let cursor = snap.cursor;
+                let lines = snap.lines.clone();
+                drop(snap);
+                self.view.update(&lines, cursor, rect, self.edit_generation, None);
+            }
+        }
         self.view.render(f, rect, theme, focused);
     }
 
@@ -296,7 +394,14 @@ mod tests {
     use crate::keys::KeyBindings;
 
     fn make_editor() -> TextEditorComponent {
-        TextEditorComponent::new(KeyBindings::empty())
+        TextEditorComponent::new(KeyBindings::empty(), &crate::settings::AppSettings::default())
+    }
+
+    fn get_ta(editor: &mut TextEditorComponent) -> &mut TextArea<'static> {
+        match &mut editor.backend {
+            BackendState::Textarea(ta) => ta,
+            _ => panic!("expected Textarea backend"),
+        }
     }
 
     #[test]
@@ -344,11 +449,16 @@ mod tests {
     fn mouse_down_clears_selection() {
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
-        editor.text_area.start_selection();
-        editor.text_area.move_cursor(ratatui_textarea::CursorMove::WordForward);
-        assert!(editor.text_area.selection_range().is_some());
-        editor.text_area.cancel_selection();
-        editor.selection = editor.text_area.selection_range();
+        let ta = get_ta(&mut editor);
+        ta.start_selection();
+        ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        assert!(ta.selection_range().is_some());
+        ta.cancel_selection();
+        editor.selection = if let BackendState::Textarea(ta) = &editor.backend {
+            ta.selection_range()
+        } else {
+            None
+        };
         assert!(editor.selection.is_none());
     }
 
@@ -356,12 +466,13 @@ mod tests {
     fn ctrl_c_copies_selected_text() {
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
-        editor.text_area.move_cursor(ratatui_textarea::CursorMove::Head);
-        editor.text_area.start_selection();
-        editor.text_area.move_cursor(ratatui_textarea::CursorMove::WordForward);
-        let range = editor.text_area.selection_range().unwrap();
+        let ta = get_ta(&mut editor);
+        ta.move_cursor(ratatui_textarea::CursorMove::Head);
+        ta.start_selection();
+        ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        let range = ta.selection_range().unwrap();
         let ((sr, sc), (er, ec)) = range;
-        let lines = editor.text_area.lines();
+        let lines = ta.lines();
         let selected = if sr == er {
             lines[sr][sc..ec].to_string()
         } else {
@@ -374,8 +485,9 @@ mod tests {
     fn paste_inserts_text_at_cursor() {
         let mut editor = make_editor();
         editor.set_text("hello".to_string());
-        editor.text_area.move_cursor(ratatui_textarea::CursorMove::End);
-        editor.text_area.insert_str(" world");
+        let ta = get_ta(&mut editor);
+        ta.move_cursor(ratatui_textarea::CursorMove::End);
+        ta.insert_str(" world");
         assert_eq!(editor.get_text(), "hello world");
     }
 }
