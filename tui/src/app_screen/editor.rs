@@ -512,7 +512,7 @@ impl AppScreen for EditorScreen {
         };
         let mut footer = Block::default()
             .title(format!(
-                "[{focus_label}]  {}: Quit  |  {}: Preferences |  {}: Toggle sidebar",
+                "[{focus_label}]  {}: Preferences |  {}: Toggle sidebar | {}: Quit",
                 self.quit_key, self.settings_key, self.toggle_key,
             ))
             .borders(Borders::ALL)
