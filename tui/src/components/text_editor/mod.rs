@@ -8,6 +8,24 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKi
 use ratatui::layout::Rect;
 use ratatui_textarea::{CursorMove, TextArea};
 
+/// Move or extend the selection by `movement`.
+///
+/// If `shift` is held and no selection is currently active, anchors the selection
+/// first; otherwise the existing anchor is kept. Without `shift`, any active
+/// selection is cancelled before the cursor moves.
+macro_rules! cursor_move {
+    ($ta:expr, $mv:expr, $shift:expr) => {{
+        if $shift {
+            if $ta.selection_range().is_none() {
+                $ta.start_selection();
+            }
+        } else {
+            $ta.cancel_selection();
+        }
+        $ta.move_cursor($mv);
+    }};
+}
+
 use self::view::MarkdownEditorView;
 
 use crate::components::Component;
@@ -148,6 +166,49 @@ impl Component for TextEditorComponent {
                         _ => {}
                     }
                 }
+
+                // macOS-style navigation shortcuts not handled by ratatui-textarea.
+                //
+                // Alt+Left/Right (Option key on macOS) — word jump.
+                // ratatui-textarea handles Alt+b/f but not Alt+Arrow, so we map them here.
+                //
+                // Super+Arrow (Cmd key on macOS) — line/document navigation.
+                // Most terminal emulators on macOS do NOT forward the Cmd modifier; if
+                // they do (e.g. via kitty/iTerm configured key bindings) this catches it.
+                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                let handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
+                    (KeyModifiers::ALT, KeyCode::Left) => {
+                        cursor_move!(self.text_area, CursorMove::WordBack, shift);
+                        true
+                    }
+                    (KeyModifiers::ALT, KeyCode::Right) => {
+                        cursor_move!(self.text_area, CursorMove::WordForward, shift);
+                        true
+                    }
+                    (KeyModifiers::SUPER, KeyCode::Left) => {
+                        cursor_move!(self.text_area, CursorMove::Head, shift);
+                        true
+                    }
+                    (KeyModifiers::SUPER, KeyCode::Right) => {
+                        cursor_move!(self.text_area, CursorMove::End, shift);
+                        true
+                    }
+                    (KeyModifiers::SUPER, KeyCode::Up) => {
+                        cursor_move!(self.text_area, CursorMove::Top, shift);
+                        true
+                    }
+                    (KeyModifiers::SUPER, KeyCode::Down) => {
+                        cursor_move!(self.text_area, CursorMove::Bottom, shift);
+                        true
+                    }
+                    _ => false,
+                };
+                if handled {
+                    self.selection = self.text_area.selection_range();
+                    self.edit_generation = self.edit_generation.wrapping_add(1);
+                    return EventState::Consumed;
+                }
+
                 // Check keybindings for navigation actions.
                 if let Some(combo) = key_event_to_combo(key) {
                     if let Some(ActionShortcuts::FocusSidebar) =
