@@ -5,7 +5,7 @@
 
 ## Overview
 
-Deploy the Kimun mdbook documentation to GitHub Pages using the `gh-pages` branch strategy. The built HTML is pushed to a dedicated `gh-pages` branch on every change to `docs/` on `main`, keeping generated output separate from source.
+Deploy the Kimun mdbook documentation to GitHub Pages using the GitHub Actions deployment model. A workflow builds the book on every change to `docs/` on `main`, uploads the output as a Pages artifact, and deploys it via `actions/deploy-pages`. No `gh-pages` branch is involved; GitHub Pages is configured to use the "GitHub Actions" source.
 
 ## Changes
 
@@ -20,19 +20,22 @@ Fill in the GitHub repository metadata (currently placeholders):
 
 Trigger: push to `main`, path filter `docs/**`.
 
+Permissions required:
+- `contents: read`
+- `pages: write`
+- `id-token: write`
+
 Steps:
 1. Checkout repository
-2. Install `mdbook` via `cargo install` or a prebuilt action
-3. Run `mdbook build` inside the `docs/` directory (output goes to `docs/book/`)
+2. Install `mdbook` using a prebuilt binary (e.g., `taiki-e/install-action@mdbook`) — avoids slow `cargo install` compilation
+3. Run `mdbook build` inside the `docs/` directory (output goes to `docs/book/`, the default since `book.toml` does not override `build.build-dir`)
 4. Upload `docs/book/` as a Pages artifact (`actions/upload-pages-artifact`)
-5. Deploy to `gh-pages` branch (`actions/deploy-pages`)
-
-The workflow requires `pages: write` and `id-token: write` permissions.
+5. Deploy via the GitHub Pages Actions environment (`actions/deploy-pages`)
 
 ### 3. GitHub Pages settings (one-time manual step)
 
 In repo Settings → Pages:
-- Source: **GitHub Actions** (not branch — this pairs with `actions/deploy-pages`)
+- Source: **GitHub Actions**
 
 ## Result
 
