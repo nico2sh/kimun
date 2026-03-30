@@ -40,7 +40,7 @@ Legacy single-workspace configurations are automatically migrated to multi-works
 
 Multi-workspace support allows you to manage separate note directories.
 
-For full workspace management reference, see the [Workspaces](@/workspaces.md) page.
+For full workspace management reference, see the [Workspaces](@/getting-started/workspaces.md) page.
 
 **Quick reference:**
 ```sh
@@ -80,7 +80,7 @@ Searches support free text, filters, and operators:
   - Title: `>-draft` or `in:-draft`
   - Filename: `@-temp` or `at:-temp`
 
-For comprehensive search documentation, see the [Search](@/search.md) page.
+For comprehensive search documentation, see the [Search](@/using-kimun/search.md) page.
 
 ### Examples
 
