@@ -32,6 +32,9 @@ pub struct MarkdownEditorView {
     /// Only the two cursor rows (old and new) are rebuilt when just the cursor row changes;
     /// all rows are rebuilt when content or width changes.
     rendered_cache: Vec<Vec<bool>>,
+    /// Current selection range in logical (row, byte-col) coordinates.
+    /// `None` when no selection is active.
+    pub selection: Option<((usize, usize), (usize, usize))>,
 }
 
 impl MarkdownEditorView {
@@ -49,10 +52,12 @@ impl MarkdownEditorView {
             last_layout_cursor: (usize::MAX, usize::MAX),
             cursor_vrow: 0,
             rendered_cache: Vec::new(),
+            selection: None,
         }
     }
 
-    pub fn update(&mut self, lines: &[String], cursor: (usize, usize), rect: Rect, generation: u64) {
+    pub fn update(&mut self, lines: &[String], cursor: (usize, usize), rect: Rect, generation: u64, selection: Option<((usize, usize), (usize, usize))>) {
+        self.selection = selection;
         if rect.height == 0 { return; }
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
@@ -132,15 +137,19 @@ impl MarkdownEditorView {
         let height = rect.height as usize;
         let vlines = self.layout.visual_lines();
 
+        let selection = self.selection;
+        let parsed_cache = &self.parsed_cache;
+        let cursor_code_block = &self.cursor_code_block;
+
         let visible: Vec<Line> = vlines
             .iter()
             .skip(scroll)
             .take(height)
             .map(|vl| {
                 let cursor_col = if vl.logical_row == cursor.0 { Some(cursor.1) } else { None };
-                let force_raw = self.is_in_code_block(vl.logical_row);
+                let force_raw = cursor_code_block.as_ref().map_or(false, |r| r.contains(&vl.logical_row));
                 let logical_line = lines.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
-                let parsed = &self.parsed_cache[vl.logical_row];
+                let parsed = &parsed_cache[vl.logical_row];
                 let content = vl.content(logical_line);
                 let spans = MarkdownSpanner::render_with(
                     content,
@@ -153,6 +162,35 @@ impl MarkdownEditorView {
                     rect.width,
                     theme,
                 );
+
+                // Apply selection highlight if this visual line is within the selection.
+                let spans = if let Some(((sel_sr, sel_sc), (sel_er, sel_ec))) = selection {
+                    let row = vl.logical_row;
+                    if row >= sel_sr && row <= sel_er {
+                        let start_rendered = if row == sel_sr {
+                            MarkdownSpanner::rendered_cursor_col_with(
+                                logical_line, parsed, vl.start_col, sel_sc,
+                                vl.is_first_visual_line, force_raw,
+                            )
+                        } else {
+                            0
+                        };
+                        let end_rendered = if row == sel_er {
+                            MarkdownSpanner::rendered_cursor_col_with(
+                                logical_line, parsed, vl.start_col, sel_ec,
+                                vl.is_first_visual_line, force_raw,
+                            )
+                        } else {
+                            usize::MAX
+                        };
+                        apply_selection_highlight(spans, start_rendered..end_rendered, theme)
+                    } else {
+                        spans
+                    }
+                } else {
+                    spans
+                };
+
                 Line::from(spans)
             })
             .collect();
@@ -238,6 +276,75 @@ impl Default for MarkdownEditorView {
     fn default() -> Self { Self::new() }
 }
 
+/// Re-style spans to apply `bg_selected` over the given rendered-column range.
+///
+/// `sel_cols` is a range of rendered (screen) column offsets within the visual line.
+/// Spans that overlap the range are split at the boundaries; the overlapping portion
+/// receives `.bg(theme.bg_selected)`. Non-overlapping portions keep their original style.
+fn apply_selection_highlight<'a>(
+    spans: Vec<ratatui::text::Span<'a>>,
+    sel_cols: std::ops::Range<usize>,
+    theme: &Theme,
+) -> Vec<ratatui::text::Span<'a>> {
+    if sel_cols.is_empty() {
+        return spans;
+    }
+
+    let highlight_bg = theme.bg_selected.to_ratatui();
+    let mut result = Vec::new();
+    let mut col = 0usize;
+
+    for span in spans {
+        let content: &str = &span.content;
+        let span_len = content.chars().count();
+        let span_end = col + span_len;
+
+        let overlap_start = sel_cols.start.max(col);
+        let overlap_end = sel_cols.end.min(span_end);
+
+        if overlap_start >= overlap_end {
+            // No overlap — emit as-is.
+            result.push(span);
+        } else {
+            // Convert char-index offsets (relative to start of span) to byte offsets.
+            let prefix_chars = overlap_start - col;
+            let selected_chars = overlap_end - overlap_start;
+
+            let mut char_iter = content.char_indices();
+            let prefix_byte = char_iter.nth(prefix_chars).map(|(b, _)| b).unwrap_or(content.len());
+            let selected_byte_start = prefix_byte;
+            let selected_byte_end = char_iter
+                .nth(selected_chars.saturating_sub(1))
+                .map(|(b, c)| b + c.len_utf8())
+                .unwrap_or(content.len());
+
+            // Prefix (before selection)
+            if prefix_byte > 0 {
+                result.push(ratatui::text::Span::styled(
+                    content[..prefix_byte].to_string(),
+                    span.style,
+                ));
+            }
+            // Selected portion
+            result.push(ratatui::text::Span::styled(
+                content[selected_byte_start..selected_byte_end].to_string(),
+                span.style.bg(highlight_bg),
+            ));
+            // Suffix (after selection)
+            if selected_byte_end < content.len() {
+                result.push(ratatui::text::Span::styled(
+                    content[selected_byte_end..].to_string(),
+                    span.style,
+                ));
+            }
+        }
+
+        col = span_end;
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,14 +360,14 @@ mod tests {
     #[test]
     fn zero_height_rect_does_not_panic() {
         let mut v = MarkdownEditorView::new();
-        v.update(&["hello".to_string()], (0, 0), rect(0), 1);
+        v.update(&["hello".to_string()], (0, 0), rect(0), 1, None);
     }
 
     #[test]
     fn scroll_follows_cursor_down() {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..5).map(|i| format!("line{}", i)).collect();
-        v.update(&lines, (4, 0), rect(3), 1);
+        v.update(&lines, (4, 0), rect(3), 1, None);
         assert!(v.visual_scroll_offset >= 2);
     }
 
@@ -268,8 +375,8 @@ mod tests {
     fn scroll_follows_cursor_up() {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..5).map(|i| format!("line{}", i)).collect();
-        v.update(&lines, (4, 0), rect(3), 1);
-        v.update(&lines, (0, 0), rect(3), 1); // same generation — scroll still adjusts
+        v.update(&lines, (4, 0), rect(3), 1, None);
+        v.update(&lines, (0, 0), rect(3), 1, None); // same generation — scroll still adjusts
         assert_eq!(v.visual_scroll_offset, 0);
     }
 
@@ -277,7 +384,7 @@ mod tests {
     fn visual_to_logical_u16_accounts_for_scroll() {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
-        v.update(&lines, (5, 0), rect(3), 1);
+        v.update(&lines, (5, 0), rect(3), 1, None);
         let scroll = v.visual_scroll_offset;
         let (row, _col) = v.click_to_logical_u16(scroll, 0);
         assert_eq!(row as usize, scroll);
@@ -314,7 +421,7 @@ mod tests {
     fn parsed_cache_populated_after_update() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello".to_string(), "**bold**".to_string()];
-        v.update(&lines, (0, 0), rect(10), 1);
+        v.update(&lines, (0, 0), rect(10), 1, None);
         assert_eq!(v.parsed_cache.len(), 2);
     }
 
@@ -322,10 +429,10 @@ mod tests {
     fn layout_skipped_on_horizontal_cursor_move_in_plain_text() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello world".to_string()];
-        v.update(&lines, (0, 0), rect(40), 1);
+        v.update(&lines, (0, 0), rect(40), 1, None);
         let layout_gen_after_first = v.last_layout_generation;
         // Move cursor right — same row, no elements, same generation → layout must be skipped.
-        v.update(&lines, (0, 5), rect(40), 1);
+        v.update(&lines, (0, 5), rect(40), 1, None);
         assert_eq!(v.last_layout_cursor, (0, 0), "layout cursor unchanged = layout was skipped");
         assert_eq!(v.last_layout_generation, layout_gen_after_first);
     }
@@ -334,8 +441,8 @@ mod tests {
     fn layout_recomputed_on_row_change() {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..3).map(|i| format!("line{}", i)).collect();
-        v.update(&lines, (0, 0), rect(40), 1);
-        v.update(&lines, (1, 0), rect(40), 1); // cursor moves to row 1
+        v.update(&lines, (0, 0), rect(40), 1, None);
+        v.update(&lines, (1, 0), rect(40), 1, None); // cursor moves to row 1
         assert_eq!(v.last_layout_cursor.0, 1, "layout recomputed on row change");
     }
 
@@ -343,8 +450,8 @@ mod tests {
     fn layout_recomputed_on_width_change() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello world foo bar".to_string()];
-        v.update(&lines, (0, 0), rect(40), 1);
-        v.update(&lines, (0, 0), Rect { x: 0, y: 0, width: 10, height: 10 }, 1);
+        v.update(&lines, (0, 0), rect(40), 1, None);
+        v.update(&lines, (0, 0), Rect { x: 0, y: 0, width: 10, height: 10 }, 1, None);
         assert_eq!(v.last_layout_width, 10);
     }
 
@@ -352,10 +459,10 @@ mod tests {
     fn same_generation_skips_snapshot_rebuild() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["original".to_string()];
-        v.update(&lines, (0, 0), rect(10), 1);
+        v.update(&lines, (0, 0), rect(10), 1, None);
         // Update with different content but same generation — snapshot must NOT change.
         let lines2 = vec!["changed".to_string()];
-        v.update(&lines2, (0, 0), rect(10), 1);
+        v.update(&lines2, (0, 0), rect(10), 1, None);
         assert_eq!(v.lines_snapshot, vec!["original".to_string()]);
     }
 
@@ -363,9 +470,26 @@ mod tests {
     fn new_generation_triggers_snapshot_rebuild() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["original".to_string()];
-        v.update(&lines, (0, 0), rect(10), 1);
+        v.update(&lines, (0, 0), rect(10), 1, None);
         let lines2 = vec!["changed".to_string()];
-        v.update(&lines2, (0, 0), rect(10), 2);
+        v.update(&lines2, (0, 0), rect(10), 2, None);
         assert_eq!(v.lines_snapshot, vec!["changed".to_string()]);
+    }
+
+    #[test]
+    fn update_stores_selection() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec!["hello world".to_string()];
+        v.update(&lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
+        assert_eq!(v.selection, Some(((0, 0), (0, 5))));
+    }
+
+    #[test]
+    fn update_clears_selection_when_none() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec!["hello world".to_string()];
+        v.update(&lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
+        v.update(&lines, (0, 0), rect(40), 1, None);
+        assert_eq!(v.selection, None);
     }
 }

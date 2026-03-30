@@ -2,8 +2,9 @@ pub mod markdown;
 pub mod view;
 pub mod word_wrap;
 
+use arboard::Clipboard;
 use ratatui::Frame;
-use ratatui::crossterm::event::MouseEventKind;
+use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui_textarea::{CursorMove, TextArea};
 
@@ -29,6 +30,11 @@ pub struct TextEditorComponent {
     /// Incremented on every mutating input event. Passed to `view.update()` so the view
     /// can skip the expensive lines clone and parse-cache rebuild on idle frames.
     edit_generation: u64,
+    /// Current selection range in logical (row, byte-col) coordinates, kept in sync with
+    /// `text_area.selection_range()` after every input event.
+    selection: Option<((usize, usize), (usize, usize))>,
+    /// System clipboard handle. `None` if the clipboard is unavailable (e.g. headless CI).
+    clipboard: Option<Clipboard>,
 }
 
 impl TextEditorComponent {
@@ -40,6 +46,8 @@ impl TextEditorComponent {
             last_saved_text: String::new(),
             view: MarkdownEditorView::new(),
             edit_generation: 0,
+            selection: None,
+            clipboard: Clipboard::new().ok(),
         }
     }
 
@@ -77,12 +85,71 @@ impl TextEditorComponent {
             .find(|s| s.start <= col && col < s.end)
             .map(|s| s.target)
     }
+
+    /// Copy selected text to the system clipboard and clear the selection.
+    fn copy_selection_to_clipboard(&mut self) {
+        let Some(((sr, sc), (er, ec))) = self.text_area.selection_range() else {
+            return;
+        };
+        let lines = self.text_area.lines();
+        let text = if sr == er {
+            lines[sr][sc..ec].to_string()
+        } else {
+            let mut parts = vec![lines[sr][sc..].to_string()];
+            for row in (sr + 1)..er {
+                parts.push(lines[row].to_string());
+            }
+            parts.push(lines[er][..ec].to_string());
+            parts.join("\n")
+        };
+        if let Some(cb) = &mut self.clipboard {
+            let _ = cb.set_text(text);
+        }
+        self.text_area.cancel_selection();
+        self.selection = None;
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+    }
+
+    /// Paste text from the system clipboard at the cursor, replacing any active selection.
+    fn paste_from_clipboard(&mut self) {
+        let text = match &mut self.clipboard {
+            Some(cb) => match cb.get_text() {
+                Ok(t) => t,
+                Err(_) => return,
+            },
+            None => return,
+        };
+        if text.is_empty() {
+            return;
+        }
+        // If a selection is active, delete it first.
+        if self.text_area.selection_range().is_some() {
+            self.text_area.cut();
+        }
+        self.text_area.insert_str(&text);
+        self.selection = self.text_area.selection_range();
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+    }
 }
 
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
             InputEvent::Key(key) => {
+                // System clipboard shortcuts — intercept before passing to textarea.
+                if key.modifiers == KeyModifiers::CONTROL {
+                    match key.code {
+                        KeyCode::Char('c') => {
+                            self.copy_selection_to_clipboard();
+                            return EventState::Consumed;
+                        }
+                        KeyCode::Char('v') => {
+                            self.paste_from_clipboard();
+                            return EventState::Consumed;
+                        }
+                        _ => {}
+                    }
+                }
                 // Check keybindings for navigation actions.
                 if let Some(combo) = key_event_to_combo(key) {
                     if let Some(ActionShortcuts::FocusSidebar) =
@@ -108,15 +175,27 @@ impl Component for TextEditorComponent {
                 match mouse.kind {
                     MouseEventKind::Down(_) => {
                         tx.send(AppEvent::FocusEditor).ok();
+                        self.text_area.cancel_selection();
+                        let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
+                        let vcol = (mouse.column - r.x) as usize;
+                        let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
+                        self.text_area.move_cursor(CursorMove::Jump(lrow, lcol));
+                        self.text_area.start_selection();
+                        self.edit_generation = self.edit_generation.wrapping_add(1);
+                        self.selection = self.text_area.selection_range();
+                    }
+                    MouseEventKind::Drag(_) => {
                         let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
                         let vcol = (mouse.column - r.x) as usize;
                         let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
                         self.text_area.move_cursor(CursorMove::Jump(lrow, lcol));
                         self.edit_generation = self.edit_generation.wrapping_add(1);
+                        self.selection = self.text_area.selection_range();
                     }
                     _ => {
                         self.text_area.input(*mouse);
                         self.edit_generation = self.edit_generation.wrapping_add(1);
+                        self.selection = self.text_area.selection_range();
                     }
                 }
                 EventState::Consumed
@@ -128,7 +207,7 @@ impl Component for TextEditorComponent {
         self.rect = rect;
         let cursor = self.text_area.cursor();
         self.view
-            .update(self.text_area.lines(), cursor, rect, self.edit_generation);
+            .update(self.text_area.lines(), cursor, rect, self.edit_generation, self.selection);
         self.view.render(f, rect, theme, focused);
     }
 
@@ -196,5 +275,44 @@ mod tests {
             !editor.is_dirty(),
             "trailing newline should not make editor dirty after load"
         );
+    }
+
+    #[test]
+    fn mouse_down_clears_selection() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        editor.text_area.start_selection();
+        editor.text_area.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        assert!(editor.text_area.selection_range().is_some());
+        editor.text_area.cancel_selection();
+        editor.selection = editor.text_area.selection_range();
+        assert!(editor.selection.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_copies_selected_text() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        editor.text_area.move_cursor(ratatui_textarea::CursorMove::Head);
+        editor.text_area.start_selection();
+        editor.text_area.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        let range = editor.text_area.selection_range().unwrap();
+        let ((sr, sc), (er, ec)) = range;
+        let lines = editor.text_area.lines();
+        let selected = if sr == er {
+            lines[sr][sc..ec].to_string()
+        } else {
+            lines[sr][sc..].to_string()
+        };
+        assert_eq!(selected, "hello ");
+    }
+
+    #[test]
+    fn paste_inserts_text_at_cursor() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        editor.text_area.move_cursor(ratatui_textarea::CursorMove::End);
+        editor.text_area.insert_str(" world");
+        assert_eq!(editor.get_text(), "hello world");
     }
 }
