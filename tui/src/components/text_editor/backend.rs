@@ -74,7 +74,10 @@ impl NvimBackend {
             .map_err(|e| format!("failed to spawn {binary}: {e}"))?;
 
         let stdin = child.stdin.take().ok_or("nvim stdin unavailable")?;
-        let stdout = child.stdout.take().ok_or("nvim stdout unavailable")?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            let _ = child.kill();
+            "nvim stdout unavailable"
+        })?;
 
         let is_dead = Arc::new(AtomicBool::new(false));
         let rpc = Arc::new(NvimRpc::new_with_dead_signal(stdin, stdout, is_dead.clone()));
@@ -112,7 +115,7 @@ impl NvimBackend {
                 rmpv::Value::Array(lines),
             ],
         );
-        let mut snap = self.snapshot.lock().unwrap();
+        let mut snap = self.snapshot.lock().unwrap_or_else(|p| p.into_inner());
         snap.lines = text.lines().map(|l| l.to_string()).collect();
         if snap.lines.is_empty() {
             snap.lines.push(String::new());
@@ -128,14 +131,13 @@ impl NvimBackend {
             return;
         };
 
-        // Mark dirty immediately so is_dirty() is correct before refresh completes.
-        self.snapshot.lock().unwrap().dirty = true;
-
         let current_gen = self.refresh_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let rpc = self.rpc.clone();
         let snapshot = self.snapshot.clone();
         let refresh_gen = self.refresh_gen.clone();
 
+        // `call_blocking` uses std::sync::mpsc::recv_timeout which blocks the OS thread.
+        // spawn_blocking gives us a dedicated thread so we don't stall the async executor.
         tokio::task::spawn_blocking(move || {
             // Feed the key; wait for nvim to confirm it was processed.
             if let Err(e) = rpc.call_blocking(
@@ -149,6 +151,9 @@ impl NvimBackend {
                 log::debug!("nvim_feedkeys error: {e}");
                 return;
             }
+
+            // Mark dirty now that nvim has confirmed the key was processed.
+            snapshot.lock().unwrap_or_else(|p| p.into_inner()).dirty = true;
 
             if refresh_gen.load(Ordering::SeqCst) != current_gen {
                 return; // superseded by a later keystroke
@@ -193,7 +198,7 @@ impl NvimBackend {
                     .unwrap_or_default();
 
                 if refresh_gen.load(Ordering::SeqCst) == current_gen {
-                    let mut snap = snapshot.lock().unwrap();
+                    let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
                     snap.mode = mode;
                     snap.cmdline = Some(format!("{cmdtype}{cmdline_text}"));
                 }
@@ -207,6 +212,11 @@ impl NvimBackend {
                         rmpv::Value::Boolean(false),
                     ],
                 );
+
+                // Check generation before fetching cursor to avoid mismatched line/cursor state.
+                if refresh_gen.load(Ordering::SeqCst) != current_gen {
+                    return;
+                }
 
                 let cursor_val = rpc.call_blocking(
                     "nvim_win_get_cursor",
@@ -244,7 +254,7 @@ impl NvimBackend {
                         })
                         .unwrap_or((0, 0));
 
-                    let mut snap = snapshot.lock().unwrap();
+                    let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
                     snap.lines = lines;
                     snap.cursor = cursor;
                     snap.mode = mode;
