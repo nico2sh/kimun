@@ -9,7 +9,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::task::JoinHandle;
 
 use crate::components::Component;
@@ -235,9 +235,14 @@ impl MoveDialog {
                 EventState::Consumed
             }
             KeyCode::Char(c) => {
-                self.search_query.push(c);
-                self.schedule_filter(tx);
-                self.dest_validation = ValidationState::Idle;
+                let non_shift = key.modifiers - KeyModifiers::SHIFT;
+                if non_shift.is_empty() {
+                    self.search_query.push(c);
+                    self.schedule_filter(tx);
+                    self.dest_validation = ValidationState::Idle;
+                }
+                // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
+                // from leaking a character into the search box.
                 EventState::Consumed
             }
             KeyCode::Backspace => {

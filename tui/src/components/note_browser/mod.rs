@@ -20,6 +20,7 @@ use crate::settings::themes::Theme;
 
 pub mod search_provider;
 pub mod file_finder_provider;
+pub mod link_results_provider;
 
 // ---------------------------------------------------------------------------
 // NoteBrowserProvider trait
@@ -285,12 +286,17 @@ impl Component for NoteBrowserModal {
                 EventState::Consumed
             }
             KeyCode::Char(c) => {
-                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    self.search_query.push(c.to_ascii_uppercase());
-                } else {
-                    self.search_query.push(c);
+                let non_shift = key.modifiers - KeyModifiers::SHIFT;
+                if non_shift.is_empty() {
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        self.search_query.push(c.to_ascii_uppercase());
+                    } else {
+                        self.search_query.push(c);
+                    }
+                    self.schedule_load(tx.clone());
                 }
-                self.schedule_load(tx.clone());
+                // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
+                // from leaking a character into the search box.
                 EventState::Consumed
             }
             KeyCode::Backspace => {

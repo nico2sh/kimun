@@ -100,8 +100,7 @@ Use these action names exactly as shown:
   - `NewJournal` — Create a new journal entry
 
 - **Sorting**
-  - `SortByName` — Sort notes by filename
-  - `SortByTitle` — Sort notes by title (from front matter)
+  - `CycleSortField` — Cycle the sort field (filename → title → filename → …)
   - `SortReverseOrder` — Toggle sort direction (ascending ↔ descending)
 
 - **File Operations**

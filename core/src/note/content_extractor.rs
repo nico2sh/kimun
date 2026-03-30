@@ -29,6 +29,77 @@ static URL_RX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^https?:\/\/[\w\d]+\.[\w\d]+(?:(?:\.[\w\d]+)|(?:[\w\d\/?=#]+))+$"#).unwrap()
 });
 
+/// Discriminates the type of an inline link found by [`link_char_spans`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkSpanKind {
+    /// A `[[page]]` or `[[page|display]]` wikilink.
+    WikiLink,
+    /// A `[text](url)` or `![alt](url)` markdown link.
+    Markdown,
+}
+
+/// A resolved inline link span within a text string.
+///
+/// `start` and `end` are char-index offsets covering the full token
+/// (including delimiters such as `[[`/`]]` or `[`/`)`).
+/// `target` holds the link destination — the wiki page name for
+/// [`LinkSpanKind::WikiLink`] (before any `|` separator), or the URL/path
+/// for [`LinkSpanKind::Markdown`].
+#[derive(Debug, Clone)]
+pub struct LinkSpan {
+    pub start: usize,
+    pub end: usize,
+    pub kind: LinkSpanKind,
+    pub target: String,
+}
+
+/// Returns only `[[wikilink]]` spans from `text`, sorted by document order.
+///
+/// Cheaper than `link_char_spans` when markdown links are not needed (e.g. the
+/// per-frame editor render path).
+pub fn wikilink_char_spans(text: &str) -> Vec<LinkSpan> {
+    WIKILINK_RX
+        .captures_iter(text)
+        .map(|caps| {
+            let m = caps.get(0).unwrap();
+            let start = text[..m.start()].chars().count();
+            let end = text[..m.end()].chars().count();
+            let inner = &caps["link_text"];
+            let target = inner.split('|').next().unwrap_or(inner).to_string();
+            LinkSpan { start, end, kind: LinkSpanKind::WikiLink, target }
+        })
+        .collect()
+}
+
+/// Returns every inline link span in `text`, covering both `[[wikilinks]]`
+/// and `[markdown](links)`, sorted by document order.
+///
+/// Suitable for syntax highlighting, editor decoration, and lightweight
+/// link extraction without full vault-path resolution.
+pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
+    let mut spans: Vec<LinkSpan> = Vec::new();
+
+    for caps in WIKILINK_RX.captures_iter(text) {
+        let m = caps.get(0).unwrap();
+        let start = text[..m.start()].chars().count();
+        let end = text[..m.end()].chars().count();
+        let inner = &caps["link_text"];
+        let target = inner.split('|').next().unwrap_or(inner).to_string();
+        spans.push(LinkSpan { start, end, kind: LinkSpanKind::WikiLink, target });
+    }
+
+    for caps in MD_LINK_RX.captures_iter(text) {
+        let m = caps.get(0).unwrap();
+        let start = text[..m.start()].chars().count();
+        let end = text[..m.end()].chars().count();
+        let target = caps["link"].trim().to_string();
+        spans.push(LinkSpan { start, end, kind: LinkSpanKind::Markdown, target });
+    }
+
+    spans.sort_by_key(|s| s.start);
+    spans
+}
+
 /// Returns chunks and links in a single pass, avoiding double markdown parsing.
 pub fn get_chunks_and_links<S: AsRef<str>>(
     reference_path: &VaultPath,

@@ -36,6 +36,8 @@ pub enum AppEvent {
     OpenJournal,
     /// Sent by NoteBrowserModal on Esc or after Enter+open.
     CloseNoteBrowser,
+    /// Follow the link under the editor cursor: note name/path or external URL.
+    FollowLink(String),
 
     // ── File-operation dialog messages ───────────────────────────────────────
     /// Request to show the file-operations menu (delete / rename / move).
