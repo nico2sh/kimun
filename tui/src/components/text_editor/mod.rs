@@ -380,6 +380,26 @@ impl Component for TextEditorComponent {
 
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
         use crate::keys::action_shortcuts::ActionShortcuts;
+
+        // For the Nvim backend, prepend the current mode as the first "hint".
+        if let BackendState::Nvim(nvim) = &self.backend {
+            let label = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).footer_label();
+            let mut hints = vec![(String::new(), label)];
+            hints.extend(
+                [
+                    (ActionShortcuts::FocusSidebar, "focus sidebar"),
+                    (ActionShortcuts::FileOperations, "file ops"),
+                ]
+                .iter()
+                .filter_map(|(action, label)| {
+                    self.key_bindings
+                        .first_combo_for(action)
+                        .map(|k| (k, label.to_string()))
+                }),
+            );
+            return hints;
+        }
+
         [
             (ActionShortcuts::FocusSidebar, "focus sidebar"),
             (ActionShortcuts::FileOperations, "file ops"),
@@ -495,5 +515,13 @@ mod tests {
         ta.move_cursor(ratatui_textarea::CursorMove::End);
         ta.insert_str(" world");
         assert_eq!(editor.get_text(), "hello world");
+    }
+
+    #[test]
+    fn textarea_hint_shortcuts_has_no_mode_indicator() {
+        let editor = make_editor();
+        let hints = editor.hint_shortcuts();
+        // None of the hint labels should be "NORMAL", "INSERT", etc.
+        assert!(!hints.iter().any(|(_, label)| label == "NORMAL" || label == "INSERT"));
     }
 }
