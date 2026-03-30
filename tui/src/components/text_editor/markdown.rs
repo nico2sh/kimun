@@ -162,6 +162,7 @@ impl ParsedLine {
         detect_wikilinks(line, &mut content_vis, &mut elements);
 
         // Build O(1) lookup bitmasks from the collected element ranges.
+        debug_assert!(elements.len() < 255, "Too many elements on a single line ({})", elements.len());
         let mut elem_vis = vec![false; total];
         let mut elem_index = vec![0u8; total];
         for (i, e) in elements.iter().enumerate() {
@@ -663,9 +664,13 @@ impl MarkdownSpanner {
 /// Appends `WikiLink` elements for every `[[...]]` span in `line` and unsets
 /// `content_vis` for the `[[` and `]]` bracket sigils.
 fn detect_wikilinks(line: &str, content_vis: &mut Vec<bool>, elements: &mut Vec<Element>) {
-    use kimun_core::note::{link_char_spans, LinkSpanKind};
-    for span in link_char_spans(line) {
-        if span.kind != LinkSpanKind::WikiLink {
+    for span in kimun_core::note::wikilink_char_spans(line) {
+        // Skip wikilinks that fall entirely inside an already-parsed element
+        // (e.g. `[[icon]]` inside a markdown link's display text).
+        let overlaps = elements
+            .iter()
+            .any(|e| span.start >= e.start_char && span.end <= e.end_char);
+        if overlaps {
             continue;
         }
         // The inner text was marked as content by pulldown-cmark's Text event;

@@ -53,6 +53,24 @@ pub struct LinkSpan {
     pub target: String,
 }
 
+/// Returns only `[[wikilink]]` spans from `text`, sorted by document order.
+///
+/// Cheaper than `link_char_spans` when markdown links are not needed (e.g. the
+/// per-frame editor render path).
+pub fn wikilink_char_spans(text: &str) -> Vec<LinkSpan> {
+    WIKILINK_RX
+        .captures_iter(text)
+        .map(|caps| {
+            let m = caps.get(0).unwrap();
+            let start = text[..m.start()].chars().count();
+            let end = text[..m.end()].chars().count();
+            let inner = &caps["link_text"];
+            let target = inner.split('|').next().unwrap_or(inner).to_string();
+            LinkSpan { start, end, kind: LinkSpanKind::WikiLink, target }
+        })
+        .collect()
+}
+
 /// Returns every inline link span in `text`, covering both `[[wikilinks]]`
 /// and `[markdown](links)`, sorted by document order.
 ///
