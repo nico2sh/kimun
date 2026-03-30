@@ -1,5 +1,8 @@
 # Kimün
 
+[![Crates.io](https://img.shields.io/crates/v/kimun-notes)](https://crates.io/crates/kimun-notes)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A terminal-based notes app focused on simplicity and powerful search.
 
 **Check the [docs](https://nico2sh.github.io/kimun/).**
