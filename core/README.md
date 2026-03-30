@@ -6,7 +6,7 @@ Core library for [Kimün](https://github.com/nico2sh/kimun) — handles note vau
 
 ```toml
 [dependencies]
-kimun_core = "0.1"
+kimun_core = "0.3.1"
 ```
 
 ## Overview
@@ -29,12 +29,12 @@ vault.init_and_validate().await?;
 
 The main handle for all vault operations: indexing, browsing, searching, and file management.
 
-| Method | Description |
-|--------|-------------|
-| `new(path)` | Open a vault at the given path |
-| `init_and_validate()` | Check the index and sync any new/removed notes |
-| `force_rebuild()` | Delete and fully rebuild the index |
-| `recreate_index()` | Rebuild the index without deleting the database file |
+| Method                  | Description                                          |
+| ----------------------- | ---------------------------------------------------- |
+| `new(path)`           | Open a vault at the given path                       |
+| `init_and_validate()` | Check the index and sync any new/removed notes       |
+| `force_rebuild()`     | Delete and fully rebuild the index                   |
+| `recreate_index()`    | Rebuild the index without deleting the database file |
 
 ### `nfs` — Filesystem Abstraction
 

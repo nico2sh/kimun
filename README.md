@@ -9,11 +9,22 @@ A terminal-based notes app focused on simplicity and powerful search.
 
 Notes are plain Markdown files stored in a directory you own. Kimün indexes them into a local SQLite database for fast full-text and structured search.
 
+If you are already using another markdown, local-first, note-taking app, you should feel right at home and be able to use Kimün just like your existing app (QownNotes, Obsidian, Logseq, etc.), only that in this case, it is on your terminal emulator.
+
 > Small disclaimer: Although by no means this has been vibe coded — the core has been written manually — there is a good chunk of AI-assisted code (using Claude) with manual reviews. Initially for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the foundations of more complex stuff, especially on the UI side. Use AI as a tool, not as a replacement.
 
 ## Quick Start
 
 Kimün is a terminal UI for browsing and editing your Markdown notes with a powerful search engine. Use the TUI to write and organize notes, or the CLI for automation and scripting. Everything is stored as plain `.md` files — no lock-in.
+
+**Homebrew (macOS and Linux):**
+
+```sh
+brew tap nico2sh/kimun
+brew install kimun
+```
+
+**Cargo:**
 
 ```sh
 cargo install kimun-notes
@@ -28,6 +39,7 @@ Full documentation is available in [`docs/`](docs/content):
 - [Guides](docs/content/guides/)
 
 To browse the docs locally with search:
+
 ```sh
 # Install Zola: https://www.getzola.org/documentation/getting-started/installation/
 zola serve docs/
@@ -49,13 +61,22 @@ cargo install cargo-edit
 ```
 
 The script will:
+
 1. Calculate the next version from git history
 2. Bump the version in `tui/Cargo.toml` (kimun-notes)
 3. Commit the change and push a version tag
 
-The tag triggers the CI workflow, which publishes to crates.io — skipping any crate whose current version is already published.
+The tag triggers the CI workflow, which:
+
+- Publishes to crates.io — skipping any crate whose current version is already published
+- Pushes a formula to the [homebrew-kimun](https://github.com/nico2sh/homebrew-kimun) tap (final releases only)
 
 **Releasing `kimun_core`:** Core is versioned independently. Update `core/Cargo.toml` and the `kimun_core` entry in the root `Cargo.toml` `[workspace.dependencies]` manually, commit, then run `./release.sh` as usual.
+
+**Required secrets** (set in the repository settings):
+
+- `CARGO_REGISTRY_TOKEN` — crates.io API token
+- `HOMEBREW_TAP_TOKEN` — GitHub PAT with write access to `nico2sh/homebrew-kimun`
 
 ## Roadmap
 

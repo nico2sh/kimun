@@ -7,7 +7,14 @@ weight = 2
 
 ## Install Kimün
 
-Install via Cargo:
+**Homebrew (macOS and Linux):**
+
+```sh
+brew tap nico2sh/kimun
+brew install kimun
+```
+
+**Cargo:**
 
 ```sh
 cargo install kimun-notes

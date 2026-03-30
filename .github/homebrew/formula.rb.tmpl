@@ -1,0 +1,33 @@
+class Kimun < Formula
+  desc "Terminal-based notes app focused on simplicity and powerful search"
+  homepage "https://github.com/nico2sh/kimun"
+  version "{{VERSION}}"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/nico2sh/kimun/releases/download/v{{VERSION}}/kimun-{{VERSION}}-macos-arm64.tar.gz"
+      sha256 "{{SHA256_MACOS_ARM64}}"
+    end
+
+    on_intel do
+      url "https://github.com/nico2sh/kimun/releases/download/v{{VERSION}}/kimun-{{VERSION}}-macos-x64.tar.gz"
+      sha256 "{{SHA256_MACOS_X64}}"
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/nico2sh/kimun/releases/download/v{{VERSION}}/kimun-{{VERSION}}-linux-x64.tar.gz"
+      sha256 "{{SHA256_LINUX_X64}}"
+    end
+  end
+
+  def install
+    bin.install "kimun"
+  end
+
+  test do
+    system "#{bin}/kimun", "--version"
+  end
+end
