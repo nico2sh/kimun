@@ -160,6 +160,7 @@ impl Component for TextEditorComponent {
                     }
                 }
                 self.text_area.input(*key);
+                self.selection = self.text_area.selection_range();
                 self.edit_generation = self.edit_generation.wrapping_add(1);
                 EventState::Consumed
             }
