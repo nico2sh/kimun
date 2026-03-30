@@ -4,7 +4,7 @@ pub mod word_wrap;
 
 use arboard::Clipboard;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui_textarea::{CursorMove, TextArea};
 
@@ -174,6 +174,9 @@ impl Component for TextEditorComponent {
                     return EventState::NotConsumed;
                 }
                 match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Right) => {
+                        self.copy_selection_to_clipboard();
+                    }
                     MouseEventKind::Down(_) => {
                         tx.send(AppEvent::FocusEditor).ok();
                         self.text_area.cancel_selection();
