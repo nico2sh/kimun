@@ -67,9 +67,16 @@ All settings are stored in your config file (see [Configuration Reference](@/get
 
 ### Sorting
 
-- **`Ctrl+N`** — Sort by filename
-- **`Ctrl+G`** — Sort by note title
+- **`Ctrl+N`** — Cycle sort field (filename → title → filename → …)
 - **`Ctrl+R`** — Reverse the sort order
+
+### Following Links
+
+When the cursor is inside a link in the editor, **`Ctrl+G`** follows it:
+
+- **Wikilink (`[[note name]]`)** — opens the matching note directly, or shows a picker if multiple notes match
+- **Markdown link (`[text](path)`)** — opens the linked note; fragment suffixes (e.g. `#section`) are ignored during lookup
+- **URL (`https://...`)** — opens the URL in your default browser
 
 ## Key Bindings
 
@@ -90,9 +97,9 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 | Toggle header | `Ctrl+T` |
 | Focus editor | `Ctrl+L` |
 | Focus sidebar | `Ctrl+H` |
-| Sort by name | `Ctrl+N` |
-| Sort by title | `Ctrl+G` |
+| Cycle sort field (name/title) | `Ctrl+N` |
 | Reverse sort order | `Ctrl+R` |
+| Follow link under cursor | `Ctrl+G` |
 | File operations (rename/move/delete) | `F2` |
 
 ### Context-Sensitive Bindings
@@ -103,6 +110,10 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 - When the cursor is **inside the editor pane:** Applies or removes **bold** formatting to the selected text or word
 
 This dual purpose allows efficient use of keyboard space while maintaining logical behavior based on context.
+
+**`Ctrl+G` — Follow link (editor only):**
+
+`Ctrl+G` is only active when the editor pane has focus and the cursor is positioned inside a link. If the cursor is not on a link, the key press is ignored.
 
 ## Customizing Key Bindings
 

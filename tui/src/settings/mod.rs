@@ -148,7 +148,7 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
         .add(KeyStrike::KeyB, ActionShortcuts::ToggleSidebar)
-        .add(KeyStrike::KeyN, ActionShortcuts::SortByName)
+        .add(KeyStrike::KeyN, ActionShortcuts::CycleSortField)
         .add(KeyStrike::KeyG, ActionShortcuts::FollowLink)
         .add(KeyStrike::KeyR, ActionShortcuts::SortReverseOrder)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
