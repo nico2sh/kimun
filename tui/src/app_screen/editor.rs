@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
-use kimun_core::error::{FSError, VaultError};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -12,7 +12,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::dialogs::{
-    ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog, ValidationState,
+    ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog,
+    RenameDialog, ValidationState,
 };
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
@@ -533,7 +534,7 @@ impl AppScreen for EditorScreen {
         let mut footer = Block::default()
             .title(format!(
                 "[{focus_label}]  {}: Preferences |  {}: Toggle sidebar | {}: Quit",
-                self.quit_key, self.settings_key, self.toggle_key,
+                self.settings_key, self.toggle_key, self.quit_key,
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_ratatui()))
@@ -559,11 +560,8 @@ impl AppScreen for EditorScreen {
         // Build the hints line with the nvim mode label (empty key) styled
         // distinctly from the regular shortcut hints.
         let secondary = Style::default().fg(theme.fg_secondary.to_ratatui());
-        let sep       = Span::styled("  │  ", secondary);
-        let mut spans = vec![Span::styled(
-            format!(" {} ", self.icons.info),
-            secondary,
-        )];
+        let sep = Span::styled("  │  ", secondary);
+        let mut spans = vec![Span::styled(format!(" {} ", self.icons.info), secondary)];
         for (i, (key, label)) in hints.iter().enumerate() {
             if i > 0 {
                 spans.push(sep.clone());
