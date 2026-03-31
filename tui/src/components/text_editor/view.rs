@@ -109,8 +109,9 @@ impl MarkdownEditorView {
                         if let Some(p) = self.parsed_cache.get(row) {
                             let force_raw = self.is_in_code_block(row);
                             let cursor_col = if row == new_row { Some(cursor.1) } else { None };
-                            self.rendered_cache[row] =
-                                MarkdownSpanner::visible_positions_with(l, p, cursor_col, force_raw);
+                            if let Some(entry) = self.rendered_cache.get_mut(row) {
+                                *entry = MarkdownSpanner::visible_positions_with(l, p, cursor_col, force_raw);
+                            }
                         }
                     }
                 }

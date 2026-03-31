@@ -110,6 +110,10 @@ pub struct NvimBackend {
     pub nvim: NvimClient,
     pub snapshot: Arc<Mutex<NvimSnapshot>>,
     pub is_dead: Arc<AtomicBool>,
+    /// Set while a `buf_set_lines` call spawned by `set_text` is in flight.
+    /// The refresh task skips line/dirty updates while this is `true` to avoid
+    /// overwriting the pre-populated snapshot with stale nvim state.
+    set_text_in_flight: Arc<AtomicBool>,
     /// Incremented by the handler on every flush event.
     flush_rx: tokio::sync::watch::Receiver<u64>,
     /// Incremented by handle_key after each successful nvim_input call.
@@ -117,12 +121,18 @@ pub struct NvimBackend {
     key_tx: tokio::sync::watch::Sender<u64>,
     /// Stored until the refresh task is started on the first handle_key call.
     pending_key_rx: Mutex<Option<tokio::sync::watch::Receiver<u64>>>,
-    _io_handle: tokio::task::JoinHandle<Result<(), Box<LoopError>>>,
+    /// Tracks the last size passed to `ui_attach`/`ui_try_resize` so we only
+    /// send a resize RPC when the terminal rect actually changes.
+    pub last_ui_size: Mutex<(u16, u16)>,
+    io_handle: tokio::task::JoinHandle<Result<(), Box<LoopError>>>,
     child: Option<tokio::process::Child>,
 }
 
 impl Drop for NvimBackend {
     fn drop(&mut self) {
+        // Abort the IO loop first so it stops sending on flush_tx,
+        // which lets the refresh task's flush_rx.changed() return Err and exit.
+        self.io_handle.abort();
         if let Some(ref mut child) = self.child {
             let _ = child.start_kill();
         }
@@ -167,10 +177,12 @@ impl NvimBackend {
             nvim,
             snapshot: Arc::new(Mutex::new(NvimSnapshot::default())),
             is_dead: Arc::new(AtomicBool::new(false)),
+            set_text_in_flight: Arc::new(AtomicBool::new(false)),
             flush_rx,
             key_tx,
             pending_key_rx: Mutex::new(Some(key_rx)),
-            _io_handle: io_handle,
+            last_ui_size: Mutex::new((80, 24)),
+            io_handle,
             child: Some(child),
         })
     }
@@ -180,11 +192,12 @@ impl NvimBackend {
         let mut guard = self.pending_key_rx.lock().unwrap_or_else(|p| p.into_inner());
         let Some(key_rx) = guard.take() else { return };
 
-        let nvim      = self.nvim.clone();
-        let snapshot  = self.snapshot.clone();
-        let is_dead   = self.is_dead.clone();
-        let flush_rx  = self.flush_rx.clone();
-        let tx        = tx.clone();
+        let nvim           = self.nvim.clone();
+        let snapshot       = self.snapshot.clone();
+        let is_dead        = self.is_dead.clone();
+        let in_flight      = self.set_text_in_flight.clone();
+        let flush_rx       = self.flush_rx.clone();
+        let tx             = tx.clone();
 
         tokio::spawn(async move {
             let mut key_rx   = key_rx;
@@ -217,7 +230,7 @@ impl NvimBackend {
 
                 match nvim.exec_lua(STATE_QUERY_LUA, vec![]).await {
                     Ok(value) => {
-                        apply_lua_state(&snapshot, value);
+                        apply_lua_state(&snapshot, &in_flight, value);
                         tx.send(AppEvent::Redraw).ok();
                     }
                     Err(e) => {
@@ -246,12 +259,15 @@ impl NvimBackend {
             snap.content_gen = snap.content_gen.wrapping_add(1);
         }
 
-        let nvim     = self.nvim.clone();
-        let is_dead  = self.is_dead.clone();
+        let nvim      = self.nvim.clone();
+        let is_dead   = self.is_dead.clone();
+        let in_flight = self.set_text_in_flight.clone();
+        in_flight.store(true, Ordering::SeqCst);
         tokio::spawn(async move {
             let buf = match nvim.get_current_buf().await {
                 Ok(b) => b,
                 Err(e) => {
+                    in_flight.store(false, Ordering::SeqCst);
                     if e.is_channel_closed() { is_dead.store(true, Ordering::SeqCst); }
                     log::warn!("set_text get_current_buf: {e}");
                     return;
@@ -259,6 +275,26 @@ impl NvimBackend {
             };
             if let Err(e) = buf.set_lines(0, -1, false, lines).await {
                 log::warn!("set_text buf_set_lines: {e}");
+            }
+            in_flight.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// Notify nvim of a terminal resize, but only when the dimensions actually change.
+    pub fn maybe_resize(&self, width: u16, height: u16) {
+        let mut guard = self.last_ui_size.lock().unwrap_or_else(|p| p.into_inner());
+        if *guard == (width, height) {
+            return;
+        }
+        *guard = (width, height);
+        drop(guard);
+
+        let nvim    = self.nvim.clone();
+        let is_dead = self.is_dead.clone();
+        tokio::spawn(async move {
+            if let Err(e) = nvim.ui_try_resize(width as i64, height as i64).await {
+                if e.is_channel_closed() { is_dead.store(true, Ordering::SeqCst); }
+                log::debug!("ui_try_resize error: {e}");
             }
         });
     }
@@ -298,7 +334,7 @@ impl NvimBackend {
 // Parse the Lua state bundle and apply it to the snapshot.
 // ---------------------------------------------------------------------------
 
-fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, value: nvim_rs::Value) {
+fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, in_flight: &Arc<AtomicBool>, value: nvim_rs::Value) {
     let Some(arr) = value.as_array() else { return };
     let mode_str = match arr.first().and_then(|v| v.as_str()) {
         Some(s) => s,
@@ -356,7 +392,7 @@ fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, value: nvim_rs::Value) {
         None
     };
 
-    if new_lines != snap.lines {
+    if new_lines != snap.lines && !in_flight.load(Ordering::SeqCst) {
         snap.dirty       = true;
         snap.lines       = new_lines;
         snap.content_gen = snap.content_gen.wrapping_add(1);
