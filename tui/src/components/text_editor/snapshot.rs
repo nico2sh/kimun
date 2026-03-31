@@ -13,6 +13,13 @@ pub struct NvimSnapshot {
     pub cmdline: Option<String>,
     /// `true` after every keystroke, cleared by `mark_saved()`.
     pub dirty: bool,
+    /// Monotonically increasing; incremented every time `lines` actually changes.
+    /// Used by `view.update()` so the parse cache is rebuilt from fresh content,
+    /// not from whatever lines happened to be in the snapshot when the key was pressed.
+    pub content_gen: u64,
+    /// Active visual selection in logical (row, byte-col) coordinates, 0-indexed.
+    /// `None` when not in a visual mode. For `VisualLine` the end col is `usize::MAX`.
+    pub visual_selection: Option<((usize, usize), (usize, usize))>,
 }
 
 impl Default for NvimSnapshot {
@@ -23,6 +30,8 @@ impl Default for NvimSnapshot {
             mode: NvimMode::Normal,
             cmdline: None,
             dirty: false,
+            content_gen: 0,
+            visual_selection: None,
         }
     }
 }

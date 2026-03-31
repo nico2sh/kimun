@@ -48,6 +48,32 @@ use crate::keys::key_event_to_combo;
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
+
+    // Install a panic hook before the TUI takes over the terminal.
+    // Restores the terminal so the output is readable, then writes to
+    // kimun-panic.log (works in both debug and release builds).
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stderr(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture,
+        );
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("kimun-panic.log")
+        {
+            use std::io::Write;
+            let _ = writeln!(file, "{info}");
+            let bt = std::backtrace::Backtrace::force_capture();
+            let _ = writeln!(file, "{bt}");
+        }
+        log::error!("panic: {info}");
+        default_hook(info);
+    }));
+
     let cli = Cli::parse();
 
     // Check if CLI subcommand was provided
