@@ -84,7 +84,7 @@ impl SidebarComponent {
                 .current_dir
                 .append(&VaultPath::note_path_from(&self.file_list.search_query))
                 .flatten();
-            let filename = path.get_parent_path().1;
+            let filename = path.to_string();
             self.file_list
                 .set_create_entry(Some(FileListEntry::CreateNote { filename, path }));
         }
