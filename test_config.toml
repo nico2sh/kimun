@@ -22,7 +22,7 @@
 #
 # ─────────────────────────────────────────────────────────────────────────────
 config_version = 2
-last_paths = ["/one.md", "/journal/2026-03-31.md"]
+last_paths = ["/one.md", "/journal/2026-03-31.md", "test.md", "/directory/another.md", "/work/another.md", "/test.md", "/testing.md", "/nico.md"]
 theme = ""
 autosave_interval_secs = 5
 use_nerd_fonts = false
