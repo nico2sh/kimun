@@ -121,7 +121,9 @@ impl EditorScreen {
         let path = kimun_core::nfs::VaultPath::note_path_from(target_clean);
         match self.vault.open_or_search(&path).await {
             Ok(results) if results.is_empty() => {
-                self.pre_dialog_focus = Some(self.focus);
+                if !matches!(self.focus, Focus::Dialog) {
+                    self.pre_dialog_focus = Some(self.focus);
+                }
                 self.active_dialog = Some(ActiveDialog::CreateNote(CreateNoteDialog::new(
                     path,
                     self.vault.clone(),
@@ -179,7 +181,9 @@ impl EditorScreen {
             }
             Err(e) => {
                 if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
-                    self.pre_dialog_focus = Some(self.focus);
+                    if !matches!(self.focus, Focus::Dialog) {
+                        self.pre_dialog_focus = Some(self.focus);
+                    }
                     self.active_dialog = Some(ActiveDialog::CreateNote(CreateNoteDialog::new(
                         self.path.clone(),
                         self.vault.clone(),
