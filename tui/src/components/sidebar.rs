@@ -7,13 +7,14 @@ use kimun_core::SearchResult;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, ResultType};
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry, SortField, SortOrder};
 use crate::keys::KeyBindings;
 use crate::settings::icons::Icons;
@@ -72,6 +73,21 @@ impl SidebarComponent {
         }
 
         self.pending_rx = Some(rx);
+        self.sync_create_entry();
+    }
+
+    fn sync_create_entry(&mut self) {
+        if self.file_list.search_query.is_empty() {
+            self.file_list.set_create_entry(None);
+        } else {
+            let path = self
+                .current_dir
+                .append(&VaultPath::note_path_from(&self.file_list.search_query))
+                .flatten();
+            let filename = path.get_parent_path().1;
+            self.file_list
+                .set_create_entry(Some(FileListEntry::CreateNote { filename, path }));
+        }
     }
 
     fn poll_loading(&mut self) {
@@ -111,7 +127,39 @@ fn format_journal_date(date: NaiveDate) -> String {
 
 impl Component for SidebarComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        self.file_list.handle_input(event, tx)
+        // Intercept Enter when the selected entry is a CreateNote.
+        // The sidebar owns the vault, so it creates the note here before
+        // forwarding OpenPath — mirroring the note browser modal pattern.
+        if let InputEvent::Key(key) = event {
+            if key.code == KeyCode::Enter {
+                if let Some(FileListEntry::CreateNote { path, .. }) =
+                    self.file_list.selected_entry()
+                {
+                    let path = path.clone();
+                    let vault = Arc::clone(&self.vault);
+                    let tx2 = tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = vault.load_or_create_note(&path, None).await {
+                            log::warn!("create note failed for {path}: {e}");
+                            return;
+                        }
+                        tx2.send(AppEvent::OpenPath(path)).ok();
+                    });
+                    return EventState::Consumed;
+                }
+            }
+        }
+
+        let result = self.file_list.handle_input(event, tx);
+
+        // After a key that modifies the search query, keep the create entry in sync.
+        if let InputEvent::Key(key) = event {
+            if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
+                self.sync_create_entry();
+            }
+        }
+
+        result
     }
 
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
