@@ -126,8 +126,14 @@ jobs:
           fi
 
       - name: Publish kimun_core to crates.io
-        if: steps.core_check.outputs.skip == 'false'
-        run: cargo publish -p kimun_core
+        if: steps.core_check.outputs.skip != 'true'
+        run: |
+          output=$(cargo publish -p kimun_core 2>&1)
+          exit_code=$?
+          echo "$output"
+          if [ $exit_code -ne 0 ]; then
+            echo "$output" | grep -q "already exists" && exit 0 || exit $exit_code
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
