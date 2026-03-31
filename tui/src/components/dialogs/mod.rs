@@ -52,7 +52,7 @@ impl ActiveDialog {
             ActiveDialog::Delete(d)    => d.error = Some(msg),
             ActiveDialog::Rename(d)    => d.error = Some(msg),
             ActiveDialog::Move(d)      => d.error = Some(msg),
-            ActiveDialog::CreateNote(d) => d.error = Some(msg),
+            ActiveDialog::CreateNote(d)  => d.error = Some(msg),
         }
     }
 }
@@ -67,7 +67,7 @@ impl Component for ActiveDialog {
             ActiveDialog::Delete(d)    => d.handle_key(*key, tx),
             ActiveDialog::Rename(d)    => d.handle_key(*key, tx),
             ActiveDialog::Move(d)      => d.handle_key(*key, tx),
-            ActiveDialog::CreateNote(d) => d.handle_key(*key, tx),
+            ActiveDialog::CreateNote(d)  => d.handle_key(*key, tx),
         }
     }
 
@@ -77,7 +77,7 @@ impl Component for ActiveDialog {
             ActiveDialog::Delete(d)    => d.render(f, rect, theme, focused),
             ActiveDialog::Rename(d)    => d.render(f, rect, theme, focused),
             ActiveDialog::Move(d)      => d.render(f, rect, theme, focused),
-            ActiveDialog::CreateNote(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::CreateNote(d)  => d.render(f, rect, theme, focused),
         }
     }
 }
