@@ -13,6 +13,8 @@ If you are already using another markdown, local-first, note-taking app, you sho
 
 > Small disclaimer: Although by no means this has been vibe coded — the core has been written manually — there is a good chunk of AI-assisted code (using Claude) with manual reviews. Initially for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the foundations of more complex stuff, especially on the UI side. Use AI as a tool, not as a replacement.
 
+![Kimün screenshot](docs/static/screenshot.png)
+
 ## Quick Start
 
 Kimün is a terminal UI for browsing and editing your Markdown notes with a powerful search engine. Use the TUI to write and organize notes, or the CLI for automation and scripting. Everything is stored as plain `.md` files — no lock-in.
