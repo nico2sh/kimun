@@ -9,19 +9,19 @@ Kimun's CLI output is designed to work seamlessly with Unix pipes and other comm
 
 ## Basic piping
 
-### Pipe search results into `kimun show`
+### Pipe search results into `kimun note show`
 
 Find a note and display it directly:
 
 ```sh
 # Find a note and display it
-kimun search "standup" | head -1 | kimun show
+kimun search "standup" | head -1 | kimun note show
 
 # Or use the path directly
-kimun show journal/2024-01-15
+kimun note show journal/2024-01-15
 ```
 
-`kimun show` accepts a path via stdin (one path per line) or as an argument.
+`kimun note show` accepts a path via stdin (one path per line) or as an argument.
 
 ## Viewing output
 
@@ -30,13 +30,13 @@ kimun show journal/2024-01-15
 Display search results or note content with pagination:
 
 ```sh
-kimun show journal/2024-01-15 | less
+kimun note show journal/2024-01-15 | less
 ```
 
 For syntax-highlighted viewing (requires `bat` to be installed):
 
 ```sh
-kimun show journal/2024-01-15 | bat
+kimun note show journal/2024-01-15 | bat
 ```
 
 Combine JSON output with a pager:
@@ -53,10 +53,10 @@ kimun search "project" --format json | jq '.' | less
 
 ```sh
 # Pick from all notes
-kimun notes | fzf | kimun show
+kimun notes --format paths | fzf | kimun note show
 
 # Pick from search results
-kimun search "meeting" | fzf | kimun show
+kimun search "meeting" --format paths | fzf | kimun note show
 ```
 
 ### Preview note content while selecting
@@ -64,7 +64,7 @@ kimun search "meeting" | fzf | kimun show
 Use fzf's `--preview` option to show note content:
 
 ```sh
-kimun notes | fzf --preview 'kimun show {}' | kimun show
+kimun notes --format paths | fzf --preview 'kimun note show {}' | kimun note show
 ```
 
 ## Shell aliases and functions
@@ -75,7 +75,7 @@ Add these to your `~/.zshrc` or `~/.bashrc` for quick access:
 
 ```sh
 # Pick from all notes
-alias kn='kimun notes | fzf | kimun show'
+alias kn='kimun notes --format paths | fzf | kimun note show'
 ```
 
 ### Search with preview
@@ -83,7 +83,7 @@ alias kn='kimun notes | fzf | kimun show'
 ```sh
 # Search and preview results
 ks() {
-  kimun search "$1" | fzf --preview 'kimun show {}' | kimun show
+  kimun search "$1" --format paths | fzf --preview 'kimun note show {}' | kimun note show
 }
 
 # Usage: ks "query"
@@ -93,7 +93,7 @@ ks() {
 
 ```sh
 # Show the most recently changed note
-alias klast='kimun notes --format json | jq -r ".notes | sort_by(.modified) | last | .path" | kimun show'
+alias klast='kimun notes --format json | jq -r ".notes | sort_by(.modified) | last | .path" | kimun note show'
 ```
 
 ## Tips

@@ -65,7 +65,8 @@ kimun search "rust" --format json                # JSON output
 
 ### Flags
 
-- `--format json` — Output as JSON (default: text). Useful for scripting with `jq`.
+- `--format json` — Output as JSON. Useful for scripting with `jq`.
+- `--format paths` — Output bare paths only (one per line). Ideal for piping into `kimun note show` or `fzf`.
 - `--workspace <name>` — Search a specific workspace (if applicable).
 
 ### Query Syntax
@@ -111,7 +112,8 @@ kimun notes --format json                        # JSON output
 ### Flags
 
 - `--path <prefix>` — Filter notes by path prefix (e.g., `journal/`, `projects/`).
-- `--format json` — Output as JSON (default: text).
+- `--format json` — Output as JSON. Useful for scripting with `jq`.
+- `--format paths` — Output bare paths only (one per line). Ideal for piping into `kimun note show` or `fzf`.
 
 ### Examples
 
@@ -161,8 +163,8 @@ kimun note show "projects/foo" "inbox/bar"
 # Read paths from stdin (one per line)
 echo "journal/2024-01-01" | kimun note show
 
-# Pipe from find or other tools
-find ./notes -name "*.md" | kimun note show
+# Pipe paths from search results
+kimun search "rust" --format paths | kimun note show
 
 # Show as JSON
 kimun note show "inbox/meeting" --format json
