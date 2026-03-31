@@ -17,17 +17,18 @@ pub struct CreateNoteDialog {
     pub path: VaultPath,
     pub vault: Arc<NoteVault>,
     /// Pre-formatted `"  {path}"` for zero-allocation rendering.
-    pub filename: String,
+    pub path_display: String,
     pub error: Option<String>,
 }
 
 impl CreateNoteDialog {
     pub fn new(path: VaultPath, vault: Arc<NoteVault>) -> Self {
-        let filename = format!("  {}", path);
-        Self { path, vault, filename, error: None }
+        let path_display = format!("  {}", path);
+        Self { path, vault, path_display, error: None }
     }
 
-    /// Handle a raw [`KeyEvent`]. Returns [`EventState::Consumed`] for Enter and Esc.
+    /// Handle a raw [`KeyEvent`]. Returns [`EventState::Consumed`] for all
+    /// keys this dialog acts on; the caller should forward only key events.
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
         match key.code {
             KeyCode::Enter => {
@@ -88,7 +89,7 @@ impl Component for CreateNoteDialog {
             ])
             .split(inner);
 
-        super::render_path_row(f, rows[1], &self.filename, fg, bg);
+        super::render_path_row(f, rows[1], &self.path_display, fg, bg);
         super::render_separator(f, rows[2], fg_muted, bg);
         f.render_widget(
             Paragraph::new("  Note doesn't exist.")
@@ -111,11 +112,29 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
 
-    #[test]
-    fn new_does_not_panic() {
+    /// Full smoke test: creates a `CreateNoteDialog` with a temporary vault
+    /// and asserts the initial `error` field is `None`.
+    ///
+    /// This test requires file-system access and a valid SQLite database, so it
+    /// is gated with `#[ignore]`.  Run it explicitly with:
+    ///
+    /// ```text
+    /// cargo test -- --ignored create_note_dialog::tests::new_with_vault_does_not_panic
+    /// ```
+    #[tokio::test]
+    #[ignore = "requires a real vault directory with kimun.sqlite"]
+    async fn new_with_vault_does_not_panic() {
+        let tmp = std::env::temp_dir().join("kimun_test_vault");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let vault = Arc::new(
+            NoteVault::new(tmp)
+                .await
+                .expect("vault creation failed"),
+        );
         let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
-        let path = VaultPath::root();
-        let _ = (path,);
+        let dialog = CreateNoteDialog::new(VaultPath::root(), vault);
+        assert!(dialog.error.is_none());
     }
 
     #[test]
@@ -157,6 +176,9 @@ mod tests {
             let vault = Arc::new(vault);
 
             let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+            // _rx intentionally dropped — we only assert the synchronous return value (Consumed).
+            // The async task sends OpenPath but vault.load_or_create_note will fail on the empty
+            // tempdir, resulting in DialogError which we don't assert here.
             let mut dialog = CreateNoteDialog::new(VaultPath::root(), vault);
 
             let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
