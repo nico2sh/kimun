@@ -584,7 +584,10 @@ impl FileListComponent {
         };
         let entry_idx = match &self.display_indices {
             None => adjusted,
-            Some(v) => v[adjusted],
+            Some(v) => match v.get(adjusted) {
+                Some(&i) => i,
+                None => return,
+            },
         };
         tx.send(AppEvent::OpenPath(self.entries[entry_idx].path().clone()))
             .ok();
@@ -605,7 +608,7 @@ impl FileListComponent {
                 };
                 let entry_idx = match &self.display_indices {
                     None => adjusted,
-                    Some(v) => v[adjusted],
+                    Some(v) => v.get(adjusted).copied()?,
                 };
                 self.entries.get(entry_idx).map(|e| e.visual_height()).unwrap_or(1)
             };
@@ -1082,5 +1085,33 @@ mod tests {
         list.clear();
         assert!(list.create_entry.is_none());
         assert_eq!(list.display_len(), 0);
+    }
+
+    #[test]
+    fn selected_entry_with_create_entry_and_regular_note() {
+        let mut list = make_list();
+        list.push_entry(make_note("a.md", "A"));
+        list.push_entry(make_note("b.md", "B"));
+        list.set_create_entry(Some(FileListEntry::CreateNote {
+            filename: "new.md".to_string(),
+            path: VaultPath::new("new.md"),
+        }));
+        // display_idx 0 → CreateNote
+        assert!(matches!(
+            list.selected_entry(),
+            Some(FileListEntry::CreateNote { .. })
+        ));
+        // Move selection to display_idx 1 → first Note (adjusted = 0)
+        list.select_next();
+        assert!(matches!(
+            list.selected_entry(),
+            Some(FileListEntry::Note { filename, .. }) if filename == "a.md"
+        ));
+        // display_idx 2 → second Note (adjusted = 1)
+        list.select_next();
+        assert!(matches!(
+            list.selected_entry(),
+            Some(FileListEntry::Note { filename, .. }) if filename == "b.md"
+        ));
     }
 }
