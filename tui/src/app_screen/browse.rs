@@ -5,6 +5,8 @@ use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::Style;
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
@@ -66,9 +68,16 @@ impl AppScreen for BrowseScreen {
 
     fn render(&mut self, f: &mut Frame) {
         f.render_widget(
-            ratatui::widgets::Block::default().style(self.theme.base_style()),
+            Block::default().style(self.theme.base_style()),
             f.area(),
         );
+
+        // Split into content area + one-line hint bar at the bottom.
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(f.area());
+
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -76,8 +85,21 @@ impl AppScreen for BrowseScreen {
                 Constraint::Length(60),
                 Constraint::Min(0),
             ])
-            .split(f.area());
+            .split(rows[0]);
+
         self.sidebar.render(f, cols[1], &self.theme, true);
+
+        f.render_widget(
+            Paragraph::new(
+                " Type to filter  ·  Enter to open  ·  Type + Enter to create a new note",
+            )
+            .style(
+                Style::default()
+                    .fg(self.theme.fg_muted.to_ratatui())
+                    .bg(self.theme.bg.to_ratatui()),
+            ),
+            rows[1],
+        );
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {

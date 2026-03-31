@@ -62,7 +62,9 @@ impl MarkdownEditorView {
         if rect.height == 0 { return; }
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
-        if generation != self.last_seen_generation {
+        // Also guard against parsed_cache being shorter than lines (e.g. async snapshot
+        // update arriving after a stale generation write) to prevent OOB indexing below.
+        if generation != self.last_seen_generation || lines.len() != self.parsed_cache.len() {
             self.lines_snapshot = lines.to_vec();
             self.cursor_code_block = Self::find_code_block(lines, cursor.0);
             self.parsed_cache = lines.iter().map(|l| ParsedLine::parse(l)).collect();
@@ -107,8 +109,9 @@ impl MarkdownEditorView {
                         if let Some(p) = self.parsed_cache.get(row) {
                             let force_raw = self.is_in_code_block(row);
                             let cursor_col = if row == new_row { Some(cursor.1) } else { None };
-                            self.rendered_cache[row] =
-                                MarkdownSpanner::visible_positions_with(l, p, cursor_col, force_raw);
+                            if let Some(entry) = self.rendered_cache.get_mut(row) {
+                                *entry = MarkdownSpanner::visible_positions_with(l, p, cursor_col, force_raw);
+                            }
                         }
                     }
                 }
