@@ -600,7 +600,9 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::OpenPath(path) => {
-                self.restore_focus(); // dismiss any active dialog (e.g. CreateNote) before loading
+                if self.active_dialog.is_some() {
+                    self.restore_focus(); // dismiss any active dialog (e.g. CreateNote) before loading
+                }
                 if path.is_note() {
                     self.open_path(path, tx).await;
                     self.focus_editor();
