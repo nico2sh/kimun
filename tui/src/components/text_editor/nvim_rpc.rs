@@ -4,44 +4,57 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 ///
 /// Returns `None` for events that have no Neovim equivalent (e.g., modifier-only events).
 /// Space maps to `<Space>` and `<` maps to `<lt>` to avoid ambiguity in Neovim's key parser.
+/// Ctrl/Alt modifiers are applied to all key types, e.g. Ctrl+Up → `<C-Up>`.
 pub fn key_event_to_nvim_string(key: &KeyEvent) -> Option<String> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let ctrl  = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt   = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    let base = match key.code {
-        KeyCode::Char(c) => {
-            if ctrl {
-                return Some(format!("<C-{}>", c.to_lowercase()));
-            }
-            if alt {
-                return Some(format!("<A-{c}>"));
-            }
-            match c {
-                ' ' => return Some("<Space>".into()),
-                '<' => return Some("<lt>".into()),
-                _ => return Some(c.to_string()),
-            }
+    // Characters are handled separately: the char itself already encodes shift
+    // (uppercase), so we only need to apply ctrl/alt wrappers.
+    if let KeyCode::Char(c) = key.code {
+        if ctrl {
+            return Some(format!("<C-{}>", c.to_lowercase()));
         }
-        KeyCode::Enter => "<CR>",
-        KeyCode::Backspace => "<BS>",
-        KeyCode::Delete => "<Del>",
-        KeyCode::Esc => "<Esc>",
-        KeyCode::Tab => "<Tab>",
-        KeyCode::BackTab => "<S-Tab>",
-        KeyCode::Up => "<Up>",
-        KeyCode::Down => "<Down>",
-        KeyCode::Left => "<Left>",
-        KeyCode::Right => "<Right>",
-        KeyCode::Home => "<Home>",
-        KeyCode::End => "<End>",
-        KeyCode::PageUp => "<PageUp>",
-        KeyCode::PageDown => "<PageDown>",
-        KeyCode::Insert => "<Insert>",
-        KeyCode::F(n) => return Some(format!("<F{n}>")),
-        _ => return None,
+        if alt {
+            return Some(format!("<A-{c}>"));
+        }
+        return Some(match c {
+            ' ' => "<Space>".into(),
+            '<' => "<lt>".into(),
+            _   => c.to_string(),
+        });
+    }
+
+    // For all other keys, get the inner name (without angle brackets) and then
+    // wrap with any modifier prefix.
+    let inner: String = match key.code {
+        KeyCode::Enter     => "CR".into(),
+        KeyCode::Backspace => "BS".into(),
+        KeyCode::Delete    => "Del".into(),
+        KeyCode::Esc       => "Esc".into(),
+        KeyCode::Tab       => "Tab".into(),
+        // BackTab is Shift+Tab — always emitted as <S-Tab> regardless of modifiers.
+        KeyCode::BackTab   => return Some("<S-Tab>".into()),
+        KeyCode::Up        => "Up".into(),
+        KeyCode::Down      => "Down".into(),
+        KeyCode::Left      => "Left".into(),
+        KeyCode::Right     => "Right".into(),
+        KeyCode::Home      => "Home".into(),
+        KeyCode::End       => "End".into(),
+        KeyCode::PageUp    => "PageUp".into(),
+        KeyCode::PageDown  => "PageDown".into(),
+        KeyCode::Insert    => "Insert".into(),
+        KeyCode::F(n)      => format!("F{n}"),
+        _                  => return None,
     };
 
-    Some(base.to_string())
+    Some(match (ctrl, alt, shift) {
+        (true, _, _) => format!("<C-{inner}>"),
+        (_, true, _) => format!("<A-{inner}>"),
+        (_, _, true) => format!("<S-{inner}>"),
+        _            => format!("<{inner}>"),
+    })
 }
 
 #[cfg(test)]
@@ -166,5 +179,45 @@ mod key_tests {
     #[test]
     fn backslash_char() {
         assert_eq!(key_event_to_nvim_string(&key(KeyCode::Char('\\'), KeyModifiers::NONE)), Some("\\".into()));
+    }
+
+    #[test]
+    fn ctrl_up() {
+        assert_eq!(key_event_to_nvim_string(&key(KeyCode::Up, KeyModifiers::CONTROL)), Some("<C-Up>".into()));
+    }
+
+    #[test]
+    fn ctrl_down() {
+        assert_eq!(key_event_to_nvim_string(&key(KeyCode::Down, KeyModifiers::CONTROL)), Some("<C-Down>".into()));
+    }
+
+    #[test]
+    fn alt_left() {
+        assert_eq!(key_event_to_nvim_string(&key(KeyCode::Left, KeyModifiers::ALT)), Some("<A-Left>".into()));
+    }
+
+    #[test]
+    fn alt_right() {
+        assert_eq!(key_event_to_nvim_string(&key(KeyCode::Right, KeyModifiers::ALT)), Some("<A-Right>".into()));
+    }
+
+    #[test]
+    fn shift_up() {
+        assert_eq!(key_event_to_nvim_string(&key(KeyCode::Up, KeyModifiers::SHIFT)), Some("<S-Up>".into()));
+    }
+
+    #[test]
+    fn ctrl_page_down() {
+        assert_eq!(key_event_to_nvim_string(&key(KeyCode::PageDown, KeyModifiers::CONTROL)), Some("<C-PageDown>".into()));
+    }
+
+    #[test]
+    fn ctrl_home() {
+        assert_eq!(key_event_to_nvim_string(&key(KeyCode::Home, KeyModifiers::CONTROL)), Some("<C-Home>".into()));
+    }
+
+    #[test]
+    fn ctrl_end() {
+        assert_eq!(key_event_to_nvim_string(&key(KeyCode::End, KeyModifiers::CONTROL)), Some("<C-End>".into()));
     }
 }

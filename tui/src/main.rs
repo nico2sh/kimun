@@ -45,7 +45,9 @@ use crate::event_handler::EventHandler;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
 
-#[tokio::main]
+// The nvim backend uses `tokio::task::block_in_place` during construction,
+// which requires a multi-thread runtime. Keep this flavor explicit.
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     color_eyre::install()?;
 

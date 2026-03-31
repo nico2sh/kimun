@@ -59,6 +59,9 @@ pub struct TextEditorComponent {
     selection: Option<((usize, usize), (usize, usize))>,
     /// System clipboard handle. `None` if the clipboard is unavailable (e.g. headless CI).
     clipboard: Option<Clipboard>,
+    /// `true` after a `Z` keypress in Normal mode; cleared on the next key.
+    /// Lets us intercept `ZZ` (write+quit) and `ZQ` (quit) without forwarding them to nvim.
+    nvim_pending_z: bool,
 }
 
 impl TextEditorComponent {
@@ -75,6 +78,7 @@ impl TextEditorComponent {
             edit_generation: 0,
             selection: None,
             clipboard: Clipboard::new().ok(),
+            nvim_pending_z: false,
         }
     }
 
@@ -229,6 +233,45 @@ impl Component for TextEditorComponent {
                         }
                     }
 
+                    // Intercept ZZ / ZQ in Normal mode: buffer the first Z, then
+                    // decide on the second key without forwarding either to nvim.
+                    if self.nvim_pending_z {
+                        self.nvim_pending_z = false;
+                        match key.code {
+                            KeyCode::Char('Z') => {
+                                // ZZ — write + quit
+                                tx.send(AppEvent::Autosave).ok();
+                                tx.send(AppEvent::FocusSidebar).ok();
+                                return EventState::Consumed;
+                            }
+                            KeyCode::Char('Q') => {
+                                // ZQ — quit without saving
+                                tx.send(AppEvent::FocusSidebar).ok();
+                                return EventState::Consumed;
+                            }
+                            _ => {
+                                // Not a quit sequence — replay the buffered Z first.
+                                nvim.handle_key(
+                                    &ratatui::crossterm::event::KeyEvent::new(
+                                        KeyCode::Char('Z'),
+                                        KeyModifiers::NONE,
+                                    ),
+                                    tx.clone(),
+                                );
+                                // Then fall through to forward the current key normally.
+                            }
+                        }
+                    } else if key.code == KeyCode::Char('Z') {
+                        let in_normal = {
+                            let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                            snap.mode == NvimMode::Normal
+                        };
+                        if in_normal {
+                            self.nvim_pending_z = true;
+                            return EventState::Consumed;
+                        }
+                    }
+
                     // Intercept vim quit/write-quit commands so they don't kill the
                     // embedded nvim process.  When Enter is pressed in command mode
                     // with a quit-like command, cancel it in nvim (send <Esc>) and
@@ -253,7 +296,7 @@ impl Component for TextEditorComponent {
                             );
                             let quits = saves || matches!(
                                 cmdline.as_str(),
-                                "q" | "q!" | "qa" | "qa!"
+                                "q" | "q!" | "qa" | "qa!" | "cq" | "cq!"
                             );
                             if quits {
                                 // Cancel the command in nvim so the process stays alive.
@@ -414,6 +457,7 @@ impl Component for TextEditorComponent {
                 self.view.update(lines, cursor, rect, self.edit_generation, self.selection);
             }
             BackendState::Nvim(nvim) => {
+                nvim.maybe_resize(rect.width, rect.height);
                 let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                 let cursor = snap.cursor;
                 let lines = snap.lines.clone();
