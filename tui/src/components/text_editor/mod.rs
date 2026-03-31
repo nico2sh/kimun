@@ -30,6 +30,7 @@ macro_rules! cursor_move {
 }
 
 use self::backend::BackendState;
+use self::snapshot::NvimMode;
 use self::view::MarkdownEditorView;
 
 use crate::components::Component;
@@ -227,7 +228,52 @@ impl Component for TextEditorComponent {
                             return EventState::Consumed;
                         }
                     }
-                    nvim.handle_key(key);
+
+                    // Intercept vim quit/write-quit commands so they don't kill the
+                    // embedded nvim process.  When Enter is pressed in command mode
+                    // with a quit-like command, cancel it in nvim (send <Esc>) and
+                    // handle it here instead.
+                    if key.code == KeyCode::Enter {
+                        let (is_cmd, cmdline) = {
+                            let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                            let cmd = if snap.mode == NvimMode::Command {
+                                snap.cmdline.as_deref()
+                                    .unwrap_or("")
+                                    .trim_start_matches(':')
+                                    .to_string()
+                            } else {
+                                String::new()
+                            };
+                            (snap.mode == NvimMode::Command, cmd)
+                        };
+                        if is_cmd {
+                            let saves = matches!(
+                                cmdline.as_str(),
+                                "w" | "wq" | "wq!" | "wqa" | "wqa!" | "x" | "xa" | "x!"
+                            );
+                            let quits = saves || matches!(
+                                cmdline.as_str(),
+                                "q" | "q!" | "qa" | "qa!"
+                            );
+                            if quits {
+                                // Cancel the command in nvim so the process stays alive.
+                                nvim.handle_key(
+                                    &ratatui::crossterm::event::KeyEvent::new(
+                                        KeyCode::Esc,
+                                        KeyModifiers::NONE,
+                                    ),
+                                    tx.clone(),
+                                );
+                                if saves {
+                                    tx.send(AppEvent::Autosave).ok();
+                                }
+                                tx.send(AppEvent::FocusSidebar).ok();
+                                return EventState::Consumed;
+                            }
+                        }
+                    }
+
+                    nvim.handle_key(key, tx.clone());
                     self.edit_generation = self.edit_generation.wrapping_add(1);
                     return EventState::Consumed;
                 }
@@ -371,8 +417,10 @@ impl Component for TextEditorComponent {
                 let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                 let cursor = snap.cursor;
                 let lines = snap.lines.clone();
+                let content_gen = snap.content_gen;
+                let visual_selection = snap.visual_selection;
                 drop(snap);
-                self.view.update(&lines, cursor, rect, self.edit_generation, None);
+                self.view.update(&lines, cursor, rect, content_gen, visual_selection);
             }
         }
         self.view.render(f, rect, theme, focused);

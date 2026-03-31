@@ -1,25 +1,91 @@
 use std::path::PathBuf;
-use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use tokio::process::ChildStdin;
+use tokio_util::compat::Compat;
+
+use nvim_rs::{
+    create::tokio::new_child_cmd,
+    error::LoopError,
+    Handler, Neovim, UiAttachOptions,
+};
 use ratatui_textarea::TextArea;
 
-use super::nvim_rpc::{key_event_to_nvim_string, NvimRpc};
+use super::nvim_rpc::key_event_to_nvim_string;
 use super::snapshot::{NvimMode, NvimSnapshot};
+use crate::components::events::{AppEvent, AppTx};
 use crate::settings::EditorBackendSetting;
 
-/// Which editor engine `TextEditorComponent` is currently using.
+type NvimWriter = Compat<ChildStdin>;
+type NvimClient = Neovim<NvimWriter>;
+
+// ---------------------------------------------------------------------------
+// Lua snippet: fetch all editor state in one round-trip.
+//
+// Command mode  → [mode, cmdtype, cmdline]
+// Other modes   → [mode, lines, cursor, vpos]
+// ---------------------------------------------------------------------------
+const STATE_QUERY_LUA: &str = r#"
+local m = vim.api.nvim_get_mode().mode
+if m == 'c' then
+  return {m, vim.fn.getcmdtype(), vim.fn.getcmdline()}
+else
+  local lines  = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local vpos   = vim.fn.getpos('v')
+  return {m, lines, cursor, vpos}
+end
+"#;
+
+// ---------------------------------------------------------------------------
+// Handler — increments flush_tx counter on every "flush" redraw event.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct NvimHandler {
+    flush_tx: tokio::sync::watch::Sender<u64>,
+}
+
+#[async_trait::async_trait]
+impl Handler for NvimHandler {
+    type Writer = NvimWriter;
+
+    async fn handle_notify(
+        &self,
+        name: String,
+        args: Vec<nvim_rs::Value>,
+        _neovim: NvimClient,
+    ) {
+        if name != "redraw" {
+            return;
+        }
+        for arg in &args {
+            if let Some(events) = arg.as_array() {
+                for event in events {
+                    if let Some(ea) = event.as_array() {
+                        if ea.first().and_then(|v| v.as_str()) == Some("flush") {
+                            self.flush_tx.send_modify(|v| *v = v.wrapping_add(1));
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BackendState
+// ---------------------------------------------------------------------------
+
 pub enum BackendState {
     Textarea(TextArea<'static>),
     Nvim(NvimBackend),
 }
 
 impl BackendState {
-    /// Construct the appropriate backend from settings.
-    ///
-    /// Falls back to `Textarea` if `editor_backend` is `Textarea`, or if the
-    /// nvim binary cannot be found or spawned (logs a warning in that case).
     pub fn from_settings(
         editor_backend: &EditorBackendSetting,
         nvim_path: Option<&PathBuf>,
@@ -36,242 +102,267 @@ impl BackendState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// NvimBackend
+// ---------------------------------------------------------------------------
+
 pub struct NvimBackend {
-    pub rpc: Arc<NvimRpc>,
+    pub nvim: NvimClient,
     pub snapshot: Arc<Mutex<NvimSnapshot>>,
-    /// Monotonically increasing counter; incremented before each refresh task.
-    /// The refresh task checks this before writing to the snapshot — if the value
-    /// has moved on, the result is discarded (superseded by a later keystroke).
-    pub refresh_gen: Arc<AtomicU64>,
-    /// Set to `true` by the reader thread on EOF (nvim process died).
     pub is_dead: Arc<AtomicBool>,
-    child: Option<std::process::Child>,
+    /// Incremented by the handler on every flush event.
+    flush_rx: tokio::sync::watch::Receiver<u64>,
+    /// Incremented by handle_key after each successful nvim_input call.
+    /// Gives the refresh task a wakeup path even when nvim doesn't send flush.
+    key_tx: tokio::sync::watch::Sender<u64>,
+    /// Stored until the refresh task is started on the first handle_key call.
+    pending_key_rx: Mutex<Option<tokio::sync::watch::Receiver<u64>>>,
+    _io_handle: tokio::task::JoinHandle<Result<(), Box<LoopError>>>,
+    child: Option<tokio::process::Child>,
 }
 
 impl Drop for NvimBackend {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
+        if let Some(ref mut child) = self.child {
+            let _ = child.start_kill();
         }
     }
 }
 
 impl NvimBackend {
-    /// Spawn `nvim --embed` and create the backend.
-    ///
-    /// `nvim_path` overrides the binary; if `None`, `nvim` is resolved from `PATH`.
     pub fn new(nvim_path: Option<&PathBuf>) -> Result<Self, String> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(Self::new_async(nvim_path))
+        })
+    }
+
+    async fn new_async(nvim_path: Option<&PathBuf>) -> Result<Self, String> {
         let binary = nvim_path
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "nvim".to_string());
 
-        let mut child = std::process::Command::new(&binary)
-            .arg("--embed")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
+        let (flush_tx, flush_rx) = tokio::sync::watch::channel(0u64);
+        let (key_tx, key_rx)     = tokio::sync::watch::channel(0u64);
+        let handler = NvimHandler { flush_tx };
+
+        let mut cmd = tokio::process::Command::new(&binary);
+        cmd.arg("--embed")
+            .stderr(std::process::Stdio::null());
+
+        let (nvim, io_handle, child) = new_child_cmd(&mut cmd, handler)
+            .await
             .map_err(|e| format!("failed to spawn {binary}: {e}"))?;
 
-        let stdin = child.stdin.take().ok_or("nvim stdin unavailable")?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            let _ = child.kill();
-            "nvim stdout unavailable"
-        })?;
+        let mut ui_opts = UiAttachOptions::new();
+        ui_opts.set_rgb(false);
+        nvim.ui_attach(80, 24, &ui_opts).await
+            .map_err(|e| format!("nvim_ui_attach failed: {e}"))?;
 
-        let is_dead = Arc::new(AtomicBool::new(false));
-        let rpc = Arc::new(NvimRpc::new_with_dead_signal(stdin, stdout, is_dead.clone()));
-
-        // Attach as a minimal UI. Without this, nvim runs as a passive RPC server
-        // and never fires its input-processing event loop — keystrokes queued via
-        // nvim_input are silently ignored until something calls vgetc().
-        rpc.send(
-            "nvim_ui_attach",
-            vec![
-                rmpv::Value::Integer(80.into()),
-                rmpv::Value::Integer(24.into()),
-                rmpv::Value::Map(vec![]), // empty options dict
-            ],
-        );
-
-        // Fire-and-forget init commands (no response needed).
-        rpc.send("nvim_command", vec![rmpv::Value::String("set noswapfile".into())]);
-        rpc.send("nvim_command", vec![rmpv::Value::String("set buftype=nofile".into())]);
-        rpc.send("nvim_command", vec![rmpv::Value::String("set nomodeline".into())]);
+        let _ = nvim.command("set noswapfile").await;
+        let _ = nvim.command("set buftype=nofile").await;
+        let _ = nvim.command("set nomodeline").await;
 
         Ok(Self {
-            rpc,
+            nvim,
             snapshot: Arc::new(Mutex::new(NvimSnapshot::default())),
-            refresh_gen: Arc::new(AtomicU64::new(0)),
-            is_dead,
+            is_dead: Arc::new(AtomicBool::new(false)),
+            flush_rx,
+            key_tx,
+            pending_key_rx: Mutex::new(Some(key_rx)),
+            _io_handle: io_handle,
             child: Some(child),
         })
     }
 
-    /// Load content into the nvim buffer and update the snapshot directly.
-    ///
-    /// Fire-and-forget: sends `nvim_buf_set_lines` without waiting for the response.
-    /// The snapshot is pre-populated from `text` so `get_text()` works immediately.
-    pub fn set_text(&self, text: &str) {
-        let lines: Vec<rmpv::Value> = text
-            .lines()
-            .map(|l| rmpv::Value::String(l.into()))
-            .collect();
-        self.rpc.send(
-            "nvim_buf_set_lines",
-            vec![
-                rmpv::Value::Integer(0.into()),
-                rmpv::Value::Integer(0.into()),
-                rmpv::Value::Integer((-1i64).into()),
-                rmpv::Value::Boolean(false),
-                rmpv::Value::Array(lines),
-            ],
-        );
-        let mut snap = self.snapshot.lock().unwrap_or_else(|p| p.into_inner());
-        snap.lines = text.lines().map(|l| l.to_string()).collect();
-        if snap.lines.is_empty() {
-            snap.lines.push(String::new());
-        }
-        snap.cursor = (0, 0);
-        snap.dirty = false;
+    /// Start the long-running refresh task on the first call; no-op afterwards.
+    fn ensure_refresh_task(&self, tx: &AppTx) {
+        let mut guard = self.pending_key_rx.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(key_rx) = guard.take() else { return };
+
+        let nvim      = self.nvim.clone();
+        let snapshot  = self.snapshot.clone();
+        let is_dead   = self.is_dead.clone();
+        let flush_rx  = self.flush_rx.clone();
+        let tx        = tx.clone();
+
+        tokio::spawn(async move {
+            let mut key_rx   = key_rx;
+            let mut flush_rx = flush_rx;
+
+            loop {
+                // Wake on either:
+                //  • flush event (nvim finished processing input — best path)
+                //  • key signal  (nvim_input returned; give nvim 30 ms to flush first)
+                tokio::select! {
+                    res = flush_rx.changed() => {
+                        if res.is_err() {
+                            // Sender dropped — nvim IO loop ended.
+                            is_dead.store(true, Ordering::SeqCst);
+                            tx.send(AppEvent::Redraw).ok();
+                            break;
+                        }
+                        // Flush arrived — state is fresh, query immediately.
+                    }
+                    res = key_rx.changed() => {
+                        if res.is_err() { break; }
+                        // nvim_input returned. Wait up to 30 ms for flush before
+                        // querying; proceed regardless so nothing is ever stuck.
+                        tokio::time::timeout(
+                            Duration::from_millis(30),
+                            flush_rx.changed(),
+                        ).await.ok();
+                    }
+                }
+
+                match nvim.exec_lua(STATE_QUERY_LUA, vec![]).await {
+                    Ok(value) => {
+                        apply_lua_state(&snapshot, value);
+                        tx.send(AppEvent::Redraw).ok();
+                    }
+                    Err(e) => {
+                        if e.is_channel_closed() {
+                            is_dead.store(true, Ordering::SeqCst);
+                            tx.send(AppEvent::Redraw).ok();
+                            break;
+                        }
+                        // Non-fatal (e.g. transient Lua error): log and continue.
+                        log::debug!("exec_lua error: {e}");
+                    }
+                }
+            }
+        });
     }
 
-    /// Send a keystroke to nvim and spawn a blocking task to refresh the snapshot.
-    pub fn handle_key(&self, key: &ratatui::crossterm::event::KeyEvent) {
+    /// Load content into the nvim buffer and pre-populate the snapshot.
+    pub fn set_text(&self, text: &str) {
+        let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+
+        {
+            let mut snap = self.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+            snap.lines       = if lines.is_empty() { vec![String::new()] } else { lines.clone() };
+            snap.cursor      = (0, 0);
+            snap.dirty       = false;
+            snap.content_gen = snap.content_gen.wrapping_add(1);
+        }
+
+        let nvim     = self.nvim.clone();
+        let is_dead  = self.is_dead.clone();
+        tokio::spawn(async move {
+            let buf = match nvim.get_current_buf().await {
+                Ok(b) => b,
+                Err(e) => {
+                    if e.is_channel_closed() { is_dead.store(true, Ordering::SeqCst); }
+                    log::warn!("set_text get_current_buf: {e}");
+                    return;
+                }
+            };
+            if let Err(e) = buf.set_lines(0, -1, false, lines).await {
+                log::warn!("set_text buf_set_lines: {e}");
+            }
+        });
+    }
+
+    /// Forward a keystroke to nvim.
+    pub fn handle_key(&self, key: &ratatui::crossterm::event::KeyEvent, tx: AppTx) {
+        self.ensure_refresh_task(&tx);
+
         let Some(nvim_key) = key_event_to_nvim_string(key) else {
             log::debug!("unmappable key: {key:?}");
             return;
         };
 
-        let current_gen = self.refresh_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        let rpc = self.rpc.clone();
-        let snapshot = self.snapshot.clone();
-        let refresh_gen = self.refresh_gen.clone();
+        let nvim     = self.nvim.clone();
+        let is_dead  = self.is_dead.clone();
+        let key_tx   = self.key_tx.clone();
 
-        // `call_blocking` uses std::sync::mpsc::recv_timeout which blocks the OS thread.
-        // spawn_blocking gives us a dedicated thread so we don't stall the async executor.
-        tokio::task::spawn_blocking(move || {
-            // Send the key through the normal input queue (same path as real keyboard
-            // input). nvim_input is the correct API for embedded UIs — unlike
-            // nvim_feedkeys it goes through libuv's input buffer which the event loop
-            // drains synchronously before handling the next RPC message.
-            if let Err(e) = rpc.call_blocking(
-                "nvim_input",
-                vec![rmpv::Value::String(nvim_key.into())],
-            ) {
-                log::debug!("nvim_input error: {e}");
-                return;
-            }
-
-            // Mark dirty now that nvim has confirmed the key was processed.
-            snapshot.lock().unwrap_or_else(|p| p.into_inner()).dirty = true;
-
-            if refresh_gen.load(Ordering::SeqCst) != current_gen {
-                return; // superseded by a later keystroke
-            }
-
-            // Get the current mode.
-            let mode_str = rpc
-                .call_blocking("nvim_get_mode", vec![])
-                .ok()
-                .and_then(|v| {
-                    v.as_map()?.iter()
-                        .find(|(k, _)| k.as_str() == Some("mode"))
-                        .and_then(|(_, v)| v.as_str().map(|s| s.to_string()))
-                })
-                .unwrap_or_else(|| "n".to_string());
-
-            let mode = NvimMode::from_nvim_str(&mode_str);
-
-            if mode == NvimMode::Command {
-                let cmdtype = rpc
-                    .call_blocking(
-                        "nvim_call_function",
-                        vec![
-                            rmpv::Value::String("getcmdtype".into()),
-                            rmpv::Value::Array(vec![]),
-                        ],
-                    )
-                    .ok()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()))
-                    .unwrap_or_default();
-
-                let cmdline_text = rpc
-                    .call_blocking(
-                        "nvim_call_function",
-                        vec![
-                            rmpv::Value::String("getcmdline".into()),
-                            rmpv::Value::Array(vec![]),
-                        ],
-                    )
-                    .ok()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()))
-                    .unwrap_or_default();
-
-                if refresh_gen.load(Ordering::SeqCst) == current_gen {
-                    let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
-                    snap.mode = mode;
-                    snap.cmdline = Some(format!("{cmdtype}{cmdline_text}"));
+        tokio::spawn(async move {
+            match nvim.input(&nvim_key).await {
+                Ok(_) => {
+                    // Signal the refresh task: a key was just sent.
+                    key_tx.send_modify(|v| *v = v.wrapping_add(1));
                 }
-            } else {
-                let lines_val = rpc.call_blocking(
-                    "nvim_buf_get_lines",
-                    vec![
-                        rmpv::Value::Integer(0.into()),
-                        rmpv::Value::Integer(0.into()),
-                        rmpv::Value::Integer((-1i64).into()),
-                        rmpv::Value::Boolean(false),
-                    ],
-                );
-
-                // Check generation before fetching cursor to avoid mismatched line/cursor state.
-                if refresh_gen.load(Ordering::SeqCst) != current_gen {
-                    return;
-                }
-
-                let cursor_val = rpc.call_blocking(
-                    "nvim_win_get_cursor",
-                    vec![rmpv::Value::Integer(0.into())],
-                );
-
-                if refresh_gen.load(Ordering::SeqCst) == current_gen {
-                    let lines = lines_val
-                        .ok()
-                        .and_then(|v| {
-                            v.as_array().map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                    .collect::<Vec<_>>()
-                            })
-                        })
-                        .unwrap_or_else(|| vec![String::new()]);
-
-                    // nvim_win_get_cursor returns [row, col]:
-                    // row is 1-indexed, col is 0-indexed byte offset.
-                    let cursor = cursor_val
-                        .ok()
-                        .and_then(|v| {
-                            v.as_array().map(|arr| {
-                                let row = arr
-                                    .first()
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(1) as usize;
-                                let col = arr
-                                    .get(1)
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0) as usize;
-                                (row.saturating_sub(1), col)
-                            })
-                        })
-                        .unwrap_or((0, 0));
-
-                    let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
-                    snap.lines = lines;
-                    snap.cursor = cursor;
-                    snap.mode = mode;
-                    snap.cmdline = None;
+                Err(e) => {
+                    if e.is_channel_closed() {
+                        is_dead.store(true, Ordering::SeqCst);
+                        tx.send(AppEvent::Redraw).ok();
+                    }
+                    log::debug!("nvim_input error: {e}");
                 }
             }
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Parse the Lua state bundle and apply it to the snapshot.
+// ---------------------------------------------------------------------------
+
+fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, value: nvim_rs::Value) {
+    let Some(arr) = value.as_array() else { return };
+    let mode_str = match arr.first().and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return,
+    };
+    let mode = NvimMode::from_nvim_str(mode_str);
+
+    let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
+
+    if mode == NvimMode::Command {
+        let cmdtype  = arr.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let cmdline  = arr.get(2).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        snap.mode    = mode;
+        snap.cmdline = Some(format!("{cmdtype}{cmdline}"));
+        return;
+    }
+
+    // Lines.
+    let new_lines: Vec<String> = arr.get(1)
+        .and_then(|v| v.as_array())
+        .map(|ls| ls.iter().filter_map(|l| l.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    let new_lines = if new_lines.is_empty() { vec![String::new()] } else { new_lines };
+
+    // Cursor: nvim_win_get_cursor → [row(1-indexed), col(0-indexed)].
+    let cursor = arr.get(2)
+        .and_then(|v| v.as_array())
+        .and_then(|c| {
+            let row = c.first()?.as_u64()? as usize;
+            let col = c.get(1)?.as_u64()? as usize;
+            Some((row.saturating_sub(1), col))
+        })
+        .unwrap_or((0, 0));
+
+    // Visual selection: getpos("v") → [bufnum, lnum(1-indexed), col(1-indexed), off].
+    let visual_selection = if matches!(mode, NvimMode::Visual | NvimMode::VisualLine) {
+        arr.get(3)
+            .and_then(|v| v.as_array())
+            .and_then(|p| {
+                let lnum = p.get(1)?.as_u64()? as usize;
+                let vcol = p.get(2)?.as_u64()? as usize;
+                if lnum == 0 { return None; }
+                Some((lnum.saturating_sub(1), vcol.saturating_sub(1)))
+            })
+            .map(|anchor| {
+                let (mut start, mut end) =
+                    if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
+                if mode == NvimMode::VisualLine {
+                    start.1 = 0;
+                    end.1   = usize::MAX;
+                }
+                (start, end)
+            })
+    } else {
+        None
+    };
+
+    if new_lines != snap.lines {
+        snap.dirty       = true;
+        snap.lines       = new_lines;
+        snap.content_gen = snap.content_gen.wrapping_add(1);
+    }
+    snap.cursor           = cursor;
+    snap.mode             = mode;
+    snap.cmdline          = None;
+    snap.visual_selection = visual_selection;
 }
