@@ -25,7 +25,7 @@ Kimün stores its configuration in `kimun_config.toml`, typically located in you
 The `[global]` section contains workspace-level and theme settings.
 
 - **`current_workspace`** — name of the currently active workspace (e.g. `"default"`). This workspace will be loaded when Kimün starts.
-- **`theme`** — active theme name (e.g. `"Nord"`). This overrides the `theme` field at the top level.
+- **`theme`** — active theme name (e.g. `"Nord"`). This overrides the `theme` field at the top level. See [Themes](@/using-kimun/themes.md) for built-in options and how to create custom themes.
 
 Example:
 ```toml

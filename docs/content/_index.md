@@ -9,11 +9,7 @@ Kimün is a terminal-based notes app that helps you organize and search your tho
 
 ## Quick Start
 
-Install Kimün with:
-
-```sh
-cargo install kimun-notes
-```
+See the [Installation](@/getting-started/installation.md) page for setup instructions.
 
 Then run the terminal UI:
 
