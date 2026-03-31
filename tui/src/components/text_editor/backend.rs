@@ -82,6 +82,18 @@ impl NvimBackend {
         let is_dead = Arc::new(AtomicBool::new(false));
         let rpc = Arc::new(NvimRpc::new_with_dead_signal(stdin, stdout, is_dead.clone()));
 
+        // Attach as a minimal UI. Without this, nvim runs as a passive RPC server
+        // and never fires its input-processing event loop — keystrokes queued via
+        // nvim_input are silently ignored until something calls vgetc().
+        rpc.send(
+            "nvim_ui_attach",
+            vec![
+                rmpv::Value::Integer(80.into()),
+                rmpv::Value::Integer(24.into()),
+                rmpv::Value::Map(vec![]), // empty options dict
+            ],
+        );
+
         // Fire-and-forget init commands (no response needed).
         rpc.send("nvim_command", vec![rmpv::Value::String("set noswapfile".into())]);
         rpc.send("nvim_command", vec![rmpv::Value::String("set buftype=nofile".into())]);
@@ -139,16 +151,15 @@ impl NvimBackend {
         // `call_blocking` uses std::sync::mpsc::recv_timeout which blocks the OS thread.
         // spawn_blocking gives us a dedicated thread so we don't stall the async executor.
         tokio::task::spawn_blocking(move || {
-            // Feed the key; wait for nvim to confirm it was processed.
+            // Send the key through the normal input queue (same path as real keyboard
+            // input). nvim_input is the correct API for embedded UIs — unlike
+            // nvim_feedkeys it goes through libuv's input buffer which the event loop
+            // drains synchronously before handling the next RPC message.
             if let Err(e) = rpc.call_blocking(
-                "nvim_feedkeys",
-                vec![
-                    rmpv::Value::String(nvim_key.into()),
-                    rmpv::Value::String("m".into()), // apply user keymaps
-                    rmpv::Value::Boolean(false),
-                ],
+                "nvim_input",
+                vec![rmpv::Value::String(nvim_key.into())],
             ) {
-                log::debug!("nvim_feedkeys error: {e}");
+                log::debug!("nvim_input error: {e}");
                 return;
             }
 
