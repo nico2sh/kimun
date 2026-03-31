@@ -202,14 +202,14 @@ impl EditorScreen {
             }
         }
 
-        // Only load the sidebar on first open (when it has no entries yet).
-        // Selecting a note while browsing should not reload the sidebar.
+        // Load or refresh the sidebar:
+        // - First open (sidebar empty): load the note's parent directory.
+        // - Note is in the currently shown sidebar dir: refresh so the new entry appears.
+        let note_parent = path.get_parent_path().0;
         if self.sidebar.is_empty() {
-            let dir = if path.is_note() {
-                path.get_parent_path().0
-            } else {
-                path
-            };
+            self.navigate_sidebar(note_parent, tx).await;
+        } else if note_parent.is_like(self.sidebar.current_dir()) {
+            let dir = self.sidebar.current_dir().clone();
             self.navigate_sidebar(dir, tx).await;
         }
 
@@ -276,7 +276,7 @@ impl EditorScreen {
                 parent,
             )))
             .ok();
-        } else {
+        } else if from.get_parent_path().0.is_like(self.sidebar.current_dir()) {
             let dir = self.sidebar.current_dir().clone();
             self.navigate_sidebar(dir, tx).await;
         }
