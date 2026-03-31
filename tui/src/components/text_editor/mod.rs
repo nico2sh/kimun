@@ -334,6 +334,17 @@ impl Component for TextEditorComponent {
                             self.paste_from_clipboard();
                             return EventState::Consumed;
                         }
+                        KeyCode::Char('x') => {
+                            self.copy_selection_to_clipboard();
+                            if let BackendState::Textarea(ta) = &mut self.backend {
+                                if ta.selection_range().is_some() {
+                                    ta.cut();
+                                }
+                                self.selection = ta.selection_range();
+                            }
+                            self.edit_generation = self.edit_generation.wrapping_add(1);
+                            return EventState::Consumed;
+                        }
                         _ => {}
                     }
                 }
@@ -387,7 +398,49 @@ impl Component for TextEditorComponent {
                         return EventState::Consumed;
                     }
                 }
-                ta.input(*key);
+                // Standard text-editor shortcuts.
+                // `input_without_shortcuts` only handles chars, backspace, delete, tab, newline —
+                // all navigation and editing shortcuts must be mapped explicitly.
+                let shortcut_handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
+                    // --- Cursor movement (Shift extends the selection) ---
+                    (KeyModifiers::NONE, KeyCode::Left)     => { cursor_move!(ta, CursorMove::Back,             shift); true }
+                    (KeyModifiers::NONE, KeyCode::Right)    => { cursor_move!(ta, CursorMove::Forward,          shift); true }
+                    (KeyModifiers::NONE, KeyCode::Up)       => { cursor_move!(ta, CursorMove::Up,               shift); true }
+                    (KeyModifiers::NONE, KeyCode::Down)     => { cursor_move!(ta, CursorMove::Down,             shift); true }
+                    (KeyModifiers::NONE, KeyCode::Home)     => { cursor_move!(ta, CursorMove::Head,             shift); true }
+                    (KeyModifiers::NONE, KeyCode::End)      => { cursor_move!(ta, CursorMove::End,              shift); true }
+                    (KeyModifiers::NONE, KeyCode::PageUp)   => { cursor_move!(ta, CursorMove::ParagraphBack,    shift); true }
+                    (KeyModifiers::NONE, KeyCode::PageDown) => { cursor_move!(ta, CursorMove::ParagraphForward, shift); true }
+                    // Word navigation (Ctrl+arrow, Windows/Linux style)
+                    (KeyModifiers::CONTROL, KeyCode::Left)  => { cursor_move!(ta, CursorMove::WordBack,    shift); true }
+                    (KeyModifiers::CONTROL, KeyCode::Right) => { cursor_move!(ta, CursorMove::WordForward, shift); true }
+                    // Document start / end
+                    (KeyModifiers::CONTROL, KeyCode::Home) => { cursor_move!(ta, CursorMove::Top,    shift); true }
+                    (KeyModifiers::CONTROL, KeyCode::End)  => { cursor_move!(ta, CursorMove::Bottom, shift); true }
+                    // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
+                    (KeyModifiers::CONTROL, KeyCode::Char('z')) => { ta.undo(); true }
+                    (KeyModifiers::CONTROL, KeyCode::Char('y'))
+                    | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => { ta.redo(); true }
+                    // Select all
+                    (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+                        ta.move_cursor(CursorMove::Top);
+                        ta.start_selection();
+                        ta.move_cursor(CursorMove::Bottom);
+                        true
+                    }
+                    // Delete word before / after cursor
+                    (KeyModifiers::CONTROL, KeyCode::Backspace)
+                    | (KeyModifiers::ALT,   KeyCode::Backspace) => { ta.delete_word(); true }
+                    (KeyModifiers::CONTROL, KeyCode::Delete)
+                    | (KeyModifiers::ALT,   KeyCode::Delete)    => { ta.delete_next_word(); true }
+                    _ => false,
+                };
+                if shortcut_handled {
+                    self.selection = ta.selection_range();
+                    self.edit_generation = self.edit_generation.wrapping_add(1);
+                    return EventState::Consumed;
+                }
+                ta.input_without_shortcuts(*key);
                 self.selection = ta.selection_range();
                 self.edit_generation = self.edit_generation.wrapping_add(1);
                 EventState::Consumed
