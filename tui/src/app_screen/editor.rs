@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
@@ -537,16 +537,31 @@ impl AppScreen for EditorScreen {
                 .unwrap_or_default(),
             Focus::Dialog => vec![],
         };
-        let hints_text = hints
-            .iter()
-            .map(|(key, label)| format!("{key}: {label}"))
-            .collect::<Vec<_>>()
-            .join("  |  ");
-        let hints_text = format!(" {} {hints_text}", self.icons.info);
-        f.render_widget(
-            Paragraph::new(hints_text).style(Style::default().fg(theme.fg_secondary.to_ratatui())),
-            footer_inner,
-        );
+        // Build the hints line with the nvim mode label (empty key) styled
+        // distinctly from the regular shortcut hints.
+        let secondary = Style::default().fg(theme.fg_secondary.to_ratatui());
+        let sep       = Span::styled("  │  ", secondary);
+        let mut spans = vec![Span::styled(
+            format!(" {} ", self.icons.info),
+            secondary,
+        )];
+        for (i, (key, label)) in hints.iter().enumerate() {
+            if i > 0 {
+                spans.push(sep.clone());
+            }
+            if key.is_empty() {
+                // Mode / command-line label from the nvim backend — make it pop.
+                spans.push(Span::styled(
+                    format!(" {label} "),
+                    Style::default()
+                        .fg(theme.accent.to_ratatui())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled(format!("{key}: {label}"), secondary));
+            }
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), footer_inner);
 
         // Modal overlay — rendered last so it appears on top of everything.
         if let Some(modal) = &mut self.note_browser {
