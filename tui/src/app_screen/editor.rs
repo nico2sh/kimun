@@ -3,15 +3,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
+use kimun_core::error::{FSError, VaultError};
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::dialogs::{
-    ActiveDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog, ValidationState,
+    ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog, ValidationState,
 };
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
@@ -72,11 +73,12 @@ impl EditorScreen {
         let toggle_key = first_key(&ActionShortcuts::ToggleSidebar);
         let icons = settings.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &settings);
+        let editor = TextEditorComponent::new(kb, &settings);
         Self {
             settings,
             icons,
             theme,
-            editor: TextEditorComponent::new(kb),
+            editor,
             sidebar,
             vault,
             path,
@@ -119,7 +121,14 @@ impl EditorScreen {
         let path = kimun_core::nfs::VaultPath::note_path_from(target_clean);
         match self.vault.open_or_search(&path).await {
             Ok(results) if results.is_empty() => {
-                self.key_flash = Some((format!("Not found: {target}"), std::time::Instant::now()));
+                if !matches!(self.focus, Focus::Dialog) {
+                    self.pre_dialog_focus = Some(self.focus);
+                }
+                self.active_dialog = Some(ActiveDialog::CreateNote(CreateNoteDialog::new(
+                    path,
+                    self.vault.clone(),
+                )));
+                self.focus = Focus::Dialog;
             }
             Ok(mut results) if results.len() == 1 => {
                 let (entry, _) = results.remove(0);
@@ -171,25 +180,36 @@ impl EditorScreen {
                 tx.send(AppEvent::Redraw).ok();
             }
             Err(e) => {
-                log::error!("Failed to read note {}: {e}", self.path);
-                let parent = self.path.get_parent_path().0;
-                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
-                    self.vault.clone(),
-                    parent,
-                )))
-                .ok();
+                if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
+                    if !matches!(self.focus, Focus::Dialog) {
+                        self.pre_dialog_focus = Some(self.focus);
+                    }
+                    self.active_dialog = Some(ActiveDialog::CreateNote(CreateNoteDialog::new(
+                        self.path.clone(),
+                        self.vault.clone(),
+                    )));
+                    self.focus = Focus::Dialog;
+                } else {
+                    log::error!("Failed to read note {}: {e}", self.path);
+                    let parent = self.path.get_parent_path().0;
+                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+                        self.vault.clone(),
+                        parent,
+                    )))
+                    .ok();
+                }
                 return;
             }
         }
 
-        // Only load the sidebar on first open (when it has no entries yet).
-        // Selecting a note while browsing should not reload the sidebar.
+        // Load or refresh the sidebar:
+        // - First open (sidebar empty): load the note's parent directory.
+        // - Note is in the currently shown sidebar dir: refresh so the new entry appears.
+        let note_parent = path.get_parent_path().0;
         if self.sidebar.is_empty() {
-            let dir = if path.is_note() {
-                path.get_parent_path().0
-            } else {
-                path
-            };
+            self.navigate_sidebar(note_parent, tx).await;
+        } else if note_parent.is_like(self.sidebar.current_dir()) {
+            let dir = self.sidebar.current_dir().clone();
             self.navigate_sidebar(dir, tx).await;
         }
 
@@ -256,7 +276,7 @@ impl EditorScreen {
                 parent,
             )))
             .ok();
-        } else {
+        } else if from.get_parent_path().0.is_like(self.sidebar.current_dir()) {
             let dir = self.sidebar.current_dir().clone();
             self.navigate_sidebar(dir, tx).await;
         }
@@ -536,16 +556,31 @@ impl AppScreen for EditorScreen {
                 .unwrap_or_default(),
             Focus::Dialog => vec![],
         };
-        let hints_text = hints
-            .iter()
-            .map(|(key, label)| format!("{key}: {label}"))
-            .collect::<Vec<_>>()
-            .join("  |  ");
-        let hints_text = format!(" {} {hints_text}", self.icons.info);
-        f.render_widget(
-            Paragraph::new(hints_text).style(Style::default().fg(theme.fg_secondary.to_ratatui())),
-            footer_inner,
-        );
+        // Build the hints line with the nvim mode label (empty key) styled
+        // distinctly from the regular shortcut hints.
+        let secondary = Style::default().fg(theme.fg_secondary.to_ratatui());
+        let sep       = Span::styled("  │  ", secondary);
+        let mut spans = vec![Span::styled(
+            format!(" {} ", self.icons.info),
+            secondary,
+        )];
+        for (i, (key, label)) in hints.iter().enumerate() {
+            if i > 0 {
+                spans.push(sep.clone());
+            }
+            if key.is_empty() {
+                // Mode / command-line label from the nvim backend — make it pop.
+                spans.push(Span::styled(
+                    format!(" {label} "),
+                    Style::default()
+                        .fg(theme.accent.to_ratatui())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled(format!("{key}: {label}"), secondary));
+            }
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), footer_inner);
 
         // Modal overlay — rendered last so it appears on top of everything.
         if let Some(modal) = &mut self.note_browser {
@@ -565,6 +600,9 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::OpenPath(path) => {
+                if self.active_dialog.is_some() {
+                    self.restore_focus(); // dismiss any active dialog (e.g. CreateNote) before loading
+                }
                 if path.is_note() {
                     self.open_path(path, tx).await;
                     self.focus_editor();

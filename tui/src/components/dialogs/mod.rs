@@ -2,6 +2,7 @@ pub use delete_dialog::DeleteConfirmDialog;
 pub use rename_dialog::RenameDialog;
 pub use move_dialog::MoveDialog;
 pub use file_ops_menu::FileOpsMenuDialog;
+pub use create_note_dialog::CreateNoteDialog;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -34,21 +35,24 @@ pub mod delete_dialog;
 pub mod rename_dialog;
 pub mod move_dialog;
 pub mod file_ops_menu;
+pub mod create_note_dialog;
 
 pub enum ActiveDialog {
     Menu(FileOpsMenuDialog),
     Delete(DeleteConfirmDialog),
     Rename(RenameDialog),
     Move(MoveDialog),
+    CreateNote(CreateNoteDialog),
 }
 
 impl ActiveDialog {
     pub fn set_error(&mut self, msg: String) {
         match self {
-            ActiveDialog::Menu(_)   => {} // menu has no error state
-            ActiveDialog::Delete(d) => d.error = Some(msg),
-            ActiveDialog::Rename(d) => d.error = Some(msg),
-            ActiveDialog::Move(d)   => d.error = Some(msg),
+            ActiveDialog::Menu(_)      => {} // menu has no error state
+            ActiveDialog::Delete(d)    => d.error = Some(msg),
+            ActiveDialog::Rename(d)    => d.error = Some(msg),
+            ActiveDialog::Move(d)      => d.error = Some(msg),
+            ActiveDialog::CreateNote(d)  => d.error = Some(msg),
         }
     }
 }
@@ -59,19 +63,21 @@ impl Component for ActiveDialog {
             return EventState::NotConsumed;
         };
         match self {
-            ActiveDialog::Menu(d)   => d.handle_key(*key, tx),
-            ActiveDialog::Delete(d) => d.handle_key(*key, tx),
-            ActiveDialog::Rename(d) => d.handle_key(*key, tx),
-            ActiveDialog::Move(d)   => d.handle_key(*key, tx),
+            ActiveDialog::Menu(d)      => d.handle_key(*key, tx),
+            ActiveDialog::Delete(d)    => d.handle_key(*key, tx),
+            ActiveDialog::Rename(d)    => d.handle_key(*key, tx),
+            ActiveDialog::Move(d)      => d.handle_key(*key, tx),
+            ActiveDialog::CreateNote(d)  => d.handle_key(*key, tx),
         }
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         match self {
-            ActiveDialog::Menu(d)   => d.render(f, rect, theme, focused),
-            ActiveDialog::Delete(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::Rename(d) => d.render(f, rect, theme, focused),
-            ActiveDialog::Move(d)   => d.render(f, rect, theme, focused),
+            ActiveDialog::Menu(d)      => d.render(f, rect, theme, focused),
+            ActiveDialog::Delete(d)    => d.render(f, rect, theme, focused),
+            ActiveDialog::Rename(d)    => d.render(f, rect, theme, focused),
+            ActiveDialog::Move(d)      => d.render(f, rect, theme, focused),
+            ActiveDialog::CreateNote(d)  => d.render(f, rect, theme, focused),
         }
     }
 }

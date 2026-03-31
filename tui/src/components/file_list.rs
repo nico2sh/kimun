@@ -279,6 +279,9 @@ pub struct FileListComponent {
     // Sort
     pub sort_field: SortField,
     pub sort_order: SortOrder,
+    // Always-visible pinned entry shown above all others (used for "Create…").
+    // Not stored in `entries`; not touched by the filter.
+    create_entry: Option<FileListEntry>,
     // Keybindings
     key_bindings: KeyBindings,
     // Icons resolved once at construction
@@ -298,9 +301,15 @@ impl FileListComponent {
             filter_task: None,
             sort_field: SortField::Name,
             sort_order: SortOrder::Ascending,
+            create_entry: None,
             key_bindings,
             icons,
         }
+    }
+
+    pub fn set_create_entry(&mut self, entry: Option<FileListEntry>) {
+        self.create_entry = entry;
+        self.reset_selection();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -342,6 +351,7 @@ impl FileListComponent {
         self.display_indices = None;
         self.filter_rx = None;
         self.search_query.clear();
+        self.create_entry = None;
         self.list_state.select(None);
         self.loading = false;
     }
@@ -444,11 +454,12 @@ impl FileListComponent {
         }
     }
 
-    fn display_len(&self) -> usize {
-        match &self.display_indices {
+    pub fn display_len(&self) -> usize {
+        let base = match &self.display_indices {
             None => self.entries.len(),
             Some(v) => v.len(),
-        }
+        };
+        base + usize::from(self.create_entry.is_some())
     }
 
     /// Number of entries currently visible in the list (respects active filter).
@@ -538,6 +549,17 @@ impl FileListComponent {
 
     pub fn selected_entry(&self) -> Option<&FileListEntry> {
         let display_idx = self.list_state.selected()?;
+        if self.create_entry.is_some() {
+            if display_idx == 0 {
+                return self.create_entry.as_ref();
+            }
+            let adjusted = display_idx - 1;
+            let entry_idx = match &self.display_indices {
+                None => adjusted,
+                Some(v) => *v.get(adjusted)?,
+            };
+            return self.entries.get(entry_idx);
+        }
         let entry_idx = match &self.display_indices {
             None => display_idx,
             Some(v) => *v.get(display_idx)?,
@@ -549,9 +571,23 @@ impl FileListComponent {
         let Some(display_idx) = self.list_state.selected() else {
             return;
         };
+        if self.create_entry.is_some() && display_idx == 0 {
+            if let Some(entry) = &self.create_entry {
+                tx.send(AppEvent::OpenPath(entry.path().clone())).ok();
+            }
+            return;
+        }
+        let adjusted = if self.create_entry.is_some() {
+            display_idx - 1
+        } else {
+            display_idx
+        };
         let entry_idx = match &self.display_indices {
-            None => display_idx,
-            Some(v) => v[display_idx],
+            None => adjusted,
+            Some(v) => match v.get(adjusted) {
+                Some(&i) => i,
+                None => return,
+            },
         };
         tx.send(AppEvent::OpenPath(self.entries[entry_idx].path().clone()))
             .ok();
@@ -562,11 +598,20 @@ impl FileListComponent {
         let len = self.display_len();
         let mut y = 0u16;
         for display_idx in offset..len {
-            let entry_idx = match &self.display_indices {
-                None => display_idx,
-                Some(v) => v[display_idx],
+            let h = if self.create_entry.is_some() && display_idx == 0 {
+                self.create_entry.as_ref().map(|e| e.visual_height()).unwrap_or(1)
+            } else {
+                let adjusted = if self.create_entry.is_some() {
+                    display_idx - 1
+                } else {
+                    display_idx
+                };
+                let entry_idx = match &self.display_indices {
+                    None => adjusted,
+                    Some(v) => v.get(adjusted).copied()?,
+                };
+                self.entries.get(entry_idx).map(|e| e.visual_height()).unwrap_or(1)
             };
-            let h = self.entries[entry_idx].visual_height();
             if row < y + h {
                 return Some(display_idx);
             }
@@ -700,7 +745,12 @@ impl Component for FileListComponent {
             None => Box::new(self.entries.iter()),
             Some(indices) => Box::new(indices.iter().map(|&i| &self.entries[i])),
         };
-        let items: Vec<ListItem> = entry_iter
+        let create_iter: Box<dyn Iterator<Item = &FileListEntry>> = match &self.create_entry {
+            Some(e) => Box::new(std::iter::once(e)),
+            None => Box::new(std::iter::empty()),
+        };
+        let items: Vec<ListItem> = create_iter
+            .chain(entry_iter)
             .enumerate()
             .map(|(i, e)| {
                 let bg = if i % 2 == 0 { bg_even } else { bg_odd };
@@ -768,6 +818,13 @@ mod tests {
     fn make_tx() -> AppTx {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
         tx
+    }
+
+    fn make_list() -> FileListComponent {
+        FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        )
     }
 
     #[tokio::test]
@@ -985,5 +1042,76 @@ mod tests {
             result
         );
         assert!(rx.try_recv().is_err(), "no event should be sent for Up entry");
+    }
+
+    #[test]
+    fn set_create_entry_shows_at_virtual_index_zero() {
+        let mut list = make_list();
+        list.push_entry(make_note("a.md", "A"));
+        list.push_entry(make_note("b.md", "B"));
+        list.set_create_entry(Some(FileListEntry::CreateNote {
+            filename: "new.md".to_string(),
+            path: VaultPath::new("new.md"),
+        }));
+        // 2 notes + 1 virtual create entry
+        assert_eq!(list.display_len(), 3);
+        // Selection resets to 0, which is the CreateNote
+        assert!(matches!(
+            list.selected_entry(),
+            Some(FileListEntry::CreateNote { filename, .. }) if filename == "new.md"
+        ));
+    }
+
+    #[test]
+    fn set_create_entry_none_hides_it() {
+        let mut list = make_list();
+        list.push_entry(make_note("a.md", "A"));
+        list.set_create_entry(Some(FileListEntry::CreateNote {
+            filename: "new.md".to_string(),
+            path: VaultPath::new("new.md"),
+        }));
+        list.set_create_entry(None);
+        assert_eq!(list.display_len(), 1);
+        assert!(matches!(list.selected_entry(), Some(FileListEntry::Note { .. })));
+    }
+
+    #[test]
+    fn clear_removes_create_entry() {
+        let mut list = make_list();
+        list.set_create_entry(Some(FileListEntry::CreateNote {
+            filename: "new.md".to_string(),
+            path: VaultPath::new("new.md"),
+        }));
+        list.clear();
+        assert!(list.create_entry.is_none());
+        assert_eq!(list.display_len(), 0);
+    }
+
+    #[test]
+    fn selected_entry_with_create_entry_and_regular_note() {
+        let mut list = make_list();
+        list.push_entry(make_note("a.md", "A"));
+        list.push_entry(make_note("b.md", "B"));
+        list.set_create_entry(Some(FileListEntry::CreateNote {
+            filename: "new.md".to_string(),
+            path: VaultPath::new("new.md"),
+        }));
+        // display_idx 0 → CreateNote
+        assert!(matches!(
+            list.selected_entry(),
+            Some(FileListEntry::CreateNote { .. })
+        ));
+        // Move selection to display_idx 1 → first Note (adjusted = 0)
+        list.select_next();
+        assert!(matches!(
+            list.selected_entry(),
+            Some(FileListEntry::Note { filename, .. }) if filename == "a.md"
+        ));
+        // display_idx 2 → second Note (adjusted = 1)
+        list.select_next();
+        assert!(matches!(
+            list.selected_entry(),
+            Some(FileListEntry::Note { filename, .. }) if filename == "b.md"
+        ));
     }
 }
