@@ -196,7 +196,7 @@ fn resolve_show_paths<R: std::io::BufRead>(
             let paths: Result<Vec<String>, _> = r
                 .lines()
                 .filter(|l| l.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(true))
-                .map(|l| l.map(|s| s.trim().to_owned()))
+                .map(|l| l.map(|s| s.trim().split('\t').next().unwrap_or("").to_owned()))
                 .collect();
             let paths = paths.map_err(|e| color_eyre::eyre::eyre!("Failed to read stdin: {}", e))?;
             if paths.is_empty() {
@@ -429,6 +429,15 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("No paths provided"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_resolve_show_paths_strips_tab_separated_fields() {
+        // kimun notes outputs tab-separated lines: path\ttitle\tsize\ttimestamp
+        let input = b"projects/foo\tFoo Note\t1234\t1700000000\ninbox/bar\tBar\t42\t1700000001\n";
+        let reader = Cursor::new(input.as_ref());
+        let result = resolve_show_paths(vec![], Some(reader)).unwrap();
+        assert_eq!(result, vec!["projects/foo", "inbox/bar"]);
     }
 
     #[test]
