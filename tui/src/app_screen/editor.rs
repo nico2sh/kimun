@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
+use kimun_core::error::{FSError, VaultError};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -11,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::dialogs::{
-    ActiveDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog, ValidationState,
+    ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog, RenameDialog, ValidationState,
 };
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
@@ -120,7 +121,12 @@ impl EditorScreen {
         let path = kimun_core::nfs::VaultPath::note_path_from(target_clean);
         match self.vault.open_or_search(&path).await {
             Ok(results) if results.is_empty() => {
-                self.key_flash = Some((format!("Not found: {target}"), std::time::Instant::now()));
+                self.pre_dialog_focus = Some(self.focus);
+                self.active_dialog = Some(ActiveDialog::CreateNote(CreateNoteDialog::new(
+                    path,
+                    self.vault.clone(),
+                )));
+                self.focus = Focus::Dialog;
             }
             Ok(mut results) if results.len() == 1 => {
                 let (entry, _) = results.remove(0);
@@ -172,13 +178,22 @@ impl EditorScreen {
                 tx.send(AppEvent::Redraw).ok();
             }
             Err(e) => {
-                log::error!("Failed to read note {}: {e}", self.path);
-                let parent = self.path.get_parent_path().0;
-                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
-                    self.vault.clone(),
-                    parent,
-                )))
-                .ok();
+                if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
+                    self.pre_dialog_focus = Some(self.focus);
+                    self.active_dialog = Some(ActiveDialog::CreateNote(CreateNoteDialog::new(
+                        self.path.clone(),
+                        self.vault.clone(),
+                    )));
+                    self.focus = Focus::Dialog;
+                } else {
+                    log::error!("Failed to read note {}: {e}", self.path);
+                    let parent = self.path.get_parent_path().0;
+                    tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
+                        self.vault.clone(),
+                        parent,
+                    )))
+                    .ok();
+                }
                 return;
             }
         }
@@ -581,6 +596,7 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::OpenPath(path) => {
+                self.restore_focus(); // dismiss any active dialog (e.g. CreateNote) before loading
                 if path.is_note() {
                     self.open_path(path, tx).await;
                     self.focus_editor();
