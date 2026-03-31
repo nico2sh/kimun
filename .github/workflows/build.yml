@@ -104,29 +104,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # kimun_core is versioned independently — read its version directly from
-      # Cargo.toml rather than deriving it from the release tag.
-      - name: Read kimun_core version
-        id: core_version
-        run: |
-          VERSION=$(grep '^version' core/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Check if kimun_core is already published
-        id: core_check
-        run: |
-          VERSION="${{ steps.core_version.outputs.version }}"
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/kimun_core/${VERSION}")
-          if [ "$STATUS" = "200" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "kimun_core ${VERSION} already published, skipping."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "kimun_core ${VERSION} not yet published, will publish."
-          fi
-
       - name: Publish kimun_core to crates.io
-        if: steps.core_check.outputs.skip != 'true'
         run: |
           set +e
           output=$(cargo publish -p kimun_core 2>&1)
@@ -157,26 +135,19 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           cargo set-version -p kimun-notes "$VERSION"
 
-      - name: Check if kimun-notes is already published
-        id: tui_check
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/kimun-notes/${VERSION}")
-          if [ "$STATUS" = "200" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "kimun-notes ${VERSION} already published, skipping."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "kimun-notes ${VERSION} not yet published, will publish."
-          fi
-
-      - name: Wait for crates.io to index kimun_core (if it was just published)
-        if: steps.tui_check.outputs.skip == 'false'
+      - name: Wait for crates.io to index kimun_core
         run: sleep 30
 
       - name: Publish kimun-notes to crates.io
-        if: steps.tui_check.outputs.skip == 'false'
-        run: cargo publish -p kimun-notes --allow-dirty
+        run: |
+          set +e
+          output=$(cargo publish -p kimun-notes --allow-dirty 2>&1)
+          exit_code=$?
+          set -e
+          echo "$output"
+          if [ $exit_code -ne 0 ]; then
+            echo "$output" | grep -q "already exists" && exit 0 || exit $exit_code
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -318,6 +289,7 @@ jobs:
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/nico2sh/homebrew-kimun.git"
           git add Formula/kimun.rb
           git commit -m "kimun ${GITHUB_REF_NAME}"
           git push
