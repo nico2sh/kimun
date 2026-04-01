@@ -161,7 +161,7 @@ impl MoveDialog {
             .await
             .unwrap_or_default();
 
-            let paths = matched_strs.iter().map(|s| VaultPath::new(s)).collect();
+            let paths = matched_strs.iter().map(VaultPath::new).collect();
             tx_clone.send(AppEvent::MoveFilterResults(paths)).ok();
         });
 
@@ -255,8 +255,8 @@ impl MoveDialog {
                 if self.dest_validation == ValidationState::Taken {
                     return EventState::Consumed;
                 }
-                if let Some(selected_idx) = self.list_state.selected() {
-                    if selected_idx < self.results().len() {
+                if let Some(selected_idx) = self.list_state.selected()
+                    && selected_idx < self.results().len() {
                         let from = self.path.clone();
                         let dest_dir = self.results()[selected_idx].clone();
                         let filename = from.get_parent_path().1;
@@ -290,7 +290,6 @@ impl MoveDialog {
                             }
                         });
                     }
-                }
                 EventState::Consumed
             }
             KeyCode::Esc => {

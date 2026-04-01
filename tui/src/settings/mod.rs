@@ -320,7 +320,7 @@ impl AppSettings {
 
             // Try to read and deserialize the theme file
             match fs::read_to_string(&path)
-                .and_then(|s| toml::from_str::<Theme>(&s).map_err(|e| std::io::Error::other(e)))
+                .and_then(|s| toml::from_str::<Theme>(&s).map_err(std::io::Error::other))
             {
                 Ok(theme) => themes.push(theme),
                 Err(e) => log::warn!("Skipping theme file {:?}: {}", path, e),
@@ -469,13 +469,12 @@ impl AppSettings {
     // We set a new workspace to work with, remember to save the data
     // to persist it in disk
     pub fn set_workspace(&mut self, workspace_path: &PathBuf) {
-        if let Some(current_workspace_dir) = &self.workspace_dir {
-            if workspace_path != current_workspace_dir {
+        if let Some(current_workspace_dir) = &self.workspace_dir
+            && workspace_path != current_workspace_dir {
                 // We clean up the data related with the workspace
                 self.last_paths = vec![];
                 self.needs_indexing = true;
             }
-        }
 
         self.workspace_dir = Some(workspace_path.to_owned());
     }

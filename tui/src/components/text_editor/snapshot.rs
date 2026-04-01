@@ -42,11 +42,10 @@ impl NvimSnapshot {
     /// In command mode, shows the live command line with a block cursor appended.
     /// In all other modes, shows the mode label (e.g., `"NORMAL"`).
     pub fn footer_label(&self) -> String {
-        if self.mode == NvimMode::Command {
-            if let Some(cmd) = &self.cmdline {
+        if self.mode == NvimMode::Command
+            && let Some(cmd) = &self.cmdline {
                 return format!("{}\u{2590}", cmd); // ▐ block cursor
             }
-        }
         self.mode.label().to_string()
     }
 }

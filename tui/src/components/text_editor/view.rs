@@ -105,15 +105,14 @@ impl MarkdownEditorView {
                 let old_row = self.last_layout_cursor.0;
                 let new_row = cursor.0;
                 for row in [old_row, new_row] {
-                    if let Some(l) = lines.get(row) {
-                        if let Some(p) = self.parsed_cache.get(row) {
+                    if let Some(l) = lines.get(row)
+                        && let Some(p) = self.parsed_cache.get(row) {
                             let force_raw = self.is_in_code_block(row);
                             let cursor_col = if row == new_row { Some(cursor.1) } else { None };
                             if let Some(entry) = self.rendered_cache.get_mut(row) {
                                 *entry = MarkdownSpanner::visible_positions_with(l, p, cursor_col, force_raw);
                             }
                         }
-                    }
                 }
             }
             // Width-only change: masks are width-independent; reuse rendered_cache as-is.
@@ -151,7 +150,7 @@ impl MarkdownEditorView {
             .take(height)
             .map(|vl| {
                 let cursor_col = if vl.logical_row == cursor.0 { Some(cursor.1) } else { None };
-                let force_raw = cursor_code_block.as_ref().map_or(false, |r| r.contains(&vl.logical_row));
+                let force_raw = cursor_code_block.as_ref().is_some_and(|r| r.contains(&vl.logical_row));
                 let logical_line = lines.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
                 let parsed = &parsed_cache[vl.logical_row];
                 let content = vl.content(logical_line);
@@ -226,7 +225,7 @@ impl MarkdownEditorView {
     }
 
     fn is_in_code_block(&self, row: usize) -> bool {
-        self.cursor_code_block.as_ref().map_or(false, |r| r.contains(&row))
+        self.cursor_code_block.as_ref().is_some_and(|r| r.contains(&row))
     }
 
     /// Markdown-aware mouse click: maps a rendered screen column to the correct logical
