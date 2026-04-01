@@ -125,13 +125,34 @@ nav {
   padding-right: $baseline;
   width: 20rem;
 
-  img {
-    width:128px;
+  #nav-header {
+    display: flex;
+    align-items: center;
+    gap: $baseline * 0.5;
+    margin-bottom: $baseline;
   }
 
-  h1 {
-    margin:0;
-    line-height: 1;
+  #nav-title {
+    display: flex;
+    align-items: center;
+    gap: $baseline * 0.5;
+    flex: 1;
+    text-decoration: none;
+    color: $color;
+
+    &:visited {
+      color: $color;
+    }
+
+    img {
+      width: 32px;
+      flex-shrink: 0;
+    }
+
+    span {
+      font-size: 1.1em;
+      font-weight: 600;
+    }
   }
 
   #repo-link {
@@ -139,7 +160,7 @@ nav {
     align-items: center;
     color: $color;
     opacity: 0.6;
-    margin-top: $baseline * 0.5;
+    flex-shrink: 0;
 
     &:hover {
       opacity: 1;
