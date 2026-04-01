@@ -133,6 +133,23 @@ nav {
     margin:0;
     line-height: 1;
   }
+
+  #repo-link {
+    display: inline-flex;
+    align-items: center;
+    color: $color;
+    opacity: 0.6;
+    margin-top: $baseline * 0.5;
+
+    &:hover {
+      opacity: 1;
+      color: $color;
+    }
+
+    &:visited {
+      color: $color;
+    }
+  }
 }
 
 #toc {
