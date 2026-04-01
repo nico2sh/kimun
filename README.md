@@ -3,15 +3,20 @@
 [![Crates.io](https://img.shields.io/crates/v/kimun-notes)](https://crates.io/crates/kimun-notes)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+[![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
+
+
 A terminal-based notes app focused on simplicity and powerful search.
 
-**Check the [docs](https://nico2sh.github.io/kimun/).**
+It doesn't try to do everything; there are already more powerful tools for more complex workflows and knowledge management. Kimün aims to be simple and give you the tools to integrate with your own workflow. You can even combine it with other note taking apps that support local notes.
+
+**Check the [docs](https://nico2sh.github.io/kimun/) for more on what you can do with Kimün.**
 
 Notes are plain Markdown files stored in a directory you own. Kimün indexes them into a local SQLite database for fast full-text and structured search.
 
 If you are already using another markdown, local-first, note-taking app, you should feel right at home and be able to use Kimün just like your existing app (QownNotes, Obsidian, Logseq, etc.), only that in this case, it is on your terminal emulator.
 
-## Two ways to use it
+## Interactive and cli tool
 
 **TUI** — an interactive terminal interface for writing, browsing, and organizing notes. Navigate your vault, search across notes, follow wiki links, and manage files without leaving the terminal.
 
@@ -28,7 +33,7 @@ kimun note journal "Fixed the auth bug, deploying at 17:00"
 kimun search "todo" --format json | jq '.notes[] | {title, path}'
 ```
 
-The CLI is also well-suited for integration with AI tools and agents. An AI assistant can create, append, and search notes on your behalf — logging findings, organizing research, or updating your journal as part of an automated workflow.
+The CLI can be used with AI tools and agents. An AI assistant can create, append, and search notes on your behalf — logging findings, organizing research, or updating your journal as part of an automated workflow. You can use the skill located under the [skills](skills/) directory, or create your own (in that case, create a pull request here and share yours!)
 
 > Note: There is a fair amount of AI-assisted code (using Claude) with manual reviews, although most of the core was written with my human hands. Initially for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the foundations of more complex stuff, especially on the UI side. Anyway, I guess the lesson is, use AI as a tool, not as a replacement.
 
@@ -59,7 +64,7 @@ The `skills/` directory contains ready-made skills for AI coding assistants, so 
 
 ```sh
 # Copy the skill to your Claude skills directory
-cp -r skills/kimun-cli ~/.claude/skills/
+cp -r skills/kimun-cli ~/.claude/skills
 ```
 
 Claude Code will pick it up automatically. In any session, Claude can now create and append notes, log to your journal, and search your vault using the CLI.
@@ -134,4 +139,8 @@ The tag triggers the CI workflow, which:
 - [X] Autosave
 - [X] Wikilinks in preview
 - [X] Navigate notes via links in preview
-- [ ] Embed neoVim as an option
+- [X] Embed neoVim as an option (currently experimental)
+
+# Credits
+Built with [Ratatui](https://github.com/ratatui/ratatui) (and [ratatui-textarea](https://github.com/ratatui/ratatui-textarea)), [Nucleo](https://docs.rs/nucleo/latest/nucleo/) for fuzzy searching, [Ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for fast file read.
+Inspired by [Obsidian](https://obsidian.md/), [Logseq](https://logseq.com/) and [QownNotes](https://www.qownnotes.org/).
