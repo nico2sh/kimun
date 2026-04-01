@@ -3,6 +3,9 @@
 [![Crates.io](https://img.shields.io/crates/v/kimun-notes)](https://crates.io/crates/kimun-notes)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+[![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
+
+
 A terminal-based notes app focused on simplicity and powerful search.
 
 It doesn't try to do everything; there are already more powerful tools for more complex workflows and knowledge management. Kimün aims to be simple and give you the tools to integrate with your own workflow. You can even combine it with other note taking apps that support local notes.
