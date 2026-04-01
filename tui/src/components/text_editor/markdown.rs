@@ -466,9 +466,9 @@ impl MarkdownSpanner {
             .take(content_char_count)
         {
             let is_content = pos < content_vis.len() && content_vis[pos];
-            let in_heading_sigil = heading_sigil_end.map_or(false, |end| pos < end);
-            let in_list_sigil = list_sigil_end.map_or(false, |end| pos < end);
-            let in_expanded_elem = expanded.map_or(false, |i| {
+            let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
+            let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
+            let in_expanded_elem = expanded.is_some_and(|i| {
                 elements[i].start_char <= pos && pos < elements[i].end_char
             });
             let this_elem = parsed.elem_at(pos);
@@ -563,9 +563,9 @@ impl MarkdownSpanner {
         (visual_start_col..end)
             .filter(|&pos| {
                 let is_content = pos < content_vis.len() && content_vis[pos];
-                let in_heading_sigil = heading_sigil_end.map_or(false, |s_end| pos < s_end);
-                let in_list_sigil = list_sigil_end.map_or(false, |s_end| pos < s_end);
-                let in_expanded_elem = expanded.map_or(false, |i| {
+                let in_heading_sigil = heading_sigil_end.is_some_and(|s_end| pos < s_end);
+                let in_list_sigil = list_sigil_end.is_some_and(|s_end| pos < s_end);
+                let in_expanded_elem = expanded.is_some_and(|i| {
                     elements[i].start_char <= pos && pos < elements[i].end_char
                 });
                 let in_any_element = parsed.in_any_element(pos);
@@ -604,10 +604,10 @@ impl MarkdownSpanner {
         (0..total)
             .map(|pos| {
                 let is_content = pos < content_vis.len() && content_vis[pos];
-                let in_heading_sigil = heading_sigil_end.map_or(false, |end| pos < end);
-                let in_list_sigil = list_sigil_end.map_or(false, |end| pos < end);
+                let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
+                let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
                 let in_any_element = parsed.in_any_element(pos);
-                let in_expanded = expanded.map_or(false, |i| {
+                let in_expanded = expanded.is_some_and(|i| {
                     parsed.elements[i].start_char <= pos && pos < parsed.elements[i].end_char
                 });
                 is_content || in_heading_sigil || in_list_sigil || in_expanded || !in_any_element
@@ -650,8 +650,8 @@ impl MarkdownSpanner {
                 return pos;
             }
             let is_content = pos < content_vis.len() && content_vis[pos];
-            let in_heading_sigil = heading_sigil_end.map_or(false, |end| pos < end);
-            let in_list_sigil = list_sigil_end.map_or(false, |end| pos < end);
+            let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
+            let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
             let in_any_element = parsed.in_any_element(pos);
             if is_content || in_heading_sigil || in_list_sigil || !in_any_element {
                 rendered_count += 1;

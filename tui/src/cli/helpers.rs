@@ -115,7 +115,7 @@ pub fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<Stri
                 std::io::stdin()
                     .read_to_string(&mut buf)
                     .map_err(|e| color_eyre::eyre::eyre!("Failed to read stdin: {}", e))?;
-                Ok(buf.trim_end_matches(|c| c == '\n' || c == '\r').to_string())
+                Ok(buf.trim_end_matches(['\n', '\r']).to_string())
             }
         }
     }

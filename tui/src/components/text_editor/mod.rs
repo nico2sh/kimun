@@ -243,14 +243,13 @@ impl Component for TextEditorComponent {
             InputEvent::Key(key) => {
                 // Nvim backend: forward all keys directly, except FocusSidebar which kimun handles.
                 if let BackendState::Nvim(nvim) = &self.backend {
-                    if let Some(combo) = key_event_to_combo(key) {
-                        if let Some(ActionShortcuts::FocusSidebar) =
+                    if let Some(combo) = key_event_to_combo(key)
+                        && let Some(ActionShortcuts::FocusSidebar) =
                             self.key_bindings.get_action(&combo)
                         {
                             tx.send(AppEvent::FocusSidebar).ok();
                             return EventState::Consumed;
                         }
-                    }
 
                     // Intercept ZZ / ZQ in Normal mode: buffer the first Z, then
                     // decide on the second key without forwarding either to nvim.
@@ -411,14 +410,13 @@ impl Component for TextEditorComponent {
                 }
 
                 // Check keybindings for navigation actions.
-                if let Some(combo) = key_event_to_combo(key) {
-                    if let Some(ActionShortcuts::FocusSidebar) =
+                if let Some(combo) = key_event_to_combo(key)
+                    && let Some(ActionShortcuts::FocusSidebar) =
                         self.key_bindings.get_action(&combo)
                     {
                         tx.send(AppEvent::FocusSidebar).ok();
                         return EventState::Consumed;
                     }
-                }
                 // Standard text-editor shortcuts.
                 // `input_without_shortcuts` only handles chars, backspace, delete, tab, newline —
                 // all navigation and editing shortcuts must be mapped explicitly.

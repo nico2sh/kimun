@@ -103,13 +103,12 @@ impl AppScreen for BrowseScreen {
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
-        if let AppEvent::OpenPath(path) = &msg {
-            if !path.is_note() {
+        if let AppEvent::OpenPath(path) = &msg
+            && !path.is_note() {
                 let dir = path.clone();
                 self.navigate_sidebar(dir, tx).await;
                 return None;
             }
-        }
         Some(msg)
     }
 }
