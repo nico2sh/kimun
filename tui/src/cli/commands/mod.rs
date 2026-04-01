@@ -3,7 +3,9 @@ pub mod search;
 pub mod notes;
 pub mod workspace;
 pub mod note_ops;
+pub mod journal;
 
 // Re-export for convenience
 pub use workspace::WorkspaceSubcommand;
 pub use note_ops::NoteSubcommand;
+pub use journal::JournalArgs;

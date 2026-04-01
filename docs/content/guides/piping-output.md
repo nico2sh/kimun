@@ -96,6 +96,30 @@ ks() {
 alias klast='kimun notes --format json | jq -r ".notes | sort_by(.modified) | last | .path" | kimun note show'
 ```
 
+## Piping into the journal
+
+`kimun journal` accepts piped input when stdin is not a terminal, making it easy to log command output directly to your daily entry:
+
+```sh
+# Timestamped log line
+echo "$(date +%H:%M) — build succeeded" | kimun journal
+
+# Capture command output
+./run-tests.sh | tail -1 | kimun journal
+
+# Pipe search results as a journal entry
+kimun search "todo" --format paths | kimun journal
+
+# Log to a specific date
+echo "Late entry" | kimun journal --date 2024-01-15
+```
+
+Combine with cron for automatic daily logs:
+
+```sh
+@daily echo "$(hostname): $(uptime)" | kimun journal
+```
+
 ## Tips
 
 - Pipes work with both plain text and JSON output

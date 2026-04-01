@@ -3,7 +3,8 @@
 // Integration tests for note create/append/journal CLI commands.
 
 use kimun_notes::cli::{run_cli, CliCommand};
-use kimun_notes::cli::commands::NoteSubcommand;
+use kimun_notes::cli::commands::{NoteSubcommand, JournalArgs};
+use kimun_notes::cli::commands::journal::JournalSubcommand;
 use tempfile::TempDir;
 
 /// Helper: write a minimal Phase 2 config and initialise the vault index.
@@ -240,26 +241,26 @@ async fn test_note_append_empty_content_is_noop() {
     assert_eq!(content, "# Original", "content should be unchanged on empty append");
 }
 
-// --- note journal ---
+// --- journal ---
 
 #[tokio::test]
-async fn test_note_journal_creates_todays_entry() {
+async fn test_journal_creates_todays_entry() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
     write_config(&config_path, workspace_dir.path()).await;
 
     let result = run_cli(
-        CliCommand::Note {
-            subcommand: NoteSubcommand::Journal {
-                content: Some("Today's thought".to_string()),
-            },
-        },
+        CliCommand::Journal(JournalArgs {
+            date: None,
+            content: Some("Today's thought".to_string()),
+            subcommand: None,
+        }),
         Some(config_path),
     )
     .await;
 
-    assert!(result.is_ok(), "note journal should succeed: {:?}", result);
+    assert!(result.is_ok(), "journal should succeed: {:?}", result);
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let journal_file = workspace_dir.path()
@@ -271,7 +272,7 @@ async fn test_note_journal_creates_todays_entry() {
 }
 
 #[tokio::test]
-async fn test_note_journal_appends_to_existing_entry() {
+async fn test_journal_appends_to_existing_entry() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
@@ -286,11 +287,11 @@ async fn test_note_journal_appends_to_existing_entry() {
     ).unwrap();
 
     run_cli(
-        CliCommand::Note {
-            subcommand: NoteSubcommand::Journal {
-                content: Some("Second entry".to_string()),
-            },
-        },
+        CliCommand::Journal(JournalArgs {
+            date: None,
+            content: Some("Second entry".to_string()),
+            subcommand: None,
+        }),
         Some(config_path),
     )
     .await
@@ -302,7 +303,7 @@ async fn test_note_journal_appends_to_existing_entry() {
 }
 
 #[tokio::test]
-async fn test_note_journal_empty_content_is_noop() {
+async fn test_journal_empty_content_is_noop() {
     let config_dir = TempDir::new().unwrap();
     let config_path = config_dir.path().join("config.toml");
     let workspace_dir = TempDir::new().unwrap();
@@ -315,11 +316,11 @@ async fn test_note_journal_empty_content_is_noop() {
     std::fs::write(&journal_file, format!("# {}", today)).unwrap();
 
     run_cli(
-        CliCommand::Note {
-            subcommand: NoteSubcommand::Journal {
-                content: Some("".to_string()),
-            },
-        },
+        CliCommand::Journal(JournalArgs {
+            date: None,
+            content: Some("".to_string()),
+            subcommand: None,
+        }),
         Some(config_path),
     )
     .await
@@ -327,6 +328,77 @@ async fn test_note_journal_empty_content_is_noop() {
 
     let content = std::fs::read_to_string(&journal_file).unwrap();
     assert_eq!(content, format!("# {}", today), "content should be unchanged on empty journal");
+}
+
+#[tokio::test]
+async fn test_journal_date_creates_specific_entry() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    write_config(&config_path, workspace_dir.path()).await;
+
+    run_cli(
+        CliCommand::Journal(JournalArgs {
+            date: Some("2024-01-15".to_string()),
+            content: Some("Backdated entry".to_string()),
+            subcommand: None,
+        }),
+        Some(config_path),
+    )
+    .await
+    .unwrap();
+
+    let journal_file = workspace_dir.path().join("journal").join("2024-01-15.md");
+    assert!(journal_file.exists(), "specific-date journal entry should exist");
+    let content = std::fs::read_to_string(&journal_file).unwrap();
+    assert!(content.contains("Backdated entry"));
+}
+
+#[tokio::test]
+async fn test_journal_invalid_date_returns_error() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    write_config(&config_path, workspace_dir.path()).await;
+
+    let result = run_cli(
+        CliCommand::Journal(JournalArgs {
+            date: Some("not-a-date".to_string()),
+            content: Some("content".to_string()),
+            subcommand: None,
+        }),
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_err(), "invalid date should return an error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("Invalid date"), "error should mention invalid date, got: {}", msg);
+}
+
+#[tokio::test]
+async fn test_journal_show_missing_entry_returns_error() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    write_config(&config_path, workspace_dir.path()).await;
+
+    let result = run_cli(
+        CliCommand::Journal(JournalArgs {
+            date: None,
+            content: None,
+            subcommand: Some(JournalSubcommand::Show {
+                date: Some("1999-01-01".to_string()),
+                format: kimun_notes::cli::output::OutputFormat::Text,
+            }),
+        }),
+        Some(config_path),
+    )
+    .await;
+
+    assert!(result.is_err(), "show on missing entry should return an error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("No journal entry found"), "got: {}", msg);
 }
 
 // --- note show ---
