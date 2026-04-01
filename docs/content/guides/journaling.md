@@ -18,7 +18,9 @@ Press `Ctrl+J` to create a new journal entry. Kimun creates a file named with to
 ### In the CLI
 
 ```sh
-kimun note journal          # Create today's journal entry (or open if it exists)
+kimun journal               # Append to today's journal entry (creates it if it doesn't exist)
+kimun journal "Quick note"  # Append inline content
+kimun journal show          # Display today's entry
 ```
 
 ## Writing in the editor
@@ -35,6 +37,17 @@ Reviewed the Q1 roadmap...
 - [ ] Follow up with Alex
 - [ ] Finish the report draft
 ```
+
+## Writing to a specific date
+
+`kimun journal` defaults to today. Use `--date` to target a different entry:
+
+```sh
+kimun journal --date 2024-01-15 "Retroactive note for January 15th"
+kimun journal --date 2025-12-31 "New Year's Eve plans"
+```
+
+The entry will be created if it doesn't exist. The date must be in `YYYY-MM-DD` format.
 
 ## Browsing journal entries
 

@@ -24,7 +24,7 @@ Copy the skill to your Claude skills directory:
 cp -r skills/kimun-cli ~/.claude/skills/
 ```
 
-Claude Code picks it up automatically — no further configuration needed. From any session, Claude can invoke `kimun note create`, `kimun note append`, `kimun note journal`, `kimun search`, and related commands on your behalf.
+Claude Code picks it up automatically — no further configuration needed. From any session, Claude can invoke `kimun note create`, `kimun note append`, `kimun journal`, `kimun search`, and related commands on your behalf.
 
 ### Other AI tools
 

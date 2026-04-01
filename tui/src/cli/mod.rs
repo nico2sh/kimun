@@ -9,6 +9,7 @@ use clap::Subcommand;
 use color_eyre::eyre::{Result, eyre};
 use commands::note_ops::NoteSubcommand;
 use commands::workspace::WorkspaceSubcommand;
+use commands::journal::JournalArgs;
 use helpers::{
     create_and_init_vault, load_and_resolve_workspace, load_settings, resolve_quick_note_path,
 };
@@ -35,11 +36,13 @@ pub enum CliCommand {
         #[command(subcommand)]
         subcommand: WorkspaceSubcommand,
     },
-    /// Note operations (create, append, journal)
+    /// Note operations (create, append, show)
     Note {
         #[command(subcommand)]
         subcommand: NoteSubcommand,
     },
+    /// Append to or show journal entries
+    Journal(JournalArgs),
 }
 
 pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf>) -> Result<()> {
@@ -70,6 +73,10 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
         CliCommand::Notes { path, format } => {
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;
             commands::notes::run(&vault, path.as_deref(), format, &workspace_name, false).await
+        }
+        CliCommand::Journal(args) => {
+            let (vault, workspace_name) = create_and_init_vault(config_path).await?;
+            commands::journal::run(args, &vault, &workspace_name).await
         }
     }
 }

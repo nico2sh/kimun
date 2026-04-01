@@ -13,7 +13,10 @@ Kimün is a local-first, terminal notes app. Notes are plain Markdown files inde
 |------|---------|
 | Create note | `kimun note create "path" "content"` |
 | Append to note | `kimun note append "path" "content"` |
-| Log to today's journal | `kimun note journal "text"` |
+| Log to today's journal | `kimun journal "text"` |
+| Log to a specific date | `kimun journal --date YYYY-MM-DD "text"` |
+| Show today's journal | `kimun journal show` |
+| Show a specific journal entry | `kimun journal show --date YYYY-MM-DD` |
 | Show note content | `kimun note show "path"` |
 | Search notes | `kimun search "query"` |
 | List notes | `kimun notes` |
@@ -38,13 +41,23 @@ kimun note append "inbox/log" "New entry"
 echo "Entry" | kimun note append "inbox/log"
 ```
 
-### Journal
-Appends to today's journal (`journal/YYYY-MM-DD.md`). No path argument — always targets today.
+## Journal
+
+`kimun journal` appends to a journal entry (today by default). `kimun journal show` displays one.
 
 ```sh
-kimun note journal "Captured this finding"
-echo "$(date +%H:%M) — task complete" | kimun note journal
+kimun journal "Captured this finding"             # append to today
+kimun journal --date 2024-01-15 "Backdated note"  # append to specific date
+echo "$(date +%H:%M) — task complete" | kimun journal
+
+kimun journal show                                # show today's entry
+kimun journal show --date 2024-01-15             # show specific date
+kimun journal show --format json                 # JSON output
 ```
+
+- Defaults to today; `--date YYYY-MM-DD` targets any date
+- Creates the entry if it doesn't exist
+- `show` supports `--format text` (default) and `--format json`
 
 ## Path Rules
 
@@ -55,15 +68,50 @@ echo "$(date +%H:%M) — task complete" | kimun note journal
 ## Searching
 
 ```sh
-kimun search "query"                     # Full-text search
-kimun search "meeting -cancelled"        # Exclude a term
-kimun search "@filename-fragment"        # Filter by filename
-kimun search ">section-name query"       # Search within a Markdown section
-kimun search "query" --format json       # Structured JSON output
-kimun search "query" --format paths      # Bare paths, one per line (pipeable)
+kimun search "query"               # Full-text search
+kimun search "query" --format json # JSON output
+kimun search "query" --format paths # Bare paths, one per line (pipeable)
 ```
 
-Query syntax summary: free text is case-insensitive with `*` wildcard; `@` filters by filename; `>` filters by section heading; `-` negates any term.
+### Query syntax
+
+Free text is case-insensitive, diacritics-ignored. Multiple terms = AND.
+
+**Wildcards** — `*` matches any sequence of characters, works in free text and with operators:
+
+```
+kimu*          # starts with "kimu"
+*report        # ends with "report"
+*meeting*      # contains "meeting" anywhere
+@task*         # filename starts with "task"
+@*2024*        # filename contains "2024"
+```
+
+| Operator | Long form | Matches |
+|----------|-----------|---------|
+| `@term` | `at:term` | filename contains term |
+| `>term` | `in:term` | Markdown section heading contains term |
+| `/term` | `pt:term` | note path (directory) contains term |
+| `-term` | | exclude notes containing term |
+
+**Exclusion composes with all operators:**
+
+```
+-cancelled           # exclude notes containing "cancelled"
+@-temp               # exclude notes with "temp" in filename
+>-draft              # exclude notes with "draft" in any section title
+/-private            # exclude notes under a "private/" path
+```
+
+**Combining filters** (all terms are ANDed):
+
+```
+meeting -cancelled           # "meeting" but not "cancelled"
+@tasks >work report          # file "tasks", has "Work" section, contains "report"
+@2024 >-draft                # files from 2024, no "draft" section title
+/journal >tasks -done        # in journal/, "tasks" section, excluding "done"
+>personal kimun              # "kimun" under a "Personal" section
+```
 
 ## Reading Notes
 
@@ -77,7 +125,7 @@ kimun notes --format paths               # Bare paths for piping
 
 ## JSON Output
 
-`search` and `notes` both support `--format json`. Each note object includes:
+`search`, `notes`, `note show`, and `journal show` all support `--format json`. Each note object includes:
 `path`, `title`, `content`, `size`, `modified`, `journal_date`, `metadata.tags`, `metadata.links`, `metadata.headers`.
 
 ```sh
@@ -90,6 +138,9 @@ kimun notes --format json | jq '.notes[] | select(.journal_date != null)'
 # Filter by tag
 kimun search "project" --format json | jq '.notes[] | select(.metadata.tags[] == "active")'
 
+# Get today's journal headings
+kimun journal show --format json | jq '.notes[0].metadata.headers[].text'
+
 # Pipe search results directly into note show
 kimun search "todo" --format paths | kimun note show
 ```
@@ -98,7 +149,7 @@ kimun search "todo" --format paths | kimun note show
 
 ```sh
 # Log a research finding to today's journal
-kimun note journal "Finding: X is faster than Y for large datasets"
+kimun journal "Finding: X is faster than Y for large datasets"
 
 # Capture command output as a timestamped note
 some-command | kimun note create "logs/output-$(date +%F)"
@@ -112,6 +163,9 @@ kimun search "authentication" --format json | jq '.notes[] | {title, path}'
 # Read a specific note for context
 kimun note show "projects/roadmap"
 
+# Read today's journal for context
+kimun journal show
+
 # Chain: search → read all matching notes
 kimun search "meeting notes" --format paths | kimun note show
 ```
@@ -119,5 +173,6 @@ kimun search "meeting notes" --format paths | kimun note show
 ## Common Mistakes
 
 - **`create` on an existing note** — it fails. Use `append` when you're not sure if the note exists.
-- **No stdin from a live terminal** — piping works (`echo "x" | kimun note journal`); passing no content from an interactive terminal produces an empty write.
+- **No stdin from a live terminal** — piping works (`echo "x" | kimun journal`); passing no content from an interactive terminal produces an empty write.
 - **Relative vs absolute paths** — if a `quick_note_path` is set in `kimun_config.toml`, relative paths are resolved against it. Prefix with `/` to always target the vault root explicitly.
+- **`kimun journal show` — `--format paths` is not supported**; use `text` or `json`.
