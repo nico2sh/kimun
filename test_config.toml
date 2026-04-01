@@ -23,10 +23,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 config_version = 2
 workspace_dir = "/Users/nhormazabal/Documents/Notes"
-last_paths = ["/one.md", "test.md", "/directory/another.md", "/work/another.md", "/test.md", "/testing.md", "/nico.md", "/journal/2026-03-31.md"]
+last_paths = ["/one.md", "test.md", "/directory/another.md", "/work/another.md", "/test.md", "/testing.md", "/nico.md", "/journal/2026-03-31.md", "/journal/2026-04-01.md"]
 theme = ""
 autosave_interval_secs = 5
-use_nerd_fonts = false
+use_nerd_fonts = true
 editor_backend = "textarea"
 default_sort_field = "name"
 default_sort_order = "ascending"
