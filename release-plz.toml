@@ -5,3 +5,4 @@ git_tag_name = "kimun_core-v{{ version }}"
 [[package]]
 name = "kimun-notes"
 git_tag_name = "kimun-notes-v{{ version }}"
+pre_release = false
