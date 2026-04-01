@@ -91,6 +91,27 @@ pub fn resolve_note_path(input: &str, quick_note_path: &str) -> Result<VaultPath
     Ok(VaultPath::note_path_from(&raw))
 }
 
+/// Returns content from the Option, or reads from stdin if not a TTY.
+/// Returns an empty string if content is None and stdin is a TTY.
+/// Propagates I/O errors from stdin.
+pub fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<String> {
+    use std::io::IsTerminal;
+    match content {
+        Some(c) => Ok(c),
+        None => {
+            if std::io::stdin().is_terminal() {
+                Ok(String::new())
+            } else {
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf)
+                    .map_err(|e| color_eyre::eyre::eyre!("Failed to read stdin: {}", e))?;
+                Ok(buf.trim_end_matches(|c| c == '\n' || c == '\r').to_string())
+            }
+        }
+    }
+}
+
 /// Create and initialize a vault from workspace configuration.
 ///
 /// This handles the common pattern of creating a NoteVault from workspace settings

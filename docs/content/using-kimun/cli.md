@@ -250,19 +250,28 @@ EOF
 kimun search "rust" --format paths | kimun note append "inbox/rust-refs"
 ```
 
-### Journal
+## Journal
 
-Append text to today's journal entry (`journal/YYYY-MM-DD.md`). Creates the entry and the `journal/` directory if they do not exist.
+Append to or show journal entries. Journal entries are stored as `YYYY-MM-DD.md` files in the vault's configured journal directory.
 
 ```sh
-kimun note journal "Today's entry"
-echo "Event happened" | kimun note journal
+kimun journal "Today's entry"
+kimun journal --date 2024-01-15 "Retroactive entry"
+kimun journal show
+kimun journal show --date 2024-01-15
+```
+
+### Append
+
+Appends text to a journal entry. Creates the entry if it does not exist.
+
+```sh
+kimun journal [--date YYYY-MM-DD] [content]
 ```
 
 ### Features
 
-- No path argument — always targets today's date automatically
-- Creates `journal/YYYY-MM-DD.md` in the vault if it does not exist
+- Defaults to today's date; use `--date` to target a specific entry
 - Accepts content as an argument or from stdin (when stdin is not a TTY)
 - New content is joined with a newline after any existing content
 - Prints `Note saved: <path>` on success
@@ -271,16 +280,19 @@ echo "Event happened" | kimun note journal
 
 ```sh
 # Capture a quick thought
-kimun note journal "Had a good retro today"
+kimun journal "Had a good retro today"
 
 # Pipe in a timestamped log line
-echo "$(date +%H:%M) — finished the auth refactor" | kimun note journal
+echo "$(date +%H:%M) — finished the auth refactor" | kimun journal
 
 # Record the result of a script
-./run-tests.sh | tail -1 | kimun note journal
+./run-tests.sh | tail -1 | kimun journal
+
+# Append to a specific date's entry
+kimun journal --date 2024-01-15 "Retroactive note"
 
 # Append a longer entry with a here-string
-kimun note journal <<'EOF'
+kimun journal <<'EOF'
 
 ## Evening review
 
@@ -290,10 +302,39 @@ kimun note journal <<'EOF'
 EOF
 
 # Use in a cron job to log system info daily
-@daily kimun note journal "$(hostname): $(uptime)"
+@daily kimun journal "$(hostname): $(uptime)"
 
 # Chain with other commands — log search activity
-kimun search "todo" --format paths | xargs -I{} echo "open: {}" | kimun note journal
+kimun search "todo" --format paths | xargs -I{} echo "open: {}" | kimun journal
+```
+
+### Show
+
+Displays a journal entry's content and metadata.
+
+```sh
+kimun journal show [--date YYYY-MM-DD] [--format text|json]
+```
+
+### Flags
+
+- `--date <YYYY-MM-DD>` — Show a specific date's entry (defaults to today).
+- `--format json` — Output as JSON. Useful for scripting with `jq`.
+
+### Examples
+
+```sh
+# Show today's journal entry
+kimun journal show
+
+# Show a specific date
+kimun journal show --date 2024-01-15
+
+# Output as JSON for scripting
+kimun journal show --format json | jq '.notes[0].metadata.headers'
+
+# Get today's headings
+kimun journal show --format json | jq '.notes[0].metadata.headers[].text'
 ```
 
 ## JSON Output

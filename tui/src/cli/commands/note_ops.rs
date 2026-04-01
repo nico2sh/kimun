@@ -1,6 +1,6 @@
 // tui/src/cli/commands/note_ops.rs
 //
-// CLI commands for note create, append, and journal operations.
+// CLI commands for note create, append, and show operations.
 
 use clap::Subcommand;
 use color_eyre::eyre::Result;
@@ -21,11 +21,6 @@ pub enum NoteSubcommand {
     Append {
         /// Note path, relative to quick_note_path or absolute from vault root
         path: String,
-        /// Text to append (reads from stdin if omitted and stdin is not a TTY)
-        content: Option<String>,
-    },
-    /// Append text to today's journal entry (creates it if it does not exist)
-    Journal {
         /// Text to append (reads from stdin if omitted and stdin is not a TTY)
         content: Option<String>,
     },
@@ -51,9 +46,6 @@ pub async fn run(
         NoteSubcommand::Append { path, content } => {
             run_append(vault, &path, content, quick_note_path).await
         }
-        NoteSubcommand::Journal { content } => {
-            run_journal(vault, content).await
-        }
         NoteSubcommand::Show { paths, format } => {
             use std::io::IsTerminal;
             let reader = if std::io::stdin().is_terminal() {
@@ -73,7 +65,7 @@ async fn run_create(
     content: Option<String>,
     quick_note_path: &str,
 ) -> Result<()> {
-    use crate::cli::helpers::resolve_note_path;
+    use crate::cli::helpers::{resolve_note_path, resolve_content};
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
     let text = resolve_content(content)?;
@@ -97,7 +89,7 @@ async fn run_append(
     content: Option<String>,
     quick_note_path: &str,
 ) -> Result<()> {
-    use crate::cli::helpers::resolve_note_path;
+    use crate::cli::helpers::{resolve_note_path, resolve_content};
     use kimun_core::error::FSError;
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
@@ -134,26 +126,7 @@ async fn run_append(
     Ok(())
 }
 
-async fn run_journal(vault: &NoteVault, content: Option<String>) -> Result<()> {
-    let text = resolve_content(content)?;
-
-    if text.is_empty() {
-        return Ok(());
-    }
-
-    // journal_entry() handles create-if-absent internally, so no TOCTOU retry needed here.
-    let (details, existing) = vault.journal_entry().await
-        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-
-    let combined = format!("{}\n{}", existing, text);
-    vault.save_note(&details.path, &combined).await
-        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-
-    println!("Note saved: {}", details.path);
-    Ok(())
-}
-
-fn format_note_show_text(
+pub(crate) fn format_note_show_text(
     path: &kimun_core::nfs::VaultPath,
     content: &str,
     title: &str,
@@ -370,27 +343,6 @@ async fn run_show(
     }
 
     Ok(())
-}
-
-/// Returns content from the Option, or reads from stdin if not a TTY.
-/// Returns an empty string if content is None and stdin is a TTY.
-/// Propagates I/O errors from stdin.
-fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<String> {
-    use std::io::IsTerminal;
-    match content {
-        Some(c) => Ok(c),
-        None => {
-            if std::io::stdin().is_terminal() {
-                Ok(String::new())
-            } else {
-                use std::io::Read;
-                let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf)
-                    .map_err(|e| color_eyre::eyre::eyre!("Failed to read stdin: {}", e))?;
-                Ok(buf.trim_end_matches(|c| c == '\n' || c == '\r').to_string())
-            }
-        }
-    }
 }
 
 #[cfg(test)]
