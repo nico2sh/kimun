@@ -1,5 +1,9 @@
 # Kimün
 
+<p align="center">
+  <img src="docs/static/img/kimun.png" alt="Kimün logo" width="128"/>
+</p>
+
 [![Crates.io](https://img.shields.io/crates/v/kimun-notes)](https://crates.io/crates/kimun-notes)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-nico2sh.github.io%2Fkimun-blue)](https://nico2sh.github.io/kimun/)
