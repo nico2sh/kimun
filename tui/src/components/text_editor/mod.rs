@@ -112,15 +112,21 @@ impl TextEditorComponent {
     pub fn get_text(&self) -> String {
         match &self.backend {
             BackendState::Textarea(ta) => ta.lines().join("\n"),
-            BackendState::Nvim(nvim) => {
-                nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).lines.join("\n")
-            }
+            BackendState::Nvim(nvim) => nvim
+                .snapshot
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .lines
+                .join("\n"),
         }
     }
 
     pub fn mark_saved(&mut self, text: String) {
         if let BackendState::Nvim(nvim) = &self.backend {
-            nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).dirty = false;
+            nvim.snapshot
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .dirty = false;
         }
         self.last_saved_text = text;
     }
@@ -129,7 +135,10 @@ impl TextEditorComponent {
         match &self.backend {
             BackendState::Textarea(_) => self.get_text() != self.last_saved_text,
             BackendState::Nvim(nvim) => {
-                nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).dirty
+                nvim.snapshot
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .dirty
             }
         }
     }
@@ -137,7 +146,7 @@ impl TextEditorComponent {
     /// Returns the raw link target under the cursor, or `None` if the cursor
     /// is not inside a wikilink or markdown link span.
     pub fn link_at_cursor(&self) -> Option<String> {
-        let (row, col, line) = match &self.backend {
+        let (_row, col, line) = match &self.backend {
             BackendState::Textarea(ta) => {
                 let (row, col) = ta.cursor();
                 let line = ta.lines().get(row)?.to_string();
@@ -160,8 +169,12 @@ impl TextEditorComponent {
     fn copy_selection_to_clipboard(&mut self) {
         // Scope the borrow of self.backend so self.clipboard can be borrowed after.
         let text = {
-            let BackendState::Textarea(ta) = &self.backend else { return };
-            let Some(((sr, sc), (er, ec))) = ta.selection_range() else { return };
+            let BackendState::Textarea(ta) = &self.backend else {
+                return;
+            };
+            let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
+                return;
+            };
             let lines = ta.lines();
             if sr == er {
                 lines[sr].get(sc..ec).unwrap_or("").to_string()
@@ -208,7 +221,13 @@ impl Component for TextEditorComponent {
         // Extract fallback text first (scoping the borrow), then reassign self.backend.
         let fallback_text = if let BackendState::Nvim(nvim) = &self.backend {
             if nvim.is_dead.load(Ordering::SeqCst) {
-                Some(nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).lines.join("\n"))
+                Some(
+                    nvim.snapshot
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .lines
+                        .join("\n"),
+                )
             } else {
                 None
             }
@@ -280,7 +299,8 @@ impl Component for TextEditorComponent {
                         let (is_cmd, cmdline) = {
                             let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                             let cmd = if snap.mode == NvimMode::Command {
-                                snap.cmdline.as_deref()
+                                snap.cmdline
+                                    .as_deref()
                                     .unwrap_or("")
                                     .trim_start_matches(':')
                                     .to_string()
@@ -294,10 +314,11 @@ impl Component for TextEditorComponent {
                                 cmdline.as_str(),
                                 "w" | "wq" | "wq!" | "wqa" | "wqa!" | "x" | "xa" | "x!"
                             );
-                            let quits = saves || matches!(
-                                cmdline.as_str(),
-                                "q" | "q!" | "qa" | "qa!" | "cq" | "cq!"
-                            );
+                            let quits = saves
+                                || matches!(
+                                    cmdline.as_str(),
+                                    "q" | "q!" | "qa" | "qa!" | "cq" | "cq!"
+                                );
                             if quits {
                                 // Cancel the command in nvim so the process stays alive.
                                 nvim.handle_key(
@@ -403,24 +424,66 @@ impl Component for TextEditorComponent {
                 // all navigation and editing shortcuts must be mapped explicitly.
                 let shortcut_handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
                     // --- Cursor movement (Shift extends the selection) ---
-                    (KeyModifiers::NONE, KeyCode::Left)     => { cursor_move!(ta, CursorMove::Back,             shift); true }
-                    (KeyModifiers::NONE, KeyCode::Right)    => { cursor_move!(ta, CursorMove::Forward,          shift); true }
-                    (KeyModifiers::NONE, KeyCode::Up)       => { cursor_move!(ta, CursorMove::Up,               shift); true }
-                    (KeyModifiers::NONE, KeyCode::Down)     => { cursor_move!(ta, CursorMove::Down,             shift); true }
-                    (KeyModifiers::NONE, KeyCode::Home)     => { cursor_move!(ta, CursorMove::Head,             shift); true }
-                    (KeyModifiers::NONE, KeyCode::End)      => { cursor_move!(ta, CursorMove::End,              shift); true }
-                    (KeyModifiers::NONE, KeyCode::PageUp)   => { cursor_move!(ta, CursorMove::ParagraphBack,    shift); true }
-                    (KeyModifiers::NONE, KeyCode::PageDown) => { cursor_move!(ta, CursorMove::ParagraphForward, shift); true }
+                    (KeyModifiers::NONE, KeyCode::Left) => {
+                        cursor_move!(ta, CursorMove::Back, shift);
+                        true
+                    }
+                    (KeyModifiers::NONE, KeyCode::Right) => {
+                        cursor_move!(ta, CursorMove::Forward, shift);
+                        true
+                    }
+                    (KeyModifiers::NONE, KeyCode::Up) => {
+                        cursor_move!(ta, CursorMove::Up, shift);
+                        true
+                    }
+                    (KeyModifiers::NONE, KeyCode::Down) => {
+                        cursor_move!(ta, CursorMove::Down, shift);
+                        true
+                    }
+                    (KeyModifiers::NONE, KeyCode::Home) => {
+                        cursor_move!(ta, CursorMove::Head, shift);
+                        true
+                    }
+                    (KeyModifiers::NONE, KeyCode::End) => {
+                        cursor_move!(ta, CursorMove::End, shift);
+                        true
+                    }
+                    (KeyModifiers::NONE, KeyCode::PageUp) => {
+                        cursor_move!(ta, CursorMove::ParagraphBack, shift);
+                        true
+                    }
+                    (KeyModifiers::NONE, KeyCode::PageDown) => {
+                        cursor_move!(ta, CursorMove::ParagraphForward, shift);
+                        true
+                    }
                     // Word navigation (Ctrl+arrow, Windows/Linux style)
-                    (KeyModifiers::CONTROL, KeyCode::Left)  => { cursor_move!(ta, CursorMove::WordBack,    shift); true }
-                    (KeyModifiers::CONTROL, KeyCode::Right) => { cursor_move!(ta, CursorMove::WordForward, shift); true }
+                    (KeyModifiers::CONTROL, KeyCode::Left) => {
+                        cursor_move!(ta, CursorMove::WordBack, shift);
+                        true
+                    }
+                    (KeyModifiers::CONTROL, KeyCode::Right) => {
+                        cursor_move!(ta, CursorMove::WordForward, shift);
+                        true
+                    }
                     // Document start / end
-                    (KeyModifiers::CONTROL, KeyCode::Home) => { cursor_move!(ta, CursorMove::Top,    shift); true }
-                    (KeyModifiers::CONTROL, KeyCode::End)  => { cursor_move!(ta, CursorMove::Bottom, shift); true }
+                    (KeyModifiers::CONTROL, KeyCode::Home) => {
+                        cursor_move!(ta, CursorMove::Top, shift);
+                        true
+                    }
+                    (KeyModifiers::CONTROL, KeyCode::End) => {
+                        cursor_move!(ta, CursorMove::Bottom, shift);
+                        true
+                    }
                     // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
-                    (KeyModifiers::CONTROL, KeyCode::Char('z')) => { ta.undo(); true }
+                    (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
+                        ta.undo();
+                        true
+                    }
                     (KeyModifiers::CONTROL, KeyCode::Char('y'))
-                    | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => { ta.redo(); true }
+                    | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => {
+                        ta.redo();
+                        true
+                    }
                     // Select all
                     (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
                         ta.move_cursor(CursorMove::Top);
@@ -430,9 +493,15 @@ impl Component for TextEditorComponent {
                     }
                     // Delete word before / after cursor
                     (KeyModifiers::CONTROL, KeyCode::Backspace)
-                    | (KeyModifiers::ALT,   KeyCode::Backspace) => { ta.delete_word(); true }
+                    | (KeyModifiers::ALT, KeyCode::Backspace) => {
+                        ta.delete_word();
+                        true
+                    }
                     (KeyModifiers::CONTROL, KeyCode::Delete)
-                    | (KeyModifiers::ALT,   KeyCode::Delete)    => { ta.delete_next_word(); true }
+                    | (KeyModifiers::ALT, KeyCode::Delete) => {
+                        ta.delete_next_word();
+                        true
+                    }
                     _ => false,
                 };
                 if shortcut_handled {
@@ -507,7 +576,8 @@ impl Component for TextEditorComponent {
             BackendState::Textarea(ta) => {
                 let cursor = ta.cursor();
                 let lines = ta.lines();
-                self.view.update(lines, cursor, rect, self.edit_generation, self.selection);
+                self.view
+                    .update(lines, cursor, rect, self.edit_generation, self.selection);
             }
             BackendState::Nvim(nvim) => {
                 nvim.maybe_resize(rect.width, rect.height);
@@ -517,7 +587,8 @@ impl Component for TextEditorComponent {
                 let content_gen = snap.content_gen;
                 let visual_selection = snap.visual_selection;
                 drop(snap);
-                self.view.update(&lines, cursor, rect, content_gen, visual_selection);
+                self.view
+                    .update(&lines, cursor, rect, content_gen, visual_selection);
             }
         }
         self.view.render(f, rect, theme, focused);
@@ -528,7 +599,11 @@ impl Component for TextEditorComponent {
 
         // For the Nvim backend, prepend the current mode as the first "hint".
         if let BackendState::Nvim(nvim) = &self.backend {
-            let label = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner()).footer_label();
+            let label = nvim
+                .snapshot
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .footer_label();
             let mut hints = vec![(String::new(), label)];
             hints.extend(
                 [
@@ -565,7 +640,10 @@ mod tests {
     use crate::keys::KeyBindings;
 
     fn make_editor() -> TextEditorComponent {
-        TextEditorComponent::new(KeyBindings::empty(), &crate::settings::AppSettings::default())
+        TextEditorComponent::new(
+            KeyBindings::empty(),
+            &crate::settings::AppSettings::default(),
+        )
     }
 
     fn get_ta(editor: &mut TextEditorComponent) -> &mut TextArea<'static> {
@@ -667,6 +745,10 @@ mod tests {
         let editor = make_editor();
         let hints = editor.hint_shortcuts();
         // None of the hint labels should be "NORMAL", "INSERT", etc.
-        assert!(!hints.iter().any(|(_, label)| label == "NORMAL" || label == "INSERT"));
+        assert!(
+            !hints
+                .iter()
+                .any(|(_, label)| label == "NORMAL" || label == "INSERT")
+        );
     }
 }
