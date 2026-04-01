@@ -59,7 +59,7 @@ The `skills/` directory contains ready-made skills for AI coding assistants, so 
 
 ```sh
 # Copy the skill to your Claude skills directory
-cp -r skills/kimun-cli ~/.claude/skills/
+cp -r skills/kimun-cli ~/.claude/skills
 ```
 
 Claude Code will pick it up automatically. In any session, Claude can now create and append notes, log to your journal, and search your vault using the CLI.
@@ -134,4 +134,4 @@ The tag triggers the CI workflow, which:
 - [X] Autosave
 - [X] Wikilinks in preview
 - [X] Navigate notes via links in preview
-- [ ] Embed neoVim as an option
+- [X] Embed neoVim as an option (currently experimental)
