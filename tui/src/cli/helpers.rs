@@ -2,11 +2,11 @@
 //
 // Common helper functions for CLI operations to reduce code duplication.
 
-use std::path::PathBuf;
+use crate::settings::AppSettings;
 use color_eyre::eyre::Result;
 use kimun_core::NoteVault;
-use kimun_core::nfs::{VaultPath, PATH_SEPARATOR};
-use crate::settings::AppSettings;
+use kimun_core::nfs::{PATH_SEPARATOR, VaultPath};
+use std::path::PathBuf;
 
 /// Load settings from either a specific config file path or the default location.
 pub fn load_settings(config_path: Option<PathBuf>) -> Result<AppSettings> {
@@ -26,21 +26,25 @@ pub fn resolve_workspace_config(settings: &AppSettings) -> Result<(PathBuf, Stri
     }
 
     // Check Phase 2 workspace configuration
-    if let Some(ref ws_config) = settings.workspace_config {
-        if let Some(entry) = ws_config.get_current_workspace() {
-            let name = ws_config.global.current_workspace.clone();
-            return Ok((entry.path.clone(), name));
-        }
+    if let Some(ref ws_config) = settings.workspace_config
+        && let Some(entry) = ws_config.get_current_workspace()
+    {
+        let name = ws_config.global.current_workspace.clone();
+        return Ok((entry.path.clone(), name));
     }
 
-    Err(color_eyre::eyre::eyre!("No workspace configured. Run 'kimun' to set up a workspace."))
+    Err(color_eyre::eyre::eyre!(
+        "No workspace configured. Run 'kimun' to set up a workspace."
+    ))
 }
 
 /// Load settings and resolve workspace configuration in one operation.
 ///
 /// This is a convenience function that combines loading settings and resolving
 /// the workspace configuration, which is a common pattern in CLI commands.
-pub fn load_and_resolve_workspace(config_path: Option<PathBuf>) -> Result<(AppSettings, PathBuf, String)> {
+pub fn load_and_resolve_workspace(
+    config_path: Option<PathBuf>,
+) -> Result<(AppSettings, PathBuf, String)> {
     let settings = load_settings(config_path)?;
     let (workspace_path, workspace_name) = resolve_workspace_config(&settings)?;
     Ok((settings, workspace_path, workspace_name))
@@ -55,10 +59,10 @@ pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
         return root;
     }
     // Phase 2: workspace_config
-    if let Some(ref ws_config) = settings.workspace_config {
-        if let Some(entry) = ws_config.get_current_workspace() {
-            return entry.effective_quick_note_path();
-        }
+    if let Some(ref ws_config) = settings.workspace_config
+        && let Some(entry) = ws_config.get_current_workspace()
+    {
+        return entry.effective_quick_note_path();
     }
     root
 }
@@ -73,10 +77,14 @@ pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
 pub fn resolve_note_path(input: &str, quick_note_path: &str) -> Result<VaultPath> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(color_eyre::eyre::eyre!("Note path cannot be empty or whitespace-only"));
+        return Err(color_eyre::eyre::eyre!(
+            "Note path cannot be empty or whitespace-only"
+        ));
     }
     if trimmed.len() == 1 && trimmed.starts_with(PATH_SEPARATOR) {
-        return Err(color_eyre::eyre::eyre!("Note path cannot be the root separator alone"));
+        return Err(color_eyre::eyre::eyre!(
+            "Note path cannot be the root separator alone"
+        ));
     }
     let raw = if trimmed.starts_with(PATH_SEPARATOR) {
         trimmed.to_string()
@@ -104,9 +112,10 @@ pub fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<Stri
             } else {
                 use std::io::Read;
                 let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf)
+                std::io::stdin()
+                    .read_to_string(&mut buf)
                     .map_err(|e| color_eyre::eyre::eyre!("Failed to read stdin: {}", e))?;
-                Ok(buf.trim_end_matches(|c| c == '\n' || c == '\r').to_string())
+                Ok(buf.trim_end_matches(['\n', '\r']).to_string())
             }
         }
     }
@@ -116,9 +125,7 @@ pub fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<Stri
 ///
 /// This handles the common pattern of creating a NoteVault from workspace settings
 /// and initializing/validating its database.
-pub async fn create_and_init_vault(
-    config_path: Option<PathBuf>
-) -> Result<(NoteVault, String)> {
+pub async fn create_and_init_vault(config_path: Option<PathBuf>) -> Result<(NoteVault, String)> {
     let (_settings, workspace_path, workspace_name) = load_and_resolve_workspace(config_path)?;
 
     let vault = NoteVault::new(&workspace_path).await?;

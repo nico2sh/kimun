@@ -130,9 +130,9 @@ impl Component for SidebarComponent {
         // Intercept Enter when the selected entry is a CreateNote.
         // The sidebar owns the vault, so it creates the note here before
         // forwarding OpenPath — mirroring the note browser modal pattern.
-        if let InputEvent::Key(key) = event {
-            if key.code == KeyCode::Enter {
-                if let Some(FileListEntry::CreateNote { path, .. }) =
+        if let InputEvent::Key(key) = event
+            && key.code == KeyCode::Enter
+                && let Some(FileListEntry::CreateNote { path, .. }) =
                     self.file_list.selected_entry()
                 {
                     let path = path.clone();
@@ -147,17 +147,14 @@ impl Component for SidebarComponent {
                     });
                     return EventState::Consumed;
                 }
-            }
-        }
 
         let result = self.file_list.handle_input(event, tx);
 
         // After a key that modifies the search query, keep the create entry in sync.
-        if let InputEvent::Key(key) = event {
-            if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
+        if let InputEvent::Key(key) = event
+            && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
                 self.sync_create_entry();
             }
-        }
 
         result
     }

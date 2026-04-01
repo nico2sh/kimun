@@ -17,13 +17,12 @@ pub fn extract_tags(content: &str) -> Vec<String> {
     let mut tags: HashSet<String> = HashSet::new();
 
     // Extract from YAML frontmatter
-    if let Some(frontmatter) = extract_frontmatter(content) {
-        if let Some(yaml_tags) = extract_frontmatter_tags(&frontmatter) {
+    if let Some(frontmatter) = extract_frontmatter(content)
+        && let Some(yaml_tags) = extract_frontmatter_tags(&frontmatter) {
             for tag in yaml_tags {
                 tags.insert(tag);
             }
         }
-    }
 
     // Extract hashtags from content
     for capture in hashtag_regex().captures_iter(content) {
@@ -48,13 +47,12 @@ pub fn extract_headers(content: &str) -> Vec<JsonHeader> {
     let mut headers: Vec<JsonHeader> = Vec::new();
 
     for line in content.lines() {
-        if let Some(capture) = header_regex().captures(line) {
-            if let (Some(level_match), Some(text_match)) = (capture.get(1), capture.get(2)) {
+        if let Some(capture) = header_regex().captures(line)
+            && let (Some(level_match), Some(text_match)) = (capture.get(1), capture.get(2)) {
                 let level = level_match.as_str().len() as u32;
                 let text = text_match.as_str().trim().to_string();
                 headers.push(JsonHeader { text, level });
             }
-        }
     }
 
     headers
