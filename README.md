@@ -11,6 +11,25 @@ Notes are plain Markdown files stored in a directory you own. Kimün indexes the
 
 If you are already using another markdown, local-first, note-taking app, you should feel right at home and be able to use Kimün just like your existing app (QownNotes, Obsidian, Logseq, etc.), only that in this case, it is on your terminal emulator.
 
+## Two ways to use it
+
+**TUI** — an interactive terminal interface for writing, browsing, and organizing notes. Navigate your vault, search across notes, follow wiki links, and manage files without leaving the terminal.
+
+**CLI** — a scriptable interface for automation and integration. Pipe output, capture command results into notes, log to your journal from cron jobs, or build custom workflows with `jq` and shell scripts:
+
+```sh
+# Quick capture from anywhere
+kimun note journal "Fixed the auth bug, deploying at 17:00"
+
+# Pipe command output into a note
+./run-tests.sh | tail -5 | kimun note append "logs/test-log"
+
+# Search and process results
+kimun search "todo" --format json | jq '.notes[] | {title, path}'
+```
+
+The CLI is also well-suited for integration with AI tools and agents. An AI assistant can create, append, and search notes on your behalf — logging findings, organizing research, or updating your journal as part of an automated workflow.
+
 > Note: There is a fair amount of AI-assisted code (using Claude) with manual reviews, although most of the core was written with my human hands. Initially for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the foundations of more complex stuff, especially on the UI side. Anyway, I guess the lesson is, use AI as a tool, not as a replacement.
 
 ![Kimün screenshot](docs/static/screenshot.png)
@@ -31,6 +50,25 @@ brew install kimun
 ```sh
 cargo install kimun-notes
 ```
+
+## AI Skills
+
+The `skills/` directory contains ready-made skills for AI coding assistants, so they can use the Kimün CLI on your behalf — capturing notes, appending to your journal, searching your vault, and more.
+
+### Claude Code
+
+```sh
+# Copy the skill to your Claude skills directory
+cp -r skills/kimun-cli ~/.claude/skills/
+```
+
+Claude Code will pick it up automatically. In any session, Claude can now create and append notes, log to your journal, and search your vault using the CLI.
+
+### Other AI tools (Codex, Gemini CLI, etc.)
+
+Copy `skills/kimun-cli/SKILL.md` to wherever your tool loads skills from, following that tool's skill installation instructions.
+
+---
 
 ## Documentation
 
