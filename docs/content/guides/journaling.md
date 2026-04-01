@@ -23,6 +23,34 @@ kimun journal "Quick note"  # Append inline content
 kimun journal show          # Display today's entry
 ```
 
+### Piping content
+
+`kimun journal` reads from stdin when no content argument is provided and stdin is not a terminal. This makes it easy to capture command output directly into your journal:
+
+```sh
+# Pipe a timestamped line
+echo "$(date +%H:%M) — deployed v1.2 to production" | kimun journal
+
+# Capture the last line of a script's output
+./run-tests.sh | tail -1 | kimun journal
+
+# Log system info
+echo "$(hostname): $(uptime)" | kimun journal
+
+# Append a multi-line entry with a here-string
+kimun journal <<'EOF'
+
+## Evening review
+
+- Finished the auth refactor
+- Reviewed two PRs
+- TODO: follow up on deploy schedule
+EOF
+
+# Pipe to a specific date
+echo "Late addition" | kimun journal --date 2024-01-15
+```
+
 ## Writing in the editor
 
 Once a journal entry is open, write freely in Markdown. Use headers to organise your entry:
