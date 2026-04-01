@@ -174,29 +174,126 @@ kimun note show "inbox/meeting" --format json
 
 ### Create
 
-Create a new note (fails if it already exists):
+Create a new note. Fails with an error if the note already exists.
 
 ```sh
 kimun note create "path/to/note" "Initial content"
 echo "My content" | kimun note create "path/to/note"
 ```
 
+### Features
+
+- Accepts content as a second argument or from stdin (when stdin is not a TTY)
+- Paths are relative to the configured `quick_note_path`, or absolute from the vault root when prefixed with `/`
+- Prints `Note saved: <path>` on success
+
+### Examples
+
+```sh
+# Create a note with inline content
+kimun note create "inbox/idea" "Use kimun for daily notes"
+
+# Create a note at an absolute vault path
+kimun note create "/projects/roadmap" "Q3 goals"
+
+# Pipe content from a command
+date | kimun note create "inbox/timestamp"
+
+# Capture command output into a new note
+curl -s https://example.com/api/status | kimun note create "inbox/status-check"
+
+# Create from a here-string
+kimun note create "inbox/snippet" <<'EOF'
+## Snippet
+
+Some important code or text to save.
+EOF
+```
+
 ### Append
 
-Append text to a note (creates it if it doesn't exist):
+Append text to an existing note. Creates the note if it does not exist.
 
 ```sh
 kimun note append "path/to/note" "Appended text"
 echo "New line" | kimun note append "path/to/note"
 ```
 
+### Features
+
+- Accepts content as a second argument or from stdin (when stdin is not a TTY)
+- If the note does not exist, it is created automatically
+- New content is joined with a newline after the existing content
+- Prints `Note saved: <path>` on success
+
+### Examples
+
+```sh
+# Append a quick thought to an existing note
+kimun note append "inbox/ideas" "Another idea just came to me"
+
+# Log the output of a command to a running log note
+date >> /dev/null; echo "$(date): build succeeded" | kimun note append "logs/build-log"
+
+# Accumulate cron job output
+0 * * * * kimun note append "logs/hourly" "$(date): checked in"
+
+# Append multiline content
+kimun note append "inbox/research" <<'EOF'
+
+## New finding
+
+Something worth noting from today's reading.
+EOF
+
+# Use with search results: append a summary of found notes to a log
+kimun search "rust" --format paths | kimun note append "inbox/rust-refs"
+```
+
 ### Journal
 
-Append to today's journal entry (creates it if needed):
+Append text to today's journal entry (`journal/YYYY-MM-DD.md`). Creates the entry and the `journal/` directory if they do not exist.
 
 ```sh
 kimun note journal "Today's entry"
 echo "Event happened" | kimun note journal
+```
+
+### Features
+
+- No path argument — always targets today's date automatically
+- Creates `journal/YYYY-MM-DD.md` in the vault if it does not exist
+- Accepts content as an argument or from stdin (when stdin is not a TTY)
+- New content is joined with a newline after any existing content
+- Prints `Note saved: <path>` on success
+
+### Examples
+
+```sh
+# Capture a quick thought
+kimun note journal "Had a good retro today"
+
+# Pipe in a timestamped log line
+echo "$(date +%H:%M) — finished the auth refactor" | kimun note journal
+
+# Record the result of a script
+./run-tests.sh | tail -1 | kimun note journal
+
+# Append a longer entry with a here-string
+kimun note journal <<'EOF'
+
+## Evening review
+
+- Completed the CLI documentation
+- Reviewed two PRs
+- TODO: follow up with team on deploy schedule
+EOF
+
+# Use in a cron job to log system info daily
+@daily kimun note journal "$(hostname): $(uptime)"
+
+# Chain with other commands — log search activity
+kimun search "todo" --format paths | xargs -I{} echo "open: {}" | kimun note journal
 ```
 
 ## JSON Output
