@@ -313,8 +313,8 @@ impl AppScreen for EditorScreen {
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        if let InputEvent::Key(key) = event {
-            if let Some(combo) = key_event_to_combo(key) {
+        if let InputEvent::Key(key) = event
+            && let Some(combo) = key_event_to_combo(key) {
                 let is_fkey = matches!(
                     combo.key,
                     KeyStrike::F1
@@ -410,7 +410,6 @@ impl AppScreen for EditorScreen {
                     _ => {}
                 }
             }
-        }
 
         // Mouse events are routed to all components regardless of focus so that
         // clicking anywhere can transfer focus correctly.
@@ -420,11 +419,10 @@ impl AppScreen for EditorScreen {
                 return EventState::Consumed;
             }
             // Note browser modal intercepts all mouse events when open.
-            if matches!(self.focus, Focus::NoteBrowser) {
-                if let Some(modal) = &mut self.note_browser {
+            if matches!(self.focus, Focus::NoteBrowser)
+                && let Some(modal) = &mut self.note_browser {
                     return modal.handle_input(event, tx);
                 }
-            }
             if self.sidebar_visible && self.sidebar.handle_input(event, tx).is_consumed() {
                 return EventState::Consumed;
             }
@@ -519,11 +517,10 @@ impl AppScreen for EditorScreen {
         self.editor.render(f, editor_inner, theme, editor_focused);
 
         // Expire stale key flash
-        if let Some((_, instant)) = &self.key_flash {
-            if instant.elapsed() >= std::time::Duration::from_secs(2) {
+        if let Some((_, instant)) = &self.key_flash
+            && instant.elapsed() >= std::time::Duration::from_secs(2) {
                 self.key_flash = None;
             }
-        }
 
         let focus_label = match self.focus {
             Focus::Editor => "EDITOR",

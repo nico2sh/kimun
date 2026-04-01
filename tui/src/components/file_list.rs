@@ -489,11 +489,10 @@ impl FileListComponent {
         let offset = self.list_state.offset();
         if offset > 0 {
             *self.list_state.offset_mut() = offset - 1;
-            if let Some(sel) = self.list_state.selected() {
-                if sel > 0 {
+            if let Some(sel) = self.list_state.selected()
+                && sel > 0 {
                     self.list_state.select(Some(sel - 1));
                 }
-            }
         }
     }
 
@@ -502,11 +501,10 @@ impl FileListComponent {
         let offset = self.list_state.offset();
         if len > 0 && offset + 1 < len {
             *self.list_state.offset_mut() = offset + 1;
-            if let Some(sel) = self.list_state.selected() {
-                if sel + 1 < len {
+            if let Some(sel) = self.list_state.selected()
+                && sel + 1 < len {
                     self.list_state.select(Some(sel + 1));
                 }
-            }
         }
     }
 
@@ -647,12 +645,11 @@ impl Component for FileListComponent {
                             return EventState::Consumed;
                         }
                         Some(ActionShortcuts::FileOperations) => {
-                            if let Some(entry) = self.selected_entry() {
-                                if !matches!(entry, FileListEntry::Up { .. }) {
+                            if let Some(entry) = self.selected_entry()
+                                && !matches!(entry, FileListEntry::Up { .. }) {
                                     tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone())).ok();
                                     return EventState::Consumed;
                                 }
-                            }
                             return EventState::NotConsumed;
                         }
                         _ => {}

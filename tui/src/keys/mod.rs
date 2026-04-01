@@ -111,8 +111,8 @@ impl KeyBindings {
     }
 
     pub fn get_action(&self, combo: &KeyCombo) -> Option<ActionShortcuts> {
-        let bind = self.bindings.get(combo).map(|a| a.to_owned());
-        bind
+        
+        self.bindings.get(combo).map(|a| a.to_owned())
     }
 
     /// Returns the display string of the first combo bound to `action`, or `None`.

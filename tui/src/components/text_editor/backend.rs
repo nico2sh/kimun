@@ -64,12 +64,11 @@ impl Handler for NvimHandler {
         for arg in &args {
             if let Some(events) = arg.as_array() {
                 for event in events {
-                    if let Some(ea) = event.as_array() {
-                        if ea.first().and_then(|v| v.as_str()) == Some("flush") {
+                    if let Some(ea) = event.as_array()
+                        && ea.first().and_then(|v| v.as_str()) == Some("flush") {
                             self.flush_tx.send_modify(|v| *v = v.wrapping_add(1));
                             return;
                         }
-                    }
                 }
             }
         }
