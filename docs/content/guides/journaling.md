@@ -18,7 +18,37 @@ Press `Ctrl+J` to create a new journal entry. Kimun creates a file named with to
 ### In the CLI
 
 ```sh
-kimun note journal          # Create today's journal entry (or open if it exists)
+kimun journal               # Append to today's journal entry (creates it if it doesn't exist)
+kimun journal "Quick note"  # Append inline content
+kimun journal show          # Display today's entry
+```
+
+### Piping content
+
+`kimun journal` reads from stdin when no content argument is provided and stdin is not a terminal. This makes it easy to capture command output directly into your journal:
+
+```sh
+# Pipe a timestamped line
+echo "$(date +%H:%M) — deployed v1.2 to production" | kimun journal
+
+# Capture the last line of a script's output
+./run-tests.sh | tail -1 | kimun journal
+
+# Log system info
+echo "$(hostname): $(uptime)" | kimun journal
+
+# Append a multi-line entry with a here-string
+kimun journal <<'EOF'
+
+## Evening review
+
+- Finished the auth refactor
+- Reviewed two PRs
+- TODO: follow up on deploy schedule
+EOF
+
+# Pipe to a specific date
+echo "Late addition" | kimun journal --date 2024-01-15
 ```
 
 ## Writing in the editor
@@ -35,6 +65,17 @@ Reviewed the Q1 roadmap...
 - [ ] Follow up with Alex
 - [ ] Finish the report draft
 ```
+
+## Writing to a specific date
+
+`kimun journal` defaults to today. Use `--date` to target a different entry:
+
+```sh
+kimun journal --date 2024-01-15 "Retroactive note for January 15th"
+kimun journal --date 2025-12-31 "New Year's Eve plans"
+```
+
+The entry will be created if it doesn't exist. The date must be in `YYYY-MM-DD` format.
 
 ## Browsing journal entries
 
