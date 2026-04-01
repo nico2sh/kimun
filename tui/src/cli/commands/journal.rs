@@ -109,7 +109,6 @@ async fn run_show(
     use crate::cli::commands::note_ops::format_note_show_text;
     use crate::cli::json_output::{JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata};
     use crate::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
-    use crate::cli::output::OutputFormat;
     use kimun_core::error::{VaultError, FSError};
     use chrono::Utc;
     use std::time::UNIX_EPOCH;
