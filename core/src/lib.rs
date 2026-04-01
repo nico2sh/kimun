@@ -89,10 +89,7 @@ impl NoteVault {
     }
 
     pub async fn validate(&self) -> Result<DBStatus, VaultError> {
-        self.vault_db
-            .check_db()
-            .await
-            .map_err(|e| VaultError::DBError(e))
+        self.vault_db.check_db().await.map_err(VaultError::DBError)
     }
     /// On init and validate it verifies the DB index to make sure:
     ///
@@ -524,7 +521,7 @@ impl NoteVault {
 
         // We delete in DB first
         let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
-        db::delete_notes(&mut tx, &[path.clone()]).await?;
+        db::delete_notes(&mut tx, std::slice::from_ref(&path)).await?;
         tx.commit().await.map_err(DBError::from)?;
 
         nfs::delete_note(&self.workspace_path, &path).await?;
@@ -543,7 +540,7 @@ impl NoteVault {
 
         // We delete in DB first
         let mut tx = self.vault_db.pool().begin().await.map_err(DBError::from)?;
-        db::delete_directories(&mut tx, &[path.clone()]).await?;
+        db::delete_directories(&mut tx, std::slice::from_ref(&path)).await?;
         tx.commit().await.map_err(DBError::from)?;
 
         nfs::delete_directory(&self.workspace_path, &path).await?;
@@ -754,12 +751,15 @@ impl Display for NotesValidation {
 }
 
 #[async_recursion::async_recursion]
-async fn create_index_for<P: AsRef<Path> + Send>(
+async fn create_index_for<P>(
     workspace_path: P,
     pool: &sqlx::SqlitePool,
     path: &VaultPath,
     validation_mode: NotesValidation,
-) -> Result<(), DBError> {
+) -> Result<(), DBError>
+where
+    P: AsRef<Path> + Send,
+{
     debug!("Start fetching files at {}", path);
     let workspace_path = workspace_path.as_ref();
     let walker = nfs::get_file_walker(workspace_path, path, false);
