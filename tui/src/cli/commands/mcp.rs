@@ -264,8 +264,20 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<BacklinksParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = p;
-        Err(McpError::internal_error("not yet implemented", None))
+        let vault_path = Self::resolve_path(&p.path);
+        let backlinks = self
+            .vault
+            .get_backlinks(&vault_path)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        if backlinks.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text("No backlinks found.")]));
+        }
+        let lines: Vec<String> = backlinks
+            .iter()
+            .map(|(entry, content)| format!("{} — {}", entry.path, content.title))
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
     }
 
     #[tool(description = "Return the content chunks (sections) of a note as JSON.")]
@@ -273,8 +285,25 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<ChunksParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = p;
-        Err(McpError::internal_error("not yet implemented", None))
+        let vault_path = Self::resolve_path(&p.path);
+        let chunks_map = self
+            .vault
+            .get_note_chunks(&vault_path)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let mut lines: Vec<String> = Vec::new();
+        for (_section_path, chunks) in &chunks_map {
+            for chunk in chunks {
+                let breadcrumb = chunk.breadcrumb.join(" > ");
+                lines.push(format!("[{}] {}", breadcrumb, chunk.text.trim()));
+            }
+        }
+
+        if lines.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text("No chunks found.")]));
+        }
+        Ok(CallToolResult::success(vec![Content::text(lines.join("\n\n"))]))
     }
 }
 
@@ -566,6 +595,94 @@ mod tests {
             Some(true),
             "expected error for invalid date"
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_backlinks_empty_for_no_links() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "standalone".to_string(),
+                content: "# Standalone\n\nNo links here.".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .get_backlinks(Parameters(BacklinksParams {
+                path: "standalone".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+    }
+
+    #[tokio::test]
+    async fn test_get_backlinks_finds_linking_note() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "target".to_string(),
+                content: "# Target".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "source".to_string(),
+                content: "links to [[target]]".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .get_backlinks(Parameters(BacklinksParams {
+                path: "target".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+        assert!(
+            result_text(&result).contains("source"),
+            "expected 'source' in backlinks: {}",
+            result_text(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_chunks_returns_sections() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "chunked".to_string(),
+                content: "# Title\n\n## Section One\n\nparagraph\n\n## Section Two\n\nmore".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .get_chunks(Parameters(ChunksParams {
+                path: "chunked".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+        assert!(
+            result_text(&result).contains("Section"),
+            "expected section in chunks: {}",
+            result_text(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_chunks_missing_note_returns_gracefully() {
+        let (handler, _dir) = make_handler().await;
+        // get_note_chunks on a missing note may return empty map or an error —
+        // either way it should not panic.
+        let result = handler
+            .get_chunks(Parameters(ChunksParams {
+                path: "missing/note".to_string(),
+            }))
+            .await;
+        // Just verify it returned something without panicking
+        let _ = result;
     }
 
     #[tokio::test]
