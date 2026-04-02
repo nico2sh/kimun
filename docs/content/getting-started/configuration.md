@@ -15,6 +15,8 @@ Kimün stores its configuration in `kimun_config.toml`, typically located in you
 | `theme` | string | `""` | Unused at top level — set theme in `[global]` instead. |
 | `autosave_interval_secs` | integer | `5` | How often unsaved changes are written to disk (seconds). |
 | `use_nerd_fonts` | boolean | `true` | Enable Nerd Font icons in the TUI. Set to `false` if your terminal lacks Nerd Font support. |
+| `editor_backend` | string | `"textarea"` | Editor engine. `"textarea"` uses the built-in editor; `"nvim"` uses Neovim. |
+| `nvim_path` | string | *(unset)* | Path to the `nvim` binary. Only needed when Neovim is not on `PATH`. |
 | `default_sort_field` | string | `"name"` | Default sort field for the note browser. Options: `"name"`, `"title"`. |
 | `default_sort_order` | string | `"ascending"` | Default sort direction. Options: `"ascending"`, `"descending"`. |
 | `journal_sort_field` | string | `"name"` | Sort field used in the journal view. Options: `"name"`, `"title"`. |
@@ -51,6 +53,35 @@ path = "/Users/alice/work-notes"
 [workspaces.archive]
 path = "/Users/alice/archive-notes"
 ```
+
+## Editor Backend
+
+By default, Kimün uses a built-in textarea for note editing. You can switch to [Neovim](https://neovim.io/) as the editor backend to get full modal editing, custom keymaps, plugins, and anything else your `init.lua` / `init.vim` provides.
+
+### Requirements
+
+- Neovim must be installed and available on your `PATH` (or you can point Kimün at a specific binary — see below).
+- Neovim is launched as a headless embedded process (`nvim --embed`); no terminal window opens.
+
+### Configuration
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `editor_backend` | string | `"textarea"` | Editor engine. Set to `"nvim"` to enable the Neovim backend. |
+| `nvim_path` | string | *(unset)* | Absolute path to the `nvim` binary. Omit to use the `nvim` found on `PATH`. |
+
+```toml
+editor_backend = "nvim"
+
+# Optional — only needed if nvim is not on your PATH:
+nvim_path = "/usr/local/bin/nvim"
+```
+
+### Behaviour notes
+
+- **Tab key** inserts 4 spaces (`expandtab`, `tabstop=4` are set automatically so indentation renders correctly in the TUI).
+- Your personal Neovim config (`init.lua` / `init.vim`) is loaded normally, so custom keymaps and plugins work as expected.
+- If Neovim fails to start (binary not found, crash on init, etc.), Kimün logs a warning and falls back to the built-in textarea automatically.
 
 ## `[key_bindings]` Section
 
