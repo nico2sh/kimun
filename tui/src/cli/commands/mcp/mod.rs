@@ -1,6 +1,8 @@
-// tui/src/cli/commands/mcp.rs
+// tui/src/cli/commands/mcp/mod.rs
 //
 // MCP server handler for kimun — exposes vault operations as MCP tools.
+
+pub mod prompts;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,11 +11,16 @@ use color_eyre::eyre::{Result, eyre};
 use kimun_core::{NoteVault, nfs::VaultPath};
 use rmcp::{
     ErrorData as McpError,
+    RoleServer,
     ServerHandler,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    handler::server::{
+        router::{prompt::PromptRouter, tool::ToolRouter},
+        wrapper::Parameters,
+    },
     model::*,
     schemars,
-    tool, tool_handler, tool_router,
+    prompt_handler, tool, tool_handler, tool_router,
+    service::RequestContext,
     transport::stdio,
     ServiceExt,
 };
@@ -74,6 +81,7 @@ pub struct ChunksParams {
 pub struct KimunHandler {
     vault: Arc<NoteVault>,
     tool_router: ToolRouter<KimunHandler>,
+    prompt_router: PromptRouter<KimunHandler>,
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +94,7 @@ impl KimunHandler {
         Self {
             vault: Arc::new(vault),
             tool_router: Self::tool_router(),
+            prompt_router: Self::prompt_router(),
         }
     }
 
@@ -312,10 +321,17 @@ impl KimunHandler {
 // ---------------------------------------------------------------------------
 
 #[tool_handler]
+#[prompt_handler]
 impl ServerHandler for KimunHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_resources().build())
-            .with_instructions("Kimun notes MCP server — read and write vault notes via tools.")
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_prompts()
+                .build(),
+        )
+        .with_instructions("Kimun notes MCP server — read and write vault notes via tools.")
     }
 
     async fn list_resources(
