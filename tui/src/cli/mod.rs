@@ -43,6 +43,8 @@ pub enum CliCommand {
     },
     /// Append to or show journal entries
     Journal(JournalArgs),
+    /// Start the MCP server (stdio transport)
+    Mcp,
 }
 
 pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf>) -> Result<()> {
@@ -78,5 +80,6 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;
             commands::journal::run(args, &vault, &workspace_name).await
         }
+        CliCommand::Mcp => commands::mcp::run(config_path).await,
     }
 }
