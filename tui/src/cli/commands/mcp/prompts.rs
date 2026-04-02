@@ -54,7 +54,47 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<DailyReviewParams>,
     ) -> Result<Vec<PromptMessage>, McpError> {
-        Err(McpError::internal_error("not yet implemented", None))
+        use kimun_core::error::{FSError, VaultError};
+
+        let date_str = match p.date.as_deref() {
+            None => chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            Some(d) => {
+                if chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err() {
+                    return Ok(vec![PromptMessage::new_text(
+                        PromptMessageRole::User,
+                        format!("Invalid date '{}' — expected YYYY-MM-DD.", d),
+                    )]);
+                }
+                d.to_string()
+            }
+        };
+
+        let journal_path = self
+            .vault
+            .journal_path()
+            .append(&kimun_core::nfs::VaultPath::note_path_from(&date_str))
+            .absolute();
+
+        let journal_text = match self.vault.get_note_text(&journal_path).await {
+            Ok(t) => t,
+            Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
+                return Ok(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!("No journal entry found for {}.", date_str),
+                )]);
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        let message = format!(
+            "Here is my journal entry for {date_str}:\n\n---\n{journal_text}\n---\n\n\
+            Please review this journal entry:\n\
+            1. Summarize what was accomplished\n\
+            2. Identify any action items or follow-ups\n\
+            3. Note any recurring themes worth tracking"
+        );
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
     }
 
     #[prompt(description = "Load a note and its backlink list, then ask the LLM to identify non-obvious conceptual connections to the rest of the vault.")]
@@ -79,5 +119,94 @@ impl KimunHandler {
         Parameters(p): Parameters<BrainstormParams>,
     ) -> Result<Vec<PromptMessage>, McpError> {
         Err(McpError::internal_error("not yet implemented", None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::*;
+    use tempfile::TempDir;
+    use kimun_core::NoteVault;
+
+    async fn make_handler() -> (KimunHandler, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(dir.path()).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+        let handler = KimunHandler::new(vault);
+        (handler, dir)
+    }
+
+    /// Extract the text from the first PromptMessage's content.
+    fn first_text(msgs: &[PromptMessage]) -> String {
+        match msgs.first().map(|m| &m.content) {
+            Some(PromptMessageContent::Text { text }) => text.clone(),
+            _ => String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_daily_review_no_entry_returns_graceful_message() {
+        let (handler, _dir) = make_handler().await;
+        let msgs = handler
+            .daily_review(Parameters(DailyReviewParams { date: None }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("No journal entry"),
+            "expected graceful message, got: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_daily_review_with_entry_includes_content() {
+        let (handler, _dir) = make_handler().await;
+        // Create today's entry via the journal tool
+        handler
+            .journal(Parameters(JournalParams {
+                text: "worked on unique_daily_review_content_xyz".to_string(),
+                date: None,
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .daily_review(Parameters(DailyReviewParams { date: None }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("unique_daily_review_content_xyz"),
+            "expected journal content in prompt: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_daily_review_specific_date() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .journal(Parameters(JournalParams {
+                text: "specific date entry content".to_string(),
+                date: Some("2026-01-15".to_string()),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .daily_review(Parameters(DailyReviewParams {
+                date: Some("2026-01-15".to_string()),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("specific date entry content"),
+            "expected entry in prompt: {}",
+            text
+        );
     }
 }
