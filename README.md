@@ -41,6 +41,7 @@ kimun search "todo" --format json | jq '.notes[] | {title, path}'
 The CLI can be used with AI tools and agents. An AI assistant can create, append, and search notes on your behalf — logging findings, organizing research, or updating your journal as part of an automated workflow. You can use the skill located under the [skills](skills/) directory, or create your own (in that case, create a pull request here and share yours!)
 
 > Note: There is a fair amount of AI-assisted code (using Claude) with manual reviews, although most of the core was written with my human hands. Initially AI was used for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the foundations of more complex stuff, especially on the UI side. Anyway, I guess the lesson is, use AI as a tool, not as a replacement.
+> 
 > Oh, and about the app logo: maybe is not the most beautiful one, but I did it myself with Inkscape! Pay artists or do it yourself, but don't take away the fun creative things from people.
 
 ![Kimün screenshot](docs/static/screenshot.png)
