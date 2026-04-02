@@ -210,8 +210,53 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<JournalParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = p;
-        Err(McpError::internal_error("not yet implemented", None))
+        // Validate and resolve the date
+        let date_str = match p.date.as_deref() {
+            None => chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            Some(d) => {
+                if chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err() {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Invalid date '{}' — expected YYYY-MM-DD",
+                        d
+                    ))]));
+                }
+                d.to_string()
+            }
+        };
+
+        let (vault_path, existing) = if p.date.is_none() {
+            // Today — use journal_entry() which handles create-if-absent internally
+            let (details, existing) = self
+                .vault
+                .journal_entry()
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            (details.path, existing)
+        } else {
+            // Specific date — build path manually
+            let journal_path = self
+                .vault
+                .journal_path()
+                .append(&VaultPath::note_path_from(&date_str))
+                .absolute();
+            let existing = self
+                .vault
+                .load_or_create_note(&journal_path, Some(format!("# {}\n\n", date_str)))
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            (journal_path, existing)
+        };
+
+        let combined = format!("{}\n{}", existing, p.text);
+        self.vault
+            .save_note(&vault_path, &combined)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Note saved: {}",
+            vault_path
+        ))]))
     }
 
     #[tool(description = "Return the list of notes that link to the given note (backlinks).")]
@@ -473,6 +518,54 @@ mod tests {
         let text = result_text(&result);
         assert!(text.contains("folder/a"), "missing 'folder/a': {}", text);
         assert!(text.contains("folder/b"), "missing 'folder/b': {}", text);
+    }
+
+    #[tokio::test]
+    async fn test_journal_appends_to_today() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .journal(Parameters(JournalParams {
+                text: "Today's thought".to_string(),
+                date: None,
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        assert!(
+            result_text(&result).contains("saved"),
+            "expected 'saved' in result: {}",
+            result_text(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_journal_with_explicit_date() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .journal(Parameters(JournalParams {
+                text: "Entry for specific date".to_string(),
+                date: Some("2026-01-15".to_string()),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "expected success: {}", result_text(&result));
+    }
+
+    #[tokio::test]
+    async fn test_journal_invalid_date_returns_error() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .journal(Parameters(JournalParams {
+                text: "bad date".to_string(),
+                date: Some("not-a-date".to_string()),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "expected error for invalid date"
+        );
     }
 
     #[tokio::test]
