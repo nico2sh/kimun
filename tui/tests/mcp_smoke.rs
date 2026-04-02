@@ -2,7 +2,7 @@
 //
 // End-to-end smoke test: spawns the real `kimun` binary, sends MCP JSON-RPC
 // messages over stdin, and asserts that `tools/list` returns all 8 expected
-// tool names.
+// tool names and that `prompts/list` returns all 4 expected prompt names.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -129,6 +129,75 @@ fn mcp_smoke_tools_list() {
             combined.contains(tool),
             "tool '{}' not found in tools/list response:\n{}",
             tool,
+            combined
+        );
+    }
+}
+
+const PROMPTS_LIST_MSG: &str = r#"{"jsonrpc":"2.0","id":3,"method":"prompts/list","params":{}}"#;
+
+#[test]
+fn mcp_smoke_prompts_list() {
+    // Build the binary first
+    let build_status = Command::new("cargo")
+        .args(["build", "--package", "kimun-notes"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .expect("failed to run cargo build");
+    assert!(build_status.success(), "cargo build failed");
+
+    let config_dir = TempDir::new().unwrap();
+    let workspace_dir = TempDir::new().unwrap();
+    let config_path = write_config(config_dir.path(), workspace_dir.path());
+
+    let mut child = Command::new(kimun_bin())
+        .args(["--config", config_path.to_str().unwrap(), "mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn kimun mcp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+
+    writeln!(stdin, "{}", INITIALIZE_MSG).unwrap();
+    writeln!(stdin, "{}", INITIALIZED_NOTIF).unwrap();
+    writeln!(stdin, "{}", PROMPTS_LIST_MSG).unwrap();
+    drop(stdin);
+
+    use std::io::BufRead;
+    let reader = std::io::BufReader::new(stdout);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut combined = String::new();
+    for line in reader.lines() {
+        if std::time::Instant::now() > deadline {
+            panic!("timed out waiting for prompts/list response");
+        }
+        match line {
+            Ok(l) => {
+                combined.push_str(&l);
+                combined.push('\n');
+                if combined.contains(r#""id":3"#) {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = child.wait();
+
+    let expected_prompts = [
+        "daily_review",
+        "find_connections",
+        "research_note",
+        "brainstorm",
+    ];
+    for prompt in &expected_prompts {
+        assert!(
+            combined.contains(prompt),
+            "prompt '{}' not found in prompts/list response:\n{}",
+            prompt,
             combined
         );
     }
