@@ -250,7 +250,48 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<BrainstormParams>,
     ) -> Result<Vec<PromptMessage>, McpError> {
-        Err(McpError::internal_error("not yet implemented", None))
+        let results = self
+            .vault
+            .search_notes(&p.topic)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let top: Vec<_> = results.into_iter().take(5).collect();
+        let suggested_path = top.first().map(|(entry, _)| entry.path.to_string());
+
+        let mut vault_sections: Vec<String> = Vec::new();
+        for (entry, _) in &top {
+            match self.vault.get_note_text(&entry.path).await {
+                Ok(text) => vault_sections.push(format!("=== {} ===\n{}", entry.path, text)),
+                Err(_) => {} // skip notes that can't be read
+            }
+        }
+
+        let vault_block = if vault_sections.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Here is relevant content from my vault:\n\n{}\n\n",
+                vault_sections.join("\n\n")
+            )
+        };
+
+        let suggestion_line = match &suggested_path {
+            Some(path) => format!("3. Suggested note to append new ideas to: {}\n", path),
+            None => String::new(),
+        };
+
+        let message = format!(
+            "I want to brainstorm ideas about: \"{topic}\"\n\n\
+            {vault_block}\
+            Based on my existing notes:\n\
+            1. Generate 5–10 new ideas related to \"{topic}\" that build on what's already captured\n\
+            2. Avoid repeating existing content\n\
+            {suggestion_line}",
+            topic = p.topic,
+        );
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
     }
 }
 
@@ -510,5 +551,78 @@ mod tests {
         assert!(!msgs.is_empty());
         let text = first_text(&msgs);
         assert!(text.contains("not found"), "expected not-found message: {}", text);
+    }
+
+    #[tokio::test]
+    async fn test_brainstorm_includes_vault_content() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "ideas/rust".to_string(),
+                content: "# Rust Ideas\n\nunique_brainstorm_rust_content_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .brainstorm(Parameters(BrainstormParams {
+                topic: "unique_brainstorm_rust_content_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("unique_brainstorm_rust_content_xyz"),
+            "expected vault content in prompt: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_brainstorm_suggests_note_to_append() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "ideas/brainstorm_target".to_string(),
+                content: "# Brainstorm Target\n\nunique_suggest_xyz_content".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .brainstorm(Parameters(BrainstormParams {
+                topic: "unique_suggest_xyz_content".to_string(),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("ideas/brainstorm_target"),
+            "expected suggested note path: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_brainstorm_no_vault_content_still_returns_prompt() {
+        let (handler, _dir) = make_handler().await;
+        let msgs = handler
+            .brainstorm(Parameters(BrainstormParams {
+                topic: "completely_nonexistent_topic_zzz_999".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("completely_nonexistent_topic_zzz_999"),
+            "expected topic in prompt: {}",
+            text
+        );
+        // No suggestion line when no results
+        assert!(
+            !text.contains("Suggested note"),
+            "should not suggest a note when no results: {}",
+            text
+        );
     }
 }
