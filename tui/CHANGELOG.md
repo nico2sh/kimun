@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.3.8...kimun-notes-v0.3.9) - 2026-04-02
+
+### Added
+
+- emoji support, not breaking lines
+
+### Fixed
+
+- tabs are properly rendered in nvim mode
+- redraw on terminal resize
+- *(test)* drain channel before asserting CloseDialog in esc test
+
+### Other
+
+- readme
+- gihooks
+- add shareable commit-msg hook and contributing docs
+
 ## [0.3.8](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.3.7...kimun-notes-v0.3.8) - 2026-04-01
 
 ### Other
