@@ -122,7 +122,7 @@ impl KimunHandler {
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let combined = if existing.is_empty() {
-            p.content.clone()
+            p.content
         } else {
             format!("{}\n{}", existing, p.content)
         };
@@ -374,6 +374,9 @@ mod tests {
         let text = result_text(&show);
         assert!(text.contains("original"), "missing 'original' in: {}", text);
         assert!(text.contains("added"), "missing 'added' in: {}", text);
+        let orig_pos = text.find("original").expect("original not found");
+        let added_pos = text.find("added").expect("added not found");
+        assert!(orig_pos < added_pos, "original should appear before added");
     }
 }
 
