@@ -4,7 +4,7 @@
 
 use rmcp::{
     ErrorData as McpError,
-    handler::server::{router::prompt::PromptRouter, wrapper::Parameters},
+    handler::server::wrapper::Parameters,
     model::{PromptMessage, PromptMessageRole},
     schemars,
     prompt, prompt_router,
@@ -179,7 +179,7 @@ impl KimunHandler {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let mut topics: Vec<String> = Vec::new();
-        for (_section_path, chunks) in &chunks_map {
+        for chunks in chunks_map.values() {
             for chunk in chunks {
                 if let Some(leaf) = chunk.breadcrumb.last() {
                     let topic = leaf.trim().to_string();
@@ -261,10 +261,12 @@ impl KimunHandler {
 
         let mut vault_sections: Vec<String> = Vec::new();
         for (entry, _) in &top {
-            match self.vault.get_note_text(&entry.path).await {
-                Ok(text) => vault_sections.push(format!("=== {} ===\n{}", entry.path, text)),
-                Err(_) => {} // skip notes that can't be read
-            }
+            let text = self
+                .vault
+                .get_note_text(&entry.path)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            vault_sections.push(format!("=== {} ===\n{}", entry.path, text));
         }
 
         let vault_block = if vault_sections.is_empty() {
