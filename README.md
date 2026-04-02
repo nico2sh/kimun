@@ -117,7 +117,7 @@ zola serve docs/
 
 Contributions are welcome! This project uses [Conventional Commits](https://www.conventionalcommits.org/) to automate versioning and changelog generation.
 
-After cloning, enable the included git hook:
+If you want to automate enforcing the Conventional Commits, after cloning enable the included git hook:
 
 ```sh
 git config core.hooksPath .githooks
