@@ -17,7 +17,7 @@ pub struct NvimSnapshot {
     /// Used by `view.update()` so the parse cache is rebuilt from fresh content,
     /// not from whatever lines happened to be in the snapshot when the key was pressed.
     pub content_gen: u64,
-    /// Active visual selection in logical (row, byte-col) coordinates, 0-indexed.
+    /// Active visual selection in logical (row, char-col) coordinates, 0-indexed.
     /// `None` when not in a visual mode. For `VisualLine` the end col is `usize::MAX`.
     pub visual_selection: Option<((usize, usize), (usize, usize))>,
 }

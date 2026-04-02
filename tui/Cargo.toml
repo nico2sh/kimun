@@ -42,7 +42,8 @@ arboard = "3"
 nvim-rs = { version = "0.9", features = ["use_tokio"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 rmpv = "1"
-unicode-width = "0.1"
+unicode-width = "0.2"
+unicode-segmentation = "1"
 
 [dev-dependencies]
 tempfile = "3"
