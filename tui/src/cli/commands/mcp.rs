@@ -98,8 +98,16 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<CreateNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = (p, Self::resolve_path);
-        Err(McpError::internal_error("not yet implemented", None))
+        let vault_path = Self::resolve_path(&p.path);
+        match self.vault.create_note(&vault_path, &p.content).await {
+            Ok(_) => Ok(CallToolResult::success(vec![Content::text(
+                format!("Note created: {}", vault_path),
+            )])),
+            Err(kimun_core::error::VaultError::NoteExists { .. }) => Ok(CallToolResult::error(
+                vec![Content::text(format!("Note already exists: {}", vault_path))],
+            )),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
     }
 
     #[tool(description = "Append text to an existing note. Creates the note if it does not exist.")]
@@ -107,8 +115,25 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<AppendNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = p;
-        Err(McpError::internal_error("not yet implemented", None))
+        let vault_path = Self::resolve_path(&p.path);
+        let existing = self
+            .vault
+            .load_or_create_note(&vault_path, None)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let combined = if existing.is_empty() {
+            p.content.clone()
+        } else {
+            format!("{}\n{}", existing, p.content)
+        };
+        self.vault
+            .save_note(&vault_path, &combined)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Note saved: {}",
+            vault_path
+        ))]))
     }
 
     #[tool(description = "Return the full markdown content of a note.")]
@@ -116,8 +141,17 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<ShowNoteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = p;
-        Err(McpError::internal_error("not yet implemented", None))
+        let vault_path = Self::resolve_path(&p.path);
+        match self.vault.get_note_text(&vault_path).await {
+            Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+            Err(kimun_core::error::VaultError::FSError(
+                kimun_core::error::FSError::VaultPathNotFound { .. },
+            )) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Note not found: {}",
+                vault_path
+            ))])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
     }
 
     #[tool(description = "Search notes by query. Supports @filename, >heading, /path prefix, and -exclusion operators.")]
@@ -207,6 +241,139 @@ impl ServerHandler for KimunHandler {
             next_cursor: None,
             meta: None,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use kimun_core::NoteVault;
+
+    async fn make_handler() -> (KimunHandler, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(dir.path()).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+        let handler = KimunHandler::new(vault);
+        (handler, dir)
+    }
+
+    fn is_success(result: &CallToolResult) -> bool {
+        result.is_error != Some(true)
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        serde_json::to_string(&result.content).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn test_create_note_succeeds() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "test/hello".to_string(),
+                content: "# Hello\n\nworld".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "expected success, got: {:?}", result_text(&result));
+        assert!(result_text(&result).contains("test/hello"));
+    }
+
+    #[tokio::test]
+    async fn test_create_note_fails_if_exists() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "test/hello".to_string(),
+                content: "first".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "test/hello".to_string(),
+                content: "second".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_show_note_returns_content() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "show/me".to_string(),
+                content: "# Show me\n\nsome content".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .show_note(Parameters(ShowNoteParams { path: "show/me".to_string() }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+        assert!(result_text(&result).contains("some content"));
+    }
+
+    #[tokio::test]
+    async fn test_show_note_not_found_returns_error_result() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .show_note(Parameters(ShowNoteParams { path: "missing/note".to_string() }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_append_note_creates_if_absent() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .append_note(Parameters(AppendNoteParams {
+                path: "new/note".to_string(),
+                content: "appended text".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+        let show = handler
+            .show_note(Parameters(ShowNoteParams { path: "new/note".to_string() }))
+            .await
+            .unwrap();
+        assert!(result_text(&show).contains("appended text"));
+    }
+
+    #[tokio::test]
+    async fn test_append_note_appends_to_existing() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "exist/note".to_string(),
+                content: "original".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .append_note(Parameters(AppendNoteParams {
+                path: "exist/note".to_string(),
+                content: "added".to_string(),
+            }))
+            .await
+            .unwrap();
+        let show = handler
+            .show_note(Parameters(ShowNoteParams { path: "exist/note".to_string() }))
+            .await
+            .unwrap();
+        let text = result_text(&show);
+        assert!(text.contains("original"), "missing 'original' in: {}", text);
+        assert!(text.contains("added"), "missing 'added' in: {}", text);
     }
 }
 
