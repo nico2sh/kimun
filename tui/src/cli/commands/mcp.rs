@@ -314,7 +314,7 @@ impl KimunHandler {
 #[tool_handler]
 impl ServerHandler for KimunHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().enable_resources().build())
             .with_instructions("Kimun notes MCP server — read and write vault notes via tools.")
     }
 
