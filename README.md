@@ -133,5 +133,5 @@ This will reject commit messages that don't follow the format. Common types:
 | `chore:`, `docs:`, `ci:` | No release triggered |
 
 # Credits
-Built with [Ratatui](https://github.com/ratatui/ratatui) (and [ratatui-textarea](https://github.com/ratatui/ratatui-textarea)), [Nucleo](https://docs.rs/nucleo/latest/nucleo/) for fuzzy searching, [Ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for fast file read.
+Built with [Ratatui](https://github.com/ratatui/ratatui) (and [ratatui-textarea](https://github.com/ratatui/ratatui-textarea)), [Nucleo](https://docs.rs/nucleo/latest/nucleo/) for fuzzy searching, [Ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for fast file read, [nvim-rs](https://github.com/killthemule/nvim-rs) for Neovim integration.
 Inspired by [Obsidian](https://obsidian.md/), [Logseq](https://logseq.com/) and [QownNotes](https://www.qownnotes.org/).
