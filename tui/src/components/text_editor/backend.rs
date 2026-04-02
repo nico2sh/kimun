@@ -335,6 +335,22 @@ impl NvimBackend {
 // Parse the Lua state bundle and apply it to the snapshot.
 // ---------------------------------------------------------------------------
 
+/// Convert a UTF-8 byte offset to a Unicode scalar (char) index.
+///
+/// `nvim_win_get_cursor` and `getpos()` return byte offsets. This converts them
+/// to char indices so the rest of the rendering pipeline can use char-indexed
+/// operations consistently. If the offset falls in the middle of a multi-byte
+/// sequence it is snapped to the nearest valid char boundary.
+fn byte_offset_to_char_idx(line: &str, byte_offset: usize) -> usize {
+    // Walk backward from the offset to the nearest valid char boundary, then
+    // count chars up to that point. Handles mid-codepoint offsets safely.
+    let safe = (0..=byte_offset.min(line.len()))
+        .rev()
+        .find(|&i| line.is_char_boundary(i))
+        .unwrap_or(0);
+    line[..safe].chars().count()
+}
+
 fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, in_flight: &Arc<AtomicBool>, value: nvim_rs::Value) {
     let Some(arr) = value.as_array() else { return };
     let mode_str = match arr.first().and_then(|v| v.as_str()) {
@@ -360,25 +376,36 @@ fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, in_flight: &Arc<AtomicBo
         .unwrap_or_default();
     let new_lines = if new_lines.is_empty() { vec![String::new()] } else { new_lines };
 
-    // Cursor: nvim_win_get_cursor → [row(1-indexed), col(0-indexed)].
+    // Cursor: nvim_win_get_cursor → [row(1-indexed), col(0-indexed byte offset)].
+    // Convert the byte offset to a char index so all downstream code works in
+    // char-index space uniformly (independent of multi-byte character widths).
     let cursor = arr.get(2)
         .and_then(|v| v.as_array())
         .and_then(|c| {
             let row = c.first()?.as_u64()? as usize;
-            let col = c.get(1)?.as_u64()? as usize;
-            Some((row.saturating_sub(1), col))
+            let byte_col = c.get(1)?.as_u64()? as usize;
+            let row0 = row.saturating_sub(1);
+            let char_col = new_lines.get(row0)
+                .map(|line| byte_offset_to_char_idx(line, byte_col))
+                .unwrap_or(byte_col);
+            Some((row0, char_col))
         })
         .unwrap_or((0, 0));
 
-    // Visual selection: getpos("v") → [bufnum, lnum(1-indexed), col(1-indexed), off].
+    // Visual selection: getpos("v") → [bufnum, lnum(1-indexed), col(1-indexed byte offset), off].
+    // Convert the 1-indexed byte col to a 0-indexed char index.
     let visual_selection = if matches!(mode, NvimMode::Visual | NvimMode::VisualLine) {
         arr.get(3)
             .and_then(|v| v.as_array())
             .and_then(|p| {
                 let lnum = p.get(1)?.as_u64()? as usize;
-                let vcol = p.get(2)?.as_u64()? as usize;
+                let vcol_byte = p.get(2)?.as_u64()? as usize;
                 if lnum == 0 { return None; }
-                Some((lnum.saturating_sub(1), vcol.saturating_sub(1)))
+                let row0 = lnum.saturating_sub(1);
+                let char_col = new_lines.get(row0)
+                    .map(|line| byte_offset_to_char_idx(line, vcol_byte.saturating_sub(1)))
+                    .unwrap_or(vcol_byte.saturating_sub(1));
+                Some((row0, char_col))
             })
             .map(|anchor| {
                 let (mut start, mut end) =
