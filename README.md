@@ -42,7 +42,7 @@ The CLI can be used with AI tools and agents. An AI assistant can create, append
 
 > Note: There is a fair amount of AI-assisted code (using Claude) with manual reviews, although most of the core was written with my human hands. Initially AI was used for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the foundations of more complex stuff, especially on the UI side. Anyway, I guess the lesson is, use AI as a tool, not as a replacement.
 > 
-> Oh, and about the app logo: maybe is not the most beautiful one, but I did it myself with Inkscape! Pay artists or do it yourself, but don't take away the fun creative things from people.
+> Oh, and about the app logo: maybe is not the most beautiful one, but I did it myself with Inkscape! (it's a `k`! that looks like an open book! get it?) Pay artists or do it yourself, but don't take away the fun creative things from people.
 
 ![Kimün screenshot](docs/static/screenshot.png)
 
