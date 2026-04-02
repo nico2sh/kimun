@@ -302,7 +302,7 @@ impl KimunHandler {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let mut lines: Vec<String> = Vec::new();
-        for (_section_path, chunks) in &chunks_map {
+        for chunks in chunks_map.values() {
             for chunk in chunks {
                 let breadcrumb = chunk.breadcrumb.join(" > ");
                 lines.push(format!("[{}] {}", breadcrumb, chunk.text.trim()));
