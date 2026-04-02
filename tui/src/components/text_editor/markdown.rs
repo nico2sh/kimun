@@ -6,6 +6,14 @@ use ratatui::text::Span;
 /// Shared parser options used by all pulldown-cmark call sites in this module.
 const PARSER_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
 
+/// Visual columns per tab stop. Must match the `tabstop` setting in the nvim backend.
+const TAB_STOP: usize = 4;
+
+/// Compute the display width of a tab character at the given visual column.
+fn tab_width_at(col: usize) -> usize {
+    TAB_STOP - (col % TAB_STOP)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Element {
     pub start_char: usize,
@@ -441,6 +449,8 @@ impl MarkdownSpanner {
         let mut seg_elem: Option<usize> = None;
         let mut seg_is_sigil = false;
         let mut seg_is_expanded = false;
+        // Tracks the current rendered visual column for tab-stop calculation.
+        let mut visual_col = 0usize;
 
         let flush = |seg_str: &mut String,
                      seg_elem: Option<usize>,
@@ -508,7 +518,16 @@ impl MarkdownSpanner {
                 seg_is_sigil = this_is_sigil;
                 seg_is_expanded = this_is_expanded;
             }
-            seg_str.push(ch);
+            if ch == '\t' {
+                let tw = tab_width_at(visual_col);
+                for _ in 0..tw {
+                    seg_str.push(' ');
+                }
+                visual_col += tw;
+            } else {
+                seg_str.push(ch);
+                visual_col += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+            }
         }
         flush(
             &mut seg_str,
@@ -559,23 +578,28 @@ impl MarkdownSpanner {
             None
         };
 
+        let chars: Vec<char> = logical_line.chars().collect();
         let end = cursor_col.min(logical_char_count);
-        (visual_start_col..end)
-            .filter(|&pos| {
-                let is_content = pos < content_vis.len() && content_vis[pos];
-                let in_heading_sigil = heading_sigil_end.is_some_and(|s_end| pos < s_end);
-                let in_list_sigil = list_sigil_end.is_some_and(|s_end| pos < s_end);
-                let in_expanded_elem = expanded.is_some_and(|i| {
-                    elements[i].start_char <= pos && pos < elements[i].end_char
-                });
-                let in_any_element = parsed.in_any_element(pos);
-                is_content
-                    || in_heading_sigil
-                    || in_list_sigil
-                    || in_expanded_elem
-                    || !in_any_element
-            })
-            .count()
+        let mut rendered_col = 0usize;
+        for pos in visual_start_col..end {
+            let is_content = pos < content_vis.len() && content_vis[pos];
+            let in_heading_sigil = heading_sigil_end.is_some_and(|s_end| pos < s_end);
+            let in_list_sigil = list_sigil_end.is_some_and(|s_end| pos < s_end);
+            let in_expanded_elem = expanded.is_some_and(|i| {
+                elements[i].start_char <= pos && pos < elements[i].end_char
+            });
+            let in_any_element = parsed.in_any_element(pos);
+            let visible = is_content
+                || in_heading_sigil
+                || in_list_sigil
+                || in_expanded_elem
+                || !in_any_element;
+            if visible {
+                let ch = chars.get(pos).copied().unwrap_or(' ');
+                rendered_col += if ch == '\t' { tab_width_at(rendered_col) } else { 1 };
+            }
+        }
+        rendered_col
     }
 
     pub fn visible_positions_with(
@@ -644,9 +668,10 @@ impl MarkdownSpanner {
             None
         };
 
+        let chars: Vec<char> = logical_line.chars().collect();
         let mut rendered_count = 0;
         for pos in visual_start_col..logical_char_count {
-            if rendered_count == rendered_col {
+            if rendered_count >= rendered_col {
                 return pos;
             }
             let is_content = pos < content_vis.len() && content_vis[pos];
@@ -654,7 +679,8 @@ impl MarkdownSpanner {
             let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
             let in_any_element = parsed.in_any_element(pos);
             if is_content || in_heading_sigil || in_list_sigil || !in_any_element {
-                rendered_count += 1;
+                let ch = chars.get(pos).copied().unwrap_or(' ');
+                rendered_count += if ch == '\t' { tab_width_at(rendered_count) } else { 1 };
             }
         }
         logical_char_count
