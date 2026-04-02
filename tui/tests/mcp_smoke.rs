@@ -46,7 +46,7 @@ fn mcp_smoke_tools_list() {
     // Build the binary first so the path returned by kimun_bin() exists.
     let build_status = Command::new("cargo")
         .args(["build", "--package", "kimun-notes"])
-        .current_dir("/home/nico/Development/kimun")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .status()
         .expect("failed to run cargo build");
     assert!(build_status.success(), "cargo build failed");
