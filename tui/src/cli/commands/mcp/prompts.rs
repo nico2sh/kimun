@@ -153,7 +153,96 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<ResearchNoteParams>,
     ) -> Result<Vec<PromptMessage>, McpError> {
-        Err(McpError::internal_error("not yet implemented", None))
+        use kimun_core::error::{FSError, VaultError};
+        use kimun_core::nfs::VaultPath;
+        use std::collections::HashSet;
+
+        let vault_path = VaultPath::note_path_from(&p.path);
+        let max = p.max_results.unwrap_or(5) as usize;
+
+        let note_text = match self.vault.get_note_text(&vault_path).await {
+            Ok(t) => t,
+            Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
+                return Ok(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!("Note not found: {}", vault_path),
+                )]);
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        // Extract unique leaf headings from the note's chunks
+        let chunks_map = self
+            .vault
+            .get_note_chunks(&vault_path)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let mut topics: Vec<String> = Vec::new();
+        for (_section_path, chunks) in &chunks_map {
+            for chunk in chunks {
+                if let Some(leaf) = chunk.breadcrumb.last() {
+                    let topic = leaf.trim().to_string();
+                    if !topic.is_empty() && !topics.contains(&topic) {
+                        topics.push(topic);
+                    }
+                }
+            }
+        }
+
+        // Search each topic; deduplicate results; cap at max
+        let source_path_str = vault_path.to_string();
+        let mut seen: HashSet<String> = HashSet::new();
+        seen.insert(source_path_str.clone());
+
+        let mut related_sections: Vec<String> = Vec::new();
+
+        'outer: for topic in &topics {
+            let results = self
+                .vault
+                .search_notes(topic)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            for (entry, _) in results {
+                let path_str = entry.path.to_string();
+                if seen.contains(&path_str) {
+                    continue;
+                }
+                seen.insert(path_str.clone());
+                let text = self
+                    .vault
+                    .get_note_text(&entry.path)
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                related_sections.push(format!("=== {} ===\n{}", entry.path, text));
+                if related_sections.len() >= max {
+                    break 'outer;
+                }
+            }
+        }
+
+        let topics_list = if topics.is_empty() {
+            "(no sections found)".to_string()
+        } else {
+            topics.join(", ")
+        };
+
+        let related_block = if related_sections.is_empty() {
+            "No related notes found in the vault.".to_string()
+        } else {
+            related_sections.join("\n\n")
+        };
+
+        let message = format!(
+            "Here is the note at \"{path}\":\n\n---\n{note_text}\n---\n\n\
+            Related notes found by searching section topics ({topics_list}):\n\n\
+            {related_block}\n\n\
+            Synthesize what the vault knows about this topic. \
+            What key ideas are captured? What gaps exist? What questions remain unanswered?",
+            path = vault_path,
+        );
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
     }
 
     #[prompt(description = "Search the vault for a topic and ask the LLM to generate new ideas that build on existing notes, with a suggested note to append them to.")]
@@ -342,6 +431,79 @@ mod tests {
         let msgs = handler
             .find_connections(Parameters(FindConnectionsParams {
                 path: "missing/note".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(text.contains("not found"), "expected not-found message: {}", text);
+    }
+
+    #[tokio::test]
+    async fn test_research_note_includes_source_note() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "research/topic".to_string(),
+                content: "# Topic\n\n## Background\n\nunique_research_source_xyz\n\n## Open Questions\n\nwhat next?".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_note(Parameters(ResearchNoteParams {
+                path: "research/topic".to_string(),
+                max_results: Some(3),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("unique_research_source_xyz"),
+            "expected source note content: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_note_includes_related_notes() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "research/main".to_string(),
+                content: "# Main\n\n## Rust Programming\n\nabout rust".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "research/related".to_string(),
+                content: "# Related\n\nRust Programming is great".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_note(Parameters(ResearchNoteParams {
+                path: "research/main".to_string(),
+                max_results: Some(5),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("research/related"),
+            "expected related note in prompt: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_note_not_found() {
+        let (handler, _dir) = make_handler().await;
+        let msgs = handler
+            .research_note(Parameters(ResearchNoteParams {
+                path: "missing/note".to_string(),
+                max_results: None,
             }))
             .await
             .unwrap();
