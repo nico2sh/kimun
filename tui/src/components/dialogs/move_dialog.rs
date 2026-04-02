@@ -505,8 +505,16 @@ mod tests {
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::CloseDialog");
-            assert!(matches!(event, AppEvent::CloseDialog));
+            // Drain the channel — background tasks (e.g. MoveDirectoriesLoaded)
+            // may have sent events before or after the Esc key was processed.
+            let mut found = false;
+            while let Ok(event) = rx.try_recv() {
+                if matches!(event, AppEvent::CloseDialog) {
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found, "expected AppEvent::CloseDialog in channel");
         });
     }
 
