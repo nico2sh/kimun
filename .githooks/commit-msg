@@ -1,0 +1,15 @@
+#!/bin/sh
+# Enforce conventional commits format
+MSG=$(cat "$1")
+PATTERN='^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\(.+\))?(!)?: .+'
+
+if ! echo "$MSG" | grep -qE "$PATTERN"; then
+  echo "ERROR: Commit message does not follow Conventional Commits format."
+  echo "Expected: <type>[optional scope][optional !]: <description>"
+  echo "Types: feat, fix, docs, style, refactor, perf, test, chore, ci, build, revert"
+  echo "Examples:"
+  echo "  feat: add search functionality"
+  echo "  fix(editor): handle empty note crash"
+  echo "  feat!: redesign note storage format"
+  exit 1
+fi
