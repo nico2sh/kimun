@@ -54,6 +54,7 @@ impl EventHandler {
                             return AppEvent::Input(InputEvent::Key(key));
                         }
                         CrosstermEvent::Mouse(mouse) => return AppEvent::Input(InputEvent::Mouse(mouse)),
+                        CrosstermEvent::Resize(_, _) => return AppEvent::Redraw,
                         _ => continue,
                     }
                 }
