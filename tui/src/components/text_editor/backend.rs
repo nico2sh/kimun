@@ -171,6 +171,8 @@ impl NvimBackend {
         let _ = nvim.command("set noswapfile").await;
         let _ = nvim.command("set buftype=nofile").await;
         let _ = nvim.command("set nomodeline").await;
+        let _ = nvim.command("set expandtab").await;
+        let _ = nvim.command("set tabstop=4").await;
 
         Ok(Self {
             nvim,
