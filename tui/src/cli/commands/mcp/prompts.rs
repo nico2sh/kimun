@@ -102,7 +102,50 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<FindConnectionsParams>,
     ) -> Result<Vec<PromptMessage>, McpError> {
-        Err(McpError::internal_error("not yet implemented", None))
+        use kimun_core::error::{FSError, VaultError};
+        use kimun_core::nfs::VaultPath;
+
+        let vault_path = VaultPath::note_path_from(&p.path);
+
+        let note_text = match self.vault.get_note_text(&vault_path).await {
+            Ok(t) => t,
+            Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
+                return Ok(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!("Note not found: {}", vault_path),
+                )]);
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        let backlinks = self
+            .vault
+            .get_backlinks(&vault_path)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let backlinks_section = if backlinks.is_empty() {
+            String::new()
+        } else {
+            let paths: Vec<String> = backlinks
+                .iter()
+                .map(|(entry, _)| format!("- {}", entry.path))
+                .collect();
+            format!(
+                "\nNotes that link to this note:\n{}\n",
+                paths.join("\n")
+            )
+        };
+
+        let message = format!(
+            "Here is the note at \"{path}\":\n\n---\n{note_text}\n---\n{backlinks_section}\n\
+            Identify non-obvious conceptual connections between this note and the rest of the vault. \
+            What themes link them? What ideas are worth exploring further?\n\
+            (You can call the show_note tool to read any linked note in full.)",
+            path = vault_path,
+        );
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
     }
 
     #[prompt(description = "Search the vault using a note's section headings as queries, then ask the LLM to synthesise what is captured and identify gaps.")]
@@ -208,5 +251,102 @@ mod tests {
             "expected entry in prompt: {}",
             text
         );
+    }
+
+    #[tokio::test]
+    async fn test_find_connections_includes_note_content() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "my/note".to_string(),
+                content: "# My Note\n\nunique_connections_content_abc".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .find_connections(Parameters(FindConnectionsParams {
+                path: "my/note".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("unique_connections_content_abc"),
+            "expected note content in prompt: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_connections_lists_backlinks() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "target".to_string(),
+                content: "# Target".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "source".to_string(),
+                content: "see [[target]] for details".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .find_connections(Parameters(FindConnectionsParams {
+                path: "target".to_string(),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("source"),
+            "expected backlink 'source' in prompt: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_connections_no_backlinks_omits_section() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "lone/note".to_string(),
+                content: "# Lone\n\nno links to here".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .find_connections(Parameters(FindConnectionsParams {
+                path: "lone/note".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        // Note content should be present; backlinks section should be absent
+        assert!(text.contains("Lone"), "expected note content: {}", text);
+        assert!(
+            !text.contains("Notes that link"),
+            "should not have backlinks section: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_connections_note_not_found() {
+        let (handler, _dir) = make_handler().await;
+        let msgs = handler
+            .find_connections(Parameters(FindConnectionsParams {
+                path: "missing/note".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(text.contains("not found"), "expected not-found message: {}", text);
     }
 }
