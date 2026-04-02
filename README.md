@@ -95,39 +95,6 @@ To browse the docs locally with search:
 zola serve docs/
 ```
 
-## Releasing
-
-Releases are automated via `release.sh`, which uses [`semtag`](./semtag) to determine the next version. Requires [`cargo-edit`](https://github.com/killercup/cargo-edit):
-
-```sh
-cargo install cargo-edit
-```
-
-```sh
-./release.sh           # auto scope (minor or patch based on diff size)
-./release.sh -s patch  # force patch bump
-./release.sh -s minor  # force minor bump
-./release.sh -s major  # force major bump
-```
-
-The script will:
-
-1. Calculate the next version from git history
-2. Bump the version in `tui/Cargo.toml` (kimun-notes)
-3. Commit the change and push a version tag
-
-The tag triggers the CI workflow, which:
-
-- Publishes to crates.io — skipping any crate whose current version is already published
-- Pushes a formula to the [homebrew-kimun](https://github.com/nico2sh/homebrew-kimun) tap (final releases only)
-
-**Releasing `kimun_core`:** Core is versioned independently. Update `core/Cargo.toml` and the `kimun_core` entry in the root `Cargo.toml` `[workspace.dependencies]` manually, commit, then run `./release.sh` as usual.
-
-**Required secrets** (set in the repository settings):
-
-- `CARGO_REGISTRY_TOKEN` — crates.io API token
-- `HOMEBREW_TAP_TOKEN` — GitHub PAT with write access to `nico2sh/homebrew-kimun`
-
 ## Roadmap
 
 - [ ] Command palette
@@ -145,6 +112,25 @@ The tag triggers the CI workflow, which:
 - [X] Wikilinks in preview
 - [X] Navigate notes via links in preview
 - [X] Embed neoVim as an option (currently experimental)
+
+# Contributing
+
+Contributions are welcome! This project uses [Conventional Commits](https://www.conventionalcommits.org/) to automate versioning and changelog generation.
+
+After cloning, enable the included git hook:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+This will reject commit messages that don't follow the format. Common types:
+
+| Type | When to use |
+|---|---|
+| `feat:` | New feature (minor version bump) |
+| `fix:` | Bug fix (patch bump) |
+| `feat!:` | Breaking change (major bump) |
+| `chore:`, `docs:`, `ci:` | No release triggered |
 
 # Credits
 Built with [Ratatui](https://github.com/ratatui/ratatui) (and [ratatui-textarea](https://github.com/ratatui/ratatui-textarea)), [Nucleo](https://docs.rs/nucleo/latest/nucleo/) for fuzzy searching, [Ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for fast file read.
