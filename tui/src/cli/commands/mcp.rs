@@ -159,8 +159,19 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<SearchNotesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = p;
-        Err(McpError::internal_error("not yet implemented", None))
+        let results = self
+            .vault
+            .search_notes(&p.query)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        if results.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text("No results found.")]));
+        }
+        let lines: Vec<String> = results
+            .iter()
+            .map(|(entry, content)| format!("{} — {}", entry.path, content.title))
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
     }
 
     #[tool(description = "List all notes in the vault, optionally filtered by path prefix.")]
@@ -168,8 +179,30 @@ impl KimunHandler {
         &self,
         Parameters(p): Parameters<ListNotesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = p;
-        Err(McpError::internal_error("not yet implemented", None))
+        let all = self
+            .vault
+            .get_all_notes()
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let filtered: Vec<_> = match &p.path {
+            None => all,
+            Some(prefix) => {
+                let norm = prefix.trim_matches('/');
+                all.into_iter()
+                    .filter(|(entry, _)| {
+                        entry.path.to_string().trim_start_matches('/').starts_with(norm)
+                    })
+                    .collect()
+            }
+        };
+        if filtered.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text("No notes found.")]));
+        }
+        let lines: Vec<String> = filtered
+            .iter()
+            .map(|(entry, content)| format!("{} — {}", entry.path, content.title))
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
     }
 
     #[tool(description = "Append text to today's journal entry (or a specific date). Creates the entry if absent.")]
@@ -377,6 +410,98 @@ mod tests {
         let orig_pos = text.find("original").expect("original not found");
         let added_pos = text.find("added").expect("added not found");
         assert!(orig_pos < added_pos, "original should appear before added");
+    }
+
+    #[tokio::test]
+    async fn test_search_notes_finds_match() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "alpha/one".to_string(),
+                content: "# Alpha\n\ncontains unique_keyword_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .search_notes(Parameters(SearchNotesParams {
+                query: "unique_keyword_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        assert!(
+            result_text(&result).contains("alpha/one"),
+            "search result did not include 'alpha/one': {}",
+            result_text(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_notes_returns_empty_for_no_match() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .search_notes(Parameters(SearchNotesParams {
+                query: "nonexistent_zzz_123".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+    }
+
+    #[tokio::test]
+    async fn test_list_notes_returns_all() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "folder/a".to_string(),
+                content: "note a".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "folder/b".to_string(),
+                content: "note b".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .list_notes(Parameters(ListNotesParams { path: None }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+        let text = result_text(&result);
+        assert!(text.contains("folder/a"), "missing 'folder/a': {}", text);
+        assert!(text.contains("folder/b"), "missing 'folder/b': {}", text);
+    }
+
+    #[tokio::test]
+    async fn test_list_notes_filters_by_prefix() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "projects/foo".to_string(),
+                content: "foo".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "journal/2026-01-01".to_string(),
+                content: "journal".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .list_notes(Parameters(ListNotesParams {
+                path: Some("projects".to_string()),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+        let text = result_text(&result);
+        assert!(text.contains("projects/foo"), "missing projects/foo: {}", text);
+        assert!(!text.contains("journal/2026"), "should not include journal: {}", text);
     }
 }
 
