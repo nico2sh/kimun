@@ -395,8 +395,11 @@ impl NoteVault {
     /// - Image paths are resolved to absolute OS paths so renderers can load them directly.
     ///   Relative image paths are resolved against the note's location in the vault.
     ///   External image URLs are kept as-is.
-    pub fn get_markdown_and_links(&self, note: &NoteDetails) -> note::MarkdownNote {
-        // Step 1: convert wikilinks, extract note/URL/hashtag links.
+    pub async fn get_markdown_and_links(
+        &self,
+        path: &VaultPath,
+    ) -> Result<note::MarkdownNote, VaultError> {
+        let note = self.load_note(path).await?;
         let note_parent = if note.path.is_note() {
             note.path.get_parent_path().0
         } else {
@@ -404,16 +407,12 @@ impl NoteVault {
         };
         let (md_text, mut links) =
             note::content_extractor::get_markdown_and_links(&note.path, &note.raw_text);
-
-        // Step 2: resolve image paths to absolute OS paths.
         let (md_text, image_links) =
             note::content_extractor::process_image_links(&md_text, |alt_text, raw_path| {
                 let resolved =
                     if raw_path.starts_with("http://") || raw_path.starts_with("https://") {
-                        // External URL: keep as-is
                         raw_path.to_string()
                     } else {
-                        // Vault-relative or note-relative path → absolute OS path
                         let image_vault_path = if raw_path.starts_with('/') {
                             VaultPath::new(raw_path)
                         } else {
@@ -427,12 +426,11 @@ impl NoteVault {
                 let link = note::NoteLink::image(&resolved, alt_text, raw_path);
                 (resolved, link)
             });
-
         links.extend(image_links);
-        note::MarkdownNote {
+        Ok(note::MarkdownNote {
             text: md_text,
             links,
-        }
+        })
     }
 
     /// Returns all notes that contain a link pointing to `path`.
@@ -808,12 +806,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
 
-        // Note at /directory/note.md, image at ../photo.png  →  /photo.png in vault
-        let note = note::NoteDetails::new(
-            &VaultPath::new("/directory/note.md"),
-            "![alt](../photo.png)",
-        );
-        let md_note = vault.get_markdown_and_links(&note);
+        std::fs::create_dir_all(dir.path().join("directory")).unwrap();
+        std::fs::write(dir.path().join("directory/note.md"), "![alt](../photo.png)").unwrap();
+
+        let md_note = vault
+            .get_markdown_and_links(&VaultPath::new("/directory/note.md"))
+            .await
+            .unwrap();
 
         let expected_os_path = dir.path().join("photo.png").display().to_string();
         assert_eq!(md_note.text, format!("![alt]({})", expected_os_path));
@@ -829,12 +828,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
 
-        // Note anywhere, image at /assets/banner.png (vault-absolute)
-        let note = note::NoteDetails::new(
-            &VaultPath::new("/notes/note.md"),
+        std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+        std::fs::write(
+            dir.path().join("notes/note.md"),
             "![banner](/assets/banner.png)",
-        );
-        let md_note = vault.get_markdown_and_links(&note);
+        )
+        .unwrap();
+
+        let md_note = vault
+            .get_markdown_and_links(&VaultPath::new("/notes/note.md"))
+            .await
+            .unwrap();
 
         let expected_os_path = dir
             .path()
@@ -855,11 +859,17 @@ mod tests {
         let vault = make_vault(dir.path()).await;
 
         let url = "https://example.com/img.png";
-        let note =
-            note::NoteDetails::new(&VaultPath::new("/note.md"), &format!("![remote]({})", url));
-        let md_note = vault.get_markdown_and_links(&note);
+        std::fs::write(
+            dir.path().join("note.md"),
+            format!("![remote]({})", url),
+        )
+        .unwrap();
 
-        // URL must be kept verbatim in the output markdown
+        let md_note = vault
+            .get_markdown_and_links(&VaultPath::new("/note.md"))
+            .await
+            .unwrap();
+
         assert_eq!(md_note.text, format!("![remote]({})", url));
         assert!(matches!(
             &md_note.links[0].ltype,
@@ -873,14 +883,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let vault = make_vault(dir.path()).await;
 
-        // Mix: wikilink, note link, image, hashtag
-        let note = note::NoteDetails::new(
-            &VaultPath::new("/note.md"),
+        std::fs::write(
+            dir.path().join("note.md"),
             "[[Other Note]] [link](other.md) ![img](photo.png) #tag",
-        );
-        let md_note = vault.get_markdown_and_links(&note);
+        )
+        .unwrap();
 
-        // Image link present
+        let md_note = vault
+            .get_markdown_and_links(&VaultPath::new("/note.md"))
+            .await
+            .unwrap();
+
         assert_eq!(
             1,
             md_note
@@ -889,7 +902,6 @@ mod tests {
                 .filter(|l| matches!(l.ltype, note::LinkType::Image(_)))
                 .count()
         );
-        // Note links: wikilink + markdown note link
         assert_eq!(
             2,
             md_note
@@ -898,7 +910,6 @@ mod tests {
                 .filter(|l| matches!(l.ltype, note::LinkType::Note(_)))
                 .count()
         );
-        // Hashtag
         assert_eq!(
             1,
             md_note
