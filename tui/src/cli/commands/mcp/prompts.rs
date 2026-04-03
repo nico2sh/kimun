@@ -49,6 +49,14 @@ pub struct WeeklyReviewParams {
     pub date: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct LinkSuggestionsParams {
+    /// Vault-relative path to the note
+    pub path: String,
+    /// Maximum number of candidate notes to include (default 5)
+    pub max_results: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // Prompt implementations
 // ---------------------------------------------------------------------------
@@ -365,6 +373,132 @@ impl KimunHandler {
             monday.format("%Y-%m-%d"),
             sunday.format("%Y-%m-%d"),
             days_text
+        );
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+    }
+
+    #[prompt(description = "Find vault notes topically related to the given note but not yet linked, and ask the LLM to evaluate which connections are worth formalising.")]
+    async fn link_suggestions(
+        &self,
+        Parameters(p): Parameters<LinkSuggestionsParams>,
+    ) -> Result<Vec<PromptMessage>, McpError> {
+        use kimun_core::error::{FSError, VaultError};
+        use kimun_core::nfs::VaultPath;
+        use kimun_core::note::LinkType;
+        use std::collections::HashSet;
+
+        let vault_path = VaultPath::note_path_from(&p.path);
+        let max = p.max_results.unwrap_or(5) as usize;
+
+        // Load source note
+        let note_text = match self.vault.get_note_text(&vault_path).await {
+            Ok(t) => t,
+            Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
+                return Ok(vec![PromptMessage::new_text(
+                    PromptMessageRole::User,
+                    format!("Note not found: {}", vault_path),
+                )]);
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        // Extract unique leaf headings (same approach as research_note)
+        let chunks_map = self
+            .vault
+            .get_note_chunks(&vault_path)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let mut topics: Vec<String> = Vec::new();
+        for chunks in chunks_map.values() {
+            for chunk in chunks {
+                if let Some(leaf) = chunk.breadcrumb.last() {
+                    let topic = leaf.trim().to_string();
+                    if !topic.is_empty() && !topics.contains(&topic) {
+                        topics.push(topic);
+                    }
+                }
+            }
+        }
+
+        // Build exclusion set: outlinks + backlinks + source itself
+        let mut excluded: HashSet<String> = HashSet::new();
+        excluded.insert(vault_path.to_string());
+
+        let md_note = self
+            .vault
+            .get_markdown_and_links(&vault_path)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        for link in md_note.links {
+            if let LinkType::Note(linked_path) = link.ltype {
+                excluded.insert(linked_path.to_string());
+            }
+        }
+
+        let backlinks = self
+            .vault
+            .get_backlinks(&vault_path)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        for (entry, _) in &backlinks {
+            excluded.insert(entry.path.to_string());
+        }
+
+        // Search each heading; collect, deduplicate, filter, cap
+        let mut candidates: Vec<(VaultPath, String)> = Vec::new();
+        let mut seen: HashSet<String> = excluded.clone();
+
+        'outer: for topic in &topics {
+            let results = self
+                .vault
+                .search_notes(topic)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            for (entry, _) in results {
+                let path_str = entry.path.to_string();
+                if seen.contains(&path_str) {
+                    continue;
+                }
+                seen.insert(path_str);
+                let text = self
+                    .vault
+                    .get_note_text(&entry.path)
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                candidates.push((entry.path, text));
+                if candidates.len() >= max {
+                    break 'outer;
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return Ok(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                format!(
+                    "Here is the note at \"{}\":\n\n---\n{}\n---\n\nNo unlinked related notes found in the vault.",
+                    vault_path, note_text
+                ),
+            )]);
+        }
+
+        let candidates_block: String = candidates
+            .iter()
+            .map(|(path, text)| format!("=== {} ===\n{}", path, text))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let message = format!(
+            "Here is the note at \"{path}\":\n\n---\n{note_text}\n---\n\n\
+            Candidate notes not yet linked to or from this note:\n\n\
+            {candidates_block}\n\n\
+            For each candidate:\n\
+            1. Assess whether a meaningful conceptual connection exists.\n\
+            2. If yes, suggest the exact [[wikilink]] syntax to add and where in the note it fits.\n\
+            3. If no clear connection, explain briefly why it was surfaced.",
+            path = vault_path,
         );
 
         Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
@@ -766,6 +900,98 @@ mod tests {
         assert!(
             text.contains("Invalid date"),
             "expected graceful error message: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_link_suggestions_returns_unlinked_candidates() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "source".to_string(),
+                content: "# Source\n\n## Rust Programming\n\nsome rust content".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "candidate".to_string(),
+                content: "# Candidate\n\nRust Programming is great".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .link_suggestions(Parameters(LinkSuggestionsParams {
+                path: "source".to_string(),
+                max_results: Some(5),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("candidate"),
+            "expected candidate note in prompt: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_link_suggestions_excludes_already_linked_notes() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "source".to_string(),
+                content: "# Source\n\n## Rust Programming\n\nsee [[linked-note]]".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "linked-note".to_string(),
+                content: "# Linked Note\n\nRust Programming is great".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .link_suggestions(Parameters(LinkSuggestionsParams {
+                path: "source".to_string(),
+                max_results: Some(5),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        // The already-linked note should not appear as a candidate
+        assert!(
+            !text.contains("=== /linked-note") && !text.contains("=== linked-note"),
+            "linked-note should be excluded from candidates: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_link_suggestions_empty_vault_returns_graceful_message() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "lonely".to_string(),
+                content: "# Lonely\n\n## Some Topic\n\nalone".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .link_suggestions(Parameters(LinkSuggestionsParams {
+                path: "lonely".to_string(),
+                max_results: Some(5),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("No unlinked related notes"),
+            "expected graceful no-results message: {}",
             text
         );
     }
