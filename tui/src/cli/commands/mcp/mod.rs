@@ -78,6 +78,19 @@ pub struct OutlinksParams {
     pub path: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RenameNoteParams {
+    pub path: String,
+    /// New filename stem — no extension, no path separator
+    pub new_name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MoveNoteParams {
+    pub path: String,
+    pub new_path: String,
+}
+
 // ---------------------------------------------------------------------------
 // Handler struct
 // ---------------------------------------------------------------------------
@@ -376,6 +389,49 @@ impl KimunHandler {
         }
 
         Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
+    }
+
+    #[tool(description = "Rename a note within its current directory (filename only). Use move_note to change the directory.")]
+    async fn rename_note(
+        &self,
+        Parameters(p): Parameters<RenameNoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if p.new_name.contains('/') {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "new_name must not contain '/'. Use move_note to change a note's directory.",
+            )]));
+        }
+
+        let from = Self::resolve_path(&p.path);
+        let (parent, _) = from.get_parent_path();
+        let to = parent
+            .append(&VaultPath::note_path_from(&p.new_name))
+            .absolute();
+
+        match self.vault.rename_note(&from, &to).await {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Note renamed: {} → {}",
+                from, to
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Move a note to a new vault path (different directory and/or name). Backlinks in other notes are updated automatically.")]
+    async fn move_note(
+        &self,
+        Parameters(p): Parameters<MoveNoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let from = Self::resolve_path(&p.path);
+        let to = Self::resolve_path(&p.new_path);
+
+        match self.vault.rename_note(&from, &to).await {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Note moved: {} → {}",
+                from, to
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
     }
 }
 
@@ -939,6 +995,155 @@ mod tests {
         let result = handler
             .get_outlinks(Parameters(OutlinksParams {
                 path: "missing/note".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_rename_note_succeeds() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "old-name".to_string(),
+                content: "# Old\n\nunique_rename_content_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .rename_note(Parameters(RenameNoteParams {
+                path: "old-name".to_string(),
+                new_name: "new-name".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        let show = handler
+            .show_note(Parameters(ShowNoteParams { path: "new-name".to_string() }))
+            .await
+            .unwrap();
+        assert!(is_success(&show), "new path should be readable");
+        assert!(result_text(&show).contains("unique_rename_content_xyz"));
+        let old = handler
+            .show_note(Parameters(ShowNoteParams { path: "old-name".to_string() }))
+            .await
+            .unwrap();
+        assert_eq!(old.is_error, Some(true), "old path should be gone");
+    }
+
+    #[tokio::test]
+    async fn test_rename_note_rejects_slash_in_name() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "some/note".to_string(),
+                content: "content".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .rename_note(Parameters(RenameNoteParams {
+                path: "some/note".to_string(),
+                new_name: "other/dir".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            result_text(&result).contains("move_note"),
+            "hint should mention move_note: {}",
+            result_text(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rename_note_updates_backlinks() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "target".to_string(),
+                content: "# Target".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "linker".to_string(),
+                content: "see [[target]] for details".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .rename_note(Parameters(RenameNoteParams {
+                path: "target".to_string(),
+                new_name: "renamed-target".to_string(),
+            }))
+            .await
+            .unwrap();
+        let show = handler
+            .show_note(Parameters(ShowNoteParams { path: "linker".to_string() }))
+            .await
+            .unwrap();
+        assert!(
+            result_text(&show).contains("renamed-target"),
+            "backlink should be updated: {}",
+            result_text(&show)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_move_note_succeeds() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "original".to_string(),
+                content: "# Original\n\nunique_move_content_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .move_note(Parameters(MoveNoteParams {
+                path: "original".to_string(),
+                new_path: "folder/moved".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        let show = handler
+            .show_note(Parameters(ShowNoteParams { path: "folder/moved".to_string() }))
+            .await
+            .unwrap();
+        assert!(is_success(&show));
+        assert!(result_text(&show).contains("unique_move_content_xyz"));
+        let old = handler
+            .show_note(Parameters(ShowNoteParams { path: "original".to_string() }))
+            .await
+            .unwrap();
+        assert_eq!(old.is_error, Some(true), "old path should be gone");
+    }
+
+    #[tokio::test]
+    async fn test_move_note_fails_if_destination_exists() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "src".to_string(),
+                content: "source".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "dst".to_string(),
+                content: "destination".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .move_note(Parameters(MoveNoteParams {
+                path: "src".to_string(),
+                new_path: "dst".to_string(),
             }))
             .await
             .unwrap();
