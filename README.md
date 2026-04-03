@@ -80,6 +80,19 @@ Claude Code will pick it up automatically. In any session, Claude can now create
 
 Copy `skills/kimun-cli/SKILL.md` to wherever your tool loads skills from, following that tool's skill installation instructions.
 
+## MCP Server
+
+For richer AI integration, `kimun mcp` runs as a [Model Context Protocol](https://modelcontextprotocol.io) server. MCP gives the AI direct access to your vault through structured tools and prompt templates — no shell commands needed.
+
+```sh
+# Claude Code (one-time setup)
+claude mcp add kimun -- kimun mcp
+```
+
+**Tools** let the AI create, read, search, and reorganise notes. **Prompt templates** load vault content and ask the model to reason over it — reviewing your day, scanning a week of journal entries, finding unlinked related notes, or brainstorming ideas grounded in what you've already written.
+
+See the [MCP Server docs](docs/content/getting-started/mcp-server.md) for the full tool and prompt reference, and setup instructions for Claude Desktop and other clients.
+
 ---
 
 ## Documentation
