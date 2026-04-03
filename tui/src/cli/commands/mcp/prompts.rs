@@ -43,6 +43,12 @@ pub struct BrainstormParams {
     pub topic: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct WeeklyReviewParams {
+    /// Any date within the target week in YYYY-MM-DD format; defaults to today
+    pub date: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Prompt implementations
 // ---------------------------------------------------------------------------
@@ -291,6 +297,74 @@ impl KimunHandler {
             2. Avoid repeating existing content\n\
             {suggestion_line}",
             topic = p.topic,
+        );
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+    }
+
+    #[prompt(description = "Load a full week of journal entries and ask the LLM to synthesise themes, accomplishments, and carry-overs.")]
+    async fn weekly_review(
+        &self,
+        Parameters(p): Parameters<WeeklyReviewParams>,
+    ) -> Result<Vec<PromptMessage>, McpError> {
+        use chrono::{Datelike, Duration, NaiveDate, Utc};
+        use kimun_core::error::{FSError, VaultError};
+        use kimun_core::nfs::VaultPath;
+
+        // Parse or default to today
+        let anchor: NaiveDate = match p.date.as_deref() {
+            None => Utc::now().date_naive(),
+            Some(d) => match NaiveDate::parse_from_str(d, "%Y-%m-%d") {
+                Ok(date) => date,
+                Err(_) => {
+                    return Ok(vec![PromptMessage::new_text(
+                        PromptMessageRole::User,
+                        format!("Invalid date '{}' — expected YYYY-MM-DD.", d),
+                    )]);
+                }
+            },
+        };
+
+        // Compute Monday and Sunday of the week
+        let days_from_monday = anchor.weekday().num_days_from_monday();
+        let monday = anchor - Duration::days(days_from_monday as i64);
+        let sunday = monday + Duration::days(6);
+
+        // Day names for formatting
+        let day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+        let mut days_text = String::new();
+        for i in 0..7 {
+            let day = monday + Duration::days(i);
+            let date_str = day.format("%Y-%m-%d").to_string();
+            let journal_path = self
+                .vault
+                .journal_path()
+                .append(&VaultPath::note_path_from(&date_str))
+                .absolute();
+
+            let content = match self.vault.get_note_text(&journal_path).await {
+                Ok(text) => text,
+                Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => "(no entry)".to_string(),
+                Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+            };
+
+            days_text.push_str(&format!(
+                "{} {}:\n---\n{}\n---\n\n",
+                day_names[i as usize], date_str, content
+            ));
+        }
+
+        let message = format!(
+            "Week of {} – {}\n\n{}\
+            Please review this week:\n\
+            1. What were the main themes and accomplishments?\n\
+            2. What carried over unfinished from day to day?\n\
+            3. What patterns are worth paying attention to?\n\
+            4. What should be prioritised next week?",
+            monday.format("%Y-%m-%d"),
+            sunday.format("%Y-%m-%d"),
+            days_text
         );
 
         Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
@@ -624,6 +698,74 @@ mod tests {
         assert!(
             !text.contains("Suggested note"),
             "should not suggest a note when no results: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_weekly_review_includes_entries_and_marks_missing() {
+        let (handler, _dir) = make_handler().await;
+        // Create entries for Monday and Wednesday of a known week (2026-03-02 is a Monday)
+        handler
+            .journal(Parameters(JournalParams {
+                text: "monday content unique_weekly_mon_xyz".to_string(),
+                date: Some("2026-03-02".to_string()),
+            }))
+            .await
+            .unwrap();
+        handler
+            .journal(Parameters(JournalParams {
+                text: "wednesday content unique_weekly_wed_xyz".to_string(),
+                date: Some("2026-03-04".to_string()),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .weekly_review(Parameters(WeeklyReviewParams {
+                date: Some("2026-03-02".to_string()),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(text.contains("unique_weekly_mon_xyz"), "monday entry: {}", text);
+        assert!(text.contains("unique_weekly_wed_xyz"), "wednesday entry: {}", text);
+        // Days without entries should show (no entry)
+        assert!(text.contains("(no entry)"), "missing days: {}", text);
+    }
+
+    #[tokio::test]
+    async fn test_weekly_review_date_in_middle_of_week_uses_correct_range() {
+        let (handler, _dir) = make_handler().await;
+        // 2026-03-04 is a Wednesday — should resolve to Mon 2026-03-02 – Sun 2026-03-08
+        let msgs = handler
+            .weekly_review(Parameters(WeeklyReviewParams {
+                date: Some("2026-03-04".to_string()),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("2026-03-02") && text.contains("2026-03-08"),
+            "expected Mon 2026-03-02 – Sun 2026-03-08 in: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_weekly_review_invalid_date_returns_graceful_message() {
+        let (handler, _dir) = make_handler().await;
+        let msgs = handler
+            .weekly_review(Parameters(WeeklyReviewParams {
+                date: Some("not-a-date".to_string()),
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("Invalid date"),
+            "expected graceful error message: {}",
             text
         );
     }
