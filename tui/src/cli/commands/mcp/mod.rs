@@ -413,7 +413,16 @@ impl KimunHandler {
                 "Note renamed: {} → {}",
                 from, to
             ))])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            Err(
+                kimun_core::error::VaultError::NoteExists { .. }
+                | kimun_core::error::VaultError::FSError(
+                    kimun_core::error::FSError::VaultPathNotFound { .. }
+                    | kimun_core::error::FSError::InvalidPath { .. },
+                ),
+            ) => Ok(CallToolResult::error(vec![Content::text(
+                format!("Note not found or destination already exists: {} → {}", from, to)
+            )])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
         }
     }
 
@@ -430,7 +439,16 @@ impl KimunHandler {
                 "Note moved: {} → {}",
                 from, to
             ))])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            Err(
+                kimun_core::error::VaultError::NoteExists { .. }
+                | kimun_core::error::VaultError::FSError(
+                    kimun_core::error::FSError::VaultPathNotFound { .. }
+                    | kimun_core::error::FSError::InvalidPath { .. },
+                ),
+            ) => Ok(CallToolResult::error(vec![Content::text(
+                format!("Note not found or destination already exists: {} → {}", from, to)
+            )])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
         }
     }
 }
