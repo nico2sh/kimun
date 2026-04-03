@@ -73,6 +73,11 @@ pub struct ChunksParams {
     pub path: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct OutlinksParams {
+    pub path: String,
+}
+
 // ---------------------------------------------------------------------------
 // Handler struct
 // ---------------------------------------------------------------------------
@@ -315,6 +320,62 @@ impl KimunHandler {
             return Ok(CallToolResult::success(vec![Content::text("No chunks found.")]));
         }
         Ok(CallToolResult::success(vec![Content::text(lines.join("\n\n"))]))
+    }
+
+    #[tool(description = "Return the list of notes that this note links to (outgoing wikilinks).")]
+    async fn get_outlinks(
+        &self,
+        Parameters(p): Parameters<OutlinksParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use kimun_core::error::{FSError, VaultError};
+        use kimun_core::note::{LinkType, NoteDetails};
+
+        let vault_path = Self::resolve_path(&p.path);
+
+        let md_note = match self.vault.get_markdown_and_links(&vault_path).await {
+            Ok(n) => n,
+            Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Note not found: {}",
+                    vault_path
+                ))]));
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
+
+        let note_links: Vec<_> = md_note
+            .links
+            .into_iter()
+            .filter_map(|link| {
+                if let LinkType::Note(path) = link.ltype {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if note_links.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text("No outlinks found.")]));
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        for path in note_links {
+            let title = match self.vault.get_note_text(&path).await {
+                Ok(text) => {
+                    let t = NoteDetails::get_title_from_text(&text);
+                    if t.is_empty() {
+                        path.get_clean_name()
+                    } else {
+                        t
+                    }
+                }
+                Err(_) => path.get_clean_name(),
+            };
+            lines.push(format!("{} — {}", path, title));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
     }
 }
 
@@ -815,6 +876,73 @@ mod tests {
         // and assert result.is_err()
         let _ = &handler;
         unreachable!("test is ignored");
+    }
+
+    #[tokio::test]
+    async fn test_get_outlinks_returns_linked_notes() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "source".to_string(),
+                content: "# Source\n\nSee [[target]] for more.".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "target".to_string(),
+                content: "# Target\n\nContent here.".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .get_outlinks(Parameters(OutlinksParams {
+                path: "source".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        assert!(
+            result_text(&result).contains("target"),
+            "expected 'target' in outlinks: {}",
+            result_text(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_outlinks_no_links_returns_empty_message() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "no-links".to_string(),
+                content: "# No Links\n\nJust text, no wikilinks.".to_string(),
+            }))
+            .await
+            .unwrap();
+        let result = handler
+            .get_outlinks(Parameters(OutlinksParams {
+                path: "no-links".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+        assert!(
+            result_text(&result).contains("No outlinks found"),
+            "expected empty message: {}",
+            result_text(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_outlinks_note_not_found_returns_error() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .get_outlinks(Parameters(OutlinksParams {
+                path: "missing/note".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
     }
 
     #[tokio::test]
