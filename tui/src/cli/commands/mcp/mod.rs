@@ -199,7 +199,9 @@ impl KimunHandler {
                 let norm = prefix.trim_matches('/');
                 all.into_iter()
                     .filter(|(entry, _)| {
-                        entry.path.to_string().trim_start_matches('/').starts_with(norm)
+                        let mut p = entry.path.clone();
+                        p.to_relative();
+                        p.to_string().starts_with(norm)
                     })
                     .collect()
             }
@@ -348,24 +350,14 @@ impl ServerHandler for KimunHandler {
         let resources: Vec<Resource> = notes
             .into_iter()
             .map(|(entry, content)| {
-                // Build URI: note://{path_without_leading_slash}.md
-                let path_str = entry.path.to_string();
-                let path_trimmed = path_str.trim_start_matches('/');
-                let uri = if path_trimmed.ends_with(".md") {
-                    format!("note://{}", path_trimmed)
-                } else {
-                    format!("note://{}.md", path_trimmed)
-                };
+                // Build URI: note://{relative_path_with_ext}
+                let mut rel_path = entry.path.clone();
+                rel_path.to_relative();
+                let uri = format!("note://{}", rel_path.to_string_with_ext());
 
-                // Name: title from NoteContentData, or filename if title empty
+                // Name: title from NoteContentData, or stem of filename if title empty
                 let name = if content.title.is_empty() {
-                    // Use the last path segment as filename
-                    path_trimmed
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(path_trimmed)
-                        .trim_end_matches(".md")
-                        .to_string()
+                    entry.path.get_clean_name()
                 } else {
                     content.title.clone()
                 };
@@ -398,9 +390,7 @@ impl ServerHandler for KimunHandler {
                 None,
             ))?;
 
-        // Strip .md extension to get vault path
-        let path_str = path_with_ext.trim_end_matches(".md");
-        let vault_path = VaultPath::note_path_from(path_str);
+        let vault_path = VaultPath::note_path_from(path_with_ext);
 
         // Fetch note text
         match self.vault.get_note_text(&vault_path).await {
