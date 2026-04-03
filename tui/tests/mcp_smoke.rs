@@ -1,8 +1,8 @@
 // tui/tests/mcp_smoke.rs
 //
 // End-to-end smoke test: spawns the real `kimun` binary, sends MCP JSON-RPC
-// messages over stdin, and asserts that `tools/list` returns all 8 expected
-// tool names and that `prompts/list` returns all 4 expected prompt names.
+// messages over stdin, and asserts that `tools/list` returns all 11 expected
+// tool names and that `prompts/list` returns all 6 expected prompt names.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -123,6 +123,9 @@ fn mcp_smoke_tools_list() {
         "journal",
         "get_backlinks",
         "get_chunks",
+        "get_outlinks",
+        "rename_note",
+        "move_note",
     ];
     for tool in &expected_tools {
         assert!(
@@ -192,6 +195,8 @@ fn mcp_smoke_prompts_list() {
         "find_connections",
         "research_note",
         "brainstorm",
+        "weekly_review",
+        "link_suggestions",
     ];
     for prompt in &expected_prompts {
         assert!(
