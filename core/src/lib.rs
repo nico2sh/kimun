@@ -407,6 +407,9 @@ impl NoteVault {
         };
         let (md_text, mut links) =
             note::content_extractor::get_markdown_and_links(&note.path, &note.raw_text);
+        // Since this function is intended to return content ready to be rendered
+        // We need the full path of the image links, so any markdown processor can find the image,
+        // the full path can only be resolved from here as we have the vault path
         let (md_text, image_links) =
             note::content_extractor::process_image_links(&md_text, |alt_text, raw_path| {
                 let resolved =
@@ -859,11 +862,7 @@ mod tests {
         let vault = make_vault(dir.path()).await;
 
         let url = "https://example.com/img.png";
-        std::fs::write(
-            dir.path().join("note.md"),
-            format!("![remote]({})", url),
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("note.md"), format!("![remote]({})", url)).unwrap();
 
         let md_note = vault
             .get_markdown_and_links(&VaultPath::new("/note.md"))
