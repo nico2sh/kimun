@@ -298,13 +298,15 @@ pub async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
             message: "Path provided is not a note".to_string(),
         });
     }
-    let (parent, note) = path.get_parent_path();
-    let base_path = resolve_path_on_disk(&workspace_path, &parent).await;
-    let full_path = base_path.join(&note);
-    tokio::fs::create_dir_all(&base_path).await?;
-    tokio::fs::write(full_path, text.as_ref().as_bytes()).await?;
+    // Resolve the full path case-insensitively so an existing `MyNote.md` is
+    // written in place rather than creating a new lowercase `mynote.md` alongside it.
+    let full_path = resolve_path_on_disk(&workspace_path, path).await;
+    if let Some(base_path) = full_path.parent() {
+        tokio::fs::create_dir_all(base_path).await?;
+    }
+    tokio::fs::write(&full_path, text.as_ref().as_bytes()).await?;
 
-    let entry = NoteEntryData::from_path(workspace_path, path).await?;
+    let entry = NoteEntryData::from_os_path(path, &full_path).await?;
     Ok(entry)
 }
 
@@ -327,14 +329,14 @@ pub async fn rename_note<P: AsRef<Path>>(
     }
 
     let full_from_path = resolve_path_on_disk(&workspace_path, from).await;
-    let full_to_path = to.to_pathbuf(&workspace_path);
+    let (to_parent, to_name) = to.get_parent_path();
+    let to_base = resolve_path_on_disk(&workspace_path, &to_parent).await;
+    let full_to_path = to_base.join(&to_name);
     // We create the destination directory if doesn't exist
-    if let Some(parent) = full_to_path.parent() {
-        match tokio::fs::metadata(parent).await {
-            Ok(m) if m.is_dir() => {}
-            _ => {
-                tokio::fs::create_dir_all(parent).await?;
-            }
+    match tokio::fs::metadata(&to_base).await {
+        Ok(m) if m.is_dir() => {}
+        _ => {
+            tokio::fs::create_dir_all(&to_base).await?;
         }
     }
     tokio::fs::rename(full_from_path, full_to_path).await?;
@@ -360,12 +362,14 @@ pub async fn rename_directory<P: AsRef<Path>>(
     }
 
     let full_from_path = resolve_path_on_disk(&workspace_path, from).await;
-    let full_to_path = to.to_pathbuf(&workspace_path);
+    let (to_parent, to_name) = to.get_parent_path();
+    let to_base = resolve_path_on_disk(&workspace_path, &to_parent).await;
+    let full_to_path = to_base.join(&to_name);
     // We create the destination directory if doesn't exist
-    match tokio::fs::metadata(&full_to_path).await {
+    match tokio::fs::metadata(&to_base).await {
         Ok(m) if m.is_dir() => {}
         _ => {
-            tokio::fs::create_dir_all(&full_to_path).await?;
+            tokio::fs::create_dir_all(&to_base).await?;
         }
     }
     tokio::fs::rename(full_from_path, full_to_path).await?;
@@ -1672,5 +1676,183 @@ mod tests {
         let b = VaultPath::new("/projects/note.md");
         assert_eq!(a, b);
         assert_eq!(a.to_string(), "/projects/note.md");
+    }
+
+    // ── Case-insensitive disk resolution tests ────────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_finds_uppercase_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Journal")).await.unwrap();
+
+        let result = super::resolve_path_on_disk(tmp.path(), &VaultPath::new("/journal")).await;
+        assert_eq!(result, tmp.path().join("Journal"));
+    }
+
+    #[tokio::test]
+    async fn resolve_finds_uppercase_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Projects")).await.unwrap();
+        tokio::fs::write(tmp.path().join("Projects").join("MyNote.md"), "hi").await.unwrap();
+
+        let result = super::resolve_path_on_disk(tmp.path(), &VaultPath::new("/projects/mynote.md")).await;
+        assert_eq!(result, tmp.path().join("Projects").join("MyNote.md"));
+    }
+
+    #[tokio::test]
+    async fn resolve_uses_lowercase_for_nonexistent_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let result = super::resolve_path_on_disk(tmp.path(), &VaultPath::new("/newdir/note.md")).await;
+        assert_eq!(result, tmp.path().join("newdir").join("note.md"));
+    }
+
+    #[test]
+    fn resolve_sync_finds_uppercase_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("Archive")).unwrap();
+
+        let result = super::resolve_path_on_disk_sync(tmp.path(), &VaultPath::new("/archive"));
+        assert_eq!(result, tmp.path().join("Archive"));
+    }
+
+    #[tokio::test]
+    async fn load_note_finds_uppercase_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Journal")).await.unwrap();
+        tokio::fs::write(tmp.path().join("Journal").join("MyNote.md"), "# Hello").await.unwrap();
+
+        let text = super::load_note(tmp.path(), &VaultPath::new("/journal/mynote.md")).await.unwrap();
+        assert_eq!(text, "# Hello");
+    }
+
+    #[tokio::test]
+    async fn save_note_writes_to_existing_uppercase_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Journal")).await.unwrap();
+        tokio::fs::write(tmp.path().join("Journal").join("MyNote.md"), "original").await.unwrap();
+
+        save_note(tmp.path(), &VaultPath::new("/journal/mynote.md"), "updated").await.unwrap();
+
+        // The uppercase file should be updated
+        let content = tokio::fs::read_to_string(tmp.path().join("Journal").join("MyNote.md")).await.unwrap();
+        assert_eq!(content, "updated");
+
+        // No duplicate lowercase file should have been created
+        assert!(!tmp.path().join("Journal").join("mynote.md").exists());
+        // No duplicate lowercase directory should have been created
+        assert!(!tmp.path().join("journal").exists());
+    }
+
+    #[tokio::test]
+    async fn save_note_in_uppercase_parent_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Projects")).await.unwrap();
+
+        save_note(tmp.path(), &VaultPath::new("/projects/new.md"), "content").await.unwrap();
+
+        // File should land inside the existing uppercase directory
+        assert!(tmp.path().join("Projects").join("new.md").exists());
+        // No duplicate lowercase directory should have been created
+        assert!(!tmp.path().join("projects").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_note_removes_uppercase_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Journal")).await.unwrap();
+        let file = tmp.path().join("Journal").join("MyNote.md");
+        tokio::fs::write(&file, "bye").await.unwrap();
+
+        delete_note(tmp.path(), &VaultPath::new("/journal/mynote.md")).await.unwrap();
+
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn delete_directory_removes_uppercase_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Archive")).await.unwrap();
+        tokio::fs::write(tmp.path().join("Archive").join("note.md"), "x").await.unwrap();
+
+        delete_directory(tmp.path(), &VaultPath::new("/archive")).await.unwrap();
+
+        assert!(!tmp.path().join("Archive").exists());
+    }
+
+    #[tokio::test]
+    async fn rename_note_finds_uppercase_source() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Projects")).await.unwrap();
+        tokio::fs::write(tmp.path().join("Projects").join("MyNote.md"), "data").await.unwrap();
+
+        rename_note(
+            tmp.path(),
+            &VaultPath::new("/projects/mynote.md"),
+            &VaultPath::new("/projects/renamed.md"),
+        ).await.unwrap();
+
+        assert!(tmp.path().join("Projects").join("renamed.md").exists());
+        assert!(!tmp.path().join("Projects").join("MyNote.md").exists());
+    }
+
+    #[tokio::test]
+    async fn rename_note_into_uppercase_parent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Inbox")).await.unwrap();
+        tokio::fs::write(tmp.path().join("Inbox").join("note.md"), "data").await.unwrap();
+        tokio::fs::create_dir(tmp.path().join("Archive")).await.unwrap();
+
+        rename_note(
+            tmp.path(),
+            &VaultPath::new("/inbox/note.md"),
+            &VaultPath::new("/archive/note.md"),
+        ).await.unwrap();
+
+        assert!(tmp.path().join("Archive").join("note.md").exists());
+        // No duplicate lowercase destination directory should have been created
+        assert!(!tmp.path().join("archive").exists());
+    }
+
+    #[tokio::test]
+    async fn rename_directory_finds_uppercase_source() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("OldName")).await.unwrap();
+
+        rename_directory(
+            tmp.path(),
+            &VaultPath::new("/oldname"),
+            &VaultPath::new("/newname"),
+        ).await.unwrap();
+
+        assert!(tmp.path().join("newname").exists());
+        assert!(!tmp.path().join("OldName").exists());
+    }
+
+    #[tokio::test]
+    async fn vault_entry_from_path_uses_lowercase_vault_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Projects")).await.unwrap();
+        tokio::fs::write(tmp.path().join("Projects").join("MyNote.md"), "# Title").await.unwrap();
+
+        let entry = VaultEntry::from_path(tmp.path(), tmp.path().join("Projects").join("MyNote.md"))
+            .await.unwrap();
+
+        // VaultPath is always lowercase even though the disk file has uppercase
+        assert_eq!(entry.path.to_string(), "/projects/mynote.md");
+        assert!(matches!(entry.data, EntryData::Note(_)));
+    }
+
+    #[tokio::test]
+    async fn vault_entry_new_finds_uppercase_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::create_dir(tmp.path().join("Projects")).await.unwrap();
+        tokio::fs::write(tmp.path().join("Projects").join("MyNote.md"), "# Title").await.unwrap();
+
+        let entry = VaultEntry::new(tmp.path(), VaultPath::new("/projects/mynote.md"))
+            .await.unwrap();
+
+        assert_eq!(entry.path.to_string(), "/projects/mynote.md");
+        assert!(matches!(entry.data, EntryData::Note(_)));
     }
 }

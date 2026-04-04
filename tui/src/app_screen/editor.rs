@@ -714,6 +714,7 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::EntryCreated(path) => {
+                self.restore_focus();
                 self.open_path(path.clone(), tx).await;
                 self.focus_editor();
                 // Refresh the sidebar so the new note appears in the list.
