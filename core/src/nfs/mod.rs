@@ -70,8 +70,11 @@ impl NoteEntryData {
         path: &VaultPath,
     ) -> Result<NoteEntryData, FSError> {
         let file_path = resolve_path_on_disk(&workspace_path, path).await;
+        Self::from_os_path(path, &file_path).await
+    }
 
-        let metadata = tokio::fs::metadata(&file_path).await?;
+    async fn from_os_path(path: &VaultPath, file_path: &Path) -> Result<NoteEntryData, FSError> {
+        let metadata = tokio::fs::metadata(file_path).await?;
         let size = metadata.len();
         let modified_secs = metadata
             .modified()
@@ -121,20 +124,25 @@ async fn _get_dir_content_size<P: AsRef<Path>>(
 impl VaultEntry {
     pub async fn new<P: AsRef<Path>>(workspace_path: P, path: VaultPath) -> Result<Self, FSError> {
         let os_path = resolve_path_on_disk(&workspace_path, &path).await;
-        let metadata =
-            tokio::fs::metadata(&os_path)
-                .await
-                .map_err(|e| match e.kind() {
-                    std::io::ErrorKind::NotFound => FSError::NoFileOrDirectoryFound {
-                        path: path_to_string(&os_path),
-                    },
-                    _ => FSError::ReadFileError(e),
-                })?;
+        Self::from_vault_and_os_path(path, &os_path).await
+    }
+
+    /// Creates a `VaultEntry` when the real on-disk path is already known,
+    /// skipping the case-insensitive resolve step.
+    async fn from_vault_and_os_path(path: VaultPath, os_path: &Path) -> Result<Self, FSError> {
+        let metadata = tokio::fs::metadata(os_path)
+            .await
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => FSError::NoFileOrDirectoryFound {
+                    path: path_to_string(os_path),
+                },
+                _ => FSError::ReadFileError(e),
+            })?;
 
         let kind = if metadata.is_dir() {
             EntryData::Directory(DirectoryEntryData { path: path.clone() })
         } else if path.is_note() {
-            let note_entry_data = NoteEntryData::from_path(workspace_path, &path).await?;
+            let note_entry_data = NoteEntryData::from_os_path(&path, os_path).await?;
             EntryData::Note(note_entry_data)
         } else {
             EntryData::Attachment
@@ -153,7 +161,8 @@ impl VaultEntry {
         full_path: F,
     ) -> Result<Self, FSError> {
         let note_path = VaultPath::from_path(&workspace_path, &full_path)?;
-        Self::new(&workspace_path, note_path).await
+        // full_path is the real disk path already provided by the OS walker — no re-resolve needed.
+        Self::from_vault_and_os_path(note_path, full_path.as_ref()).await
     }
 }
 
