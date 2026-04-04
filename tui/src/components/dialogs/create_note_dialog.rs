@@ -38,7 +38,7 @@ impl CreateNoteDialog {
                 tokio::spawn(async move {
                     match vault.load_or_create_note(&path, None).await {
                         Ok(_) => {
-                            tx_clone.send(AppEvent::OpenPath(path)).ok();
+                            tx_clone.send(AppEvent::EntryCreated(path)).ok();
                         }
                         Err(e) => {
                             tx_clone.send(AppEvent::DialogError(e.to_string())).ok();
@@ -177,7 +177,7 @@ mod tests {
 
             let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
             // _rx intentionally dropped — we only assert the synchronous return value (Consumed).
-            // The async task sends OpenPath but vault.load_or_create_note will fail on the empty
+            // The async task sends EntryCreated but vault.load_or_create_note will fail on the empty
             // tempdir, resulting in DialogError which we don't assert here.
             let mut dialog = CreateNoteDialog::new(VaultPath::root(), vault);
 

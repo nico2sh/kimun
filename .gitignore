@@ -17,6 +17,7 @@ docs/book/
 **/.claude/
 **/.superpowers/
 docs/superpowers/
+docs/plans/
 memory/
 **/.DS_Store
 **/*.log

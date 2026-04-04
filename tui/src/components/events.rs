@@ -54,6 +54,8 @@ pub enum AppEvent {
     EntryRenamed { from: VaultPath, to: VaultPath },
     /// Confirmation that an entry was successfully moved.
     EntryMoved { from: VaultPath, to: VaultPath },
+    /// A new note was just created and should be opened; sidebar should reflect it.
+    EntryCreated(VaultPath),
     /// A dialog operation failed; carries a human-readable error message.
     DialogError(String),
     /// Dismiss the currently visible dialog without taking action.
