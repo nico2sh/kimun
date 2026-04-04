@@ -38,7 +38,7 @@ impl CreateNoteDialog {
                 tokio::spawn(async move {
                     match vault.load_or_create_note(&path, None).await {
                         Ok(_) => {
-                            tx_clone.send(AppEvent::OpenPath(path)).ok();
+                            tx_clone.send(AppEvent::EntryCreated(path)).ok();
                         }
                         Err(e) => {
                             tx_clone.send(AppEvent::DialogError(e.to_string())).ok();
