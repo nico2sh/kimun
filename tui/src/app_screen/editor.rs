@@ -203,15 +203,11 @@ impl EditorScreen {
             }
         }
 
-        // Load or refresh the sidebar:
-        // - First open (sidebar empty): load the note's parent directory.
-        // - Note is in the currently shown sidebar dir: refresh so the new entry appears.
+        // Load the sidebar on first open only; refreshes happen via explicit
+        // create/rename/delete/move events, not on every note open.
         let note_parent = path.get_parent_path().0;
         if self.sidebar.is_empty() {
             self.navigate_sidebar(note_parent, tx).await;
-        } else if note_parent.is_like(self.sidebar.current_dir()) {
-            let dir = self.sidebar.current_dir().clone();
-            self.navigate_sidebar(dir, tx).await;
         }
 
         // Abort any existing timer and spawn a fresh one for the new note.
@@ -616,7 +612,15 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::OpenJournal => {
                 if let Ok((details, _)) = self.vault.journal_entry().await {
-                    self.open_path(details.path, tx).await;
+                    let path = details.path;
+                    self.open_path(path.clone(), tx).await;
+                    // The journal note may have just been created; refresh the
+                    // sidebar so today's entry appears if it wasn't there yet.
+                    let note_parent = path.get_parent_path().0;
+                    if note_parent.is_like(self.sidebar.current_dir()) {
+                        let dir = self.sidebar.current_dir().clone();
+                        self.navigate_sidebar(dir, tx).await;
+                    }
                 }
                 None
             }
@@ -706,6 +710,18 @@ impl AppScreen for EditorScreen {
                         ValidationState::Taken
                     };
                     d.validation_task = None;
+                }
+                None
+            }
+            AppEvent::EntryCreated(path) => {
+                self.restore_focus();
+                self.open_path(path.clone(), tx).await;
+                self.focus_editor();
+                // Refresh the sidebar so the new note appears in the list.
+                let note_parent = path.get_parent_path().0;
+                if note_parent.is_like(self.sidebar.current_dir()) {
+                    let dir = self.sidebar.current_dir().clone();
+                    self.navigate_sidebar(dir, tx).await;
                 }
                 None
             }

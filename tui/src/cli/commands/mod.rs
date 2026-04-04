@@ -4,6 +4,7 @@ pub mod notes;
 pub mod workspace;
 pub mod note_ops;
 pub mod journal;
+pub mod mcp;
 
 // Re-export for convenience
 pub use workspace::WorkspaceSubcommand;
