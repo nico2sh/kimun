@@ -69,7 +69,7 @@ impl NoteEntryData {
         workspace_path: P,
         path: &VaultPath,
     ) -> Result<NoteEntryData, FSError> {
-        let file_path = path.to_pathbuf(&workspace_path);
+        let file_path = resolve_path_on_disk(&workspace_path, path).await;
 
         let metadata = tokio::fs::metadata(&file_path).await?;
         let size = metadata.len();
@@ -120,7 +120,7 @@ async fn _get_dir_content_size<P: AsRef<Path>>(
 
 impl VaultEntry {
     pub async fn new<P: AsRef<Path>>(workspace_path: P, path: VaultPath) -> Result<Self, FSError> {
-        let os_path = path.to_pathbuf(&workspace_path);
+        let os_path = resolve_path_on_disk(&workspace_path, &path).await;
         let metadata =
             tokio::fs::metadata(&os_path)
                 .await
@@ -191,13 +191,61 @@ pub(crate) fn hash_text<S: AsRef<str>>(text: S) -> u64 {
     // gxhash64(text.as_ref().as_bytes(), 0)
 }
 
+/// Resolves a VaultPath to the real PathBuf on disk by matching each component
+/// case-insensitively. When a component doesn't exist on disk yet, the stored
+/// (lowercase) name is used for the remainder of the path.
+pub(crate) async fn resolve_path_on_disk<P: AsRef<Path>>(
+    workspace_path: P,
+    vault_path: &VaultPath,
+) -> PathBuf {
+    let mut current = workspace_path.as_ref().to_path_buf();
+    for slice in &vault_path.flatten().slices {
+        let name = slice.to_string();
+        let real_name = async {
+            let mut entries = tokio::fs::read_dir(&current).await.ok()?;
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if entry.file_name().to_string_lossy().to_lowercase() == name {
+                    return Some(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+            None
+        }
+        .await
+        .unwrap_or(name);
+        current = current.join(real_name);
+    }
+    current
+}
+
+/// Sync variant of `resolve_path_on_disk` for use in non-async contexts.
+pub(crate) fn resolve_path_on_disk_sync<P: AsRef<Path>>(
+    workspace_path: P,
+    vault_path: &VaultPath,
+) -> PathBuf {
+    let mut current = workspace_path.as_ref().to_path_buf();
+    for slice in &vault_path.flatten().slices {
+        let name = slice.to_string();
+        let real_name = std::fs::read_dir(&current)
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .find(|e| e.file_name().to_string_lossy().to_lowercase() == name)
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+            })
+            .unwrap_or(name);
+        current = current.join(real_name);
+    }
+    current
+}
+
 /// Loads a note from disk, if the file doesn't exist, returns a FSError::NotePathNotFound
 /// Returns the note's text. If you want the details, use NoteDetails::from_content
 pub(crate) async fn load_note<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<String, FSError> {
-    let os_path = path.to_pathbuf(&workspace_path);
+    let os_path = resolve_path_on_disk(&workspace_path, path).await;
     match tokio::fs::read(&os_path).await {
         Ok(file) => {
             let text = String::from_utf8(file)?;
@@ -223,7 +271,7 @@ pub async fn create_directory<P: AsRef<Path>>(
         });
     }
 
-    let full_path = path.to_pathbuf(workspace_path);
+    let full_path = resolve_path_on_disk(&workspace_path, path).await;
     tokio::fs::create_dir_all(full_path).await?;
     Ok(DirectoryEntryData {
         path: path.to_owned(),
@@ -242,9 +290,9 @@ pub async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
         });
     }
     let (parent, note) = path.get_parent_path();
-    let base_path = parent.to_pathbuf(&workspace_path);
-    let full_path = base_path.join(note);
-    tokio::fs::create_dir_all(base_path).await?;
+    let base_path = resolve_path_on_disk(&workspace_path, &parent).await;
+    let full_path = base_path.join(&note);
+    tokio::fs::create_dir_all(&base_path).await?;
     tokio::fs::write(full_path, text.as_ref().as_bytes()).await?;
 
     let entry = NoteEntryData::from_path(workspace_path, path).await?;
@@ -269,7 +317,7 @@ pub async fn rename_note<P: AsRef<Path>>(
         });
     }
 
-    let full_from_path = from.to_pathbuf(&workspace_path);
+    let full_from_path = resolve_path_on_disk(&workspace_path, from).await;
     let full_to_path = to.to_pathbuf(&workspace_path);
     // We create the destination directory if doesn't exist
     if let Some(parent) = full_to_path.parent() {
@@ -302,7 +350,7 @@ pub async fn rename_directory<P: AsRef<Path>>(
         });
     }
 
-    let full_from_path = from.to_pathbuf(&workspace_path);
+    let full_from_path = resolve_path_on_disk(&workspace_path, from).await;
     let full_to_path = to.to_pathbuf(&workspace_path);
     // We create the destination directory if doesn't exist
     match tokio::fs::metadata(&full_to_path).await {
@@ -315,7 +363,7 @@ pub async fn rename_directory<P: AsRef<Path>>(
     Ok(())
 }
 pub async fn delete_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<(), FSError> {
-    let full_path = path.to_pathbuf(workspace_path);
+    let full_path = resolve_path_on_disk(&workspace_path, path).await;
     tokio::fs::remove_file(full_path).await?;
     Ok(())
 }
@@ -324,7 +372,7 @@ pub async fn delete_directory<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<(), FSError> {
-    let full_path = path.to_pathbuf(workspace_path);
+    let full_path = resolve_path_on_disk(&workspace_path, path).await;
     tokio::fs::remove_dir_all(full_path).await?;
     Ok(())
 }
@@ -828,7 +876,7 @@ pub fn list_directories<P: AsRef<Path>>(
     recursive: bool,
 ) -> Result<Vec<super::DirectoryDetails>, FSError> {
     let base_path = base_path.as_ref();
-    let os_path = path.to_pathbuf(base_path);
+    let os_path = resolve_path_on_disk_sync(base_path, path);
     let walker = WalkBuilder::new(&os_path)
         .max_depth(if recursive { None } else { Some(1) })
         .filter_entry(filter_files)
@@ -850,7 +898,7 @@ pub fn get_file_walker<P: AsRef<Path>>(
     path: &VaultPath,
     recurse: bool,
 ) -> WalkParallel {
-    let w = WalkBuilder::new(path.to_pathbuf(base_path))
+    let w = WalkBuilder::new(resolve_path_on_disk_sync(base_path, path))
         .max_depth(if recurse { None } else { Some(1) })
         .filter_entry(filter_files)
         // .threads(0)
@@ -1606,5 +1654,14 @@ mod tests {
         let numbered_name = VaultPath::new("test_3");
         let incremented_numbered = numbered_name.get_name_on_conflict();
         assert_eq!(incremented_numbered.to_string(), "test_4");
+    }
+
+    #[test]
+    fn vault_path_normalizes_to_lowercase() {
+        // Paths are always stored lowercase regardless of input case
+        let a = VaultPath::new("/Projects/Note.md");
+        let b = VaultPath::new("/projects/note.md");
+        assert_eq!(a, b);
+        assert_eq!(a.to_string(), "/projects/note.md");
     }
 }
