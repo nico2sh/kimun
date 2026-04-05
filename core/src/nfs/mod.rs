@@ -806,13 +806,15 @@ impl VaultPath {
 
 impl Display for VaultPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.absolute {
+            write!(f, "{}", PATH_SEPARATOR)?;
+        }
         write!(
             f,
-            "{}{}",
-            if self.absolute { "/" } else { "" },
+            "{}",
             self.slices
                 .iter()
-                .map(|s| { s.to_string() })
+                .map(|s| s.to_string())
                 .collect::<Vec<String>>()
                 .join(&PATH_SEPARATOR.to_string())
         )

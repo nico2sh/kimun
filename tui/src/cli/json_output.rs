@@ -53,15 +53,6 @@ pub struct JsonOutput {
     pub notes: Vec<JsonNoteEntry>,
 }
 
-/// Appends `.md` to a path string if it does not already end with it.
-pub fn ensure_md_extension(path: &str) -> String {
-    if path.ends_with(".md") {
-        path.to_owned()
-    } else {
-        format!("{}.md", path)
-    }
-}
-
 /// Format note entries with their content as JSON output.
 pub fn format_notes_with_content_as_json(
     vault: &NoteVault,
