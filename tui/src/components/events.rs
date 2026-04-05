@@ -61,6 +61,12 @@ pub enum AppEvent {
     /// Dismiss the currently visible dialog without taking action.
     CloseDialog,
 
+    /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
+    /// Carries the formatted error message. The main loop clears the vault path,
+    /// saves settings, and redirects to the settings screen with an error overlay.
+    /// To support a new conflict type: add one arm in start.rs on_enter, nothing else.
+    VaultConflict(String),
+
     // ── Dialog async result messages ─────────────────────────────────────────
     /// Rename dialog: name availability check result.
     RenameValidation { available: bool },
@@ -90,6 +96,8 @@ pub enum InputEvent {
 pub enum ScreenEvent {
     Start,
     OpenSettings,
+    /// Open the settings screen with an error overlay already shown.
+    OpenSettingsWithError(String),
     /// Navigate to the editor for the given vault root path.
     OpenEditor(Arc<NoteVault>, VaultPath),
     /// Navigate to the browse screen for the given vault root and directory path.
