@@ -5,6 +5,10 @@ A note taking app split into two components:
 - **core**: all file operations, indexing, and note taking functionality
 - **ui** (TUI): interaction and presentation layer only
 
+## Docs
+
+The `docs/` directory is the Kimün user-facing documentation site. Only end-user documentation belongs there. Plans, specs, and other internal working documents must be stored outside of `docs/`.
+
 ## Rules
 
 - All file modifications and path manipulation must be implemented in core, never in the TUI
