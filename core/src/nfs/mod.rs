@@ -22,10 +22,13 @@ use super::utilities::path_to_string;
 pub const PATH_SEPARATOR: char = '/';
 const NOTE_EXTENSION: &str = ".md";
 // non valid chars
-// Not allowed: \ | : * ? " < > | [ ] ^ #
-const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|\[\]\^\#]"#;
+// Not allowed: \ | : * ? " < > | [ ] ^ #  plus control characters (U+0000-U+001F, U+007F)
+const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|\[\]\^\#\x00-\x1f\x7f]"#;
 // Not allowed files starting with two dots
 const NON_VALID_PATH_NAME: &str = r#"^\.{2,}.+$"#;
+// Windows reserved device names (case-insensitive; optional extension)
+const WINDOWS_RESERVED_NAMES_REGEX: &str =
+    r#"(?i)^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..+)?$"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaultEntry {
@@ -912,17 +915,37 @@ impl VaultPathSlice {
             VaultPathSlice::Current
         } else {
             let rx_chars = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
-            let final_slice = rx_chars.replace_all(slice.as_ref(), "_").to_lowercase();
+            // Replace invalid chars, lowercase, then strip leading/trailing spaces
+            // and trailing dots (Windows silently strips them, causing silent collisions).
+            let sanitized = rx_chars.replace_all(slice.as_ref(), "_").to_lowercase();
+            let sanitized = sanitized.trim().trim_end_matches('.').to_string();
+            // Prefix Windows reserved device names so they don't map to device handles.
+            let rx_reserved = regex::Regex::new(WINDOWS_RESERVED_NAMES_REGEX).unwrap();
+            let final_slice = if rx_reserved.is_match(&sanitized) {
+                format!("_{}", sanitized)
+            } else {
+                sanitized
+            };
 
             VaultPathSlice::PathSlice(final_slice)
         }
     }
 
     fn is_valid<S: AsRef<str>>(slice: S) -> bool {
+        let slice = slice.as_ref();
+        // `.` (current dir) and `..` (parent dir) are always valid path components.
+        if slice == "." || slice == ".." {
+            return true;
+        }
         let rx_chars = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
         let rx_dot = regex::Regex::new(NON_VALID_PATH_NAME).unwrap();
-        let slice = slice.as_ref();
-        !rx_chars.is_match(slice) && !rx_dot.is_match(slice)
+        let rx_reserved = regex::Regex::new(WINDOWS_RESERVED_NAMES_REGEX).unwrap();
+        !rx_chars.is_match(slice)
+            && !rx_dot.is_match(slice)
+            && !rx_reserved.is_match(slice)
+            && !slice.ends_with('.')
+            && !slice.starts_with(' ')
+            && !slice.ends_with(' ')
     }
 
     fn is_note(&self) -> bool {
@@ -999,6 +1022,73 @@ mod tests {
     };
 
     use super::{load_note, VaultPath, VaultPathSlice};
+
+    // --- cross-platform character validation tests ---
+
+    #[test]
+    fn control_chars_are_invalid() {
+        // Control characters U+0001–U+001F must be rejected (Windows forbids them)
+        assert!(!VaultPath::is_valid("note\x01name"));
+        assert!(!VaultPath::is_valid("dir\x1fname"));
+    }
+
+    #[test]
+    fn control_chars_are_sanitized_in_new() {
+        let path = VaultPath::new("note\x07name");
+        assert_eq!("note_name", path.to_string());
+    }
+
+    #[test]
+    fn windows_reserved_names_are_invalid() {
+        // Windows device names must be rejected regardless of extension or case
+        for name in &["CON", "PRN", "AUX", "NUL", "COM1", "COM9", "LPT1", "LPT9"] {
+            assert!(!VaultPath::is_valid(name), "{name} should be invalid");
+            assert!(
+                !VaultPath::is_valid(&format!("{name}.md")),
+                "{name}.md should be invalid"
+            );
+        }
+        // Lower-case variants too
+        assert!(!VaultPath::is_valid("con.md"));
+        assert!(!VaultPath::is_valid("nul"));
+    }
+
+    #[test]
+    fn windows_reserved_names_are_sanitized_in_new() {
+        // VaultPath::new should produce a usable path, not a Windows device handle
+        let path = VaultPath::new("con.md");
+        assert_ne!("con.md", path.to_string(), "con.md should be renamed");
+
+        let path = VaultPath::new("nul");
+        assert_ne!("nul", path.to_string(), "nul should be renamed");
+    }
+
+    #[test]
+    fn trailing_dot_is_invalid() {
+        // Windows silently strips trailing dots from filenames
+        assert!(!VaultPath::is_valid("notes."));
+        assert!(!VaultPath::is_valid("dir./sub"));
+    }
+
+    #[test]
+    fn trailing_dot_is_sanitized_in_new() {
+        let path = VaultPath::new("notes./sub");
+        // trailing dot stripped from directory component
+        assert_eq!("notes/sub", path.to_string());
+    }
+
+    #[test]
+    fn leading_or_trailing_spaces_are_invalid() {
+        assert!(!VaultPath::is_valid(" note"));
+        assert!(!VaultPath::is_valid("note "));
+        assert!(!VaultPath::is_valid(" dir /sub"));
+    }
+
+    #[test]
+    fn leading_and_trailing_spaces_are_sanitized_in_new() {
+        let path = VaultPath::new(" note ");
+        assert_eq!("note", path.to_string());
+    }
 
     #[test]
     fn should_print_correctly() {
