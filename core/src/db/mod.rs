@@ -34,7 +34,7 @@ fn row_to_note_entry(
 
 use super::error::DBError;
 
-use super::{nfs::NoteEntryData, VaultPath};
+use super::{nfs::{NoteEntryData, PATH_SEPARATOR}, VaultPath};
 
 const VERSION: &str = "0.4";
 const DB_FILE: &str = "kimun.sqlite";
@@ -910,18 +910,18 @@ pub async fn rename_directory(
 ) -> Result<(), DBError> {
     let from = {
         let s = from.to_string();
-        if s.ends_with('/') {
+        if s.ends_with(PATH_SEPARATOR) {
             s
         } else {
-            s + "/"
+            s + &PATH_SEPARATOR.to_string()
         }
     };
     let to = {
         let s = to.to_string();
-        if s.ends_with('/') {
+        if s.ends_with(PATH_SEPARATOR) {
             s
         } else {
-            s + "/"
+            s + &PATH_SEPARATOR.to_string()
         }
     };
 
