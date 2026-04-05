@@ -126,6 +126,9 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     let mut screen: Box<dyn AppScreen> = match new_screen {
         ScreenEvent::Start => Box::new(StartScreen::new(app.settings.clone(), None)),
         ScreenEvent::OpenSettings => Box::new(SettingsScreen::new(app.settings.clone())),
+        ScreenEvent::OpenSettingsWithError(msg) => {
+            Box::new(SettingsScreen::new_with_error(app.settings.clone(), msg))
+        }
         ScreenEvent::OpenEditor(note_vault, vault_path) => Box::new(EditorScreen::new(
             note_vault,
             vault_path,
