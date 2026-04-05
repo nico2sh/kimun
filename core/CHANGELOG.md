@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.3...kimun_core-v0.2.4) - 2026-04-05
+
+### Other
+
+- small cleanup removing hardcoded .md reference in the tui
+
 ## [0.2.3](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.2...kimun_core-v0.2.3) - 2026-04-04
 
 ### Fixed
