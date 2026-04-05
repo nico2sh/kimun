@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kimun_core::NoteVault;
+use kimun_core::error::VaultError;
 use kimun_core::nfs::VaultPath;
 use throbber_widgets_tui::ThrobberState;
 
@@ -41,12 +42,20 @@ impl AppScreen for StartScreen {
         if let Some(vault) = self.vault.clone() {
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
-                let result = vault
-                    .validate_and_init()
-                    .await
-                    .map_err(|e| e.to_string())
-                    .map(|r| r.duration);
-                tx2.send(AppEvent::IndexingDone(result)).ok();
+                match vault.validate_and_init().await {
+                    Ok(report) => {
+                        tx2.send(AppEvent::IndexingDone(Ok(report.duration))).ok();
+                    }
+                    Err(e @ VaultError::CaseConflict { .. }) => {
+                        // Route structural vault conflicts to VaultConflict so the main
+                        // loop can clear the vault path and redirect to settings.
+                        // To support a future VaultError conflict type: add one arm here.
+                        tx2.send(AppEvent::VaultConflict(e.to_string())).ok();
+                    }
+                    Err(e) => {
+                        tx2.send(AppEvent::IndexingDone(Err(e.to_string()))).ok();
+                    }
+                }
             });
             self.overlay = Some(spawn_running(handle, tx));
         } else {
@@ -243,6 +252,45 @@ mod tests {
         assert!(
             matches!(state, EventState::NotConsumed),
             "input should not be consumed when overlay is None"
+        );
+    }
+
+    // Linux only: macOS and Windows filesystems are case-insensitive by default,
+    // so creating note.md + Note.md would silently overwrite on those platforms.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn on_enter_case_conflict_sends_vault_conflict_not_indexing_done() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("note.md"), "a").unwrap();
+        std::fs::write(tmp.path().join("Note.md"), "b").unwrap();
+
+        let vault = Arc::new(NoteVault::new(tmp.path()).await.unwrap());
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let mut screen = StartScreen::new(AppSettings::default(), Some(vault));
+        screen.on_enter(&tx).await;
+
+        // Drain events until VaultConflict arrives; skip Redraw ticks from the spinner.
+        let conflict_msg = loop {
+            let msg = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                rx.recv(),
+            )
+            .await
+            .expect("timed out waiting for VaultConflict")
+            .expect("channel closed");
+
+            match msg {
+                AppEvent::VaultConflict(details) => break details,
+                AppEvent::Redraw => continue,
+                AppEvent::IndexingDone(_) => panic!("expected VaultConflict, got IndexingDone"),
+                _ => continue,
+            }
+        };
+
+        assert!(
+            conflict_msg.contains("note.md") && conflict_msg.contains("Note.md"),
+            "conflict message should name both files, got: {}",
+            conflict_msg
         );
     }
 }
