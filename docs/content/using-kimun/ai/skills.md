@@ -1,6 +1,6 @@
 +++
-title = "AI Skills"
-weight = 4
+title = "CLI Skill"
+weight = 1
 +++
 
 # AI Skills
