@@ -479,6 +479,21 @@ impl AppSettings {
         self.workspace_dir = Some(workspace_path.to_owned());
     }
 
+    /// Removes the active workspace path so the user is prompted to choose a new one.
+    /// Handles both Phase 1 (workspace_dir) and Phase 2 (workspace_config) config formats.
+    pub fn clear_workspace(&mut self) {
+        // Phase 1
+        self.workspace_dir = None;
+        self.last_paths.clear();
+        self.needs_indexing = true;
+        // Phase 2
+        if let Some(wc) = &mut self.workspace_config {
+            let key = wc.global.current_workspace.clone();
+            wc.workspaces.remove(&key);
+            wc.global.current_workspace = String::new();
+        }
+    }
+
     pub fn set_theme(&mut self, theme: String) {
         self.theme = theme;
     }
@@ -609,6 +624,28 @@ Quit = ["ctrl&Q"]
         let action = settings.key_bindings.get_action(&f2);
         assert_eq!(action, Some(ActionShortcuts::FileOperations),
             "merge_missing_default_bindings should add F2 → FileOperations");
+    }
+
+    #[test]
+    fn clear_workspace_phase1_clears_workspace_dir_and_paths() {
+        let mut settings = AppSettings::default();
+        settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
+        settings.last_paths = vec![kimun_core::nfs::VaultPath::new("note")];
+        settings.clear_workspace();
+        assert!(settings.workspace_dir.is_none(), "workspace_dir should be None");
+        assert!(settings.last_paths.is_empty(), "last_paths should be cleared");
+    }
+
+    #[test]
+    fn clear_workspace_phase2_removes_current_workspace_entry() {
+        let mut settings = AppSettings::default();
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1")).unwrap();
+        settings.workspace_config = Some(wc);
+        settings.clear_workspace();
+        let wc = settings.workspace_config.as_ref().unwrap();
+        assert!(wc.workspaces.is_empty(), "workspace entry should be removed");
+        assert!(wc.global.current_workspace.is_empty(), "current_workspace should be empty");
     }
 }
 
