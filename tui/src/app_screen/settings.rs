@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use throbber_widgets_tui::ThrobberState;
 
 use crate::app_screen::{AppScreen, ScreenKind};
@@ -763,7 +763,8 @@ impl SettingsScreen {
                 f.render_widget(block, area);
                 f.render_widget(
                     Paragraph::new(format!("\n  {}\n\n  [ OK ]", msg))
-                        .style(theme.base_style()),
+                        .style(theme.base_style())
+                        .wrap(Wrap { trim: false }),
                     inner,
                 );
             }

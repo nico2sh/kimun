@@ -661,6 +661,24 @@ Quit = ["ctrl&Q"]
     }
 
     #[test]
+    fn clear_workspace_both_phases_active() {
+        // When Phase 1 and Phase 2 fields are both populated (e.g. during migration),
+        // clear_workspace must clear both independently.
+        let mut settings = AppSettings::default();
+        settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
+        settings.last_paths = vec![kimun_core::nfs::VaultPath::new("note")];
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1")).unwrap();
+        settings.workspace_config = Some(wc);
+        settings.clear_workspace();
+        assert!(settings.workspace_dir.is_none(), "phase1 workspace_dir should be cleared");
+        assert!(settings.last_paths.is_empty(), "phase1 last_paths should be cleared");
+        let wc = settings.workspace_config.as_ref().unwrap();
+        assert!(wc.workspaces.is_empty(), "phase2 workspace entry should be removed");
+        assert!(wc.global.current_workspace.is_empty(), "phase2 current_workspace should be empty");
+    }
+
+    #[test]
     fn clear_workspace_phase2_preserves_other_workspaces() {
         let mut settings = AppSettings::default();
         let mut wc = WorkspaceConfig::new_empty();
