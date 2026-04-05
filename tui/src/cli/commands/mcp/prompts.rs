@@ -57,6 +57,14 @@ pub struct LinkSuggestionsParams {
     pub max_results: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ResearchTopicParams {
+    /// Topic or keyword to research across the vault
+    pub topic: String,
+    /// Maximum total number of notes to include (default 10)
+    pub max_results: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // Prompt implementations
 // ---------------------------------------------------------------------------
@@ -373,6 +381,181 @@ impl KimunHandler {
             monday.format("%Y-%m-%d"),
             sunday.format("%Y-%m-%d"),
             days_text
+        );
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+    }
+
+    #[prompt(description = "Search the vault for a topic, expand the search via backlinks and related headings from the results, then ask the LLM for a comprehensive overview of the topic and everything connected to it.")]
+    async fn research_topic(
+        &self,
+        Parameters(p): Parameters<ResearchTopicParams>,
+    ) -> Result<Vec<PromptMessage>, McpError> {
+        use kimun_core::nfs::VaultPath;
+        use std::collections::HashSet;
+
+        let max = p.max_results.unwrap_or(10) as usize;
+        let mut seen: HashSet<String> = HashSet::new();
+
+        // Step 1: Direct search for the topic
+        let initial_results = self
+            .vault
+            .search_notes(&p.topic)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let mut direct_notes: Vec<(VaultPath, String)> = Vec::new();
+        let mut backlink_candidates: Vec<VaultPath> = Vec::new();
+        let mut secondary_topics: Vec<String> = Vec::new();
+
+        for (entry, _) in initial_results {
+            if direct_notes.len() >= max {
+                break;
+            }
+            let path_str = entry.path.to_string();
+            if seen.contains(&path_str) {
+                continue;
+            }
+            seen.insert(path_str);
+
+            let text = self
+                .vault
+                .get_note_text(&entry.path)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            direct_notes.push((entry.path.clone(), text));
+
+            // Step 2a: Collect backlinks for this note
+            let backlinks = self
+                .vault
+                .get_backlinks(&entry.path)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            for (bl_entry, _) in backlinks {
+                let bl_str = bl_entry.path.to_string();
+                if !seen.contains(&bl_str) {
+                    seen.insert(bl_str);
+                    backlink_candidates.push(bl_entry.path);
+                }
+            }
+
+            // Step 2b: Extract leaf headings for secondary search
+            let chunks_map = self
+                .vault
+                .get_note_chunks(&entry.path)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            for chunks in chunks_map.values() {
+                for chunk in chunks {
+                    if let Some(leaf) = chunk.breadcrumb.last() {
+                        let t = leaf.trim().to_string();
+                        if !t.is_empty()
+                            && t.to_lowercase() != p.topic.to_lowercase()
+                            && !secondary_topics.contains(&t)
+                        {
+                            secondary_topics.push(t);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 3: Load backlink notes (within remaining budget)
+        let mut backlink_notes: Vec<(VaultPath, String)> = Vec::new();
+        for path in &backlink_candidates {
+            if direct_notes.len() + backlink_notes.len() >= max {
+                break;
+            }
+            let text = self
+                .vault
+                .get_note_text(path)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            backlink_notes.push((path.clone(), text));
+        }
+
+        // Step 4: Secondary search using headings extracted from the initial results
+        let mut related_notes: Vec<(VaultPath, String)> = Vec::new();
+        'outer: for topic in &secondary_topics {
+            let results = self
+                .vault
+                .search_notes(topic)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            for (entry, _) in results {
+                if direct_notes.len() + backlink_notes.len() + related_notes.len() >= max {
+                    break 'outer;
+                }
+                let path_str = entry.path.to_string();
+                if seen.contains(&path_str) {
+                    continue;
+                }
+                seen.insert(path_str);
+                let text = self
+                    .vault
+                    .get_note_text(&entry.path)
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                related_notes.push((entry.path, text));
+            }
+        }
+
+        if direct_notes.is_empty() && backlink_notes.is_empty() && related_notes.is_empty() {
+            return Ok(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                format!("No notes found in the vault related to \"{}\".", p.topic),
+            )]);
+        }
+
+        let mut blocks: Vec<String> = Vec::new();
+
+        if !direct_notes.is_empty() {
+            let section = direct_notes
+                .iter()
+                .map(|(path, text)| format!("=== {} ===\n{}", path, text))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            blocks.push(format!("### Notes matching \"{}\":\n\n{}", p.topic, section));
+        }
+
+        if !backlink_notes.is_empty() {
+            let section = backlink_notes
+                .iter()
+                .map(|(path, text)| format!("=== {} ===\n{}", path, text))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            blocks.push(format!("### Notes linking to the above:\n\n{}", section));
+        }
+
+        if !related_notes.is_empty() {
+            let shown_topics = secondary_topics
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let section = related_notes
+                .iter()
+                .map(|(path, text)| format!("=== {} ===\n{}", path, text))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            blocks.push(format!(
+                "### Notes on related subtopics ({}):\n\n{}",
+                shown_topics, section
+            ));
+        }
+
+        let content_block = blocks.join("\n\n");
+
+        let message = format!(
+            "Research topic: \"{topic}\"\n\n\
+            {content_block}\n\n\
+            Using the vault content above, provide a comprehensive overview of \"{topic}\":\n\
+            1. What does the vault capture about this topic?\n\
+            2. What are the key ideas, patterns, or recurring themes?\n\
+            3. How do the related notes connect to the topic?\n\
+            4. What gaps or unexplored angles exist?",
+            topic = p.topic,
         );
 
         Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
@@ -992,6 +1175,209 @@ mod tests {
         assert!(
             text.contains("No unlinked related notes"),
             "expected graceful no-results message: {}",
+            text
+        );
+    }
+
+    // ── research_topic tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_research_topic_no_results_returns_graceful_message() {
+        let (handler, _dir) = make_handler().await;
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "completely_nonexistent_topic_zzz_123".to_string(),
+                max_results: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("No notes found"),
+            "expected graceful no-results message: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_includes_direct_search_results() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "science/quantum".to_string(),
+                content: "# Quantum Physics\n\nunique_quantum_direct_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_quantum_direct_xyz".to_string(),
+                max_results: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("unique_quantum_direct_xyz"),
+            "expected direct result content in prompt: {}",
+            text
+        );
+        assert!(
+            text.contains("Notes matching"),
+            "expected direct-results section header: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_includes_backlinks() {
+        let (handler, _dir) = make_handler().await;
+        // Note that will be a direct search hit
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "topics/target".to_string(),
+                content: "# Target\n\nunique_backlink_target_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        // Note that links to target — should appear somewhere in the output (via backlinks
+        // if the index is warm, or via heading-based secondary search otherwise)
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "topics/linker".to_string(),
+                content: "# Linker\n\nSee [[topics/target]] for more detail".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_backlink_target_xyz".to_string(),
+                max_results: Some(10),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("topics/linker"),
+            "expected linker note to appear somewhere in the prompt: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_includes_related_via_headings() {
+        let (handler, _dir) = make_handler().await;
+        // Direct hit with a heading that becomes a secondary search term
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "topics/main".to_string(),
+                content: "# Main\n\n## Async Runtime\n\nunique_heading_research_abc".to_string(),
+            }))
+            .await
+            .unwrap();
+        // Note that matches the heading "Async Runtime"
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "topics/related".to_string(),
+                content: "# Related\n\nAsync Runtime is fundamental in Rust".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_heading_research_abc".to_string(),
+                max_results: Some(10),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("topics/related"),
+            "expected related note via heading search: {}",
+            text
+        );
+        assert!(
+            text.contains("Notes on related subtopics"),
+            "expected subtopics section header: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_deduplicates_notes() {
+        let (handler, _dir) = make_handler().await;
+        // Note matches both direct search and would be a backlink from itself — must appear once
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "dedup/alpha".to_string(),
+                content: "# Alpha\n\nunique_dedup_topic_xyz\n\n## Subtopic\n\nunique_dedup_sub_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        // Second note that matches on the subtopic heading
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "dedup/beta".to_string(),
+                content: "# Beta\n\nunique_dedup_sub_xyz and more".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_dedup_topic_xyz".to_string(),
+                max_results: Some(10),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        // Count occurrences of "dedup/alpha" — should appear exactly once
+        let count = text.matches("dedup/alpha").count();
+        assert!(
+            count >= 1,
+            "expected dedup/alpha to appear at least once: {}",
+            text
+        );
+        // The prompt message should only contain one === /dedup/alpha === block
+        let header_count = text.matches("/dedup/alpha").count();
+        assert!(
+            header_count <= 2, // path may appear in section header and content
+            "dedup/alpha appeared too many times ({}), suggesting duplicate inclusion: {}",
+            header_count,
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_respects_max_results() {
+        let (handler, _dir) = make_handler().await;
+        // Create 5 notes all matching the same topic
+        for i in 0..5 {
+            handler
+                .create_note(Parameters(CreateNoteParams {
+                    path: format!("limit/note{}", i),
+                    content: format!("# Note {}\n\nunique_limit_topic_xyz note number {}", i, i),
+                }))
+                .await
+                .unwrap();
+        }
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_limit_topic_xyz".to_string(),
+                max_results: Some(2),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        // At most 2 note sections should be present
+        let section_count = (0..5)
+            .filter(|i| text.contains(&format!("limit/note{}", i)))
+            .count();
+        assert!(
+            section_count <= 2,
+            "expected at most 2 notes with max_results=2, found {} in: {}",
+            section_count,
             text
         );
     }
