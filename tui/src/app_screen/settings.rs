@@ -89,6 +89,9 @@ pub enum Overlay {
     ConfirmFullReindex { focused_button: ConfirmButton },
     ConfirmSave { focused_button: SaveButton },
     IndexingProgress(IndexingProgressState),
+    /// Vault was rejected due to structural errors (e.g. case conflicts).
+    /// Rendered like the other confirmation dialogs but with a single close button.
+    VaultConflict(String),
 }
 
 // ── Section / Focus enums ─────────────────────────────────────────────────────
@@ -169,7 +172,7 @@ impl SettingsScreen {
     /// before calling `switch_screen`.
     pub fn new_with_error(settings: AppSettings, error: String) -> Self {
         let mut s = Self::new(settings);
-        s.overlay = Overlay::IndexingProgress(IndexingProgressState::Failed(error));
+        s.overlay = Overlay::VaultConflict(error);
         s
     }
 
@@ -362,6 +365,16 @@ impl AppScreen for SettingsScreen {
                         return EventState::Consumed;
                     }
                 }
+            }
+
+            Overlay::VaultConflict(_) => {
+                let InputEvent::Key(key) = event else {
+                    return EventState::NotConsumed;
+                };
+                if key.code == KeyCode::Enter || key.code == KeyCode::Esc {
+                    self.overlay = Overlay::None;
+                }
+                return EventState::Consumed;
             }
         }
 
@@ -738,6 +751,23 @@ impl SettingsScreen {
                     "Reindex in progress…",
                 );
             }
+
+            Overlay::VaultConflict(msg) => {
+                let area = fixed_centered_rect(60, 9, f.area());
+                f.render_widget(Clear, area);
+                let block = Block::default()
+                    .title("Vault Error")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.accent.to_ratatui()))
+                    .style(theme.base_style());
+                let inner = block.inner(area);
+                f.render_widget(block, area);
+                f.render_widget(
+                    Paragraph::new(format!("\n  {}\n\n  [ OK ]", msg))
+                        .style(theme.base_style()),
+                    inner,
+                );
+            }
         }
     }
 }
@@ -1015,14 +1045,14 @@ mod settings_screen_tests {
     }
 
     #[test]
-    fn new_with_error_sets_failed_overlay_with_message() {
+    fn new_with_error_sets_vault_conflict_overlay_with_message() {
         let settings = AppSettings::default();
         let screen = SettingsScreen::new_with_error(settings, "test error msg".to_string());
         match screen.overlay {
-            Overlay::IndexingProgress(IndexingProgressState::Failed(ref msg)) => {
+            Overlay::VaultConflict(ref msg) => {
                 assert_eq!(msg, "test error msg");
             }
-            _ => panic!("expected Overlay::IndexingProgress(Failed(...))"),
+            _ => panic!("expected Overlay::VaultConflict(...)"),
         }
     }
 }
