@@ -481,15 +481,23 @@ impl AppSettings {
 
     /// Removes the active workspace path so the user is prompted to choose a new one.
     /// Handles both Phase 1 (workspace_dir) and Phase 2 (workspace_config) config formats.
+    ///
+    /// For Phase 2: only the currently active workspace entry is removed; other workspace
+    /// entries in the config are preserved. After this call, `workspace_config` remains
+    /// `Some` but `get_current_workspace()` returns `None`.
     pub fn clear_workspace(&mut self) {
         // Phase 1
-        self.workspace_dir = None;
-        self.last_paths.clear();
-        self.needs_indexing = true;
+        if self.workspace_dir.is_some() {
+            self.workspace_dir = None;
+            self.last_paths.clear();
+            self.needs_indexing = true;
+        }
         // Phase 2
         if let Some(wc) = &mut self.workspace_config {
             let key = wc.global.current_workspace.clone();
-            wc.workspaces.remove(&key);
+            if !key.is_empty() {
+                wc.workspaces.remove(&key);
+            }
             wc.global.current_workspace = String::new();
         }
     }
@@ -631,9 +639,11 @@ Quit = ["ctrl&Q"]
         let mut settings = AppSettings::default();
         settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
         settings.last_paths = vec![kimun_core::nfs::VaultPath::new("note")];
+        settings.needs_indexing = false; // ensure the method actually sets it
         settings.clear_workspace();
         assert!(settings.workspace_dir.is_none(), "workspace_dir should be None");
         assert!(settings.last_paths.is_empty(), "last_paths should be cleared");
+        assert!(settings.needs_indexing, "needs_indexing should be reset to true");
     }
 
     #[test]
@@ -642,9 +652,26 @@ Quit = ["ctrl&Q"]
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1")).unwrap();
         settings.workspace_config = Some(wc);
+        // Assert precondition: add_workspace auto-selects the first workspace
+        assert_eq!(settings.workspace_config.as_ref().unwrap().global.current_workspace, "vault1");
         settings.clear_workspace();
         let wc = settings.workspace_config.as_ref().unwrap();
         assert!(wc.workspaces.is_empty(), "workspace entry should be removed");
+        assert!(wc.global.current_workspace.is_empty(), "current_workspace should be empty");
+    }
+
+    #[test]
+    fn clear_workspace_phase2_preserves_other_workspaces() {
+        let mut settings = AppSettings::default();
+        let mut wc = WorkspaceConfig::new_empty();
+        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1")).unwrap();
+        wc.add_workspace("vault2".to_string(), PathBuf::from("/tmp/vault2")).unwrap();
+        wc.global.current_workspace = "vault1".to_string();
+        settings.workspace_config = Some(wc);
+        settings.clear_workspace();
+        let wc = settings.workspace_config.as_ref().unwrap();
+        assert!(!wc.workspaces.contains_key("vault1"), "active workspace should be removed");
+        assert!(wc.workspaces.contains_key("vault2"), "other workspaces should be preserved");
         assert!(wc.global.current_workspace.is_empty(), "current_workspace should be empty");
     }
 }
