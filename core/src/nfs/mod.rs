@@ -28,7 +28,7 @@ const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|\[\]\^\#\x00-\x1f\x7f]"#;
 const NON_VALID_PATH_NAME: &str = r#"^\.{2,}.+$"#;
 // Windows reserved device names (case-insensitive; optional extension)
 const WINDOWS_RESERVED_NAMES_REGEX: &str =
-    r#"(?i)^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..+)?$"#;
+    r#"(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..+)?$"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaultEntry {
@@ -572,20 +572,6 @@ impl VaultPath {
             .as_ref()
             .split(PATH_SEPARATOR)
             .any(|s| !VaultPathSlice::is_valid(s))
-        // let mut slices = path.as_ref().split(PATH_SEPARATOR).peekable();
-        // let mut valid = true;
-        // while let Some(slice) = slices.next() {
-        //     valid = if slices.peek().is_none() {
-        //         // Last element
-        //         matches!(VaultPathSlice::new(slice), VaultPathSlice::PathSlice(_name))
-        //     } else {
-        //         VaultPathSlice::is_valid(slice)
-        //     };
-        //     if !valid {
-        //         break;
-        //     }
-        // }
-        // valid
     }
 
     // Creates a note file path, if the path ends with a separator
@@ -1055,12 +1041,16 @@ mod tests {
 
     #[test]
     fn windows_reserved_names_are_sanitized_in_new() {
-        // VaultPath::new should produce a usable path, not a Windows device handle
+        // VaultPath::new should prefix reserved names with '_' so they don't map to
+        // Windows device handles. The name is already lowercased by this point.
         let path = VaultPath::new("con.md");
-        assert_ne!("con.md", path.to_string(), "con.md should be renamed");
+        assert_eq!("_con.md", path.to_string());
 
         let path = VaultPath::new("nul");
-        assert_ne!("nul", path.to_string(), "nul should be renamed");
+        assert_eq!("_nul", path.to_string());
+
+        let path = VaultPath::new("COM1.md");
+        assert_eq!("_com1.md", path.to_string());
     }
 
     #[test]

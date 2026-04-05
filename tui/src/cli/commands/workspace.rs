@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use color_eyre::eyre::{eyre, Result};
 use kimun_core::NoteVault;
+use kimun_core::error::VaultError;
 
 use crate::settings::{
     workspace_config::WorkspaceConfig,
@@ -330,9 +331,21 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
         eyre!("Failed to open vault at {}: {}", entry.path.display(), e)
     })?;
 
-    let report = vault.recreate_index().await.map_err(|e| {
-        eyre!("Failed to reindex workspace '{}': {}", workspace_name, e)
-    })?;
+    let report = match vault.recreate_index().await {
+        Ok(r) => r,
+        Err(VaultError::CaseConflict { conflicts }) => {
+            eprintln!("Error: vault '{}' has case-sensitivity conflicts:", workspace_name);
+            for c in &conflicts {
+                eprintln!("  {}", c);
+            }
+            eprintln!(
+                "\nResolve the conflicts on disk, then run `kimun workspace use {}` to re-select the vault.",
+                workspace_name
+            );
+            return Err(eyre!("Vault '{}' has case-sensitivity conflicts", workspace_name));
+        }
+        Err(e) => return Err(eyre!("Failed to reindex workspace '{}': {}", workspace_name, e)),
+    };
 
     let _ = report; // IndexReport only contains timing info
     println!(
