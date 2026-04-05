@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use kimun_core::{NoteVault, NotesValidation};
+use kimun_core::error::VaultError;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -186,18 +187,17 @@ impl SettingsScreen {
             self.pending_save_after_index = true;
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
-                let result = async {
-                    let vault = NoteVault::new(&workspace)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    vault
-                        .recreate_index()
-                        .await
-                        .map_err(|e| e.to_string())
-                        .map(|r| r.duration)
-                }
-                .await;
-                tx2.send(AppEvent::IndexingDone(result)).ok();
+                let event = match NoteVault::new(&workspace).await {
+                    Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
+                    Ok(vault) => match vault.recreate_index().await {
+                        Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
+                        Err(e @ VaultError::CaseConflict { .. }) => {
+                            AppEvent::VaultConflict(e.to_string())
+                        }
+                        Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
+                    },
+                };
+                tx2.send(event).ok();
             });
             self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
         } else {
@@ -300,18 +300,17 @@ impl AppScreen for SettingsScreen {
                             };
                             let tx2 = tx.clone();
                             let handle = tokio::spawn(async move {
-                                let result = async {
-                                    let vault = NoteVault::new(&workspace)
-                                        .await
-                                        .map_err(|e| e.to_string())?;
-                                    vault
-                                        .recreate_index()
-                                        .await
-                                        .map_err(|e| e.to_string())
-                                        .map(|r| r.duration)
-                                }
-                                .await;
-                                tx2.send(AppEvent::IndexingDone(result)).ok();
+                                let event = match NoteVault::new(&workspace).await {
+                                    Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
+                                    Ok(vault) => match vault.recreate_index().await {
+                                        Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
+                                        Err(e @ VaultError::CaseConflict { .. }) => {
+                                            AppEvent::VaultConflict(e.to_string())
+                                        }
+                                        Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
+                                    },
+                                };
+                                tx2.send(event).ok();
                             });
                             self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
                         } else {

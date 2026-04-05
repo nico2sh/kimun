@@ -157,6 +157,10 @@ impl NoteVault {
     /// This is similar to a force rebuild but instead of deleting the db file
     /// it only deletes the tables.
     pub async fn recreate_index(&self) -> Result<IndexReport, VaultError> {
+        let conflicts = nfs::check_case_conflicts(&self.workspace_path);
+        if !conflicts.is_empty() {
+            return Err(VaultError::CaseConflict { conflicts });
+        }
         let index_report = IndexReport::new();
         debug!("Initializing DB from Vault request");
         db::init_db(self.vault_db.pool()).await?;
