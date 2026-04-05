@@ -278,6 +278,15 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         AppEvent::CloseSettings => {
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
         }
+        AppEvent::VaultConflict(msg) => {
+            // The vault has structural conflicts (e.g. case-insensitive path clashes).
+            // Clear the workspace so the user is not stuck in a loop, then show
+            // the settings screen with the error overlay pre-populated.
+            app.settings.clear_workspace();
+            app.settings.save_to_disk().ok();
+            app.vault = None;
+            switch_screen(app, tx, ScreenEvent::OpenSettingsWithError(msg)).await;
+        }
         other => {
             if let Some(screen) = app.current_screen.as_mut() {
                 screen.handle_app_message(other, tx).await;
