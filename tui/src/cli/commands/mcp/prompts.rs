@@ -41,6 +41,8 @@ pub struct ResearchNoteParams {
 pub struct BrainstormParams {
     /// Topic to brainstorm ideas about
     pub topic: String,
+    /// Maximum number of vault notes to include as context (default 5)
+    pub max_results: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -66,6 +68,42 @@ pub struct ResearchTopicParams {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+impl KimunHandler {
+    /// Return the unique leaf heading strings from a note's chunk tree, in
+    /// insertion order.  Used by several prompts to derive secondary search
+    /// terms from a note's section outline.
+    async fn extract_leaf_headings(
+        &self,
+        path: &kimun_core::nfs::VaultPath,
+    ) -> Result<Vec<String>, McpError> {
+        use std::collections::HashSet;
+
+        let chunks_map = self
+            .vault
+            .get_note_chunks(path)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut topics: Vec<String> = Vec::new();
+        for chunks in chunks_map.values() {
+            for chunk in chunks {
+                if let Some(leaf) = chunk.breadcrumb.last() {
+                    let t = leaf.trim().to_string();
+                    if !t.is_empty() && seen.insert(t.clone()) {
+                        topics.push(t);
+                    }
+                }
+            }
+        }
+        Ok(topics)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Prompt implementations
 // ---------------------------------------------------------------------------
 
@@ -82,10 +120,10 @@ impl KimunHandler {
             None => chrono::Utc::now().format("%Y-%m-%d").to_string(),
             Some(d) => {
                 if chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err() {
-                    return Ok(vec![PromptMessage::new_text(
-                        PromptMessageRole::User,
+                    return Err(McpError::invalid_params(
                         format!("Invalid date '{}' — expected YYYY-MM-DD.", d),
-                    )]);
+                        None,
+                    ));
                 }
                 d.to_string()
             }
@@ -113,7 +151,7 @@ impl KimunHandler {
             Please review this journal entry:\n\
             1. Summarize what was accomplished\n\
             2. Identify any action items or follow-ups\n\
-            3. Note any recurring themes worth tracking"
+            3. Note any open questions or concerns that need follow-up"
         );
 
         Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
@@ -163,7 +201,7 @@ impl KimunHandler {
             "Here is the note at \"{path}\":\n\n---\n{note_text}\n---\n{backlinks_section}\n\
             Identify non-obvious conceptual connections between this note and the rest of the vault. \
             What themes link them? What ideas are worth exploring further?\n\
-            (You can call the show_note tool to read any linked note in full.)",
+            (You can use the available vault tools to read any linked note in full.)",
             path = vault_path,
         );
 
@@ -193,29 +231,11 @@ impl KimunHandler {
             Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
         };
 
-        // Extract unique leaf headings from the note's chunks
-        let chunks_map = self
-            .vault
-            .get_note_chunks(&vault_path)
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let mut topics: Vec<String> = Vec::new();
-        for chunks in chunks_map.values() {
-            for chunk in chunks {
-                if let Some(leaf) = chunk.breadcrumb.last() {
-                    let topic = leaf.trim().to_string();
-                    if !topic.is_empty() && !topics.contains(&topic) {
-                        topics.push(topic);
-                    }
-                }
-            }
-        }
+        let topics = self.extract_leaf_headings(&vault_path).await?;
 
         // Search each topic; deduplicate results; cap at max
-        let source_path_str = vault_path.to_string();
         let mut seen: HashSet<String> = HashSet::new();
-        seen.insert(source_path_str.clone());
+        seen.insert(vault_path.to_string());
 
         let mut related_sections: Vec<String> = Vec::new();
 
@@ -259,8 +279,9 @@ impl KimunHandler {
             "Here is the note at \"{path}\":\n\n---\n{note_text}\n---\n\n\
             Related notes found by searching section topics ({topics_list}):\n\n\
             {related_block}\n\n\
-            Synthesize what the vault knows about this topic. \
-            What key ideas are captured? What gaps exist? What questions remain unanswered?",
+            For each of the section topics ({topics_list}), synthesize what the vault captures \
+            and identify what is missing or unexplored. What key ideas are captured? \
+            What gaps exist? What questions remain unanswered?",
             path = vault_path,
         );
 
@@ -278,7 +299,8 @@ impl KimunHandler {
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let top: Vec<_> = results.into_iter().take(5).collect();
+        let max = p.max_results.unwrap_or(5) as usize;
+        let top: Vec<_> = results.into_iter().take(max).collect();
         let suggested_path = top.first().map(|(entry, _)| entry.path.to_string());
 
         let mut vault_sections: Vec<String> = Vec::new();
@@ -310,7 +332,7 @@ impl KimunHandler {
             {vault_block}\
             Based on my existing notes:\n\
             1. Generate 5–10 new ideas related to \"{topic}\" that build on what's already captured\n\
-            2. Avoid repeating existing content\n\
+            2. For each new idea, identify which existing note it connects to and suggest where it could be appended or linked\n\
             {suggestion_line}",
             topic = p.topic,
         );
@@ -333,10 +355,10 @@ impl KimunHandler {
             Some(d) => match NaiveDate::parse_from_str(d, "%Y-%m-%d") {
                 Ok(date) => date,
                 Err(_) => {
-                    return Ok(vec![PromptMessage::new_text(
-                        PromptMessageRole::User,
+                    return Err(McpError::invalid_params(
                         format!("Invalid date '{}' — expected YYYY-MM-DD.", d),
-                    )]);
+                        None,
+                    ));
                 }
             },
         };
@@ -406,7 +428,10 @@ impl KimunHandler {
 
         let mut direct_notes: Vec<(VaultPath, String)> = Vec::new();
         let mut backlink_candidates: Vec<VaultPath> = Vec::new();
+        // secondary_topics: insertion-ordered, deduplicated case-insensitively
         let mut secondary_topics: Vec<String> = Vec::new();
+        let mut secondary_topics_lower: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for (entry, _) in initial_results {
             if direct_notes.len() >= max {
@@ -439,23 +464,14 @@ impl KimunHandler {
                 }
             }
 
-            // Step 2b: Extract leaf headings for secondary search
-            let chunks_map = self
-                .vault
-                .get_note_chunks(&entry.path)
-                .await
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-            for chunks in chunks_map.values() {
-                for chunk in chunks {
-                    if let Some(leaf) = chunk.breadcrumb.last() {
-                        let t = leaf.trim().to_string();
-                        if !t.is_empty()
-                            && t.to_lowercase() != p.topic.to_lowercase()
-                            && !secondary_topics.contains(&t)
-                        {
-                            secondary_topics.push(t);
-                        }
-                    }
+            // Step 2b: Extract leaf headings for secondary search (case-insensitive dedup)
+            let headings = self.extract_leaf_headings(&entry.path).await?;
+            for t in headings {
+                let t_lower = t.to_lowercase();
+                if t_lower != p.topic.to_lowercase()
+                    && secondary_topics_lower.insert(t_lower)
+                {
+                    secondary_topics.push(t);
                 }
             }
         }
@@ -476,12 +492,14 @@ impl KimunHandler {
 
         // Step 4: Secondary search using headings extracted from the initial results
         let mut related_notes: Vec<(VaultPath, String)> = Vec::new();
+        let mut contributing_topics: Vec<String> = Vec::new();
         'outer: for topic in &secondary_topics {
             let results = self
                 .vault
                 .search_notes(topic)
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            let before = related_notes.len();
             for (entry, _) in results {
                 if direct_notes.len() + backlink_notes.len() + related_notes.len() >= max {
                     break 'outer;
@@ -497,6 +515,9 @@ impl KimunHandler {
                     .await
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?;
                 related_notes.push((entry.path, text));
+            }
+            if related_notes.len() > before {
+                contributing_topics.push(topic.clone());
             }
         }
 
@@ -528,21 +549,23 @@ impl KimunHandler {
         }
 
         if !related_notes.is_empty() {
-            let shown_topics = secondary_topics
-                .iter()
-                .take(5)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
             let section = related_notes
                 .iter()
                 .map(|(path, text)| format!("=== {} ===\n{}", path, text))
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            blocks.push(format!(
-                "### Notes on related subtopics ({}):\n\n{}",
-                shown_topics, section
-            ));
+            let header = if contributing_topics.is_empty() {
+                "### Notes on related subtopics:".to_string()
+            } else {
+                let label = contributing_topics
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("### Notes on related subtopics ({label}):")
+            };
+            blocks.push(format!("{header}\n\n{section}"));
         }
 
         let content_block = blocks.join("\n\n");
@@ -586,24 +609,7 @@ impl KimunHandler {
             Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
         };
 
-        // Extract unique leaf headings (same approach as research_note)
-        let chunks_map = self
-            .vault
-            .get_note_chunks(&vault_path)
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let mut topics: Vec<String> = Vec::new();
-        for chunks in chunks_map.values() {
-            for chunk in chunks {
-                if let Some(leaf) = chunk.breadcrumb.last() {
-                    let topic = leaf.trim().to_string();
-                    if !topic.is_empty() && !topics.contains(&topic) {
-                        topics.push(topic);
-                    }
-                }
-            }
-        }
+        let topics = self.extract_leaf_headings(&vault_path).await?;
 
         // Build exclusion set: outlinks + backlinks + source itself
         let mut excluded: HashSet<String> = HashSet::new();
@@ -773,6 +779,23 @@ mod tests {
             text.contains("specific date entry content"),
             "expected entry in prompt: {}",
             text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_daily_review_invalid_date_returns_error() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .daily_review(Parameters(DailyReviewParams {
+                date: Some("not-a-date".to_string()),
+            }))
+            .await;
+        assert!(result.is_err(), "expected Err for invalid date");
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("Invalid date"),
+            "expected error message to mention invalid date: {:?}",
+            err
         );
     }
 
@@ -959,6 +982,7 @@ mod tests {
         let msgs = handler
             .brainstorm(Parameters(BrainstormParams {
                 topic: "unique_brainstorm_rust_content_xyz".to_string(),
+                max_results: None,
             }))
             .await
             .unwrap();
@@ -984,6 +1008,7 @@ mod tests {
         let msgs = handler
             .brainstorm(Parameters(BrainstormParams {
                 topic: "unique_suggest_xyz_content".to_string(),
+                max_results: None,
             }))
             .await
             .unwrap();
@@ -1001,6 +1026,7 @@ mod tests {
         let msgs = handler
             .brainstorm(Parameters(BrainstormParams {
                 topic: "completely_nonexistent_topic_zzz_999".to_string(),
+                max_results: None,
             }))
             .await
             .unwrap();
@@ -1070,20 +1096,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_weekly_review_invalid_date_returns_graceful_message() {
+    async fn test_weekly_review_invalid_date_returns_error() {
         let (handler, _dir) = make_handler().await;
-        let msgs = handler
+        let result = handler
             .weekly_review(Parameters(WeeklyReviewParams {
                 date: Some("not-a-date".to_string()),
             }))
-            .await
-            .unwrap();
-        assert!(!msgs.is_empty());
-        let text = first_text(&msgs);
+            .await;
+        assert!(result.is_err(), "expected Err for invalid date");
+        let err = result.unwrap_err();
         assert!(
-            text.contains("Invalid date"),
-            "expected graceful error message: {}",
-            text
+            err.message.contains("Invalid date"),
+            "expected error message to mention invalid date: {:?}",
+            err
         );
     }
 
