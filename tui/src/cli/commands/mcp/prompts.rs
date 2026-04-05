@@ -41,6 +41,8 @@ pub struct ResearchNoteParams {
 pub struct BrainstormParams {
     /// Topic to brainstorm ideas about
     pub topic: String,
+    /// Maximum number of vault notes to include as context (default 5)
+    pub max_results: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -55,6 +57,50 @@ pub struct LinkSuggestionsParams {
     pub path: String,
     /// Maximum number of candidate notes to include (default 5)
     pub max_results: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ResearchTopicParams {
+    /// Topic or keyword to research across the vault
+    pub topic: String,
+    /// Maximum total number of notes to include (default 10)
+    pub max_results: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+impl KimunHandler {
+    /// Return the unique leaf heading strings from a note's chunk tree, in
+    /// insertion order.  Used by several prompts to derive secondary search
+    /// terms from a note's section outline.
+    async fn extract_leaf_headings(
+        &self,
+        path: &kimun_core::nfs::VaultPath,
+    ) -> Result<Vec<String>, McpError> {
+        use std::collections::HashSet;
+
+        let chunks_map = self
+            .vault
+            .get_note_chunks(path)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut topics: Vec<String> = Vec::new();
+        for chunks in chunks_map.values() {
+            for chunk in chunks {
+                if let Some(leaf) = chunk.breadcrumb.last() {
+                    let t = leaf.trim().to_string();
+                    if !t.is_empty() && seen.insert(t.clone()) {
+                        topics.push(t);
+                    }
+                }
+            }
+        }
+        Ok(topics)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -74,10 +120,10 @@ impl KimunHandler {
             None => chrono::Utc::now().format("%Y-%m-%d").to_string(),
             Some(d) => {
                 if chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err() {
-                    return Ok(vec![PromptMessage::new_text(
-                        PromptMessageRole::User,
+                    return Err(McpError::invalid_params(
                         format!("Invalid date '{}' — expected YYYY-MM-DD.", d),
-                    )]);
+                        None,
+                    ));
                 }
                 d.to_string()
             }
@@ -105,7 +151,7 @@ impl KimunHandler {
             Please review this journal entry:\n\
             1. Summarize what was accomplished\n\
             2. Identify any action items or follow-ups\n\
-            3. Note any recurring themes worth tracking"
+            3. Note any open questions or concerns that need follow-up"
         );
 
         Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
@@ -155,7 +201,7 @@ impl KimunHandler {
             "Here is the note at \"{path}\":\n\n---\n{note_text}\n---\n{backlinks_section}\n\
             Identify non-obvious conceptual connections between this note and the rest of the vault. \
             What themes link them? What ideas are worth exploring further?\n\
-            (You can call the show_note tool to read any linked note in full.)",
+            (You can use the available vault tools to read any linked note in full.)",
             path = vault_path,
         );
 
@@ -185,29 +231,11 @@ impl KimunHandler {
             Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
         };
 
-        // Extract unique leaf headings from the note's chunks
-        let chunks_map = self
-            .vault
-            .get_note_chunks(&vault_path)
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let mut topics: Vec<String> = Vec::new();
-        for chunks in chunks_map.values() {
-            for chunk in chunks {
-                if let Some(leaf) = chunk.breadcrumb.last() {
-                    let topic = leaf.trim().to_string();
-                    if !topic.is_empty() && !topics.contains(&topic) {
-                        topics.push(topic);
-                    }
-                }
-            }
-        }
+        let topics = self.extract_leaf_headings(&vault_path).await?;
 
         // Search each topic; deduplicate results; cap at max
-        let source_path_str = vault_path.to_string();
         let mut seen: HashSet<String> = HashSet::new();
-        seen.insert(source_path_str.clone());
+        seen.insert(vault_path.to_string());
 
         let mut related_sections: Vec<String> = Vec::new();
 
@@ -251,8 +279,9 @@ impl KimunHandler {
             "Here is the note at \"{path}\":\n\n---\n{note_text}\n---\n\n\
             Related notes found by searching section topics ({topics_list}):\n\n\
             {related_block}\n\n\
-            Synthesize what the vault knows about this topic. \
-            What key ideas are captured? What gaps exist? What questions remain unanswered?",
+            For each of the section topics ({topics_list}), synthesize what the vault captures \
+            and identify what is missing or unexplored. What key ideas are captured? \
+            What gaps exist? What questions remain unanswered?",
             path = vault_path,
         );
 
@@ -270,7 +299,8 @@ impl KimunHandler {
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let top: Vec<_> = results.into_iter().take(5).collect();
+        let max = p.max_results.unwrap_or(5) as usize;
+        let top: Vec<_> = results.into_iter().take(max).collect();
         let suggested_path = top.first().map(|(entry, _)| entry.path.to_string());
 
         let mut vault_sections: Vec<String> = Vec::new();
@@ -302,7 +332,7 @@ impl KimunHandler {
             {vault_block}\
             Based on my existing notes:\n\
             1. Generate 5–10 new ideas related to \"{topic}\" that build on what's already captured\n\
-            2. Avoid repeating existing content\n\
+            2. For each new idea, identify which existing note it connects to and suggest where it could be appended or linked\n\
             {suggestion_line}",
             topic = p.topic,
         );
@@ -325,10 +355,10 @@ impl KimunHandler {
             Some(d) => match NaiveDate::parse_from_str(d, "%Y-%m-%d") {
                 Ok(date) => date,
                 Err(_) => {
-                    return Ok(vec![PromptMessage::new_text(
-                        PromptMessageRole::User,
+                    return Err(McpError::invalid_params(
                         format!("Invalid date '{}' — expected YYYY-MM-DD.", d),
-                    )]);
+                        None,
+                    ));
                 }
             },
         };
@@ -378,6 +408,182 @@ impl KimunHandler {
         Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
     }
 
+    #[prompt(description = "Search the vault for a topic, expand the search via backlinks and related headings from the results, then ask the LLM for a comprehensive overview of the topic and everything connected to it.")]
+    async fn research_topic(
+        &self,
+        Parameters(p): Parameters<ResearchTopicParams>,
+    ) -> Result<Vec<PromptMessage>, McpError> {
+        use kimun_core::nfs::VaultPath;
+        use std::collections::HashSet;
+
+        let max = p.max_results.unwrap_or(10) as usize;
+        let mut seen: HashSet<String> = HashSet::new();
+
+        // Step 1: Direct search for the topic
+        let initial_results = self
+            .vault
+            .search_notes(&p.topic)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let mut direct_notes: Vec<(VaultPath, String)> = Vec::new();
+        let mut backlink_candidates: Vec<VaultPath> = Vec::new();
+        // secondary_topics: insertion-ordered, deduplicated case-insensitively
+        let mut secondary_topics: Vec<String> = Vec::new();
+        let mut secondary_topics_lower: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for (entry, _) in initial_results {
+            if direct_notes.len() >= max {
+                break;
+            }
+            let path_str = entry.path.to_string();
+            if seen.contains(&path_str) {
+                continue;
+            }
+            seen.insert(path_str);
+
+            let text = self
+                .vault
+                .get_note_text(&entry.path)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            direct_notes.push((entry.path.clone(), text));
+
+            // Step 2a: Collect backlinks for this note
+            let backlinks = self
+                .vault
+                .get_backlinks(&entry.path)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            for (bl_entry, _) in backlinks {
+                let bl_str = bl_entry.path.to_string();
+                if !seen.contains(&bl_str) {
+                    seen.insert(bl_str);
+                    backlink_candidates.push(bl_entry.path);
+                }
+            }
+
+            // Step 2b: Extract leaf headings for secondary search (case-insensitive dedup)
+            let headings = self.extract_leaf_headings(&entry.path).await?;
+            for t in headings {
+                let t_lower = t.to_lowercase();
+                if t_lower != p.topic.to_lowercase()
+                    && secondary_topics_lower.insert(t_lower)
+                {
+                    secondary_topics.push(t);
+                }
+            }
+        }
+
+        // Step 3: Load backlink notes (within remaining budget)
+        let mut backlink_notes: Vec<(VaultPath, String)> = Vec::new();
+        for path in &backlink_candidates {
+            if direct_notes.len() + backlink_notes.len() >= max {
+                break;
+            }
+            let text = self
+                .vault
+                .get_note_text(path)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            backlink_notes.push((path.clone(), text));
+        }
+
+        // Step 4: Secondary search using headings extracted from the initial results
+        let mut related_notes: Vec<(VaultPath, String)> = Vec::new();
+        let mut contributing_topics: Vec<String> = Vec::new();
+        'outer: for topic in &secondary_topics {
+            let results = self
+                .vault
+                .search_notes(topic)
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            let before = related_notes.len();
+            for (entry, _) in results {
+                if direct_notes.len() + backlink_notes.len() + related_notes.len() >= max {
+                    break 'outer;
+                }
+                let path_str = entry.path.to_string();
+                if seen.contains(&path_str) {
+                    continue;
+                }
+                seen.insert(path_str);
+                let text = self
+                    .vault
+                    .get_note_text(&entry.path)
+                    .await
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                related_notes.push((entry.path, text));
+            }
+            if related_notes.len() > before {
+                contributing_topics.push(topic.clone());
+            }
+        }
+
+        if direct_notes.is_empty() && backlink_notes.is_empty() && related_notes.is_empty() {
+            return Ok(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                format!("No notes found in the vault related to \"{}\".", p.topic),
+            )]);
+        }
+
+        let mut blocks: Vec<String> = Vec::new();
+
+        if !direct_notes.is_empty() {
+            let section = direct_notes
+                .iter()
+                .map(|(path, text)| format!("=== {} ===\n{}", path, text))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            blocks.push(format!("### Notes matching \"{}\":\n\n{}", p.topic, section));
+        }
+
+        if !backlink_notes.is_empty() {
+            let section = backlink_notes
+                .iter()
+                .map(|(path, text)| format!("=== {} ===\n{}", path, text))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            blocks.push(format!("### Notes linking to the above:\n\n{}", section));
+        }
+
+        if !related_notes.is_empty() {
+            let section = related_notes
+                .iter()
+                .map(|(path, text)| format!("=== {} ===\n{}", path, text))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let header = if contributing_topics.is_empty() {
+                "### Notes on related subtopics:".to_string()
+            } else {
+                let label = contributing_topics
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("### Notes on related subtopics ({label}):")
+            };
+            blocks.push(format!("{header}\n\n{section}"));
+        }
+
+        let content_block = blocks.join("\n\n");
+
+        let message = format!(
+            "Research topic: \"{topic}\"\n\n\
+            {content_block}\n\n\
+            Using the vault content above, provide a comprehensive overview of \"{topic}\":\n\
+            1. What does the vault capture about this topic?\n\
+            2. What are the key ideas, patterns, or recurring themes?\n\
+            3. How do the related notes connect to the topic?\n\
+            4. What gaps or unexplored angles exist?",
+            topic = p.topic,
+        );
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+    }
+
     #[prompt(description = "Find vault notes topically related to the given note but not yet linked, and ask the LLM to evaluate which connections are worth formalising.")]
     async fn link_suggestions(
         &self,
@@ -403,24 +609,7 @@ impl KimunHandler {
             Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
         };
 
-        // Extract unique leaf headings (same approach as research_note)
-        let chunks_map = self
-            .vault
-            .get_note_chunks(&vault_path)
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let mut topics: Vec<String> = Vec::new();
-        for chunks in chunks_map.values() {
-            for chunk in chunks {
-                if let Some(leaf) = chunk.breadcrumb.last() {
-                    let topic = leaf.trim().to_string();
-                    if !topic.is_empty() && !topics.contains(&topic) {
-                        topics.push(topic);
-                    }
-                }
-            }
-        }
+        let topics = self.extract_leaf_headings(&vault_path).await?;
 
         // Build exclusion set: outlinks + backlinks + source itself
         let mut excluded: HashSet<String> = HashSet::new();
@@ -590,6 +779,23 @@ mod tests {
             text.contains("specific date entry content"),
             "expected entry in prompt: {}",
             text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_daily_review_invalid_date_returns_error() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .daily_review(Parameters(DailyReviewParams {
+                date: Some("not-a-date".to_string()),
+            }))
+            .await;
+        assert!(result.is_err(), "expected Err for invalid date");
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("Invalid date"),
+            "expected error message to mention invalid date: {:?}",
+            err
         );
     }
 
@@ -776,6 +982,7 @@ mod tests {
         let msgs = handler
             .brainstorm(Parameters(BrainstormParams {
                 topic: "unique_brainstorm_rust_content_xyz".to_string(),
+                max_results: None,
             }))
             .await
             .unwrap();
@@ -801,6 +1008,7 @@ mod tests {
         let msgs = handler
             .brainstorm(Parameters(BrainstormParams {
                 topic: "unique_suggest_xyz_content".to_string(),
+                max_results: None,
             }))
             .await
             .unwrap();
@@ -818,6 +1026,7 @@ mod tests {
         let msgs = handler
             .brainstorm(Parameters(BrainstormParams {
                 topic: "completely_nonexistent_topic_zzz_999".to_string(),
+                max_results: None,
             }))
             .await
             .unwrap();
@@ -887,20 +1096,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_weekly_review_invalid_date_returns_graceful_message() {
+    async fn test_weekly_review_invalid_date_returns_error() {
         let (handler, _dir) = make_handler().await;
-        let msgs = handler
+        let result = handler
             .weekly_review(Parameters(WeeklyReviewParams {
                 date: Some("not-a-date".to_string()),
             }))
-            .await
-            .unwrap();
-        assert!(!msgs.is_empty());
-        let text = first_text(&msgs);
+            .await;
+        assert!(result.is_err(), "expected Err for invalid date");
+        let err = result.unwrap_err();
         assert!(
-            text.contains("Invalid date"),
-            "expected graceful error message: {}",
-            text
+            err.message.contains("Invalid date"),
+            "expected error message to mention invalid date: {:?}",
+            err
         );
     }
 
@@ -992,6 +1200,209 @@ mod tests {
         assert!(
             text.contains("No unlinked related notes"),
             "expected graceful no-results message: {}",
+            text
+        );
+    }
+
+    // ── research_topic tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_research_topic_no_results_returns_graceful_message() {
+        let (handler, _dir) = make_handler().await;
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "completely_nonexistent_topic_zzz_123".to_string(),
+                max_results: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("No notes found"),
+            "expected graceful no-results message: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_includes_direct_search_results() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "science/quantum".to_string(),
+                content: "# Quantum Physics\n\nunique_quantum_direct_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_quantum_direct_xyz".to_string(),
+                max_results: None,
+            }))
+            .await
+            .unwrap();
+        assert!(!msgs.is_empty());
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("unique_quantum_direct_xyz"),
+            "expected direct result content in prompt: {}",
+            text
+        );
+        assert!(
+            text.contains("Notes matching"),
+            "expected direct-results section header: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_includes_backlinks() {
+        let (handler, _dir) = make_handler().await;
+        // Note that will be a direct search hit
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "topics/target".to_string(),
+                content: "# Target\n\nunique_backlink_target_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        // Note that links to target — should appear somewhere in the output (via backlinks
+        // if the index is warm, or via heading-based secondary search otherwise)
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "topics/linker".to_string(),
+                content: "# Linker\n\nSee [[topics/target]] for more detail".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_backlink_target_xyz".to_string(),
+                max_results: Some(10),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("topics/linker"),
+            "expected linker note to appear somewhere in the prompt: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_includes_related_via_headings() {
+        let (handler, _dir) = make_handler().await;
+        // Direct hit with a heading that becomes a secondary search term
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "topics/main".to_string(),
+                content: "# Main\n\n## Async Runtime\n\nunique_heading_research_abc".to_string(),
+            }))
+            .await
+            .unwrap();
+        // Note that matches the heading "Async Runtime"
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "topics/related".to_string(),
+                content: "# Related\n\nAsync Runtime is fundamental in Rust".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_heading_research_abc".to_string(),
+                max_results: Some(10),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        assert!(
+            text.contains("topics/related"),
+            "expected related note via heading search: {}",
+            text
+        );
+        assert!(
+            text.contains("Notes on related subtopics"),
+            "expected subtopics section header: {}",
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_deduplicates_notes() {
+        let (handler, _dir) = make_handler().await;
+        // Note matches both direct search and would be a backlink from itself — must appear once
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "dedup/alpha".to_string(),
+                content: "# Alpha\n\nunique_dedup_topic_xyz\n\n## Subtopic\n\nunique_dedup_sub_xyz".to_string(),
+            }))
+            .await
+            .unwrap();
+        // Second note that matches on the subtopic heading
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "dedup/beta".to_string(),
+                content: "# Beta\n\nunique_dedup_sub_xyz and more".to_string(),
+            }))
+            .await
+            .unwrap();
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_dedup_topic_xyz".to_string(),
+                max_results: Some(10),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        // Count occurrences of "dedup/alpha" — should appear exactly once
+        let count = text.matches("dedup/alpha").count();
+        assert!(
+            count >= 1,
+            "expected dedup/alpha to appear at least once: {}",
+            text
+        );
+        // The prompt message should only contain one === /dedup/alpha === block
+        let header_count = text.matches("/dedup/alpha").count();
+        assert!(
+            header_count <= 2, // path may appear in section header and content
+            "dedup/alpha appeared too many times ({}), suggesting duplicate inclusion: {}",
+            header_count,
+            text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_research_topic_respects_max_results() {
+        let (handler, _dir) = make_handler().await;
+        // Create 5 notes all matching the same topic
+        for i in 0..5 {
+            handler
+                .create_note(Parameters(CreateNoteParams {
+                    path: format!("limit/note{}", i),
+                    content: format!("# Note {}\n\nunique_limit_topic_xyz note number {}", i, i),
+                }))
+                .await
+                .unwrap();
+        }
+        let msgs = handler
+            .research_topic(Parameters(ResearchTopicParams {
+                topic: "unique_limit_topic_xyz".to_string(),
+                max_results: Some(2),
+            }))
+            .await
+            .unwrap();
+        let text = first_text(&msgs);
+        // At most 2 note sections should be present
+        let section_count = (0..5)
+            .filter(|i| text.contains(&format!("limit/note{}", i)))
+            .count();
+        assert!(
+            section_count <= 2,
+            "expected at most 2 notes with max_results=2, found {} in: {}",
+            section_count,
             text
         );
     }
