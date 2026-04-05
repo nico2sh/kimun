@@ -248,6 +248,68 @@ pub(crate) fn resolve_path_on_disk_sync<P: AsRef<Path>>(
     current
 }
 
+/// Walks the vault directory tree and returns a human-readable description of
+/// every pair of entries that collide when lowercased (e.g. "note.md" vs "Note.md").
+/// Returns an empty Vec if the vault is clean.
+pub(crate) fn check_case_conflicts<P: AsRef<Path>>(workspace_path: P) -> Vec<String> {
+    let root = workspace_path.as_ref();
+    check_conflicts_in_dir(root, root)
+}
+
+fn check_conflicts_in_dir(workspace_root: &Path, dir: &Path) -> Vec<String> {
+    let mut conflicts = Vec::new();
+    let mut seen: std::collections::HashMap<String, std::ffi::OsString> =
+        std::collections::HashMap::new();
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return conflicts,
+    };
+
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy().to_string();
+        // skip hidden entries, consistent with the vault's filter_files behaviour
+        if name_str.starts_with('.') {
+            continue;
+        }
+        let lower = name_str.to_lowercase();
+        if let Some(existing) = seen.get(&lower) {
+            let rel = dir.strip_prefix(workspace_root).unwrap_or(dir);
+            let rel_str = rel.to_string_lossy();
+            let location = if rel_str.is_empty() {
+                PATH_SEPARATOR.to_string()
+            } else {
+                format!("{}{}", PATH_SEPARATOR, rel_str)
+            };
+            conflicts.push(format!(
+                "\"{}\" conflicts with \"{}\" in {}",
+                name_str,
+                existing.to_string_lossy(),
+                location
+            ));
+        } else {
+            seen.insert(lower, name);
+        }
+        // Use file_type() rather than is_dir() to avoid following symlinks,
+        // which could cause unbounded recursion on symlink loops.
+        if let Ok(ft) = entry.file_type() {
+            if ft.is_dir() {
+                subdirs.push(entry.path());
+            }
+        }
+    }
+
+    // Recurse into all subdirectories, including both sides of a conflicting pair,
+    // so that deeper conflicts inside them are also surfaced.
+    for subdir in subdirs {
+        conflicts.extend(check_conflicts_in_dir(workspace_root, &subdir));
+    }
+
+    conflicts
+}
+
 /// Loads a note from disk, if the file doesn't exist, returns a FSError::NotePathNotFound
 /// Returns the note's text. If you want the details, use NoteDetails::from_content
 pub(crate) async fn load_note<P: AsRef<Path>>(
