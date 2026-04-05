@@ -1,6 +1,6 @@
 +++
 title = "CLI Skill"
-weight = 1
+weight = 21
 +++
 
 # AI Skills

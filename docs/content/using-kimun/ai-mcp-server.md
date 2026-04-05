@@ -1,6 +1,6 @@
 +++
 title = "MCP Server"
-weight = 2
+weight = 22
 +++
 
 # MCP Server
