@@ -161,6 +161,15 @@ impl SettingsScreen {
         }
     }
 
+    /// Creates a settings screen with a `Failed` error overlay pre-populated.
+    /// Used when the vault was rejected due to structural conflicts. The settings
+    /// passed in should already have the workspace path cleared.
+    pub fn new_with_error(settings: AppSettings, error: String) -> Self {
+        let mut s = Self::new(settings);
+        s.overlay = Overlay::IndexingProgress(IndexingProgressState::Failed(error));
+        s
+    }
+
     fn do_save(&mut self, tx: &AppTx) {
         if self.settings.workspace_dir != self.initial_settings.workspace_dir {
             let Some(workspace) = self.settings.workspace_dir.clone() else {
@@ -1000,5 +1009,17 @@ mod settings_screen_tests {
         };
         screen.handle_input(&key(KeyCode::Esc), &tx);
         assert!(matches!(screen.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn new_with_error_sets_failed_overlay_with_message() {
+        let settings = AppSettings::default();
+        let screen = SettingsScreen::new_with_error(settings, "test error msg".to_string());
+        match screen.overlay {
+            Overlay::IndexingProgress(IndexingProgressState::Failed(ref msg)) => {
+                assert_eq!(msg, "test error msg");
+            }
+            _ => panic!("expected Overlay::IndexingProgress(Failed(...))"),
+        }
     }
 }
