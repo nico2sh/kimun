@@ -162,8 +162,11 @@ impl SettingsScreen {
     }
 
     /// Creates a settings screen with a `Failed` error overlay pre-populated.
-    /// Used when the vault was rejected due to structural conflicts. The settings
-    /// passed in should already have the workspace path cleared.
+    /// Used when the vault was rejected due to structural conflicts.
+    ///
+    /// The `settings` passed in should already have the workspace cleared —
+    /// this is handled by the `VaultConflict` branch in `handle_app_message` (`main.rs`)
+    /// before calling `switch_screen`.
     pub fn new_with_error(settings: AppSettings, error: String) -> Self {
         let mut s = Self::new(settings);
         s.overlay = Overlay::IndexingProgress(IndexingProgressState::Failed(error));

@@ -62,9 +62,12 @@ pub enum AppEvent {
     CloseDialog,
 
     /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
-    /// Carries the formatted error message. The main loop clears the vault path,
-    /// saves settings, and redirects to the settings screen with an error overlay.
-    /// To support a new conflict type: add one arm in start.rs on_enter, nothing else.
+    /// Carries a formatted, human-readable error message.
+    ///
+    /// Handled by `handle_app_message` in `main.rs`, which clears the workspace,
+    /// saves settings, and opens the settings screen with an error overlay.
+    /// To add a new conflict source: emit this event from the detection site; no
+    /// other files need to change.
     VaultConflict(String),
 
     // ── Dialog async result messages ─────────────────────────────────────────
