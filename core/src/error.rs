@@ -18,6 +18,8 @@ pub enum VaultError {
     NoteExists { path: VaultPath },
     #[error("Directory already exists at: {path}")]
     DirectoryExists { path: VaultPath },
+    #[error("Case-sensitivity conflicts detected in vault:\n{}", conflicts.join("\n"))]
+    CaseConflict { conflicts: Vec<String> },
 }
 
 #[derive(Error, Debug)]

@@ -101,6 +101,10 @@ impl NoteVault {
     /// missing notes.
     /// This can be slow on large vaults.
     pub async fn validate_and_init(&self) -> Result<IndexReport, VaultError> {
+        let conflicts = nfs::check_case_conflicts(&self.workspace_path);
+        if !conflicts.is_empty() {
+            return Err(VaultError::CaseConflict { conflicts });
+        }
         debug!("Initializing DB and validating it");
         let db_result = self.validate().await;
         match db_result {
@@ -1368,5 +1372,45 @@ mod tests {
     #[test]
     fn test_default_journal_path_constant() {
         assert_eq!(DEFAULT_JOURNAL_PATH, "/journal");
+    }
+
+    // Verifies that validate_and_init rejects a vault containing case-insensitive
+    // path conflicts (e.g. note.md vs Note.md, projects/ vs Projects/).
+    // Linux only: macOS and Windows filesystems are case-insensitive by default,
+    // so creating note.md + Note.md would silently overwrite rather than produce two files.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn rejects_vault_with_case_conflicts() {
+        let tmp = TempDir::new().unwrap();
+        // file conflict at root
+        std::fs::write(tmp.path().join("note.md"), "lowercase").unwrap();
+        std::fs::write(tmp.path().join("Note.md"), "uppercase").unwrap();
+        // directory conflict at root
+        std::fs::create_dir(tmp.path().join("projects")).unwrap();
+        std::fs::create_dir(tmp.path().join("Projects")).unwrap();
+
+        let vault = NoteVault::new(tmp.path()).await.unwrap();
+        let result = vault.validate_and_init().await;
+
+        match result {
+            Err(VaultError::CaseConflict { conflicts }) => {
+                assert_eq!(conflicts.len(), 2, "expected 2 conflicts, got: {:?}", conflicts);
+                let joined = conflicts.join("\n");
+                assert!(
+                    joined.contains("note.md") && joined.contains("Note.md"),
+                    "expected note.md conflict in list, got: {}",
+                    joined
+                );
+                assert!(
+                    joined.contains("projects") && joined.contains("Projects"),
+                    "expected projects conflict in list, got: {}",
+                    joined
+                );
+            }
+            other => panic!("expected CaseConflict, got: {}", match other {
+                Ok(_) => "Ok(_)".to_string(),
+                Err(e) => format!("Err({})", e),
+            }),
+        }
     }
 }
