@@ -50,7 +50,7 @@ pub fn app_log_dir() -> PathBuf {
     {
         std::env::var("APPDATA")
             .map(|p| PathBuf::from(p).join(name))
-            .unwrap_or_else(|_| fallback())
+            .unwrap_or_else(|_| fallback().join(name))
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
