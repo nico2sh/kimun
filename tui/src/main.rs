@@ -9,7 +9,11 @@ pub mod ui;
 
 use clap::Parser;
 use color_eyre::Result;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::prelude::*;
 
 #[derive(Parser)]
 #[command(name = "kimun", about = "Kimün notes")]
@@ -45,15 +49,87 @@ use crate::event_handler::EventHandler;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
 
+/// Initialises file (and, in debug, stderr) logging.
+///
+/// Accepts `log_dir` as a parameter so it can be called from tests with a
+/// controlled path. Returns `Some(guard)` on success; the caller must keep
+/// the guard alive for the duration of the program. Returns `None` and prints
+/// a warning to stderr on failure — startup is not aborted.
+fn init_logging(log_dir: &Path) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    if let Err(e) = fs::create_dir_all(log_dir) {
+        eprintln!("kimun: could not create log directory: {e}");
+        return None;
+    }
+
+    let log_path = log_dir.join("kimun.log");
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("kimun: could not open log file: {e}");
+            return None;
+        }
+    };
+
+    let (writer, guard) = tracing_appender::non_blocking(file);
+
+    #[cfg(debug_assertions)]
+    let file_level_filter = LevelFilter::DEBUG;
+    #[cfg(not(debug_assertions))]
+    let file_level_filter = LevelFilter::WARN;
+
+    let file_layer: Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync> =
+        tracing_subscriber::fmt::layer()
+            .compact()
+            .with_ansi(false)
+            .with_writer(writer)
+            .with_filter(file_level_filter)
+            .boxed();
+
+    #[cfg(debug_assertions)]
+    let stderr_layer: Option<Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>> = Some(
+        tracing_subscriber::fmt::layer()
+            .compact()
+            .with_writer(std::io::stderr)
+            .with_filter(LevelFilter::DEBUG)
+            .boxed(),
+    );
+    #[cfg(not(debug_assertions))]
+    let stderr_layer: Option<Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>> = None;
+
+    let mut layers: Vec<Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>> =
+        vec![file_layer];
+    if let Some(s) = stderr_layer {
+        layers.push(s);
+    }
+
+    // try_init instead of init so tests can call this without panicking on the
+    // global-subscriber-already-set error.
+    let _ = tracing_subscriber::registry()
+        .with(layers)
+        .try_init();
+
+    // Forward log:: crate events into the tracing pipeline.
+    tracing_log::LogTracer::init().ok();
+
+    Some(guard)
+}
+
 // The nvim backend uses `tokio::task::block_in_place` during construction,
 // which requires a multi-thread runtime. Keep this flavor explicit.
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
-    // Install a panic hook before the TUI takes over the terminal.
-    // Restores the terminal so the output is readable, then writes to
-    // kimun-panic.log (works in both debug and release builds).
+    // Compute once, reuse for both init_logging and the panic hook.
+    let log_dir: PathBuf = kimun_core::app_log_dir();
+    // _guard declared early so it is dropped last (reverse declaration order).
+    let _guard = init_logging(&log_dir);
+
+    let log_path: PathBuf = log_dir.join("kimun.log");
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = crossterm::terminal::disable_raw_mode();
@@ -62,35 +138,38 @@ async fn main() -> Result<()> {
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::event::DisableMouseCapture,
         );
-        if let Ok(mut file) = std::fs::OpenOptions::new()
+
+        // Emit through tracing first (subscriber may still be active).
+        tracing::error!("panic: {info}");
+
+        // Direct fallback write — independent of the tracing subscriber.
+        let parent = log_path.parent().unwrap_or(std::path::Path::new("."));
+        let _ = fs::create_dir_all(parent);
+        match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open("kimun-panic.log")
+            .open(&log_path)
         {
-            use std::io::Write;
-            let _ = writeln!(file, "{info}");
-            let bt = std::backtrace::Backtrace::force_capture();
-            let _ = writeln!(file, "{bt}");
+            Ok(mut file) => {
+                use std::io::Write;
+                let _ = writeln!(file, "[PANIC] {info}");
+                let bt = std::backtrace::Backtrace::force_capture();
+                let _ = writeln!(file, "{bt}");
+            }
+            Err(e) => {
+                eprintln!("kimun: could not write panic to log: {e}");
+            }
         }
-        log::error!("panic: {info}");
+
         default_hook(info);
     }));
 
     let cli = Cli::parse();
 
-    // Check if CLI subcommand was provided
     if let Some(command) = cli.command {
-        // CLI mode - run command and exit
         return crate::cli::run_cli(command, cli.config).await;
     }
 
-    // TUI mode continues below...
-    #[cfg(debug_assertions)]
-    {
-        use simplelog::*;
-        let log_file = std::fs::File::create("kimun.log").unwrap();
-        WriteLogger::init(LevelFilter::Debug, Config::default(), log_file).unwrap();
-    }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -106,7 +185,12 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let mut events = EventHandler::new();
     let mut app = App::new(cli.config).await?;
-    run_app(&mut terminal, &mut app, &mut events).await?;
+
+    if let Err(e) = run_app(&mut terminal, &mut app, &mut events).await {
+        tracing::error!("fatal error: {e}");
+        return Err(e.into());
+    }
+
     disable_raw_mode()?;
     let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     execute!(
@@ -115,6 +199,9 @@ async fn main() -> Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
+
+    // Pin _guard liveness through end of scope, preventing NLL early-drop.
+    let _ = &_guard;
     Ok(())
 }
 
@@ -332,5 +419,15 @@ mod tests {
             msg,
             AppEvent::OpenScreen(ScreenEvent::OpenSettings)
         ));
+    }
+
+    #[test]
+    fn init_logging_returns_none_on_bad_path() {
+        use crate::init_logging;
+        // /nonexistent/readonly/path cannot be created; init_logging must return None
+        // without panicking. This test exercises the early-return path before try_init
+        // is called, so the global subscriber singleton is not set by this test.
+        let result = init_logging(std::path::Path::new("/nonexistent/readonly/path"));
+        assert!(result.is_none());
     }
 }
