@@ -997,6 +997,19 @@ pub fn get_file_walker<P: AsRef<Path>>(
 mod tests {
     use std::path::{Path, PathBuf};
 
+    /// Returns true if the filesystem at `dir` is case-sensitive.
+    /// Used to skip "no duplicate lowercase entry" assertions on macOS and other
+    /// platforms that use a case-insensitive filesystem by default.
+    fn is_case_sensitive_fs(dir: &Path) -> bool {
+        // Write a probe file with a known uppercase name, then check whether the
+        // lowercase variant resolves to the same entry or is absent.
+        let upper = dir.join("__CaseSensitivityProbe__");
+        std::fs::write(&upper, "").unwrap();
+        let result = !dir.join("__casesensitivityprobe__").exists();
+        std::fs::remove_file(&upper).unwrap();
+        result
+    }
+
     use crate::{
         error::FSError,
         nfs::{
@@ -1882,10 +1895,13 @@ mod tests {
         let content = tokio::fs::read_to_string(tmp.path().join("Journal").join("MyNote.md")).await.unwrap();
         assert_eq!(content, "updated");
 
-        // No duplicate lowercase file should have been created
-        assert!(!tmp.path().join("Journal").join("mynote.md").exists());
-        // No duplicate lowercase directory should have been created
-        assert!(!tmp.path().join("journal").exists());
+        // On case-sensitive filesystems: no duplicate lowercase entries should exist.
+        // On case-insensitive filesystems (e.g. macOS default APFS), 'Journal' and
+        // 'journal' are the same path so these assertions are not meaningful.
+        if is_case_sensitive_fs(tmp.path()) {
+            assert!(!tmp.path().join("Journal").join("mynote.md").exists());
+            assert!(!tmp.path().join("journal").exists());
+        }
     }
 
     #[tokio::test]
@@ -1897,8 +1913,10 @@ mod tests {
 
         // File should land inside the existing uppercase directory
         assert!(tmp.path().join("Projects").join("new.md").exists());
-        // No duplicate lowercase directory should have been created
-        assert!(!tmp.path().join("projects").exists());
+        // On case-sensitive filesystems: no duplicate lowercase directory should exist.
+        if is_case_sensitive_fs(tmp.path()) {
+            assert!(!tmp.path().join("projects").exists());
+        }
     }
 
     #[tokio::test]
@@ -1954,8 +1972,10 @@ mod tests {
         ).await.unwrap();
 
         assert!(tmp.path().join("Archive").join("note.md").exists());
-        // No duplicate lowercase destination directory should have been created
-        assert!(!tmp.path().join("archive").exists());
+        // On case-sensitive filesystems: no duplicate lowercase directory should exist.
+        if is_case_sensitive_fs(tmp.path()) {
+            assert!(!tmp.path().join("archive").exists());
+        }
     }
 
     #[tokio::test]
