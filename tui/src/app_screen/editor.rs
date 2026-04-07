@@ -191,7 +191,7 @@ impl EditorScreen {
                     )));
                     self.focus = Focus::Dialog;
                 } else {
-                    log::error!("Failed to read note {}: {e}", self.path);
+                    tracing::error!("Failed to read note {}: {e}", self.path);
                     let parent = self.path.get_parent_path().0;
                     tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
                         self.vault.clone(),
@@ -238,7 +238,7 @@ impl EditorScreen {
         let tx2 = tx.clone();
         tokio::spawn(async move {
             if let Err(e) = vault.browse_vault(options).await {
-                log::error!("browse_vault failed: {e}");
+                tracing::error!("browse_vault failed: {e}");
             }
             tx2.send(AppEvent::Redraw).ok();
         });

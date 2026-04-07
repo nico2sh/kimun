@@ -93,7 +93,7 @@ impl BackendState {
             match NvimBackend::new(nvim_path) {
                 Ok(backend) => return BackendState::Nvim(backend),
                 Err(e) => {
-                    log::warn!("nvim backend unavailable, falling back to textarea: {e}")
+                    tracing::warn!("nvim backend unavailable, falling back to textarea: {e}")
                 }
             }
         }
@@ -241,7 +241,7 @@ impl NvimBackend {
                             break;
                         }
                         // Non-fatal (e.g. transient Lua error): log and continue.
-                        log::debug!("exec_lua error: {e}");
+                        tracing::debug!("exec_lua error: {e}");
                     }
                 }
             }
@@ -270,12 +270,12 @@ impl NvimBackend {
                 Err(e) => {
                     in_flight.store(false, Ordering::SeqCst);
                     if e.is_channel_closed() { is_dead.store(true, Ordering::SeqCst); }
-                    log::warn!("set_text get_current_buf: {e}");
+                    tracing::warn!("set_text get_current_buf: {e}");
                     return;
                 }
             };
             if let Err(e) = buf.set_lines(0, -1, false, lines).await {
-                log::warn!("set_text buf_set_lines: {e}");
+                tracing::warn!("set_text buf_set_lines: {e}");
             }
             in_flight.store(false, Ordering::SeqCst);
         });
@@ -295,7 +295,7 @@ impl NvimBackend {
         tokio::spawn(async move {
             if let Err(e) = nvim.ui_try_resize(width as i64, height as i64).await {
                 if e.is_channel_closed() { is_dead.store(true, Ordering::SeqCst); }
-                log::debug!("ui_try_resize error: {e}");
+                tracing::debug!("ui_try_resize error: {e}");
             }
         });
     }
@@ -305,7 +305,7 @@ impl NvimBackend {
         self.ensure_refresh_task(&tx);
 
         let Some(nvim_key) = key_event_to_nvim_string(key) else {
-            log::debug!("unmappable key: {key:?}");
+            tracing::debug!("unmappable key: {key:?}");
             return;
         };
 
@@ -324,7 +324,7 @@ impl NvimBackend {
                         is_dead.store(true, Ordering::SeqCst);
                         tx.send(AppEvent::Redraw).ok();
                     }
-                    log::debug!("nvim_input error: {e}");
+                    tracing::debug!("nvim_input error: {e}");
                 }
             }
         });
