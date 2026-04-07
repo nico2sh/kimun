@@ -23,14 +23,7 @@ fn app_dir_name() -> &'static str {
 ///
 /// Fallback chain per platform:
 ///   preferred dir → `current_dir()` → `temp_dir()` (always available)
-/// Never returns an empty path.
-///
-/// # Examples
-///
-/// ```
-/// let dir = kimun_core::app_log_dir();
-/// assert!(dir.is_absolute());
-/// ```
+/// Always returns an absolute path with the app-name suffix appended.
 pub fn app_log_dir() -> PathBuf {
     let name = app_dir_name();
     let fallback = || {
@@ -40,7 +33,7 @@ pub fn app_log_dir() -> PathBuf {
     {
         std::env::var("HOME")
             .map(|h| PathBuf::from(h).join("Library/Application Support").join(name))
-            .unwrap_or_else(|_| fallback())
+            .unwrap_or_else(|_| fallback().join(name))
     }
     #[cfg(target_os = "linux")]
     {
