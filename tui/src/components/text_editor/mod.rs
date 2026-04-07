@@ -235,7 +235,7 @@ impl Component for TextEditorComponent {
             None
         };
         if let Some(text) = fallback_text {
-            log::warn!("nvim process died; falling back to textarea backend");
+            tracing::warn!("nvim process died; falling back to textarea backend");
             self.backend = BackendState::Textarea(TextArea::from(text.lines()));
         }
 

@@ -48,7 +48,7 @@ impl EventHandler {
                 biased;
                 Some(msg) = self.rx.recv() => return msg,
                 Some(Ok(event)) = self.crossterm_stream.next() => {
-                    log::debug!("RAW EVENT: {:?}", event);
+                    tracing::debug!("RAW EVENT: {:?}", event);
                     match event {
                         CrosstermEvent::Key(key) if key.kind != KeyEventKind::Release => {
                             return AppEvent::Input(InputEvent::Key(key));

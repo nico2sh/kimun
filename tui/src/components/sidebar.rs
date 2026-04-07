@@ -140,7 +140,7 @@ impl Component for SidebarComponent {
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
                         if let Err(e) = vault.load_or_create_note(&path, None).await {
-                            log::warn!("create note failed for {path}: {e}");
+                            tracing::warn!("create note failed for {path}: {e}");
                             return;
                         }
                         tx2.send(AppEvent::OpenPath(path)).ok();

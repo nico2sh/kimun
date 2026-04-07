@@ -10,7 +10,6 @@ use std::fs::{self, File};
 
 use color_eyre::eyre;
 use kimun_core::nfs::VaultPath;
-use log::debug;
 
 use crate::keys::KeyBindings;
 mod config_dir;
@@ -269,7 +268,7 @@ impl AppSettings {
         match toml::from_str::<Theme>(&theme_string) {
             Ok(theme) => Ok(theme),
             Err(e) => {
-                debug!(
+                tracing::debug!(
                     "Failed to deserialize theme file {:?}: {}. Removing.",
                     path, e
                 );
@@ -323,7 +322,7 @@ impl AppSettings {
                 .and_then(|s| toml::from_str::<Theme>(&s).map_err(std::io::Error::other))
             {
                 Ok(theme) => themes.push(theme),
-                Err(e) => log::warn!("Skipping theme file {:?}: {}", path, e),
+                Err(e) => tracing::warn!("Skipping theme file {:?}: {}", path, e),
             }
         }
 
@@ -331,7 +330,7 @@ impl AppSettings {
     }
 
     pub fn save_to_disk(&self) -> eyre::Result<()> {
-        log::debug!("Saving settings to disk");
+        tracing::debug!("Saving settings to disk");
         let settings_file_path = self.get_config_file_path()?;
         let mut file = File::create(settings_file_path)?;
         file.write_all(CONFIG_HEADER.as_bytes())?;
@@ -359,7 +358,7 @@ impl AppSettings {
                     Ok(setting)
                 }
                 Err(e) => {
-                    log::warn!(
+                    tracing::warn!(
                         "Config file at {:?} could not be parsed ({}). \
                          Renaming to .corrupt and starting with defaults.",
                         settings_file_path,
@@ -393,7 +392,7 @@ impl AppSettings {
 
                 // Check if migration is needed (Phase 1 -> Phase 2)
                 if setting.workspace_dir.is_some() && setting.workspace_config.is_none() {
-                    log::info!("Migrating Phase 1 config to Phase 2 format");
+                    tracing::info!("Migrating Phase 1 config to Phase 2 format");
 
                     let workspace_dir = setting.workspace_dir.take().unwrap();
                     let theme = if setting.theme.is_empty() {
@@ -432,7 +431,7 @@ impl AppSettings {
                 Ok(setting)
             }
             Err(e) => {
-                log::warn!(
+                tracing::warn!(
                     "Config file at {:?} could not be parsed ({}). \
                      Renaming to .corrupt and starting with defaults.",
                     path,

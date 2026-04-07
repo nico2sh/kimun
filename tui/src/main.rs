@@ -268,7 +268,7 @@ where
             AppEvent::Input(input) => {
                 match input {
                     InputEvent::Key(key) => {
-                        log::debug!(
+                        tracing::debug!(
                             "KEY: code={:?} mods={:?} kind={:?}",
                             key.code,
                             key.modifiers,
@@ -276,7 +276,7 @@ where
                         );
                         // Global shortcuts — fire before any screen gets the event.
                         if let Some(combo) = key_event_to_combo(&key) {
-                            log::debug!(
+                            tracing::debug!(
                                 "COMBO: {} → {:?}",
                                 combo,
                                 app.settings.key_bindings.get_action(&combo)
