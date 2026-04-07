@@ -3,6 +3,7 @@ pub mod error;
 pub mod nfs;
 pub mod note;
 pub mod utilities;
+pub use utilities::app_log_dir;
 
 use std::{
     collections::HashMap,
