@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::dialogs::{
-    ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, MoveDialog,
+    ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, HelpDialog, MoveDialog,
     RenameDialog, ValidationState,
 };
 use crate::components::event_state::EventState;
@@ -403,7 +403,24 @@ impl AppScreen for EditorScreen {
                         }
                         return EventState::Consumed;
                     }
-                    _ => {}
+                    _ => {
+                        if is_fkey {
+                            // F1 opens the help modal (only when no other dialog is active).
+                            if combo.key == KeyStrike::F1
+                                && combo.modifiers.is_empty()
+                                && self.active_dialog.is_none()
+                            {
+                                self.pre_dialog_focus = Some(self.focus);
+                                self.active_dialog = Some(ActiveDialog::Help(
+                                    HelpDialog::new(&self.settings.key_bindings),
+                                ));
+                                self.focus = Focus::Dialog;
+                            }
+                            // All F-keys (including F1 when a dialog is already open) are consumed
+                            // and never forwarded to the embedded editor.
+                            return EventState::Consumed;
+                        }
+                    }
                 }
             }
 
