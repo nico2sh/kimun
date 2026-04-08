@@ -3,6 +3,7 @@ pub use rename_dialog::RenameDialog;
 pub use move_dialog::MoveDialog;
 pub use file_ops_menu::FileOpsMenuDialog;
 pub use create_note_dialog::CreateNoteDialog;
+pub use help_dialog::HelpDialog;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -36,6 +37,7 @@ pub mod rename_dialog;
 pub mod move_dialog;
 pub mod file_ops_menu;
 pub mod create_note_dialog;
+pub mod help_dialog;
 
 pub enum ActiveDialog {
     Menu(FileOpsMenuDialog),
@@ -43,6 +45,7 @@ pub enum ActiveDialog {
     Rename(RenameDialog),
     Move(MoveDialog),
     CreateNote(CreateNoteDialog),
+    Help(HelpDialog),
 }
 
 impl ActiveDialog {
@@ -53,6 +56,7 @@ impl ActiveDialog {
             ActiveDialog::Rename(d)    => d.error = Some(msg),
             ActiveDialog::Move(d)      => d.error = Some(msg),
             ActiveDialog::CreateNote(d)  => d.error = Some(msg),
+            ActiveDialog::Help(_)      => {}
         }
     }
 }
@@ -68,6 +72,7 @@ impl Component for ActiveDialog {
             ActiveDialog::Rename(d)    => d.handle_key(*key, tx),
             ActiveDialog::Move(d)      => d.handle_key(*key, tx),
             ActiveDialog::CreateNote(d)  => d.handle_key(*key, tx),
+            ActiveDialog::Help(d)      => d.handle_key(*key, tx),
         }
     }
 
@@ -78,6 +83,7 @@ impl Component for ActiveDialog {
             ActiveDialog::Rename(d)    => d.render(f, rect, theme, focused),
             ActiveDialog::Move(d)      => d.render(f, rect, theme, focused),
             ActiveDialog::CreateNote(d)  => d.render(f, rect, theme, focused),
+            ActiveDialog::Help(d)      => d.render(f, rect, theme, focused),
         }
     }
 }
@@ -166,5 +172,17 @@ pub(super) fn fixed_centered_rect(width: u16, height: u16, area: ratatui::layout
         y: area.y + (area.height.saturating_sub(h)) / 2,
         width: w,
         height: h,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys::KeyBindings;
+
+    #[test]
+    fn active_dialog_help_variant_compiles() {
+        let dialog = HelpDialog::new(&KeyBindings::empty());
+        let _active: ActiveDialog = ActiveDialog::Help(dialog);
     }
 }
