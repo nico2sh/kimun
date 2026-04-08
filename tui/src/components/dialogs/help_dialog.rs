@@ -197,7 +197,7 @@ impl Component for HelpDialog {
         }
 
         f.render_widget(
-            Paragraph::new("  [↑↓] Scroll   [Esc] Close")
+            Paragraph::new("  [↑↓ PgUp/PgDn] Scroll   [Esc] Close")
                 .style(Style::default().fg(fg_muted).bg(bg)),
             footer_area,
         );
