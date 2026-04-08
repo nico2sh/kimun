@@ -89,15 +89,8 @@ fn init_logging(log_dir: &Path) -> Option<tracing_appender::non_blocking::Worker
             .with_filter(file_level_filter)
             .boxed();
 
-    #[cfg(debug_assertions)]
-    let stderr_layer: Option<Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>> = Some(
-        tracing_subscriber::fmt::layer()
-            .compact()
-            .with_writer(std::io::stderr)
-            .with_filter(LevelFilter::DEBUG)
-            .boxed(),
-    );
-    #[cfg(not(debug_assertions))]
+    // No stderr layer — writing to stderr corrupts the ratatui alternate screen.
+    // Debug logs are captured in the log file at DEBUG level instead.
     let stderr_layer: Option<Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>> = None;
 
     let mut layers: Vec<Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>> =
