@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.3...kimun_core-v0.2.4) - 2026-04-09
+
+### Added
+
+- *(core)* add app_log_dir() returning platform-specific log directory
+- *(core)* add app_log_dir() returning platform-specific log directory
+- *(core)* reject control chars, Windows reserved names, trailing dots/spaces in vault paths
+- *(core)* reject vault on case-insensitive path conflicts
+
+### Fixed
+
+- *(core)* skip case-duplicate assertions on case-insensitive filesystems
+- *(core)* append app dir name to Windows fallback path in app_log_dir
+- address code review findings
+- *(core,tui)* detect case conflicts in recreate_index and all settings reindex paths
+
+### Other
+
+- refactor dialogs
+- small cleanup removing hardcoded .md reference in the tui
+
 ## [0.2.3](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.2...kimun_core-v0.2.3) - 2026-04-04
 
 ### Fixed
