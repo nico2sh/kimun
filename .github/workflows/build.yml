@@ -105,6 +105,8 @@ jobs:
     permissions:
       contents: write
       packages: write
+    outputs:
+      version: ${{ steps.extract_version.outputs.version }}
 
     steps:
       - name: Extract version
@@ -201,8 +203,10 @@ jobs:
   publish-homebrew:
     needs: create-release
     runs-on: ubuntu-latest
-    # Skip pre-releases (alpha, beta, rc tags contain a hyphen).
-    if: ${{ !contains(github.ref_name, '-') }}
+    # Skip pre-releases. The version is extracted by stripping the "kimun-notes-v"
+    # prefix; a pre-release like "0.5.0-beta.1" will contain a hyphen in the
+    # remaining version string.
+    if: ${{ !contains(needs.create-release.outputs.version, '-') }}
 
     steps:
       - uses: actions/checkout@v4
