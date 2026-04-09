@@ -72,7 +72,7 @@ const CONFIG_HEADER: &str = "\
 #
 # Examples:
 #   Quit         = [\"ctrl&Q\"]            # Ctrl+Q
-#   SearchNotes  = [\"ctrl&E\"]            # Ctrl+E
+#   SearchNotes  = [\"ctrl&K\"]            # Ctrl+K
 #   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
 #   OpenSettings = [\"ctrl+shift&P\"]      # Ctrl+Shift+P
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
@@ -126,9 +126,9 @@ pub struct AppSettings {
 
 fn default_keybindings() -> KeyBindings {
     let mut kb = KeyBindings::empty();
-    kb.batch_add().with_ctrl()
-        .add(KeyStrike::KeyF, ActionShortcuts::ToggleNoteBrowser)
-        .add(KeyStrike::KeyE, ActionShortcuts::SearchNotes)
+    kb.batch_add()
+        .with_ctrl()
+        .add(KeyStrike::KeyK, ActionShortcuts::SearchNotes)
         .add(KeyStrike::KeyO, ActionShortcuts::OpenNote)
         .add(KeyStrike::KeyY, ActionShortcuts::TogglePreview)
         .add(KeyStrike::KeyB, ActionShortcuts::Text(TextAction::Bold))
@@ -158,7 +158,7 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyP, ActionShortcuts::OpenSettings)
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
-        .add(KeyStrike::KeyB, ActionShortcuts::ToggleSidebar)
+        .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyN, ActionShortcuts::CycleSortField)
         .add(KeyStrike::KeyG, ActionShortcuts::FollowLink)
         .add(KeyStrike::KeyR, ActionShortcuts::SortReverseOrder)
@@ -270,7 +270,8 @@ impl AppSettings {
             Err(e) => {
                 tracing::debug!(
                     "Failed to deserialize theme file {:?}: {}. Removing.",
-                    path, e
+                    path,
+                    e
                 );
                 let _ = fs::remove_file(path);
                 Err(eyre::eyre!("corrupt theme file: {}", e))
@@ -400,11 +401,8 @@ impl AppSettings {
                     } else {
                         setting.theme.clone()
                     };
-                    let last_paths: Vec<String> = setting
-                        .last_paths
-                        .iter()
-                        .map(|p| p.to_string())
-                        .collect();
+                    let last_paths: Vec<String> =
+                        setting.last_paths.iter().map(|p| p.to_string()).collect();
 
                     // Validate workspace directory still exists
                     if !workspace_dir.exists() {
@@ -469,11 +467,12 @@ impl AppSettings {
     // to persist it in disk
     pub fn set_workspace(&mut self, workspace_path: &PathBuf) {
         if let Some(current_workspace_dir) = &self.workspace_dir
-            && workspace_path != current_workspace_dir {
-                // We clean up the data related with the workspace
-                self.last_paths = vec![];
-                self.needs_indexing = true;
-            }
+            && workspace_path != current_workspace_dir
+        {
+            // We clean up the data related with the workspace
+            self.last_paths = vec![];
+            self.needs_indexing = true;
+        }
 
         self.workspace_dir = Some(workspace_path.to_owned());
     }
@@ -609,8 +608,11 @@ FileOperations = ["F2"]
         let settings: AppSettings = toml::from_str(toml).unwrap();
         let f2 = KeyCombo::new(KeyModifiers::default(), KeyStrike::F2);
         let action = settings.key_bindings.get_action(&f2);
-        assert_eq!(action, Some(ActionShortcuts::FileOperations),
-            "F2 should survive deserialization and map to FileOperations");
+        assert_eq!(
+            action,
+            Some(ActionShortcuts::FileOperations),
+            "F2 should survive deserialization and map to FileOperations"
+        );
     }
 
     /// Verify merge_missing_default_bindings adds F2 when absent from config.
@@ -629,8 +631,11 @@ Quit = ["ctrl&Q"]
 
         let f2 = KeyCombo::new(KeyModifiers::default(), KeyStrike::F2);
         let action = settings.key_bindings.get_action(&f2);
-        assert_eq!(action, Some(ActionShortcuts::FileOperations),
-            "merge_missing_default_bindings should add F2 → FileOperations");
+        assert_eq!(
+            action,
+            Some(ActionShortcuts::FileOperations),
+            "merge_missing_default_bindings should add F2 → FileOperations"
+        );
     }
 
     #[test]
@@ -640,23 +645,47 @@ Quit = ["ctrl&Q"]
         settings.last_paths = vec![kimun_core::nfs::VaultPath::new("note")];
         settings.needs_indexing = false; // ensure the method actually sets it
         settings.clear_workspace();
-        assert!(settings.workspace_dir.is_none(), "workspace_dir should be None");
-        assert!(settings.last_paths.is_empty(), "last_paths should be cleared");
-        assert!(settings.needs_indexing, "needs_indexing should be reset to true");
+        assert!(
+            settings.workspace_dir.is_none(),
+            "workspace_dir should be None"
+        );
+        assert!(
+            settings.last_paths.is_empty(),
+            "last_paths should be cleared"
+        );
+        assert!(
+            settings.needs_indexing,
+            "needs_indexing should be reset to true"
+        );
     }
 
     #[test]
     fn clear_workspace_phase2_removes_current_workspace_entry() {
         let mut settings = AppSettings::default();
         let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1")).unwrap();
+        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
+            .unwrap();
         settings.workspace_config = Some(wc);
         // Assert precondition: add_workspace auto-selects the first workspace
-        assert_eq!(settings.workspace_config.as_ref().unwrap().global.current_workspace, "vault1");
+        assert_eq!(
+            settings
+                .workspace_config
+                .as_ref()
+                .unwrap()
+                .global
+                .current_workspace,
+            "vault1"
+        );
         settings.clear_workspace();
         let wc = settings.workspace_config.as_ref().unwrap();
-        assert!(wc.workspaces.is_empty(), "workspace entry should be removed");
-        assert!(wc.global.current_workspace.is_empty(), "current_workspace should be empty");
+        assert!(
+            wc.workspaces.is_empty(),
+            "workspace entry should be removed"
+        );
+        assert!(
+            wc.global.current_workspace.is_empty(),
+            "current_workspace should be empty"
+        );
     }
 
     #[test]
@@ -667,29 +696,53 @@ Quit = ["ctrl&Q"]
         settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
         settings.last_paths = vec![kimun_core::nfs::VaultPath::new("note")];
         let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1")).unwrap();
+        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
+            .unwrap();
         settings.workspace_config = Some(wc);
         settings.clear_workspace();
-        assert!(settings.workspace_dir.is_none(), "phase1 workspace_dir should be cleared");
-        assert!(settings.last_paths.is_empty(), "phase1 last_paths should be cleared");
+        assert!(
+            settings.workspace_dir.is_none(),
+            "phase1 workspace_dir should be cleared"
+        );
+        assert!(
+            settings.last_paths.is_empty(),
+            "phase1 last_paths should be cleared"
+        );
         let wc = settings.workspace_config.as_ref().unwrap();
-        assert!(wc.workspaces.is_empty(), "phase2 workspace entry should be removed");
-        assert!(wc.global.current_workspace.is_empty(), "phase2 current_workspace should be empty");
+        assert!(
+            wc.workspaces.is_empty(),
+            "phase2 workspace entry should be removed"
+        );
+        assert!(
+            wc.global.current_workspace.is_empty(),
+            "phase2 current_workspace should be empty"
+        );
     }
 
     #[test]
     fn clear_workspace_phase2_preserves_other_workspaces() {
         let mut settings = AppSettings::default();
         let mut wc = WorkspaceConfig::new_empty();
-        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1")).unwrap();
-        wc.add_workspace("vault2".to_string(), PathBuf::from("/tmp/vault2")).unwrap();
+        wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
+            .unwrap();
+        wc.add_workspace("vault2".to_string(), PathBuf::from("/tmp/vault2"))
+            .unwrap();
         wc.global.current_workspace = "vault1".to_string();
         settings.workspace_config = Some(wc);
         settings.clear_workspace();
         let wc = settings.workspace_config.as_ref().unwrap();
-        assert!(!wc.workspaces.contains_key("vault1"), "active workspace should be removed");
-        assert!(wc.workspaces.contains_key("vault2"), "other workspaces should be preserved");
-        assert!(wc.global.current_workspace.is_empty(), "current_workspace should be empty");
+        assert!(
+            !wc.workspaces.contains_key("vault1"),
+            "active workspace should be removed"
+        );
+        assert!(
+            wc.workspaces.contains_key("vault2"),
+            "other workspaces should be preserved"
+        );
+        assert!(
+            wc.global.current_workspace.is_empty(),
+            "current_workspace should be empty"
+        );
     }
 }
 
@@ -700,7 +753,10 @@ mod backend_tests {
     #[test]
     fn default_backend_is_textarea() {
         let settings = AppSettings::default();
-        assert!(matches!(settings.editor_backend, EditorBackendSetting::Textarea));
+        assert!(matches!(
+            settings.editor_backend,
+            EditorBackendSetting::Textarea
+        ));
     }
 
     #[test]

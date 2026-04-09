@@ -310,120 +310,119 @@ impl AppScreen for EditorScreen {
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         if let InputEvent::Key(key) = event
-            && let Some(combo) = key_event_to_combo(key) {
-                let is_fkey = matches!(
-                    combo.key,
-                    KeyStrike::F1
-                        | KeyStrike::F2
-                        | KeyStrike::F3
-                        | KeyStrike::F4
-                        | KeyStrike::F5
-                        | KeyStrike::F6
-                        | KeyStrike::F7
-                        | KeyStrike::F8
-                        | KeyStrike::F9
-                        | KeyStrike::F10
-                        | KeyStrike::F11
-                        | KeyStrike::F12
-                );
-                if is_fkey
-                    || ((combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
-                        && combo.key >= KeyStrike::KeyA
-                        && combo.key <= KeyStrike::KeyZ)
-                {
-                    self.key_flash = Some((combo.to_string(), std::time::Instant::now()));
-                    let tx2 = tx.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        tx2.send(AppEvent::Redraw).ok();
-                    });
+            && let Some(combo) = key_event_to_combo(key)
+        {
+            let is_fkey = matches!(
+                combo.key,
+                KeyStrike::F1
+                    | KeyStrike::F2
+                    | KeyStrike::F3
+                    | KeyStrike::F4
+                    | KeyStrike::F5
+                    | KeyStrike::F6
+                    | KeyStrike::F7
+                    | KeyStrike::F8
+                    | KeyStrike::F9
+                    | KeyStrike::F10
+                    | KeyStrike::F11
+                    | KeyStrike::F12
+            );
+            if is_fkey
+                || ((combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
+                    && combo.key >= KeyStrike::KeyA
+                    && combo.key <= KeyStrike::KeyZ)
+            {
+                // We display for two seconds the key combination pressed in the footer
+                self.key_flash = Some((combo.to_string(), std::time::Instant::now()));
+                let tx2 = tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    tx2.send(AppEvent::Redraw).ok();
+                });
+            }
+            match self.settings.key_bindings.get_action(&combo) {
+                Some(ActionShortcuts::ToggleSidebar) => {
+                    self.toggle_sidebar();
+                    return EventState::Consumed;
                 }
-                match self.settings.key_bindings.get_action(&combo) {
-                    Some(ActionShortcuts::ToggleSidebar) => {
-                        self.toggle_sidebar();
-                        return EventState::Consumed;
-                    }
-                    Some(ActionShortcuts::NewJournal) => {
-                        tx.send(AppEvent::OpenJournal).ok();
-                        return EventState::Consumed;
-                    }
-                    Some(ActionShortcuts::SearchNotes)
-                    | Some(ActionShortcuts::ToggleNoteBrowser) => {
-                        if self.note_browser.is_some() {
-                            self.note_browser = None;
-                            if matches!(self.focus, Focus::NoteBrowser) {
-                                self.focus = Focus::Editor;
-                            }
-                        } else {
-                            let provider = SearchNotesProvider::new(
-                                self.vault.clone(),
-                                self.settings.last_paths.clone(),
-                            );
-                            self.note_browser = Some(NoteBrowserModal::new(
-                                "Note Browser",
-                                provider,
-                                self.vault.clone(),
-                                self.settings.key_bindings.clone(),
-                                self.settings.icons(),
-                                tx.clone(),
-                            ));
-                            self.focus = Focus::NoteBrowser;
+                Some(ActionShortcuts::NewJournal) => {
+                    tx.send(AppEvent::OpenJournal).ok();
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::SearchNotes) => {
+                    if self.note_browser.is_some() {
+                        self.note_browser = None;
+                        if matches!(self.focus, Focus::NoteBrowser) {
+                            self.focus = Focus::Editor;
                         }
-                        return EventState::Consumed;
+                    } else {
+                        let provider = SearchNotesProvider::new(
+                            self.vault.clone(),
+                            self.settings.last_paths.clone(),
+                        );
+                        self.note_browser = Some(NoteBrowserModal::new(
+                            "Note Browser",
+                            provider,
+                            self.vault.clone(),
+                            self.settings.key_bindings.clone(),
+                            self.settings.icons(),
+                            tx.clone(),
+                        ));
+                        self.focus = Focus::NoteBrowser;
                     }
-                    Some(ActionShortcuts::OpenNote) => {
-                        if self.note_browser.is_some() {
-                            self.note_browser = None;
-                            if matches!(self.focus, Focus::NoteBrowser) {
-                                self.focus = Focus::Editor;
-                            }
-                        } else {
-                            let current_dir = self.path.get_parent_path().0;
-                            let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
-                            self.note_browser = Some(NoteBrowserModal::new(
-                                "Find Note",
-                                provider,
-                                self.vault.clone(),
-                                self.settings.key_bindings.clone(),
-                                self.settings.icons(),
-                                tx.clone(),
-                            ));
-                            self.focus = Focus::NoteBrowser;
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::OpenNote) => {
+                    if self.note_browser.is_some() {
+                        self.note_browser = None;
+                        if matches!(self.focus, Focus::NoteBrowser) {
+                            self.focus = Focus::Editor;
                         }
-                        return EventState::Consumed;
+                    } else {
+                        let current_dir = self.path.get_parent_path().0;
+                        let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
+                        self.note_browser = Some(NoteBrowserModal::new(
+                            "Find Note",
+                            provider,
+                            self.vault.clone(),
+                            self.settings.key_bindings.clone(),
+                            self.settings.icons(),
+                            tx.clone(),
+                        ));
+                        self.focus = Focus::NoteBrowser;
                     }
-                    Some(ActionShortcuts::FileOperations)
-                        if matches!(self.focus, Focus::Editor) =>
-                    {
-                        tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
-                        return EventState::Consumed;
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::FileOperations) if matches!(self.focus, Focus::Editor) => {
+                    tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::FollowLink) if matches!(self.focus, Focus::Editor) => {
+                    if let Some(target) = self.editor.link_at_cursor() {
+                        tx.send(AppEvent::FollowLink(target)).ok();
                     }
-                    Some(ActionShortcuts::FollowLink) if matches!(self.focus, Focus::Editor) => {
-                        if let Some(target) = self.editor.link_at_cursor() {
-                            tx.send(AppEvent::FollowLink(target)).ok();
+                    return EventState::Consumed;
+                }
+                _ => {
+                    if is_fkey {
+                        // F1 opens the help modal (only when no other dialog is active).
+                        if combo.key == KeyStrike::F1
+                            && combo.modifiers.is_empty()
+                            && self.active_dialog.is_none()
+                        {
+                            self.pre_dialog_focus = Some(self.focus);
+                            self.active_dialog = Some(ActiveDialog::Help(HelpDialog::new(
+                                &self.settings.key_bindings,
+                            )));
+                            self.focus = Focus::Dialog;
                         }
+                        // All F-keys (including F1 when a dialog is already open) are consumed
+                        // and never forwarded to the embedded editor.
                         return EventState::Consumed;
-                    }
-                    _ => {
-                        if is_fkey {
-                            // F1 opens the help modal (only when no other dialog is active).
-                            if combo.key == KeyStrike::F1
-                                && combo.modifiers.is_empty()
-                                && self.active_dialog.is_none()
-                            {
-                                self.pre_dialog_focus = Some(self.focus);
-                                self.active_dialog = Some(ActiveDialog::Help(
-                                    HelpDialog::new(&self.settings.key_bindings),
-                                ));
-                                self.focus = Focus::Dialog;
-                            }
-                            // All F-keys (including F1 when a dialog is already open) are consumed
-                            // and never forwarded to the embedded editor.
-                            return EventState::Consumed;
-                        }
                     }
                 }
             }
+        }
 
         // Mouse events are routed to all components regardless of focus so that
         // clicking anywhere can transfer focus correctly.
@@ -434,9 +433,10 @@ impl AppScreen for EditorScreen {
             }
             // Note browser modal intercepts all mouse events when open.
             if matches!(self.focus, Focus::NoteBrowser)
-                && let Some(modal) = &mut self.note_browser {
-                    return modal.handle_input(event, tx);
-                }
+                && let Some(modal) = &mut self.note_browser
+            {
+                return modal.handle_input(event, tx);
+            }
             if self.sidebar_visible && self.sidebar.handle_input(event, tx).is_consumed() {
                 return EventState::Consumed;
             }
@@ -532,9 +532,10 @@ impl AppScreen for EditorScreen {
 
         // Expire stale key flash
         if let Some((_, instant)) = &self.key_flash
-            && instant.elapsed() >= std::time::Duration::from_secs(2) {
-                self.key_flash = None;
-            }
+            && instant.elapsed() >= std::time::Duration::from_secs(2)
+        {
+            self.key_flash = None;
+        }
 
         let focus_label = match self.focus {
             Focus::Editor => "EDITOR",
