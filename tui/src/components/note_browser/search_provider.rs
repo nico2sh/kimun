@@ -18,7 +18,7 @@ impl SearchNotesProvider {
         Self { vault, last_paths }
     }
 
-    fn into_entry(&self, entry: NoteEntryData, content: NoteContentData) -> FileListEntry {
+    fn to_entry(&self, entry: NoteEntryData, content: NoteContentData) -> FileListEntry {
         let filename = entry.path.get_parent_path().1;
         let title = if content.title.trim().is_empty() {
             "<no title>".to_string()
@@ -52,7 +52,7 @@ impl NoteBrowserProvider for SearchNotesProvider {
                 .iter()
                 .rev()
                 .filter_map(|path| by_path.remove(path))
-                .map(|(entry, content)| self.into_entry(entry, content))
+                .map(|(entry, content)| self.to_entry(entry, content))
                 .collect()
         } else {
             self.vault
@@ -60,7 +60,7 @@ impl NoteBrowserProvider for SearchNotesProvider {
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(entry, content)| self.into_entry(entry, content))
+                .map(|(entry, content)| self.to_entry(entry, content))
                 .collect()
         }
     }

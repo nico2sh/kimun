@@ -77,7 +77,7 @@ async fn run_init(
         settings.workspace_config = Some(WorkspaceConfig::new_empty());
     }
 
-    let ws_config = settings.workspace_config.as_ref().unwrap();
+    let ws_config = settings.workspace_config.as_ref().expect("workspace_config must exist after init");
 
     // Determine workspace name
     let workspace_name = match name {
@@ -106,24 +106,17 @@ async fn run_init(
     }
 
     // Validate/create the target path
-    if !path.exists() {
-        std::fs::create_dir_all(&path).map_err(|e| {
-            eyre!(
-                "Failed to create workspace directory {}: {}",
-                path.display(),
-                e
-            )
-        })?;
-        println!("Created directory: {}", path.display());
-    }
-
-    let canonical_path = path.canonicalize().map_err(|e| {
+    let created = !path.exists();
+    let canonical_path = kimun_core::ensure_dir_exists(&path).map_err(|e| {
         eyre!(
-            "Failed to resolve workspace path {}: {}",
+            "Failed to create workspace directory {}: {}",
             path.display(),
             e
         )
     })?;
+    if created {
+        println!("Created directory: {}", path.display());
+    }
 
     // Initialize NoteVault database (creates kimun.sqlite)
     println!("Initializing workspace database...");
@@ -135,7 +128,7 @@ async fn run_init(
     })?;
 
     // Add workspace to config and save
-    let ws_config_mut = settings.workspace_config.as_mut().unwrap();
+    let ws_config_mut = settings.workspace_config.as_mut().expect("workspace_config must exist after init");
     ws_config_mut
         .add_workspace(workspace_name.clone(), canonical_path.clone())
         .map_err(|e| eyre!("{}", e))?;
@@ -149,7 +142,7 @@ async fn run_init(
         canonical_path.display()
     );
 
-    let ws_config = settings.workspace_config.as_ref().unwrap();
+    let ws_config = settings.workspace_config.as_ref().expect("workspace_config must exist after init");
     if ws_config.global.current_workspace == workspace_name {
         println!("Set as current workspace.");
     }
@@ -215,7 +208,7 @@ fn run_use(settings: &mut AppSettings, name: String) -> Result<()> {
         ));
     }
 
-    settings.workspace_config.as_mut().unwrap().global.current_workspace = name.clone();
+    settings.workspace_config.as_mut().expect("workspace_config must exist").global.current_workspace = name.clone();
     settings.save_to_disk()?;
 
     println!("Switched to workspace '{}'.", name);
@@ -246,7 +239,7 @@ fn run_rename(
         ));
     }
 
-    let ws_config_mut = settings.workspace_config.as_mut().unwrap();
+    let ws_config_mut = settings.workspace_config.as_mut().expect("workspace_config must exist after init");
 
     // Move entry to new key
     let entry = ws_config_mut
@@ -288,7 +281,7 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
     settings
         .workspace_config
         .as_mut()
-        .unwrap()
+        .expect("workspace_config must exist")
         .workspaces
         .remove(&name);
 

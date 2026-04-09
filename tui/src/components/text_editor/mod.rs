@@ -180,8 +180,8 @@ impl TextEditorComponent {
                 lines[sr].get(sc..ec).unwrap_or("").to_string()
             } else {
                 let mut parts = vec![lines[sr].get(sc..).unwrap_or("").to_string()];
-                for row in (sr + 1)..er {
-                    parts.push(lines[row].to_string());
+                for line in &lines[(sr + 1)..er] {
+                    parts.push(line.to_string());
                 }
                 parts.push(lines[er].get(..ec).unwrap_or("").to_string());
                 parts.join("\n")
@@ -213,12 +213,10 @@ impl TextEditorComponent {
     }
 }
 
-impl Component for TextEditorComponent {
-    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+impl TextEditorComponent {
+    /// If the Nvim process has died, fall back to a Textarea with the last known content.
+    fn maybe_recover_from_dead_nvim(&mut self) {
         use std::sync::atomic::Ordering;
-
-        // If Nvim process died, fall back to Textarea with last known content.
-        // Extract fallback text first (scoping the borrow), then reassign self.backend.
         let fallback_text = if let BackendState::Nvim(nvim) = &self.backend {
             if nvim.is_dead.load(Ordering::SeqCst) {
                 Some(
@@ -238,333 +236,361 @@ impl Component for TextEditorComponent {
             tracing::warn!("nvim process died; falling back to textarea backend");
             self.backend = BackendState::Textarea(TextArea::from(text.lines()));
         }
+    }
+
+    /// Handle a key event when using the Nvim backend.
+    ///
+    /// Returns `Some(EventState)` if the event was handled (or should be),
+    /// `None` if the backend is not Nvim and the caller should fall through.
+    fn handle_nvim_key(
+        &mut self,
+        key: &ratatui::crossterm::event::KeyEvent,
+        tx: &AppTx,
+    ) -> Option<EventState> {
+        let BackendState::Nvim(nvim) = &self.backend else {
+            return None;
+        };
+
+        if let Some(combo) = key_event_to_combo(key)
+            && let Some(ActionShortcuts::FocusSidebar) = self.key_bindings.get_action(&combo)
+        {
+            tx.send(AppEvent::FocusSidebar).ok();
+            return Some(EventState::Consumed);
+        }
+
+        // Intercept ZZ / ZQ in Normal mode: buffer the first Z, then
+        // decide on the second key without forwarding either to nvim.
+        if self.nvim_pending_z {
+            self.nvim_pending_z = false;
+            match key.code {
+                KeyCode::Char('Z') => {
+                    // ZZ — write + quit
+                    tx.send(AppEvent::Autosave).ok();
+                    tx.send(AppEvent::FocusSidebar).ok();
+                    return Some(EventState::Consumed);
+                }
+                KeyCode::Char('Q') => {
+                    // ZQ — quit without saving
+                    tx.send(AppEvent::FocusSidebar).ok();
+                    return Some(EventState::Consumed);
+                }
+                _ => {
+                    // Not a quit sequence — replay the buffered Z first.
+                    nvim.handle_key(
+                        &ratatui::crossterm::event::KeyEvent::new(
+                            KeyCode::Char('Z'),
+                            KeyModifiers::NONE,
+                        ),
+                        tx.clone(),
+                    );
+                    // Then fall through to forward the current key normally.
+                }
+            }
+        } else if key.code == KeyCode::Char('Z') {
+            let in_normal = {
+                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                snap.mode == NvimMode::Normal
+            };
+            if in_normal {
+                self.nvim_pending_z = true;
+                return Some(EventState::Consumed);
+            }
+        }
+
+        // Intercept vim quit/write-quit commands so they don't kill the
+        // embedded nvim process.
+        if key.code == KeyCode::Enter {
+            let (is_cmd, cmdline) = {
+                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                let cmd = if snap.mode == NvimMode::Command {
+                    snap.cmdline
+                        .as_deref()
+                        .unwrap_or("")
+                        .trim_start_matches(':')
+                        .to_string()
+                } else {
+                    String::new()
+                };
+                (snap.mode == NvimMode::Command, cmd)
+            };
+            if is_cmd {
+                let saves = matches!(
+                    cmdline.as_str(),
+                    "w" | "wq" | "wq!" | "wqa" | "wqa!" | "x" | "xa" | "x!"
+                );
+                let quits = saves
+                    || matches!(
+                        cmdline.as_str(),
+                        "q" | "q!" | "qa" | "qa!" | "cq" | "cq!"
+                    );
+                if quits {
+                    nvim.handle_key(
+                        &ratatui::crossterm::event::KeyEvent::new(
+                            KeyCode::Esc,
+                            KeyModifiers::NONE,
+                        ),
+                        tx.clone(),
+                    );
+                    if saves {
+                        tx.send(AppEvent::Autosave).ok();
+                    }
+                    tx.send(AppEvent::FocusSidebar).ok();
+                    return Some(EventState::Consumed);
+                }
+            }
+        }
+
+        nvim.handle_key(key, tx.clone());
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+        Some(EventState::Consumed)
+    }
+
+    /// Handle a key event when using the Textarea backend.
+    fn handle_textarea_key(
+        &mut self,
+        key: &ratatui::crossterm::event::KeyEvent,
+        tx: &AppTx,
+    ) -> EventState {
+        // System clipboard shortcuts — intercept before passing to textarea.
+        if key.modifiers == KeyModifiers::CONTROL {
+            match key.code {
+                KeyCode::Char('c') => {
+                    self.copy_selection_to_clipboard();
+                    return EventState::Consumed;
+                }
+                KeyCode::Char('v') => {
+                    self.paste_from_clipboard();
+                    return EventState::Consumed;
+                }
+                KeyCode::Char('x') => {
+                    self.copy_selection_to_clipboard();
+                    if let BackendState::Textarea(ta) = &mut self.backend {
+                        if ta.selection_range().is_some() {
+                            ta.cut();
+                        }
+                        self.selection = ta.selection_range();
+                    }
+                    self.edit_generation = self.edit_generation.wrapping_add(1);
+                    return EventState::Consumed;
+                }
+                _ => {}
+            }
+        }
+
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            unreachable!("handle_textarea_key called with non-Textarea backend")
+        };
+
+        // macOS-style navigation shortcuts not handled by ratatui-textarea.
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
+            (KeyModifiers::ALT, KeyCode::Left) => {
+                cursor_move!(ta, CursorMove::WordBack, shift);
+                true
+            }
+            (KeyModifiers::ALT, KeyCode::Right) => {
+                cursor_move!(ta, CursorMove::WordForward, shift);
+                true
+            }
+            (KeyModifiers::SUPER, KeyCode::Left) => {
+                cursor_move!(ta, CursorMove::Head, shift);
+                true
+            }
+            (KeyModifiers::SUPER, KeyCode::Right) => {
+                cursor_move!(ta, CursorMove::End, shift);
+                true
+            }
+            (KeyModifiers::SUPER, KeyCode::Up) => {
+                cursor_move!(ta, CursorMove::Top, shift);
+                true
+            }
+            (KeyModifiers::SUPER, KeyCode::Down) => {
+                cursor_move!(ta, CursorMove::Bottom, shift);
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            self.selection = ta.selection_range();
+            self.edit_generation = self.edit_generation.wrapping_add(1);
+            return EventState::Consumed;
+        }
+
+        // Check keybindings for navigation actions.
+        if let Some(combo) = key_event_to_combo(key)
+            && let Some(ActionShortcuts::FocusSidebar) = self.key_bindings.get_action(&combo)
+        {
+            tx.send(AppEvent::FocusSidebar).ok();
+            return EventState::Consumed;
+        }
+
+        // Standard text-editor shortcuts.
+        // `input_without_shortcuts` only handles chars, backspace, delete, tab, newline —
+        // all navigation and editing shortcuts must be mapped explicitly.
+        let shortcut_handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
+            // --- Cursor movement (Shift extends the selection) ---
+            (KeyModifiers::NONE, KeyCode::Left) => {
+                cursor_move!(ta, CursorMove::Back, shift);
+                true
+            }
+            (KeyModifiers::NONE, KeyCode::Right) => {
+                cursor_move!(ta, CursorMove::Forward, shift);
+                true
+            }
+            (KeyModifiers::NONE, KeyCode::Up) => {
+                cursor_move!(ta, CursorMove::Up, shift);
+                true
+            }
+            (KeyModifiers::NONE, KeyCode::Down) => {
+                cursor_move!(ta, CursorMove::Down, shift);
+                true
+            }
+            (KeyModifiers::NONE, KeyCode::Home) => {
+                cursor_move!(ta, CursorMove::Head, shift);
+                true
+            }
+            (KeyModifiers::NONE, KeyCode::End) => {
+                cursor_move!(ta, CursorMove::End, shift);
+                true
+            }
+            (KeyModifiers::NONE, KeyCode::PageUp) => {
+                cursor_move!(ta, CursorMove::ParagraphBack, shift);
+                true
+            }
+            (KeyModifiers::NONE, KeyCode::PageDown) => {
+                cursor_move!(ta, CursorMove::ParagraphForward, shift);
+                true
+            }
+            // Word navigation (Ctrl+arrow, Windows/Linux style)
+            (KeyModifiers::CONTROL, KeyCode::Left) => {
+                cursor_move!(ta, CursorMove::WordBack, shift);
+                true
+            }
+            (KeyModifiers::CONTROL, KeyCode::Right) => {
+                cursor_move!(ta, CursorMove::WordForward, shift);
+                true
+            }
+            // Document start / end
+            (KeyModifiers::CONTROL, KeyCode::Home) => {
+                cursor_move!(ta, CursorMove::Top, shift);
+                true
+            }
+            (KeyModifiers::CONTROL, KeyCode::End) => {
+                cursor_move!(ta, CursorMove::Bottom, shift);
+                true
+            }
+            // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
+            (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
+                ta.undo();
+                true
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('y'))
+            | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => {
+                ta.redo();
+                true
+            }
+            // Select all
+            (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+                ta.move_cursor(CursorMove::Top);
+                ta.start_selection();
+                ta.move_cursor(CursorMove::Bottom);
+                true
+            }
+            // Delete word before / after cursor
+            (KeyModifiers::CONTROL, KeyCode::Backspace)
+            | (KeyModifiers::ALT, KeyCode::Backspace) => {
+                ta.delete_word();
+                true
+            }
+            (KeyModifiers::CONTROL, KeyCode::Delete)
+            | (KeyModifiers::ALT, KeyCode::Delete) => {
+                ta.delete_next_word();
+                true
+            }
+            _ => false,
+        };
+        if shortcut_handled {
+            self.selection = ta.selection_range();
+            self.edit_generation = self.edit_generation.wrapping_add(1);
+            return EventState::Consumed;
+        }
+        ta.input_without_shortcuts(*key);
+        self.selection = ta.selection_range();
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+        EventState::Consumed
+    }
+
+    /// Handle a mouse event (Textarea backend only).
+    fn handle_mouse(
+        &mut self,
+        mouse: &ratatui::crossterm::event::MouseEvent,
+        tx: &AppTx,
+    ) -> EventState {
+        let BackendState::Textarea(_) = &self.backend else {
+            return EventState::NotConsumed;
+        };
+        let r = &self.rect;
+        let in_bounds = mouse.column >= r.x
+            && mouse.column < r.x + r.width
+            && mouse.row >= r.y
+            && mouse.row < r.y + r.height;
+        if !in_bounds {
+            return EventState::NotConsumed;
+        }
+        // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
+            tx.send(AppEvent::FocusEditor).ok();
+            self.copy_selection_to_clipboard();
+            self.selection = if let BackendState::Textarea(ta) = &self.backend {
+                ta.selection_range()
+            } else {
+                None
+            };
+            self.edit_generation = self.edit_generation.wrapping_add(1);
+            return EventState::Consumed;
+        }
+        // Now extract ta for remaining mouse operations.
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            unreachable!()
+        };
+        match mouse.kind {
+            MouseEventKind::Down(_) => {
+                tx.send(AppEvent::FocusEditor).ok();
+                ta.cancel_selection();
+                let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
+                let vcol = (mouse.column - r.x) as usize;
+                let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
+                ta.move_cursor(CursorMove::Jump(lrow, lcol));
+                ta.start_selection();
+            }
+            MouseEventKind::Drag(_) => {
+                let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
+                let vcol = (mouse.column - r.x) as usize;
+                let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
+                ta.move_cursor(CursorMove::Jump(lrow, lcol));
+            }
+            _ => {
+                ta.input(*mouse);
+            }
+        }
+        self.selection = ta.selection_range();
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+        EventState::Consumed
+    }
+}
+
+impl Component for TextEditorComponent {
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        self.maybe_recover_from_dead_nvim();
 
         match event {
             InputEvent::Key(key) => {
-                // Nvim backend: forward all keys directly, except FocusSidebar which kimun handles.
-                if let BackendState::Nvim(nvim) = &self.backend {
-                    if let Some(combo) = key_event_to_combo(key)
-                        && let Some(ActionShortcuts::FocusSidebar) =
-                            self.key_bindings.get_action(&combo)
-                        {
-                            tx.send(AppEvent::FocusSidebar).ok();
-                            return EventState::Consumed;
-                        }
-
-                    // Intercept ZZ / ZQ in Normal mode: buffer the first Z, then
-                    // decide on the second key without forwarding either to nvim.
-                    if self.nvim_pending_z {
-                        self.nvim_pending_z = false;
-                        match key.code {
-                            KeyCode::Char('Z') => {
-                                // ZZ — write + quit
-                                tx.send(AppEvent::Autosave).ok();
-                                tx.send(AppEvent::FocusSidebar).ok();
-                                return EventState::Consumed;
-                            }
-                            KeyCode::Char('Q') => {
-                                // ZQ — quit without saving
-                                tx.send(AppEvent::FocusSidebar).ok();
-                                return EventState::Consumed;
-                            }
-                            _ => {
-                                // Not a quit sequence — replay the buffered Z first.
-                                nvim.handle_key(
-                                    &ratatui::crossterm::event::KeyEvent::new(
-                                        KeyCode::Char('Z'),
-                                        KeyModifiers::NONE,
-                                    ),
-                                    tx.clone(),
-                                );
-                                // Then fall through to forward the current key normally.
-                            }
-                        }
-                    } else if key.code == KeyCode::Char('Z') {
-                        let in_normal = {
-                            let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
-                            snap.mode == NvimMode::Normal
-                        };
-                        if in_normal {
-                            self.nvim_pending_z = true;
-                            return EventState::Consumed;
-                        }
-                    }
-
-                    // Intercept vim quit/write-quit commands so they don't kill the
-                    // embedded nvim process.  When Enter is pressed in command mode
-                    // with a quit-like command, cancel it in nvim (send <Esc>) and
-                    // handle it here instead.
-                    if key.code == KeyCode::Enter {
-                        let (is_cmd, cmdline) = {
-                            let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
-                            let cmd = if snap.mode == NvimMode::Command {
-                                snap.cmdline
-                                    .as_deref()
-                                    .unwrap_or("")
-                                    .trim_start_matches(':')
-                                    .to_string()
-                            } else {
-                                String::new()
-                            };
-                            (snap.mode == NvimMode::Command, cmd)
-                        };
-                        if is_cmd {
-                            let saves = matches!(
-                                cmdline.as_str(),
-                                "w" | "wq" | "wq!" | "wqa" | "wqa!" | "x" | "xa" | "x!"
-                            );
-                            let quits = saves
-                                || matches!(
-                                    cmdline.as_str(),
-                                    "q" | "q!" | "qa" | "qa!" | "cq" | "cq!"
-                                );
-                            if quits {
-                                // Cancel the command in nvim so the process stays alive.
-                                nvim.handle_key(
-                                    &ratatui::crossterm::event::KeyEvent::new(
-                                        KeyCode::Esc,
-                                        KeyModifiers::NONE,
-                                    ),
-                                    tx.clone(),
-                                );
-                                if saves {
-                                    tx.send(AppEvent::Autosave).ok();
-                                }
-                                tx.send(AppEvent::FocusSidebar).ok();
-                                return EventState::Consumed;
-                            }
-                        }
-                    }
-
-                    nvim.handle_key(key, tx.clone());
-                    self.edit_generation = self.edit_generation.wrapping_add(1);
-                    return EventState::Consumed;
+                if let Some(state) = self.handle_nvim_key(key, tx) {
+                    return state;
                 }
-
-                // Textarea backend: original logic below.
-
-                // System clipboard shortcuts — intercept before passing to textarea.
-                if key.modifiers == KeyModifiers::CONTROL {
-                    match key.code {
-                        KeyCode::Char('c') => {
-                            self.copy_selection_to_clipboard();
-                            return EventState::Consumed;
-                        }
-                        KeyCode::Char('v') => {
-                            self.paste_from_clipboard();
-                            return EventState::Consumed;
-                        }
-                        KeyCode::Char('x') => {
-                            self.copy_selection_to_clipboard();
-                            if let BackendState::Textarea(ta) = &mut self.backend {
-                                if ta.selection_range().is_some() {
-                                    ta.cut();
-                                }
-                                self.selection = ta.selection_range();
-                            }
-                            self.edit_generation = self.edit_generation.wrapping_add(1);
-                            return EventState::Consumed;
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Extract ta for all remaining textarea operations.
-                let BackendState::Textarea(ta) = &mut self.backend else {
-                    unreachable!("already handled Nvim branch above")
-                };
-
-                // macOS-style navigation shortcuts not handled by ratatui-textarea.
-                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-                let handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
-                    (KeyModifiers::ALT, KeyCode::Left) => {
-                        cursor_move!(ta, CursorMove::WordBack, shift);
-                        true
-                    }
-                    (KeyModifiers::ALT, KeyCode::Right) => {
-                        cursor_move!(ta, CursorMove::WordForward, shift);
-                        true
-                    }
-                    (KeyModifiers::SUPER, KeyCode::Left) => {
-                        cursor_move!(ta, CursorMove::Head, shift);
-                        true
-                    }
-                    (KeyModifiers::SUPER, KeyCode::Right) => {
-                        cursor_move!(ta, CursorMove::End, shift);
-                        true
-                    }
-                    (KeyModifiers::SUPER, KeyCode::Up) => {
-                        cursor_move!(ta, CursorMove::Top, shift);
-                        true
-                    }
-                    (KeyModifiers::SUPER, KeyCode::Down) => {
-                        cursor_move!(ta, CursorMove::Bottom, shift);
-                        true
-                    }
-                    _ => false,
-                };
-                if handled {
-                    self.selection = ta.selection_range();
-                    self.edit_generation = self.edit_generation.wrapping_add(1);
-                    return EventState::Consumed;
-                }
-
-                // Check keybindings for navigation actions.
-                if let Some(combo) = key_event_to_combo(key)
-                    && let Some(ActionShortcuts::FocusSidebar) =
-                        self.key_bindings.get_action(&combo)
-                    {
-                        tx.send(AppEvent::FocusSidebar).ok();
-                        return EventState::Consumed;
-                    }
-                // Standard text-editor shortcuts.
-                // `input_without_shortcuts` only handles chars, backspace, delete, tab, newline —
-                // all navigation and editing shortcuts must be mapped explicitly.
-                let shortcut_handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
-                    // --- Cursor movement (Shift extends the selection) ---
-                    (KeyModifiers::NONE, KeyCode::Left) => {
-                        cursor_move!(ta, CursorMove::Back, shift);
-                        true
-                    }
-                    (KeyModifiers::NONE, KeyCode::Right) => {
-                        cursor_move!(ta, CursorMove::Forward, shift);
-                        true
-                    }
-                    (KeyModifiers::NONE, KeyCode::Up) => {
-                        cursor_move!(ta, CursorMove::Up, shift);
-                        true
-                    }
-                    (KeyModifiers::NONE, KeyCode::Down) => {
-                        cursor_move!(ta, CursorMove::Down, shift);
-                        true
-                    }
-                    (KeyModifiers::NONE, KeyCode::Home) => {
-                        cursor_move!(ta, CursorMove::Head, shift);
-                        true
-                    }
-                    (KeyModifiers::NONE, KeyCode::End) => {
-                        cursor_move!(ta, CursorMove::End, shift);
-                        true
-                    }
-                    (KeyModifiers::NONE, KeyCode::PageUp) => {
-                        cursor_move!(ta, CursorMove::ParagraphBack, shift);
-                        true
-                    }
-                    (KeyModifiers::NONE, KeyCode::PageDown) => {
-                        cursor_move!(ta, CursorMove::ParagraphForward, shift);
-                        true
-                    }
-                    // Word navigation (Ctrl+arrow, Windows/Linux style)
-                    (KeyModifiers::CONTROL, KeyCode::Left) => {
-                        cursor_move!(ta, CursorMove::WordBack, shift);
-                        true
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Right) => {
-                        cursor_move!(ta, CursorMove::WordForward, shift);
-                        true
-                    }
-                    // Document start / end
-                    (KeyModifiers::CONTROL, KeyCode::Home) => {
-                        cursor_move!(ta, CursorMove::Top, shift);
-                        true
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::End) => {
-                        cursor_move!(ta, CursorMove::Bottom, shift);
-                        true
-                    }
-                    // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
-                    (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
-                        ta.undo();
-                        true
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('y'))
-                    | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => {
-                        ta.redo();
-                        true
-                    }
-                    // Select all
-                    (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                        ta.move_cursor(CursorMove::Top);
-                        ta.start_selection();
-                        ta.move_cursor(CursorMove::Bottom);
-                        true
-                    }
-                    // Delete word before / after cursor
-                    (KeyModifiers::CONTROL, KeyCode::Backspace)
-                    | (KeyModifiers::ALT, KeyCode::Backspace) => {
-                        ta.delete_word();
-                        true
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Delete)
-                    | (KeyModifiers::ALT, KeyCode::Delete) => {
-                        ta.delete_next_word();
-                        true
-                    }
-                    _ => false,
-                };
-                if shortcut_handled {
-                    self.selection = ta.selection_range();
-                    self.edit_generation = self.edit_generation.wrapping_add(1);
-                    return EventState::Consumed;
-                }
-                ta.input_without_shortcuts(*key);
-                self.selection = ta.selection_range();
-                self.edit_generation = self.edit_generation.wrapping_add(1);
-                EventState::Consumed
+                self.handle_textarea_key(key, tx)
             }
-            InputEvent::Mouse(mouse) => {
-                // Mouse is only handled for the Textarea backend.
-                let BackendState::Textarea(_) = &self.backend else {
-                    return EventState::NotConsumed;
-                };
-                let r = &self.rect;
-                let in_bounds = mouse.column >= r.x
-                    && mouse.column < r.x + r.width
-                    && mouse.row >= r.y
-                    && mouse.row < r.y + r.height;
-                if !in_bounds {
-                    return EventState::NotConsumed;
-                }
-                // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
-                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
-                    tx.send(AppEvent::FocusEditor).ok();
-                    self.copy_selection_to_clipboard();
-                    self.selection = if let BackendState::Textarea(ta) = &self.backend {
-                        ta.selection_range()
-                    } else {
-                        None
-                    };
-                    self.edit_generation = self.edit_generation.wrapping_add(1);
-                    return EventState::Consumed;
-                }
-                // Now extract ta for remaining mouse operations.
-                let BackendState::Textarea(ta) = &mut self.backend else {
-                    unreachable!()
-                };
-                match mouse.kind {
-                    MouseEventKind::Down(_) => {
-                        tx.send(AppEvent::FocusEditor).ok();
-                        ta.cancel_selection();
-                        let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
-                        let vcol = (mouse.column - r.x) as usize;
-                        let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
-                        ta.move_cursor(CursorMove::Jump(lrow, lcol));
-                        ta.start_selection();
-                    }
-                    MouseEventKind::Drag(_) => {
-                        let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
-                        let vcol = (mouse.column - r.x) as usize;
-                        let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
-                        ta.move_cursor(CursorMove::Jump(lrow, lcol));
-                    }
-                    _ => {
-                        ta.input(*mouse);
-                    }
-                }
-                self.selection = ta.selection_range();
-                self.edit_generation = self.edit_generation.wrapping_add(1);
-                EventState::Consumed
-            }
+            InputEvent::Mouse(mouse) => self.handle_mouse(mouse, tx),
         }
     }
 

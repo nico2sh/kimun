@@ -79,6 +79,7 @@ impl Handler for NvimHandler {
 // BackendState
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::large_enum_variant)]
 pub enum BackendState {
     Textarea(TextArea<'static>),
     Nvim(NvimBackend),

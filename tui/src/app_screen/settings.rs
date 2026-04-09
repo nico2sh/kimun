@@ -203,7 +203,7 @@ impl SettingsScreen {
         } else {
             self.settings.save_to_disk().ok();
             let settings = self.settings.clone();
-            tx.send(AppEvent::SettingsSaved(settings)).ok();
+            tx.send(AppEvent::SettingsSaved(Box::new(settings))).ok();
         }
     }
 }
@@ -521,7 +521,7 @@ impl AppScreen for SettingsScreen {
                             self.pending_save_after_index = false;
                             self.settings.save_to_disk().ok();
                             let settings = self.settings.clone();
-                            tx.send(AppEvent::SettingsSaved(settings)).ok();
+                            tx.send(AppEvent::SettingsSaved(Box::new(settings))).ok();
                         } else {
                             self.overlay =
                                 Overlay::IndexingProgress(IndexingProgressState::Done(duration));

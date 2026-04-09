@@ -1,4 +1,7 @@
+pub mod autosave_timer;
+pub mod dialog_manager;
 pub mod dialogs;
+pub mod footer_bar;
 pub mod event_state;
 pub mod events;
 pub mod file_list;

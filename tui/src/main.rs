@@ -351,7 +351,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                     None
                 };
             }
-            app.settings = new_settings;
+            app.settings = *new_settings;
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
             // switch_screen(app, tx, Box::new(StartScreen::new(app.settings.clone()))).await;
         }
