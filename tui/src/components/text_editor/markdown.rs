@@ -24,7 +24,7 @@ fn tab_width_at(col: usize) -> usize {
 fn cluster_display_width(cluster: &str) -> usize {
     cluster.chars()
         .next()
-        .and_then(|ch| unicode_width::UnicodeWidthChar::width(ch))
+        .and_then(unicode_width::UnicodeWidthChar::width)
         .unwrap_or(1)
 }
 
@@ -114,10 +114,8 @@ impl ParsedLine {
                     let range_char_len = line[range.start..range.end].chars().count();
                     let sigil_each = range_char_len.saturating_sub(code_len) / 2;
                     let cs = sc + sigil_each;
-                    for i in cs..(cs + code_len) {
-                        if i < total {
-                            content_vis[i] = true;
-                        }
+                    for vis in content_vis.iter_mut().skip(cs).take(code_len) {
+                        *vis = true;
                     }
                     elements.push(Element {
                         start_char: sc,
@@ -153,10 +151,8 @@ impl ParsedLine {
                     }
                 }
                 Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
-                    for i in sc..ec {
-                        if i < total {
-                            content_vis[i] = true;
-                        }
+                    for vis in content_vis.iter_mut().skip(sc).take(ec.saturating_sub(sc)) {
+                        *vis = true;
                     }
                 }
                 _ => {}
@@ -173,7 +169,7 @@ impl ParsedLine {
             ) {
                 for i in (e.start_char..e.end_char).rev() {
                     match line.chars().nth(i) {
-                        Some(c) if matches!(c, ' ' | '\t') => content_vis[i] = true,
+                        Some(' ' | '\t') => content_vis[i] = true,
                         _ => break,
                     }
                 }
@@ -408,6 +404,7 @@ impl MarkdownSpanner {
 
     // ── `_with` variants: accept pre-parsed `&ParsedLine` ────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render_with<'a>(
         content: &'a str,
         logical_line: &'a str,
@@ -719,7 +716,7 @@ impl MarkdownSpanner {
 
 /// Appends `WikiLink` elements for every `[[...]]` span in `line` and unsets
 /// `content_vis` for the `[[` and `]]` bracket sigils.
-fn detect_wikilinks(line: &str, content_vis: &mut Vec<bool>, elements: &mut Vec<Element>) {
+fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Element>) {
     for span in kimun_core::note::wikilink_char_spans(line) {
         // Skip wikilinks that fall entirely inside an already-parsed element
         // (e.g. `[[icon]]` inside a markdown link's display text).

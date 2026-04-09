@@ -58,6 +58,15 @@ pub fn app_log_dir() -> PathBuf {
     }
 }
 
+/// Creates the directory (and any missing parents) at `path` if it does not
+/// already exist. Returns the canonicalized path on success.
+pub fn ensure_dir_exists(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    if !path.exists() {
+        std::fs::create_dir_all(path)?;
+    }
+    path.canonicalize()
+}
+
 // taken from https://github.com/YesSeri/diacritics/
 // with modifications
 pub fn remove_diacritics(string: &str) -> String {

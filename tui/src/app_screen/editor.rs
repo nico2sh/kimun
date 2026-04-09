@@ -5,16 +5,14 @@ use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
-use crate::components::dialogs::{
-    ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, HelpDialog, MoveDialog,
-    RenameDialog, ValidationState,
-};
+use crate::components::autosave_timer::AutosaveTimer;
+use crate::components::dialog_manager::DialogManager;
+use crate::components::footer_bar::FooterBar;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::note_browser::NoteBrowserModal;
@@ -47,14 +45,10 @@ pub struct EditorScreen {
     path: VaultPath,
     focus: Focus,
     sidebar_visible: bool,
-    settings_key: String,
-    quit_key: String,
-    toggle_key: String,
-    autosave_handle: Option<tokio::task::JoinHandle<()>>,
-    key_flash: Option<(String, std::time::Instant)>,
+    footer: FooterBar,
+    autosave: AutosaveTimer,
     note_browser: Option<NoteBrowserModal>,
-    active_dialog: Option<ActiveDialog>,
-    pre_dialog_focus: Option<Focus>,
+    dialogs: DialogManager,
 }
 
 impl EditorScreen {
@@ -69,9 +63,11 @@ impl EditorScreen {
                 .map(|c| c.to_string())
                 .unwrap_or_default()
         };
-        let quit_key = first_key(&ActionShortcuts::Quit);
-        let settings_key = first_key(&ActionShortcuts::OpenSettings);
-        let toggle_key = first_key(&ActionShortcuts::ToggleSidebar);
+        let footer = FooterBar::new(
+            first_key(&ActionShortcuts::OpenSettings),
+            first_key(&ActionShortcuts::Quit),
+            first_key(&ActionShortcuts::ToggleSidebar),
+        );
         let icons = settings.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &settings);
         let editor = TextEditorComponent::new(kb, &settings);
@@ -85,22 +81,10 @@ impl EditorScreen {
             path,
             focus: Focus::Editor,
             sidebar_visible: true,
-            settings_key,
-            quit_key,
-            toggle_key,
-            autosave_handle: None,
-            key_flash: None,
+            footer,
+            autosave: AutosaveTimer::new(),
             note_browser: None,
-            active_dialog: None,
-            pre_dialog_focus: None,
-        }
-    }
-}
-
-impl Drop for EditorScreen {
-    fn drop(&mut self) {
-        if let Some(handle) = self.autosave_handle.take() {
-            handle.abort();
+            dialogs: DialogManager::new(),
         }
     }
 }
@@ -110,7 +94,7 @@ impl EditorScreen {
         // External URL — hand off to the OS browser/handler.
         if target.starts_with("http://") || target.starts_with("https://") {
             if let Err(e) = open::that_detached(&target) {
-                self.key_flash = Some((format!("Cannot open URL: {e}"), std::time::Instant::now()));
+                self.footer.flash(format!("Cannot open URL: {e}"));
             }
             return;
         }
@@ -122,13 +106,8 @@ impl EditorScreen {
         let path = kimun_core::nfs::VaultPath::note_path_from(target_clean);
         match self.vault.open_or_search(&path).await {
             Ok(results) if results.is_empty() => {
-                if !matches!(self.focus, Focus::Dialog) {
-                    self.pre_dialog_focus = Some(self.focus);
-                }
-                self.active_dialog = Some(ActiveDialog::CreateNote(CreateNoteDialog::new(
-                    path,
-                    self.vault.clone(),
-                )));
+                self.dialogs
+                    .open_create_note(path, self.vault.clone(), self.focus_index());
                 self.focus = Focus::Dialog;
             }
             Ok(mut results) if results.len() == 1 => {
@@ -150,7 +129,7 @@ impl EditorScreen {
                 self.focus = Focus::NoteBrowser;
             }
             Err(e) => {
-                self.key_flash = Some((format!("Link error: {e}"), std::time::Instant::now()));
+                self.footer.flash(format!("Link error: {e}"));
             }
         }
     }
@@ -182,13 +161,11 @@ impl EditorScreen {
             }
             Err(e) => {
                 if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
-                    if !matches!(self.focus, Focus::Dialog) {
-                        self.pre_dialog_focus = Some(self.focus);
-                    }
-                    self.active_dialog = Some(ActiveDialog::CreateNote(CreateNoteDialog::new(
+                    self.dialogs.open_create_note(
                         self.path.clone(),
                         self.vault.clone(),
-                    )));
+                        self.focus_index(),
+                    );
                     self.focus = Focus::Dialog;
                 } else {
                     tracing::error!("Failed to read note {}: {e}", self.path);
@@ -211,21 +188,7 @@ impl EditorScreen {
         }
 
         // Abort any existing timer and spawn a fresh one for the new note.
-        if let Some(h) = self.autosave_handle.take() {
-            h.abort();
-        }
-        let interval_secs = self.settings.autosave_interval_secs;
-        let tx2 = tx.clone();
-        self.autosave_handle = Some(tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
-            interval.tick().await; // skip immediate first tick
-            loop {
-                interval.tick().await;
-                if tx2.send(AppEvent::Autosave).is_err() {
-                    break;
-                }
-            }
-        }));
+        self.autosave.restart(self.settings.autosave_interval_secs, tx.clone());
     }
 
     pub async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
@@ -255,17 +218,36 @@ impl EditorScreen {
         }
     }
 
+    fn focus_index(&self) -> u8 {
+        match self.focus {
+            Focus::Sidebar => 0,
+            Focus::Editor => 1,
+            Focus::NoteBrowser => 2,
+            Focus::Dialog => 3,
+        }
+    }
+
+    fn focus_from_index(idx: u8) -> Focus {
+        match idx {
+            0 => Focus::Sidebar,
+            2 => Focus::NoteBrowser,
+            3 => Focus::Dialog,
+            _ => Focus::Editor,
+        }
+    }
+
     fn restore_focus(&mut self) {
-        self.active_dialog = None;
-        self.focus = self.pre_dialog_focus.take().unwrap_or(Focus::Editor);
+        self.focus = self
+            .dialogs
+            .close()
+            .map(Self::focus_from_index)
+            .unwrap_or(Focus::Editor);
     }
 
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
         self.restore_focus();
         if from == self.path {
-            if let Some(h) = self.autosave_handle.take() {
-                h.abort();
-            }
+            self.autosave.stop();
             self.try_save().await;
             let parent = self.path.get_parent_path().0;
             tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
@@ -333,7 +315,7 @@ impl AppScreen for EditorScreen {
                     && combo.key <= KeyStrike::KeyZ)
             {
                 // We display for two seconds the key combination pressed in the footer
-                self.key_flash = Some((combo.to_string(), std::time::Instant::now()));
+                self.footer.flash(combo.to_string());
                 let tx2 = tx.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -408,12 +390,10 @@ impl AppScreen for EditorScreen {
                         // F1 opens the help modal (only when no other dialog is active).
                         if combo.key == KeyStrike::F1
                             && combo.modifiers.is_empty()
-                            && self.active_dialog.is_none()
+                            && !self.dialogs.is_open()
                         {
-                            self.pre_dialog_focus = Some(self.focus);
-                            self.active_dialog = Some(ActiveDialog::Help(HelpDialog::new(
-                                &self.settings.key_bindings,
-                            )));
+                            self.dialogs
+                                .open_help(&self.settings.key_bindings, self.focus_index());
                             self.focus = Focus::Dialog;
                         }
                         // All F-keys (including F1 when a dialog is already open) are consumed
@@ -453,13 +433,7 @@ impl AppScreen for EditorScreen {
                     EventState::NotConsumed
                 }
             }
-            Focus::Dialog => {
-                if let Some(dialog) = &mut self.active_dialog {
-                    dialog.handle_input(event, tx)
-                } else {
-                    EventState::NotConsumed
-                }
-            }
+            Focus::Dialog => self.dialogs.handle_input(event, tx),
         }
     }
 
@@ -530,35 +504,12 @@ impl AppScreen for EditorScreen {
         f.render_widget(editor_block, editor_area);
         self.editor.render(f, editor_inner, theme, editor_focused);
 
-        // Expire stale key flash
-        if let Some((_, instant)) = &self.key_flash
-            && instant.elapsed() >= std::time::Duration::from_secs(2)
-        {
-            self.key_flash = None;
-        }
-
         let focus_label = match self.focus {
             Focus::Editor => "EDITOR",
             Focus::Sidebar => "SIDEBAR",
             Focus::NoteBrowser => "NOTE BROWSER",
             Focus::Dialog => "DIALOG",
         };
-        let mut footer = Block::default()
-            .title(format!(
-                "[{focus_label}]  {}: Preferences |  {}: Toggle sidebar | {}: Quit",
-                self.settings_key, self.toggle_key, self.quit_key,
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.to_ratatui()))
-            .style(theme.base_style())
-            .title_style(Style::default().fg(theme.fg_secondary.to_ratatui()));
-        if let Some((flash, _)) = &self.key_flash {
-            footer = footer.title_top(Line::from(format!(" {} ", flash)).right_aligned());
-        }
-        let footer_inner = footer.inner(rows[2]);
-        f.render_widget(footer, rows[2]);
-
-        // Hints inside the footer's inner area.
         let hints = match self.focus {
             Focus::Editor => self.editor.hint_shortcuts(),
             Focus::Sidebar => self.sidebar.hint_shortcuts(),
@@ -569,28 +520,8 @@ impl AppScreen for EditorScreen {
                 .unwrap_or_default(),
             Focus::Dialog => vec![],
         };
-        // Build the hints line with the nvim mode label (empty key) styled
-        // distinctly from the regular shortcut hints.
-        let secondary = Style::default().fg(theme.fg_secondary.to_ratatui());
-        let sep = Span::styled("  │  ", secondary);
-        let mut spans = vec![Span::styled(format!(" {} ", self.icons.info), secondary)];
-        for (i, (key, label)) in hints.iter().enumerate() {
-            if i > 0 {
-                spans.push(sep.clone());
-            }
-            if key.is_empty() {
-                // Mode / command-line label from the nvim backend — make it pop.
-                spans.push(Span::styled(
-                    format!(" {label} "),
-                    Style::default()
-                        .fg(theme.accent.to_ratatui())
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                spans.push(Span::styled(format!("{key}: {label}"), secondary));
-            }
-        }
-        f.render_widget(Paragraph::new(Line::from(spans)), footer_inner);
+        self.footer
+            .render(f, rows[2], theme, focus_label, &hints, &self.icons);
 
         // Modal overlay — rendered last so it appears on top of everything.
         if let Some(modal) = &mut self.note_browser {
@@ -598,20 +529,40 @@ impl AppScreen for EditorScreen {
         }
 
         // Dialog overlay — rendered after the note browser so it appears on top.
-        if let Some(dialog) = &mut self.active_dialog {
-            dialog.render(f, f.area(), &self.theme, true);
-        }
+        self.dialogs.render(f, f.area(), &self.theme);
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
+        // Let the dialog manager handle dialog-related events first.
+        if self
+            .dialogs
+            .handle_app_message(&msg, &self.vault, tx, self.focus_index())
+        {
+            // CloseDialog was handled inside the manager; restore our focus.
+            if matches!(msg, AppEvent::CloseDialog) {
+                self.restore_focus();
+            }
+            // Show* events switch focus to the dialog.
+            if matches!(
+                msg,
+                AppEvent::ShowFileOpsMenu(_)
+                    | AppEvent::ShowDeleteDialog(_)
+                    | AppEvent::ShowRenameDialog(_)
+                    | AppEvent::ShowMoveDialog(_)
+            ) {
+                self.focus = Focus::Dialog;
+            }
+            return None;
+        }
+
         match msg {
             AppEvent::Autosave => {
                 self.try_save().await;
                 None
             }
             AppEvent::OpenPath(path) => {
-                if self.active_dialog.is_some() {
-                    self.restore_focus(); // dismiss any active dialog (e.g. CreateNote) before loading
+                if self.dialogs.is_open() {
+                    self.restore_focus();
                 }
                 if path.is_note() {
                     self.open_path(path, tx).await;
@@ -633,8 +584,6 @@ impl AppScreen for EditorScreen {
                 if let Ok((details, _)) = self.vault.journal_entry().await {
                     let path = details.path;
                     self.open_path(path.clone(), tx).await;
-                    // The journal note may have just been created; refresh the
-                    // sidebar so today's entry appears if it wasn't there yet.
                     let note_parent = path.get_parent_path().0;
                     if note_parent.is_like(self.sidebar.current_dir()) {
                         let dir = self.sidebar.current_dir().clone();
@@ -654,89 +603,10 @@ impl AppScreen for EditorScreen {
                 self.follow_link(target, tx).await;
                 None
             }
-            AppEvent::ShowFileOpsMenu(path) => {
-                self.pre_dialog_focus = Some(self.focus);
-                self.active_dialog = Some(ActiveDialog::Menu(FileOpsMenuDialog::new(path)));
-                self.focus = Focus::Dialog;
-                None
-            }
-            AppEvent::ShowDeleteDialog(path) => {
-                self.active_dialog = Some(ActiveDialog::Delete(DeleteConfirmDialog::new(
-                    path,
-                    self.vault.clone(),
-                )));
-                self.focus = Focus::Dialog;
-                None
-            }
-            AppEvent::ShowRenameDialog(path) => {
-                self.active_dialog = Some(ActiveDialog::Rename(RenameDialog::new(
-                    path,
-                    self.vault.clone(),
-                )));
-                self.focus = Focus::Dialog;
-                None
-            }
-            AppEvent::ShowMoveDialog(path) => {
-                self.active_dialog = Some(ActiveDialog::Move(MoveDialog::new(
-                    path,
-                    self.vault.clone(),
-                    tx,
-                )));
-                self.focus = Focus::Dialog;
-                None
-            }
-            AppEvent::RenameValidation { available } => {
-                if let Some(ActiveDialog::Rename(d)) = &mut self.active_dialog {
-                    d.validation_state = if available {
-                        ValidationState::Available
-                    } else {
-                        ValidationState::Taken
-                    };
-                    d.validation_task = None;
-                }
-                None
-            }
-            AppEvent::MoveDirectoriesLoaded(paths) => {
-                if let Some(ActiveDialog::Move(d)) = &mut self.active_dialog {
-                    d.all_dirs = paths;
-                    d.filtered = None;
-                    d.load_task = None;
-                    if d.list_state.selected().is_none() && !d.results().is_empty() {
-                        d.list_state.select(Some(0));
-                    }
-                    d.spawn_validation(tx);
-                }
-                None
-            }
-            AppEvent::MoveFilterResults(paths) => {
-                if let Some(ActiveDialog::Move(d)) = &mut self.active_dialog {
-                    d.filter_task = None;
-                    d.filtered = Some(paths);
-                    if !d.results().is_empty() {
-                        d.list_state.select(Some(0));
-                    } else {
-                        d.list_state.select(None);
-                    }
-                    d.spawn_validation(tx);
-                }
-                None
-            }
-            AppEvent::MoveDestValidation { available } => {
-                if let Some(ActiveDialog::Move(d)) = &mut self.active_dialog {
-                    d.dest_validation = if available {
-                        ValidationState::Available
-                    } else {
-                        ValidationState::Taken
-                    };
-                    d.validation_task = None;
-                }
-                None
-            }
             AppEvent::EntryCreated(path) => {
                 self.restore_focus();
                 self.open_path(path.clone(), tx).await;
                 self.focus_editor();
-                // Refresh the sidebar so the new note appears in the list.
                 let note_parent = path.get_parent_path().0;
                 if note_parent.is_like(self.sidebar.current_dir()) {
                     let dir = self.sidebar.current_dir().clone();
@@ -756,16 +626,6 @@ impl AppScreen for EditorScreen {
                 self.on_entry_op(from, tx).await;
                 None
             }
-            AppEvent::DialogError(msg) => {
-                if let Some(dialog) = &mut self.active_dialog {
-                    dialog.set_error(msg);
-                }
-                None
-            }
-            AppEvent::CloseDialog => {
-                self.restore_focus();
-                None
-            }
             other => Some(other),
         }
     }
@@ -780,11 +640,9 @@ mod tests {
     use super::*;
 
     /// Compile-time test: verifies that `Focus::Dialog` variant exists and that
-    /// `ActiveDialog` is importable in this module.  No runtime setup needed.
+    /// `DialogManager` is importable in this module.  No runtime setup needed.
     #[test]
-    fn focus_dialog_variant_and_active_dialog_compile() {
-        // If `Focus::Dialog` or `ActiveDialog` variants are missing this will
-        // fail to compile, catching regressions at test time.
+    fn focus_dialog_variant_and_dialog_manager_compile() {
         let focus = Focus::Dialog;
         let label = match focus {
             Focus::Editor => "EDITOR",
@@ -794,7 +652,7 @@ mod tests {
         };
         assert_eq!(label, "DIALOG");
 
-        // Verify ActiveDialog variants are accessible.
-        fn _accepts_active_dialog(_d: Option<ActiveDialog>) {}
+        // Verify DialogManager is accessible.
+        fn _accepts_dialog_manager(_d: DialogManager) {}
     }
 }

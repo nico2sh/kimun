@@ -22,7 +22,7 @@ pub enum AppEvent {
     FocusEditor,
     FocusSidebar,
     /// Sent by SettingsScreen when user confirms Save.
-    SettingsSaved(AppSettings),
+    SettingsSaved(Box<AppSettings>),
     /// Sent by SettingsScreen when user discards or closes unchanged.
     CloseSettings,
     /// Sent by VaultSection; SettingsScreen::handle_app_message intercepts.

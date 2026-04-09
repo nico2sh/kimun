@@ -380,8 +380,10 @@ impl AppSettings {
             fs::create_dir_all(parent)?;
         }
         if !path.exists() {
-            let mut default_settings = Self::default();
-            default_settings.config_file = Some(path);
+            let default_settings = Self {
+                config_file: Some(path),
+                ..Self::default()
+            };
             default_settings.save_to_disk()?;
             return Ok(default_settings);
         }
@@ -437,8 +439,10 @@ impl AppSettings {
                 );
                 let corrupt_path = path.with_extension("toml.corrupt");
                 let _ = fs::rename(&path, &corrupt_path);
-                let mut defaults = Self::default();
-                defaults.config_file = Some(path);
+                let defaults = Self {
+                    config_file: Some(path),
+                    ..Self::default()
+                };
                 defaults.save_to_disk()?;
                 Ok(defaults)
             }

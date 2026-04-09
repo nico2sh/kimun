@@ -45,7 +45,7 @@ impl FileFinderProvider {
         }
     }
 
-    fn into_entry(&self, entry: &NoteEntryData, content: &NoteContentData) -> FileListEntry {
+    fn to_entry(&self, entry: &NoteEntryData, content: &NoteContentData) -> FileListEntry {
         let filename = entry.path.get_parent_path().1;
         let title = if content.title.trim().is_empty() {
             "<no title>".to_string()
@@ -78,7 +78,7 @@ impl NoteBrowserProvider for FileFinderProvider {
             sorted.sort_by(|(a, _), (b, _)| b.modified_secs.cmp(&a.modified_secs));
             return sorted
                 .iter()
-                .map(|(entry, content)| self.into_entry(entry, content))
+                .map(|(entry, content)| self.to_entry(entry, content))
                 .collect();
         }
 
@@ -104,7 +104,7 @@ impl NoteBrowserProvider for FileFinderProvider {
 
         let mut result: Vec<FileListEntry> = matched
             .into_iter()
-            .map(|(e, _score)| self.into_entry(&notes[e.idx].0, &notes[e.idx].1))
+            .map(|(e, _score)| self.to_entry(&notes[e.idx].0, &notes[e.idx].1))
             .collect();
 
         // Prepend CreateNote entry so the user can create a note with this query as the path.
