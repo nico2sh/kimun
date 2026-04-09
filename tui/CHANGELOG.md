@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.5.0...kimun-notes-v0.6.0) - 2026-04-09
+
+### Added
+
+- *(editor)* open HelpDialog on F1; consume all unbound F-keys
+- *(dialogs)* add HelpDialog and ActiveDialog::Help variant
+- *(keys)* add ShortcutCategory, category(), and label() to ActionShortcuts
+- *(tui)* replace simplelog with tracing; add init_logging and always-on log file
+- *(tui)* render vault conflict error as a styled close-only dialog
+- *(tui)* handle VaultConflict — clear vault path and show settings with error
+- *(tui)* emit VaultConflict on CaseConflict instead of IndexingDone
+- *(tui)* wire ScreenEvent::OpenSettingsWithError in switch_screen
+- *(tui)* add VaultConflict event and SettingsScreen::new_with_error
+- *(tui)* add AppSettings::clear_workspace for vault conflict handling
+
+### Fixed
+
+- improve shortcut consistency
+- *(editor)* wire SearchNotes to open the note browser
+- *(logging)* remove stderr log layer that corrupted the TUI display
+- *(dialogs)* mention PgUp/PgDn in help modal footer hint
+- address code review findings
+- *(core,tui)* detect case conflicts in recreate_index and all settings reindex paths
+
+### Other
+
+- *(tui)* migrate log:: calls to tracing::
+- *(tui)* swap simplelog for tracing ecosystem
+- *(tui)* clarify VaultConflict and new_with_error doc comments
+- improve clear_workspace() test coverage
+- small cleanup removing hardcoded .md reference in the tui
+
 ## [0.5.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.4.0...kimun-notes-v0.5.0) - 2026-04-05
 
 ### Added
