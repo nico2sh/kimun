@@ -113,13 +113,12 @@ zola serve docs/
 ## Roadmap
 
 - [ ] Command palette
-- [ ] Display key shortcuts in command palette and help modal
 - [ ] Backlinks panel
 - [ ] Inline tags and search by tag (`#important`)
 - [ ] Resolve relative paths on links and images
 - [ ] Paste images into notes
-- [ ] Calendar view for journal browsing
 - [ ] Auto-continue list formatting on Enter
+- [ ] Quick add note
 - [X] Multiple workspaces
 - [X] Search under Markdown sections
 - [X] File management (create, rename, move, delete notes and directories)
