@@ -15,10 +15,10 @@ pub enum ShortcutCategory {
 impl Display for ShortcutCategory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ShortcutCategory::Navigation  => write!(f, "Navigation"),
-            ShortcutCategory::Notes       => write!(f, "Notes"),
+            ShortcutCategory::Navigation => write!(f, "Navigation"),
+            ShortcutCategory::Notes => write!(f, "Notes"),
             ShortcutCategory::TextEditing => write!(f, "Text Editing"),
-            ShortcutCategory::Other       => write!(f, "Other"),
+            ShortcutCategory::Other => write!(f, "Other"),
         }
     }
 }
@@ -28,7 +28,6 @@ impl Display for ShortcutCategory {
 pub enum ActionShortcuts {
     Quit,
     OpenSettings,
-    ToggleNoteBrowser,
     SearchNotes,
     OpenNote,
     NewJournal,
@@ -57,7 +56,6 @@ impl ActionShortcuts {
 
             ActionShortcuts::SearchNotes
             | ActionShortcuts::OpenNote
-            | ActionShortcuts::ToggleNoteBrowser
             | ActionShortcuts::NewJournal
             | ActionShortcuts::FileOperations
             | ActionShortcuts::FollowLink => ShortcutCategory::Notes,
@@ -72,28 +70,27 @@ impl ActionShortcuts {
 
     pub fn label(&self) -> String {
         match self {
-            ActionShortcuts::Quit              => "Quit".into(),
-            ActionShortcuts::OpenSettings      => "Settings".into(),
-            ActionShortcuts::ToggleNoteBrowser => "Toggle note browser".into(),
-            ActionShortcuts::SearchNotes       => "Search notes".into(),
-            ActionShortcuts::OpenNote          => "Open note".into(),
-            ActionShortcuts::NewJournal        => "New journal entry".into(),
-            ActionShortcuts::TogglePreview     => "Toggle preview".into(),
-            ActionShortcuts::ToggleSidebar     => "Toggle sidebar".into(),
-            ActionShortcuts::FocusEditor       => "Focus editor".into(),
-            ActionShortcuts::FocusSidebar      => "Focus sidebar".into(),
-            ActionShortcuts::CycleSortField    => "Cycle sort field".into(),
-            ActionShortcuts::SortReverseOrder  => "Reverse sort order".into(),
-            ActionShortcuts::FileOperations    => "File operations".into(),
-            ActionShortcuts::FollowLink        => "Follow link".into(),
+            ActionShortcuts::Quit => "Quit".into(),
+            ActionShortcuts::OpenSettings => "Settings".into(),
+            ActionShortcuts::SearchNotes => "Search notes".into(),
+            ActionShortcuts::OpenNote => "Open note".into(),
+            ActionShortcuts::NewJournal => "New journal entry".into(),
+            ActionShortcuts::TogglePreview => "Toggle preview".into(),
+            ActionShortcuts::ToggleSidebar => "Toggle sidebar".into(),
+            ActionShortcuts::FocusEditor => "Focus editor".into(),
+            ActionShortcuts::FocusSidebar => "Focus sidebar".into(),
+            ActionShortcuts::CycleSortField => "Cycle sort field".into(),
+            ActionShortcuts::SortReverseOrder => "Reverse sort order".into(),
+            ActionShortcuts::FileOperations => "File operations".into(),
+            ActionShortcuts::FollowLink => "Follow link".into(),
             ActionShortcuts::Text(ta) => match ta {
-                TextAction::Bold          => "Bold".into(),
-                TextAction::Italic        => "Italic".into(),
-                TextAction::Link          => "Insert link".into(),
-                TextAction::Image         => "Insert image".into(),
-                TextAction::ToggleHeader  => "Toggle header".into(),
-                TextAction::Header(n)     => format!("Header {n}"),
-                TextAction::Underline     => "Underline".into(),
+                TextAction::Bold => "Bold".into(),
+                TextAction::Italic => "Italic".into(),
+                TextAction::Link => "Insert link".into(),
+                TextAction::Image => "Insert image".into(),
+                TextAction::ToggleHeader => "Toggle header".into(),
+                TextAction::Header(n) => format!("Header {n}"),
+                TextAction::Underline => "Underline".into(),
                 TextAction::Strikethrough => "Strikethrough".into(),
             },
         }
@@ -105,7 +102,6 @@ impl Display for ActionShortcuts {
         let action = match self {
             ActionShortcuts::Quit => "Quit".to_string(),
             ActionShortcuts::OpenSettings => "OpenSettings".to_string(),
-            ActionShortcuts::ToggleNoteBrowser => "ToggleNoteBrowser".to_string(),
             ActionShortcuts::SearchNotes => "SearchNotes".to_string(),
             ActionShortcuts::OpenNote => "OpenNote".to_string(),
             ActionShortcuts::NewJournal => "NewJournal".to_string(),
@@ -130,7 +126,6 @@ impl TryFrom<String> for ActionShortcuts {
         let action = match value.as_str() {
             "Quit" => ActionShortcuts::Quit,
             "OpenSettings" => ActionShortcuts::OpenSettings,
-            "ToggleNoteBrowser" => ActionShortcuts::ToggleNoteBrowser,
             "SearchNotes" => ActionShortcuts::SearchNotes,
             "OpenNote" => ActionShortcuts::OpenNote,
             "NewJournal" => ActionShortcuts::NewJournal,
@@ -184,57 +179,124 @@ mod tests {
 
     #[test]
     fn action_shortcuts_categories() {
-        assert_eq!(ActionShortcuts::ToggleSidebar.category(),    ShortcutCategory::Navigation);
-        assert_eq!(ActionShortcuts::FocusSidebar.category(),     ShortcutCategory::Navigation);
-        assert_eq!(ActionShortcuts::FocusEditor.category(),      ShortcutCategory::Navigation);
-        assert_eq!(ActionShortcuts::CycleSortField.category(),   ShortcutCategory::Navigation);
-        assert_eq!(ActionShortcuts::SortReverseOrder.category(), ShortcutCategory::Navigation);
+        assert_eq!(
+            ActionShortcuts::ToggleSidebar.category(),
+            ShortcutCategory::Navigation
+        );
+        assert_eq!(
+            ActionShortcuts::FocusSidebar.category(),
+            ShortcutCategory::Navigation
+        );
+        assert_eq!(
+            ActionShortcuts::FocusEditor.category(),
+            ShortcutCategory::Navigation
+        );
+        assert_eq!(
+            ActionShortcuts::CycleSortField.category(),
+            ShortcutCategory::Navigation
+        );
+        assert_eq!(
+            ActionShortcuts::SortReverseOrder.category(),
+            ShortcutCategory::Navigation
+        );
 
-        assert_eq!(ActionShortcuts::SearchNotes.category(),       ShortcutCategory::Notes);
-        assert_eq!(ActionShortcuts::OpenNote.category(),          ShortcutCategory::Notes);
-        assert_eq!(ActionShortcuts::ToggleNoteBrowser.category(), ShortcutCategory::Notes);
-        assert_eq!(ActionShortcuts::NewJournal.category(),        ShortcutCategory::Notes);
-        assert_eq!(ActionShortcuts::FileOperations.category(),    ShortcutCategory::Notes);
-        assert_eq!(ActionShortcuts::FollowLink.category(),        ShortcutCategory::Notes);
+        assert_eq!(
+            ActionShortcuts::SearchNotes.category(),
+            ShortcutCategory::Notes
+        );
+        assert_eq!(
+            ActionShortcuts::OpenNote.category(),
+            ShortcutCategory::Notes
+        );
+        assert_eq!(
+            ActionShortcuts::NewJournal.category(),
+            ShortcutCategory::Notes
+        );
+        assert_eq!(
+            ActionShortcuts::FileOperations.category(),
+            ShortcutCategory::Notes
+        );
+        assert_eq!(
+            ActionShortcuts::FollowLink.category(),
+            ShortcutCategory::Notes
+        );
 
-        assert_eq!(ActionShortcuts::Text(TextAction::Bold).category(),      ShortcutCategory::TextEditing);
-        assert_eq!(ActionShortcuts::Text(TextAction::Header(2)).category(), ShortcutCategory::TextEditing);
+        assert_eq!(
+            ActionShortcuts::Text(TextAction::Bold).category(),
+            ShortcutCategory::TextEditing
+        );
+        assert_eq!(
+            ActionShortcuts::Text(TextAction::Header(2)).category(),
+            ShortcutCategory::TextEditing
+        );
 
-        assert_eq!(ActionShortcuts::Quit.category(),          ShortcutCategory::Other);
-        assert_eq!(ActionShortcuts::OpenSettings.category(),  ShortcutCategory::Other);
-        assert_eq!(ActionShortcuts::TogglePreview.category(), ShortcutCategory::Other);
+        assert_eq!(ActionShortcuts::Quit.category(), ShortcutCategory::Other);
+        assert_eq!(
+            ActionShortcuts::OpenSettings.category(),
+            ShortcutCategory::Other
+        );
+        assert_eq!(
+            ActionShortcuts::TogglePreview.category(),
+            ShortcutCategory::Other
+        );
     }
 
     #[test]
     fn action_shortcuts_labels() {
-        assert_eq!(ActionShortcuts::Quit.label(),               "Quit");
-        assert_eq!(ActionShortcuts::OpenSettings.label(),       "Settings");
-        assert_eq!(ActionShortcuts::ToggleNoteBrowser.label(),  "Toggle note browser");
-        assert_eq!(ActionShortcuts::SearchNotes.label(),        "Search notes");
-        assert_eq!(ActionShortcuts::OpenNote.label(),           "Open note");
-        assert_eq!(ActionShortcuts::NewJournal.label(),         "New journal entry");
-        assert_eq!(ActionShortcuts::TogglePreview.label(),      "Toggle preview");
-        assert_eq!(ActionShortcuts::ToggleSidebar.label(),      "Toggle sidebar");
-        assert_eq!(ActionShortcuts::FocusEditor.label(),        "Focus editor");
-        assert_eq!(ActionShortcuts::FocusSidebar.label(),       "Focus sidebar");
-        assert_eq!(ActionShortcuts::CycleSortField.label(),     "Cycle sort field");
-        assert_eq!(ActionShortcuts::SortReverseOrder.label(),   "Reverse sort order");
-        assert_eq!(ActionShortcuts::FileOperations.label(),     "File operations");
-        assert_eq!(ActionShortcuts::FollowLink.label(),         "Follow link");
-        assert_eq!(ActionShortcuts::Text(TextAction::Bold).label(),          "Bold");
-        assert_eq!(ActionShortcuts::Text(TextAction::Italic).label(),        "Italic");
-        assert_eq!(ActionShortcuts::Text(TextAction::Link).label(),          "Insert link");
-        assert_eq!(ActionShortcuts::Text(TextAction::Image).label(),         "Insert image");
-        assert_eq!(ActionShortcuts::Text(TextAction::ToggleHeader).label(),  "Toggle header");
-        assert_eq!(ActionShortcuts::Text(TextAction::Header(1)).label(),     "Header 1");
-        assert_eq!(ActionShortcuts::Text(TextAction::Header(2)).label(),     "Header 2");
-        assert_eq!(ActionShortcuts::Text(TextAction::Underline).label(),     "Underline");
-        assert_eq!(ActionShortcuts::Text(TextAction::Strikethrough).label(), "Strikethrough");
+        assert_eq!(ActionShortcuts::Quit.label(), "Quit");
+        assert_eq!(ActionShortcuts::OpenSettings.label(), "Settings");
+        assert_eq!(ActionShortcuts::SearchNotes.label(), "Search notes");
+        assert_eq!(ActionShortcuts::OpenNote.label(), "Open note");
+        assert_eq!(ActionShortcuts::NewJournal.label(), "New journal entry");
+        assert_eq!(ActionShortcuts::TogglePreview.label(), "Toggle preview");
+        assert_eq!(ActionShortcuts::ToggleSidebar.label(), "Toggle sidebar");
+        assert_eq!(ActionShortcuts::FocusEditor.label(), "Focus editor");
+        assert_eq!(ActionShortcuts::FocusSidebar.label(), "Focus sidebar");
+        assert_eq!(ActionShortcuts::CycleSortField.label(), "Cycle sort field");
+        assert_eq!(
+            ActionShortcuts::SortReverseOrder.label(),
+            "Reverse sort order"
+        );
+        assert_eq!(ActionShortcuts::FileOperations.label(), "File operations");
+        assert_eq!(ActionShortcuts::FollowLink.label(), "Follow link");
+        assert_eq!(ActionShortcuts::Text(TextAction::Bold).label(), "Bold");
+        assert_eq!(ActionShortcuts::Text(TextAction::Italic).label(), "Italic");
+        assert_eq!(
+            ActionShortcuts::Text(TextAction::Link).label(),
+            "Insert link"
+        );
+        assert_eq!(
+            ActionShortcuts::Text(TextAction::Image).label(),
+            "Insert image"
+        );
+        assert_eq!(
+            ActionShortcuts::Text(TextAction::ToggleHeader).label(),
+            "Toggle header"
+        );
+        assert_eq!(
+            ActionShortcuts::Text(TextAction::Header(1)).label(),
+            "Header 1"
+        );
+        assert_eq!(
+            ActionShortcuts::Text(TextAction::Header(2)).label(),
+            "Header 2"
+        );
+        assert_eq!(
+            ActionShortcuts::Text(TextAction::Underline).label(),
+            "Underline"
+        );
+        assert_eq!(
+            ActionShortcuts::Text(TextAction::Strikethrough).label(),
+            "Strikethrough"
+        );
     }
 
     #[test]
     fn file_operations_roundtrip() {
-        assert_eq!(ActionShortcuts::FileOperations.to_string(), "FileOperations");
+        assert_eq!(
+            ActionShortcuts::FileOperations.to_string(),
+            "FileOperations"
+        );
         assert_eq!(
             ActionShortcuts::try_from("FileOperations".to_string()),
             Ok(ActionShortcuts::FileOperations)
