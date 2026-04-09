@@ -347,7 +347,8 @@ impl AppScreen for EditorScreen {
                         tx.send(AppEvent::OpenJournal).ok();
                         return EventState::Consumed;
                     }
-                    Some(ActionShortcuts::ToggleNoteBrowser) => {
+                    Some(ActionShortcuts::SearchNotes)
+                    | Some(ActionShortcuts::ToggleNoteBrowser) => {
                         if self.note_browser.is_some() {
                             self.note_browser = None;
                             if matches!(self.focus, Focus::NoteBrowser) {
