@@ -346,7 +346,14 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                     kimun_core::NoteVault::new(workspace)
                         .await
                         .ok()
-                        .map(std::sync::Arc::new)
+                        .map(|mut v| {
+                            if let Some(ref wc) = new_settings.workspace_config
+                                && let Some(entry) = wc.get_current_workspace()
+                            {
+                                v.set_inbox_path(kimun_core::nfs::VaultPath::new(entry.effective_inbox_path()));
+                            }
+                            std::sync::Arc::new(v)
+                        })
                 } else {
                     None
                 };

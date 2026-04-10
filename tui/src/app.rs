@@ -36,7 +36,14 @@ impl App {
                 .map(|entry| entry.path.clone())
         });
         let vault = if let Some(ref workspace) = workspace_path {
-            NoteVault::new(workspace).await.ok().map(Arc::new)
+            NoteVault::new(workspace).await.ok().map(|mut v| {
+                if let Some(ref wc) = settings.workspace_config
+                    && let Some(entry) = wc.get_current_workspace()
+                {
+                    v.set_inbox_path(kimun_core::nfs::VaultPath::new(entry.effective_inbox_path()));
+                }
+                Arc::new(v)
+            })
         } else {
             None
         };
