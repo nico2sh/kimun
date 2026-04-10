@@ -70,6 +70,10 @@ All settings are stored in your config file (see [Configuration Reference](@/get
 - **`Ctrl+N`** — Cycle sort field (filename → title → filename → …)
 - **`Ctrl+R`** — Reverse the sort order
 
+### Quick Note
+
+Press `Ctrl+W` to open the quick note dialog. Type a thought and press Enter to save it — the note is created in your inbox directory with a timestamp filename, and you stay on the current note without interruption. Use Shift+Enter to save and immediately open the new note instead.
+
 ### Following Links
 
 When the cursor is inside a link in the editor, **`Ctrl+G`** follows it:
