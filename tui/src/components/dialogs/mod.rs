@@ -4,6 +4,7 @@ pub use move_dialog::MoveDialog;
 pub use file_ops_menu::FileOpsMenuDialog;
 pub use create_note_dialog::CreateNoteDialog;
 pub use help_dialog::HelpDialog;
+pub use quick_note_modal::QuickNoteModal;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -38,6 +39,7 @@ pub mod move_dialog;
 pub mod file_ops_menu;
 pub mod create_note_dialog;
 pub mod help_dialog;
+pub mod quick_note_modal;
 
 pub enum ActiveDialog {
     Menu(FileOpsMenuDialog),
@@ -46,6 +48,7 @@ pub enum ActiveDialog {
     Move(MoveDialog),
     CreateNote(CreateNoteDialog),
     Help(HelpDialog),
+    QuickNote(QuickNoteModal),
 }
 
 impl ActiveDialog {
@@ -57,6 +60,7 @@ impl ActiveDialog {
             ActiveDialog::Move(d)      => d.error = Some(msg),
             ActiveDialog::CreateNote(d)  => d.error = Some(msg),
             ActiveDialog::Help(_)      => {}
+            ActiveDialog::QuickNote(d) => d.error = Some(msg),
         }
     }
 }
@@ -73,6 +77,7 @@ impl Component for ActiveDialog {
             ActiveDialog::Move(d)      => d.handle_key(*key, tx),
             ActiveDialog::CreateNote(d)  => d.handle_key(*key, tx),
             ActiveDialog::Help(d)      => d.handle_key(*key, tx),
+            ActiveDialog::QuickNote(d) => d.handle_key(*key, tx),
         }
     }
 
@@ -84,6 +89,7 @@ impl Component for ActiveDialog {
             ActiveDialog::Move(d)      => d.render(f, rect, theme, focused),
             ActiveDialog::CreateNote(d)  => d.render(f, rect, theme, focused),
             ActiveDialog::Help(d)      => d.render(f, rect, theme, focused),
+            ActiveDialog::QuickNote(d) => d.render(f, rect, theme),
         }
     }
 }
