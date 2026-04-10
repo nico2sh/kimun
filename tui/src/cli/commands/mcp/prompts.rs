@@ -721,8 +721,8 @@ impl KimunHandler {
             .into_iter()
             .filter(|(entry, _)| {
                 let (parent, _) = entry.path.get_parent_path();
-                parent.to_string().starts_with(&inbox.to_string())
-                    || parent.is_like(&inbox)
+                parent.is_like(&inbox)
+                    || parent.to_string().starts_with(&inbox.to_string())
             })
             .take(max_notes)
             .collect();

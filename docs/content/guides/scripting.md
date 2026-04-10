@@ -131,6 +131,26 @@ kimun notes --format json | jq '[.notes[].size] | add / length'
 kimun notes --format json | jq '.notes[] | select(.created > (now | floor - 86400))'
 ```
 
+## Quick note automation
+
+`kimun note quick` captures thoughts into timestamped inbox notes. It pairs well with aliases and scripts:
+
+```sh
+# Shortest possible capture alias
+alias q='kimun note quick'
+
+# Log a command's output as a quick note
+some-command 2>&1 | kimun note quick
+
+# Capture clipboard contents (macOS)
+pbpaste | kimun note quick
+
+# Batch-capture from a file (one note per line)
+while IFS= read -r line; do kimun note quick "$line"; done < ideas.txt
+```
+
+List inbox contents with `kimun note triage`, or use the MCP `triage_inbox` prompt to let an AI organize them.
+
 ## Tips
 
 - Use `jq` for powerful JSON filtering and transformation

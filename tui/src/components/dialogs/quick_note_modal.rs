@@ -28,6 +28,11 @@ impl QuickNoteModal {
         }
     }
 
+    /// Number of visible characters before the cursor (for display positioning).
+    fn cursor_char_offset(&self) -> usize {
+        self.input[..self.cursor].chars().count()
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
         match (key.modifiers, key.code) {
             (m, KeyCode::Enter) if m.contains(KeyModifiers::SHIFT) => {
@@ -52,26 +57,46 @@ impl QuickNoteModal {
             }
             (_, KeyCode::Backspace) => {
                 if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.input.remove(self.cursor);
+                    // Move cursor back to the previous char boundary
+                    let prev = self.input[..self.cursor]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    self.input.drain(prev..self.cursor);
+                    self.cursor = prev;
                 }
                 EventState::Consumed
             }
             (_, KeyCode::Delete) => {
                 if self.cursor < self.input.len() {
-                    self.input.remove(self.cursor);
+                    // Find the end of the current char
+                    let next = self.input[self.cursor..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| self.cursor + i)
+                        .unwrap_or(self.input.len());
+                    self.input.drain(self.cursor..next);
                 }
                 EventState::Consumed
             }
             (_, KeyCode::Left) => {
                 if self.cursor > 0 {
-                    self.cursor -= 1;
+                    self.cursor = self.input[..self.cursor]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
                 }
                 EventState::Consumed
             }
             (_, KeyCode::Right) => {
                 if self.cursor < self.input.len() {
-                    self.cursor += 1;
+                    self.cursor = self.input[self.cursor..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| self.cursor + i)
+                        .unwrap_or(self.input.len());
                 }
                 EventState::Consumed
             }
@@ -85,7 +110,7 @@ impl QuickNoteModal {
             }
             (_, KeyCode::Char(c)) => {
                 self.input.insert(self.cursor, c);
-                self.cursor += 1;
+                self.cursor += c.len_utf8();
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,
@@ -155,8 +180,8 @@ impl QuickNoteModal {
         };
         f.render_widget(Paragraph::new(display_text).style(input_style), rows[1]);
 
-        // Place cursor
-        let cursor_x = rows[1].x + 2 + self.cursor as u16;
+        // Place cursor (use char count for display, not byte offset)
+        let cursor_x = rows[1].x + 2 + self.cursor_char_offset() as u16;
         let cursor_y = rows[1].y;
         f.set_cursor_position((cursor_x, cursor_y));
 

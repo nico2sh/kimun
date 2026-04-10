@@ -71,6 +71,20 @@ kimun notes --format paths | fzf --preview 'kimun note show {}' | kimun note sho
 
 Add these to your `~/.zshrc` or `~/.bashrc` for quick access:
 
+### Quick capture
+
+The fastest way to jot down a thought from the terminal:
+
+```sh
+# One-letter alias for instant capture
+alias q='kimun note quick'
+
+# Usage:
+# q "look into caching strategy"
+# q "call dentist tomorrow"
+# echo "deploy at $(date)" | q
+```
+
 ### Quick note picker
 
 ```sh
@@ -94,6 +108,13 @@ ks() {
 ```sh
 # Show the most recently changed note
 alias klast='kimun notes --format json | jq -r ".notes | sort_by(.modified) | last | .path" | kimun note show'
+```
+
+### Review inbox
+
+```sh
+# List what's in the inbox
+alias ki='kimun note triage'
 ```
 
 ## Piping into the journal

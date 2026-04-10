@@ -91,6 +91,7 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 | Toggle note browser | `Ctrl+F` |
 | Toggle preview | `Ctrl+Y` |
 | New journal entry | `Ctrl+J` |
+| Quick note | `Ctrl+W` |
 | Toggle sidebar / Bold (context-sensitive) | `Ctrl+B` |
 | Italic | `Ctrl+I` |
 | Strikethrough | `Ctrl+S` |
