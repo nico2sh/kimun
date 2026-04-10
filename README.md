@@ -113,7 +113,7 @@ zola serve docs/
 ## Roadmap
 
 - [ ] Command palette
-- [ ] Backlinks panel
+- [X] Backlinks panel
 - [ ] Inline tags and search by tag (`#important`)
 - [ ] Resolve relative paths on links and images
 - [ ] Paste images into notes
