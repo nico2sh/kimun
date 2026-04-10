@@ -89,7 +89,7 @@ impl Component for ActiveDialog {
             ActiveDialog::Move(d)      => d.render(f, rect, theme, focused),
             ActiveDialog::CreateNote(d)  => d.render(f, rect, theme, focused),
             ActiveDialog::Help(d)      => d.render(f, rect, theme, focused),
-            ActiveDialog::QuickNote(d) => d.render(f, rect, theme),
+            ActiveDialog::QuickNote(d) => d.render(f, rect, theme, focused),
         }
     }
 }

@@ -363,6 +363,17 @@ impl NoteVault {
         Ok(a)
     }
 
+    /// Get notes under the given path. When `recursive` is false, only direct
+    /// children are returned.
+    pub async fn get_notes(
+        &self,
+        path: &VaultPath,
+        recursive: bool,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
+        let notes = db::get_notes(self.vault_db.pool(), path, recursive).await?;
+        Ok(notes)
+    }
+
     // Get all notes
     pub async fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         let a = db::get_all_notes(self.vault_db.pool()).await?;
@@ -411,31 +422,6 @@ impl NoteVault {
 
         Ok(())
     }
-
-    // pub fn get_notes(
-    //     &self,
-    //     path: &VaultPath,
-    //     recursive: bool,
-    // ) -> Result<Vec<NoteContentData>, VaultError> {
-    //     let start = std::time::SystemTime::now();
-    //     debug!("> Start fetching files from cache");
-    //     let note_path = path.into();
-
-    //     let cached_notes = self.vault_db.call(move |conn| {
-    //         let notes = db::get_notes(conn, &note_path, recursive)?;
-    //         Ok(notes)
-    //     })?;
-
-    //     let result = cached_notes
-    //         .iter()
-    //         .map(|(_data, details)| details.to_owned())
-    //         .collect::<Vec<NoteContentData>>();
-    //     let time = std::time::SystemTime::now()
-    //         .duration_since(start)
-    //         .expect("Something's wrong with the time");
-    //     debug!("> Files fetched in {} milliseconds", time.as_millis());
-    //     Ok(result)
-    // }
 
     /// Returns all subdirectories under `path`.
     /// Non-recursive returns only the immediate children; recursive returns the full tree.

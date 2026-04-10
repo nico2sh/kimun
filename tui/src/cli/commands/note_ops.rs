@@ -355,20 +355,10 @@ async fn run_show(
 }
 
 async fn run_triage(vault: &NoteVault) -> Result<()> {
-    let inbox = vault.inbox_path().clone();
-    let all_notes = vault
-        .get_all_notes()
+    let inbox_notes = vault
+        .get_notes(vault.inbox_path(), false)
         .await
         .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-
-    let inbox_notes: Vec<_> = all_notes
-        .into_iter()
-        .filter(|(entry, _)| {
-            let (parent, _) = entry.path.get_parent_path();
-            parent.is_like(&inbox)
-                || parent.to_string().starts_with(&inbox.to_string())
-        })
-        .collect();
 
     if inbox_notes.is_empty() {
         println!("Inbox is empty.");

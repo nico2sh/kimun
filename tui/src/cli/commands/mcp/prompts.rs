@@ -709,23 +709,13 @@ impl KimunHandler {
         let max_notes = p.max_notes.unwrap_or(20) as usize;
         let max_context = p.max_context.unwrap_or(3) as usize;
 
-        let inbox = self.vault.inbox_path().clone();
-
-        let all_notes = self
+        let all_inbox = self
             .vault
-            .get_all_notes()
+            .get_notes(self.vault.inbox_path(), false)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let inbox_notes: Vec<_> = all_notes
-            .into_iter()
-            .filter(|(entry, _)| {
-                let (parent, _) = entry.path.get_parent_path();
-                parent.is_like(&inbox)
-                    || parent.to_string().starts_with(&inbox.to_string())
-            })
-            .take(max_notes)
-            .collect();
+        let inbox_notes: Vec<_> = all_inbox.into_iter().take(max_notes).collect();
 
         if inbox_notes.is_empty() {
             return Ok(vec![PromptMessage::new_text(
