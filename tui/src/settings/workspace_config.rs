@@ -36,11 +36,19 @@ pub struct WorkspaceEntry {
     pub created: DateTime<Utc>,
     #[serde(default)]
     pub quick_note_path: Option<String>,
+    #[serde(default)]
+    pub inbox_path: Option<String>,
 }
 
 impl WorkspaceEntry {
     pub fn effective_quick_note_path(&self) -> String {
         self.quick_note_path.clone().unwrap_or_else(|| kimun_core::nfs::VaultPath::root().to_string())
+    }
+
+    pub fn effective_inbox_path(&self) -> String {
+        self.inbox_path
+            .clone()
+            .unwrap_or_else(|| kimun_core::DEFAULT_INBOX_PATH.to_string())
     }
 }
 
@@ -74,6 +82,7 @@ impl WorkspaceConfig {
             last_paths: Vec::new(),
             created: Utc::now(),
             quick_note_path: None,
+            inbox_path: None,
         };
 
         self.workspaces.insert(name.clone(), entry);
@@ -107,6 +116,7 @@ impl WorkspaceConfig {
             last_paths,
             created: Utc::now(),
             quick_note_path: None,
+            inbox_path: None,
         };
 
         config.workspaces.insert("default".to_string(), entry);

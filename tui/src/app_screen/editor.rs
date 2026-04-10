@@ -385,6 +385,12 @@ impl AppScreen for EditorScreen {
                     }
                     return EventState::Consumed;
                 }
+                Some(ActionShortcuts::QuickNote) => {
+                    self.dialogs
+                        .open_quick_note(self.vault.clone(), self.focus_index());
+                    self.focus = Focus::Dialog;
+                    return EventState::Consumed;
+                }
                 _ => {
                     if is_fkey {
                         // F1 opens the help modal (only when no other dialog is active).

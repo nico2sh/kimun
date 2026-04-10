@@ -67,6 +67,14 @@ pub struct ResearchTopicParams {
     pub max_results: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TriageInboxParams {
+    /// Maximum number of inbox notes to include (default 20)
+    pub max_notes: Option<u32>,
+    /// Maximum number of related notes to include per inbox note (default 3)
+    pub max_context: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -688,6 +696,95 @@ impl KimunHandler {
             2. If yes, suggest the exact [[wikilink]] syntax to add and where in the note it fits.\n\
             3. If no clear connection, explain briefly why it was surfaced.",
             path = vault_path,
+        );
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+    }
+
+    #[prompt(description = "Review inbox notes and suggest how to organize them: move to journal, promote to a proper note with related context, or keep in inbox for later.")]
+    async fn triage_inbox(
+        &self,
+        Parameters(p): Parameters<TriageInboxParams>,
+    ) -> Result<Vec<PromptMessage>, McpError> {
+        let max_notes = p.max_notes.unwrap_or(20) as usize;
+        let max_context = p.max_context.unwrap_or(3) as usize;
+
+        let all_inbox = self
+            .vault
+            .get_notes(self.vault.inbox_path(), false)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let inbox_notes: Vec<_> = all_inbox.into_iter().take(max_notes).collect();
+
+        if inbox_notes.is_empty() {
+            return Ok(vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                "The inbox is empty — no notes to triage.".to_string(),
+            )]);
+        }
+
+        let mut sections = Vec::new();
+
+        for (entry, _content_data) in &inbox_notes {
+            let content = match self.vault.get_note_text(&entry.path).await {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            let search_terms: String = content
+                .split_whitespace()
+                .take(15)
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let mut related_section = String::new();
+            if !search_terms.is_empty()
+                && let Ok(results) = self.vault.search_notes(&search_terms).await
+            {
+                let related: Vec<_> = results
+                    .iter()
+                    .filter(|(e, _)| e.path != entry.path)
+                    .take(max_context)
+                    .collect();
+                if !related.is_empty() {
+                    related_section.push_str("\nRelated notes:\n");
+                    for (rel_entry, rel_content) in &related {
+                        let preview: String = rel_content
+                            .title
+                            .chars()
+                            .take(200)
+                            .collect();
+                        related_section.push_str(&format!(
+                            "- {} — \"{}\"\n",
+                            rel_entry.path, preview
+                        ));
+                    }
+                }
+            }
+
+            let filename = entry.path.get_clean_name();
+            sections.push(format!(
+                "---\n## {path} (filename: {filename})\n\n{content}\n{related}\n",
+                path = entry.path,
+                content = content,
+                related = related_section,
+            ));
+        }
+
+        let message = format!(
+            "Here are the notes in the inbox ({count} total):\n\n\
+            {sections}\
+            ---\n\n\
+            For each inbox note, suggest what to do:\n\
+            1. **Journal** — append the content to the journal entry for the date in the filename \
+            (use `append_note` on the journal path `/journal/YYYY-MM-DD`, then delete the inbox note with `move_note` or inform the user)\n\
+            2. **Promote** — create a proper note with a descriptive name in an appropriate vault directory \
+            (use `create_note` with the enriched content, linking to related notes if helpful, then delete the inbox note)\n\
+            3. **Keep** — leave it in the inbox if it needs more thought\n\n\
+            Process one note at a time. Use the available tools to execute your suggestions.",
+            count = inbox_notes.len(),
+            sections = sections.join(""),
         );
 
         Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])

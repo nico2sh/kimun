@@ -163,7 +163,8 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyG, ActionShortcuts::FollowLink)
         .add(KeyStrike::KeyR, ActionShortcuts::SortReverseOrder)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
-        .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor);
+        .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
+        .add(KeyStrike::KeyW, ActionShortcuts::QuickNote);
 
     // File operations menu (F2 — no modifier, reliable in all terminals).
     kb.batch_add()

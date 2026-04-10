@@ -24,6 +24,13 @@ pub enum NoteSubcommand {
         /// Text to append (reads from stdin if omitted and stdin is not a TTY)
         content: Option<String>,
     },
+    /// Quickly capture a thought into a timestamped inbox note
+    Quick {
+        /// Text content (reads from stdin if omitted and stdin is not a TTY)
+        content: Option<String>,
+    },
+    /// List inbox notes for triage
+    Triage,
     /// Show note content and metadata (read one or more notes)
     Show {
         /// One or more note paths (relative to quick_note_path or absolute from vault root)
@@ -46,6 +53,8 @@ pub async fn run(
         NoteSubcommand::Append { path, content } => {
             run_append(vault, &path, content, quick_note_path).await
         }
+        NoteSubcommand::Quick { content } => run_quick(vault, content).await,
+        NoteSubcommand::Triage => run_triage(vault).await,
         NoteSubcommand::Show { paths, format } => {
             use std::io::IsTerminal;
             let reader = if std::io::stdin().is_terminal() {
@@ -342,6 +351,47 @@ async fn run_show(
         return Err(color_eyre::eyre::eyre!("One or more notes could not be found"));
     }
 
+    Ok(())
+}
+
+async fn run_triage(vault: &NoteVault) -> Result<()> {
+    let inbox_notes = vault
+        .get_notes(vault.inbox_path(), false)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+
+    if inbox_notes.is_empty() {
+        println!("Inbox is empty.");
+        return Ok(());
+    }
+
+    println!("Inbox notes ({}):\n", inbox_notes.len());
+    for (entry, content_data) in &inbox_notes {
+        let title = if content_data.title.trim().is_empty() {
+            "<no title>"
+        } else {
+            &content_data.title
+        };
+        println!("  {} — {}", entry.path, title);
+    }
+
+    Ok(())
+}
+
+async fn run_quick(vault: &NoteVault, content: Option<String>) -> Result<()> {
+    use crate::cli::helpers::resolve_content;
+
+    let text = resolve_content(content)?;
+    if text.is_empty() {
+        return Ok(());
+    }
+
+    let details = vault
+        .quick_note(&text)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+
+    println!("Note saved: {}", details.path);
     Ok(())
 }
 

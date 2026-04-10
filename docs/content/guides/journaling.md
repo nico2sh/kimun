@@ -97,6 +97,12 @@ kimun search "@2024-01"             # Files with "2024-01" in filename (January 
 kimun search "@2024"                # All journal entries from 2024
 ```
 
+## Quick notes and the inbox
+
+For thoughts that don't belong in today's journal, use **quick notes** (`Ctrl+W` in the TUI or `kimun note quick` in the CLI). These are saved with a timestamp filename in the `/inbox` directory.
+
+Later, you can triage inbox notes and move relevant ones into the journal. If you use the [MCP server](@/using-kimun/ai-mcp-server.md), the `triage_inbox` prompt can help organize accumulated inbox notes automatically.
+
 ### Search within sections
 
 ```sh
