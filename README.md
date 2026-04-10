@@ -118,7 +118,7 @@ zola serve docs/
 - [ ] Resolve relative paths on links and images
 - [ ] Paste images into notes
 - [ ] Auto-continue list formatting on Enter
-- [ ] Quick add note
+- [X] Quick add note
 - [X] Multiple workspaces
 - [X] Search under Markdown sections
 - [X] File management (create, rename, move, delete notes and directories)

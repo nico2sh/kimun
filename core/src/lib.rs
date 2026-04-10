@@ -24,6 +24,7 @@ use utilities::path_to_string;
 use crate::{db::DBStatus, nfs::DirectoryEntryData};
 
 pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
+pub const DEFAULT_INBOX_PATH: &str = "/inbox";
 
 pub struct IndexReport {
     pub start: SystemTime,
@@ -50,6 +51,7 @@ impl IndexReport {
 pub struct NoteVault {
     pub workspace_path: PathBuf,
     journal_path: VaultPath,
+    inbox_path: VaultPath,
     vault_db: VaultDB,
 }
 
@@ -84,6 +86,7 @@ impl NoteVault {
         let note_vault = Self {
             workspace_path,
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
+            inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
             vault_db,
         };
         Ok(note_vault)
@@ -210,6 +213,63 @@ impl NoteVault {
         &self.journal_path
     }
 
+    pub fn inbox_path(&self) -> &VaultPath {
+        &self.inbox_path
+    }
+
+    pub fn set_inbox_path(&mut self, path: VaultPath) {
+        self.inbox_path = path;
+    }
+
+    pub async fn quick_note(&self, text: &str) -> Result<NoteDetails, VaultError> {
+        let base_name = Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+        let mut candidate = self
+            .inbox_path
+            .append(&VaultPath::note_path_from(&base_name))
+            .absolute();
+
+        match nfs::load_note(&self.workspace_path, &candidate).await {
+            Err(e) => {
+                if let FSError::VaultPathNotFound { .. } = e {
+                    // name is free
+                } else {
+                    return Err(e)?;
+                }
+            }
+            Ok(_) => {
+                // conflict — try suffixed names
+                let mut found = false;
+                for i in 2..=99 {
+                    let suffixed = format!("{}-{}", base_name, i);
+                    candidate = self
+                        .inbox_path
+                        .append(&VaultPath::note_path_from(&suffixed))
+                        .absolute();
+                    match nfs::load_note(&self.workspace_path, &candidate).await {
+                        Err(e) => {
+                            if let FSError::VaultPathNotFound { .. } = e {
+                                found = true;
+                                break;
+                            } else {
+                                return Err(e)?;
+                            }
+                        }
+                        Ok(_) => continue,
+                    }
+                }
+                if !found {
+                    return Err(VaultError::FSError(FSError::InvalidPath {
+                        path: candidate.to_string(),
+                        message: "Could not find a free quick note name".to_string(),
+                    }));
+                }
+            }
+        }
+
+        self.create_note(&candidate, text).await?;
+        Ok(NoteDetails::new(&candidate, text))
+    }
+
     pub async fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
         let (title, note_path) = self.get_todays_journal();
         let content = self
@@ -303,6 +363,17 @@ impl NoteVault {
         Ok(a)
     }
 
+    /// Get notes under the given path. When `recursive` is false, only direct
+    /// children are returned.
+    pub async fn get_notes(
+        &self,
+        path: &VaultPath,
+        recursive: bool,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
+        let notes = db::get_notes(self.vault_db.pool(), path, recursive).await?;
+        Ok(notes)
+    }
+
     // Get all notes
     pub async fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         let a = db::get_all_notes(self.vault_db.pool()).await?;
@@ -351,31 +422,6 @@ impl NoteVault {
 
         Ok(())
     }
-
-    // pub fn get_notes(
-    //     &self,
-    //     path: &VaultPath,
-    //     recursive: bool,
-    // ) -> Result<Vec<NoteContentData>, VaultError> {
-    //     let start = std::time::SystemTime::now();
-    //     debug!("> Start fetching files from cache");
-    //     let note_path = path.into();
-
-    //     let cached_notes = self.vault_db.call(move |conn| {
-    //         let notes = db::get_notes(conn, &note_path, recursive)?;
-    //         Ok(notes)
-    //     })?;
-
-    //     let result = cached_notes
-    //         .iter()
-    //         .map(|(_data, details)| details.to_owned())
-    //         .collect::<Vec<NoteContentData>>();
-    //     let time = std::time::SystemTime::now()
-    //         .duration_since(start)
-    //         .expect("Something's wrong with the time");
-    //     debug!("> Files fetched in {} milliseconds", time.as_millis());
-    //     Ok(result)
-    // }
 
     /// Returns all subdirectories under `path`.
     /// Non-recursive returns only the immediate children; recursive returns the full tree.
@@ -1412,5 +1458,45 @@ mod tests {
                 Err(e) => format!("Err({})", e),
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn quick_note_creates_timestamped_note_in_inbox() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(dir.path()).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+
+        let details = vault.quick_note("my quick thought").await.unwrap();
+        let (parent, _) = details.path.get_parent_path();
+        assert!(parent.to_string().contains("inbox"));
+
+        let text = vault.get_note_text(&details.path).await.unwrap();
+        assert_eq!(text, "my quick thought");
+    }
+
+    #[tokio::test]
+    async fn quick_note_resolves_conflicts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(dir.path()).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+
+        let d1 = vault.quick_note("first").await.unwrap();
+        let d2 = vault.quick_note("second").await.unwrap();
+
+        assert_ne!(d1.path, d2.path);
+        assert_eq!(vault.get_note_text(&d1.path).await.unwrap(), "first");
+        assert_eq!(vault.get_note_text(&d2.path).await.unwrap(), "second");
+    }
+
+    #[tokio::test]
+    async fn quick_note_uses_custom_inbox_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut vault = NoteVault::new(dir.path()).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+        vault.set_inbox_path(VaultPath::new("/capture"));
+
+        let details = vault.quick_note("test").await.unwrap();
+        let (parent, _) = details.path.get_parent_path();
+        assert!(parent.to_string().contains("capture"));
     }
 }

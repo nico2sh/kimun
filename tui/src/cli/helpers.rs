@@ -67,6 +67,16 @@ pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
     root
 }
 
+/// Returns the configured inbox_path for the active workspace.
+pub fn resolve_inbox_path(settings: &AppSettings) -> String {
+    if let Some(ref wc) = settings.workspace_config
+        && let Some(entry) = wc.get_current_workspace()
+    {
+        return entry.effective_inbox_path();
+    }
+    kimun_core::DEFAULT_INBOX_PATH.to_string()
+}
+
 /// Resolve a user-provided note path string into a VaultPath.
 ///
 /// Rules:
@@ -126,9 +136,11 @@ pub fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<Stri
 /// This handles the common pattern of creating a NoteVault from workspace settings
 /// and initializing/validating its database.
 pub async fn create_and_init_vault(config_path: Option<PathBuf>) -> Result<(NoteVault, String)> {
-    let (_settings, workspace_path, workspace_name) = load_and_resolve_workspace(config_path)?;
+    let (settings, workspace_path, workspace_name) = load_and_resolve_workspace(config_path)?;
 
-    let vault = NoteVault::new(&workspace_path).await?;
+    let mut vault = NoteVault::new(&workspace_path).await?;
+    let inbox = resolve_inbox_path(&settings);
+    vault.set_inbox_path(kimun_core::nfs::VaultPath::new(&inbox));
     vault.validate_and_init().await?;
 
     Ok((vault, workspace_name))
