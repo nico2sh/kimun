@@ -33,6 +33,7 @@ pub struct FileBrowserState {
     pub entries: Vec<PathBuf>,
     pub list_state: ListState,
     pub has_parent: bool,
+    last_jump_char: Option<char>,
 }
 
 impl FileBrowserState {
@@ -56,6 +57,7 @@ impl FileBrowserState {
             entries,
             list_state,
             has_parent,
+            last_jump_char: None,
         }
     }
 
@@ -67,6 +69,36 @@ impl FileBrowserState {
         if let Some(parent) = self.current_path.parent() {
             *self = Self::load(parent.to_path_buf());
         }
+    }
+
+    pub fn jump_to_char(&mut self, c: char) {
+        let c_lower = c.to_lowercase().next().unwrap_or(c);
+        let offset = if self.has_parent { 1 } else { 0 };
+        let total = self.entries.len();
+        if total == 0 {
+            return;
+        }
+
+        // If same char as last jump, cycle to next match.
+        let start = if self.last_jump_char == Some(c_lower) {
+            let cur = self.list_state.selected().unwrap_or(0);
+            if cur >= offset { cur - offset + 1 } else { 0 }
+        } else {
+            0
+        };
+
+        // Search from start, wrapping around.
+        for i in 0..total {
+            let idx = (start + i) % total;
+            if let Some(name) = self.entries[idx].file_name().and_then(|n| n.to_str())
+                && name.to_lowercase().starts_with(c_lower)
+            {
+                self.list_state.select(Some(idx + offset));
+                self.last_jump_char = Some(c_lower);
+                return;
+            }
+        }
+        self.last_jump_char = None;
     }
 }
 
@@ -296,6 +328,9 @@ impl AppScreen for SettingsScreen {
                     KeyCode::Char('c') => {
                         let chosen = fb.current_path.clone();
                         self.confirm_file_browser(chosen, tx);
+                    }
+                    KeyCode::Char(c) => {
+                        fb.jump_to_char(c);
                     }
                     _ => {
                         // Ctrl+Enter confirms too
@@ -767,7 +802,7 @@ impl SettingsScreen {
                     .highlight_style(Style::default().add_modifier(Modifier::BOLD));
                 f.render_stateful_widget(list, rows[1], &mut fb.list_state);
                 f.render_widget(
-                    Paragraph::new("Enter: open  c: confirm  Esc: cancel")
+                    Paragraph::new("Enter: open  c: confirm  Esc: cancel  a-z: jump")
                         .style(theme.base_style()),
                     rows[2],
                 );
