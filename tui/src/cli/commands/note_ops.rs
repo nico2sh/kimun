@@ -29,6 +29,8 @@ pub enum NoteSubcommand {
         /// Text content (reads from stdin if omitted and stdin is not a TTY)
         content: Option<String>,
     },
+    /// List inbox notes for triage
+    Triage,
     /// Show note content and metadata (read one or more notes)
     Show {
         /// One or more note paths (relative to quick_note_path or absolute from vault root)
@@ -52,6 +54,7 @@ pub async fn run(
             run_append(vault, &path, content, quick_note_path).await
         }
         NoteSubcommand::Quick { content } => run_quick(vault, content).await,
+        NoteSubcommand::Triage => run_triage(vault).await,
         NoteSubcommand::Show { paths, format } => {
             use std::io::IsTerminal;
             let reader = if std::io::stdin().is_terminal() {
@@ -346,6 +349,40 @@ async fn run_show(
 
     if had_errors {
         return Err(color_eyre::eyre::eyre!("One or more notes could not be found"));
+    }
+
+    Ok(())
+}
+
+async fn run_triage(vault: &NoteVault) -> Result<()> {
+    let inbox = vault.inbox_path().clone();
+    let all_notes = vault
+        .get_all_notes()
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+
+    let inbox_notes: Vec<_> = all_notes
+        .into_iter()
+        .filter(|(entry, _)| {
+            let (parent, _) = entry.path.get_parent_path();
+            parent.is_like(&inbox)
+                || parent.to_string().starts_with(&inbox.to_string())
+        })
+        .collect();
+
+    if inbox_notes.is_empty() {
+        println!("Inbox is empty.");
+        return Ok(());
+    }
+
+    println!("Inbox notes ({}):\n", inbox_notes.len());
+    for (entry, content_data) in &inbox_notes {
+        let title = if content_data.title.trim().is_empty() {
+            "<no title>"
+        } else {
+            &content_data.title
+        };
+        println!("  {} — {}", entry.path, title);
     }
 
     Ok(())
