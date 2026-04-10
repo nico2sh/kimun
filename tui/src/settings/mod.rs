@@ -171,6 +171,9 @@ fn default_keybindings() -> KeyBindings {
     kb.batch_add()
         .add(KeyStrike::F2, ActionShortcuts::FileOperations);
 
+    kb.batch_add()
+        .add(KeyStrike::F4, ActionShortcuts::SwitchWorkspace);
+
     kb
 }
 
