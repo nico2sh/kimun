@@ -334,7 +334,7 @@ pub(crate) async fn load_note<P: AsRef<Path>>(
     }
 }
 
-pub async fn create_directory<P: AsRef<Path>>(
+pub(crate) async fn create_directory<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<DirectoryEntryData, FSError> {
@@ -352,7 +352,7 @@ pub async fn create_directory<P: AsRef<Path>>(
     })
 }
 
-pub async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
+pub(crate) async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     workspace_path: P,
     path: &VaultPath,
     text: S,
@@ -375,7 +375,7 @@ pub async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     Ok(entry)
 }
 
-pub async fn rename_note<P: AsRef<Path>>(
+pub(crate) async fn rename_note<P: AsRef<Path>>(
     workspace_path: P,
     from: &VaultPath,
     to: &VaultPath,
@@ -408,7 +408,7 @@ pub async fn rename_note<P: AsRef<Path>>(
     Ok(())
 }
 
-pub async fn rename_directory<P: AsRef<Path>>(
+pub(crate) async fn rename_directory<P: AsRef<Path>>(
     workspace_path: P,
     from: &VaultPath,
     to: &VaultPath,
@@ -440,13 +440,25 @@ pub async fn rename_directory<P: AsRef<Path>>(
     tokio::fs::rename(full_from_path, full_to_path).await?;
     Ok(())
 }
-pub async fn delete_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<(), FSError> {
+pub(crate) async fn delete_note<P: AsRef<Path>>(workspace_path: P, path: &VaultPath) -> Result<(), FSError> {
     let full_path = resolve_path_on_disk(&workspace_path, path).await;
     tokio::fs::remove_file(full_path).await?;
     Ok(())
 }
 
-pub async fn delete_directory<P: AsRef<Path>>(
+/// Remove a file or directory at the given OS path. Used by `NoteVault::force_rebuild`
+/// to delete the database file before recreating it.
+pub(crate) fn remove_path(path: &Path) -> Result<(), FSError> {
+    let md = std::fs::metadata(path).map_err(FSError::ReadFileError)?;
+    if md.is_dir() {
+        std::fs::remove_dir_all(path).map_err(FSError::ReadFileError)?;
+    } else {
+        std::fs::remove_file(path).map_err(FSError::ReadFileError)?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn delete_directory<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<(), FSError> {
@@ -956,7 +968,7 @@ fn filter_files(dir: &ignore::DirEntry) -> bool {
     !dir.path().starts_with(".")
 }
 
-pub fn list_directories<P: AsRef<Path>>(
+pub(crate) fn list_directories<P: AsRef<Path>>(
     base_path: P,
     path: &VaultPath,
     recursive: bool,
@@ -979,7 +991,7 @@ pub fn list_directories<P: AsRef<Path>>(
     Ok(dirs)
 }
 
-pub fn get_file_walker<P: AsRef<Path>>(
+pub(crate) fn get_file_walker<P: AsRef<Path>>(
     base_path: P,
     path: &VaultPath,
     recurse: bool,

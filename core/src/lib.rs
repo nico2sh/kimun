@@ -139,13 +139,8 @@ impl NoteVault {
         // Close the pool to release file handles before deleting.
         // This is required on Windows where open handles prevent file deletion.
         self.vault_db.close().await?;
-        let md = std::fs::metadata(&db_path).map_err(FSError::ReadFileError)?;
-        // We delete the db file
-        if md.is_dir() {
-            std::fs::remove_dir_all(db_path).map_err(FSError::ReadFileError)?;
-        } else {
-            std::fs::remove_file(db_path).map_err(FSError::ReadFileError)?;
-        }
+        // Delete the db file via the nfs module.
+        nfs::remove_path(&db_path)?;
         // Note: the pool is closed at this point. The caller should create
         // a new NoteVault instance if further DB operations are needed.
         // recreate_index will reconnect via the pool's rwc mode which
