@@ -11,7 +11,8 @@ use commands::note_ops::NoteSubcommand;
 use commands::workspace::WorkspaceSubcommand;
 use commands::JournalArgs;
 use helpers::{
-    create_and_init_vault, load_and_resolve_workspace, load_settings, resolve_quick_note_path,
+    create_and_init_vault, load_and_resolve_workspace, load_settings, resolve_inbox_path,
+    resolve_quick_note_path,
 };
 use kimun_core::NoteVault;
 use output::OutputFormat;
@@ -57,7 +58,9 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             let (settings, workspace_path, workspace_name) =
                 load_and_resolve_workspace(config_path)?;
             let quick_note_path = resolve_quick_note_path(&settings);
-            let vault = NoteVault::new(&workspace_path).await?;
+            let inbox_path = resolve_inbox_path(&settings);
+            let mut vault = NoteVault::new(&workspace_path).await?;
+            vault.set_inbox_path(kimun_core::nfs::VaultPath::new(&inbox_path));
             match vault.validate().await? {
                 kimun_core::db::DBStatus::Ready => {
                     commands::note_ops::run(subcommand, &vault, &quick_note_path, &workspace_name)
