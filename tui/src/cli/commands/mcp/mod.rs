@@ -91,6 +91,12 @@ pub struct MoveNoteParams {
     pub new_path: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct QuickNoteParams {
+    /// Text content for the quick note
+    pub content: String,
+}
+
 // ---------------------------------------------------------------------------
 // Handler struct
 // ---------------------------------------------------------------------------
@@ -448,6 +454,25 @@ impl KimunHandler {
             ) => Ok(CallToolResult::error(vec![Content::text(
                 format!("Note not found or destination already exists: {} → {}", from, to)
             )])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
+    }
+
+    #[tool(description = "Quickly capture a thought into a timestamped note in the inbox directory. Returns the path of the created note.")]
+    async fn quick_note(
+        &self,
+        Parameters(p): Parameters<QuickNoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if p.content.trim().is_empty() {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Content cannot be empty.",
+            )]));
+        }
+        match self.vault.quick_note(&p.content).await {
+            Ok(details) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Note saved: {}",
+                details.path
+            ))])),
             Err(e) => Err(McpError::internal_error(e.to_string(), None)),
         }
     }
