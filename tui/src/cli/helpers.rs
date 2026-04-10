@@ -67,6 +67,16 @@ pub fn resolve_quick_note_path(settings: &AppSettings) -> String {
     root
 }
 
+/// Returns the configured inbox_path for the active workspace.
+pub fn resolve_inbox_path(settings: &AppSettings) -> String {
+    if let Some(ref wc) = settings.workspace_config
+        && let Some(entry) = wc.get_current_workspace()
+    {
+        return entry.effective_inbox_path();
+    }
+    kimun_core::DEFAULT_INBOX_PATH.to_string()
+}
+
 /// Resolve a user-provided note path string into a VaultPath.
 ///
 /// Rules:
