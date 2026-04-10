@@ -45,6 +45,8 @@ pub enum ActionShortcuts {
     FollowLink,
     // Quick capture
     QuickNote,
+    // Backlinks panel
+    ToggleBacklinks,
 }
 
 impl ActionShortcuts {
@@ -61,7 +63,8 @@ impl ActionShortcuts {
             | ActionShortcuts::NewJournal
             | ActionShortcuts::FileOperations
             | ActionShortcuts::FollowLink
-            | ActionShortcuts::QuickNote => ShortcutCategory::Notes,
+            | ActionShortcuts::QuickNote
+            | ActionShortcuts::ToggleBacklinks => ShortcutCategory::Notes,
 
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
 
@@ -87,6 +90,7 @@ impl ActionShortcuts {
             ActionShortcuts::FileOperations => "File operations".into(),
             ActionShortcuts::FollowLink => "Follow link".into(),
             ActionShortcuts::QuickNote => "Quick note".into(),
+            ActionShortcuts::ToggleBacklinks => "Toggle backlinks".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),
@@ -119,6 +123,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::FileOperations => "FileOperations".to_string(),
             ActionShortcuts::FollowLink => "FollowLink".to_string(),
             ActionShortcuts::QuickNote => "QuickNote".to_string(),
+            ActionShortcuts::ToggleBacklinks => "ToggleBacklinks".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -143,6 +148,7 @@ impl TryFrom<String> for ActionShortcuts {
             "FileOperations" => ActionShortcuts::FileOperations,
             "FollowLink" => ActionShortcuts::FollowLink,
             "QuickNote" => ActionShortcuts::QuickNote,
+            "ToggleBacklinks" => ActionShortcuts::ToggleBacklinks,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
