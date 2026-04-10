@@ -3,13 +3,18 @@ use std::sync::Arc;
 use kimun_core::nfs::VaultPath;
 use kimun_core::NoteVault;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::widgets::ListState;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::Frame;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::{key_event_to_combo, KeyBindings};
+use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
 // BacklinkEntry
@@ -278,6 +283,104 @@ impl BacklinksPanel {
                 .map(|k| (k, label.to_string()))
         })
         .collect()
+    }
+
+    // ── Rendering ──────────────────────────────────────────────────────
+
+    pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+        let border_style = theme.border_style(focused);
+        let fg = theme.fg.to_ratatui();
+        let fg_muted = theme.fg_muted.to_ratatui();
+        let bg = theme.bg_panel.to_ratatui();
+
+        let sort_indicator = format!("{}{}", self.sort_field.label(), self.sort_order.label());
+        let title = format!("Backlinks ({}) {}", self.entries.len(), sort_indicator);
+
+        let outer = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .style(theme.panel_style());
+        let inner = outer.inner(rect);
+        f.render_widget(outer, rect);
+
+        if self.loading {
+            f.render_widget(
+                Paragraph::new("  Loading...")
+                    .style(Style::default().fg(fg_muted).bg(bg)),
+                inner,
+            );
+            return;
+        }
+
+        if self.entries.is_empty() {
+            f.render_widget(
+                Paragraph::new("  No backlinks")
+                    .style(Style::default().fg(fg_muted).bg(bg)),
+                inner,
+            );
+            return;
+        }
+
+        let selected = self.list_state.selected().unwrap_or(usize::MAX);
+        let mut items: Vec<ListItem> = Vec::new();
+
+        for (i, entry) in self.entries.iter().enumerate() {
+            let is_selected = i == selected;
+
+            let title_style = if is_selected {
+                Style::default()
+                    .fg(theme.fg_selected.to_ratatui())
+                    .bg(theme.bg_selected.to_ratatui())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(fg).bg(bg)
+            };
+
+            let title_display = if entry.title.is_empty() {
+                entry.filename.clone()
+            } else {
+                entry.title.clone()
+            };
+
+            let mut lines = vec![Line::from(vec![
+                Span::styled(format!(" {} ", title_display), title_style),
+                Span::styled(
+                    format!(" {}", entry.filename),
+                    Style::default().fg(fg_muted).bg(if is_selected {
+                        theme.bg_selected.to_ratatui()
+                    } else {
+                        bg
+                    }),
+                ),
+            ])];
+
+            // Expanded content
+            if i < self.expand_states.len() {
+                let content = match self.expand_states[i] {
+                    ExpandState::Collapsed => None,
+                    ExpandState::Context => Some(&entry.context),
+                    ExpandState::Full => entry.full_text.as_ref().or(Some(&entry.context)),
+                };
+                if let Some(text) = content {
+                    for line in text.lines().take(50) {
+                        lines.push(Line::from(Span::styled(
+                            format!("   {}", line),
+                            Style::default().fg(fg_muted).bg(bg),
+                        )));
+                    }
+                    lines.push(Line::from(Span::raw("")));
+                }
+            }
+
+            items.push(ListItem::new(lines));
+        }
+
+        let list = List::new(items)
+            .style(Style::default().bg(bg))
+            .highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
+
+        f.render_stateful_widget(list, inner, &mut self.list_state);
     }
 }
 
