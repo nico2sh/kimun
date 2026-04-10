@@ -250,6 +250,46 @@ EOF
 kimun search "rust" --format paths | kimun note append "inbox/rust-refs"
 ```
 
+## Quick Note
+
+Capture a thought instantly. The note is saved in the inbox directory with a timestamp-based filename.
+
+```sh
+kimun note quick "My quick thought"
+echo "Piped idea" | kimun note quick
+```
+
+### Features
+
+- Saves to the configured inbox directory (default: `/inbox`)
+- Filename is generated from the current UTC time (`YYYY-MM-DDTHH-MM-SS.md`)
+- Handles timestamp collisions by appending `-2`, `-3`, etc.
+- Accepts content as an argument or from stdin
+- Empty content is silently ignored (no note created)
+
+### Examples
+
+```sh
+# Capture a quick thought
+kimun note quick "Look into async trait patterns"
+
+# Pipe in command output
+echo "$(date +%H:%M) — deploy completed" | kimun note quick
+
+# Capture a snippet from clipboard (macOS)
+pbpaste | kimun note quick
+```
+
+## Inbox Triage
+
+List notes in the inbox for review:
+
+```sh
+kimun note triage
+```
+
+Prints each inbox note's path and title. Use this to see what has accumulated before organizing with the [MCP triage prompt](@/using-kimun/ai-mcp-server.md#prompts).
+
 ## Journal
 
 Append to or show journal entries. Journal entries are stored as `YYYY-MM-DD.md` files in the vault's configured journal directory.

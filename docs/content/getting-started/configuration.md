@@ -41,14 +41,17 @@ theme = "Nord"
 Each workspace is a separate section with the naming pattern `[workspaces.<name>]`. A workspace maps a name to a directory of notes.
 
 - **`path`** — absolute path to the notes directory for this workspace. Kimün will read and write markdown files from this location.
+- **`inbox_path`** — vault-relative directory for quick notes (default: `/inbox`). Quick notes created via `Ctrl+W` (TUI), `kimun note quick` (CLI), or the `quick_note` MCP tool are stored here with timestamp-based filenames.
 
 Example:
 ```toml
 [workspaces.default]
 path = "/Users/alice/Documents/Notes"
+inbox_path = "/inbox"
 
 [workspaces.work]
 path = "/Users/alice/work-notes"
+inbox_path = "/capture"
 
 [workspaces.archive]
 path = "/Users/alice/archive-notes"
@@ -129,6 +132,7 @@ Use these action names exactly as shown:
 
 - **Note Management**
   - `NewJournal` — Create a new journal entry
+  - `QuickNote` — Open the quick note dialog to capture a thought
 
 - **Sorting**
   - `CycleSortField` — Cycle the sort field (filename → title → filename → …)
@@ -183,6 +187,7 @@ ToggleNoteBrowser = ["ctrl&F"]
 SearchNotes = ["ctrl&E"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
+QuickNote = ["ctrl&W"]
 TogglePreview = ["ctrl&Y"]
 FileOperations = ["F2"]
 ```

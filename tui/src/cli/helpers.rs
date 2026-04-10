@@ -136,9 +136,11 @@ pub fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<Stri
 /// This handles the common pattern of creating a NoteVault from workspace settings
 /// and initializing/validating its database.
 pub async fn create_and_init_vault(config_path: Option<PathBuf>) -> Result<(NoteVault, String)> {
-    let (_settings, workspace_path, workspace_name) = load_and_resolve_workspace(config_path)?;
+    let (settings, workspace_path, workspace_name) = load_and_resolve_workspace(config_path)?;
 
-    let vault = NoteVault::new(&workspace_path).await?;
+    let mut vault = NoteVault::new(&workspace_path).await?;
+    let inbox = resolve_inbox_path(&settings);
+    vault.set_inbox_path(kimun_core::nfs::VaultPath::new(&inbox));
     vault.validate_and_init().await?;
 
     Ok((vault, workspace_name))
