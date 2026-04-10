@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use crate::components::Component;
 use crate::components::dialogs::{
     ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, HelpDialog, MoveDialog,
-    RenameDialog, ValidationState,
+    QuickNoteModal, RenameDialog, ValidationState,
 };
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
@@ -177,6 +177,13 @@ impl DialogManager {
     pub fn open_help(&mut self, key_bindings: &KeyBindings, current_focus: u8) {
         self.open(
             ActiveDialog::Help(HelpDialog::new(key_bindings)),
+            current_focus,
+        );
+    }
+
+    pub fn open_quick_note(&mut self, vault: Arc<NoteVault>, current_focus: u8) {
+        self.open(
+            ActiveDialog::QuickNote(QuickNoteModal::new(vault)),
             current_focus,
         );
     }
