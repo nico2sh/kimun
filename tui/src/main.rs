@@ -382,6 +382,35 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             app.vault = None;
             switch_screen(app, tx, ScreenEvent::OpenSettingsWithError(msg)).await;
         }
+        AppEvent::WorkspaceSwitched(name) => {
+            if let Some(ref mut wc) = app.settings.workspace_config {
+                wc.global.current_workspace = name;
+            }
+            app.settings.save_to_disk().ok();
+
+            // Rebuild vault from the new workspace.
+            let workspace_path = app.settings.workspace_config
+                .as_ref()
+                .and_then(|wc| wc.get_current_workspace())
+                .map(|entry| entry.path.clone());
+            app.vault = if let Some(ref workspace) = workspace_path {
+                kimun_core::NoteVault::new(workspace)
+                    .await
+                    .ok()
+                    .map(|mut v| {
+                        if let Some(ref wc) = app.settings.workspace_config
+                            && let Some(entry) = wc.get_current_workspace()
+                        {
+                            v.set_inbox_path(kimun_core::nfs::VaultPath::new(entry.effective_inbox_path()));
+                        }
+                        std::sync::Arc::new(v)
+                    })
+            } else {
+                None
+            };
+
+            tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
+        }
         other => {
             if let Some(screen) = app.current_screen.as_mut() {
                 screen.handle_app_message(other, tx).await;

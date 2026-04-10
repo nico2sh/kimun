@@ -445,6 +445,12 @@ impl AppScreen for EditorScreen {
                     self.toggle_backlinks(tx);
                     return EventState::Consumed;
                 }
+                Some(ActionShortcuts::SwitchWorkspace) => {
+                    self.dialogs
+                        .open_workspace_switcher(&self.settings, self.focus_index());
+                    self.focus = Focus::Dialog;
+                    return EventState::Consumed;
+                }
                 Some(ActionShortcuts::QuickNote) => {
                     self.dialogs
                         .open_quick_note(self.vault.clone(), self.focus_index());
