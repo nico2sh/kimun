@@ -19,6 +19,7 @@ use crate::components::note_browser::NoteBrowserModal;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
 use crate::components::sidebar::SidebarComponent;
+use crate::components::backlinks_panel::BacklinksPanel;
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
@@ -33,6 +34,7 @@ enum Focus {
     Editor,
     NoteBrowser,
     Dialog,
+    Backlinks,
 }
 
 pub struct EditorScreen {
@@ -49,6 +51,8 @@ pub struct EditorScreen {
     autosave: AutosaveTimer,
     note_browser: Option<NoteBrowserModal>,
     dialogs: DialogManager,
+    backlinks_panel: BacklinksPanel,
+    backlinks_visible: bool,
 }
 
 impl EditorScreen {
@@ -70,6 +74,7 @@ impl EditorScreen {
         );
         let icons = settings.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &settings);
+        let backlinks_panel = BacklinksPanel::new(vault.clone(), kb.clone());
         let editor = TextEditorComponent::new(kb, &settings);
         Self {
             settings,
@@ -85,6 +90,8 @@ impl EditorScreen {
             autosave: AutosaveTimer::new(),
             note_browser: None,
             dialogs: DialogManager::new(),
+            backlinks_panel,
+            backlinks_visible: false,
         }
     }
 }
@@ -158,6 +165,9 @@ impl EditorScreen {
             Ok(content) => {
                 self.editor.set_text(content);
                 tx.send(AppEvent::Redraw).ok();
+                if self.backlinks_visible {
+                    self.backlinks_panel.load(path.clone(), tx.clone());
+                }
             }
             Err(e) => {
                 if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
@@ -224,6 +234,7 @@ impl EditorScreen {
             Focus::Editor => 1,
             Focus::NoteBrowser => 2,
             Focus::Dialog => 3,
+            Focus::Backlinks => 4,
         }
     }
 
@@ -232,6 +243,7 @@ impl EditorScreen {
             0 => Focus::Sidebar,
             2 => Focus::NoteBrowser,
             3 => Focus::Dialog,
+            4 => Focus::Backlinks,
             _ => Focus::Editor,
         }
     }
@@ -275,6 +287,16 @@ impl EditorScreen {
     fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
         if !self.sidebar_visible {
+            self.focus_editor();
+        }
+    }
+
+    fn toggle_backlinks(&mut self, tx: &AppTx) {
+        self.backlinks_visible = !self.backlinks_visible;
+        if self.backlinks_visible {
+            self.backlinks_panel.load(self.path.clone(), tx.clone());
+            self.focus = Focus::Backlinks;
+        } else if matches!(self.focus, Focus::Backlinks) {
             self.focus_editor();
         }
     }
@@ -385,6 +407,10 @@ impl AppScreen for EditorScreen {
                     }
                     return EventState::Consumed;
                 }
+                Some(ActionShortcuts::ToggleBacklinks) => {
+                    self.toggle_backlinks(tx);
+                    return EventState::Consumed;
+                }
                 Some(ActionShortcuts::QuickNote) => {
                     self.dialogs
                         .open_quick_note(self.vault.clone(), self.focus_index());
@@ -440,6 +466,13 @@ impl AppScreen for EditorScreen {
                 }
             }
             Focus::Dialog => self.dialogs.handle_input(event, tx),
+            Focus::Backlinks => {
+                if let InputEvent::Key(key) = event {
+                    self.backlinks_panel.handle_key(key, tx)
+                } else {
+                    EventState::NotConsumed
+                }
+            }
         }
     }
 
@@ -473,27 +506,30 @@ impl AppScreen for EditorScreen {
             header_inner,
         );
 
-        let columns = if self.sidebar_visible {
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(30), Constraint::Min(0)])
-                .split(rows[1])
-        } else {
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(0)])
-                .split(rows[1])
-        };
+        let mut constraints = Vec::new();
+        if self.sidebar_visible {
+            constraints.push(Constraint::Length(30));
+        }
+        constraints.push(Constraint::Min(0));
+        if self.backlinks_visible {
+            constraints.push(Constraint::Length(30));
+        }
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(constraints)
+            .split(rows[1]);
 
         let editor_focused = matches!(self.focus, Focus::Editor);
         let sidebar_focused = matches!(self.focus, Focus::Sidebar);
+        let backlinks_focused = matches!(self.focus, Focus::Backlinks);
 
-        let editor_area = if self.sidebar_visible {
-            self.sidebar.render(f, columns[0], theme, sidebar_focused);
-            columns[1]
-        } else {
-            columns[0]
-        };
+        let mut col_idx = 0;
+        if self.sidebar_visible {
+            self.sidebar.render(f, columns[col_idx], theme, sidebar_focused);
+            col_idx += 1;
+        }
+        let editor_area = columns[col_idx];
+        col_idx += 1;
 
         let editor_border_style = theme.border_style(editor_focused);
         let editor_title = if self.editor.is_dirty() {
@@ -510,11 +546,16 @@ impl AppScreen for EditorScreen {
         f.render_widget(editor_block, editor_area);
         self.editor.render(f, editor_inner, theme, editor_focused);
 
+        if self.backlinks_visible {
+            self.backlinks_panel.render(f, columns[col_idx], theme, backlinks_focused);
+        }
+
         let focus_label = match self.focus {
             Focus::Editor => "EDITOR",
             Focus::Sidebar => "SIDEBAR",
             Focus::NoteBrowser => "NOTE BROWSER",
             Focus::Dialog => "DIALOG",
+            Focus::Backlinks => "BACKLINKS",
         };
         let hints = match self.focus {
             Focus::Editor => self.editor.hint_shortcuts(),
@@ -525,6 +566,7 @@ impl AppScreen for EditorScreen {
                 .map(|m| m.hint_shortcuts())
                 .unwrap_or_default(),
             Focus::Dialog => vec![],
+            Focus::Backlinks => self.backlinks_panel.hint_shortcuts(),
         };
         self.footer
             .render(f, rows[2], theme, focus_label, &hints, &self.icons);
@@ -632,6 +674,14 @@ impl AppScreen for EditorScreen {
                 self.on_entry_op(from, tx).await;
                 None
             }
+            AppEvent::BacklinksLoaded(entries) => {
+                self.backlinks_panel.on_loaded(entries);
+                None
+            }
+            AppEvent::BacklinkFullTextLoaded { index, text } => {
+                self.backlinks_panel.on_full_text_loaded(index, text);
+                None
+            }
             other => Some(other),
         }
     }
@@ -655,6 +705,7 @@ mod tests {
             Focus::Sidebar => "SIDEBAR",
             Focus::NoteBrowser => "NOTE BROWSER",
             Focus::Dialog => "DIALOG",
+            Focus::Backlinks => "BACKLINKS",
         };
         assert_eq!(label, "DIALOG");
 
