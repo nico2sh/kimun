@@ -2,11 +2,14 @@ use std::sync::Arc;
 
 use kimun_core::nfs::VaultPath;
 use kimun_core::NoteVault;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::ListState;
 
+use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{SortField, SortOrder};
-use crate::keys::KeyBindings;
+use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::{key_event_to_combo, KeyBindings};
 
 // ---------------------------------------------------------------------------
 // BacklinkEntry
@@ -155,6 +158,126 @@ impl BacklinksPanel {
         if let Some(entry) = self.entries.get_mut(index) {
             entry.full_text = Some(text);
         }
+    }
+
+    // ── Input handling ──────────────────────────────────────────────────
+
+    pub fn handle_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
+        // Check for action shortcuts first.
+        if let Some(combo) = key_event_to_combo(key) {
+            match self.key_bindings.get_action(&combo) {
+                Some(ActionShortcuts::CycleSortField) => {
+                    self.sort_field = self.sort_field.cycle();
+                    self.apply_sort();
+                    self.expand_states = vec![ExpandState::Collapsed; self.entries.len()];
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::SortReverseOrder) => {
+                    self.sort_order = self.sort_order.toggle();
+                    self.apply_sort();
+                    self.expand_states = vec![ExpandState::Collapsed; self.entries.len()];
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::FocusSidebar) => {
+                    tx.send(AppEvent::FocusSidebar).ok();
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::FocusEditor) => {
+                    tx.send(AppEvent::FocusEditor).ok();
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::FollowLink) => {
+                    if let Some(path) = self.selected_path().cloned() {
+                        tx.send(AppEvent::OpenPath(path)).ok();
+                    }
+                    return EventState::Consumed;
+                }
+                _ => {}
+            }
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                self.move_selection(-1);
+                EventState::Consumed
+            }
+            KeyCode::Down => {
+                self.move_selection(1);
+                EventState::Consumed
+            }
+            KeyCode::Enter => {
+                self.toggle_expand(tx);
+                EventState::Consumed
+            }
+            KeyCode::Esc => {
+                tx.send(AppEvent::FocusEditor).ok();
+                EventState::Consumed
+            }
+            _ => EventState::NotConsumed,
+        }
+    }
+
+    fn move_selection(&mut self, delta: i32) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let current = self.list_state.selected().unwrap_or(0) as i32;
+        let next = (current + delta).clamp(0, self.entries.len() as i32 - 1) as usize;
+        self.list_state.select(Some(next));
+        self.scroll_offset = 0;
+    }
+
+    fn toggle_expand(&mut self, tx: &AppTx) {
+        let Some(idx) = self.list_state.selected() else {
+            return;
+        };
+        if idx >= self.expand_states.len() {
+            return;
+        }
+
+        match self.expand_states[idx] {
+            ExpandState::Collapsed => {
+                self.expand_states[idx] = ExpandState::Context;
+            }
+            ExpandState::Context => {
+                // Load full text if not yet loaded.
+                if self.entries[idx].full_text.is_none() {
+                    let path = self.entries[idx].path.clone();
+                    let vault = Arc::clone(&self.vault);
+                    let tx = tx.clone();
+                    let idx_copy = idx;
+                    tokio::spawn(async move {
+                        if let Ok(text) = vault.get_note_text(&path).await {
+                            tx.send(AppEvent::BacklinkFullTextLoaded {
+                                index: idx_copy,
+                                text,
+                            })
+                            .ok();
+                        }
+                    });
+                }
+                self.expand_states[idx] = ExpandState::Full;
+            }
+            ExpandState::Full => {
+                self.expand_states[idx] = ExpandState::Collapsed;
+                self.scroll_offset = 0;
+            }
+        }
+    }
+
+    pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        [
+            (ActionShortcuts::FocusEditor, "focus editor"),
+            (ActionShortcuts::FollowLink, "open note"),
+            (ActionShortcuts::CycleSortField, "sort"),
+        ]
+        .iter()
+        .filter_map(|(action, label)| {
+            self.key_bindings
+                .first_combo_for(action)
+                .map(|k| (k, label.to_string()))
+        })
+        .collect()
     }
 }
 
