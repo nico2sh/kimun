@@ -56,13 +56,16 @@ All settings are stored in your config file (see [Configuration Reference](@/get
 
 ### Focus Management
 
-- **`Ctrl+L`** — Focus the editor pane (when in the sidebar)
-- **`Ctrl+H`** — Focus the sidebar (when in the editor)
+- **`Ctrl+L`** — Move focus right (Sidebar → Editor → Backlinks)
+- **`Ctrl+H`** — Move focus left (Backlinks → Editor → Sidebar)
+
+Focus moves directionally through the visible panels. If the target panel is hidden, it is opened automatically (e.g., pressing `Ctrl+L` from the editor opens the backlinks panel if it's not visible).
 
 ### Panels and Views
 
 - **`Ctrl+F`** — Toggle the note browser panel visibility
 - **`Ctrl+Y`** — Toggle the preview pane (Editor only)
+- **`Ctrl+E`** — Toggle the backlinks panel (right side)
 - **`Ctrl+B`** — Toggle the sidebar (context-sensitive; see Key Bindings below)
 
 ### Sorting
@@ -102,7 +105,7 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 |--------|-----------------|
 | Quit | `Ctrl+Q` |
 | Settings | `Ctrl+P` |
-| Search notes | `Ctrl+E` |
+| Search notes | `Ctrl+K` |
 | Open note (fuzzy finder) | `Ctrl+O` |
 | Toggle note browser | `Ctrl+F` |
 | Toggle preview | `Ctrl+Y` |
@@ -113,8 +116,8 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 | Italic | `Ctrl+I` |
 | Strikethrough | `Ctrl+S` |
 | Toggle header | `Ctrl+T` |
-| Focus editor | `Ctrl+L` |
-| Focus sidebar | `Ctrl+H` |
+| Focus right (Sidebar → Editor → Backlinks) | `Ctrl+L` |
+| Focus left (Backlinks → Editor → Sidebar) | `Ctrl+H` |
 | Cycle sort field (name/title) | `Ctrl+N` |
 | Reverse sort order | `Ctrl+R` |
 | Follow link under cursor | `Ctrl+G` |

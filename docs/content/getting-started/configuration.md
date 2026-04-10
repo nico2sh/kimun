@@ -127,13 +127,13 @@ Use these action names exactly as shown:
   - `OpenNote` — Open a note (fuzzy file picker)
   - `TogglePreview` — Show/hide the preview pane
   - `ToggleSidebar` — Show/hide the sidebar
-  - `FocusEditor` — Move focus to the editor
-  - `FocusSidebar` — Move focus to the sidebar
+  - `ToggleBacklinks` — Show/hide the backlinks panel
+  - `FocusEditor` — Move focus right (Sidebar → Editor → Backlinks)
+  - `FocusSidebar` — Move focus left (Backlinks → Editor → Sidebar)
 
 - **Note Management**
   - `NewJournal` — Create a new journal entry
   - `QuickNote` — Open the quick note dialog to capture a thought
-  - `ToggleBacklinks` — Show/hide the backlinks panel
 
 - **Sorting**
   - `CycleSortField` — Cycle the sort field (filename → title → filename → …)
@@ -185,7 +185,7 @@ path = "/Users/alice/Documents/Notes"
 Quit = ["ctrl&Q"]
 OpenSettings = ["ctrl&P"]
 ToggleNoteBrowser = ["ctrl&F"]
-SearchNotes = ["ctrl&E"]
+SearchNotes = ["ctrl&K"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
 QuickNote = ["ctrl&W"]
