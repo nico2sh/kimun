@@ -57,7 +57,7 @@ impl From<SortOrderSetting> for SortOrder {
 }
 
 impl SortField {
-    fn label(self) -> char {
+    pub fn label(self) -> char {
         match self {
             Self::Name => 'N',
             Self::Title => 'T',
@@ -73,7 +73,7 @@ impl SortField {
 }
 
 impl SortOrder {
-    fn label(self) -> char {
+    pub fn label(self) -> char {
         match self {
             Self::Ascending => '↑',
             Self::Descending => '↓',
