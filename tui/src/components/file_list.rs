@@ -630,10 +630,8 @@ impl Component for FileListComponent {
                 // Check keybindings first for action shortcuts.
                 if let Some(combo) = key_event_to_combo(key) {
                     match self.key_bindings.get_action(&combo) {
-                        Some(ActionShortcuts::FocusEditor) => {
-                            tx.send(AppEvent::FocusEditor).ok();
-                            return EventState::Consumed;
-                        }
+                        // FocusEditor / FocusSidebar shortcuts are intercepted
+                        // at the EditorScreen level for directional navigation.
                         Some(ActionShortcuts::CycleSortField) => {
                             let field = self.sort_field.cycle();
                             self.set_sort(field, self.sort_order, tx.clone());
@@ -791,7 +789,7 @@ impl Component for FileListComponent {
 
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
         [
-            (ActionShortcuts::FocusEditor, "focus editor"),
+            (ActionShortcuts::FocusEditor, "editor \u{2192}"),
             (ActionShortcuts::CycleSortField, "cycle sort"),
             (ActionShortcuts::SortReverseOrder, "reverse"),
             (ActionShortcuts::FileOperations, "file ops"),

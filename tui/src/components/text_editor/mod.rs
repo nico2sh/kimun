@@ -39,8 +39,6 @@ use crate::components::events::AppEvent;
 use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
 use crate::keys::KeyBindings;
-use crate::keys::action_shortcuts::ActionShortcuts;
-use crate::keys::key_event_to_combo;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -251,12 +249,8 @@ impl TextEditorComponent {
             return None;
         };
 
-        if let Some(combo) = key_event_to_combo(key)
-            && let Some(ActionShortcuts::FocusSidebar) = self.key_bindings.get_action(&combo)
-        {
-            tx.send(AppEvent::FocusSidebar).ok();
-            return Some(EventState::Consumed);
-        }
+        // FocusSidebar / FocusEditor shortcuts are intercepted at the
+        // EditorScreen level for directional navigation.
 
         // Intercept ZZ / ZQ in Normal mode: buffer the first Z, then
         // decide on the second key without forwarding either to nvim.
@@ -349,7 +343,7 @@ impl TextEditorComponent {
     fn handle_textarea_key(
         &mut self,
         key: &ratatui::crossterm::event::KeyEvent,
-        tx: &AppTx,
+        _tx: &AppTx,
     ) -> EventState {
         // System clipboard shortcuts — intercept before passing to textarea.
         if key.modifiers == KeyModifiers::CONTROL {
@@ -416,13 +410,8 @@ impl TextEditorComponent {
             return EventState::Consumed;
         }
 
-        // Check keybindings for navigation actions.
-        if let Some(combo) = key_event_to_combo(key)
-            && let Some(ActionShortcuts::FocusSidebar) = self.key_bindings.get_action(&combo)
-        {
-            tx.send(AppEvent::FocusSidebar).ok();
-            return EventState::Consumed;
-        }
+        // FocusSidebar / FocusEditor shortcuts are intercepted at the
+        // EditorScreen level for directional navigation.
 
         // Standard text-editor shortcuts.
         // `input_without_shortcuts` only handles chars, backspace, delete, tab, newline —
@@ -631,7 +620,8 @@ impl Component for TextEditorComponent {
             let mut hints = vec![(String::new(), label)];
             hints.extend(
                 [
-                    (ActionShortcuts::FocusSidebar, "focus sidebar"),
+                    (ActionShortcuts::FocusSidebar, "\u{2190} sidebar"),
+                    (ActionShortcuts::FocusEditor, "backlinks \u{2192}"),
                     (ActionShortcuts::FileOperations, "file ops"),
                 ]
                 .iter()
@@ -645,7 +635,8 @@ impl Component for TextEditorComponent {
         }
 
         [
-            (ActionShortcuts::FocusSidebar, "focus sidebar"),
+            (ActionShortcuts::FocusSidebar, "\u{2190} sidebar"),
+            (ActionShortcuts::FocusEditor, "backlinks \u{2192}"),
             (ActionShortcuts::FileOperations, "file ops"),
         ]
         .iter()

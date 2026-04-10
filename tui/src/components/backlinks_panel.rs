@@ -3,7 +3,7 @@ use std::sync::Arc;
 use kimun_core::nfs::VaultPath;
 use kimun_core::NoteVault;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -28,7 +28,7 @@ pub struct BacklinkEntry {
     pub filename: String,
     /// The paragraph in this note that contains the link to the current note.
     pub context: String,
-    /// Full note text, loaded lazily on first expand.
+    /// Full note text, loaded when backlinks are fetched.
     pub full_text: Option<String>,
 }
 
@@ -57,7 +57,10 @@ pub struct BacklinksPanel {
     sort_order: SortOrder,
     vault: Arc<NoteVault>,
     key_bindings: KeyBindings,
-    scroll_offset: usize,
+    /// Scroll offset for full-expanded content view.
+    content_scroll: usize,
+    /// Maximum scroll offset (computed during render).
+    content_scroll_max: usize,
 }
 
 impl BacklinksPanel {
@@ -72,11 +75,21 @@ impl BacklinksPanel {
             sort_order: SortOrder::Ascending,
             vault,
             key_bindings,
-            scroll_offset: 0,
+            content_scroll: 0,
+            content_scroll_max: 0,
         }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
+
+    /// Returns true if the selected entry is in full-expand mode (content takes
+    /// the whole panel, up/down scrolls content).
+    fn is_full_expanded(&self) -> bool {
+        self.list_state
+            .selected()
+            .and_then(|i| self.expand_states.get(i))
+            .is_some_and(|s| *s == ExpandState::Full)
+    }
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -100,7 +113,8 @@ impl BacklinksPanel {
         self.list_state.select(None);
         self.loading = true;
         self.current_note = note_path.clone();
-        self.scroll_offset = 0;
+        self.content_scroll = 0;
+        self.content_scroll_max = 0;
 
         let vault = Arc::clone(&self.vault);
         tokio::spawn(async move {
@@ -158,13 +172,6 @@ impl BacklinksPanel {
         self.expand_states = sorted_states;
     }
 
-    /// Called when full text for a backlink entry has been loaded.
-    pub fn on_full_text_loaded(&mut self, index: usize, text: String) {
-        if let Some(entry) = self.entries.get_mut(index) {
-            entry.full_text = Some(text);
-        }
-    }
-
     // ── Input handling ──────────────────────────────────────────────────
 
     pub fn handle_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
@@ -183,14 +190,8 @@ impl BacklinksPanel {
                     self.expand_states = vec![ExpandState::Collapsed; self.entries.len()];
                     return EventState::Consumed;
                 }
-                Some(ActionShortcuts::FocusSidebar) => {
-                    tx.send(AppEvent::FocusSidebar).ok();
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::FocusEditor) => {
-                    tx.send(AppEvent::FocusEditor).ok();
-                    return EventState::Consumed;
-                }
+                // FocusSidebar / FocusEditor are intercepted at the
+                // EditorScreen level for directional navigation.
                 Some(ActionShortcuts::FollowLink) => {
                     if let Some(path) = self.selected_path().cloned() {
                         tx.send(AppEvent::OpenPath(path)).ok();
@@ -203,21 +204,27 @@ impl BacklinksPanel {
 
         match key.code {
             KeyCode::Up => {
-                self.move_selection(-1);
+                if self.is_full_expanded() {
+                    self.content_scroll = self.content_scroll.saturating_sub(1);
+                } else {
+                    self.move_selection(-1);
+                }
                 EventState::Consumed
             }
             KeyCode::Down => {
-                self.move_selection(1);
+                if self.is_full_expanded() {
+                    // Increment freely; render() clamps to content_scroll_max.
+                    self.content_scroll += 1;
+                } else {
+                    self.move_selection(1);
+                }
                 EventState::Consumed
             }
             KeyCode::Enter => {
-                self.toggle_expand(tx);
+                self.toggle_expand();
                 EventState::Consumed
             }
-            KeyCode::Esc => {
-                tx.send(AppEvent::FocusEditor).ok();
-                EventState::Consumed
-            }
+            KeyCode::Esc => EventState::NotConsumed,
             _ => EventState::NotConsumed,
         }
     }
@@ -229,10 +236,9 @@ impl BacklinksPanel {
         let current = self.list_state.selected().unwrap_or(0) as i32;
         let next = (current + delta).clamp(0, self.entries.len() as i32 - 1) as usize;
         self.list_state.select(Some(next));
-        self.scroll_offset = 0;
     }
 
-    fn toggle_expand(&mut self, tx: &AppTx) {
+    fn toggle_expand(&mut self) {
         let Some(idx) = self.list_state.selected() else {
             return;
         };
@@ -245,34 +251,19 @@ impl BacklinksPanel {
                 self.expand_states[idx] = ExpandState::Context;
             }
             ExpandState::Context => {
-                // Load full text if not yet loaded.
-                if self.entries[idx].full_text.is_none() {
-                    let path = self.entries[idx].path.clone();
-                    let vault = Arc::clone(&self.vault);
-                    let tx = tx.clone();
-                    let idx_copy = idx;
-                    tokio::spawn(async move {
-                        if let Ok(text) = vault.get_note_text(&path).await {
-                            tx.send(AppEvent::BacklinkFullTextLoaded {
-                                index: idx_copy,
-                                text,
-                            })
-                            .ok();
-                        }
-                    });
-                }
+                self.content_scroll = 0;
                 self.expand_states[idx] = ExpandState::Full;
             }
             ExpandState::Full => {
+                self.content_scroll = 0;
                 self.expand_states[idx] = ExpandState::Collapsed;
-                self.scroll_offset = 0;
             }
         }
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
         [
-            (ActionShortcuts::FocusEditor, "focus editor"),
+            (ActionShortcuts::FocusSidebar, "\u{2190} editor"),
             (ActionShortcuts::FollowLink, "open note"),
             (ActionShortcuts::CycleSortField, "sort"),
         ]
@@ -322,65 +313,227 @@ impl BacklinksPanel {
             return;
         }
 
-        let selected = self.list_state.selected().unwrap_or(usize::MAX);
-        let mut items: Vec<ListItem> = Vec::new();
+        let selected = self.list_state.selected();
+        let selected_state = selected
+            .and_then(|i| self.expand_states.get(i).copied())
+            .unwrap_or(ExpandState::Collapsed);
 
-        for (i, entry) in self.entries.iter().enumerate() {
-            let is_selected = i == selected;
+        // Full mode: content takes the entire panel, no list visible.
+        if selected_state == ExpandState::Full {
+            if let Some(idx) = selected
+                && let Some(entry) = self.entries.get(idx)
+            {
+                let text = entry
+                    .full_text
+                    .as_deref()
+                    .unwrap_or(&entry.context);
 
-            let title_style = if is_selected {
-                Style::default()
-                    .fg(theme.fg_selected.to_ratatui())
-                    .bg(theme.bg_selected.to_ratatui())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(fg).bg(bg)
-            };
-
-            let title_display = if entry.title.is_empty() {
-                entry.filename.clone()
-            } else {
-                entry.title.clone()
-            };
-
-            let mut lines = vec![Line::from(vec![
-                Span::styled(format!(" {} ", title_display), title_style),
-                Span::styled(
-                    format!(" {}", entry.filename),
-                    Style::default().fg(fg_muted).bg(if is_selected {
-                        theme.bg_selected.to_ratatui()
-                    } else {
-                        bg
-                    }),
-                ),
-            ])];
-
-            // Expanded content
-            if i < self.expand_states.len() {
-                let content = match self.expand_states[i] {
-                    ExpandState::Collapsed => None,
-                    ExpandState::Context => Some(&entry.context),
-                    ExpandState::Full => entry.full_text.as_ref().or(Some(&entry.context)),
+                // Split into fixed header (title + divider) and scrollable content.
+                let title_display = if entry.title.is_empty() {
+                    &entry.filename
+                } else {
+                    &entry.title
                 };
-                if let Some(text) = content {
-                    for line in text.lines().take(50) {
-                        lines.push(Line::from(Span::styled(
-                            format!("   {}", line),
-                            Style::default().fg(fg_muted).bg(bg),
-                        )));
-                    }
-                    lines.push(Line::from(Span::raw("")));
-                }
-            }
 
-            items.push(ListItem::new(lines));
+                let parts = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1), // title
+                        Constraint::Length(1), // divider
+                        Constraint::Min(0),    // content
+                    ])
+                    .split(inner);
+
+                // Fixed title header.
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("\u{25BC} {} ", title_display),
+                            Style::default()
+                                .fg(theme.fg_selected.to_ratatui())
+                                .bg(bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" {}", entry.filename),
+                            Style::default().fg(fg_muted).bg(bg),
+                        ),
+                    ]))
+                    .style(Style::default().bg(bg)),
+                    parts[0],
+                );
+
+                // Fixed divider.
+                f.render_widget(
+                    Paragraph::new("\u{2500}".repeat(parts[1].width as usize))
+                        .style(Style::default().fg(fg_muted).bg(bg)),
+                    parts[1],
+                );
+
+                // Scrollable content.
+                let indent = 2usize;
+                let wrap_width = parts[2].width.saturating_sub(indent as u16 + 1) as usize;
+                let target = self.current_note.get_clean_name().to_lowercase();
+
+                let mut lines = Vec::new();
+                for line in text.lines() {
+                    let wrapped = wrap_line(line, wrap_width);
+                    for wline in wrapped {
+                        let spans = highlight_link(&wline, &target, fg_muted, bg, theme);
+                        let mut indented = vec![Span::styled(
+                            " ".repeat(indent),
+                            Style::default().bg(bg),
+                        )];
+                        indented.extend(spans);
+                        lines.push(Line::from(indented));
+                    }
+                }
+
+                let total_lines = lines.len();
+                let viewport = parts[2].height as usize;
+                self.content_scroll_max = total_lines.saturating_sub(viewport);
+                self.content_scroll = self.content_scroll.min(self.content_scroll_max);
+
+                f.render_widget(
+                    Paragraph::new(lines)
+                        .scroll((self.content_scroll as u16, 0))
+                        .style(Style::default().bg(bg)),
+                    parts[2],
+                );
+            }
+            return;
         }
+
+        // Context or Collapsed: show the list, optionally with preview below.
+        let has_context = selected_state == ExpandState::Context;
+
+        let (list_area, divider_area, content_area) = if has_context {
+            let max_list = inner.height / 2;
+            let list_height = (self.entries.len() as u16).min(max_list).max(1);
+            let areas = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(list_height),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .split(inner);
+            (areas[0], Some(areas[1]), Some(areas[2]))
+        } else {
+            (inner, None, None)
+        };
+
+        // Build list items (1 line per entry).
+        let items: Vec<ListItem> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let is_selected = selected == Some(i);
+                let title_style = if is_selected {
+                    Style::default()
+                        .fg(theme.fg_selected.to_ratatui())
+                        .bg(theme.bg_selected.to_ratatui())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(fg).bg(bg)
+                };
+                let title_display = if entry.title.is_empty() {
+                    &entry.filename
+                } else {
+                    &entry.title
+                };
+                let expand_marker = match self.expand_states.get(i) {
+                    Some(ExpandState::Context) => "\u{25BC}",
+                    _ => " ",
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{} {} ", expand_marker, title_display), title_style),
+                    Span::styled(
+                        format!(" {}", entry.filename),
+                        Style::default().fg(fg_muted).bg(if is_selected {
+                            theme.bg_selected.to_ratatui()
+                        } else {
+                            bg
+                        }),
+                    ),
+                ]))
+            })
+            .collect();
 
         let list = List::new(items)
             .style(Style::default().bg(bg))
             .highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
 
-        f.render_stateful_widget(list, inner, &mut self.list_state);
+        f.render_stateful_widget(list, list_area, &mut self.list_state);
+
+        // Divider between list and content.
+        if let Some(div) = divider_area {
+            f.render_widget(
+                Paragraph::new("\u{2500}".repeat(div.width as usize))
+                    .style(Style::default().fg(fg_muted).bg(bg)),
+                div,
+            );
+        }
+
+        // Render context preview below the list: show the full note text
+        // scrolled so the first link occurrence is visible with context above.
+        if let Some(area) = content_area
+            && let Some(idx) = selected
+            && let Some(entry) = self.entries.get(idx)
+            && selected_state == ExpandState::Context
+        {
+            let text = entry.full_text.as_deref().unwrap_or(&entry.context);
+            let indent = 2usize;
+            let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
+            let target = self.current_note.get_clean_name().to_lowercase();
+
+            let mut lines = Vec::new();
+
+            // Track which rendered line contains the first link match.
+            let mut link_line: Option<usize> = None;
+
+            for line in text.lines() {
+                let wrapped = wrap_line(line, wrap_width);
+                for wline in wrapped {
+                    if link_line.is_none()
+                        && (find_case_insensitive(&wline, &format!("[[{}", target)).is_some()
+                            || find_case_insensitive(&wline, &format!("({})", target)).is_some())
+                    {
+                        link_line = Some(lines.len());
+                    }
+                    let spans = highlight_link(&wline, &target, fg_muted, bg, theme);
+                    let mut indented = vec![Span::styled(
+                        " ".repeat(indent),
+                        Style::default().bg(bg),
+                    )];
+                    indented.extend(spans);
+                    lines.push(Line::from(indented));
+                }
+            }
+
+            // Scroll to show the link with context above. If the content from
+            // the link to the end fits within the viewport, scroll back further
+            // to fill the available space.
+            let viewport = area.height as usize;
+            let total = lines.len();
+            let link_pos = link_line.unwrap_or(0);
+            let lines_after_link = total.saturating_sub(link_pos);
+            let scroll_to = if lines_after_link <= viewport {
+                // Content from link to end fits — scroll back to fill the viewport.
+                total.saturating_sub(viewport)
+            } else {
+                // More content below the link — show 2 lines of context above.
+                link_pos.saturating_sub(2)
+            } as u16;
+
+            f.render_widget(
+                Paragraph::new(lines)
+                    .scroll((scroll_to, 0))
+                    .style(Style::default().bg(bg)),
+                area,
+            );
+        }
     }
 }
 
@@ -412,7 +565,7 @@ async fn load_backlinks(vault: &NoteVault, note_path: &VaultPath) -> Vec<Backlin
             title: content_data.title,
             filename,
             context,
-            full_text: None,
+            full_text: Some(text),
         });
     }
 
@@ -432,11 +585,21 @@ async fn load_backlinks(vault: &NoteVault, note_path: &VaultPath) -> Vec<Backlin
 fn extract_context(text: &str, target_name: &str) -> String {
     let target_lower = target_name.to_lowercase();
 
+    // Build the name with extension via VaultPath (avoids hardcoding `.md`).
+    let with_ext = VaultPath::note_path_from(&target_lower)
+        .to_string_with_ext()
+        .to_lowercase();
+    // Extract just the filename portion (after the last `/`).
+    let filename_ext = with_ext
+        .rsplit('/')
+        .next()
+        .unwrap_or(&with_ext);
+
     // Build search needles (lowercase).
     let wikilink_full = format!("[[{}]]", target_lower);
     let wikilink_partial = format!("[[{}", target_lower);
     let md_link = format!("({})", target_lower);
-    let md_link_ext = format!("({}.md)", target_lower);
+    let md_link_ext = format!("({})", filename_ext);
 
     // Split text into paragraphs (groups of consecutive non-blank lines).
     let paragraphs = split_paragraphs(text);
@@ -480,6 +643,137 @@ fn split_paragraphs(text: &str) -> Vec<String> {
     }
 
     paragraphs
+}
+
+// ---------------------------------------------------------------------------
+// Rendering helpers
+// ---------------------------------------------------------------------------
+
+/// Wrap a single line into multiple lines that fit within `max_width` characters.
+/// Uses character count (not byte length) for width. Wraps at word boundaries
+/// when possible, hard-breaks otherwise.
+fn wrap_line(line: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 || line.chars().count() <= max_width {
+        return vec![line.to_string()];
+    }
+
+    let mut result = Vec::new();
+    let mut remaining = line;
+
+    while remaining.chars().count() > max_width {
+        // Find the byte index of the max_width-th character.
+        let byte_limit = remaining
+            .char_indices()
+            .nth(max_width)
+            .map(|(i, _)| i)
+            .unwrap_or(remaining.len());
+
+        // Try to find a space to break at (within the allowed character range).
+        let break_at = remaining[..byte_limit]
+            .rfind(' ')
+            .map(|i| i + 1) // include the space on the current line
+            .unwrap_or(byte_limit); // hard break if no space
+        result.push(remaining[..break_at].trim_end().to_string());
+        remaining = &remaining[break_at..];
+    }
+    if !remaining.is_empty() {
+        result.push(remaining.to_string());
+    }
+    result
+}
+
+/// Case-insensitive search for `needle` in `haystack`, returning the byte
+/// range `(start, end)` in `haystack` where the match occurs. Compares
+/// char-by-char via `to_lowercase()` so byte lengths are always derived from
+/// the original string, avoiding the case-folding byte-mismatch problem.
+fn find_case_insensitive(haystack: &str, needle: &str) -> Option<(usize, usize)> {
+    let needle_chars: Vec<char> = needle.chars().collect();
+    if needle_chars.is_empty() {
+        return None;
+    }
+    let hay_indices: Vec<(usize, char)> = haystack.char_indices().collect();
+    'outer: for start_idx in 0..hay_indices.len() {
+        if start_idx + needle_chars.len() > hay_indices.len() {
+            break;
+        }
+        for (j, &nc) in needle_chars.iter().enumerate() {
+            let hc = hay_indices[start_idx + j].1;
+            // Compare lowercased chars.
+            let mut h_lower = hc.to_lowercase();
+            let mut n_lower = nc.to_lowercase();
+            if h_lower.next() != n_lower.next() {
+                continue 'outer;
+            }
+        }
+        // Match found — compute byte range from haystack char indices.
+        let byte_start = hay_indices[start_idx].0;
+        let byte_end = if start_idx + needle_chars.len() < hay_indices.len() {
+            hay_indices[start_idx + needle_chars.len()].0
+        } else {
+            haystack.len()
+        };
+        return Some((byte_start, byte_end));
+    }
+    None
+}
+
+/// Render a line with link references to `target` in bold.
+/// Splits the line into owned spans: normal text in `fg_muted`, link matches in bold accent.
+/// Uses case-insensitive char-by-char matching to avoid byte-index mismatches.
+fn highlight_link(
+    line: &str,
+    target: &str,
+    fg_muted: ratatui::style::Color,
+    bg: ratatui::style::Color,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let normal_style = Style::default().fg(fg_muted).bg(bg);
+    let bold_style = Style::default()
+        .fg(theme.accent.to_ratatui())
+        .bg(bg)
+        .add_modifier(Modifier::BOLD);
+
+    // Build the with-extension form for markdown links.
+    let with_ext = VaultPath::note_path_from(target)
+        .to_string_with_ext()
+        .to_lowercase();
+    let filename_ext = with_ext
+        .rsplit('/')
+        .next()
+        .unwrap_or(&with_ext)
+        .to_string();
+
+    // Build all needles to search for.
+    let needles = [
+        format!("[[{}]]", target),
+        format!("[[{}", target),
+        format!("({})", target),
+        format!("({})", filename_ext),
+    ];
+
+    // Find the earliest matching needle by byte position.
+    let mut best_match: Option<(usize, usize)> = None; // (byte_start, byte_end)
+    for needle in &needles {
+        if let Some((start, end)) = find_case_insensitive(line, needle)
+            && (best_match.is_none() || start < best_match.unwrap().0)
+        {
+            best_match = Some((start, end));
+        }
+    }
+
+    let Some((start, end)) = best_match else {
+        return vec![Span::styled(line.to_string(), normal_style)];
+    };
+
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled(line[..start].to_string(), normal_style));
+    }
+    spans.push(Span::styled(line[start..end].to_string(), bold_style));
+    if end < line.len() {
+        spans.push(Span::styled(line[end..].to_string(), normal_style));
+    }
+    spans
 }
 
 // ---------------------------------------------------------------------------
@@ -529,5 +823,92 @@ Unrelated content.";
 
         let result = extract_context(text, "my-note");
         assert!(result.contains("(my-note.md)"));
+    }
+
+    #[test]
+    fn wrap_line_fits_within_width() {
+        let result = wrap_line("short", 20);
+        assert_eq!(result, vec!["short"]);
+    }
+
+    #[test]
+    fn wrap_line_breaks_at_word_boundary() {
+        let result = wrap_line("hello world foo bar", 12);
+        assert_eq!(result, vec!["hello world", "foo bar"]);
+    }
+
+    #[test]
+    fn wrap_line_hard_breaks_long_word() {
+        let result = wrap_line("abcdefghij", 5);
+        assert_eq!(result, vec!["abcde", "fghij"]);
+    }
+
+    #[test]
+    fn wrap_line_handles_multibyte_chars() {
+        // 5 CJK characters — each is 1 char, should wrap at char boundary
+        let result = wrap_line("日本語テスト", 3);
+        assert_eq!(result, vec!["日本語", "テスト"]);
+    }
+
+    #[test]
+    fn wrap_line_empty_string() {
+        let result = wrap_line("", 10);
+        assert_eq!(result, vec![""]);
+    }
+
+    #[test]
+    fn highlight_link_bolds_wikilink() {
+        let spans = highlight_link(
+            "see [[my-note]] here",
+            "my-note",
+            ratatui::style::Color::Gray,
+            ratatui::style::Color::Black,
+            &crate::settings::themes::Theme::default(),
+        );
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content, "see ");
+        assert_eq!(spans[1].content, "[[my-note]]");
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[2].content, " here");
+    }
+
+    #[test]
+    fn highlight_link_case_insensitive() {
+        let spans = highlight_link(
+            "See [[My-Note]] here",
+            "my-note",
+            ratatui::style::Color::Gray,
+            ratatui::style::Color::Black,
+            &crate::settings::themes::Theme::default(),
+        );
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[1].content, "[[My-Note]]");
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn highlight_link_markdown_with_extension() {
+        let spans = highlight_link(
+            "see [link](my-note.md) here",
+            "my-note",
+            ratatui::style::Color::Gray,
+            ratatui::style::Color::Black,
+            &crate::settings::themes::Theme::default(),
+        );
+        assert_eq!(spans.len(), 3);
+        assert!(spans[1].content.contains("my-note.md"));
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn highlight_link_no_match_returns_single_span() {
+        let spans = highlight_link(
+            "nothing here",
+            "other",
+            ratatui::style::Color::Gray,
+            ratatui::style::Color::Black,
+            &crate::settings::themes::Theme::default(),
+        );
+        assert_eq!(spans.len(), 1);
     }
 }
