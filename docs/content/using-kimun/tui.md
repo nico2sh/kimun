@@ -74,6 +74,18 @@ All settings are stored in your config file (see [Configuration Reference](@/get
 
 Press `Ctrl+W` to open the quick note dialog. Type a thought and press Enter to save it — the note is created in your inbox directory with a timestamp filename, and you stay on the current note without interruption. Use Shift+Enter to save and immediately open the new note instead.
 
+### Backlinks Panel
+
+Press `Ctrl+E` to toggle the backlinks panel on the right side of the editor. It shows all notes that link to the current note — useful for understanding context and navigating related ideas without leaving your current work.
+
+- **Up/Down** — navigate the backlinks list
+- **Enter** — expand the selected backlink to show the paragraph that contains the link. Press Enter again to show the full note content. Press Enter a third time to collapse.
+- **Ctrl+G** — open the selected backlink in the editor
+- **Ctrl+N / Ctrl+R** — sort backlinks by name or title, toggle sort order
+- **Esc** — return focus to the editor
+
+The panel loads backlinks when toggled on and refreshes automatically when you switch notes. Panel visibility is remembered for the session.
+
 ### Following Links
 
 When the cursor is inside a link in the editor, **`Ctrl+G`** follows it:
@@ -96,6 +108,7 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 | Toggle preview | `Ctrl+Y` |
 | New journal entry | `Ctrl+J` |
 | Quick note | `Ctrl+W` |
+| Toggle backlinks panel | `Ctrl+E` |
 | Toggle sidebar / Bold (context-sensitive) | `Ctrl+B` |
 | Italic | `Ctrl+I` |
 | Strikethrough | `Ctrl+S` |

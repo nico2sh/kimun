@@ -83,8 +83,6 @@ pub enum AppEvent {
     // ── Backlinks panel messages ────────────────────────────────────────────
     /// Backlinks for the current note have been loaded.
     BacklinksLoaded(Vec<crate::components::backlinks_panel::BacklinkEntry>),
-    /// Full text for a specific backlink entry has been loaded.
-    BacklinkFullTextLoaded { index: usize, text: String },
 }
 
 impl AppEvent {

@@ -133,6 +133,7 @@ Use these action names exactly as shown:
 - **Note Management**
   - `NewJournal` — Create a new journal entry
   - `QuickNote` — Open the quick note dialog to capture a thought
+  - `ToggleBacklinks` — Show/hide the backlinks panel
 
 - **Sorting**
   - `CycleSortField` — Cycle the sort field (filename → title → filename → …)
@@ -188,6 +189,7 @@ SearchNotes = ["ctrl&E"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
 QuickNote = ["ctrl&W"]
+ToggleBacklinks = ["ctrl&E"]
 TogglePreview = ["ctrl&Y"]
 FileOperations = ["F2"]
 ```

@@ -284,6 +284,32 @@ impl EditorScreen {
         self.focus = Focus::Sidebar;
     }
 
+    /// Move focus one step to the left: Backlinks → Editor → Sidebar.
+    /// Opens the sidebar if moving left from the editor and it's hidden.
+    fn focus_left(&mut self) {
+        match self.focus {
+            Focus::Backlinks => self.focus_editor(),
+            Focus::Editor => self.focus_sidebar(),
+            _ => {}
+        }
+    }
+
+    /// Move focus one step to the right: Sidebar → Editor → Backlinks.
+    /// Opens and loads backlinks if moving right from the editor and the panel is hidden.
+    fn focus_right(&mut self, tx: &AppTx) {
+        match self.focus {
+            Focus::Sidebar => self.focus_editor(),
+            Focus::Editor => {
+                if !self.backlinks_visible {
+                    self.backlinks_visible = true;
+                    self.backlinks_panel.load(self.path.clone(), tx.clone());
+                }
+                self.focus = Focus::Backlinks;
+            }
+            _ => {}
+        }
+    }
+
     fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
         if !self.sidebar_visible {
@@ -347,6 +373,14 @@ impl AppScreen for EditorScreen {
             match self.settings.key_bindings.get_action(&combo) {
                 Some(ActionShortcuts::ToggleSidebar) => {
                     self.toggle_sidebar();
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::FocusSidebar) => {
+                    self.focus_left();
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::FocusEditor) => {
+                    self.focus_right(tx);
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::NewJournal) => {
@@ -452,6 +486,11 @@ impl AppScreen for EditorScreen {
             if self.sidebar_visible && self.sidebar.handle_input(event, tx).is_consumed() {
                 return EventState::Consumed;
             }
+            // Backlinks panel consumes mouse events in its focus to prevent
+            // clicks from falling through to the editor.
+            if matches!(self.focus, Focus::Backlinks) {
+                return EventState::Consumed;
+            }
             return self.editor.handle_input(event, tx);
         }
 
@@ -468,6 +507,11 @@ impl AppScreen for EditorScreen {
             Focus::Dialog => self.dialogs.handle_input(event, tx),
             Focus::Backlinks => {
                 if let InputEvent::Key(key) = event {
+                    // Esc goes directly to editor (not through directional navigation).
+                    if key.code == ratatui::crossterm::event::KeyCode::Esc {
+                        self.focus_editor();
+                        return EventState::Consumed;
+                    }
                     self.backlinks_panel.handle_key(key, tx)
                 } else {
                     EventState::NotConsumed
@@ -512,7 +556,7 @@ impl AppScreen for EditorScreen {
         }
         constraints.push(Constraint::Min(0));
         if self.backlinks_visible {
-            constraints.push(Constraint::Length(30));
+            constraints.push(Constraint::Length(40));
         }
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -676,10 +720,6 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::BacklinksLoaded(entries) => {
                 self.backlinks_panel.on_loaded(entries);
-                None
-            }
-            AppEvent::BacklinkFullTextLoaded { index, text } => {
-                self.backlinks_panel.on_full_text_loaded(index, text);
                 None
             }
             other => Some(other),
