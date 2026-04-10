@@ -19,7 +19,7 @@ use crate::components::settings::display_section::DisplaySection;
 use crate::components::settings::editor_section::EditorSection;
 use crate::components::settings::indexing_section::IndexingSection;
 use crate::components::settings::sorting_section::SortingSection;
-use crate::components::settings::vault_section::VaultSection;
+use crate::components::settings::workspaces_section::{WorkspacesSection, Mode as WorkspaceMode};
 use crate::components::indexing::{
     IndexingProgressState, fixed_centered_rect, render_indexing_overlay, spawn_running,
 };
@@ -99,7 +99,7 @@ pub enum Overlay {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SettingsSection {
-    Vault,
+    Workspaces,
     Appearance,
     Display,
     Sorting,
@@ -124,7 +124,8 @@ pub struct SettingsScreen {
     appearance_section: AppearanceSection,
     display_section: DisplaySection,
     sorting_section: SortingSection,
-    vault_section: VaultSection,
+    workspaces_section: WorkspacesSection,
+    pending_create_name: Option<String>,
     indexing_section: IndexingSection,
     editor_section: EditorSection,
     pub overlay: Overlay,
@@ -137,8 +138,7 @@ impl SettingsScreen {
         let theme = settings.get_theme();
         let themes = settings.theme_list();
         let active_name = settings.get_theme().name.clone();
-        let vault_path = settings.workspace_dir.clone();
-        let vault_available = vault_path.is_some();
+        let vault_available = settings.workspace_dir.is_some();
         let autosave_interval_secs = settings.autosave_interval_secs;
         let use_nerd_fonts = settings.use_nerd_fonts;
         let initial_settings = settings.clone();
@@ -151,13 +151,14 @@ impl SettingsScreen {
                 settings.journal_sort_field,
                 settings.journal_sort_order,
             ),
-            vault_section: VaultSection::new(vault_path),
+            workspaces_section: WorkspacesSection::new(&settings),
+            pending_create_name: None,
             indexing_section: IndexingSection::new(vault_available),
             editor_section: EditorSection::new(autosave_interval_secs),
             settings,
             initial_settings,
             theme,
-            section: SettingsSection::Vault,
+            section: SettingsSection::Workspaces,
             focus: SettingsFocus::Sidebar,
             overlay: Overlay::None,
             pending_save_after_index: false,
@@ -205,6 +206,43 @@ impl SettingsScreen {
             let settings = self.settings.clone();
             tx.send(AppEvent::SettingsSaved(Box::new(settings))).ok();
         }
+    }
+
+    /// Called when the file browser confirms a directory path (via 'c' or Ctrl+Enter).
+    fn confirm_file_browser(&mut self, chosen: PathBuf, _tx: &AppTx) {
+        use crate::settings::workspace_config::{WorkspaceConfig, WorkspaceEntry};
+
+        if let Some(name) = self.pending_create_name.take() {
+            // Creating a new workspace with the chosen path.
+            let entry = WorkspaceEntry {
+                path: chosen,
+                last_paths: Vec::new(),
+                created: chrono::Utc::now(),
+                quick_note_path: None,
+                inbox_path: None,
+            };
+            if let Some(ref mut wc) = self.settings.workspace_config {
+                wc.workspaces.insert(name.clone(), entry);
+                // If this is the first workspace, make it current.
+                if wc.workspaces.len() == 1 {
+                    wc.global.current_workspace = name;
+                }
+            } else {
+                let mut wc = WorkspaceConfig::new_empty();
+                wc.workspaces.insert(name.clone(), entry);
+                wc.global.current_workspace = name;
+                self.settings.workspace_config = Some(wc);
+                self.settings.config_version = 2;
+            }
+            self.workspaces_section.refresh(&self.settings);
+            self.indexing_section.set_vault_available(true);
+        } else {
+            // Browsing path for existing/current workspace.
+            self.settings.set_workspace(&chosen);
+            self.workspaces_section.refresh(&self.settings);
+            self.indexing_section.set_vault_available(true);
+        }
+        self.overlay = Overlay::None;
     }
 }
 
@@ -257,10 +295,7 @@ impl AppScreen for SettingsScreen {
                     }
                     KeyCode::Char('c') => {
                         let chosen = fb.current_path.clone();
-                        self.settings.set_workspace(&chosen);
-                        self.vault_section.set_path(Some(chosen));
-                        self.indexing_section.set_vault_available(true);
-                        self.overlay = Overlay::None;
+                        self.confirm_file_browser(chosen, tx);
                     }
                     _ => {
                         // Ctrl+Enter confirms too
@@ -268,10 +303,7 @@ impl AppScreen for SettingsScreen {
                             && key.modifiers.contains(KeyModifiers::CONTROL)
                         {
                             let chosen = fb.current_path.clone();
-                            self.settings.set_workspace(&chosen);
-                            self.vault_section.set_path(Some(chosen));
-                            self.indexing_section.set_vault_available(true);
-                            self.overlay = Overlay::None;
+                            self.confirm_file_browser(chosen, tx);
                         }
                     }
                 }
@@ -403,19 +435,19 @@ impl AppScreen for SettingsScreen {
                 SettingsFocus::Sidebar => match key.code {
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.section = match self.section {
-                            SettingsSection::Vault => SettingsSection::Appearance,
+                            SettingsSection::Workspaces => SettingsSection::Appearance,
                             SettingsSection::Appearance => SettingsSection::Display,
                             SettingsSection::Display => SettingsSection::Sorting,
                             SettingsSection::Sorting => SettingsSection::Indexing,
                             SettingsSection::Indexing => SettingsSection::Editor,
-                            SettingsSection::Editor => SettingsSection::Vault,
+                            SettingsSection::Editor => SettingsSection::Workspaces,
                         };
                         EventState::Consumed
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.section = match self.section {
-                            SettingsSection::Vault => SettingsSection::Editor,
-                            SettingsSection::Appearance => SettingsSection::Vault,
+                            SettingsSection::Workspaces => SettingsSection::Editor,
+                            SettingsSection::Appearance => SettingsSection::Workspaces,
                             SettingsSection::Display => SettingsSection::Appearance,
                             SettingsSection::Sorting => SettingsSection::Display,
                             SettingsSection::Indexing => SettingsSection::Sorting,
@@ -453,7 +485,67 @@ impl AppScreen for SettingsScreen {
                             self.settings.journal_sort_order = self.sorting_section.journal_sort_order;
                             r
                         }
-                        SettingsSection::Vault => self.vault_section.handle_input(&app_event, tx),
+                        SettingsSection::Workspaces => {
+                            // Capture pre-action state for rename/delete
+                            let pre_mode = self.workspaces_section.mode().clone();
+                            let pre_selected = self.workspaces_section.selected_name().map(|s| s.to_string());
+
+                            let r = self.workspaces_section.handle_input(&app_event, tx);
+
+                            let post_mode = self.workspaces_section.mode().clone();
+
+                            // Creating: section collected a name and sent OpenFileBrowser.
+                            // The section stays in Creating mode after Enter; store the name
+                            // for when the file browser confirms a path, then reset.
+                            if pre_mode == WorkspaceMode::Creating
+                                && post_mode == WorkspaceMode::Creating
+                                && key.code == KeyCode::Enter
+                            {
+                                let name = self.workspaces_section.input().to_string();
+                                if !name.trim().is_empty() {
+                                    self.pending_create_name = Some(name.trim().to_string());
+                                    self.workspaces_section.reset_mode();
+                                }
+                            }
+
+                            // Renaming: section was in Renaming, Enter pressed — apply rename.
+                            if pre_mode == WorkspaceMode::Renaming
+                                && post_mode == WorkspaceMode::Renaming
+                                && key.code == KeyCode::Enter
+                            {
+                                let new_name = self.workspaces_section.input().to_string();
+                                if let Some(old_name) = pre_selected.as_deref()
+                                    && !new_name.trim().is_empty()
+                                    && new_name.trim() != old_name
+                                    && let Some(ref mut wc) = self.settings.workspace_config
+                                    && let Some(entry) = wc.workspaces.remove(old_name)
+                                {
+                                    let trimmed = new_name.trim().to_string();
+                                    wc.workspaces.insert(trimmed.clone(), entry);
+                                    if wc.global.current_workspace == old_name {
+                                        wc.global.current_workspace = trimmed;
+                                    }
+                                }
+                                self.workspaces_section.reset_mode();
+                                self.workspaces_section.refresh(&self.settings);
+                            }
+
+                            // Delete confirmation: section stays in ConfirmDelete after 'y'.
+                            if pre_mode == WorkspaceMode::ConfirmDelete
+                                && post_mode == WorkspaceMode::ConfirmDelete
+                                && key.code == KeyCode::Char('y')
+                            {
+                                if let Some(name) = pre_selected.as_deref()
+                                    && let Some(ref mut wc) = self.settings.workspace_config
+                                {
+                                    wc.workspaces.remove(name);
+                                }
+                                self.workspaces_section.reset_mode();
+                                self.workspaces_section.refresh(&self.settings);
+                            }
+
+                            r
+                        }
                         SettingsSection::Indexing => {
                             self.indexing_section.handle_input(&app_event, tx)
                         }
@@ -564,14 +656,14 @@ impl AppScreen for SettingsScreen {
         // Sidebar navigation
         let sidebar_focused = self.focus == SettingsFocus::Sidebar;
         let active_idx = match self.section {
-            SettingsSection::Vault => 0,
+            SettingsSection::Workspaces => 0,
             SettingsSection::Appearance => 1,
             SettingsSection::Display => 2,
             SettingsSection::Sorting => 3,
             SettingsSection::Indexing => 4,
             SettingsSection::Editor => 5,
         };
-        let items: Vec<ListItem> = ["Vault", "Appearance", "Display", "Sorting", "Indexing", "Editor"]
+        let items: Vec<ListItem> = ["Workspaces", "Appearance", "Display", "Sorting", "Indexing", "Editor"]
             .iter()
             .enumerate()
             .map(|(i, name)| {
@@ -604,8 +696,8 @@ impl AppScreen for SettingsScreen {
             SettingsSection::Sorting => self
                 .sorting_section
                 .render(f, cols[1], &theme, content_focused),
-            SettingsSection::Vault => {
-                self.vault_section
+            SettingsSection::Workspaces => {
+                self.workspaces_section
                     .render(f, cols[1], &theme, content_focused)
             }
             SettingsSection::Indexing => {
