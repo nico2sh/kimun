@@ -341,23 +341,31 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             }
         }
         AppEvent::SettingsSaved(new_settings) => {
-            if new_settings.workspace_dir != app.settings.workspace_dir {
-                app.vault = if let Some(ref workspace) = new_settings.workspace_dir {
-                    kimun_core::NoteVault::new(workspace)
-                        .await
-                        .ok()
-                        .map(|mut v| {
-                            if let Some(ref wc) = new_settings.workspace_config
-                                && let Some(entry) = wc.get_current_workspace()
-                            {
-                                v.set_inbox_path(kimun_core::nfs::VaultPath::new(entry.effective_inbox_path()));
-                            }
-                            std::sync::Arc::new(v)
-                        })
-                } else {
-                    None
-                };
-            }
+            // Resolve workspace path from Phase 1 (workspace_dir) or Phase 2
+            // (workspace_config) settings, then rebuild the vault so workspace
+            // path and inbox_path changes take effect.
+            let workspace_path = new_settings.workspace_dir.clone().or_else(|| {
+                new_settings
+                    .workspace_config
+                    .as_ref()
+                    .and_then(|wc| wc.get_current_workspace())
+                    .map(|entry| entry.path.clone())
+            });
+            app.vault = if let Some(ref workspace) = workspace_path {
+                kimun_core::NoteVault::new(workspace)
+                    .await
+                    .ok()
+                    .map(|mut v| {
+                        if let Some(ref wc) = new_settings.workspace_config
+                            && let Some(entry) = wc.get_current_workspace()
+                        {
+                            v.set_inbox_path(kimun_core::nfs::VaultPath::new(entry.effective_inbox_path()));
+                        }
+                        std::sync::Arc::new(v)
+                    })
+            } else {
+                None
+            };
             app.settings = *new_settings;
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
             // switch_screen(app, tx, Box::new(StartScreen::new(app.settings.clone()))).await;

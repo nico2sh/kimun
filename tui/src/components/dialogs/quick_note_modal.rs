@@ -56,6 +56,7 @@ impl QuickNoteModal {
                 EventState::Consumed
             }
             (_, KeyCode::Backspace) => {
+                self.error = None;
                 if self.cursor > 0 {
                     // Move cursor back to the previous char boundary
                     let prev = self.input[..self.cursor]
@@ -109,6 +110,7 @@ impl QuickNoteModal {
                 EventState::Consumed
             }
             (_, KeyCode::Char(c)) => {
+                self.error = None;
                 self.input.insert(self.cursor, c);
                 self.cursor += c.len_utf8();
                 EventState::Consumed
@@ -137,7 +139,7 @@ impl QuickNoteModal {
         });
     }
 
-    pub fn render(&self, f: &mut Frame, rect: Rect, theme: &Theme) {
+    pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
         let height = if self.error.is_some() { 9 } else { 8 };
         let popup_area = super::fixed_centered_rect(62, height, rect);
 
