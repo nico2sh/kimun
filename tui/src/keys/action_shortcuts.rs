@@ -56,15 +56,15 @@ impl ActionShortcuts {
             | ActionShortcuts::FocusSidebar
             | ActionShortcuts::FocusEditor
             | ActionShortcuts::CycleSortField
-            | ActionShortcuts::SortReverseOrder => ShortcutCategory::Navigation,
+            | ActionShortcuts::SortReverseOrder
+            | ActionShortcuts::ToggleBacklinks => ShortcutCategory::Navigation,
 
             ActionShortcuts::SearchNotes
             | ActionShortcuts::OpenNote
             | ActionShortcuts::NewJournal
             | ActionShortcuts::FileOperations
             | ActionShortcuts::FollowLink
-            | ActionShortcuts::QuickNote
-            | ActionShortcuts::ToggleBacklinks => ShortcutCategory::Notes,
+            | ActionShortcuts::QuickNote => ShortcutCategory::Notes,
 
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
 
@@ -83,8 +83,8 @@ impl ActionShortcuts {
             ActionShortcuts::NewJournal => "New journal entry".into(),
             ActionShortcuts::TogglePreview => "Toggle preview".into(),
             ActionShortcuts::ToggleSidebar => "Toggle sidebar".into(),
-            ActionShortcuts::FocusEditor => "Focus editor".into(),
-            ActionShortcuts::FocusSidebar => "Focus sidebar".into(),
+            ActionShortcuts::FocusEditor => "Focus right".into(),
+            ActionShortcuts::FocusSidebar => "Focus left".into(),
             ActionShortcuts::CycleSortField => "Cycle sort field".into(),
             ActionShortcuts::SortReverseOrder => "Reverse sort order".into(),
             ActionShortcuts::FileOperations => "File operations".into(),
@@ -211,6 +211,10 @@ mod tests {
             ActionShortcuts::SortReverseOrder.category(),
             ShortcutCategory::Navigation
         );
+        assert_eq!(
+            ActionShortcuts::ToggleBacklinks.category(),
+            ShortcutCategory::Navigation
+        );
 
         assert_eq!(
             ActionShortcuts::SearchNotes.category(),
@@ -230,6 +234,10 @@ mod tests {
         );
         assert_eq!(
             ActionShortcuts::FollowLink.category(),
+            ShortcutCategory::Notes
+        );
+        assert_eq!(
+            ActionShortcuts::QuickNote.category(),
             ShortcutCategory::Notes
         );
 
@@ -262,8 +270,8 @@ mod tests {
         assert_eq!(ActionShortcuts::NewJournal.label(), "New journal entry");
         assert_eq!(ActionShortcuts::TogglePreview.label(), "Toggle preview");
         assert_eq!(ActionShortcuts::ToggleSidebar.label(), "Toggle sidebar");
-        assert_eq!(ActionShortcuts::FocusEditor.label(), "Focus editor");
-        assert_eq!(ActionShortcuts::FocusSidebar.label(), "Focus sidebar");
+        assert_eq!(ActionShortcuts::FocusEditor.label(), "Focus right");
+        assert_eq!(ActionShortcuts::FocusSidebar.label(), "Focus left");
         assert_eq!(ActionShortcuts::CycleSortField.label(), "Cycle sort field");
         assert_eq!(
             ActionShortcuts::SortReverseOrder.label(),
@@ -271,6 +279,11 @@ mod tests {
         );
         assert_eq!(ActionShortcuts::FileOperations.label(), "File operations");
         assert_eq!(ActionShortcuts::FollowLink.label(), "Follow link");
+        assert_eq!(ActionShortcuts::QuickNote.label(), "Quick note");
+        assert_eq!(
+            ActionShortcuts::ToggleBacklinks.label(),
+            "Toggle backlinks"
+        );
         assert_eq!(ActionShortcuts::Text(TextAction::Bold).label(), "Bold");
         assert_eq!(ActionShortcuts::Text(TextAction::Italic).label(), "Italic");
         assert_eq!(
