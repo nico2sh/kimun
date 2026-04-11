@@ -1,10 +1,16 @@
 # Docs workflow: Build and deploy Zola documentation to GitHub Pages
-# Triggered on pushes to main that touch docs/
+# Triggered on:
+#   - pushes to main that touch docs/ (content changes)
+#   - published releases (so the sidebar release pill fetched at build time via
+#     Zola load_data is refreshed against the new GitHub API latest release)
+#   - manual dispatch
 on:
   push:
     branches: [main]
     paths:
       - "docs/**"
+  release:
+    types: [published]
   workflow_dispatch:
 
 name: docs
