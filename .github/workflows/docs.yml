@@ -1,16 +1,20 @@
 # Docs workflow: Build and deploy Zola documentation to GitHub Pages
 # Triggered on:
 #   - pushes to main that touch docs/ (content changes)
-#   - published releases (so the sidebar release pill fetched at build time via
-#     Zola load_data is refreshed against the new GitHub API latest release)
+#   - successful release-plz runs (so the sidebar release pill fetched at build
+#     time via Zola load_data is refreshed against the new GitHub API latest
+#     release). workflow_run always runs in the default-branch context, so the
+#     github-pages environment's branch protection allows it — unlike a release
+#     event, which runs under the tag ref and gets rejected.
 #   - manual dispatch
 on:
   push:
     branches: [main]
     paths:
       - "docs/**"
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["release-plz"]
+    types: [completed]
   workflow_dispatch:
 
 name: docs
@@ -32,6 +36,8 @@ jobs:
   deploy:
     name: Build and Deploy Docs
     runs-on: ubuntu-latest
+    # Skip if triggered by a failed release-plz run
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
