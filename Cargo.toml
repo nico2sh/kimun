@@ -11,7 +11,7 @@ strip = true      # strip debug symbols from the final binary
 panic = "abort"   # drop unwinding machinery (~10 % size reduction)
 
 [workspace.dependencies]
-kimun_core = { path = "core", version = "0.2.4" }
+kimun_core = { path = "core", version = "0.2.5" }
 
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.0.7"
