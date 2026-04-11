@@ -24,7 +24,7 @@ use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
 use crate::keys::key_strike::KeyStrike;
-use crate::settings::AppSettings;
+use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -39,7 +39,7 @@ enum Focus {
 
 pub struct EditorScreen {
     vault: Arc<NoteVault>,
-    settings: AppSettings,
+    settings: SharedSettings,
     icons: Icons,
     theme: Theme,
     editor: TextEditorComponent,
@@ -56,9 +56,10 @@ pub struct EditorScreen {
 }
 
 impl EditorScreen {
-    pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: AppSettings) -> Self {
-        let kb = settings.key_bindings.clone();
-        let theme = settings.get_theme();
+    pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
+        let s = settings.read().unwrap();
+        let kb = s.key_bindings.clone();
+        let theme = s.get_theme();
         let kb_map = kb.to_hashmap();
         let first_key = |action: &ActionShortcuts| {
             kb_map
@@ -72,10 +73,11 @@ impl EditorScreen {
             first_key(&ActionShortcuts::Quit),
             first_key(&ActionShortcuts::ToggleSidebar),
         );
-        let icons = settings.icons();
-        let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &settings);
+        let icons = s.icons();
+        let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &s);
         let backlinks_panel = BacklinksPanel::new(vault.clone(), kb.clone());
-        let editor = TextEditorComponent::new(kb, &settings);
+        let editor = TextEditorComponent::new(kb, &s);
+        drop(s);
         Self {
             settings,
             icons,
@@ -125,14 +127,16 @@ impl EditorScreen {
                 // Multiple matches — show picker.
                 use crate::components::note_browser::link_results_provider::LinkResultsProvider;
                 let provider = LinkResultsProvider::from_results(results);
+                let s = self.settings.read().unwrap();
                 self.note_browser = Some(NoteBrowserModal::new(
                     format!("Follow: {target}"),
                     provider,
                     self.vault.clone(),
-                    self.settings.key_bindings.clone(),
-                    self.settings.icons(),
+                    s.key_bindings.clone(),
+                    s.icons(),
                     tx.clone(),
                 ));
+                drop(s);
                 self.focus = Focus::NoteBrowser;
             }
             Err(e) => {
@@ -154,8 +158,11 @@ impl EditorScreen {
         // Save current note before switching
         self.try_save().await;
 
-        self.settings.add_path_history(&path);
-        let settings_snapshot = self.settings.clone();
+        {
+            let mut s = self.settings.write().unwrap();
+            s.add_path_history(&path);
+        }
+        let settings_snapshot = self.settings.read().unwrap().clone();
         tokio::spawn(async move {
             settings_snapshot.save_to_disk().ok();
         });
@@ -198,7 +205,8 @@ impl EditorScreen {
         }
 
         // Abort any existing timer and spawn a fresh one for the new note.
-        self.autosave.restart(self.settings.autosave_interval_secs, tx.clone());
+        let interval = self.settings.read().unwrap().autosave_interval_secs;
+        self.autosave.restart(interval, tx.clone());
     }
 
     pub async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
@@ -370,7 +378,11 @@ impl AppScreen for EditorScreen {
                     tx2.send(AppEvent::Redraw).ok();
                 });
             }
-            match self.settings.key_bindings.get_action(&combo) {
+            let action = {
+                let s = self.settings.read().unwrap();
+                s.key_bindings.get_action(&combo)
+            };
+            match action {
                 Some(ActionShortcuts::ToggleSidebar) => {
                     self.toggle_sidebar();
                     return EventState::Consumed;
@@ -394,18 +406,20 @@ impl AppScreen for EditorScreen {
                             self.focus = Focus::Editor;
                         }
                     } else {
+                        let s = self.settings.read().unwrap();
                         let provider = SearchNotesProvider::new(
                             self.vault.clone(),
-                            self.settings.last_paths.clone(),
+                            s.current_last_paths(),
                         );
                         self.note_browser = Some(NoteBrowserModal::new(
                             "Note Browser",
                             provider,
                             self.vault.clone(),
-                            self.settings.key_bindings.clone(),
-                            self.settings.icons(),
+                            s.key_bindings.clone(),
+                            s.icons(),
                             tx.clone(),
                         ));
+                        drop(s);
                         self.focus = Focus::NoteBrowser;
                     }
                     return EventState::Consumed;
@@ -419,14 +433,16 @@ impl AppScreen for EditorScreen {
                     } else {
                         let current_dir = self.path.get_parent_path().0;
                         let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
+                        let s = self.settings.read().unwrap();
                         self.note_browser = Some(NoteBrowserModal::new(
                             "Find Note",
                             provider,
                             self.vault.clone(),
-                            self.settings.key_bindings.clone(),
-                            self.settings.icons(),
+                            s.key_bindings.clone(),
+                            s.icons(),
                             tx.clone(),
                         ));
+                        drop(s);
                         self.focus = Focus::NoteBrowser;
                     }
                     return EventState::Consumed;
@@ -446,8 +462,10 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SwitchWorkspace) => {
+                    let s = self.settings.read().unwrap();
                     self.dialogs
-                        .open_workspace_switcher(&self.settings, self.focus_index());
+                        .open_workspace_switcher(&s, self.focus_index());
+                    drop(s);
                     self.focus = Focus::Dialog;
                     return EventState::Consumed;
                 }
@@ -464,8 +482,10 @@ impl AppScreen for EditorScreen {
                             && combo.modifiers.is_empty()
                             && !self.dialogs.is_open()
                         {
+                            let s = self.settings.read().unwrap();
                             self.dialogs
-                                .open_help(&self.settings.key_bindings, self.focus_index());
+                                .open_help(&s.key_bindings, self.focus_index());
+                            drop(s);
                             self.focus = Focus::Dialog;
                         }
                         // All F-keys (including F1 when a dialog is already open) are consumed
