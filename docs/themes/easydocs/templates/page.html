@@ -2,4 +2,32 @@
 {% block title %} {{ config.title }} | {{ page.title }} {% endblock title %}
     {% block content %}
         {{ page.content | safe }}
+
+        <footer class="page-footer">
+            {%- if config.extra.edit_url -%}
+                {%- set _rel = page.relative_path -%}
+                <p class="edit-link">
+                    <a href="{{ config.extra.edit_url | safe }}/{{ _rel | safe }}" target="_blank" rel="noopener noreferrer">
+                        Edit this page on GitHub &rarr;
+                    </a>
+                </p>
+            {%- endif -%}
+
+            {%- if page.lower or page.higher -%}
+                <nav class="page-nav" aria-label="Page navigation">
+                    {%- if page.lower -%}
+                        <a class="page-nav__prev" href="{{ page.lower.permalink | safe }}">
+                            <span class="page-nav__label">&larr; Previous</span>
+                            <span class="page-nav__title">{{ page.lower.title }}</span>
+                        </a>
+                    {%- endif -%}
+                    {%- if page.higher -%}
+                        <a class="page-nav__next" href="{{ page.higher.permalink | safe }}">
+                            <span class="page-nav__label">Next &rarr;</span>
+                            <span class="page-nav__title">{{ page.higher.title }}</span>
+                        </a>
+                    {%- endif -%}
+                </nav>
+            {%- endif -%}
+        </footer>
     {% endblock content %}

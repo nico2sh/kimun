@@ -16,6 +16,7 @@ kimun.app
 docs/book/
 **/.claude/
 **/.superpowers/
+.agents/
 docs/superpowers/
 docs/plans/
 docs/specs/

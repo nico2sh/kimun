@@ -131,31 +131,52 @@ function debounce(func, wait) {
     return li;
   }
   
-  // Go from the book view to the search view
-  function toggleSearchMode() {
-    var $wrapContent = document.querySelector("#wrap");
-    var $searchIcon = document.querySelector("#search-ico");
-    var $searchContainer = document.querySelector(".search-container");
-    if ($searchContainer.classList.contains("search-container--is-visible")) {
-      $searchContainer.classList.remove("search-container--is-visible");
-      $wrapContent.style.display = "";
-      $searchIcon.className = "ms-Icon--Search";
-    } else {
-      $searchContainer.classList.add("search-container--is-visible");
-      $wrapContent.style.display = "none";
-      $searchIcon.className = "ms-Icon--ChromeClose";
-      document.getElementById("search").focus();
-    }
-  }
-  
   function initSearch() {
     var $searchInput = document.getElementById("search");
     if (!$searchInput) {
       return;
     }
-    var $searchIcon = document.querySelector("#search-ico");
-    $searchIcon.addEventListener("click", toggleSearchMode);
-  
+
+    // Keyboard shortcuts
+    document.addEventListener("keydown", function (e) {
+      var t = e.target;
+      var tag = t && t.tagName;
+      var inField = tag === "INPUT" || tag === "TEXTAREA" || (t && t.isContentEditable);
+
+      // Esc: blur search, clear value, hide results
+      if (e.key === "Escape" && document.activeElement === $searchInput) {
+        $searchInput.value = "";
+        $searchInput.blur();
+        var $r = document.querySelector(".search-results");
+        if ($r) $r.style.display = "none";
+        var $h = document.querySelector(".search-results__header");
+        if ($h) $h.innerText = "";
+        var $i = document.querySelector(".search-results__items");
+        if ($i) $i.innerHTML = "";
+        return;
+      }
+
+      if (inField) return;
+
+      // "/" focuses search
+      if (e.key === "/") {
+        e.preventDefault();
+        $searchInput.focus();
+        $searchInput.select();
+        return;
+      }
+
+      // n / p: next / previous page (uses footer page-nav)
+      if (e.key === "n" || e.key === "p") {
+        var selector = e.key === "n" ? ".page-nav__next" : ".page-nav__prev";
+        var link = document.querySelector(selector);
+        if (link && link.href) {
+          e.preventDefault();
+          window.location.href = link.href;
+        }
+      }
+    });
+
     var $searchResults = document.querySelector(".search-results");
     var $searchResultsHeader = document.querySelector(".search-results__header");
     var $searchResultsItems = document.querySelector(".search-results__items");
@@ -176,11 +197,15 @@ function debounce(func, wait) {
       if (term === currentTerm || !index) {
         return;
       }
-      $searchResults.style.display = term === "" ? "none" : "block";
-      $searchResultsItems.innerHTML = "";
       if (term === "") {
+        $searchResults.style.display = "none";
+        $searchResultsItems.innerHTML = "";
+        $searchResultsHeader.innerText = "";
+        currentTerm = "";
         return;
       }
+      $searchResults.style.display = "block";
+      $searchResultsItems.innerHTML = "";
   
       var results = index.search(term, options).filter(function (r) {
         return r.doc.body !== "";
@@ -212,28 +237,32 @@ function debounce(func, wait) {
     document.addEventListener("DOMContentLoaded", initSearch);
   }
 
-// mobile 
+// mobile
 
   function burger() {
-    let x = document.querySelector("#trees");
-    let y = document.querySelector("#mobile");
+    const trees = document.querySelector("#trees");
+    const btn = document.querySelector("#mobile");
+    const menuIcon = btn.querySelector(".icon-menu");
+    const closeIcon = btn.querySelector(".icon-close");
 
-    if (x.style.display === "block") {
-      x.style.display = "none";
-      y.className = "ms-Icon--GlobalNavButton";
-    } else {
-      x.style.display = "block";
-      y.className = "ms-Icon--ChromeClose";
-    }
+    const isOpen = trees.style.display === "block";
+    trees.style.display = isOpen ? "none" : "block";
+    btn.setAttribute("aria-expanded", String(!isOpen));
+    menuIcon.style.display = isOpen ? "" : "none";
+    closeIcon.style.display = isOpen ? "none" : "";
   }
 
 // https://aaronluna.dev/blog/add-copy-button-to-code-blocks-hugo-chroma/
 
+const ICON_COPY = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M3 10V3a1 1 0 0 1 1-1h7"/></svg>';
+const ICON_CHECK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg>';
+
 function createCopyButton(highlightDiv) {
   const button = document.createElement("button");
-  button.className = "copy-code-button ";
+  button.className = "copy-code-button";
   button.type = "button";
-  button.innerHTML = "&#xE8C8;";
+  button.setAttribute("aria-label", "Copy code");
+  button.innerHTML = ICON_COPY;
   button.addEventListener("click", () =>
     copyCodeToClipboard(button, highlightDiv)
   );
@@ -276,9 +305,9 @@ function copyCodeBlockExecCommand(codeToCopy, highlightDiv) {
 
 function codeWasCopied(button) {
   button.blur();
-  button.innerHTML = "&#xE74E;";
+  button.innerHTML = ICON_CHECK;
   setTimeout(function () {
-    button.innerHTML = "&#xE8C8;";
+    button.innerHTML = ICON_COPY;
   }, 2000);
 }
 
@@ -293,3 +322,27 @@ function addCopyButtonToDom(button, highlightDiv) {
 document
   .querySelectorAll("pre")
   .forEach((highlightDiv) => createCopyButton(highlightDiv));
+
+// Back-to-top button
+(function initBackToTop() {
+  var btn = document.createElement("button");
+  btn.className = "back-to-top";
+  btn.type = "button";
+  btn.setAttribute("aria-label", "Back to top");
+  btn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V4M4 7.5L8 3.5l4 4"/></svg>';
+  btn.addEventListener("click", function () {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+  document.body.appendChild(btn);
+
+  var threshold = function () { return window.innerHeight * 2; };
+  var onScroll = function () {
+    if (window.scrollY > threshold()) {
+      btn.classList.add("back-to-top--visible");
+    } else {
+      btn.classList.remove("back-to-top--visible");
+    }
+  };
+  window.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+})();
