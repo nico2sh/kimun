@@ -18,11 +18,12 @@ pub fn extract_tags(content: &str) -> Vec<String> {
 
     // Extract from YAML frontmatter
     if let Some(frontmatter) = extract_frontmatter(content)
-        && let Some(yaml_tags) = extract_frontmatter_tags(&frontmatter) {
-            for tag in yaml_tags {
-                tags.insert(tag);
-            }
+        && let Some(yaml_tags) = extract_frontmatter_tags(&frontmatter)
+    {
+        for tag in yaml_tags {
+            tags.insert(tag);
         }
+    }
 
     // Extract hashtags from content
     for capture in hashtag_regex().captures_iter(content) {
@@ -48,11 +49,12 @@ pub fn extract_headers(content: &str) -> Vec<JsonHeader> {
 
     for line in content.lines() {
         if let Some(capture) = header_regex().captures(line)
-            && let (Some(level_match), Some(text_match)) = (capture.get(1), capture.get(2)) {
-                let level = level_match.as_str().len() as u32;
-                let text = text_match.as_str().trim().to_string();
-                headers.push(JsonHeader { text, level });
-            }
+            && let (Some(level_match), Some(text_match)) = (capture.get(1), capture.get(2))
+        {
+            let level = level_match.as_str().len() as u32;
+            let text = text_match.as_str().trim().to_string();
+            headers.push(JsonHeader { text, level });
+        }
     }
 
     headers
@@ -97,15 +99,21 @@ fn extract_frontmatter_tags(frontmatter: &str) -> Option<Vec<String>> {
 
             // Check if this is an inline array format
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                let cleaned = trimmed.strip_prefix('[')
+                let cleaned = trimmed
+                    .strip_prefix('[')
                     .and_then(|s| s.strip_suffix(']'))
                     .unwrap_or(trimmed);
 
                 for tag in cleaned.split(',') {
-                    let clean_tag = tag.trim()
+                    let clean_tag = tag
+                        .trim()
                         .strip_prefix('"')
                         .and_then(|s| s.strip_suffix('"'))
-                        .or_else(|| tag.trim().strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                        .or_else(|| {
+                            tag.trim()
+                                .strip_prefix('\'')
+                                .and_then(|s| s.strip_suffix('\''))
+                        })
                         .unwrap_or(tag.trim());
 
                     if !clean_tag.is_empty() {
@@ -131,10 +139,16 @@ fn extract_frontmatter_tags(frontmatter: &str) -> Option<Vec<String>> {
         // Handle YAML block sequence format (tags: \n  - tag1 \n  - tag2)
         else if in_tags_block && line.starts_with('-') {
             if let Some(tag_str) = line.strip_prefix('-') {
-                let clean_tag = tag_str.trim()
+                let clean_tag = tag_str
+                    .trim()
                     .strip_prefix('"')
                     .and_then(|s| s.strip_suffix('"'))
-                    .or_else(|| tag_str.trim().strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                    .or_else(|| {
+                        tag_str
+                            .trim()
+                            .strip_prefix('\'')
+                            .and_then(|s| s.strip_suffix('\''))
+                    })
                     .unwrap_or(tag_str.trim());
 
                 if !clean_tag.is_empty() {
@@ -144,7 +158,8 @@ fn extract_frontmatter_tags(frontmatter: &str) -> Option<Vec<String>> {
         }
         // Handle "tag: value" format (single tag)
         else if let Some(tag_str) = line.strip_prefix("tag:") {
-            let clean_tag = tag_str.trim()
+            let clean_tag = tag_str
+                .trim()
                 .strip_prefix('"')
                 .and_then(|s| s.strip_suffix('"'))
                 .unwrap_or(tag_str.trim());

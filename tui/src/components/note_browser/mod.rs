@@ -18,9 +18,9 @@ use crate::keys::KeyBindings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
-pub mod search_provider;
 pub mod file_finder_provider;
 pub mod link_results_provider;
+pub mod search_provider;
 
 // ---------------------------------------------------------------------------
 // NoteBrowserProvider trait
@@ -245,67 +245,67 @@ impl Component for NoteBrowserModal {
                 _ => EventState::Consumed, // consume all other mouse events while modal is open
             }
         } else {
-        let InputEvent::Key(key) = event else {
-            return EventState::NotConsumed;
-        };
-        match key.code {
-            KeyCode::Esc => {
-                tx.send(AppEvent::CloseNoteBrowser).ok();
-                EventState::Consumed
-            }
-            KeyCode::Enter => {
-                if let Some(entry) = self.file_list.selected_entry() {
-                    match entry {
-                        FileListEntry::CreateNote { path, .. } => {
-                            let path = path.clone();
-                            let vault = Arc::clone(&self.vault);
-                            let tx = tx.clone();
-                            tokio::spawn(async move {
-                                vault.load_or_create_note(&path, None).await.ok();
+            let InputEvent::Key(key) = event else {
+                return EventState::NotConsumed;
+            };
+            match key.code {
+                KeyCode::Esc => {
+                    tx.send(AppEvent::CloseNoteBrowser).ok();
+                    EventState::Consumed
+                }
+                KeyCode::Enter => {
+                    if let Some(entry) = self.file_list.selected_entry() {
+                        match entry {
+                            FileListEntry::CreateNote { path, .. } => {
+                                let path = path.clone();
+                                let vault = Arc::clone(&self.vault);
+                                let tx = tx.clone();
+                                tokio::spawn(async move {
+                                    vault.load_or_create_note(&path, None).await.ok();
+                                    tx.send(AppEvent::OpenPath(path)).ok();
+                                    tx.send(AppEvent::CloseNoteBrowser).ok();
+                                });
+                            }
+                            _ => {
+                                let path = entry.path().clone();
                                 tx.send(AppEvent::OpenPath(path)).ok();
                                 tx.send(AppEvent::CloseNoteBrowser).ok();
-                            });
-                        }
-                        _ => {
-                            let path = entry.path().clone();
-                            tx.send(AppEvent::OpenPath(path)).ok();
-                            tx.send(AppEvent::CloseNoteBrowser).ok();
+                            }
                         }
                     }
+                    EventState::Consumed
                 }
-                EventState::Consumed
-            }
-            KeyCode::Up => {
-                self.file_list.select_prev();
-                self.refresh_preview();
-                EventState::Consumed
-            }
-            KeyCode::Down => {
-                self.file_list.select_next();
-                self.refresh_preview();
-                EventState::Consumed
-            }
-            KeyCode::Char(c) => {
-                let non_shift = key.modifiers - KeyModifiers::SHIFT;
-                if non_shift.is_empty() {
-                    if key.modifiers.contains(KeyModifiers::SHIFT) {
-                        self.search_query.push(c.to_ascii_uppercase());
-                    } else {
-                        self.search_query.push(c);
+                KeyCode::Up => {
+                    self.file_list.select_prev();
+                    self.refresh_preview();
+                    EventState::Consumed
+                }
+                KeyCode::Down => {
+                    self.file_list.select_next();
+                    self.refresh_preview();
+                    EventState::Consumed
+                }
+                KeyCode::Char(c) => {
+                    let non_shift = key.modifiers - KeyModifiers::SHIFT;
+                    if non_shift.is_empty() {
+                        if key.modifiers.contains(KeyModifiers::SHIFT) {
+                            self.search_query.push(c.to_ascii_uppercase());
+                        } else {
+                            self.search_query.push(c);
+                        }
+                        self.schedule_load(tx.clone());
                     }
+                    // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
+                    // from leaking a character into the search box.
+                    EventState::Consumed
+                }
+                KeyCode::Backspace => {
+                    self.search_query.pop();
                     self.schedule_load(tx.clone());
+                    EventState::Consumed
                 }
-                // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
-                // from leaking a character into the search box.
-                EventState::Consumed
+                _ => EventState::NotConsumed,
             }
-            KeyCode::Backspace => {
-                self.search_query.pop();
-                self.schedule_load(tx.clone());
-                EventState::Consumed
-            }
-            _ => EventState::NotConsumed,
-        }
         } // end key else branch
     }
 
@@ -382,9 +382,8 @@ impl Component for NoteBrowserModal {
 
         // ── Hint bar ──────────────────────────────────────────────────────
         f.render_widget(
-            Paragraph::new("↑↓: navigate  |  Enter: open  |  Esc: close").style(
-                Style::default().fg(theme.fg_secondary.to_ratatui()),
-            ),
+            Paragraph::new("↑↓: navigate  |  Enter: open  |  Esc: close")
+                .style(Style::default().fg(theme.fg_secondary.to_ratatui())),
             rows[2],
         );
     }
@@ -414,6 +413,14 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 // ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+pub(super) fn format_journal_date(date: NaiveDate) -> String {
+    date.format("%A, %B %-d, %Y").to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -423,26 +430,28 @@ mod tests {
 
     #[test]
     fn centered_rect_is_centered() {
-        let area = Rect { x: 0, y: 0, width: 100, height: 40 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
         let r = centered_rect(80, 75, area);
         assert_eq!(r.width, 80);
         assert_eq!(r.height, 30);
         assert_eq!(r.x, 10); // (100 - 80) / 2
-        assert_eq!(r.y, 5);  // (40 - 30) / 2
+        assert_eq!(r.y, 5); // (40 - 30) / 2
     }
 
     #[test]
     fn centered_rect_does_not_underflow() {
         // Very small area — must not panic.
-        let area = Rect { x: 0, y: 0, width: 5, height: 5 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 5,
+            height: 5,
+        };
         let _ = centered_rect(80, 75, area);
     }
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-pub(super) fn format_journal_date(date: NaiveDate) -> String {
-    date.format("%A, %B %-d, %Y").to_string()
 }

@@ -17,8 +17,8 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry, SortField, SortOrder};
 use crate::keys::KeyBindings;
-use crate::settings::icons::Icons;
 use crate::settings::AppSettings;
+use crate::settings::icons::Icons;
 
 pub struct SidebarComponent {
     current_dir: VaultPath,
@@ -32,7 +32,12 @@ pub struct SidebarComponent {
 }
 
 impl SidebarComponent {
-    pub fn new(key_bindings: KeyBindings, vault: Arc<NoteVault>, icons: Icons, settings: &AppSettings) -> Self {
+    pub fn new(
+        key_bindings: KeyBindings,
+        vault: Arc<NoteVault>,
+        icons: Icons,
+        settings: &AppSettings,
+    ) -> Self {
         Self {
             current_dir: VaultPath::root(),
             file_list: FileListComponent::new(key_bindings, icons),
@@ -132,29 +137,29 @@ impl Component for SidebarComponent {
         // forwarding OpenPath — mirroring the note browser modal pattern.
         if let InputEvent::Key(key) = event
             && key.code == KeyCode::Enter
-                && let Some(FileListEntry::CreateNote { path, .. }) =
-                    self.file_list.selected_entry()
-                {
-                    let path = path.clone();
-                    let vault = Arc::clone(&self.vault);
-                    let tx2 = tx.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = vault.load_or_create_note(&path, None).await {
-                            tracing::warn!("create note failed for {path}: {e}");
-                            return;
-                        }
-                        tx2.send(AppEvent::OpenPath(path)).ok();
-                    });
-                    return EventState::Consumed;
+            && let Some(FileListEntry::CreateNote { path, .. }) = self.file_list.selected_entry()
+        {
+            let path = path.clone();
+            let vault = Arc::clone(&self.vault);
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = vault.load_or_create_note(&path, None).await {
+                    tracing::warn!("create note failed for {path}: {e}");
+                    return;
                 }
+                tx2.send(AppEvent::OpenPath(path)).ok();
+            });
+            return EventState::Consumed;
+        }
 
         let result = self.file_list.handle_input(event, tx);
 
         // After a key that modifies the search query, keep the create entry in sync.
         if let InputEvent::Key(key) = event
-            && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
-                self.sync_create_entry();
-            }
+            && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace)
+        {
+            self.sync_create_entry();
+        }
 
         result
     }
@@ -185,10 +190,11 @@ impl Component for SidebarComponent {
         let header_inner = header.inner(rows[0]);
         f.render_widget(header, rows[0]);
         f.render_widget(
-            Paragraph::new(format!("{} notes", self.file_list.note_count()))
-                .style(Style::default()
+            Paragraph::new(format!("{} notes", self.file_list.note_count())).style(
+                Style::default()
                     .fg(theme.fg_muted.to_ratatui())
-                    .bg(theme.bg_panel.to_ratatui())),
+                    .bg(theme.bg_panel.to_ratatui()),
+            ),
             header_inner,
         );
 

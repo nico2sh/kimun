@@ -22,8 +22,7 @@ impl AutosaveTimer {
     pub fn restart(&mut self, interval_secs: u64, tx: AppTx) {
         self.stop();
         self.handle = Some(tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             interval.tick().await; // skip immediate first tick
             loop {
                 interval.tick().await;

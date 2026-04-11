@@ -1,7 +1,7 @@
-use kimun_notes::cli::json_output::format_notes_with_content_as_json;
+use kimun_core::NoteVault;
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
-use kimun_core::NoteVault;
+use kimun_notes::cli::json_output::format_notes_with_content_as_json;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -19,12 +19,13 @@ async fn json_output_includes_required_fields() {
         NoteContentData {
             title: "Test Note".to_string(),
             hash: 0x123456789abcdef0,
-        }
+        },
     )];
 
-    let content_map = vec![
-        (VaultPath::note_path_from("test/note"), "# Test Note\n\nContent here".to_string())
-    ];
+    let content_map = vec![(
+        VaultPath::note_path_from("test/note"),
+        "# Test Note\n\nContent here".to_string(),
+    )];
 
     let json_str = format_notes_with_content_as_json(
         &vault,
@@ -34,7 +35,8 @@ async fn json_output_includes_required_fields() {
         workspace_dir.path().to_str().unwrap(),
         Some("test query"),
         false, // is_listing
-    ).unwrap();
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 

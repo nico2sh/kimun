@@ -61,7 +61,10 @@ impl NoteListVisitor {
 
     // We check the content hash
     fn has_changed_deep_check(&self, cached: &mut NoteContentData, disk: &NoteEntryData) -> bool {
-        let details = self.handle.block_on(disk.load_details(&self.workspace_path, &disk.path)).unwrap();
+        let details = self
+            .handle
+            .block_on(disk.load_details(&self.workspace_path, &disk.path))
+            .unwrap();
         let details_hash = details.get_content_data().hash;
         let cached_hash = cached.hash;
         !details_hash.eq(&cached_hash)
@@ -79,8 +82,9 @@ impl NoteListVisitor {
                 NotesValidation::None => false,
             };
             if changed {
-                let details = self.handle.block_on(data
-                    .load_details(&self.workspace_path, &data.path))
+                let details = self
+                    .handle
+                    .block_on(data.load_details(&self.workspace_path, &data.path))
                     .expect("Can't get details for note");
                 let text = details.raw_text.clone();
                 self.notes_to_modify
@@ -92,8 +96,9 @@ impl NoteListVisitor {
                 cached_details
             }
         } else {
-            let details = self.handle.block_on(data
-                .load_details(&self.workspace_path, &data.path))
+            let details = self
+                .handle
+                .block_on(data.load_details(&self.workspace_path, &data.path))
                 .expect("Can't get Details for note");
             let text = details.raw_text.clone();
             self.notes_to_add
@@ -111,7 +116,9 @@ impl ParallelVisitor for NoteListVisitor {
         match entry {
             Ok(dir) => {
                 // debug!("Scanning: {}", dir.path().as_os_str().to_string_lossy());
-                let npe = self.handle.block_on(VaultEntry::from_path(&self.workspace_path, dir.path()));
+                let npe = self
+                    .handle
+                    .block_on(VaultEntry::from_path(&self.workspace_path, dir.path()));
                 match npe {
                     Ok(entry) => {
                         self.verify_cache(&entry);
@@ -222,9 +229,9 @@ impl<'s> ParallelVisitorBuilder<'s> for NoteListVisitorBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nfs::{create_directory, save_note};
     use std::sync::mpsc;
     use tempfile::TempDir;
-    use crate::nfs::{save_note, create_directory};
 
     #[tokio::test]
     async fn test_note_list_visitor_builder_new() {
@@ -355,7 +362,9 @@ mod tests {
         let dir_path = VaultPath::new("test_directory");
         let note_content = "# Test Note\n\nThis is a test note.";
 
-        save_note(workspace_path, &note_path, note_content).await.unwrap();
+        save_note(workspace_path, &note_path, note_content)
+            .await
+            .unwrap();
         create_directory(workspace_path, &dir_path).await.unwrap();
 
         let cached_notes = vec![];
@@ -378,8 +387,12 @@ mod tests {
         // This test verifies the builder setup works correctly
 
         // Cleanup
-        tokio::fs::remove_file(workspace_path.join("test_note.md")).await.ok();
-        tokio::fs::remove_dir_all(workspace_path.join("test_directory")).await.ok();
+        tokio::fs::remove_file(workspace_path.join("test_note.md"))
+            .await
+            .ok();
+        tokio::fs::remove_dir_all(workspace_path.join("test_directory"))
+            .await
+            .ok();
     }
 
     #[tokio::test]
@@ -450,16 +463,18 @@ mod tests {
             ("note_c.md", "---\ntitle: Note C\n---\n\nFrontmatter note."),
         ];
         let sub_dir = VaultPath::new("subdir");
-        let sub_notes = vec![
-            ("subdir/deep.md", "# Deep Note\n\nNested note."),
-        ];
+        let sub_notes = vec![("subdir/deep.md", "# Deep Note\n\nNested note.")];
 
         create_directory(workspace_path, &sub_dir).await.unwrap();
         for (path, content) in &notes {
-            save_note(workspace_path, &VaultPath::new(*path), *content).await.unwrap();
+            save_note(workspace_path, &VaultPath::new(*path), *content)
+                .await
+                .unwrap();
         }
         for (path, content) in &sub_notes {
-            save_note(workspace_path, &VaultPath::new(*path), *content).await.unwrap();
+            save_note(workspace_path, &VaultPath::new(*path), *content)
+                .await
+                .unwrap();
         }
 
         // Scan with the visitor using a recursive walker (no cached notes)
@@ -499,7 +514,12 @@ mod tests {
             .collect();
 
         // All four notes should be discovered
-        assert_eq!(note_paths.len(), 4, "Expected 4 notes, got: {:?}", note_paths);
+        assert_eq!(
+            note_paths.len(),
+            4,
+            "Expected 4 notes, got: {:?}",
+            note_paths
+        );
         for expected in &["note_a.md", "note_b.md", "note_c.md", "deep.md"] {
             assert!(
                 note_paths.iter().any(|p| p.contains(expected)),
@@ -518,7 +538,12 @@ mod tests {
 
         // All notes should be in the "to add" list since there were no cached notes
         let to_add = builder.get_notes_to_add();
-        assert_eq!(to_add.len(), 4, "Expected 4 notes to add, got {}", to_add.len());
+        assert_eq!(
+            to_add.len(),
+            4,
+            "Expected 4 notes to add, got {}",
+            to_add.len()
+        );
 
         // Nothing to delete or modify
         assert!(builder.get_notes_to_delete().is_empty());
@@ -532,11 +557,15 @@ mod tests {
 
         let note_path = VaultPath::new("changing.md");
         let original = "# Original\n\nOriginal content.";
-        save_note(workspace_path, &note_path, original).await.unwrap();
+        save_note(workspace_path, &note_path, original)
+            .await
+            .unwrap();
 
         // Get the entry as the walker would see it (absolute path via from_path)
         let full_path = workspace_path.join("changing.md");
-        let entry = VaultEntry::from_path(workspace_path, &full_path).await.unwrap();
+        let entry = VaultEntry::from_path(workspace_path, &full_path)
+            .await
+            .unwrap();
         let (note_data, content_data) = match entry.data {
             EntryData::Note(d) => {
                 let details = d.load_details(workspace_path, &d.path).await.unwrap();
@@ -548,7 +577,9 @@ mod tests {
 
         // Overwrite with different content so the file size changes
         let updated = "# Updated\n\nThis content is deliberately much longer to change the file size on disk.";
-        save_note(workspace_path, &note_path, updated).await.unwrap();
+        save_note(workspace_path, &note_path, updated)
+            .await
+            .unwrap();
 
         // Supply the old cached entry (with the original size) to the builder
         let cached = vec![(note_data, content_data)];
@@ -566,7 +597,12 @@ mod tests {
 
         // The note should show up as modified (size changed)
         let modified = builder.get_notes_to_modify();
-        assert_eq!(modified.len(), 1, "Expected 1 modified note, got {}", modified.len());
+        assert_eq!(
+            modified.len(),
+            1,
+            "Expected 1 modified note, got {}",
+            modified.len()
+        );
         assert!(modified[0].0.path.to_string().contains("changing.md"));
 
         // Nothing to add (it was already cached) and nothing to delete (still on disk)
@@ -581,10 +617,14 @@ mod tests {
 
         // Create a note, get its cached data, then delete it from disk
         let note_path = VaultPath::new("ephemeral.md");
-        save_note(workspace_path, &note_path, "# Gone soon").await.unwrap();
+        save_note(workspace_path, &note_path, "# Gone soon")
+            .await
+            .unwrap();
 
         let full_path = workspace_path.join("ephemeral.md");
-        let entry = VaultEntry::from_path(workspace_path, &full_path).await.unwrap();
+        let entry = VaultEntry::from_path(workspace_path, &full_path)
+            .await
+            .unwrap();
         let cached = match entry.data {
             EntryData::Note(d) => {
                 let details = d.load_details(workspace_path, &d.path).await.unwrap();
@@ -594,7 +634,9 @@ mod tests {
         };
 
         // Remove the file from disk
-        tokio::fs::remove_file(workspace_path.join("ephemeral.md")).await.unwrap();
+        tokio::fs::remove_file(workspace_path.join("ephemeral.md"))
+            .await
+            .unwrap();
 
         let mut builder = NoteListVisitorBuilder::new(
             workspace_path,

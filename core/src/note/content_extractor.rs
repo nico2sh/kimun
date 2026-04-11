@@ -13,13 +13,11 @@ use super::NoteLink;
 const _MAX_TITLE_LENGTH: usize = 40;
 
 // Compile regexes once at startup
-static WIKILINK_RX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#).unwrap()
-});
+static WIKILINK_RX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#).unwrap());
 
-static HASHTAG_RX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"#(?P<ht_text>[A-Za-z0-9_]+)"#).unwrap()
-});
+static HASHTAG_RX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"#(?P<ht_text>[A-Za-z0-9_]+)"#).unwrap());
 
 static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?P<bang>!?)(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#).unwrap()
@@ -66,7 +64,12 @@ pub fn wikilink_char_spans(text: &str) -> Vec<LinkSpan> {
             let end = text[..m.end()].chars().count();
             let inner = &caps["link_text"];
             let target = inner.split('|').next().unwrap_or(inner).to_string();
-            LinkSpan { start, end, kind: LinkSpanKind::WikiLink, target }
+            LinkSpan {
+                start,
+                end,
+                kind: LinkSpanKind::WikiLink,
+                target,
+            }
         })
         .collect()
 }
@@ -85,7 +88,12 @@ pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
         let end = text[..m.end()].chars().count();
         let inner = &caps["link_text"];
         let target = inner.split('|').next().unwrap_or(inner).to_string();
-        spans.push(LinkSpan { start, end, kind: LinkSpanKind::WikiLink, target });
+        spans.push(LinkSpan {
+            start,
+            end,
+            kind: LinkSpanKind::WikiLink,
+            target,
+        });
     }
 
     for caps in MD_LINK_RX.captures_iter(text) {
@@ -93,7 +101,12 @@ pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
         let start = text[..m.start()].chars().count();
         let end = text[..m.end()].chars().count();
         let target = caps["link"].trim().to_string();
-        spans.push(LinkSpan { start, end, kind: LinkSpanKind::Markdown, target });
+        spans.push(LinkSpan {
+            start,
+            end,
+            kind: LinkSpanKind::Markdown,
+            target,
+        });
     }
 
     spans.sort_by_key(|s| s.start);
@@ -182,11 +195,14 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
             Some(format!("[{}]({})", text, link_path))
         } else {
             // Keep invalid wikilinks as-is
-            Some(format!("[[{}]]", if link == text {
-                link.to_string()
-            } else {
-                format!("{}|{}", link, text)
-            }))
+            Some(format!(
+                "[[{}]]",
+                if link == text {
+                    link.to_string()
+                } else {
+                    format!("{}|{}", link, text)
+                }
+            ))
         }
     });
 
@@ -319,7 +335,10 @@ pub(crate) fn replace_note_links(
 /// - returns the path string to embed in the output markdown, and the link to record
 ///
 /// Non-image links pass through unchanged.
-pub(crate) fn process_image_links<F>(md_text: &str, mut resolver: F) -> (String, Vec<super::NoteLink>)
+pub(crate) fn process_image_links<F>(
+    md_text: &str,
+    mut resolver: F,
+) -> (String, Vec<super::NoteLink>)
 where
     F: FnMut(&str, &str) -> (String, super::NoteLink),
 {
@@ -479,13 +498,9 @@ impl TextLine {
     fn trim(&self) -> Self {
         match self {
             TextLine::Empty => TextLine::Empty,
-            TextLine::Header(level, text) => {
-                TextLine::Header(*level, text.trim().to_string())
-            }
+            TextLine::Header(level, text) => TextLine::Header(*level, text.trim().to_string()),
             TextLine::Text(text) => TextLine::Text(text.trim().to_string()),
-            TextLine::ListItem(level, text) => {
-                TextLine::ListItem(*level, text.trim().to_string())
-            }
+            TextLine::ListItem(level, text) => TextLine::ListItem(*level, text.trim().to_string()),
         }
     }
 }
@@ -509,7 +524,11 @@ fn loop_events(parser: &mut Parser) -> Vec<TextLine> {
                 };
 
                 if tag_end != start_tag.to_end() {
-                    debug!("Non matching tags: expected {:?}, got {:?}", start_tag.to_end(), tag_end);
+                    debug!(
+                        "Non matching tags: expected {:?}, got {:?}",
+                        start_tag.to_end(),
+                        tag_end
+                    );
                     tag_stack.push(start_tag);
                     continue;
                 }
@@ -588,19 +607,17 @@ fn parse_tag(tag: &Tag, current_line: TextLine) -> Vec<TextLine> {
             };
             vec![current_line, line]
         }
-        Tag::Item => {
-            match &current_line {
-                TextLine::ListItem(lvl, text) => {
-                    let lvl = *lvl;
-                    if text.is_empty() {
-                        vec![current_line]
-                    } else {
-                        vec![current_line, TextLine::ListItem(lvl, String::new())]
-                    }
+        Tag::Item => match &current_line {
+            TextLine::ListItem(lvl, text) => {
+                let lvl = *lvl;
+                if text.is_empty() {
+                    vec![current_line]
+                } else {
+                    vec![current_line, TextLine::ListItem(lvl, String::new())]
                 }
-                _ => vec![TextLine::ListItem(0, String::new())],
             }
-        }
+            _ => vec![TextLine::ListItem(0, String::new())],
+        },
         Tag::Paragraph => {
             vec![current_line, TextLine::Empty]
         }
@@ -685,8 +702,7 @@ mod test {
     fn replace_markdown_link_full_path() {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/notes/new-note.md");
-        let (result, changed) =
-            replace_note_links("[click](/notes/old-note.md)", &old, &new);
+        let (result, changed) = replace_note_links("[click](/notes/old-note.md)", &old, &new);
         assert!(changed);
         assert_eq!(result, "[click](/notes/new-note.md)");
     }
@@ -725,8 +741,7 @@ mod test {
     fn replace_mixed_content() {
         let old = VaultPath::new("/notes/old-note.md");
         let new = VaultPath::new("/archive/new-note.md");
-        let text =
-            "[[old-note]] and [[old-note|read this]] plus [link](/notes/old-note.md) end.";
+        let text = "[[old-note]] and [[old-note|read this]] plus [link](/notes/old-note.md) end.";
         let (result, changed) = replace_note_links(text, &old, &new);
         assert!(changed);
         assert_eq!(
@@ -1285,7 +1300,10 @@ ls -la ./test
                 && link.ltype.eq(&LinkType::Hashtag)
                 && link.raw_link.eq("#tag123")
         }));
-        assert_eq!(md, "Some text with [#hashtag](#hashtag) and another [#tag123](#tag123)");
+        assert_eq!(
+            md,
+            "Some text with [#hashtag](#hashtag) and another [#tag123](#tag123)"
+        );
     }
 
     // --- get_content_chunks: new / regression tests ---
@@ -1374,7 +1392,8 @@ ls -la ./test
 
     #[test]
     fn extract_mixed_links_and_hashtags() {
-        let markdown = r#"This is a [link](note.md) and #hashtag with [[wikilink]] and #another_tag"#;
+        let markdown =
+            r#"This is a [link](note.md) and #hashtag with [[wikilink]] and #another_tag"#;
 
         let note_path = VaultPath::new("/test_note.md");
         let (_md, links) = get_markdown_and_links(&note_path, markdown);
@@ -1396,9 +1415,11 @@ ls -la ./test
                 .filter(|l| matches!(l.ltype, LinkType::Hashtag))
                 .count()
         );
-        assert!(links.iter().any(|link| link.text.eq("hashtag")
-            && link.ltype.eq(&LinkType::Hashtag)));
-        assert!(links.iter().any(|link| link.text.eq("another_tag")
-            && link.ltype.eq(&LinkType::Hashtag)));
+        assert!(links
+            .iter()
+            .any(|link| link.text.eq("hashtag") && link.ltype.eq(&LinkType::Hashtag)));
+        assert!(links
+            .iter()
+            .any(|link| link.text.eq("another_tag") && link.ltype.eq(&LinkType::Hashtag)));
     }
 }

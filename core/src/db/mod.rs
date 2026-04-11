@@ -34,7 +34,10 @@ fn row_to_note_entry(
 
 use super::error::DBError;
 
-use super::{nfs::{NoteEntryData, PATH_SEPARATOR}, VaultPath};
+use super::{
+    nfs::{NoteEntryData, PATH_SEPARATOR},
+    VaultPath,
+};
 
 const VERSION: &str = "0.4";
 const DB_FILE: &str = "kimun.sqlite";

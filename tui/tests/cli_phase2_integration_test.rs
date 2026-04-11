@@ -3,48 +3,64 @@
 // Comprehensive integration tests for CLI Phase 2 functionality.
 // Tests multi-workspace workflows, JSON output validation, and Phase 1 migration.
 
-use kimun_core::nfs::VaultPath;
 use kimun_core::NoteVault;
-use kimun_notes::cli::{run_cli, CliCommand};
+use kimun_core::nfs::VaultPath;
 use kimun_notes::cli::commands::workspace::WorkspaceSubcommand;
 use kimun_notes::cli::output::OutputFormat;
+use kimun_notes::cli::{CliCommand, run_cli};
 use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
 /// Create a temporary workspace with test notes and return both the vault and its directory.
 async fn setup_test_workspace(name: &str, dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(dir.path()).await.expect("failed to create vault");
-    vault.validate_and_init().await.expect("failed to init vault");
+    let vault = NoteVault::new(dir.path())
+        .await
+        .expect("failed to create vault");
+    vault
+        .validate_and_init()
+        .await
+        .expect("failed to init vault");
 
     // Create test notes specific to this workspace
     vault
         .create_note(
-            &VaultPath::note_path_from(&format!("{}-project", name)),
-            &format!("# {} Project\n\n#programming #{}\n\nThis is the {} project note.", name, name, name),
+            &VaultPath::note_path_from(format!("{}-project", name)),
+            &format!(
+                "# {} Project\n\n#programming #{}\n\nThis is the {} project note.",
+                name, name, name
+            ),
         )
         .await
         .expect("failed to create project note");
 
     vault
         .create_note(
-            &VaultPath::note_path_from(&format!("journal/{}-daily", name)),
-            &format!("# {} Daily Journal\n\n## Today\n\nDaily activities for {}.", name, name),
+            &VaultPath::note_path_from(format!("journal/{}-daily", name)),
+            &format!(
+                "# {} Daily Journal\n\n## Today\n\nDaily activities for {}.",
+                name, name
+            ),
         )
         .await
         .expect("failed to create journal note");
 
     vault
         .create_note(
-            &VaultPath::note_path_from(&format!("notes/{}-research", name)),
-            &format!("# {} Research\n\n[[{}-project]]\n\nResearch notes for {}.", name, name, name),
+            &VaultPath::note_path_from(format!("notes/{}-research", name)),
+            &format!(
+                "# {} Research\n\n[[{}-project]]\n\nResearch notes for {}.",
+                name, name, name
+            ),
         )
         .await
         .expect("failed to create research note");
 
-    vault.recreate_index().await.expect("failed to recreate index");
+    vault
+        .recreate_index()
+        .await
+        .expect("failed to recreate index");
     vault
 }
-
 
 /// Write a Phase 1 legacy config file (for migration testing).
 fn write_phase1_config(config_path: &std::path::Path, workspace: &std::path::Path) {
@@ -78,7 +94,11 @@ async fn test_multi_workspace_init_and_switch() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace init should succeed: {:?}",
+        result
+    );
 
     // Initialize second workspace
     let result = run_cli(
@@ -91,15 +111,28 @@ async fn test_multi_workspace_init_and_switch() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "second workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "second workspace init should succeed: {:?}",
+        result
+    );
 
     // Verify config file has both workspaces
     let settings = AppSettings::load_from_file(config_path.clone()).expect("should load settings");
-    let ws_config = settings.workspace_config.as_ref().expect("should have workspace config");
+    let ws_config = settings
+        .workspace_config
+        .as_ref()
+        .expect("should have workspace config");
 
     assert_eq!(ws_config.workspaces.len(), 2, "should have 2 workspaces");
-    assert!(ws_config.workspaces.contains_key("work"), "should have work workspace");
-    assert!(ws_config.workspaces.contains_key("personal"), "should have personal workspace");
+    assert!(
+        ws_config.workspaces.contains_key("work"),
+        "should have work workspace"
+    );
+    assert!(
+        ws_config.workspaces.contains_key("personal"),
+        "should have personal workspace"
+    );
 
     // Switch to personal workspace
     let result = run_cli(
@@ -111,12 +144,22 @@ async fn test_multi_workspace_init_and_switch() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace switch should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace switch should succeed: {:?}",
+        result
+    );
 
     // Verify current workspace changed
     let settings = AppSettings::load_from_file(config_path.clone()).expect("should load settings");
-    let ws_config = settings.workspace_config.as_ref().expect("should have workspace config");
-    assert_eq!(ws_config.global.current_workspace, "personal", "should switch to personal workspace");
+    let ws_config = settings
+        .workspace_config
+        .as_ref()
+        .expect("should have workspace config");
+    assert_eq!(
+        ws_config.global.current_workspace, "personal",
+        "should switch to personal workspace"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +189,11 @@ async fn test_workspace_isolation() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "work workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "work workspace init should succeed: {:?}",
+        result
+    );
 
     let result = run_cli(
         CliCommand::Workspace {
@@ -158,7 +205,11 @@ async fn test_workspace_isolation() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "personal workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "personal workspace init should succeed: {:?}",
+        result
+    );
 
     // Search in work workspace (default)
     let result = run_cli(
@@ -169,7 +220,11 @@ async fn test_workspace_isolation() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "search in work workspace should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search in work workspace should succeed: {:?}",
+        result
+    );
 
     // Switch to personal workspace
     let result = run_cli(
@@ -181,7 +236,11 @@ async fn test_workspace_isolation() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace switch should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace switch should succeed: {:?}",
+        result
+    );
 
     // Search in personal workspace should find different content
     let result = run_cli(
@@ -192,7 +251,11 @@ async fn test_workspace_isolation() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "search in personal workspace should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search in personal workspace should succeed: {:?}",
+        result
+    );
 
     // Search for work content in personal workspace should find nothing
     let result = run_cli(
@@ -203,7 +266,11 @@ async fn test_workspace_isolation() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "search for work content in personal should succeed (but find nothing): {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search for work content in personal should succeed (but find nothing): {:?}",
+        result
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +296,11 @@ async fn test_json_output_multi_workspace() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "test workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "test workspace init should succeed: {:?}",
+        result
+    );
 
     // Test JSON output for search
     let result = run_cli(
@@ -240,7 +311,11 @@ async fn test_json_output_multi_workspace() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "search with JSON format should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search with JSON format should succeed: {:?}",
+        result
+    );
 
     // Test JSON output for notes listing
     let result = run_cli(
@@ -251,7 +326,11 @@ async fn test_json_output_multi_workspace() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "notes with JSON format should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "notes with JSON format should succeed: {:?}",
+        result
+    );
 
     // Verify JSON structure by directly calling the vault (since CLI output goes to stdout)
     let vault = NoteVault::new(workspace_dir.path()).await.unwrap();
@@ -265,15 +344,19 @@ async fn test_json_output_multi_workspace() {
         "test-workspace",
         Some("test"),
         false, // is_listing
-    ).await
+    )
+    .await
     .expect("format_notes_as_json should succeed");
 
-    let json: serde_json::Value = serde_json::from_str(&json_str)
-        .expect("output should be valid JSON");
+    let json: serde_json::Value =
+        serde_json::from_str(&json_str).expect("output should be valid JSON");
 
     // Verify workspace metadata is included
     assert_eq!(json["metadata"]["workspace"], "test-workspace");
-    assert_eq!(json["metadata"]["workspace_path"], workspace_dir.path().to_string_lossy().to_string());
+    assert_eq!(
+        json["metadata"]["workspace_path"],
+        workspace_dir.path().to_string_lossy().to_string()
+    );
     assert_eq!(json["metadata"]["query"], "test");
     assert!(!json["metadata"]["is_listing"].as_bool().unwrap());
 
@@ -282,10 +365,22 @@ async fn test_json_output_multi_workspace() {
     assert!(!notes.is_empty(), "should find test notes");
 
     for note in notes {
-        assert!(note["metadata"].is_object(), "note should have metadata object");
-        assert!(note["metadata"]["tags"].is_array(), "metadata should have tags array");
-        assert!(note["metadata"]["links"].is_array(), "metadata should have links array");
-        assert!(note["metadata"]["headers"].is_array(), "metadata should have headers array");
+        assert!(
+            note["metadata"].is_object(),
+            "note should have metadata object"
+        );
+        assert!(
+            note["metadata"]["tags"].is_array(),
+            "metadata should have tags array"
+        );
+        assert!(
+            note["metadata"]["links"].is_array(),
+            "metadata should have links array"
+        );
+        assert!(
+            note["metadata"]["headers"].is_array(),
+            "metadata should have headers array"
+        );
     }
 }
 
@@ -305,15 +400,36 @@ async fn test_phase1_to_phase2_migration() {
     write_phase1_config(&config_path, workspace_dir.path());
 
     // Verify Phase 1 config loads and migrates correctly
-    let settings = AppSettings::load_from_file(config_path.clone()).expect("should load Phase 1 config");
-    assert!(settings.workspace_dir.is_none(), "workspace_dir should be None after migration");
-    assert!(settings.workspace_config.is_some(), "should have migrated workspace_config");
+    let settings =
+        AppSettings::load_from_file(config_path.clone()).expect("should load Phase 1 config");
+    assert!(
+        settings.workspace_dir.is_none(),
+        "workspace_dir should be None after migration"
+    );
+    assert!(
+        settings.workspace_config.is_some(),
+        "should have migrated workspace_config"
+    );
 
     let ws_config = settings.workspace_config.as_ref().unwrap();
-    assert_eq!(ws_config.global.current_workspace, "default", "should migrate to default workspace");
-    assert_eq!(ws_config.workspaces.len(), 1, "should have one workspace after migration");
-    let default_workspace = ws_config.workspaces.get("default").expect("should have default workspace");
-    assert_eq!(default_workspace.path, workspace_dir.path(), "migrated workspace should have correct path");
+    assert_eq!(
+        ws_config.global.current_workspace, "default",
+        "should migrate to default workspace"
+    );
+    assert_eq!(
+        ws_config.workspaces.len(),
+        1,
+        "should have one workspace after migration"
+    );
+    let default_workspace = ws_config
+        .workspaces
+        .get("default")
+        .expect("should have default workspace");
+    assert_eq!(
+        default_workspace.path,
+        workspace_dir.path(),
+        "migrated workspace should have correct path"
+    );
 
     // Test that CLI commands work with migrated config
     let result = run_cli(
@@ -324,7 +440,11 @@ async fn test_phase1_to_phase2_migration() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "search should work with migrated config: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search should work with migrated config: {:?}",
+        result
+    );
 
     let result = run_cli(
         CliCommand::Notes {
@@ -334,7 +454,11 @@ async fn test_phase1_to_phase2_migration() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "notes should work with migrated config: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "notes should work with migrated config: {:?}",
+        result
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +485,11 @@ async fn test_workspace_management_commands() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "alpha workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "alpha workspace init should succeed: {:?}",
+        result
+    );
 
     let result = run_cli(
         CliCommand::Workspace {
@@ -373,7 +501,11 @@ async fn test_workspace_management_commands() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "beta workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "beta workspace init should succeed: {:?}",
+        result
+    );
 
     // List workspaces
     let result = run_cli(
@@ -383,7 +515,11 @@ async fn test_workspace_management_commands() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace list should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace list should succeed: {:?}",
+        result
+    );
 
     // Rename workspace
     let result = run_cli(
@@ -396,13 +532,26 @@ async fn test_workspace_management_commands() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace rename should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace rename should succeed: {:?}",
+        result
+    );
 
     // Verify rename worked
     let settings = AppSettings::load_from_file(config_path.clone()).expect("should load settings");
-    let ws_config = settings.workspace_config.as_ref().expect("should have workspace config");
-    assert!(ws_config.workspaces.contains_key("gamma"), "should have gamma workspace");
-    assert!(!ws_config.workspaces.contains_key("beta"), "should not have beta workspace");
+    let ws_config = settings
+        .workspace_config
+        .as_ref()
+        .expect("should have workspace config");
+    assert!(
+        ws_config.workspaces.contains_key("gamma"),
+        "should have gamma workspace"
+    );
+    assert!(
+        !ws_config.workspaces.contains_key("beta"),
+        "should not have beta workspace"
+    );
 
     // Add another workspace and remove it
     let result = run_cli(
@@ -415,7 +564,11 @@ async fn test_workspace_management_commands() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "temp workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "temp workspace init should succeed: {:?}",
+        result
+    );
 
     let result = run_cli(
         CliCommand::Workspace {
@@ -426,13 +579,27 @@ async fn test_workspace_management_commands() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace remove should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace remove should succeed: {:?}",
+        result
+    );
 
     // Verify removal worked
     let settings = AppSettings::load_from_file(config_path.clone()).expect("should load settings");
-    let ws_config = settings.workspace_config.as_ref().expect("should have workspace config");
-    assert!(!ws_config.workspaces.contains_key("temp"), "should not have temp workspace");
-    assert_eq!(ws_config.workspaces.len(), 2, "should have 2 workspaces remaining");
+    let ws_config = settings
+        .workspace_config
+        .as_ref()
+        .expect("should have workspace config");
+    assert!(
+        !ws_config.workspaces.contains_key("temp"),
+        "should not have temp workspace"
+    );
+    assert_eq!(
+        ws_config.workspaces.len(),
+        2,
+        "should have 2 workspaces remaining"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +624,11 @@ async fn test_workspace_reindex() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace init should succeed: {:?}",
+        result
+    );
 
     // Create some notes in the workspace
     setup_test_workspace("reindex", &workspace_dir).await;
@@ -472,7 +643,11 @@ async fn test_workspace_reindex() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace reindex should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace reindex should succeed: {:?}",
+        result
+    );
 
     // Verify notes are searchable after reindex
     let result = run_cli(
@@ -483,7 +658,11 @@ async fn test_workspace_reindex() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "search after reindex should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search after reindex should succeed: {:?}",
+        result
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +687,11 @@ async fn test_error_handling() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace init should succeed: {:?}",
+        result
+    );
 
     // Try to switch to non-existent workspace
     let result = run_cli(
@@ -520,7 +703,10 @@ async fn test_error_handling() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_err(), "switching to non-existent workspace should fail");
+    assert!(
+        result.is_err(),
+        "switching to non-existent workspace should fail"
+    );
 
     // Try to remove non-existent workspace
     let result = run_cli(
@@ -532,7 +718,10 @@ async fn test_error_handling() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_err(), "removing non-existent workspace should fail");
+    assert!(
+        result.is_err(),
+        "removing non-existent workspace should fail"
+    );
 
     // Try to rename non-existent workspace
     let result = run_cli(
@@ -545,7 +734,10 @@ async fn test_error_handling() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_err(), "renaming non-existent workspace should fail");
+    assert!(
+        result.is_err(),
+        "renaming non-existent workspace should fail"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -567,7 +759,11 @@ async fn test_complex_multi_workspace_workflow() {
     setup_test_workspace("project", &project_dir).await;
 
     // Initialize all workspaces through CLI
-    for (name, dir) in [("work", &work_dir), ("personal", &personal_dir), ("project", &project_dir)] {
+    for (name, dir) in [
+        ("work", &work_dir),
+        ("personal", &personal_dir),
+        ("project", &project_dir),
+    ] {
         let result = run_cli(
             CliCommand::Workspace {
                 subcommand: WorkspaceSubcommand::Init {
@@ -578,7 +774,12 @@ async fn test_complex_multi_workspace_workflow() {
             Some(config_path.clone()),
         )
         .await;
-        assert!(result.is_ok(), "{} workspace init should succeed: {:?}", name, result);
+        assert!(
+            result.is_ok(),
+            "{} workspace init should succeed: {:?}",
+            name,
+            result
+        );
     }
 
     // Test switching between workspaces and running different operations
@@ -593,7 +794,12 @@ async fn test_complex_multi_workspace_workflow() {
             Some(config_path.clone()),
         )
         .await;
-        assert!(result.is_ok(), "switch to {} should succeed: {:?}", workspace_name, result);
+        assert!(
+            result.is_ok(),
+            "switch to {} should succeed: {:?}",
+            workspace_name,
+            result
+        );
 
         // Test search in current workspace
         let result = run_cli(
@@ -604,7 +810,12 @@ async fn test_complex_multi_workspace_workflow() {
             Some(config_path.clone()),
         )
         .await;
-        assert!(result.is_ok(), "search in {} should succeed: {:?}", workspace_name, result);
+        assert!(
+            result.is_ok(),
+            "search in {} should succeed: {:?}",
+            workspace_name,
+            result
+        );
 
         // Test notes listing in current workspace
         let result = run_cli(
@@ -615,7 +826,12 @@ async fn test_complex_multi_workspace_workflow() {
             Some(config_path.clone()),
         )
         .await;
-        assert!(result.is_ok(), "notes in {} should succeed: {:?}", workspace_name, result);
+        assert!(
+            result.is_ok(),
+            "notes in {} should succeed: {:?}",
+            workspace_name,
+            result
+        );
 
         // Test JSON output in current workspace
         let result = run_cli(
@@ -626,7 +842,12 @@ async fn test_complex_multi_workspace_workflow() {
             Some(config_path.clone()),
         )
         .await;
-        assert!(result.is_ok(), "JSON search in {} should succeed: {:?}", workspace_name, result);
+        assert!(
+            result.is_ok(),
+            "JSON search in {} should succeed: {:?}",
+            workspace_name,
+            result
+        );
     }
 
     // List all workspaces to verify they all exist
@@ -637,11 +858,21 @@ async fn test_complex_multi_workspace_workflow() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "workspace list should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace list should succeed: {:?}",
+        result
+    );
 
     // Verify final config state
     let settings = AppSettings::load_from_file(config_path.clone()).expect("should load settings");
-    let ws_config = settings.workspace_config.as_ref().expect("should have workspace config");
+    let ws_config = settings
+        .workspace_config
+        .as_ref()
+        .expect("should have workspace config");
     assert_eq!(ws_config.workspaces.len(), 3, "should have 3 workspaces");
-    assert_eq!(ws_config.global.current_workspace, "project", "should be on project workspace");
+    assert_eq!(
+        ws_config.global.current_workspace, "project",
+        "should be on project workspace"
+    );
 }

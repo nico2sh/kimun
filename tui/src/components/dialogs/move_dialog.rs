@@ -5,11 +5,11 @@ use kimun_core::nfs::VaultPath;
 use nucleo::Utf32String;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use ratatui::Frame;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::task::JoinHandle;
 
 use crate::components::Component;
@@ -141,11 +141,7 @@ impl MoveDialog {
         let handle = tokio::spawn(async move {
             let matched_strs = tokio::task::spawn_blocking(move || {
                 let mut matcher = nucleo::Matcher::new(nucleo::Config::DEFAULT);
-                let pattern = Pattern::parse(
-                    &query,
-                    CaseMatching::Ignore,
-                    Normalization::Smart,
-                );
+                let pattern = Pattern::parse(&query, CaseMatching::Ignore, Normalization::Smart);
                 let mut matched: Vec<(u32, String)> = items
                     .into_iter()
                     .filter_map(|item| {
@@ -201,7 +197,9 @@ impl MoveDialog {
                 dest_dir.append(&VaultPath::new(&filename))
             };
             let exists = vault.exists(&candidate).await.is_some();
-            tx_clone.send(AppEvent::MoveDestValidation { available: !exists }).ok();
+            tx_clone
+                .send(AppEvent::MoveDestValidation { available: !exists })
+                .ok();
         });
 
         self.validation_task = Some(handle);
@@ -256,40 +254,37 @@ impl MoveDialog {
                     return EventState::Consumed;
                 }
                 if let Some(selected_idx) = self.list_state.selected()
-                    && selected_idx < self.results().len() {
-                        let from = self.path.clone();
-                        let dest_dir = self.results()[selected_idx].clone();
-                        let filename = from.get_parent_path().1;
-                        let new_path = if from.is_note() {
-                            dest_dir.append(&VaultPath::note_path_from(&filename))
+                    && selected_idx < self.results().len()
+                {
+                    let from = self.path.clone();
+                    let dest_dir = self.results()[selected_idx].clone();
+                    let filename = from.get_parent_path().1;
+                    let new_path = if from.is_note() {
+                        dest_dir.append(&VaultPath::note_path_from(&filename))
+                    } else {
+                        dest_dir.append(&VaultPath::new(&filename))
+                    };
+                    let vault = Arc::clone(&self.vault);
+                    let tx2 = tx.clone();
+                    tokio::spawn(async move {
+                        // The vault has no dedicated move API; rename_note /
+                        // rename_directory accept paths in different directories,
+                        // so a cross-directory rename is equivalent to a move.
+                        let result = if from.is_note() {
+                            vault.rename_note(&from, &new_path).await
                         } else {
-                            dest_dir.append(&VaultPath::new(&filename))
+                            vault.rename_directory(&from, &new_path).await
                         };
-                        let vault = Arc::clone(&self.vault);
-                        let tx2 = tx.clone();
-                        tokio::spawn(async move {
-                            // The vault has no dedicated move API; rename_note /
-                            // rename_directory accept paths in different directories,
-                            // so a cross-directory rename is equivalent to a move.
-                            let result = if from.is_note() {
-                                vault.rename_note(&from, &new_path).await
-                            } else {
-                                vault.rename_directory(&from, &new_path).await
-                            };
-                            match result {
-                                Ok(()) => {
-                                    tx2.send(AppEvent::EntryMoved {
-                                        from,
-                                        to: new_path,
-                                    })
-                                    .ok();
-                                }
-                                Err(e) => {
-                                    tx2.send(AppEvent::DialogError(e.to_string())).ok();
-                                }
+                        match result {
+                            Ok(()) => {
+                                tx2.send(AppEvent::EntryMoved { from, to: new_path }).ok();
                             }
-                        });
-                    }
+                            Err(e) => {
+                                tx2.send(AppEvent::DialogError(e.to_string())).ok();
+                            }
+                        }
+                    });
+                }
                 EventState::Consumed
             }
             KeyCode::Esc => {
@@ -307,7 +302,6 @@ impl MoveDialog {
 
 impl Component for MoveDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
-
         let popup_area = super::centered_rect(50, 60, rect);
 
         // Backdrop: clear whatever is rendered behind the popup.
@@ -341,22 +335,21 @@ impl Component for MoveDialog {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),                                    // 0: "MOVING" label
-                Constraint::Length(1),                                    // 1: source path
-                Constraint::Length(1),                                    // 2: spacer
-                Constraint::Length(1),                                    // 3: "DESTINATION" label
-                Constraint::Length(3),                                    // 4: search input (bordered box)
-                Constraint::Min(3),                                       // 5: directory list
-                Constraint::Length(1),                                    // 6: validation status
-                Constraint::Length(1),                                    // 7: hint line
+                Constraint::Length(1), // 0: "MOVING" label
+                Constraint::Length(1), // 1: source path
+                Constraint::Length(1), // 2: spacer
+                Constraint::Length(1), // 3: "DESTINATION" label
+                Constraint::Length(3), // 4: search input (bordered box)
+                Constraint::Min(3),    // 5: directory list
+                Constraint::Length(1), // 6: validation status
+                Constraint::Length(1), // 7: hint line
                 Constraint::Length(if self.error.is_some() { 1 } else { 0 }), // 8: error
             ])
             .split(inner);
 
         // Row 0: "MOVING" label.
         f.render_widget(
-            Paragraph::new("  MOVING")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  MOVING").style(Style::default().fg(fg_muted).bg(bg)),
             rows[0],
         );
 
@@ -367,8 +360,7 @@ impl Component for MoveDialog {
 
         // Row 3: "DESTINATION" label.
         f.render_widget(
-            Paragraph::new("  DESTINATION")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  DESTINATION").style(Style::default().fg(fg_muted).bg(bg)),
             rows[3],
         );
 
@@ -437,9 +429,13 @@ impl Component for MoveDialog {
 
         // Row 7: hint line.  Dim Enter when there's no valid selection.
         super::render_confirm_hint(
-            f, rows[7], "  [Enter] Move here",
+            f,
+            rows[7],
+            "  [Enter] Move here",
             self.dest_validation == ValidationState::Available,
-            fg, fg_muted, bg,
+            fg,
+            fg_muted,
+            bg,
         );
 
         // Row 8 (optional): error message.

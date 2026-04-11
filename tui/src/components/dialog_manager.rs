@@ -10,10 +10,10 @@ use crate::components::dialogs::{
     ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, HelpDialog, MoveDialog,
     QuickNoteModal, RenameDialog, ValidationState, WorkspaceSwitcherModal,
 };
-use crate::settings::AppSettings;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::keys::KeyBindings;
+use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
 /// Manages dialog lifecycle: open/close, focus save/restore, input routing,
@@ -197,12 +197,7 @@ impl DialogManager {
     }
 
     /// Convenience: open the create-note dialog.
-    pub fn open_create_note(
-        &mut self,
-        path: VaultPath,
-        vault: Arc<NoteVault>,
-        current_focus: u8,
-    ) {
+    pub fn open_create_note(&mut self, path: VaultPath, vault: Arc<NoteVault>, current_focus: u8) {
         self.open(
             ActiveDialog::CreateNote(CreateNoteDialog::new(path, vault)),
             current_focus,

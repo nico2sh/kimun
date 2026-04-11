@@ -1,16 +1,21 @@
-use kimun_core::nfs::VaultPath;
 use kimun_core::NoteVault;
-use kimun_notes::cli::{run_cli, CliCommand};
+use kimun_core::nfs::VaultPath;
 use kimun_notes::cli::output::OutputFormat;
+use kimun_notes::cli::{CliCommand, run_cli};
 use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
 /// Create a temporary vault with test notes indexed.
 async fn setup_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(dir.path()).await.expect("failed to create vault");
+    let vault = NoteVault::new(dir.path())
+        .await
+        .expect("failed to create vault");
 
     // Initialize DB schema before creating notes
-    vault.validate_and_init().await.expect("failed to init vault");
+    vault
+        .validate_and_init()
+        .await
+        .expect("failed to init vault");
 
     // Create a couple of test notes
     vault
@@ -30,7 +35,10 @@ async fn setup_test_vault(dir: &TempDir) -> NoteVault {
         .expect("failed to create nested note");
 
     // Index so searches and listings work
-    vault.recreate_index().await.expect("failed to recreate index");
+    vault
+        .recreate_index()
+        .await
+        .expect("failed to recreate index");
 
     vault
 }
@@ -70,7 +78,11 @@ async fn test_cli_search_command() {
     )
     .await;
 
-    assert!(result.is_ok(), "search command should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search command should succeed: {:?}",
+        result
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +108,11 @@ async fn test_cli_notes_command() {
     )
     .await;
 
-    assert!(result.is_ok(), "notes command (no filter) should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "notes command (no filter) should succeed: {:?}",
+        result
+    );
 
     // List notes with path filter
     let result_filtered = run_cli(
@@ -152,8 +168,7 @@ async fn test_cli_custom_config() {
 
     // Verify the config is honoured: settings loaded from the custom path
     // should point to our temp workspace via Phase 2 workspace_config after migration.
-    let settings =
-        AppSettings::load_from_file(config_path.clone()).expect("settings should load");
+    let settings = AppSettings::load_from_file(config_path.clone()).expect("settings should load");
     let ws_config = settings
         .workspace_config
         .as_ref()
@@ -191,8 +206,13 @@ async fn test_cli_custom_config() {
 
 /// Create a temporary vault with notes designed for exclusion testing.
 async fn setup_exclusion_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(dir.path()).await.expect("failed to create vault");
-    vault.validate_and_init().await.expect("failed to init vault");
+    let vault = NoteVault::new(dir.path())
+        .await
+        .expect("failed to create vault");
+    vault
+        .validate_and_init()
+        .await
+        .expect("failed to init vault");
 
     vault
         .create_note(
@@ -226,7 +246,10 @@ async fn setup_exclusion_test_vault(dir: &TempDir) -> NoteVault {
         .await
         .expect("failed to create final note");
 
-    vault.recreate_index().await.expect("failed to recreate index");
+    vault
+        .recreate_index()
+        .await
+        .expect("failed to recreate index");
     vault
 }
 
@@ -253,7 +276,11 @@ async fn test_cli_search_basic_exclusions() {
     )
     .await;
 
-    assert!(result.is_ok(), "search with exclusion should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search with exclusion should succeed: {:?}",
+        result
+    );
 
     // Validate directly against vault: "weekly-meeting" should appear, "cancelled-meeting" should not
     let search_results = vault
@@ -301,7 +328,11 @@ async fn test_cli_search_compound_exclusions() {
     )
     .await;
 
-    assert!(result.is_ok(), "filename exclusion should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "filename exclusion should succeed: {:?}",
+        result
+    );
 
     // Validate directly against vault: "project-final" should appear, "project-draft" should not
     let search_results = vault
@@ -335,7 +366,11 @@ async fn test_cli_search_compound_exclusions() {
     )
     .await;
 
-    assert!(result.is_ok(), "filename exclusion with final should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "filename exclusion with final should succeed: {:?}",
+        result
+    );
 
     // Validate directly against vault: "project-final" should appear
     let search_results = vault
@@ -407,7 +442,11 @@ async fn test_cli_search_exclusion_only() {
     )
     .await;
 
-    assert!(result.is_ok(), "exclusion-only search should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "exclusion-only search should succeed: {:?}",
+        result
+    );
 
     // Validate directly against vault: "cancelled-meeting" should be excluded
     let search_results = vault
@@ -442,7 +481,11 @@ async fn test_cli_search_exclusion_only() {
     )
     .await;
 
-    assert!(result.is_ok(), "title exclusion-only should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "title exclusion-only should succeed: {:?}",
+        result
+    );
 
     // Validate directly against vault: "project-draft" should be excluded
     let search_results = vault

@@ -43,9 +43,10 @@ impl NvimSnapshot {
     /// In all other modes, shows the mode label (e.g., `"NORMAL"`).
     pub fn footer_label(&self) -> String {
         if self.mode == NvimMode::Command
-            && let Some(cmd) = &self.cmdline {
-                return format!("{}\u{2590}", cmd); // ▐ block cursor
-            }
+            && let Some(cmd) = &self.cmdline
+        {
+            return format!("{}\u{2590}", cmd); // ▐ block cursor
+        }
         self.mode.label().to_string()
     }
 }

@@ -18,6 +18,12 @@ env:
 
 name: test
 
+# On PRs, cancel an in-progress run when a new commit is pushed. On main,
+# group by ref so successive pushes don't stomp on each other.
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Test (Linux)
@@ -29,23 +35,18 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: linux-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: linux-cargo-registry-
+          components: rustfmt, clippy
 
-      - name: Cache target directory
-        uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: target
-          key: linux-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: linux-target-
+          shared-key: test-linux
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -53,7 +54,7 @@ jobs:
           tool: cargo-nextest
 
       - name: Run tests
-        run: cargo nextest run --workspace --exclude kimun_rag
+        run: cargo nextest run --workspace
 
   check:
     name: Check (${{ matrix.name }})
@@ -77,22 +78,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-registry-
-
-      - name: Cache target directory
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-target-
+          shared-key: check-${{ matrix.target }}
 
       - name: Check
-        run: cargo check --workspace --exclude kimun_rag --target ${{ matrix.target }}
+        run: cargo check --workspace --target ${{ matrix.target }}

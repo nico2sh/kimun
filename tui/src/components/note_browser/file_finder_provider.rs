@@ -7,8 +7,8 @@ use kimun_core::note::NoteContentData;
 use nucleo::Matcher;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 
-use crate::components::file_list::FileListEntry;
 use super::{NoteBrowserProvider, format_journal_date};
+use crate::components::file_list::FileListEntry;
 
 // ---------------------------------------------------------------------------
 // MatchEntry — adapts (index, haystack_str) for nucleo match_list
@@ -52,7 +52,10 @@ impl FileFinderProvider {
         } else {
             content.title.clone()
         };
-        let journal_date = self.vault.journal_date(&entry.path).map(format_journal_date);
+        let journal_date = self
+            .vault
+            .journal_date(&entry.path)
+            .map(format_journal_date);
         FileListEntry::Note {
             path: entry.path.clone(),
             title,
@@ -68,9 +71,7 @@ impl NoteBrowserProvider for FileFinderProvider {
         let vault = Arc::clone(&self.vault);
         let notes = self
             .notes_cache
-            .get_or_init(|| async move {
-                vault.get_all_notes().await.unwrap_or_default()
-            })
+            .get_or_init(|| async move { vault.get_all_notes().await.unwrap_or_default() })
             .await;
 
         if query.is_empty() {

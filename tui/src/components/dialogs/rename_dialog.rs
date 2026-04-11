@@ -3,11 +3,11 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use tokio::task::JoinHandle;
 
 use crate::components::Component;
@@ -89,7 +89,9 @@ impl RenameDialog {
             };
             let exists = vault.exists(&candidate).await.is_some();
             // `true` means the name is *available* (does not exist yet).
-            tx_clone.send(AppEvent::RenameValidation { available: !exists }).ok();
+            tx_clone
+                .send(AppEvent::RenameValidation { available: !exists })
+                .ok();
         });
 
         self.validation_task = Some(handle);
@@ -133,11 +135,7 @@ impl RenameDialog {
                         };
                         match result {
                             Ok(()) => {
-                                tx2.send(AppEvent::EntryRenamed {
-                                    from,
-                                    to: new_path,
-                                })
-                                .ok();
+                                tx2.send(AppEvent::EntryRenamed { from, to: new_path }).ok();
                             }
                             Err(e) => {
                                 tx2.send(AppEvent::DialogError(e.to_string())).ok();
@@ -219,8 +217,7 @@ impl Component for RenameDialog {
 
         // Row 3: "NEW NAME" label.
         f.render_widget(
-            Paragraph::new("  NEW NAME")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  NEW NAME").style(Style::default().fg(fg_muted).bg(bg)),
             rows[3],
         );
 
@@ -281,9 +278,13 @@ impl Component for RenameDialog {
 
         // Row 7: hint.  Dim the Enter part unless rename is available.
         super::render_confirm_hint(
-            f, rows[7], "  [Enter] Rename",
+            f,
+            rows[7],
+            "  [Enter] Rename",
             self.validation_state == ValidationState::Available,
-            fg, fg_muted, bg,
+            fg,
+            fg_muted,
+            bg,
         );
 
         // Row 8 (optional): error message.
@@ -375,8 +376,7 @@ mod tests {
 
             let vault = Arc::new(vault);
             let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
-            let mut dialog =
-                RenameDialog::new(VaultPath::new("notes/test.md"), vault);
+            let mut dialog = RenameDialog::new(VaultPath::new("notes/test.md"), vault);
 
             let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             let state = dialog.handle_key(key, &tx);

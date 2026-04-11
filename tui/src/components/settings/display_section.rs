@@ -48,8 +48,10 @@ impl Component for DisplaySection {
             .style(theme.base_style());
 
         let check = if self.use_nerd_fonts { "[x]" } else { "[ ]" };
-        let items = vec![ListItem::new(format!("  Use Nerd Fonts  {}", check))
-            .style(Style::default().fg(theme.fg.to_ratatui()))];
+        let items = vec![
+            ListItem::new(format!("  Use Nerd Fonts  {}", check))
+                .style(Style::default().fg(theme.fg.to_ratatui())),
+        ];
 
         let list = List::new(items)
             .block(block)
@@ -125,6 +127,9 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         let flat: String = buf.content.iter().map(|c| c.symbol()).collect();
-        assert!(flat.contains("[ ]"), "expected [ ] when nerd fonts disabled");
+        assert!(
+            flat.contains("[ ]"),
+            "expected [ ] when nerd fonts disabled"
+        );
     }
 }

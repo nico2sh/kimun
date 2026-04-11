@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use kimun_core::nfs::NoteEntryData;
 use kimun_core::note::NoteContentData;
 
-use crate::components::file_list::FileListEntry;
 use super::NoteBrowserProvider;
+use crate::components::file_list::FileListEntry;
 
 /// A provider pre-populated with a fixed list of notes, used when following a
 /// link that resolves to several candidates.  The query is ignored.
@@ -44,7 +44,12 @@ impl NoteBrowserProvider for LinkResultsProvider {
         self.entries
             .iter()
             .filter(|e| match e {
-                FileListEntry::Note { title, filename, path, .. } => {
+                FileListEntry::Note {
+                    title,
+                    filename,
+                    path,
+                    ..
+                } => {
                     title.to_lowercase().contains(&q)
                         || filename.to_lowercase().contains(&q)
                         || path.to_string().to_lowercase().contains(&q)

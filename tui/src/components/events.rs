@@ -51,9 +51,15 @@ pub enum AppEvent {
     /// Confirmation that the given entry was successfully deleted.
     EntryDeleted(VaultPath),
     /// Confirmation that an entry was successfully renamed.
-    EntryRenamed { from: VaultPath, to: VaultPath },
+    EntryRenamed {
+        from: VaultPath,
+        to: VaultPath,
+    },
     /// Confirmation that an entry was successfully moved.
-    EntryMoved { from: VaultPath, to: VaultPath },
+    EntryMoved {
+        from: VaultPath,
+        to: VaultPath,
+    },
     /// A new note was just created and should be opened; sidebar should reflect it.
     EntryCreated(VaultPath),
     /// A dialog operation failed; carries a human-readable error message.
@@ -72,13 +78,17 @@ pub enum AppEvent {
 
     // ── Dialog async result messages ─────────────────────────────────────────
     /// Rename dialog: name availability check result.
-    RenameValidation { available: bool },
+    RenameValidation {
+        available: bool,
+    },
     /// Move dialog: directory list has loaded.
     MoveDirectoriesLoaded(Vec<VaultPath>),
     /// Move dialog: fuzzy filter results are ready.
     MoveFilterResults(Vec<VaultPath>),
     /// Move dialog: destination existence check result.
-    MoveDestValidation { available: bool },
+    MoveDestValidation {
+        available: bool,
+    },
 
     // ── Backlinks panel messages ────────────────────────────────────────────
     /// Backlinks for the current note have been loaded.

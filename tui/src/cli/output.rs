@@ -13,7 +13,7 @@ pub enum OutputFormat {
 /// Format note entries as text with journal date detection
 pub fn format_note_entries_text_with_journal(
     vault: &kimun_core::NoteVault,
-    entries: &[(NoteEntryData, NoteContentData)]
+    entries: &[(NoteEntryData, NoteContentData)],
 ) -> String {
     let mut output = String::new();
 

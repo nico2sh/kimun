@@ -11,15 +11,15 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::autosave_timer::AutosaveTimer;
+use crate::components::backlinks_panel::BacklinksPanel;
 use crate::components::dialog_manager::DialogManager;
-use crate::components::footer_bar::FooterBar;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
+use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::NoteBrowserModal;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
 use crate::components::sidebar::SidebarComponent;
-use crate::components::backlinks_panel::BacklinksPanel;
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
@@ -407,10 +407,8 @@ impl AppScreen for EditorScreen {
                         }
                     } else {
                         let s = self.settings.read().unwrap();
-                        let provider = SearchNotesProvider::new(
-                            self.vault.clone(),
-                            s.current_last_paths(),
-                        );
+                        let provider =
+                            SearchNotesProvider::new(self.vault.clone(), s.current_last_paths());
                         self.note_browser = Some(NoteBrowserModal::new(
                             "Note Browser",
                             provider,
@@ -463,8 +461,7 @@ impl AppScreen for EditorScreen {
                 }
                 Some(ActionShortcuts::SwitchWorkspace) => {
                     let s = self.settings.read().unwrap();
-                    self.dialogs
-                        .open_workspace_switcher(&s, self.focus_index());
+                    self.dialogs.open_workspace_switcher(&s, self.focus_index());
                     drop(s);
                     self.focus = Focus::Dialog;
                     return EventState::Consumed;
@@ -483,8 +480,7 @@ impl AppScreen for EditorScreen {
                             && !self.dialogs.is_open()
                         {
                             let s = self.settings.read().unwrap();
-                            self.dialogs
-                                .open_help(&s.key_bindings, self.focus_index());
+                            self.dialogs.open_help(&s.key_bindings, self.focus_index());
                             drop(s);
                             self.focus = Focus::Dialog;
                         }
@@ -581,7 +577,10 @@ impl AppScreen for EditorScreen {
         // Split header inner: note path on left, workspace label on right.
         let header_cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(workspace_label.len() as u16 + 1)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(workspace_label.len() as u16 + 1),
+            ])
             .split(header_inner);
         f.render_widget(
             Paragraph::new(self.path.to_string())
@@ -614,7 +613,8 @@ impl AppScreen for EditorScreen {
 
         let mut col_idx = 0;
         if self.sidebar_visible {
-            self.sidebar.render(f, columns[col_idx], theme, sidebar_focused);
+            self.sidebar
+                .render(f, columns[col_idx], theme, sidebar_focused);
             col_idx += 1;
         }
         let editor_area = columns[col_idx];
@@ -636,7 +636,8 @@ impl AppScreen for EditorScreen {
         self.editor.render(f, editor_inner, theme, editor_focused);
 
         if self.backlinks_visible {
-            self.backlinks_panel.render(f, columns[col_idx], theme, backlinks_focused);
+            self.backlinks_panel
+                .render(f, columns[col_idx], theme, backlinks_focused);
         }
 
         let focus_label = match self.focus {

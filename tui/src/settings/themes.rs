@@ -375,12 +375,16 @@ impl Theme {
 
     /// Base style for most surfaces: theme fg on theme bg.
     pub fn base_style(&self) -> Style {
-        Style::default().fg(self.fg.to_ratatui()).bg(self.bg.to_ratatui())
+        Style::default()
+            .fg(self.fg.to_ratatui())
+            .bg(self.bg.to_ratatui())
     }
 
     /// Panel style for sidebars and panels: theme fg on bg_panel.
     pub fn panel_style(&self) -> Style {
-        Style::default().fg(self.fg.to_ratatui()).bg(self.bg_panel.to_ratatui())
+        Style::default()
+            .fg(self.fg.to_ratatui())
+            .bg(self.bg_panel.to_ratatui())
     }
 
     pub fn nord() -> Self {
@@ -412,7 +416,10 @@ mod tests {
     fn test_border_style_focused() {
         let theme = Theme::gruvbox_dark();
         let style = theme.border_style(true);
-        assert_eq!(style, Style::default().fg(theme.border_focused.to_ratatui()));
+        assert_eq!(
+            style,
+            Style::default().fg(theme.border_focused.to_ratatui())
+        );
     }
 
     #[test]

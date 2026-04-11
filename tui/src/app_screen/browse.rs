@@ -70,10 +70,7 @@ impl AppScreen for BrowseScreen {
     }
 
     fn render(&mut self, f: &mut Frame) {
-        f.render_widget(
-            Block::default().style(self.theme.base_style()),
-            f.area(),
-        );
+        f.render_widget(Block::default().style(self.theme.base_style()), f.area());
 
         // Split into content area + one-line hint bar at the bottom.
         let rows = Layout::default()
@@ -107,11 +104,12 @@ impl AppScreen for BrowseScreen {
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
         if let AppEvent::OpenPath(path) = &msg
-            && !path.is_note() {
-                let dir = path.clone();
-                self.navigate_sidebar(dir, tx).await;
-                return None;
-            }
+            && !path.is_note()
+        {
+            let dir = path.clone();
+            self.navigate_sidebar(dir, tx).await;
+            return None;
+        }
         Some(msg)
     }
 }
@@ -120,8 +118,8 @@ impl AppScreen for BrowseScreen {
 mod tests {
     use super::*;
     use crate::settings::AppSettings;
-    use std::sync::RwLock;
     use ratatui::crossterm::event::KeyCode;
+    use std::sync::RwLock;
     use tokio::sync::mpsc::unbounded_channel;
 
     fn make_settings_with_defaults() -> SharedSettings {

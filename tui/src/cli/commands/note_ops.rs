@@ -6,7 +6,8 @@ use clap::Subcommand;
 use color_eyre::eyre::Result;
 use kimun_core::{NoteVault, error::VaultError};
 
-const NOTE_SEPARATOR: &str = "================================================================================";
+const NOTE_SEPARATOR: &str =
+    "================================================================================";
 
 #[derive(Subcommand, Debug)]
 pub enum NoteSubcommand {
@@ -74,19 +75,20 @@ async fn run_create(
     content: Option<String>,
     quick_note_path: &str,
 ) -> Result<()> {
-    use crate::cli::helpers::{resolve_note_path, resolve_content};
+    use crate::cli::helpers::{resolve_content, resolve_note_path};
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
     let text = resolve_content(content)?;
 
-    vault.create_note(&vault_path, &text).await.map_err(|e| {
-        match &e {
+    vault
+        .create_note(&vault_path, &text)
+        .await
+        .map_err(|e| match &e {
             VaultError::NoteExists { path } => {
                 color_eyre::eyre::eyre!("Note already exists: {}", path)
             }
             _ => color_eyre::eyre::eyre!("{}", e),
-        }
-    })?;
+        })?;
 
     println!("Note saved: {}", vault_path);
     Ok(())
@@ -98,7 +100,7 @@ async fn run_append(
     content: Option<String>,
     quick_note_path: &str,
 ) -> Result<()> {
-    use crate::cli::helpers::{resolve_note_path, resolve_content};
+    use crate::cli::helpers::{resolve_content, resolve_note_path};
     use kimun_core::error::FSError;
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
@@ -111,7 +113,9 @@ async fn run_append(
     match vault.get_note_text(&vault_path).await {
         Ok(existing) => {
             let combined = format!("{}\n{}", existing, text);
-            vault.save_note(&vault_path, &combined).await
+            vault
+                .save_note(&vault_path, &combined)
+                .await
                 .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
         }
         Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
@@ -119,10 +123,14 @@ async fn run_append(
                 Ok(_) => {}
                 Err(VaultError::NoteExists { .. }) => {
                     // Race: note created between our get and create — re-read and save
-                    let existing = vault.get_note_text(&vault_path).await
+                    let existing = vault
+                        .get_note_text(&vault_path)
+                        .await
                         .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
                     let combined = format!("{}\n{}", existing, text);
-                    vault.save_note(&vault_path, &combined).await
+                    vault
+                        .save_note(&vault_path, &combined)
+                        .await
                         .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
                 }
                 Err(e) => return Err(color_eyre::eyre::eyre!("{}", e)),
@@ -180,7 +188,8 @@ fn resolve_show_paths<R: std::io::BufRead>(
                 .filter(|l| l.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(true))
                 .map(|l| l.map(|s| s.trim().split('\t').next().unwrap_or("").to_owned()))
                 .collect();
-            let paths = paths.map_err(|e| color_eyre::eyre::eyre!("Failed to read stdin: {}", e))?;
+            let paths =
+                paths.map_err(|e| color_eyre::eyre::eyre!("Failed to read stdin: {}", e))?;
             if paths.is_empty() {
                 return Err(color_eyre::eyre::eyre!(
                     "No paths provided — pass paths as arguments or pipe from stdin"
@@ -202,12 +211,14 @@ async fn run_show(
     workspace_name: &str,
 ) -> Result<()> {
     use crate::cli::helpers::resolve_note_path;
-    use crate::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
-    use crate::cli::json_output::{JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata};
+    use crate::cli::json_output::{
+        JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata,
+    };
+    use crate::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
     use crate::cli::output::OutputFormat;
-    use kimun_core::nfs::NoteEntryData;
-    use kimun_core::error::{VaultError, FSError};
     use chrono::Utc;
+    use kimun_core::error::{FSError, VaultError};
+    use kimun_core::nfs::NoteEntryData;
     use std::time::UNIX_EPOCH;
 
     if matches!(format, OutputFormat::Paths) {
@@ -302,8 +313,16 @@ async fn run_show(
                     created: entry_data.modified_secs, // TODO: track actual creation time
                     hash: format!("{:x}", content_data.hash),
                     journal_date,
-                    metadata: JsonNoteMetadata { tags, links, headers },
-                    backlinks: if backlink_paths.is_empty() { None } else { Some(backlink_paths) },
+                    metadata: JsonNoteMetadata {
+                        tags,
+                        links,
+                        headers,
+                    },
+                    backlinks: if backlink_paths.is_empty() {
+                        None
+                    } else {
+                        Some(backlink_paths)
+                    },
                 });
             }
         }
@@ -341,14 +360,15 @@ async fn run_show(
             };
             print!(
                 "{}",
-                serde_json::to_string(&output)
-                    .map_err(|e| color_eyre::eyre::eyre!("{}", e))?
+                serde_json::to_string(&output).map_err(|e| color_eyre::eyre::eyre!("{}", e))?
             );
         }
     }
 
     if had_errors {
-        return Err(color_eyre::eyre::eyre!("One or more notes could not be found"));
+        return Err(color_eyre::eyre::eyre!(
+            "One or more notes could not be found"
+        ));
     }
 
     Ok(())

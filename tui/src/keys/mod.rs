@@ -5,7 +5,7 @@ use itertools::Itertools;
 use key_combo::{KeyCombo, KeyModifiers};
 use key_strike::KeyStrike;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers as CKeyMods};
-use serde::{de::Visitor, ser::SerializeMap, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Visitor, ser::SerializeMap};
 
 pub mod action_shortcuts;
 pub mod key_combo;
@@ -111,7 +111,6 @@ impl KeyBindings {
     }
 
     pub fn get_action(&self, combo: &KeyCombo) -> Option<ActionShortcuts> {
-        
         self.bindings.get(combo).map(|a| a.to_owned())
     }
 
@@ -141,7 +140,13 @@ impl KeyBindings {
         for (action, combos) in bindings {
             for combo in combos {
                 let valid = combo.is_valid_binding();
-                tracing::debug!("from_hashmap: combo='{}' key={:?} modifiers={:?} valid={}", combo, combo.key, combo.modifiers, valid);
+                tracing::debug!(
+                    "from_hashmap: combo='{}' key={:?} modifiers={:?} valid={}",
+                    combo,
+                    combo.key,
+                    combo.modifiers,
+                    valid
+                );
                 if valid {
                     kb.bindings.insert(combo.to_owned(), action.to_owned());
                 } else {
@@ -211,55 +216,56 @@ pub fn key_event_to_combo(event: &KeyEvent) -> Option<KeyCombo> {
                 c
             };
             match c.to_ascii_lowercase() {
-            'a' => KeyStrike::KeyA,
-            'b' => KeyStrike::KeyB,
-            'c' => KeyStrike::KeyC,
-            'd' => KeyStrike::KeyD,
-            'e' => KeyStrike::KeyE,
-            'f' => KeyStrike::KeyF,
-            'g' => KeyStrike::KeyG,
-            'h' => KeyStrike::KeyH,
-            'i' => KeyStrike::KeyI,
-            'j' => KeyStrike::KeyJ,
-            'k' => KeyStrike::KeyK,
-            'l' => KeyStrike::KeyL,
-            'm' => KeyStrike::KeyM,
-            'n' => KeyStrike::KeyN,
-            'o' => KeyStrike::KeyO,
-            'p' => KeyStrike::KeyP,
-            'q' => KeyStrike::KeyQ,
-            'r' => KeyStrike::KeyR,
-            's' => KeyStrike::KeyS,
-            't' => KeyStrike::KeyT,
-            'u' => KeyStrike::KeyU,
-            'v' => KeyStrike::KeyV,
-            'w' => KeyStrike::KeyW,
-            'x' => KeyStrike::KeyX,
-            'y' => KeyStrike::KeyY,
-            'z' => KeyStrike::KeyZ,
-            '0' => KeyStrike::Digit0,
-            '1' => KeyStrike::Digit1,
-            '2' => KeyStrike::Digit2,
-            '3' => KeyStrike::Digit3,
-            '4' => KeyStrike::Digit4,
-            '5' => KeyStrike::Digit5,
-            '6' => KeyStrike::Digit6,
-            '7' => KeyStrike::Digit7,
-            '8' => KeyStrike::Digit8,
-            '9' => KeyStrike::Digit9,
-            ',' => KeyStrike::Comma,
-            '.' => KeyStrike::Period,
-            '/' => KeyStrike::Slash,
-            ';' => KeyStrike::Semicolon,
-            '\'' => KeyStrike::Quote,
-            '[' => KeyStrike::BracketLeft,
-            ']' => KeyStrike::BracketRight,
-            '\\' => KeyStrike::Backslash,
-            '`' => KeyStrike::Backquote,
-            '-' => KeyStrike::Minus,
-            '=' => KeyStrike::Equal,
-            _ => return None,
-        }},
+                'a' => KeyStrike::KeyA,
+                'b' => KeyStrike::KeyB,
+                'c' => KeyStrike::KeyC,
+                'd' => KeyStrike::KeyD,
+                'e' => KeyStrike::KeyE,
+                'f' => KeyStrike::KeyF,
+                'g' => KeyStrike::KeyG,
+                'h' => KeyStrike::KeyH,
+                'i' => KeyStrike::KeyI,
+                'j' => KeyStrike::KeyJ,
+                'k' => KeyStrike::KeyK,
+                'l' => KeyStrike::KeyL,
+                'm' => KeyStrike::KeyM,
+                'n' => KeyStrike::KeyN,
+                'o' => KeyStrike::KeyO,
+                'p' => KeyStrike::KeyP,
+                'q' => KeyStrike::KeyQ,
+                'r' => KeyStrike::KeyR,
+                's' => KeyStrike::KeyS,
+                't' => KeyStrike::KeyT,
+                'u' => KeyStrike::KeyU,
+                'v' => KeyStrike::KeyV,
+                'w' => KeyStrike::KeyW,
+                'x' => KeyStrike::KeyX,
+                'y' => KeyStrike::KeyY,
+                'z' => KeyStrike::KeyZ,
+                '0' => KeyStrike::Digit0,
+                '1' => KeyStrike::Digit1,
+                '2' => KeyStrike::Digit2,
+                '3' => KeyStrike::Digit3,
+                '4' => KeyStrike::Digit4,
+                '5' => KeyStrike::Digit5,
+                '6' => KeyStrike::Digit6,
+                '7' => KeyStrike::Digit7,
+                '8' => KeyStrike::Digit8,
+                '9' => KeyStrike::Digit9,
+                ',' => KeyStrike::Comma,
+                '.' => KeyStrike::Period,
+                '/' => KeyStrike::Slash,
+                ';' => KeyStrike::Semicolon,
+                '\'' => KeyStrike::Quote,
+                '[' => KeyStrike::BracketLeft,
+                ']' => KeyStrike::BracketRight,
+                '\\' => KeyStrike::Backslash,
+                '`' => KeyStrike::Backquote,
+                '-' => KeyStrike::Minus,
+                '=' => KeyStrike::Equal,
+                _ => return None,
+            }
+        }
         KeyCode::Enter => KeyStrike::Enter,
         KeyCode::Backspace => KeyStrike::Backspace,
         KeyCode::Tab | KeyCode::BackTab => KeyStrike::Tab,
@@ -313,9 +319,9 @@ pub fn key_event_to_combo(event: &KeyEvent) -> Option<KeyCombo> {
 #[cfg(test)]
 mod tests {
     use super::{
+        KeyBindings,
         action_shortcuts::{ActionShortcuts, TextAction},
         key_strike::KeyStrike,
-        KeyBindings,
     };
 
     #[test]

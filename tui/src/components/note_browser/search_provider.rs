@@ -5,8 +5,8 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
 
-use crate::components::file_list::FileListEntry;
 use super::{NoteBrowserProvider, format_journal_date};
+use crate::components::file_list::FileListEntry;
 
 pub struct SearchNotesProvider {
     vault: Arc<NoteVault>,
@@ -25,7 +25,10 @@ impl SearchNotesProvider {
         } else {
             content.title
         };
-        let journal_date = self.vault.journal_date(&entry.path).map(format_journal_date);
+        let journal_date = self
+            .vault
+            .journal_date(&entry.path)
+            .map(format_journal_date);
         FileListEntry::Note {
             path: entry.path,
             title,

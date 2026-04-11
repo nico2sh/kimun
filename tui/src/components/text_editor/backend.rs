@@ -6,11 +6,7 @@ use std::time::Duration;
 use tokio::process::ChildStdin;
 use tokio_util::compat::Compat;
 
-use nvim_rs::{
-    create::tokio::new_child_cmd,
-    error::LoopError,
-    Handler, Neovim, UiAttachOptions,
-};
+use nvim_rs::{Handler, Neovim, UiAttachOptions, create::tokio::new_child_cmd, error::LoopError};
 use ratatui_textarea::TextArea;
 
 use super::nvim_rpc::key_event_to_nvim_string;
@@ -52,12 +48,7 @@ struct NvimHandler {
 impl Handler for NvimHandler {
     type Writer = NvimWriter;
 
-    async fn handle_notify(
-        &self,
-        name: String,
-        args: Vec<nvim_rs::Value>,
-        _neovim: NvimClient,
-    ) {
+    async fn handle_notify(&self, name: String, args: Vec<nvim_rs::Value>, _neovim: NvimClient) {
         if name != "redraw" {
             return;
         }
@@ -65,10 +56,11 @@ impl Handler for NvimHandler {
             if let Some(events) = arg.as_array() {
                 for event in events {
                     if let Some(ea) = event.as_array()
-                        && ea.first().and_then(|v| v.as_str()) == Some("flush") {
-                            self.flush_tx.send_modify(|v| *v = v.wrapping_add(1));
-                            return;
-                        }
+                        && ea.first().and_then(|v| v.as_str()) == Some("flush")
+                    {
+                        self.flush_tx.send_modify(|v| *v = v.wrapping_add(1));
+                        return;
+                    }
                 }
             }
         }
@@ -142,8 +134,7 @@ impl Drop for NvimBackend {
 impl NvimBackend {
     pub fn new(nvim_path: Option<&PathBuf>) -> Result<Self, String> {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(Self::new_async(nvim_path))
+            tokio::runtime::Handle::current().block_on(Self::new_async(nvim_path))
         })
     }
 
@@ -153,12 +144,11 @@ impl NvimBackend {
             .unwrap_or_else(|| "nvim".to_string());
 
         let (flush_tx, flush_rx) = tokio::sync::watch::channel(0u64);
-        let (key_tx, key_rx)     = tokio::sync::watch::channel(0u64);
+        let (key_tx, key_rx) = tokio::sync::watch::channel(0u64);
         let handler = NvimHandler { flush_tx };
 
         let mut cmd = tokio::process::Command::new(&binary);
-        cmd.arg("--embed")
-            .stderr(std::process::Stdio::null());
+        cmd.arg("--embed").stderr(std::process::Stdio::null());
 
         let (nvim, io_handle, child) = new_child_cmd(&mut cmd, handler)
             .await
@@ -166,7 +156,8 @@ impl NvimBackend {
 
         let mut ui_opts = UiAttachOptions::new();
         ui_opts.set_rgb(false);
-        nvim.ui_attach(80, 24, &ui_opts).await
+        nvim.ui_attach(80, 24, &ui_opts)
+            .await
             .map_err(|e| format!("nvim_ui_attach failed: {e}"))?;
 
         let _ = nvim.command("set noswapfile").await;
@@ -191,18 +182,21 @@ impl NvimBackend {
 
     /// Start the long-running refresh task on the first call; no-op afterwards.
     fn ensure_refresh_task(&self, tx: &AppTx) {
-        let mut guard = self.pending_key_rx.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self
+            .pending_key_rx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let Some(key_rx) = guard.take() else { return };
 
-        let nvim           = self.nvim.clone();
-        let snapshot       = self.snapshot.clone();
-        let is_dead        = self.is_dead.clone();
-        let in_flight      = self.set_text_in_flight.clone();
-        let flush_rx       = self.flush_rx.clone();
-        let tx             = tx.clone();
+        let nvim = self.nvim.clone();
+        let snapshot = self.snapshot.clone();
+        let is_dead = self.is_dead.clone();
+        let in_flight = self.set_text_in_flight.clone();
+        let flush_rx = self.flush_rx.clone();
+        let tx = tx.clone();
 
         tokio::spawn(async move {
-            let mut key_rx   = key_rx;
+            let mut key_rx = key_rx;
             let mut flush_rx = flush_rx;
 
             loop {
@@ -255,14 +249,18 @@ impl NvimBackend {
 
         {
             let mut snap = self.snapshot.lock().unwrap_or_else(|p| p.into_inner());
-            snap.lines       = if lines.is_empty() { vec![String::new()] } else { lines.clone() };
-            snap.cursor      = (0, 0);
-            snap.dirty       = false;
+            snap.lines = if lines.is_empty() {
+                vec![String::new()]
+            } else {
+                lines.clone()
+            };
+            snap.cursor = (0, 0);
+            snap.dirty = false;
             snap.content_gen = snap.content_gen.wrapping_add(1);
         }
 
-        let nvim      = self.nvim.clone();
-        let is_dead   = self.is_dead.clone();
+        let nvim = self.nvim.clone();
+        let is_dead = self.is_dead.clone();
         let in_flight = self.set_text_in_flight.clone();
         in_flight.store(true, Ordering::SeqCst);
         tokio::spawn(async move {
@@ -270,7 +268,9 @@ impl NvimBackend {
                 Ok(b) => b,
                 Err(e) => {
                     in_flight.store(false, Ordering::SeqCst);
-                    if e.is_channel_closed() { is_dead.store(true, Ordering::SeqCst); }
+                    if e.is_channel_closed() {
+                        is_dead.store(true, Ordering::SeqCst);
+                    }
                     tracing::warn!("set_text get_current_buf: {e}");
                     return;
                 }
@@ -291,11 +291,13 @@ impl NvimBackend {
         *guard = (width, height);
         drop(guard);
 
-        let nvim    = self.nvim.clone();
+        let nvim = self.nvim.clone();
         let is_dead = self.is_dead.clone();
         tokio::spawn(async move {
             if let Err(e) = nvim.ui_try_resize(width as i64, height as i64).await {
-                if e.is_channel_closed() { is_dead.store(true, Ordering::SeqCst); }
+                if e.is_channel_closed() {
+                    is_dead.store(true, Ordering::SeqCst);
+                }
                 tracing::debug!("ui_try_resize error: {e}");
             }
         });
@@ -310,9 +312,9 @@ impl NvimBackend {
             return;
         };
 
-        let nvim     = self.nvim.clone();
-        let is_dead  = self.is_dead.clone();
-        let key_tx   = self.key_tx.clone();
+        let nvim = self.nvim.clone();
+        let is_dead = self.is_dead.clone();
+        let key_tx = self.key_tx.clone();
 
         tokio::spawn(async move {
             match nvim.input(&nvim_key).await {
@@ -352,7 +354,11 @@ fn byte_offset_to_char_idx(line: &str, byte_offset: usize) -> usize {
     line[..safe].chars().count()
 }
 
-fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, in_flight: &Arc<AtomicBool>, value: nvim_rs::Value) {
+fn apply_lua_state(
+    snapshot: &Arc<Mutex<NvimSnapshot>>,
+    in_flight: &Arc<AtomicBool>,
+    value: nvim_rs::Value,
+) {
     let Some(arr) = value.as_array() else { return };
     let mode_str = match arr.first().and_then(|v| v.as_str()) {
         Some(s) => s,
@@ -363,30 +369,49 @@ fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, in_flight: &Arc<AtomicBo
     let mut snap = snapshot.lock().unwrap_or_else(|p| p.into_inner());
 
     if mode == NvimMode::Command {
-        let cmdtype  = arr.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let cmdline  = arr.get(2).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        snap.mode    = mode;
+        let cmdtype = arr
+            .get(1)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let cmdline = arr
+            .get(2)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        snap.mode = mode;
         snap.cmdline = Some(format!("{cmdtype}{cmdline}"));
         return;
     }
 
     // Lines.
-    let new_lines: Vec<String> = arr.get(1)
+    let new_lines: Vec<String> = arr
+        .get(1)
         .and_then(|v| v.as_array())
-        .map(|ls| ls.iter().filter_map(|l| l.as_str().map(|s| s.to_string())).collect())
+        .map(|ls| {
+            ls.iter()
+                .filter_map(|l| l.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
-    let new_lines = if new_lines.is_empty() { vec![String::new()] } else { new_lines };
+    let new_lines = if new_lines.is_empty() {
+        vec![String::new()]
+    } else {
+        new_lines
+    };
 
     // Cursor: nvim_win_get_cursor → [row(1-indexed), col(0-indexed byte offset)].
     // Convert the byte offset to a char index so all downstream code works in
     // char-index space uniformly (independent of multi-byte character widths).
-    let cursor = arr.get(2)
+    let cursor = arr
+        .get(2)
         .and_then(|v| v.as_array())
         .and_then(|c| {
             let row = c.first()?.as_u64()? as usize;
             let byte_col = c.get(1)?.as_u64()? as usize;
             let row0 = row.saturating_sub(1);
-            let char_col = new_lines.get(row0)
+            let char_col = new_lines
+                .get(row0)
                 .map(|line| byte_offset_to_char_idx(line, byte_col))
                 .unwrap_or(byte_col);
             Some((row0, char_col))
@@ -401,19 +426,25 @@ fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, in_flight: &Arc<AtomicBo
             .and_then(|p| {
                 let lnum = p.get(1)?.as_u64()? as usize;
                 let vcol_byte = p.get(2)?.as_u64()? as usize;
-                if lnum == 0 { return None; }
+                if lnum == 0 {
+                    return None;
+                }
                 let row0 = lnum.saturating_sub(1);
-                let char_col = new_lines.get(row0)
+                let char_col = new_lines
+                    .get(row0)
                     .map(|line| byte_offset_to_char_idx(line, vcol_byte.saturating_sub(1)))
                     .unwrap_or(vcol_byte.saturating_sub(1));
                 Some((row0, char_col))
             })
             .map(|anchor| {
-                let (mut start, mut end) =
-                    if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) };
+                let (mut start, mut end) = if anchor <= cursor {
+                    (anchor, cursor)
+                } else {
+                    (cursor, anchor)
+                };
                 if mode == NvimMode::VisualLine {
                     start.1 = 0;
-                    end.1   = usize::MAX;
+                    end.1 = usize::MAX;
                 }
                 (start, end)
             })
@@ -422,12 +453,12 @@ fn apply_lua_state(snapshot: &Arc<Mutex<NvimSnapshot>>, in_flight: &Arc<AtomicBo
     };
 
     if new_lines != snap.lines && !in_flight.load(Ordering::SeqCst) {
-        snap.dirty       = true;
-        snap.lines       = new_lines;
+        snap.dirty = true;
+        snap.lines = new_lines;
         snap.content_gen = snap.content_gen.wrapping_add(1);
     }
-    snap.cursor           = cursor;
-    snap.mode             = mode;
-    snap.cmdline          = None;
+    snap.cursor = cursor;
+    snap.mode = mode;
+    snap.cmdline = None;
     snap.visual_selection = visual_selection;
 }

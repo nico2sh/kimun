@@ -59,13 +59,16 @@ impl WordWrapLayout {
             }
 
             let flags: &[bool] = rendered.get(row).map(|v| v.as_slice()).unwrap_or(&[]);
-            let is_rendered = |pos: usize| -> bool {
-                if pos < flags.len() { flags[pos] } else { true }
-            };
+            let is_rendered =
+                |pos: usize| -> bool { if pos < flags.len() { flags[pos] } else { true } };
 
             // Helper: byte offset of char at position `pos` (or line.len() if pos == total).
             let byte_at = |pos: usize| -> usize {
-                if pos < ci.len() { ci[pos].0 } else { line.len() }
+                if pos < ci.len() {
+                    ci[pos].0
+                } else {
+                    line.len()
+                }
             };
 
             let total = ci.len();
@@ -105,20 +108,20 @@ impl WordWrapLayout {
                 }
 
                 // Find break point: prefer last whitespace in [start..fit_end].
-                let (content_end, next_start) =
-                    if fit_end < total && ci[fit_end].1.is_whitespace() {
-                        (fit_end, fit_end + 1)
-                    } else {
-                        match ci[start..fit_end]
-                            .iter()
-                            .enumerate()
-                            .rev()
-                            .find(|(_, (_, c))| c.is_whitespace())
-                        {
-                            Some((i, _)) => (start + i, start + i + 1),
-                            None => (fit_end, fit_end), // hard break
-                        }
-                    };
+                let (content_end, next_start) = if fit_end < total && ci[fit_end].1.is_whitespace()
+                {
+                    (fit_end, fit_end + 1)
+                } else {
+                    match ci[start..fit_end]
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, (_, c))| c.is_whitespace())
+                    {
+                        Some((i, _)) => (start + i, start + i + 1),
+                        None => (fit_end, fit_end), // hard break
+                    }
+                };
 
                 visual_lines.push(VisualLine {
                     logical_row: row,
@@ -133,7 +136,10 @@ impl WordWrapLayout {
             }
         }
 
-        Self { visual_lines, row_starts }
+        Self {
+            visual_lines,
+            row_starts,
+        }
     }
 
     pub fn total_visual_lines(&self) -> usize {
@@ -209,7 +215,7 @@ mod tests {
     #[test]
     fn empty_string_produces_one_visual_line() {
         let src = String::new();
-        let layout = WordWrapLayout::compute(&[src.clone()], 40, &[]);
+        let layout = WordWrapLayout::compute(std::slice::from_ref(&src), 40, &[]);
         assert_eq!(layout.total_visual_lines(), 1);
         assert_eq!(content_of(&layout.visual_lines()[0], &src), "");
         assert!(layout.visual_lines()[0].is_first_visual_line);
@@ -220,7 +226,10 @@ mod tests {
         let lines = ls("hello world");
         let layout = WordWrapLayout::compute(&lines, 40, &[]);
         assert_eq!(layout.total_visual_lines(), 1);
-        assert_eq!(content_of(&layout.visual_lines()[0], &lines[0]), "hello world");
+        assert_eq!(
+            content_of(&layout.visual_lines()[0], &lines[0]),
+            "hello world"
+        );
         assert!(layout.visual_lines()[0].is_first_visual_line);
     }
 
@@ -230,7 +239,10 @@ mod tests {
         let lines = ls("hello world foo");
         let layout = WordWrapLayout::compute(&lines, 11, &[]);
         assert_eq!(layout.total_visual_lines(), 2);
-        assert_eq!(content_of(&layout.visual_lines()[0], &lines[0]), "hello world");
+        assert_eq!(
+            content_of(&layout.visual_lines()[0], &lines[0]),
+            "hello world"
+        );
         assert_eq!(content_of(&layout.visual_lines()[1], &lines[0]), "foo");
         assert!(layout.visual_lines()[0].is_first_visual_line);
         assert!(!layout.visual_lines()[1].is_first_visual_line);

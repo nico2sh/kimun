@@ -2,9 +2,9 @@
 //
 // Integration tests for note create/append/journal CLI commands.
 
-use kimun_notes::cli::{run_cli, CliCommand};
-use kimun_notes::cli::commands::{NoteSubcommand, JournalArgs};
 use kimun_notes::cli::commands::journal::JournalSubcommand;
+use kimun_notes::cli::commands::{JournalArgs, NoteSubcommand};
+use kimun_notes::cli::{CliCommand, run_cli};
 use tempfile::TempDir;
 
 /// Helper: write a minimal Phase 2 config and initialise the vault index.
@@ -52,9 +52,16 @@ async fn test_note_create_creates_new_note() {
     assert!(result.is_ok(), "note create should succeed: {:?}", result);
 
     let note_file = workspace_dir.path().join("my-note.md");
-    assert!(note_file.exists(), "note file should exist at {:?}", note_file);
+    assert!(
+        note_file.exists(),
+        "note file should exist at {:?}",
+        note_file
+    );
     let content = std::fs::read_to_string(&note_file).unwrap();
-    assert!(content.contains("Hello"), "note should contain the provided content");
+    assert!(
+        content.contains("Hello"),
+        "note should contain the provided content"
+    );
 }
 
 #[tokio::test]
@@ -78,9 +85,16 @@ async fn test_note_create_fails_if_note_exists() {
     )
     .await;
 
-    assert!(result.is_err(), "note create should fail when note already exists");
+    assert!(
+        result.is_err(),
+        "note create should fail when note already exists"
+    );
     let err = format!("{:?}", result.unwrap_err());
-    assert!(err.contains("already exists"), "error should mention 'already exists': {}", err);
+    assert!(
+        err.contains("already exists"),
+        "error should mention 'already exists': {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -104,8 +118,12 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
-    kimun_core::NoteVault::new(workspace_dir.path()).await.unwrap()
-        .validate_and_init().await.unwrap();
+    kimun_core::NoteVault::new(workspace_dir.path())
+        .await
+        .unwrap()
+        .validate_and_init()
+        .await
+        .unwrap();
 
     let result = run_cli(
         CliCommand::Note {
@@ -144,8 +162,12 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
-    kimun_core::NoteVault::new(workspace_dir.path()).await.unwrap()
-        .validate_and_init().await.unwrap();
+    kimun_core::NoteVault::new(workspace_dir.path())
+        .await
+        .unwrap()
+        .validate_and_init()
+        .await
+        .unwrap();
 
     let result = run_cli(
         CliCommand::Note {
@@ -212,7 +234,10 @@ async fn test_note_append_appends_to_existing() {
 
     assert!(result.is_ok(), "note append should succeed: {:?}", result);
     let content = std::fs::read_to_string(workspace_dir.path().join("log.md")).unwrap();
-    assert!(content.contains("First entry"), "original content preserved");
+    assert!(
+        content.contains("First entry"),
+        "original content preserved"
+    );
     assert!(content.contains("Second entry"), "new content appended");
 }
 
@@ -238,7 +263,10 @@ async fn test_note_append_empty_content_is_noop() {
 
     assert!(result.is_ok());
     let content = std::fs::read_to_string(workspace_dir.path().join("original.md")).unwrap();
-    assert_eq!(content, "# Original", "content should be unchanged on empty append");
+    assert_eq!(
+        content, "# Original",
+        "content should be unchanged on empty append"
+    );
 }
 
 // --- journal ---
@@ -263,10 +291,15 @@ async fn test_journal_creates_todays_entry() {
     assert!(result.is_ok(), "journal should succeed: {:?}", result);
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let journal_file = workspace_dir.path()
+    let journal_file = workspace_dir
+        .path()
         .join("journal")
         .join(format!("{}.md", today));
-    assert!(journal_file.exists(), "journal entry should exist at {:?}", journal_file);
+    assert!(
+        journal_file.exists(),
+        "journal entry should exist at {:?}",
+        journal_file
+    );
     let content = std::fs::read_to_string(&journal_file).unwrap();
     assert!(content.contains("Today's thought"));
 }
@@ -284,7 +317,8 @@ async fn test_journal_appends_to_existing_entry() {
     std::fs::write(
         journal_dir.join(format!("{}.md", today)),
         format!("# {}\n\nFirst entry", today),
-    ).unwrap();
+    )
+    .unwrap();
 
     run_cli(
         CliCommand::Journal(JournalArgs {
@@ -298,7 +332,10 @@ async fn test_journal_appends_to_existing_entry() {
     .unwrap();
 
     let content = std::fs::read_to_string(journal_dir.join(format!("{}.md", today))).unwrap();
-    assert!(content.contains("First entry"), "original content preserved");
+    assert!(
+        content.contains("First entry"),
+        "original content preserved"
+    );
     assert!(content.contains("Second entry"), "new content appended");
 }
 
@@ -327,7 +364,11 @@ async fn test_journal_empty_content_is_noop() {
     .unwrap();
 
     let content = std::fs::read_to_string(&journal_file).unwrap();
-    assert_eq!(content, format!("# {}", today), "content should be unchanged on empty journal");
+    assert_eq!(
+        content,
+        format!("# {}", today),
+        "content should be unchanged on empty journal"
+    );
 }
 
 #[tokio::test]
@@ -349,7 +390,10 @@ async fn test_journal_date_creates_specific_entry() {
     .unwrap();
 
     let journal_file = workspace_dir.path().join("journal").join("2024-01-15.md");
-    assert!(journal_file.exists(), "specific-date journal entry should exist");
+    assert!(
+        journal_file.exists(),
+        "specific-date journal entry should exist"
+    );
     let content = std::fs::read_to_string(&journal_file).unwrap();
     assert!(content.contains("Backdated entry"));
 }
@@ -373,7 +417,11 @@ async fn test_journal_invalid_date_returns_error() {
 
     assert!(result.is_err(), "invalid date should return an error");
     let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("Invalid date"), "error should mention invalid date, got: {}", msg);
+    assert!(
+        msg.contains("Invalid date"),
+        "error should mention invalid date, got: {}",
+        msg
+    );
 }
 
 #[tokio::test]
@@ -396,7 +444,10 @@ async fn test_journal_show_missing_entry_returns_error() {
     )
     .await;
 
-    assert!(result.is_err(), "show on missing entry should return an error");
+    assert!(
+        result.is_err(),
+        "show on missing entry should return an error"
+    );
     let msg = format!("{:?}", result.unwrap_err());
     assert!(msg.contains("No journal entry found"), "got: {}", msg);
 }
@@ -413,7 +464,8 @@ async fn test_note_show_text_returns_ok() {
     std::fs::write(
         workspace_dir.path().join("my-note.md"),
         "# My Note\n\nHello world",
-    ).unwrap();
+    )
+    .unwrap();
 
     let result = run_cli(
         CliCommand::Note {
@@ -464,7 +516,8 @@ async fn test_note_show_json_returns_ok() {
     std::fs::write(
         workspace_dir.path().join("json-note.md"),
         "# JSON Note\n\nsome content",
-    ).unwrap();
+    )
+    .unwrap();
 
     let result = run_cli(
         CliCommand::Note {
@@ -477,7 +530,11 @@ async fn test_note_show_json_returns_ok() {
     )
     .await;
 
-    assert!(result.is_ok(), "note show --format json should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "note show --format json should succeed: {:?}",
+        result
+    );
 }
 
 #[tokio::test]
@@ -501,13 +558,17 @@ async fn test_note_show_multiple_notes_ok() {
     )
     .await;
 
-    assert!(result.is_ok(), "note show with multiple notes should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "note show with multiple notes should succeed: {:?}",
+        result
+    );
 }
 
 #[tokio::test]
 async fn test_note_show_format_paths_returns_error() {
-    use kimun_notes::cli::output::OutputFormat;
     use kimun_core::nfs::VaultPath;
+    use kimun_notes::cli::output::OutputFormat;
     let dir = TempDir::new().unwrap();
     let vault = kimun_core::NoteVault::new(dir.path()).await.unwrap();
     vault.validate_and_init().await.unwrap();

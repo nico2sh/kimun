@@ -5,14 +5,11 @@
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use kimun_core::NoteVault;
 use kimun_core::error::VaultError;
 
-use crate::settings::{
-    workspace_config::WorkspaceConfig,
-    AppSettings,
-};
+use crate::settings::{AppSettings, workspace_config::WorkspaceConfig};
 
 #[derive(Subcommand, Debug)]
 pub enum WorkspaceSubcommand {
@@ -51,10 +48,7 @@ pub enum WorkspaceSubcommand {
     },
 }
 
-pub async fn run(
-    subcommand: WorkspaceSubcommand,
-    settings: &mut AppSettings,
-) -> Result<()> {
+pub async fn run(subcommand: WorkspaceSubcommand, settings: &mut AppSettings) -> Result<()> {
     match subcommand {
         WorkspaceSubcommand::Init { name, path } => run_init(settings, name, path).await,
         WorkspaceSubcommand::List => run_list(settings),
@@ -67,17 +61,16 @@ pub async fn run(
     }
 }
 
-async fn run_init(
-    settings: &mut AppSettings,
-    name: Option<String>,
-    path: PathBuf,
-) -> Result<()> {
+async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBuf) -> Result<()> {
     // Ensure workspace_config exists
     if settings.workspace_config.is_none() {
         settings.workspace_config = Some(WorkspaceConfig::new_empty());
     }
 
-    let ws_config = settings.workspace_config.as_ref().expect("workspace_config must exist after init");
+    let ws_config = settings
+        .workspace_config
+        .as_ref()
+        .expect("workspace_config must exist after init");
 
     // Determine workspace name
     let workspace_name = match name {
@@ -121,14 +114,22 @@ async fn run_init(
     // Initialize NoteVault database (creates kimun.sqlite)
     println!("Initializing workspace database...");
     let vault = NoteVault::new(&canonical_path).await.map_err(|e| {
-        eyre!("Failed to create vault at {}: {}", canonical_path.display(), e)
+        eyre!(
+            "Failed to create vault at {}: {}",
+            canonical_path.display(),
+            e
+        )
     })?;
-    vault.validate_and_init().await.map_err(|e| {
-        eyre!("Failed to initialize vault database: {}", e)
-    })?;
+    vault
+        .validate_and_init()
+        .await
+        .map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
 
     // Add workspace to config and save
-    let ws_config_mut = settings.workspace_config.as_mut().expect("workspace_config must exist after init");
+    let ws_config_mut = settings
+        .workspace_config
+        .as_mut()
+        .expect("workspace_config must exist after init");
     ws_config_mut
         .add_workspace(workspace_name.clone(), canonical_path.clone())
         .map_err(|e| eyre!("{}", e))?;
@@ -142,7 +143,10 @@ async fn run_init(
         canonical_path.display()
     );
 
-    let ws_config = settings.workspace_config.as_ref().expect("workspace_config must exist after init");
+    let ws_config = settings
+        .workspace_config
+        .as_ref()
+        .expect("workspace_config must exist after init");
     if ws_config.global.current_workspace == workspace_name {
         println!("Set as current workspace.");
     }
@@ -157,7 +161,9 @@ fn run_list(settings: &AppSettings) -> Result<()> {
         }
         Some(ws_config) => {
             if ws_config.workspaces.is_empty() {
-                println!("No workspaces configured. Run 'kimun workspace init <path>' to create one.");
+                println!(
+                    "No workspaces configured. Run 'kimun workspace init <path>' to create one."
+                );
             } else {
                 println!("Configured workspaces:");
                 let mut names: Vec<&String> = ws_config.workspaces.keys().collect();
@@ -183,20 +189,18 @@ fn run_use(settings: &mut AppSettings, name: String) -> Result<()> {
         .as_ref()
         .ok_or_else(|| eyre!("No workspaces configured."))?;
 
-    let entry = ws_config
-        .get_workspace(&name)
-        .ok_or_else(|| {
-            let available: Vec<&String> = ws_config.workspaces.keys().collect();
-            eyre!(
-                "Workspace '{}' not found. Available workspaces: {}",
-                name,
-                available
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
+    let entry = ws_config.get_workspace(&name).ok_or_else(|| {
+        let available: Vec<&String> = ws_config.workspaces.keys().collect();
+        eyre!(
+            "Workspace '{}' not found. Available workspaces: {}",
+            name,
+            available
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
 
     // Validate workspace path still exists
     if !entry.effective_path().exists() {
@@ -208,28 +212,26 @@ fn run_use(settings: &mut AppSettings, name: String) -> Result<()> {
         ));
     }
 
-    settings.workspace_config.as_mut().expect("workspace_config must exist").global.current_workspace = name.clone();
+    settings
+        .workspace_config
+        .as_mut()
+        .expect("workspace_config must exist")
+        .global
+        .current_workspace = name.clone();
     settings.save_to_disk()?;
 
     println!("Switched to workspace '{}'.", name);
     Ok(())
 }
 
-fn run_rename(
-    settings: &mut AppSettings,
-    old_name: String,
-    new_name: String,
-) -> Result<()> {
+fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) -> Result<()> {
     let ws_config = settings
         .workspace_config
         .as_ref()
         .ok_or_else(|| eyre!("No workspaces configured."))?;
 
     if !ws_config.workspaces.contains_key(&old_name) {
-        return Err(eyre!(
-            "Workspace '{}' not found.",
-            old_name
-        ));
+        return Err(eyre!("Workspace '{}' not found.", old_name));
     }
 
     if ws_config.workspaces.contains_key(&new_name) {
@@ -239,7 +241,10 @@ fn run_rename(
         ));
     }
 
-    let ws_config_mut = settings.workspace_config.as_mut().expect("workspace_config must exist after init");
+    let ws_config_mut = settings
+        .workspace_config
+        .as_mut()
+        .expect("workspace_config must exist after init");
 
     // Move entry to new key
     let entry = ws_config_mut
@@ -321,13 +326,20 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
     println!("Reindexing workspace '{}'...", workspace_name);
 
     let vault = NoteVault::new(entry.effective_path()).await.map_err(|e| {
-        eyre!("Failed to open vault at {}: {}", entry.effective_path().display(), e)
+        eyre!(
+            "Failed to open vault at {}: {}",
+            entry.effective_path().display(),
+            e
+        )
     })?;
 
     let report = match vault.recreate_index().await {
         Ok(r) => r,
         Err(VaultError::CaseConflict { conflicts }) => {
-            eprintln!("Error: vault '{}' has case-sensitivity conflicts:", workspace_name);
+            eprintln!(
+                "Error: vault '{}' has case-sensitivity conflicts:",
+                workspace_name
+            );
             for c in &conflicts {
                 eprintln!("  {}", c);
             }
@@ -335,16 +347,22 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
                 "\nResolve the conflicts on disk, then run `kimun workspace use {}` to re-select the vault.",
                 workspace_name
             );
-            return Err(eyre!("Vault '{}' has case-sensitivity conflicts", workspace_name));
+            return Err(eyre!(
+                "Vault '{}' has case-sensitivity conflicts",
+                workspace_name
+            ));
         }
-        Err(e) => return Err(eyre!("Failed to reindex workspace '{}': {}", workspace_name, e)),
+        Err(e) => {
+            return Err(eyre!(
+                "Failed to reindex workspace '{}': {}",
+                workspace_name,
+                e
+            ));
+        }
     };
 
     let _ = report; // IndexReport only contains timing info
-    println!(
-        "Reindex complete for workspace '{}'.",
-        workspace_name
-    );
+    println!("Reindex complete for workspace '{}'.", workspace_name);
 
     Ok(())
 }

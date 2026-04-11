@@ -195,8 +195,7 @@ impl QuickNoteModal {
             rows[3],
         );
         f.render_widget(
-            Paragraph::new("  [Esc] Cancel")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(fg_muted).bg(bg)),
             rows[4],
         );
 

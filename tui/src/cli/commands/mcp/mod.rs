@@ -10,19 +10,16 @@ use std::sync::Arc;
 use color_eyre::eyre::{Result, eyre};
 use kimun_core::{NoteVault, nfs::VaultPath};
 use rmcp::{
-    ErrorData as McpError,
-    RoleServer,
-    ServerHandler,
+    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
     handler::server::{
         router::{prompt::PromptRouter, tool::ToolRouter},
         wrapper::Parameters,
     },
     model::*,
-    schemars,
-    prompt_handler, tool, tool_handler, tool_router,
+    prompt_handler, schemars,
     service::RequestContext,
+    tool, tool_handler, tool_router,
     transport::stdio,
-    ServiceExt,
 };
 use serde::Deserialize;
 
@@ -126,19 +123,25 @@ impl KimunHandler {
         VaultPath::note_path_from(path)
     }
 
-    #[tool(description = "Create a new note at the given vault path with the given markdown content. Fails if the note already exists.")]
+    #[tool(
+        description = "Create a new note at the given vault path with the given markdown content. Fails if the note already exists."
+    )]
     async fn create_note(
         &self,
         Parameters(p): Parameters<CreateNoteParams>,
     ) -> Result<CallToolResult, McpError> {
         let vault_path = Self::resolve_path(&p.path);
         match self.vault.create_note(&vault_path, &p.content).await {
-            Ok(_) => Ok(CallToolResult::success(vec![Content::text(
-                format!("Note created: {}", vault_path),
-            )])),
-            Err(kimun_core::error::VaultError::NoteExists { .. }) => Ok(CallToolResult::error(
-                vec![Content::text(format!("Note already exists: {}", vault_path))],
-            )),
+            Ok(_) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Note created: {}",
+                vault_path
+            ))])),
+            Err(kimun_core::error::VaultError::NoteExists { .. }) => {
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Note already exists: {}",
+                    vault_path
+                ))]))
+            }
             Err(e) => Err(McpError::internal_error(e.to_string(), None)),
         }
     }
@@ -187,7 +190,9 @@ impl KimunHandler {
         }
     }
 
-    #[tool(description = "Search notes by query. Supports @filename, >heading, /path prefix, and -exclusion operators.")]
+    #[tool(
+        description = "Search notes by query. Supports @filename, >heading, /path prefix, and -exclusion operators."
+    )]
     async fn search_notes(
         &self,
         Parameters(p): Parameters<SearchNotesParams>,
@@ -198,13 +203,17 @@ impl KimunHandler {
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         if results.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text("No results found.")]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No results found.",
+            )]));
         }
         let lines: Vec<String> = results
             .iter()
             .map(|(entry, content)| format!("{} — {}", entry.path, content.title))
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            lines.join("\n"),
+        )]))
     }
 
     #[tool(description = "List all notes in the vault, optionally filtered by path prefix.")]
@@ -231,16 +240,22 @@ impl KimunHandler {
             }
         };
         if filtered.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text("No notes found.")]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No notes found.",
+            )]));
         }
         let lines: Vec<String> = filtered
             .iter()
             .map(|(entry, content)| format!("{} — {}", entry.path, content.title))
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            lines.join("\n"),
+        )]))
     }
 
-    #[tool(description = "Append text to today's journal entry (or a specific date). Creates the entry if absent.")]
+    #[tool(
+        description = "Append text to today's journal entry (or a specific date). Creates the entry if absent."
+    )]
     async fn journal(
         &self,
         Parameters(p): Parameters<JournalParams>,
@@ -306,13 +321,17 @@ impl KimunHandler {
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         if backlinks.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text("No backlinks found.")]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No backlinks found.",
+            )]));
         }
         let lines: Vec<String> = backlinks
             .iter()
             .map(|(entry, content)| format!("{} — {}", entry.path, content.title))
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            lines.join("\n"),
+        )]))
     }
 
     #[tool(description = "Return the content chunks (sections) of a note as JSON.")]
@@ -336,9 +355,13 @@ impl KimunHandler {
         }
 
         if lines.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text("No chunks found.")]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No chunks found.",
+            )]));
         }
-        Ok(CallToolResult::success(vec![Content::text(lines.join("\n\n"))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            lines.join("\n\n"),
+        )]))
     }
 
     #[tool(description = "Return the list of notes that this note links to (outgoing wikilinks).")]
@@ -375,7 +398,9 @@ impl KimunHandler {
             .collect();
 
         if note_links.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text("No outlinks found.")]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No outlinks found.",
+            )]));
         }
 
         let mut lines: Vec<String> = Vec::new();
@@ -394,10 +419,14 @@ impl KimunHandler {
             lines.push(format!("{} — {}", path, title));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            lines.join("\n"),
+        )]))
     }
 
-    #[tool(description = "Rename a note within its current directory (filename only). Use move_note to change the directory.")]
+    #[tool(
+        description = "Rename a note within its current directory (filename only). Use move_note to change the directory."
+    )]
     async fn rename_note(
         &self,
         Parameters(p): Parameters<RenameNoteParams>,
@@ -425,14 +454,17 @@ impl KimunHandler {
                     kimun_core::error::FSError::VaultPathNotFound { .. }
                     | kimun_core::error::FSError::InvalidPath { .. },
                 ),
-            ) => Ok(CallToolResult::error(vec![Content::text(
-                format!("Note not found or destination already exists: {} → {}", from, to)
-            )])),
+            ) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Note not found or destination already exists: {} → {}",
+                from, to
+            ))])),
             Err(e) => Err(McpError::internal_error(e.to_string(), None)),
         }
     }
 
-    #[tool(description = "Move a note to a new vault path (different directory and/or name). Backlinks in other notes are updated automatically.")]
+    #[tool(
+        description = "Move a note to a new vault path (different directory and/or name). Backlinks in other notes are updated automatically."
+    )]
     async fn move_note(
         &self,
         Parameters(p): Parameters<MoveNoteParams>,
@@ -451,14 +483,17 @@ impl KimunHandler {
                     kimun_core::error::FSError::VaultPathNotFound { .. }
                     | kimun_core::error::FSError::InvalidPath { .. },
                 ),
-            ) => Ok(CallToolResult::error(vec![Content::text(
-                format!("Note not found or destination already exists: {} → {}", from, to)
-            )])),
+            ) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Note not found or destination already exists: {} → {}",
+                from, to
+            ))])),
             Err(e) => Err(McpError::internal_error(e.to_string(), None)),
         }
     }
 
-    #[tool(description = "Quickly capture a thought into a timestamped note in the inbox directory. Returns the path of the created note.")]
+    #[tool(
+        description = "Quickly capture a thought into a timestamped note in the inbox directory. Returns the path of the created note."
+    )]
     async fn quick_note(
         &self,
         Parameters(p): Parameters<QuickNoteParams>,
@@ -543,20 +578,21 @@ impl ServerHandler for KimunHandler {
         let uri = &request.uri;
 
         // Validate URI scheme
-        let path_with_ext = uri
-            .strip_prefix("note://")
-            .ok_or_else(|| McpError::invalid_params(
+        let path_with_ext = uri.strip_prefix("note://").ok_or_else(|| {
+            McpError::invalid_params(
                 format!("invalid URI scheme — expected note://, got: {}", uri),
                 None,
-            ))?;
+            )
+        })?;
 
         let vault_path = VaultPath::note_path_from(path_with_ext);
 
         // Fetch note text
         match self.vault.get_note_text(&vault_path).await {
-            Ok(text) => Ok(ReadResourceResult::new(vec![
-                ResourceContents::text(text, uri.clone()),
-            ])),
+            Ok(text) => Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                text,
+                uri.clone(),
+            )])),
             Err(kimun_core::error::VaultError::FSError(
                 kimun_core::error::FSError::VaultPathNotFound { .. },
             )) => Err(McpError::invalid_params(
@@ -581,14 +617,27 @@ impl ServerHandler for KimunHandler {
 }
 
 // ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+pub async fn run(config_path: Option<PathBuf>) -> Result<()> {
+    use crate::cli::helpers::create_and_init_vault;
+    let (vault, _) = create_and_init_vault(config_path).await?;
+    let handler = KimunHandler::new(vault);
+    let service = handler.serve(stdio()).await.map_err(|e| eyre!("{e}"))?;
+    service.waiting().await.map_err(|e| eyre!("{e}"))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use kimun_core::NoteVault;
+    use tempfile::TempDir;
 
     async fn make_handler() -> (KimunHandler, TempDir) {
         let dir = TempDir::new().unwrap();
@@ -616,7 +665,11 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(is_success(&result), "expected success, got: {:?}", result_text(&result));
+        assert!(
+            is_success(&result),
+            "expected success, got: {:?}",
+            result_text(&result)
+        );
         assert!(result_text(&result).contains("test/hello"));
     }
 
@@ -651,7 +704,9 @@ mod tests {
             .await
             .unwrap();
         let result = handler
-            .show_note(Parameters(ShowNoteParams { path: "show/me".to_string() }))
+            .show_note(Parameters(ShowNoteParams {
+                path: "show/me".to_string(),
+            }))
             .await
             .unwrap();
         assert!(is_success(&result));
@@ -662,7 +717,9 @@ mod tests {
     async fn test_show_note_not_found_returns_error_result() {
         let (handler, _dir) = make_handler().await;
         let result = handler
-            .show_note(Parameters(ShowNoteParams { path: "missing/note".to_string() }))
+            .show_note(Parameters(ShowNoteParams {
+                path: "missing/note".to_string(),
+            }))
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(true));
@@ -680,7 +737,9 @@ mod tests {
             .unwrap();
         assert!(is_success(&result));
         let show = handler
-            .show_note(Parameters(ShowNoteParams { path: "new/note".to_string() }))
+            .show_note(Parameters(ShowNoteParams {
+                path: "new/note".to_string(),
+            }))
             .await
             .unwrap();
         assert!(result_text(&show).contains("appended text"));
@@ -704,7 +763,9 @@ mod tests {
             .await
             .unwrap();
         let show = handler
-            .show_note(Parameters(ShowNoteParams { path: "exist/note".to_string() }))
+            .show_note(Parameters(ShowNoteParams {
+                path: "exist/note".to_string(),
+            }))
             .await
             .unwrap();
         let text = result_text(&show);
@@ -731,7 +792,11 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        assert!(
+            is_success(&result),
+            "expected success: {}",
+            result_text(&result)
+        );
         assert!(
             result_text(&result).contains("alpha/one"),
             "search result did not include 'alpha/one': {}",
@@ -788,7 +853,11 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        assert!(
+            is_success(&result),
+            "expected success: {}",
+            result_text(&result)
+        );
         assert!(
             result_text(&result).contains("saved"),
             "expected 'saved' in result: {}",
@@ -806,7 +875,11 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        assert!(
+            is_success(&result),
+            "expected success: {}",
+            result_text(&result)
+        );
     }
 
     #[tokio::test]
@@ -882,7 +955,8 @@ mod tests {
         handler
             .create_note(Parameters(CreateNoteParams {
                 path: "chunked".to_string(),
-                content: "# Title\n\n## Section One\n\nparagraph\n\n## Section Two\n\nmore".to_string(),
+                content: "# Title\n\n## Section One\n\nparagraph\n\n## Section Two\n\nmore"
+                    .to_string(),
             }))
             .await
             .unwrap();
@@ -1000,7 +1074,11 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        assert!(
+            is_success(&result),
+            "expected success: {}",
+            result_text(&result)
+        );
         assert!(
             result_text(&result).contains("target"),
             "expected 'target' in outlinks: {}",
@@ -1061,15 +1139,23 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        assert!(
+            is_success(&result),
+            "expected success: {}",
+            result_text(&result)
+        );
         let show = handler
-            .show_note(Parameters(ShowNoteParams { path: "new-name".to_string() }))
+            .show_note(Parameters(ShowNoteParams {
+                path: "new-name".to_string(),
+            }))
             .await
             .unwrap();
         assert!(is_success(&show), "new path should be readable");
         assert!(result_text(&show).contains("unique_rename_content_xyz"));
         let old = handler
-            .show_note(Parameters(ShowNoteParams { path: "old-name".to_string() }))
+            .show_note(Parameters(ShowNoteParams {
+                path: "old-name".to_string(),
+            }))
             .await
             .unwrap();
         assert_eq!(old.is_error, Some(true), "old path should be gone");
@@ -1125,7 +1211,9 @@ mod tests {
             .await
             .unwrap();
         let show = handler
-            .show_note(Parameters(ShowNoteParams { path: "linker".to_string() }))
+            .show_note(Parameters(ShowNoteParams {
+                path: "linker".to_string(),
+            }))
             .await
             .unwrap();
         assert!(
@@ -1152,15 +1240,23 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(is_success(&result), "expected success: {}", result_text(&result));
+        assert!(
+            is_success(&result),
+            "expected success: {}",
+            result_text(&result)
+        );
         let show = handler
-            .show_note(Parameters(ShowNoteParams { path: "folder/moved".to_string() }))
+            .show_note(Parameters(ShowNoteParams {
+                path: "folder/moved".to_string(),
+            }))
             .await
             .unwrap();
         assert!(is_success(&show));
         assert!(result_text(&show).contains("unique_move_content_xyz"));
         let old = handler
-            .show_note(Parameters(ShowNoteParams { path: "original".to_string() }))
+            .show_note(Parameters(ShowNoteParams {
+                path: "original".to_string(),
+            }))
             .await
             .unwrap();
         assert_eq!(old.is_error, Some(true), "old path should be gone");
@@ -1218,20 +1314,15 @@ mod tests {
             .unwrap();
         assert!(is_success(&result));
         let text = result_text(&result);
-        assert!(text.contains("projects/foo"), "missing projects/foo: {}", text);
-        assert!(!text.contains("journal/2026"), "should not include journal: {}", text);
+        assert!(
+            text.contains("projects/foo"),
+            "missing projects/foo: {}",
+            text
+        );
+        assert!(
+            !text.contains("journal/2026"),
+            "should not include journal: {}",
+            text
+        );
     }
-}
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-pub async fn run(config_path: Option<PathBuf>) -> Result<()> {
-    use crate::cli::helpers::create_and_init_vault;
-    let (vault, _) = create_and_init_vault(config_path).await?;
-    let handler = KimunHandler::new(vault);
-    let service = handler.serve(stdio()).await.map_err(|e| eyre!("{e}"))?;
-    service.waiting().await.map_err(|e| eyre!("{e}"))?;
-    Ok(())
 }

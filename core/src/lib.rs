@@ -1440,7 +1440,12 @@ mod tests {
 
         match result {
             Err(VaultError::CaseConflict { conflicts }) => {
-                assert_eq!(conflicts.len(), 2, "expected 2 conflicts, got: {:?}", conflicts);
+                assert_eq!(
+                    conflicts.len(),
+                    2,
+                    "expected 2 conflicts, got: {:?}",
+                    conflicts
+                );
                 let joined = conflicts.join("\n");
                 assert!(
                     joined.contains("note.md") && joined.contains("Note.md"),
@@ -1453,10 +1458,13 @@ mod tests {
                     joined
                 );
             }
-            other => panic!("expected CaseConflict, got: {}", match other {
-                Ok(_) => "Ok(_)".to_string(),
-                Err(e) => format!("Err({})", e),
-            }),
+            other => panic!(
+                "expected CaseConflict, got: {}",
+                match other {
+                    Ok(_) => "Ok(_)".to_string(),
+                    Err(e) => format!("Err({})", e),
+                }
+            ),
         }
     }
 

@@ -3,8 +3,8 @@
 // Integration tests for workspace management CLI commands.
 // These tests follow the TDD approach: written before implementation.
 
-use kimun_notes::cli::{run_cli, CliCommand};
 use kimun_notes::cli::commands::WorkspaceSubcommand;
+use kimun_notes::cli::{CliCommand, run_cli};
 use kimun_notes::settings::AppSettings;
 use tempfile::TempDir;
 
@@ -32,7 +32,11 @@ async fn test_workspace_init_creates_new_workspace() {
     )
     .await;
 
-    assert!(result.is_ok(), "workspace init should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace init should succeed: {:?}",
+        result
+    );
 
     // Verify the workspace was added to the config
     let settings = AppSettings::load_from_file(config_path).expect("settings should load");
@@ -142,7 +146,11 @@ async fn test_workspace_list_empty() {
     )
     .await;
 
-    assert!(result.is_ok(), "workspace list on empty config should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace list on empty config should succeed: {:?}",
+        result
+    );
 }
 
 #[tokio::test]
@@ -174,7 +182,11 @@ async fn test_workspace_list_shows_workspaces() {
     )
     .await;
 
-    assert!(result.is_ok(), "workspace list should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace list should succeed: {:?}",
+        result
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +278,10 @@ async fn test_workspace_use_nonexistent_fails() {
     )
     .await;
 
-    assert!(result.is_err(), "workspace use with nonexistent name should fail");
+    assert!(
+        result.is_err(),
+        "workspace use with nonexistent name should fail"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +319,11 @@ async fn test_workspace_rename_succeeds() {
     )
     .await;
 
-    assert!(result.is_ok(), "workspace rename should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace rename should succeed: {:?}",
+        result
+    );
 
     let settings = AppSettings::load_from_file(config_path).unwrap();
     let ws_config = settings.workspace_config.as_ref().unwrap();
@@ -367,7 +386,11 @@ async fn test_workspace_remove_succeeds() {
     )
     .await;
 
-    assert!(result.is_ok(), "workspace remove should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace remove should succeed: {:?}",
+        result
+    );
 
     let settings = AppSettings::load_from_file(config_path).unwrap();
     let ws_config = settings.workspace_config.as_ref().unwrap();
@@ -448,5 +471,9 @@ async fn test_workspace_reindex_succeeds() {
     )
     .await;
 
-    assert!(result.is_ok(), "workspace reindex should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "workspace reindex should succeed: {:?}",
+        result
+    );
 }

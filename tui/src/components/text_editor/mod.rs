@@ -312,17 +312,11 @@ impl TextEditorComponent {
                     cmdline.as_str(),
                     "w" | "wq" | "wq!" | "wqa" | "wqa!" | "x" | "xa" | "x!"
                 );
-                let quits = saves
-                    || matches!(
-                        cmdline.as_str(),
-                        "q" | "q!" | "qa" | "qa!" | "cq" | "cq!"
-                    );
+                let quits =
+                    saves || matches!(cmdline.as_str(), "q" | "q!" | "qa" | "qa!" | "cq" | "cq!");
                 if quits {
                     nvim.handle_key(
-                        &ratatui::crossterm::event::KeyEvent::new(
-                            KeyCode::Esc,
-                            KeyModifiers::NONE,
-                        ),
+                        &ratatui::crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
                         tx.clone(),
                     );
                     if saves {
@@ -491,8 +485,7 @@ impl TextEditorComponent {
                 ta.delete_word();
                 true
             }
-            (KeyModifiers::CONTROL, KeyCode::Delete)
-            | (KeyModifiers::ALT, KeyCode::Delete) => {
+            (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
                 ta.delete_next_word();
                 true
             }

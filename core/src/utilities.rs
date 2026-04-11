@@ -26,13 +26,15 @@ fn app_dir_name() -> &'static str {
 /// Always returns an absolute path with the app-name suffix appended.
 pub fn app_log_dir() -> PathBuf {
     let name = app_dir_name();
-    let fallback = || {
-        std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir())
-    };
+    let fallback = || std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
     #[cfg(target_os = "macos")]
     {
         std::env::var("HOME")
-            .map(|h| PathBuf::from(h).join("Library/Application Support").join(name))
+            .map(|h| {
+                PathBuf::from(h)
+                    .join("Library/Application Support")
+                    .join(name)
+            })
             .unwrap_or_else(|_| fallback().join(name))
     }
     #[cfg(target_os = "linux")]

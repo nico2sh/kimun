@@ -41,8 +41,6 @@ jobs:
             artifact_suffix: ""
             binary: kimun
     runs-on: ${{ matrix.os }}
-    env:
-      RUSTFLAGS: "-C target-cpu=native"
 
     steps:
       - name: Checkout repository
@@ -59,26 +57,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # Cache dependencies to speed up builds
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
+      # Cache cargo registry + target/ via Swatinem/rust-cache. Tests are
+      # not run here — release-plz only creates tags from main commits, and
+      # every main commit has already passed check.yml's test suite.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache target directory
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-target-
+          shared-key: release-${{ matrix.target }}
 
       # Build the TUI binary
       - name: Build
@@ -155,44 +139,33 @@ jobs:
 
       - name: Generate checksums
         run: |
+          set -euo pipefail
+          shopt -s nullglob
           cd release-artifacts
-          sha256sum kimun-*.{zip,tar.gz} 2>/dev/null > checksums-sha256.txt || true
+          files=(kimun-*.zip kimun-*.tar.gz)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::No archives found to checksum"
+            exit 1
+          fi
+          sha256sum "${files[@]}" > checksums-sha256.txt
           cat checksums-sha256.txt
         shell: bash
 
-      - name: Create Release
+      - name: Upload checksums for downstream jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: release-artifacts/checksums-sha256.txt
+
+      # Attach binaries to the release created by release-plz. No `body:` /
+      # `name:` here: release-plz owns the changelog, we only add assets.
+      - name: Attach release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Kimun v${{ steps.extract_version.outputs.version }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
-          body: |
-            ## Download Kimun v${{ steps.extract_version.outputs.version }}
-
-            Kimun is a terminal-based notes application. Download the binary for your platform and place it somewhere on your `$PATH`.
-
-            ### Downloads
-
-            **Windows (x64):**
-            - Download `kimun-v${{ steps.extract_version.outputs.version }}-windows-x64.zip`
-            - Extract and run `kimun.exe`
-
-            **macOS (Intel):**
-            - Download `kimun-v${{ steps.extract_version.outputs.version }}-macos-x64.tar.gz`
-            - Extract and run `kimun`
-
-            **macOS (Apple Silicon):**
-            - Download `kimun-v${{ steps.extract_version.outputs.version }}-macos-arm64.tar.gz`
-            - Extract and run `kimun`
-
-            **Linux (x64):**
-            - Download `kimun-v${{ steps.extract_version.outputs.version }}-linux-x64.tar.gz`
-            - Extract and run `kimun`
-
-            ### Verify Downloads
-            See `checksums-sha256.txt` for SHA-256 checksums to verify your download.
+          append_body: false
           files: |
             release-artifacts/kimun-*.zip
             release-artifacts/kimun-*.tar.gz
@@ -211,13 +184,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download checksums from release
-        run: |
-          VERSION="${GITHUB_REF_NAME#kimun-notes-v}"
-          curl -fsSL \
-            "https://github.com/nico2sh/kimun/releases/download/${GITHUB_REF_NAME}/checksums-sha256.txt" \
-            -o checksums-sha256.txt
-          cat checksums-sha256.txt
+      - name: Download checksums artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: checksums
+
+      - name: Show checksums
+        run: cat checksums-sha256.txt
 
       - name: Generate Homebrew formula
         run: |

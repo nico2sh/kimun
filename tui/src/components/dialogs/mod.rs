@@ -1,10 +1,10 @@
-pub use delete_dialog::DeleteConfirmDialog;
-pub use rename_dialog::RenameDialog;
-pub use move_dialog::MoveDialog;
-pub use file_ops_menu::FileOpsMenuDialog;
 pub use create_note_dialog::CreateNoteDialog;
+pub use delete_dialog::DeleteConfirmDialog;
+pub use file_ops_menu::FileOpsMenuDialog;
 pub use help_dialog::HelpDialog;
+pub use move_dialog::MoveDialog;
 pub use quick_note_modal::QuickNoteModal;
+pub use rename_dialog::RenameDialog;
 pub use workspace_switcher::WorkspaceSwitcherModal;
 
 use ratatui::Frame;
@@ -34,13 +34,13 @@ pub enum ValidationState {
     Taken,
 }
 
-pub mod delete_dialog;
-pub mod rename_dialog;
-pub mod move_dialog;
-pub mod file_ops_menu;
 pub mod create_note_dialog;
+pub mod delete_dialog;
+pub mod file_ops_menu;
 pub mod help_dialog;
+pub mod move_dialog;
 pub mod quick_note_modal;
+pub mod rename_dialog;
 pub mod workspace_switcher;
 
 pub enum ActiveDialog {
@@ -57,12 +57,12 @@ pub enum ActiveDialog {
 impl ActiveDialog {
     pub fn set_error(&mut self, msg: String) {
         match self {
-            ActiveDialog::Menu(_)      => {} // menu has no error state
-            ActiveDialog::Delete(d)    => d.error = Some(msg),
-            ActiveDialog::Rename(d)    => d.error = Some(msg),
-            ActiveDialog::Move(d)      => d.error = Some(msg),
-            ActiveDialog::CreateNote(d)  => d.error = Some(msg),
-            ActiveDialog::Help(_)      => {}
+            ActiveDialog::Menu(_) => {} // menu has no error state
+            ActiveDialog::Delete(d) => d.error = Some(msg),
+            ActiveDialog::Rename(d) => d.error = Some(msg),
+            ActiveDialog::Move(d) => d.error = Some(msg),
+            ActiveDialog::CreateNote(d) => d.error = Some(msg),
+            ActiveDialog::Help(_) => {}
             ActiveDialog::QuickNote(d) => d.error = Some(msg),
             ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
         }
@@ -75,12 +75,12 @@ impl Component for ActiveDialog {
             return EventState::NotConsumed;
         };
         match self {
-            ActiveDialog::Menu(d)      => d.handle_key(*key, tx),
-            ActiveDialog::Delete(d)    => d.handle_key(*key, tx),
-            ActiveDialog::Rename(d)    => d.handle_key(*key, tx),
-            ActiveDialog::Move(d)      => d.handle_key(*key, tx),
-            ActiveDialog::CreateNote(d)  => d.handle_key(*key, tx),
-            ActiveDialog::Help(d)      => d.handle_key(*key, tx),
+            ActiveDialog::Menu(d) => d.handle_key(*key, tx),
+            ActiveDialog::Delete(d) => d.handle_key(*key, tx),
+            ActiveDialog::Rename(d) => d.handle_key(*key, tx),
+            ActiveDialog::Move(d) => d.handle_key(*key, tx),
+            ActiveDialog::CreateNote(d) => d.handle_key(*key, tx),
+            ActiveDialog::Help(d) => d.handle_key(*key, tx),
             ActiveDialog::QuickNote(d) => d.handle_key(*key, tx),
             ActiveDialog::WorkspaceSwitcher(d) => d.handle_key(*key, tx),
         }
@@ -88,12 +88,12 @@ impl Component for ActiveDialog {
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         match self {
-            ActiveDialog::Menu(d)      => d.render(f, rect, theme, focused),
-            ActiveDialog::Delete(d)    => d.render(f, rect, theme, focused),
-            ActiveDialog::Rename(d)    => d.render(f, rect, theme, focused),
-            ActiveDialog::Move(d)      => d.render(f, rect, theme, focused),
-            ActiveDialog::CreateNote(d)  => d.render(f, rect, theme, focused),
-            ActiveDialog::Help(d)      => d.render(f, rect, theme, focused),
+            ActiveDialog::Menu(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::Delete(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::Rename(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::Move(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::CreateNote(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::Help(d) => d.render(f, rect, theme, focused),
             ActiveDialog::QuickNote(d) => d.render(f, rect, theme, focused),
             ActiveDialog::WorkspaceSwitcher(d) => d.render(f, rect, theme, focused),
         }
@@ -124,8 +124,7 @@ pub(super) fn render_separator(f: &mut Frame, rect: Rect, fg_muted: Color, bg: C
 /// Renders `  Error: {msg}` in red.
 pub(super) fn render_error_row(f: &mut Frame, rect: Rect, msg: &str, bg: Color) {
     f.render_widget(
-        Paragraph::new(format!("  Error: {msg}"))
-            .style(Style::default().fg(Color::Red).bg(bg)),
+        Paragraph::new(format!("  Error: {msg}")).style(Style::default().fg(Color::Red).bg(bg)),
         rect,
     );
 }
@@ -144,7 +143,10 @@ pub(super) fn render_confirm_hint(
     let enter_style = if enter_active {
         Style::default().fg(fg).bg(bg)
     } else {
-        Style::default().fg(fg_muted).bg(bg).add_modifier(Modifier::DIM)
+        Style::default()
+            .fg(fg_muted)
+            .bg(bg)
+            .add_modifier(Modifier::DIM)
     };
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -164,9 +166,13 @@ pub(super) fn render_confirm_hint(
 // Layout helper
 // ---------------------------------------------------------------------------
 
-pub(super) fn centered_rect(percent_x: u16, percent_y: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+pub(super) fn centered_rect(
+    percent_x: u16,
+    percent_y: u16,
+    area: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
     let popup_height = (area.height as u32 * percent_y as u32 / 100) as u16;
-    let popup_width  = (area.width  as u32 * percent_x as u32 / 100) as u16;
+    let popup_width = (area.width as u32 * percent_x as u32 / 100) as u16;
     ratatui::layout::Rect {
         x: area.x + (area.width.saturating_sub(popup_width)) / 2,
         y: area.y + (area.height.saturating_sub(popup_height)) / 2,
@@ -176,7 +182,11 @@ pub(super) fn centered_rect(percent_x: u16, percent_y: u16, area: ratatui::layou
 }
 
 /// Centre a dialog of exactly `width` × `height` characters.
-pub(super) fn fixed_centered_rect(width: u16, height: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+pub(super) fn fixed_centered_rect(
+    width: u16,
+    height: u16,
+    area: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
     let w = width.min(area.width);
     let h = height.min(area.height);
     ratatui::layout::Rect {
