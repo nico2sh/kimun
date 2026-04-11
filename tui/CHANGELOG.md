@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.6.0...kimun-notes-v0.7.0) - 2026-04-11
+
+### Added
+
+- relative paths in config workspaces
+- multiple workspaces
+- *(tui)* add type-ahead directory jumping to file browser
+- *(tui)* replace VaultSection with WorkspacesSection in Settings
+- *(tui)* add WorkspacesSection settings component
+- *(tui)* wire workspace switcher into editor and main loop
+- *(tui)* add WorkspaceSwitcherModal dialog
+- *(tui)* add SwitchWorkspace shortcut (F4) and WorkspaceSwitched event
+- *(tui)* wire BacklinksPanel into EditorScreen with Ctrl+E toggle
+- *(tui)* add BacklinksPanel rendering
+- *(tui)* add BacklinksPanel input handling and expand logic
+- *(tui)* add ToggleBacklinks shortcut and backlinks events
+- *(tui)* add BacklinksPanel component with context extraction
+- quick note
+- *(mcp)* add triage_inbox prompt for organizing inbox notes
+- *(mcp)* add quick_note tool
+- *(tui)* wire QuickNote shortcut (Ctrl+W) to editor screen
+- *(tui)* add QuickNoteModal dialog component
+- *(cli)* add kimun note triage command to list inbox notes
+- *(cli)* add kimun note quick command
+- *(config)* add inbox_path to workspace config
+
+### Fixed
+
+- small refactor
+- init vault on workspace switch
+- efficiency
+
+### Other
+
+- fixed docs
+- gif of the app in action
+- readme features
+- examples
+- workspace info
+- clean up SharedSettings migration, remove workarounds
+- update SettingsScreen to use SharedSettings
+- update EditorScreen to use SharedSettings
+- introduce SharedSettings, update App, events, StartScreen, BrowseScreen
+- updated readme
+- fixed docs
+- tags
+- added more about the quick note
+
 ## [0.6.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.5.0...kimun-notes-v0.6.0) - 2026-04-09
 
 ### Added
