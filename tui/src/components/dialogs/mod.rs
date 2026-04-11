@@ -5,6 +5,7 @@ pub use file_ops_menu::FileOpsMenuDialog;
 pub use create_note_dialog::CreateNoteDialog;
 pub use help_dialog::HelpDialog;
 pub use quick_note_modal::QuickNoteModal;
+pub use workspace_switcher::WorkspaceSwitcherModal;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -40,6 +41,7 @@ pub mod file_ops_menu;
 pub mod create_note_dialog;
 pub mod help_dialog;
 pub mod quick_note_modal;
+pub mod workspace_switcher;
 
 pub enum ActiveDialog {
     Menu(FileOpsMenuDialog),
@@ -49,6 +51,7 @@ pub enum ActiveDialog {
     CreateNote(CreateNoteDialog),
     Help(HelpDialog),
     QuickNote(QuickNoteModal),
+    WorkspaceSwitcher(WorkspaceSwitcherModal),
 }
 
 impl ActiveDialog {
@@ -61,6 +64,7 @@ impl ActiveDialog {
             ActiveDialog::CreateNote(d)  => d.error = Some(msg),
             ActiveDialog::Help(_)      => {}
             ActiveDialog::QuickNote(d) => d.error = Some(msg),
+            ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
         }
     }
 }
@@ -78,6 +82,7 @@ impl Component for ActiveDialog {
             ActiveDialog::CreateNote(d)  => d.handle_key(*key, tx),
             ActiveDialog::Help(d)      => d.handle_key(*key, tx),
             ActiveDialog::QuickNote(d) => d.handle_key(*key, tx),
+            ActiveDialog::WorkspaceSwitcher(d) => d.handle_key(*key, tx),
         }
     }
 
@@ -90,6 +95,7 @@ impl Component for ActiveDialog {
             ActiveDialog::CreateNote(d)  => d.render(f, rect, theme, focused),
             ActiveDialog::Help(d)      => d.render(f, rect, theme, focused),
             ActiveDialog::QuickNote(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::WorkspaceSwitcher(d) => d.render(f, rect, theme, focused),
         }
     }
 }

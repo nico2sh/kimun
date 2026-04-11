@@ -27,3 +27,4 @@ tui/kimun_config.toml
 /test_config.toml
 docs/public/
 .worktrees/
+example/*/kimun.sqlite

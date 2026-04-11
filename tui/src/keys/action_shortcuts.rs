@@ -47,6 +47,8 @@ pub enum ActionShortcuts {
     QuickNote,
     // Backlinks panel
     ToggleBacklinks,
+    // Workspace
+    SwitchWorkspace,
 }
 
 impl ActionShortcuts {
@@ -57,7 +59,8 @@ impl ActionShortcuts {
             | ActionShortcuts::FocusEditor
             | ActionShortcuts::CycleSortField
             | ActionShortcuts::SortReverseOrder
-            | ActionShortcuts::ToggleBacklinks => ShortcutCategory::Navigation,
+            | ActionShortcuts::ToggleBacklinks
+            | ActionShortcuts::SwitchWorkspace => ShortcutCategory::Navigation,
 
             ActionShortcuts::SearchNotes
             | ActionShortcuts::OpenNote
@@ -91,6 +94,7 @@ impl ActionShortcuts {
             ActionShortcuts::FollowLink => "Follow link".into(),
             ActionShortcuts::QuickNote => "Quick note".into(),
             ActionShortcuts::ToggleBacklinks => "Toggle backlinks".into(),
+            ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),
@@ -124,6 +128,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::FollowLink => "FollowLink".to_string(),
             ActionShortcuts::QuickNote => "QuickNote".to_string(),
             ActionShortcuts::ToggleBacklinks => "ToggleBacklinks".to_string(),
+            ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -149,6 +154,7 @@ impl TryFrom<String> for ActionShortcuts {
             "FollowLink" => ActionShortcuts::FollowLink,
             "QuickNote" => ActionShortcuts::QuickNote,
             "ToggleBacklinks" => ActionShortcuts::ToggleBacklinks,
+            "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -213,6 +219,10 @@ mod tests {
         );
         assert_eq!(
             ActionShortcuts::ToggleBacklinks.category(),
+            ShortcutCategory::Navigation
+        );
+        assert_eq!(
+            ActionShortcuts::SwitchWorkspace.category(),
             ShortcutCategory::Navigation
         );
 
@@ -283,6 +293,10 @@ mod tests {
         assert_eq!(
             ActionShortcuts::ToggleBacklinks.label(),
             "Toggle backlinks"
+        );
+        assert_eq!(
+            ActionShortcuts::SwitchWorkspace.label(),
+            "Switch workspace"
         );
         assert_eq!(ActionShortcuts::Text(TextAction::Bold).label(), "Bold");
         assert_eq!(ActionShortcuts::Text(TextAction::Italic).label(), "Italic");

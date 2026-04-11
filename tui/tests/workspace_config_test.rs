@@ -8,7 +8,6 @@ fn workspace_config_serializes_to_toml() {
     let config = WorkspaceConfig {
         global: GlobalConfig {
             current_workspace: "default".to_string(),
-            theme: "dark".to_string(),
         },
         workspaces: HashMap::from([(
             "default".to_string(),
@@ -20,6 +19,7 @@ fn workspace_config_serializes_to_toml() {
                     .with_timezone(&Utc),
                 quick_note_path: None,
                 inbox_path: None,
+                resolved_path: None,
             },
         )]),
     };
@@ -97,7 +97,6 @@ fn workspace_config_round_trip_serialization() {
 
     // Verify all data is preserved
     assert_eq!(config.global.current_workspace, deserialized.global.current_workspace);
-    assert_eq!(config.global.theme, deserialized.global.theme);
     assert_eq!(config.workspaces.len(), deserialized.workspaces.len());
 
     let original_entry = config.workspaces.get("test").unwrap();

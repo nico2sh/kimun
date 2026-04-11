@@ -52,10 +52,12 @@ last_paths = ["/journal", "/tasks"]
 
     let settings = AppSettings::load_from_file(config_path.clone()).unwrap();
 
+    // Theme stays at the top level, not in GlobalConfig.
+    assert_eq!(settings.theme, "gruvbox_dark");
+
     let ws_config = settings.workspace_config.unwrap();
     let default_ws = ws_config.workspaces.get("default").unwrap();
     assert_eq!(default_ws.last_paths, vec!["/journal", "/tasks"]);
-    assert_eq!(ws_config.global.theme, "gruvbox_dark");
 }
 
 #[test]

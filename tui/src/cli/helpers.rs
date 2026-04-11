@@ -20,22 +20,19 @@ pub fn load_settings(config_path: Option<PathBuf>) -> Result<AppSettings> {
 ///
 /// Returns an error if no workspace is configured.
 pub fn resolve_workspace_config(settings: &AppSettings) -> Result<(PathBuf, String)> {
-    // Check legacy workspace_dir first (Phase 1 compatibility)
-    if let Some(dir) = &settings.workspace_dir {
-        return Ok((dir.clone(), "default".to_string()));
-    }
+    let path = settings.resolve_workspace_path();
+    let name = settings
+        .workspace_config
+        .as_ref()
+        .map(|wc| wc.global.current_workspace.clone())
+        .unwrap_or_else(|| "default".to_string());
 
-    // Check Phase 2 workspace configuration
-    if let Some(ref ws_config) = settings.workspace_config
-        && let Some(entry) = ws_config.get_current_workspace()
-    {
-        let name = ws_config.global.current_workspace.clone();
-        return Ok((entry.path.clone(), name));
+    match path {
+        Some(p) => Ok((p, name)),
+        None => Err(color_eyre::eyre::eyre!(
+            "No workspace configured. Run 'kimun' to set up a workspace."
+        )),
     }
-
-    Err(color_eyre::eyre::eyre!(
-        "No workspace configured. Run 'kimun' to set up a workspace."
-    ))
 }
 
 /// Load settings and resolve workspace configuration in one operation.

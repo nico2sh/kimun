@@ -26,7 +26,6 @@ impl std::error::Error for WorkspaceConfigError {}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GlobalConfig {
     pub current_workspace: String,
-    pub theme: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -38,9 +37,18 @@ pub struct WorkspaceEntry {
     pub quick_note_path: Option<String>,
     #[serde(default)]
     pub inbox_path: Option<String>,
+    /// Absolute resolved path for runtime use. Not serialized — `path` is
+    /// written to disk as the user configured it (relative, ~/..., or absolute).
+    #[serde(skip)]
+    pub resolved_path: Option<PathBuf>,
 }
 
 impl WorkspaceEntry {
+    /// Returns the resolved absolute path if available, otherwise the original path.
+    pub fn effective_path(&self) -> &PathBuf {
+        self.resolved_path.as_ref().unwrap_or(&self.path)
+    }
+
     pub fn effective_quick_note_path(&self) -> String {
         self.quick_note_path.clone().unwrap_or_else(|| kimun_core::nfs::VaultPath::root().to_string())
     }
@@ -63,7 +71,6 @@ impl WorkspaceConfig {
         Self {
             global: GlobalConfig {
                 current_workspace: String::new(),
-                theme: "dark".to_string(),
             },
             workspaces: HashMap::new(),
         }
@@ -83,6 +90,7 @@ impl WorkspaceConfig {
             created: Utc::now(),
             quick_note_path: None,
             inbox_path: None,
+            resolved_path: None,
         };
 
         self.workspaces.insert(name.clone(), entry);
@@ -105,11 +113,9 @@ impl WorkspaceConfig {
 
     pub fn from_phase1_migration(
         workspace_dir: PathBuf,
-        theme: String,
         last_paths: Vec<String>,
     ) -> Self {
         let mut config = Self::new_empty();
-        config.global.theme = theme;
 
         let entry = WorkspaceEntry {
             path: workspace_dir,
@@ -117,6 +123,7 @@ impl WorkspaceConfig {
             created: Utc::now(),
             quick_note_path: None,
             inbox_path: None,
+            resolved_path: None,
         };
 
         config.workspaces.insert("default".to_string(), entry);

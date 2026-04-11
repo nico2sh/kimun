@@ -5,3 +5,4 @@ pub mod indexing_section;
 pub mod sorting_section;
 pub mod theme_picker;
 pub mod vault_section;
+pub mod workspaces_section;

@@ -13,7 +13,7 @@ use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::sidebar::SidebarComponent;
-use crate::settings::AppSettings;
+use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
 pub struct BrowseScreen {
@@ -24,12 +24,15 @@ pub struct BrowseScreen {
 }
 
 impl BrowseScreen {
-    pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: AppSettings) -> Self {
-        let kb = settings.key_bindings.clone();
-        let theme = settings.get_theme();
-        let icons = settings.icons();
+    pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
+        let s = settings.read().unwrap();
+        let kb = s.key_bindings.clone();
+        let theme = s.get_theme();
+        let icons = s.icons();
+        let sidebar = SidebarComponent::new(kb, vault.clone(), icons, &s);
+        drop(s);
         Self {
-            sidebar: SidebarComponent::new(kb, vault.clone(), icons, &settings),
+            sidebar,
             vault,
             theme,
             path,
@@ -116,11 +119,13 @@ impl AppScreen for BrowseScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::AppSettings;
+    use std::sync::RwLock;
     use ratatui::crossterm::event::KeyCode;
     use tokio::sync::mpsc::unbounded_channel;
 
-    fn make_settings_with_defaults() -> AppSettings {
-        AppSettings::default()
+    fn make_settings_with_defaults() -> SharedSettings {
+        Arc::new(RwLock::new(AppSettings::default()))
     }
 
     async fn make_vault() -> Arc<NoteVault> {
