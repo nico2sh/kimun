@@ -63,6 +63,28 @@ brew install kimun
 cargo install kimun-notes
 ```
 
+## Try It
+
+The `example/` directory contains two sample workspaces (personal and work) with interconnected notes, journal entries, inbox items, and wikilinks — ready to explore.
+
+```sh
+# Clone and run from source
+git clone https://github.com/nico2sh/kimun.git
+cd kimun
+cargo run -- --config example/kimun_config.toml
+```
+
+The first launch initializes the search index. After that, you can:
+
+- **Browse notes** in the sidebar, follow `[[wikilinks]]` with `Ctrl+G`
+- **Search** with `Ctrl+K`
+- **Quick note** with `Ctrl+W` — captures a thought to the inbox
+- **Backlinks panel** with `Ctrl+E` — see what links to the current note
+- **Switch workspace** with `F4` — toggle between personal and work
+- **Open settings** with `Ctrl+P` — workspace management, themes, key bindings
+
+The example config uses relative paths (`personal/`, `work/`), resolved against the config file's directory.
+
 ## AI Skills
 
 The `skills/` directory contains ready-made skills for AI coding assistants, so they can use the Kimün CLI on your behalf — capturing notes, appending to your journal, searching your vault, and more.
