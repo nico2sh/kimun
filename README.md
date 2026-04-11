@@ -17,7 +17,7 @@ It doesn't try to do everything; there are already more powerful tools for more 
 
 Features:
 * Local Markdown files indexed for fast search
-* Simple Mardown syntax highlighting
+* Simple Markdown syntax highlighting
 * Powerful but simple search syntax to browse your notes
 * Telescope-like search and note navigation with previews
 * Wikilink and Markdown links note navigation with keyboard shortcuts

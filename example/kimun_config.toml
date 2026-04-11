@@ -34,14 +34,14 @@ journal_sort_order = "descending"
 [global]
 current_workspace = "work"
 
-[workspaces.work]
-path = "work"
-last_paths = ["/journal/2026-04-10.md", "/journal/2026-04-09.md", "/people/carlos.md"]
-created = "2026-04-01T00:00:00Z"
-
 [workspaces.personal]
 path = "personal"
 last_paths = ["/journal/2026-04-10.md", "/ideas/companion-planting.md", "/projects/garden-plan.md"]
+created = "2026-04-01T00:00:00Z"
+
+[workspaces.work]
+path = "work"
+last_paths = ["/journal/2026-04-10.md", "/journal/2026-04-09.md", "/people/carlos.md"]
 created = "2026-04-01T00:00:00Z"
 
 [key_bindings]
