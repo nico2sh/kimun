@@ -243,8 +243,8 @@ impl SettingsScreen {
             });
             self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
         } else {
+            s.save_to_disk().ok();
             drop(s);
-            self.settings.read().unwrap().save_to_disk().ok();
             tx.send(AppEvent::SettingsSaved).ok();
         }
     }

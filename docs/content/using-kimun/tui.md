@@ -47,6 +47,18 @@ The Settings screen lets you configure Kimün's behavior and appearance:
 
 All settings are stored in your config file (see [Configuration Reference](@/getting-started/configuration.md) for details).
 
+## Workspace Switcher
+
+Press `F4` to open the workspace switcher. It lists all configured workspaces with the current one marked. Use Up/Down to navigate and Enter to switch — the app transitions to the new workspace, validating and indexing it as needed.
+
+Workspace management (create, rename, delete) is available in the Settings screen (`Ctrl+P`) under the **Workspaces** section:
+- **n** — create a new workspace (enter a name, then browse for a directory)
+- **r** — rename the selected workspace
+- **d** — delete the selected workspace (cannot delete the current one)
+- **b** — browse to change the selected workspace's directory path
+
+The file browser supports type-ahead: press any letter to jump to the first directory starting with that character. Press the same letter again to cycle through matches.
+
 ## Navigation Patterns
 
 ### Basic Movement
@@ -112,6 +124,7 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 | New journal entry | `Ctrl+J` |
 | Quick note | `Ctrl+W` |
 | Toggle backlinks panel | `Ctrl+E` |
+| Switch workspace | `F4` |
 | Toggle sidebar / Bold (context-sensitive) | `Ctrl+B` |
 | Italic | `Ctrl+I` |
 | Strikethrough | `Ctrl+S` |
