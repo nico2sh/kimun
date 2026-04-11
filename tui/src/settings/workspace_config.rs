@@ -26,7 +26,6 @@ impl std::error::Error for WorkspaceConfigError {}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GlobalConfig {
     pub current_workspace: String,
-    pub theme: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -63,7 +62,6 @@ impl WorkspaceConfig {
         Self {
             global: GlobalConfig {
                 current_workspace: String::new(),
-                theme: "dark".to_string(),
             },
             workspaces: HashMap::new(),
         }
@@ -105,11 +103,9 @@ impl WorkspaceConfig {
 
     pub fn from_phase1_migration(
         workspace_dir: PathBuf,
-        theme: String,
         last_paths: Vec<String>,
     ) -> Self {
         let mut config = Self::new_empty();
-        config.global.theme = theme;
 
         let entry = WorkspaceEntry {
             path: workspace_dir,

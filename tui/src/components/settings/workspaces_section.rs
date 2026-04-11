@@ -150,10 +150,10 @@ impl WorkspacesSection {
                 EventState::Consumed
             }
             KeyCode::Char('r') => {
-                if self.list_state.selected().is_some() {
+                if let Some(name) = self.selected_name().map(|s| s.to_string()) {
                     self.mode = Mode::Renaming;
-                    self.input.clear();
-                    self.input_cursor = 0;
+                    self.input = name;
+                    self.input_cursor = self.input.len();
                     self.error = None;
                 }
                 EventState::Consumed
@@ -420,7 +420,6 @@ mod tests {
         settings.workspace_config = Some(WorkspaceConfig {
             global: GlobalConfig {
                 current_workspace: current.to_string(),
-                theme: "dark".to_string(),
             },
             workspaces: ws_map,
         });

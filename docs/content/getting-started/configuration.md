@@ -130,6 +130,7 @@ Use these action names exactly as shown:
   - `ToggleBacklinks` — Show/hide the backlinks panel
   - `FocusEditor` — Move focus right (Sidebar → Editor → Backlinks)
   - `FocusSidebar` — Move focus left (Backlinks → Editor → Sidebar)
+  - `SwitchWorkspace` — Open the workspace switcher
 
 - **Note Management**
   - `NewJournal` — Create a new journal entry
@@ -192,4 +193,5 @@ QuickNote = ["ctrl&W"]
 ToggleBacklinks = ["ctrl&E"]
 TogglePreview = ["ctrl&Y"]
 FileOperations = ["F2"]
+SwitchWorkspace = ["F4"]
 ```
