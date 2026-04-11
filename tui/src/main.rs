@@ -216,8 +216,7 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
             Box::new(SettingsScreen::new_with_error(s, msg))
         }
         ScreenEvent::OpenEditor(note_vault, vault_path) => {
-            let s = app.settings.read().unwrap().clone();
-            Box::new(EditorScreen::new(note_vault, vault_path, s))
+            Box::new(EditorScreen::new(note_vault, vault_path, app.settings.clone()))
         }
         ScreenEvent::OpenBrowse(note_vault, vault_path) => Box::new(BrowseScreen::new(
             note_vault,
