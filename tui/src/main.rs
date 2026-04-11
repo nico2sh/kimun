@@ -205,7 +205,7 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     }
 
     let mut screen: Box<dyn AppScreen> = match new_screen {
-        ScreenEvent::Start => Box::new(StartScreen::new(app.settings.clone(), None)),
+        ScreenEvent::Start => Box::new(StartScreen::new(app.settings.clone(), app.vault.clone())),
         ScreenEvent::OpenSettings => {
             Box::new(SettingsScreen::new(app.settings.clone()))
         }
