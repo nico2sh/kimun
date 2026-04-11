@@ -199,12 +199,12 @@ fn run_use(settings: &mut AppSettings, name: String) -> Result<()> {
         })?;
 
     // Validate workspace path still exists
-    if !entry.path.exists() {
+    if !entry.effective_path().exists() {
         return Err(eyre!(
             "Workspace '{}' path no longer exists: {}. \
              Update the path or remove this workspace.",
             name,
-            entry.path.display()
+            entry.effective_path().display()
         ));
     }
 
@@ -310,18 +310,18 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
         .get_workspace(&workspace_name)
         .ok_or_else(|| eyre!("Workspace '{}' not found.", workspace_name))?;
 
-    if !entry.path.exists() {
+    if !entry.effective_path().exists() {
         return Err(eyre!(
             "Workspace '{}' path no longer exists: {}",
             workspace_name,
-            entry.path.display()
+            entry.effective_path().display()
         ));
     }
 
     println!("Reindexing workspace '{}'...", workspace_name);
 
-    let vault = NoteVault::new(&entry.path).await.map_err(|e| {
-        eyre!("Failed to open vault at {}: {}", entry.path.display(), e)
+    let vault = NoteVault::new(entry.effective_path()).await.map_err(|e| {
+        eyre!("Failed to open vault at {}: {}", entry.effective_path().display(), e)
     })?;
 
     let report = match vault.recreate_index().await {

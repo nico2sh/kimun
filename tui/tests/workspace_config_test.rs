@@ -19,6 +19,7 @@ fn workspace_config_serializes_to_toml() {
                     .with_timezone(&Utc),
                 quick_note_path: None,
                 inbox_path: None,
+                resolved_path: None,
             },
         )]),
     };

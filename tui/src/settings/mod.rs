@@ -367,7 +367,9 @@ impl AppSettings {
 
             match toml::from_str::<AppSettings>(toml.as_ref()) {
                 Ok(mut setting) => {
-                    setting.config_file = Some(settings_file_path);
+                    setting.config_file = Some(settings_file_path.clone());
+                    let config_dir = settings_file_path.parent().unwrap_or(std::path::Path::new("."));
+                    setting.resolve_paths(config_dir);
                     if config_migration::ConfigMigration::run(&mut setting)? {
                         setting.save_to_disk()?;
                     }
@@ -408,6 +410,10 @@ impl AppSettings {
         match toml::from_str::<AppSettings>(&toml_str) {
             Ok(mut setting) => {
                 setting.config_file = Some(path.clone());
+
+                // Resolve ~ and relative paths against the config file's directory.
+                let config_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                setting.resolve_paths(config_dir);
 
                 // Run config migrations (e.g. Phase 1 → Phase 2 workspace_dir).
                 if config_migration::ConfigMigration::run(&mut setting)? {
@@ -487,8 +493,51 @@ impl AppSettings {
         self.workspace_config
             .as_ref()
             .and_then(|wc| wc.get_current_workspace())
-            .map(|entry| entry.path.clone())
+            .map(|entry| entry.effective_path().clone())
             .or_else(|| self.workspace_dir.clone())
+    }
+
+    /// Resolve `~` and relative paths in workspace entries.
+    /// Relative paths are resolved against `base` (typically the config file's
+    /// parent directory). Called once after deserialization.
+    fn resolve_paths(&mut self, base: &std::path::Path) {
+        // Legacy workspace_dir — resolve in place (it's a legacy field that
+        // gets consumed by migration anyway).
+        if let Some(ref mut p) = self.workspace_dir {
+            *p = Self::expand_path(p, base);
+        }
+        // Phase 2 workspace entries — populate resolved_path, keep original path intact.
+        if let Some(ref mut wc) = self.workspace_config {
+            for entry in wc.workspaces.values_mut() {
+                let resolved = Self::expand_path(&entry.path, base);
+                if resolved != entry.path {
+                    entry.resolved_path = Some(resolved);
+                }
+            }
+        }
+    }
+
+    /// Expand `~` to the home directory and resolve relative paths against `base`.
+    /// Returns an absolute path. If the resolved path exists on disk, it is
+    /// canonicalized to remove `.` and `..` components.
+    fn expand_path(path: &std::path::Path, base: &std::path::Path) -> PathBuf {
+        let s = path.to_string_lossy();
+        let expanded = if s.starts_with("~/") || s == "~" {
+            if let Ok(home) = config_dir::get_home_dir() {
+                home.join(s.strip_prefix("~/").unwrap_or(""))
+            } else {
+                path.to_path_buf()
+            }
+        } else {
+            path.to_path_buf()
+        };
+        let absolute = if expanded.is_relative() {
+            base.join(expanded)
+        } else {
+            expanded
+        };
+        // Canonicalize if the path exists, otherwise return as-is.
+        absolute.canonicalize().unwrap_or(absolute)
     }
 
     pub fn set_theme(&mut self, theme: String) {
@@ -764,5 +813,161 @@ mod backend_tests {
         let toml = "editor_backend = \"nvim\"\n";
         let parsed: AppSettings = toml::from_str(toml).unwrap();
         assert!(matches!(parsed.editor_backend, EditorBackendSetting::Nvim));
+    }
+
+    // ── expand_path tests ──────────────────────────────────────────────
+
+    #[test]
+    fn expand_path_absolute_unchanged() {
+        let base = PathBuf::from("/config/dir");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("/absolute/path/notes"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        assert!(result.to_string_lossy().contains("absolute"));
+    }
+
+    #[test]
+    fn expand_path_relative_resolved_against_base() {
+        let base = tempfile::TempDir::new().unwrap();
+        let notes = base.path().join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+
+        let result = AppSettings::expand_path(
+            std::path::Path::new("notes"),
+            base.path(),
+        );
+        assert!(result.is_absolute());
+        assert_eq!(result, notes.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn expand_path_relative_with_dotdot() {
+        let base = tempfile::TempDir::new().unwrap();
+        let sibling = base.path().join("sibling");
+        std::fs::create_dir_all(&sibling).unwrap();
+        let sub = base.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let result = AppSettings::expand_path(
+            std::path::Path::new("../sibling"),
+            &sub,
+        );
+        assert!(result.is_absolute());
+        assert_eq!(result, sibling.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn expand_path_nonexistent_relative_still_absolute() {
+        let base = PathBuf::from("/some/config/dir");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("my-notes"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        assert_eq!(result, PathBuf::from("/some/config/dir/my-notes"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expand_path_tilde_uses_home_unix() {
+        let home = std::env::var("HOME").expect("HOME must be set on Unix");
+        let base = PathBuf::from("/irrelevant");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("~/Documents/notes"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        assert!(
+            result.starts_with(&home),
+            "expected path to start with HOME={}, got {:?}",
+            home,
+            result
+        );
+        assert!(result.to_string_lossy().contains("Documents/notes"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expand_path_tilde_alone_is_home_unix() {
+        let home = std::env::var("HOME").expect("HOME must be set on Unix");
+        let base = PathBuf::from("/irrelevant");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("~"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        // canonicalize may resolve symlinks, so compare canonicalized forms
+        let expected = PathBuf::from(&home).canonicalize().unwrap_or(PathBuf::from(&home));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn expand_path_tilde_uses_userprofile_windows() {
+        let home = std::env::var("USERPROFILE").expect("USERPROFILE must be set on Windows");
+        let base = PathBuf::from("C:\\irrelevant");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("~/Documents/notes"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        assert!(
+            result.starts_with(&home),
+            "expected path to start with USERPROFILE={}, got {:?}",
+            home,
+            result
+        );
+    }
+
+    #[test]
+    fn resolve_paths_populates_resolved_path() {
+        let base = tempfile::TempDir::new().unwrap();
+        let notes = base.path().join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+
+        let toml = format!(
+            r#"
+config_version = 2
+[global]
+current_workspace = "test"
+[workspaces.test]
+path = "notes"
+last_paths = []
+created = "2026-01-01T00:00:00Z"
+"#
+        );
+        let mut settings: AppSettings = toml::from_str(&toml).unwrap();
+        settings.resolve_paths(base.path());
+
+        let wc = settings.workspace_config.as_ref().unwrap();
+        let entry = wc.workspaces.get("test").unwrap();
+        // Original path preserved
+        assert_eq!(entry.path, PathBuf::from("notes"));
+        // Resolved path is absolute
+        assert!(entry.resolved_path.is_some());
+        assert!(entry.effective_path().is_absolute());
+    }
+
+    #[test]
+    fn resolve_paths_absolute_no_resolved_path() {
+        let toml = r#"
+config_version = 2
+[global]
+current_workspace = "test"
+[workspaces.test]
+path = "/absolute/notes"
+last_paths = []
+created = "2026-01-01T00:00:00Z"
+"#;
+        let mut settings: AppSettings = toml::from_str(toml).unwrap();
+        settings.resolve_paths(std::path::Path::new("/config"));
+
+        let wc = settings.workspace_config.as_ref().unwrap();
+        let entry = wc.workspaces.get("test").unwrap();
+        // No resolved_path needed for already-absolute paths
+        assert!(entry.resolved_path.is_none());
+        assert_eq!(*entry.effective_path(), PathBuf::from("/absolute/notes"));
     }
 }

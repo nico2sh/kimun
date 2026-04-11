@@ -88,7 +88,10 @@ impl ConfigMigration {
             // Theme stays as the top-level field — no duplication.
         } else if let Some(ref mut wc) = settings.workspace_config {
             // Phase 2 config exists but legacy workspace_dir was still present.
-            let already_exists = wc.workspaces.values().any(|e| e.path == workspace_dir);
+            let already_exists = wc
+                .workspaces
+                .values()
+                .any(|e| *e.effective_path() == workspace_dir);
             if !already_exists && !workspace_dir.exists() {
                 tracing::warn!(
                     "Dropping orphaned workspace_dir {:?} (directory no longer exists)",
@@ -110,6 +113,7 @@ impl ConfigMigration {
                     created: chrono::Utc::now(),
                     quick_note_path: None,
                     inbox_path: None,
+                    resolved_path: None,
                 };
                 wc.workspaces.insert(name, entry);
             }
