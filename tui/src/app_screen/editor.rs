@@ -562,6 +562,13 @@ impl AppScreen for EditorScreen {
             ])
             .split(f.area());
 
+        let workspace_label = {
+            let s = self.settings.read().unwrap();
+            s.workspace_config
+                .as_ref()
+                .map(|wc| format!("{} {}", self.icons.workspace, wc.global.current_workspace))
+                .unwrap_or_default()
+        };
         let header = Block::default()
             .title("Kimün")
             .borders(Borders::ALL)
@@ -570,10 +577,22 @@ impl AppScreen for EditorScreen {
             .title_style(Style::default().fg(theme.accent.to_ratatui()));
         let header_inner = header.inner(rows[0]);
         f.render_widget(header, rows[0]);
+
+        // Split header inner: note path on left, workspace label on right.
+        let header_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(workspace_label.len() as u16 + 1)])
+            .split(header_inner);
         f.render_widget(
             Paragraph::new(self.path.to_string())
                 .style(Style::default().fg(theme.fg_secondary.to_ratatui())),
-            header_inner,
+            header_cols[0],
+        );
+        f.render_widget(
+            Paragraph::new(workspace_label)
+                .alignment(ratatui::layout::Alignment::Right)
+                .style(Style::default().fg(theme.fg_muted.to_ratatui())),
+            header_cols[1],
         );
 
         let mut constraints = Vec::new();

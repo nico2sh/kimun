@@ -28,6 +28,21 @@ impl ConfigMigration {
             migrated = true;
         }
 
+        // Validate current_workspace points to an existing entry.
+        if let Some(ref mut wc) = settings.workspace_config
+            && !wc.global.current_workspace.is_empty()
+            && !wc.workspaces.contains_key(&wc.global.current_workspace)
+        {
+            let first = wc.workspaces.keys().next().cloned().unwrap_or_default();
+            tracing::warn!(
+                "current_workspace '{}' does not exist, resetting to '{}'",
+                wc.global.current_workspace,
+                first
+            );
+            wc.global.current_workspace = first;
+            migrated = true;
+        }
+
         // Future migrations go here, gated on config_version:
         // if settings.config_version < 3 { ... migrated = true; }
 

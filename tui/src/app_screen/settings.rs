@@ -729,7 +729,11 @@ impl AppScreen for SettingsScreen {
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
             .split(f.area());
 
         let header = Block::default()
@@ -739,6 +743,15 @@ impl AppScreen for SettingsScreen {
             .style(theme.base_style())
             .title_style(Style::default().fg(theme.accent.to_ratatui()));
         f.render_widget(header, rows[0]);
+
+        // Footer hint
+        f.render_widget(
+            Paragraph::new("  [Esc] Save & Close  [Tab] Switch sidebar/content")
+                .style(Style::default()
+                    .fg(theme.fg_muted.to_ratatui())
+                    .bg(theme.bg.to_ratatui())),
+            rows[2],
+        );
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
