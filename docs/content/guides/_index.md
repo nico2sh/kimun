@@ -6,8 +6,8 @@ sort_by = "weight"
 
 # Guides
 
-Here are some guides on how you can get the most from Kimün, showing you walkthroughs for common workflows and automation that would allow to use the app alongside with other tools.
+Here are some guides on getting the most out of Kimün — walkthroughs for common workflows and automation that let you use the app alongside your other tools.
 
-In the next pages there are guides for journaling, scripting Kimün, and piping output through the CLI. These build on the basics covered in *Getting Started* and *Using Kimün*. My personal favorite is creating a single character alias to capture quick ideas from the terminal, check that out. 
+The next pages cover journaling, scripting Kimün, and piping output through the CLI. They build on the basics covered in *Getting Started* and *Using Kimün*. My personal favorite is setting up a single-character alias to capture quick ideas from the terminal — definitely check that one out.
 
 **Start here:** [Journaling](@/guides/journaling.md)
