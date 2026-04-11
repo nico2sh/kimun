@@ -15,11 +15,22 @@ A terminal-based notes app focused on simplicity and powerful search.
 
 It doesn't try to do everything; there are already more powerful tools for more complex workflows and knowledge management. Kimün aims to be simple and give you the tools to integrate with your own workflow. You can even combine it with other note taking apps that support local notes.
 
-**Check the [docs](https://nico2sh.github.io/kimun/) for more on what you can do with Kimün.**
+Features:
+* Local Markdown files indexed for fast search
+* Simple Mardown syntax highlighting
+* Powerful but simple search syntax to browse your notes
+* Telescope-like search and note navigation with previews
+* Wikilink and Markdown links note navigation with keyboard shortcuts
+* Multiple workspaces, so you keep your notes in separate contexts
+* Backlink support with previews
+* Skills and MCP Server for integrating with your favorite LLM
+* FAST
+
+And more: **Check the [docs](https://nico2sh.github.io/kimun/) for more on what you can do with Kimün.**
 
 Notes are plain Markdown files stored in a directory you own. Kimün indexes them into a local SQLite database for fast full-text and structured search.
 
-If you are already using another markdown, local-first, note-taking app, you should feel right at home and be able to use Kimün just like your existing app (QownNotes, Obsidian, Logseq, etc.), only that in this case, it is on your terminal emulator.
+If you are already using another markdown, local-first, note-taking app, you should feel right at home and be able to use Kimün just like your existing app (QownNotes, Obsidian, Logseq, etc.) or alongside with it, only that in this case, it is on your terminal emulator.
 
 ## Interactive and cli tool
 
