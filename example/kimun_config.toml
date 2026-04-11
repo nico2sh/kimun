@@ -22,9 +22,7 @@
 #
 # ─────────────────────────────────────────────────────────────────────────────
 config_version = 2
-workspace_dir = "/Users/nhormazabal/Documents/Notes"
-last_paths = ["/one.md", "test.md", "/directory/another.md", "/work/another.md", "/test.md", "/testing.md", "/nico.md", "/journal/2026-03-31.md", "/journal/2026-04-01.md"]
-theme = ""
+theme = "dark"
 autosave_interval_secs = 5
 use_nerd_fonts = true
 editor_backend = "textarea"
@@ -34,31 +32,37 @@ journal_sort_field = "name"
 journal_sort_order = "descending"
 
 [global]
-current_workspace = "default"
-theme = "dark"
+current_workspace = "work"
 
-[workspaces.default]
-path = "/home/nico/notes"
-last_paths = ["/one.md"]
-created = "2026-03-31T05:49:32.553673595Z"
+[workspaces.personal]
+path = "personal"
+last_paths = ["/journal/2026-04-10.md", "/ideas/companion-planting.md", "/projects/garden-plan.md"]
+created = "2026-04-01T00:00:00Z"
+
+[workspaces.work]
+path = "work"
+last_paths = ["/journal/2026-04-10.md", "/journal/2026-04-09.md", "/people/carlos.md"]
+created = "2026-04-01T00:00:00Z"
 
 [key_bindings]
 Quit = ["ctrl&Q"]
 OpenSettings = ["ctrl&P"]
-ToggleNoteBrowser = ["ctrl&F"]
-SearchNotes = ["ctrl&E"]
+SearchNotes = ["ctrl&K"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
 TogglePreview = ["ctrl&Y"]
 TextEditor-Bold = ["ctrl&B"]
 TextEditor-Italic = ["ctrl&I"]
 TextEditor-Image = ["ctrl+shift&L"]
-TextEditor-ToggleHeader = ["ctrl&T"]
 TextEditor-Underline = ["ctrl&U"]
 TextEditor-Strikethrough = ["ctrl&S"]
+ToggleSidebar = ["ctrl&T"]
 FocusEditor = ["ctrl&L"]
 FocusSidebar = ["ctrl&H"]
 CycleSortField = ["ctrl&N"]
 SortReverseOrder = ["ctrl&R"]
 FileOperations = ["F2"]
 FollowLink = ["ctrl&G"]
+QuickNote = ["ctrl&W"]
+ToggleBacklinks = ["ctrl&E"]
+SwitchWorkspace = ["F4"]

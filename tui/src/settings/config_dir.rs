@@ -58,7 +58,8 @@ pub fn get_config_dir_path(app_name: &str) -> io::Result<PathBuf> {
 }
 
 /// Gets the user's home directory.
-fn get_home_dir() -> io::Result<PathBuf> {
+/// Uses `$HOME` on Unix, `%USERPROFILE%` on Windows.
+pub(super) fn get_home_dir() -> io::Result<PathBuf> {
     env::var("HOME")
         .or_else(|_| env::var("USERPROFILE"))
         .map(PathBuf::from)

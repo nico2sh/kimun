@@ -5,14 +5,19 @@ use crate::settings::themes::Theme;
 use crate::settings::workspace_config::WorkspaceConfig;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use std::fs::{self, File};
 
 use color_eyre::eyre;
+
+/// Shared settings handle — all screens and components reference the same instance.
+pub type SharedSettings = Arc<RwLock<AppSettings>>;
 use kimun_core::nfs::VaultPath;
 
 use crate::keys::KeyBindings;
 mod config_dir;
+pub mod config_migration;
 pub mod icons;
 pub mod themes;
 pub mod workspace_config;
@@ -89,10 +94,12 @@ pub struct AppSettings {
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub workspace_config: Option<WorkspaceConfig>,
 
-    // Legacy Phase 1 fields (for migration detection)
+    // Legacy Phase 1 fields — only kept for migration detection/deserialization.
+    // Never written back: workspace_dir is taken by migration, last_paths is
+    // moved into workspace_config entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_dir: Option<PathBuf>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub last_paths: Vec<VaultPath>,
 
     // Preserved fields
@@ -170,6 +177,9 @@ fn default_keybindings() -> KeyBindings {
     // File operations menu (F2 — no modifier, reliable in all terminals).
     kb.batch_add()
         .add(KeyStrike::F2, ActionShortcuts::FileOperations);
+
+    kb.batch_add()
+        .add(KeyStrike::F4, ActionShortcuts::SwitchWorkspace);
 
     kb
 }
@@ -357,6 +367,12 @@ impl AppSettings {
 
             match toml::from_str::<AppSettings>(toml.as_ref()) {
                 Ok(mut setting) => {
+                    setting.config_file = Some(settings_file_path.clone());
+                    let config_dir = settings_file_path.parent().unwrap_or(std::path::Path::new("."));
+                    setting.resolve_paths(config_dir);
+                    if config_migration::ConfigMigration::run(&mut setting)? {
+                        setting.save_to_disk()?;
+                    }
                     setting.merge_missing_default_bindings();
                     Ok(setting)
                 }
@@ -395,37 +411,12 @@ impl AppSettings {
             Ok(mut setting) => {
                 setting.config_file = Some(path.clone());
 
-                // Check if migration is needed (Phase 1 -> Phase 2)
-                if setting.workspace_dir.is_some() && setting.workspace_config.is_none() {
-                    tracing::info!("Migrating Phase 1 config to Phase 2 format");
+                // Resolve ~ and relative paths against the config file's directory.
+                let config_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                setting.resolve_paths(config_dir);
 
-                    let workspace_dir = setting.workspace_dir.take().unwrap();
-                    let theme = if setting.theme.is_empty() {
-                        "dark".to_string()
-                    } else {
-                        setting.theme.clone()
-                    };
-                    let last_paths: Vec<String> =
-                        setting.last_paths.iter().map(|p| p.to_string()).collect();
-
-                    // Validate workspace directory still exists
-                    if !workspace_dir.exists() {
-                        return Err(eyre::eyre!(
-                            "Cannot migrate: workspace directory {} no longer exists",
-                            workspace_dir.display()
-                        ));
-                    }
-
-                    setting.workspace_config = Some(WorkspaceConfig::from_phase1_migration(
-                        workspace_dir,
-                        theme,
-                        last_paths,
-                    ));
-                    setting.config_version = 2;
-                    setting.last_paths.clear();
-                    setting.theme.clear(); // Will use theme from workspace_config.global
-
-                    // Save migrated config
+                // Run config migrations (e.g. Phase 1 → Phase 2 workspace_dir).
+                if config_migration::ConfigMigration::run(&mut setting)? {
                     setting.save_to_disk()?;
                 }
 
@@ -462,21 +453,12 @@ impl AppSettings {
         self.key_bindings = KeyBindings::from_hashmap(current);
     }
 
-    pub fn get_workspace_string(&self) -> String {
-        self.workspace_dir.as_ref().map_or_else(
-            || "<NONE>".to_string(),
-            |dir| dir.to_string_lossy().to_string(),
-        )
-    }
-
     // We set a new workspace to work with, remember to save the data
     // to persist it in disk
     pub fn set_workspace(&mut self, workspace_path: &PathBuf) {
         if let Some(current_workspace_dir) = &self.workspace_dir
             && workspace_path != current_workspace_dir
         {
-            // We clean up the data related with the workspace
-            self.last_paths = vec![];
             self.needs_indexing = true;
         }
 
@@ -493,7 +475,6 @@ impl AppSettings {
         // Phase 1
         if self.workspace_dir.is_some() {
             self.workspace_dir = None;
-            self.last_paths.clear();
             self.needs_indexing = true;
         }
         // Phase 2
@@ -504,6 +485,59 @@ impl AppSettings {
             }
             wc.global.current_workspace = String::new();
         }
+    }
+
+    /// Resolve the active workspace path from Phase 2 (workspace_config) or
+    /// Phase 1 (workspace_dir). Returns `None` if no workspace is configured.
+    pub fn resolve_workspace_path(&self) -> Option<PathBuf> {
+        self.workspace_config
+            .as_ref()
+            .and_then(|wc| wc.get_current_workspace())
+            .map(|entry| entry.effective_path().clone())
+            .or_else(|| self.workspace_dir.clone())
+    }
+
+    /// Resolve `~` and relative paths in workspace entries.
+    /// Relative paths are resolved against `base` (typically the config file's
+    /// parent directory). Called once after deserialization.
+    fn resolve_paths(&mut self, base: &std::path::Path) {
+        // Legacy workspace_dir — resolve in place (it's a legacy field that
+        // gets consumed by migration anyway).
+        if let Some(ref mut p) = self.workspace_dir {
+            *p = Self::expand_path(p, base);
+        }
+        // Phase 2 workspace entries — populate resolved_path, keep original path intact.
+        if let Some(ref mut wc) = self.workspace_config {
+            for entry in wc.workspaces.values_mut() {
+                let resolved = Self::expand_path(&entry.path, base);
+                if resolved != entry.path {
+                    entry.resolved_path = Some(resolved);
+                }
+            }
+        }
+    }
+
+    /// Expand `~` to the home directory and resolve relative paths against `base`.
+    /// Returns an absolute path. If the resolved path exists on disk, it is
+    /// canonicalized to remove `.` and `..` components.
+    fn expand_path(path: &std::path::Path, base: &std::path::Path) -> PathBuf {
+        let s = path.to_string_lossy();
+        let expanded = if s.starts_with("~/") || s == "~" {
+            if let Ok(home) = config_dir::get_home_dir() {
+                home.join(s.strip_prefix("~/").unwrap_or(""))
+            } else {
+                path.to_path_buf()
+            }
+        } else {
+            path.to_path_buf()
+        };
+        let absolute = if expanded.is_relative() {
+            base.join(expanded)
+        } else {
+            expanded
+        };
+        // Canonicalize if the path exists, otherwise return as-is.
+        absolute.canonicalize().unwrap_or(absolute)
     }
 
     pub fn set_theme(&mut self, theme: String) {
@@ -519,17 +553,36 @@ impl AppSettings {
     }
 
     pub fn add_path_history(&mut self, note_path: &VaultPath) {
-        if note_path.is_note() {
-            // If the path already is in the history, we remove it
-            self.last_paths.retain(|path| !path.eq(note_path));
-            // Maximum size of the path list
-            // removing an element at a position is not very efficient
-            // but since is a short list, shouldn't be a major problem
-            while self.last_paths.len() >= LAST_PATH_HISTORY_SIZE {
-                self.last_paths.remove(0);
-            }
-            self.last_paths.push(note_path.to_owned());
+        if !note_path.is_note() {
+            return;
         }
+        let path_str = note_path.to_string();
+
+        // Write to the current workspace entry in workspace_config.
+        if let Some(ref mut wc) = self.workspace_config
+            && let Some(entry) = wc.workspaces.get_mut(&wc.global.current_workspace)
+        {
+            entry.last_paths.retain(|p| p != &path_str);
+            while entry.last_paths.len() >= LAST_PATH_HISTORY_SIZE {
+                entry.last_paths.remove(0);
+            }
+            entry.last_paths.push(path_str);
+        }
+    }
+
+    /// Returns the last-visited paths for the current workspace.
+    /// Reads from workspace_config (Phase 2) first, falls back to top-level (Phase 1).
+    pub fn current_last_paths(&self) -> Vec<VaultPath> {
+        if let Some(ref wc) = self.workspace_config
+            && let Some(entry) = wc.get_current_workspace()
+        {
+            return entry
+                .last_paths
+                .iter()
+                .map(VaultPath::new)
+                .collect();
+        }
+        self.last_paths.clone()
     }
 
     /// Build the icon set for the current `use_nerd_fonts` setting.
@@ -645,19 +698,14 @@ Quit = ["ctrl&Q"]
     }
 
     #[test]
-    fn clear_workspace_phase1_clears_workspace_dir_and_paths() {
+    fn clear_workspace_phase1_clears_workspace_dir() {
         let mut settings = AppSettings::default();
         settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
-        settings.last_paths = vec![kimun_core::nfs::VaultPath::new("note")];
-        settings.needs_indexing = false; // ensure the method actually sets it
+        settings.needs_indexing = false;
         settings.clear_workspace();
         assert!(
             settings.workspace_dir.is_none(),
             "workspace_dir should be None"
-        );
-        assert!(
-            settings.last_paths.is_empty(),
-            "last_paths should be cleared"
         );
         assert!(
             settings.needs_indexing,
@@ -700,7 +748,6 @@ Quit = ["ctrl&Q"]
         // clear_workspace must clear both independently.
         let mut settings = AppSettings::default();
         settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
-        settings.last_paths = vec![kimun_core::nfs::VaultPath::new("note")];
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
             .unwrap();
@@ -709,10 +756,6 @@ Quit = ["ctrl&Q"]
         assert!(
             settings.workspace_dir.is_none(),
             "phase1 workspace_dir should be cleared"
-        );
-        assert!(
-            settings.last_paths.is_empty(),
-            "phase1 last_paths should be cleared"
         );
         let wc = settings.workspace_config.as_ref().unwrap();
         assert!(
@@ -770,5 +813,161 @@ mod backend_tests {
         let toml = "editor_backend = \"nvim\"\n";
         let parsed: AppSettings = toml::from_str(toml).unwrap();
         assert!(matches!(parsed.editor_backend, EditorBackendSetting::Nvim));
+    }
+
+    // ── expand_path tests ──────────────────────────────────────────────
+
+    #[test]
+    fn expand_path_absolute_unchanged() {
+        let base = PathBuf::from("/config/dir");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("/absolute/path/notes"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        assert!(result.to_string_lossy().contains("absolute"));
+    }
+
+    #[test]
+    fn expand_path_relative_resolved_against_base() {
+        let base = tempfile::TempDir::new().unwrap();
+        let notes = base.path().join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+
+        let result = AppSettings::expand_path(
+            std::path::Path::new("notes"),
+            base.path(),
+        );
+        assert!(result.is_absolute());
+        assert_eq!(result, notes.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn expand_path_relative_with_dotdot() {
+        let base = tempfile::TempDir::new().unwrap();
+        let sibling = base.path().join("sibling");
+        std::fs::create_dir_all(&sibling).unwrap();
+        let sub = base.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let result = AppSettings::expand_path(
+            std::path::Path::new("../sibling"),
+            &sub,
+        );
+        assert!(result.is_absolute());
+        assert_eq!(result, sibling.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn expand_path_nonexistent_relative_still_absolute() {
+        let base = PathBuf::from("/some/config/dir");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("my-notes"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        assert_eq!(result, PathBuf::from("/some/config/dir/my-notes"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expand_path_tilde_uses_home_unix() {
+        let home = std::env::var("HOME").expect("HOME must be set on Unix");
+        let base = PathBuf::from("/irrelevant");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("~/Documents/notes"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        assert!(
+            result.starts_with(&home),
+            "expected path to start with HOME={}, got {:?}",
+            home,
+            result
+        );
+        assert!(result.to_string_lossy().contains("Documents/notes"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expand_path_tilde_alone_is_home_unix() {
+        let home = std::env::var("HOME").expect("HOME must be set on Unix");
+        let base = PathBuf::from("/irrelevant");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("~"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        // canonicalize may resolve symlinks, so compare canonicalized forms
+        let expected = PathBuf::from(&home).canonicalize().unwrap_or(PathBuf::from(&home));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn expand_path_tilde_uses_userprofile_windows() {
+        let home = std::env::var("USERPROFILE").expect("USERPROFILE must be set on Windows");
+        let base = PathBuf::from("C:\\irrelevant");
+        let result = AppSettings::expand_path(
+            std::path::Path::new("~/Documents/notes"),
+            &base,
+        );
+        assert!(result.is_absolute());
+        assert!(
+            result.starts_with(&home),
+            "expected path to start with USERPROFILE={}, got {:?}",
+            home,
+            result
+        );
+    }
+
+    #[test]
+    fn resolve_paths_populates_resolved_path() {
+        let base = tempfile::TempDir::new().unwrap();
+        let notes = base.path().join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+
+        let toml = format!(
+            r#"
+config_version = 2
+[global]
+current_workspace = "test"
+[workspaces.test]
+path = "notes"
+last_paths = []
+created = "2026-01-01T00:00:00Z"
+"#
+        );
+        let mut settings: AppSettings = toml::from_str(&toml).unwrap();
+        settings.resolve_paths(base.path());
+
+        let wc = settings.workspace_config.as_ref().unwrap();
+        let entry = wc.workspaces.get("test").unwrap();
+        // Original path preserved
+        assert_eq!(entry.path, PathBuf::from("notes"));
+        // Resolved path is absolute
+        assert!(entry.resolved_path.is_some());
+        assert!(entry.effective_path().is_absolute());
+    }
+
+    #[test]
+    fn resolve_paths_absolute_no_resolved_path() {
+        let toml = r#"
+config_version = 2
+[global]
+current_workspace = "test"
+[workspaces.test]
+path = "/absolute/notes"
+last_paths = []
+created = "2026-01-01T00:00:00Z"
+"#;
+        let mut settings: AppSettings = toml::from_str(toml).unwrap();
+        settings.resolve_paths(std::path::Path::new("/config"));
+
+        let wc = settings.workspace_config.as_ref().unwrap();
+        let entry = wc.workspaces.get("test").unwrap();
+        // No resolved_path needed for already-absolute paths
+        assert!(entry.resolved_path.is_none());
+        assert_eq!(*entry.effective_path(), PathBuf::from("/absolute/notes"));
     }
 }

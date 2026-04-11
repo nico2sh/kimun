@@ -47,14 +47,20 @@ pub trait AppScreen: Send {
 mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
+    use std::sync::{Arc, RwLock};
+
     use super::*;
     use crate::app_screen::settings::SettingsScreen;
     use crate::settings::AppSettings;
 
+    fn shared_defaults() -> crate::settings::SharedSettings {
+        Arc::new(RwLock::new(AppSettings::default()))
+    }
+
     #[tokio::test]
     async fn non_editor_screen_passes_focus_message_back() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let mut screen = SettingsScreen::new(AppSettings::default());
+        let mut screen = SettingsScreen::new(shared_defaults());
         let result = screen.handle_app_message(AppEvent::FocusSidebar, &tx).await;
         assert!(
             result.is_some(),
@@ -65,7 +71,7 @@ mod tests {
     #[tokio::test]
     async fn non_editor_screen_passes_focus_editor_message_back() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let mut screen = SettingsScreen::new(AppSettings::default());
+        let mut screen = SettingsScreen::new(shared_defaults());
         let result = screen.handle_app_message(AppEvent::FocusEditor, &tx).await;
         assert!(
             result.is_some(),
@@ -76,7 +82,7 @@ mod tests {
     #[tokio::test]
     async fn on_exit_default_is_noop() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let mut screen = SettingsScreen::new(AppSettings::default());
+        let mut screen = SettingsScreen::new(shared_defaults());
         screen.on_exit(&tx).await; // must compile and not panic
     }
 }

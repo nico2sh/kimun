@@ -15,11 +15,22 @@ A terminal-based notes app focused on simplicity and powerful search.
 
 It doesn't try to do everything; there are already more powerful tools for more complex workflows and knowledge management. Kimün aims to be simple and give you the tools to integrate with your own workflow. You can even combine it with other note taking apps that support local notes.
 
-**Check the [docs](https://nico2sh.github.io/kimun/) for more on what you can do with Kimün.**
+Features:
+* Local Markdown files indexed for fast search
+* Simple Markdown syntax highlighting
+* Powerful but simple search syntax to browse your notes
+* Telescope-like search and note navigation with previews
+* Wikilink and Markdown links note navigation with keyboard shortcuts
+* Multiple workspaces, so you keep your notes in separate contexts
+* Backlink support with previews
+* Skills and MCP Server for integrating with your favorite LLM
+* FAST
+
+And more: **Check the [docs](https://nico2sh.github.io/kimun/) for more on what you can do with Kimün.**
 
 Notes are plain Markdown files stored in a directory you own. Kimün indexes them into a local SQLite database for fast full-text and structured search.
 
-If you are already using another markdown, local-first, note-taking app, you should feel right at home and be able to use Kimün just like your existing app (QownNotes, Obsidian, Logseq, etc.), only that in this case, it is on your terminal emulator.
+If you are already using another markdown, local-first, note-taking app, you should feel right at home and be able to use Kimün just like your existing app (QownNotes, Obsidian, Logseq, etc.) or alongside with it, only that in this case, it is on your terminal emulator.
 
 ## Interactive and cli tool
 
@@ -44,7 +55,9 @@ The CLI can be used with AI tools and agents. An AI assistant can create, append
 > 
 > Oh, and about the app logo: maybe is not the most beautiful one, but I did it myself with Inkscape! (it's a `k`! that looks like an open book! get it?) Pay artists or do it yourself, but don't take away the fun creative things from people.
 
-![Kimün screenshot](docs/static/screenshot.png)
+![Kimün demo](media/demo.gif)
+
+![Kimün screenshot](media/screenshot.png)
 
 ## Quick Start
 
@@ -62,6 +75,28 @@ brew install kimun
 ```sh
 cargo install kimun-notes
 ```
+
+## Try It
+
+The `example/` directory contains two sample workspaces (personal and work) with interconnected notes, journal entries, inbox items, and wikilinks — ready to explore.
+
+```sh
+# Clone and run from source
+git clone https://github.com/nico2sh/kimun.git
+cd kimun
+cargo run -- --config example/kimun_config.toml
+```
+
+The first launch initializes the search index. After that, you can:
+
+- **Browse notes** in the sidebar, follow `[[wikilinks]]` with `Ctrl+G`
+- **Search** with `Ctrl+K`
+- **Quick note** with `Ctrl+W` — captures a thought to the inbox
+- **Backlinks panel** with `Ctrl+E` — see what links to the current note
+- **Switch workspace** with `F4` — toggle between personal and work
+- **Open settings** with `Ctrl+P` — workspace management, themes, key bindings
+
+The example config uses relative paths (`personal/`, `work/`), resolved against the config file's directory.
 
 ## AI Skills
 

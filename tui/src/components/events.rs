@@ -4,7 +4,6 @@ use std::time::Duration;
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::settings::AppSettings;
 use kimun_core::{NoteVault, nfs::VaultPath};
 
 /// All events that flow through the system — both input events (from crossterm)
@@ -21,8 +20,9 @@ pub enum AppEvent {
     OpenPath(VaultPath),
     FocusEditor,
     FocusSidebar,
-    /// Sent by SettingsScreen when user confirms Save.
-    SettingsSaved(Box<AppSettings>),
+    /// Sent by SettingsScreen when user confirms Save. The shared settings
+    /// reference already contains the updated values.
+    SettingsSaved,
     /// Sent by SettingsScreen when user discards or closes unchanged.
     CloseSettings,
     /// Sent by VaultSection; SettingsScreen::handle_app_message intercepts.
@@ -83,6 +83,11 @@ pub enum AppEvent {
     // ── Backlinks panel messages ────────────────────────────────────────────
     /// Backlinks for the current note have been loaded.
     BacklinksLoaded(Vec<crate::components::backlinks_panel::BacklinkEntry>),
+
+    // ── Workspace messages ──────────────────────────────────────────────
+    /// User switched to a different workspace. Carries the workspace name.
+    /// Handled by main.rs to rebuild the vault and navigate to StartScreen.
+    WorkspaceSwitched(String),
 }
 
 impl AppEvent {
