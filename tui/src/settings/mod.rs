@@ -5,14 +5,19 @@ use crate::settings::themes::Theme;
 use crate::settings::workspace_config::WorkspaceConfig;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use std::fs::{self, File};
 
 use color_eyre::eyre;
+
+/// Shared settings handle — all screens and components reference the same instance.
+pub type SharedSettings = Arc<RwLock<AppSettings>>;
 use kimun_core::nfs::VaultPath;
 
 use crate::keys::KeyBindings;
 mod config_dir;
+pub mod config_migration;
 pub mod icons;
 pub mod themes;
 pub mod workspace_config;
@@ -89,10 +94,12 @@ pub struct AppSettings {
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub workspace_config: Option<WorkspaceConfig>,
 
-    // Legacy Phase 1 fields (for migration detection)
+    // Legacy Phase 1 fields — only kept for migration detection/deserialization.
+    // Never written back: workspace_dir is taken by migration, last_paths is
+    // moved into workspace_config entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_dir: Option<PathBuf>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub last_paths: Vec<VaultPath>,
 
     // Preserved fields
@@ -360,6 +367,10 @@ impl AppSettings {
 
             match toml::from_str::<AppSettings>(toml.as_ref()) {
                 Ok(mut setting) => {
+                    setting.config_file = Some(settings_file_path);
+                    if config_migration::ConfigMigration::run(&mut setting)? {
+                        setting.save_to_disk()?;
+                    }
                     setting.merge_missing_default_bindings();
                     Ok(setting)
                 }
@@ -398,37 +409,8 @@ impl AppSettings {
             Ok(mut setting) => {
                 setting.config_file = Some(path.clone());
 
-                // Check if migration is needed (Phase 1 -> Phase 2)
-                if setting.workspace_dir.is_some() && setting.workspace_config.is_none() {
-                    tracing::info!("Migrating Phase 1 config to Phase 2 format");
-
-                    let workspace_dir = setting.workspace_dir.take().unwrap();
-                    let theme = if setting.theme.is_empty() {
-                        "dark".to_string()
-                    } else {
-                        setting.theme.clone()
-                    };
-                    let last_paths: Vec<String> =
-                        setting.last_paths.iter().map(|p| p.to_string()).collect();
-
-                    // Validate workspace directory still exists
-                    if !workspace_dir.exists() {
-                        return Err(eyre::eyre!(
-                            "Cannot migrate: workspace directory {} no longer exists",
-                            workspace_dir.display()
-                        ));
-                    }
-
-                    setting.workspace_config = Some(WorkspaceConfig::from_phase1_migration(
-                        workspace_dir,
-                        theme,
-                        last_paths,
-                    ));
-                    setting.config_version = 2;
-                    setting.last_paths.clear();
-                    setting.theme.clear(); // Will use theme from workspace_config.global
-
-                    // Save migrated config
+                // Run config migrations (e.g. Phase 1 → Phase 2 workspace_dir).
+                if config_migration::ConfigMigration::run(&mut setting)? {
                     setting.save_to_disk()?;
                 }
 
@@ -478,8 +460,6 @@ impl AppSettings {
         if let Some(current_workspace_dir) = &self.workspace_dir
             && workspace_path != current_workspace_dir
         {
-            // We clean up the data related with the workspace
-            self.last_paths = vec![];
             self.needs_indexing = true;
         }
 
@@ -496,7 +476,6 @@ impl AppSettings {
         // Phase 1
         if self.workspace_dir.is_some() {
             self.workspace_dir = None;
-            self.last_paths.clear();
             self.needs_indexing = true;
         }
         // Phase 2
@@ -522,17 +501,36 @@ impl AppSettings {
     }
 
     pub fn add_path_history(&mut self, note_path: &VaultPath) {
-        if note_path.is_note() {
-            // If the path already is in the history, we remove it
-            self.last_paths.retain(|path| !path.eq(note_path));
-            // Maximum size of the path list
-            // removing an element at a position is not very efficient
-            // but since is a short list, shouldn't be a major problem
-            while self.last_paths.len() >= LAST_PATH_HISTORY_SIZE {
-                self.last_paths.remove(0);
-            }
-            self.last_paths.push(note_path.to_owned());
+        if !note_path.is_note() {
+            return;
         }
+        let path_str = note_path.to_string();
+
+        // Write to the current workspace entry in workspace_config.
+        if let Some(ref mut wc) = self.workspace_config
+            && let Some(entry) = wc.workspaces.get_mut(&wc.global.current_workspace)
+        {
+            entry.last_paths.retain(|p| p != &path_str);
+            while entry.last_paths.len() >= LAST_PATH_HISTORY_SIZE {
+                entry.last_paths.remove(0);
+            }
+            entry.last_paths.push(path_str);
+        }
+    }
+
+    /// Returns the last-visited paths for the current workspace.
+    /// Reads from workspace_config (Phase 2) first, falls back to top-level (Phase 1).
+    pub fn current_last_paths(&self) -> Vec<VaultPath> {
+        if let Some(ref wc) = self.workspace_config
+            && let Some(entry) = wc.get_current_workspace()
+        {
+            return entry
+                .last_paths
+                .iter()
+                .map(VaultPath::new)
+                .collect();
+        }
+        self.last_paths.clone()
     }
 
     /// Build the icon set for the current `use_nerd_fonts` setting.
@@ -648,19 +646,14 @@ Quit = ["ctrl&Q"]
     }
 
     #[test]
-    fn clear_workspace_phase1_clears_workspace_dir_and_paths() {
+    fn clear_workspace_phase1_clears_workspace_dir() {
         let mut settings = AppSettings::default();
         settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
-        settings.last_paths = vec![kimun_core::nfs::VaultPath::new("note")];
-        settings.needs_indexing = false; // ensure the method actually sets it
+        settings.needs_indexing = false;
         settings.clear_workspace();
         assert!(
             settings.workspace_dir.is_none(),
             "workspace_dir should be None"
-        );
-        assert!(
-            settings.last_paths.is_empty(),
-            "last_paths should be cleared"
         );
         assert!(
             settings.needs_indexing,
@@ -703,7 +696,6 @@ Quit = ["ctrl&Q"]
         // clear_workspace must clear both independently.
         let mut settings = AppSettings::default();
         settings.workspace_dir = Some(PathBuf::from("/tmp/vault"));
-        settings.last_paths = vec![kimun_core::nfs::VaultPath::new("note")];
         let mut wc = WorkspaceConfig::new_empty();
         wc.add_workspace("vault1".to_string(), PathBuf::from("/tmp/vault1"))
             .unwrap();
@@ -712,10 +704,6 @@ Quit = ["ctrl&Q"]
         assert!(
             settings.workspace_dir.is_none(),
             "phase1 workspace_dir should be cleared"
-        );
-        assert!(
-            settings.last_paths.is_empty(),
-            "phase1 last_paths should be cleared"
         );
         let wc = settings.workspace_config.as_ref().unwrap();
         assert!(
