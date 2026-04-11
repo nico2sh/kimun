@@ -55,7 +55,9 @@ The CLI can be used with AI tools and agents. An AI assistant can create, append
 > 
 > Oh, and about the app logo: maybe is not the most beautiful one, but I did it myself with Inkscape! (it's a `k`! that looks like an open book! get it?) Pay artists or do it yourself, but don't take away the fun creative things from people.
 
-![Kimün screenshot](docs/static/screenshot.png)
+![Kimün demo](media/demo.gif)
+
+![Kimün screenshot](media/screenshot.png)
 
 ## Quick Start
 
