@@ -144,8 +144,13 @@ impl WorkspacesSection {
             }
             KeyCode::Char('n') => {
                 self.mode = Mode::Creating;
-                self.input.clear();
-                self.input_cursor = 0;
+                if self.entries.is_empty() {
+                    self.input = "default".to_string();
+                    self.input_cursor = self.input.len();
+                } else {
+                    self.input.clear();
+                    self.input_cursor = 0;
+                }
                 self.error = None;
                 EventState::Consumed
             }

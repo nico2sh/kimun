@@ -12,6 +12,7 @@ pub struct Icons {
     pub attachment: &'static str,
     // UI chrome icons
     pub info: &'static str,
+    pub workspace: &'static str,
 }
 
 impl Icons {
@@ -24,6 +25,7 @@ impl Icons {
                 journal: "󰃭",
                 attachment: "",
                 info: "󰋽",
+                workspace: " ",
             }
         } else {
             Self {
@@ -33,6 +35,7 @@ impl Icons {
                 journal: "[J]",
                 attachment: "   ",
                 info: "(i)",
+                workspace: "W",
             }
         }
     }
