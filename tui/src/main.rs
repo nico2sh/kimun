@@ -346,17 +346,10 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             }
         }
         AppEvent::SettingsSaved => {
-            // Resolve workspace path from Phase 1 (workspace_dir) or Phase 2
-            // (workspace_config) settings, then rebuild the vault so workspace
-            // path and inbox_path changes take effect.
+            // Rebuild the vault so workspace path and inbox_path changes take effect.
             let (workspace_path, inbox_path) = {
                 let s = app.settings.read().unwrap();
-                let wp = s.workspace_dir.clone().or_else(|| {
-                    s.workspace_config
-                        .as_ref()
-                        .and_then(|wc| wc.get_current_workspace())
-                        .map(|entry| entry.path.clone())
-                });
+                let wp = s.resolve_workspace_path();
                 let ip = s.workspace_config.as_ref()
                     .and_then(|wc| wc.get_current_workspace())
                     .map(|e| e.effective_inbox_path());
@@ -404,10 +397,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             // Rebuild vault from the new workspace.
             let (workspace_path, inbox_path) = {
                 let s = app.settings.read().unwrap();
-                let wp = s.workspace_config
-                    .as_ref()
-                    .and_then(|wc| wc.get_current_workspace())
-                    .map(|entry| entry.path.clone());
+                let wp = s.resolve_workspace_path();
                 let ip = s.workspace_config.as_ref()
                     .and_then(|wc| wc.get_current_workspace())
                     .map(|e| e.effective_inbox_path());
