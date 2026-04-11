@@ -6,6 +6,7 @@ build_search_index = true
 
 [markdown]
 # Note: Zola 0.22+ uses [markdown.highlighting] instead of the deprecated highlight_code = true
+insert_anchor_links = "right"
 
 [markdown.highlighting]
 theme = "ayu-dark"
@@ -16,4 +17,8 @@ edit_url = "https://github.com/nico2sh/kimun/edit/main/docs/content"
 logo = "/img/kimun.png"
 favicon = "/img/kimun-small.png"
 easydocs_logo_always_clickable = true
-easydocs_heading_threshold = 2
+easydocs_heading_threshold = 5
+release_api_url = "https://api.github.com/repos/nico2sh/kimun/releases/latest"
+release_fallback = "latest"
+license = "MIT"
+license_url = "https://github.com/nico2sh/kimun/blob/main/LICENSE"

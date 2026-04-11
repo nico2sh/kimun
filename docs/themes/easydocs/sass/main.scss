@@ -45,29 +45,95 @@ a {
   }
 }
 
+h1,
 h2,
 h3,
-h4 {
+h4,
+h5,
+h6 {
   .anchor {
-    visibility: hidden;
+    display: inline-flex;
+    align-items: center;
+    opacity: 0.3;
     text-decoration: none;
     cursor: pointer;
     line-height: 1;
-    color:$color;
+    color: $color;
+    transition: opacity 0.2s ease-in-out;
+    vertical-align: middle;
+
+    svg {
+      width: 0.9em;
+      height: 0.9em;
+    }
   }
 
-  &:hover {
-    .anchor {
-      visibility: visible;
-      animation: fade-in 0.3s ease-in-out;
-      font-family: 'FabricMDL2Icons';
-    }
+  &:hover .anchor,
+  .anchor:focus-visible {
+    opacity: 1;
   }
 }
 
-table td, table th {
-  border: 1px solid $color;
+// Fallback: any .anchor outside the heading selectors above still gets sized
+.anchor svg {
+  width: 0.9em;
+  height: 0.9em;
+}
+
+:focus-visible {
+  outline: 2px solid $hover-links;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+table {
+  border-collapse: collapse;
+  table-layout: auto;
+  width: 100%;
+  margin: $baseline 0;
+  font-family: $body-font-family;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+
+  th, td {
+    padding: calc(#{$baseline} / 2) calc(#{$baseline} * 0.75);
+    text-align: left;
+    vertical-align: top;
+    border: none;
+    border-bottom: 1px solid rgba($color, 0.12);
   }
+
+  th:first-child {
+    min-width: 10rem;
+    white-space: nowrap;
+  }
+
+  th {
+    font-family: $font-family;
+    font-weight: 600;
+    font-size: 0.8125rem;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: rgba($color, 0.75);
+    border-bottom: 1px solid rgba($color, 0.3);
+    background: transparent;
+  }
+
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  tbody tr:hover {
+    background: rgba($color, 0.07);
+  }
+
+  code {
+    font-size: 0.875rem;
+    padding: 1px 4px;
+    background: rgba($color, 0.08);
+    border-radius: 3px;
+  }
+}
 
 pre {
   margin:$baseline 0;
@@ -75,6 +141,20 @@ pre {
   padding:$baseline;
   overflow: auto;
   position: relative;
+
+  // Shell-language blocks: wrap long commands so copy-paste never misses a flag.
+  // Other languages keep horizontal scroll (indentation matters for code).
+  &:has(code[data-lang="sh"]),
+  &:has(code[data-lang="bash"]),
+  &:has(code[data-lang="zsh"]),
+  &:has(code[data-lang="shell"]),
+  &:has(code[data-lang="shellscript"]),
+  &:has(code[data-lang="console"]) {
+    code, span {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  }
 
   code {
   background:transparent;
@@ -97,28 +177,40 @@ pre {
   }
 
   .copy-code-button {
-    font-family: 'FabricMDL2Icons';
-    display:none;
-    background:$background;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(#{$baseline} * 1.25);
+    height: calc(#{$baseline} * 1.25);
+    background: rgba($background, 0.85);
     border-radius: 4px;
-    border:none;
+    border: 1px solid rgba($color, 0.15);
     cursor: pointer;
-    animation: fade-in 0.3s ease-in-out;
-    font-size: $baseline;
-    color:$color;
+    color: $color;
+    opacity: 0.5;
     z-index: 10;
-    position:absolute;
-    top:$baseline;
-    right:$baseline;
+    position: absolute;
+    top: calc(#{$baseline} / 2);
+    right: calc(#{$baseline} / 2);
+    transition: opacity 0.2s ease-in-out, border-color 0.2s ease-in-out;
+
+    &:hover,
+    &:focus-visible {
+      opacity: 1;
+      border-color: $hover-links;
+    }
+
+    svg {
+      width: 14px;
+      height: 14px;
+    }
   }
 
-  pre:hover .copy-code-button {
-    display: block;
-  }
-
-nav {
+main > nav {
   position: sticky;
-  height: 92vh;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - #{$baseline} * 2);
   top:$baseline;
   left:$baseline;
   bottom: $baseline;
@@ -203,15 +295,69 @@ main {
 }
 
 #release {
-  text-align: left;
-  margin:$baseline 0;
+  margin: 0 0 $baseline 0;
+  font-size: 0.8125rem;
+  font-family: $font-family;
 
-&::before {
-  display: inline-block;
-  content: "\EE2E";
-  font-family: 'FabricMDL2Icons';
-  margin-right:calc(#{$baseline} / 8);
+  a {
+    display: inline-block;
+    padding: 2px 8px;
+    border: 1px solid rgba($color, 0.2);
+    border-radius: 999px;
+    color: $color;
+    opacity: 0.75;
+    transition: opacity 0.2s ease-in-out, border-color 0.2s ease-in-out;
+
+    &:hover {
+      opacity: 1;
+      border-color: $hover-links;
+      color: $color;
+    }
+
+    &:visited {
+      color: $color;
+    }
+  }
 }
+
+#nav-footer {
+  margin-top: $baseline;
+  padding-top: calc(#{$baseline} / 2);
+  border-top: 1px solid rgba($color, 0.1);
+  font-size: 0.8125rem;
+  font-family: $font-family;
+
+  p {
+    margin: 0 0 calc(#{$baseline} / 4) 0;
+    opacity: 0.6;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+
+  .keybinds kbd {
+    display: inline-block;
+    font-family: inherit;
+    font-size: 0.75rem;
+    padding: 0 4px;
+    margin: 0 1px;
+    border: 1px solid rgba($color, 0.3);
+    border-radius: 3px;
+    line-height: 1.3;
+  }
+
+  a {
+    color: $color;
+
+    &:hover {
+      color: $hover-links;
+    }
+
+    &:visited {
+      color: $color;
+    }
+  }
 }
 
 @keyframes slideIn {
@@ -235,13 +381,14 @@ main {
   }
  }
 
- nav label {
+ main > nav label {
   display:block;
  }
 
  #trees {
   overflow-y: auto;
-  height: 80%;
+  flex: 1;
+  min-height: 0;
  }
 
  .subtree {
@@ -251,20 +398,59 @@ main {
   padding: 0;
  }
 
+ .tree-section {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+ }
+
+ .tree-section-link {
+  flex: 1;
+  min-width: 0;
+  color: $color;
+  text-decoration: none;
+
+  &:visited {
+    color: $color;
+  }
+
+  &:hover {
+    color: $hover-links;
+  }
+
+  &.active {
+    font-weight: bold;
+  }
+ }
+
  .tree-toggle-label {
   user-select:none;
   cursor:pointer;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  flex-shrink: 0;
  }
 
  .tree-toggle-label::before {
-  display:inline-block;
-  content:"\E970";
-  font-family:'FabricMDL2Icons';
-  font-size:.75rem;
-  transform:rotate(0deg);
-  transform-origin:50% 50% 0px;
-  transition:transform 0.1s linear 0s;
-  margin-right: 2px;
+  display: inline-block;
+  content: "";
+  width: 0.75rem;
+  height: 0.75rem;
+  background-color: currentColor;
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M6 4l4 4-4 4' stroke='black' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M6 4l4 4-4 4' stroke='black' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  mask-size: contain;
+  -webkit-mask-size: contain;
+  mask-repeat: no-repeat;
+  -webkit-mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-position: center;
+  vertical-align: middle;
+  transform: rotate(0deg);
+  transform-origin: 50% 50% 0px;
+  transition: transform 0.15s ease-in-out;
+  margin-right: 4px;
  }
 
 
@@ -274,27 +460,21 @@ main {
   z-index:-1;
  }
 
- .tree-toggle:checked+.tree-toggle-label::before {
-  content:"\E970";
-  font-family:'FabricMDL2Icons';
-  font-size:.75rem;
-  transform:rotate(90deg);
-  transform-origin:50% 50% 0px;
-  transition:transform 0.1s linear 0s;
-  margin-right: 2px;
+ .tree-toggle:checked+.tree-section .tree-toggle-label::before {
+  transform: rotate(90deg);
  }
 
- .tree-toggle:checked+.tree-toggle-label {
-  font-weight:bold;
+ .tree-toggle:checked+.tree-section .tree-section-link {
+  font-weight: 600;
  }
 
- .tree-toggle+.tree-toggle-label+.subtree {
+ .tree-toggle+.tree-section+.subtree {
   animation-name:slideOut;
   animation-duration:0.25s;
   animation-fill-mode:both;
  }
 
- .tree-toggle:checked+.tree-toggle-label+.subtree {
+ .tree-toggle:checked+.tree-section+.subtree {
   animation-name:slideIn;
   animation-duration:0.25s;
   animation-fill-mode:both;
@@ -311,9 +491,12 @@ main {
   }
 
   &::before {
-    content: "\E7C3";
-    font-family:'FabricMDL2Icons';
-    font-size:0.75rem;
+    display: inline-block;
+    content: "·";
+    width: 0.75rem;
+    color: rgba($color, 0.5);
+    text-align: center;
+    margin-right: 4px;
   }
 
 }
@@ -329,6 +512,21 @@ article {
 
  img {
    max-width:100%;
+   border: 1px solid rgba($color, 0.15);
+   border-radius: 6px;
+ }
+
+ #wrap {
+   max-width: 72ch;
+
+   p, li, blockquote, dd, dt, table {
+     font-family: $body-font-family;
+     line-height: $body-line-height;
+   }
+
+   code, pre, pre code {
+     font-family: '0xProto', 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+   }
  }
 
 }
@@ -338,14 +536,26 @@ article {
 }
 
 
-@media screen and (max-width: 1023px) {
+// Tablet: keep side-by-side layout but narrow the nav and tighten article
+@media screen and (min-width: 768px) and (max-width: 1023px) {
+  main > nav {
+    width: 14rem;
+  }
+
+  article {
+    width: calc(100% - (#{$baseline} * 3 + 14rem));
+    margin-left: $baseline;
+  }
+}
+
+@media screen and (max-width: 767px) {
 
   main {
     flex-flow: column nowrap;
     width: 100%;
   }
 
-  nav {
+  main > nav {
     position: inherit;
     height:auto;
     margin:$baseline $baseline 0 $baseline;
@@ -358,15 +568,20 @@ article {
   }
 
   #mobile {
-    font-family: 'FabricMDL2Icons';
     cursor: pointer;
-    font-size: $baseline;
-    margin:0 $baseline 0 0;
-    display: block;
-    color:$color;
+    margin: 0 $baseline 0 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: $color;
     background: transparent;
     border: none;
     padding: 0;
+
+    svg {
+      width: $baseline;
+      height: $baseline;
+    }
   }
 
   #trees {
@@ -392,7 +607,7 @@ blockquote {
 }
 
 blockquote.markdown-alert-note:before {
-  content: "🔍 Note";
+  content: "🔍 Note" / "Note";
   font-weight: bold;
   color: $quote-alert-note-color;
 }
@@ -403,7 +618,7 @@ blockquote.markdown-alert-note {
 }
 
 blockquote.markdown-alert-tip:before {
-  content: "💡 Tip";
+  content: "💡 Tip" / "Tip";
   font-weight: bold;
   color: $quote-alert-tip-color;
 }
@@ -414,7 +629,7 @@ blockquote.markdown-alert-tip {
 }
 
 blockquote.markdown-alert-warning:before {
-  content: "⚠️ Warning";
+  content: "⚠️ Warning" / "Warning";
   font-weight: bold;
   color: $quote-alert-warning-color;
 }
@@ -425,7 +640,7 @@ blockquote.markdown-alert-warning {
 }
 
 blockquote.markdown-alert-important:before {
-  content: "📌 Important";
+  content: "📌 Important" / "Important";
   font-weight: bold;
   color: $quote-alert-important-color;
 }
@@ -436,7 +651,7 @@ blockquote.markdown-alert-important {
 }
 
 blockquote.markdown-alert-caution:before {
-  content: "☢️ Caution";
+  content: "☢️ Caution" / "Caution";
   font-weight: bold;
   color: $quote-alert-caution-color;
 }
@@ -446,5 +661,162 @@ blockquote.markdown-alert-caution {
   background-color: $background;
 }
 
-@import "fabric-icons-inline";
+.section-index {
+  max-width: 72ch;
+  margin: calc(#{$baseline} * 1.5) 0;
+  padding: 0;
+  list-style: none;
+  font-family: $body-font-family;
+
+  li {
+    padding: calc(#{$baseline} / 2) 0;
+    border-bottom: 1px solid rgba($color, 0.1);
+
+    &:last-child {
+      border-bottom: none;
+    }
+
+    a {
+      display: inline-flex;
+      align-items: center;
+      gap: calc(#{$baseline} / 3);
+      font-size: 1.0625rem;
+
+      &::after {
+        content: "→";
+        opacity: 0;
+        transform: translateX(-4px);
+        transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
+      }
+
+      &:hover::after {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+  }
+}
+
+.page-footer {
+  max-width: 72ch;
+  margin-top: calc(#{$baseline} * 3);
+  padding-top: $baseline;
+  border-top: 1px solid rgba($color, 0.15);
+  font-family: $body-font-family;
+
+  .edit-link {
+    margin: 0 0 $baseline 0;
+    font-size: 0.9375rem;
+    opacity: 0.75;
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+
+  .page-nav {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-auto-rows: min-content;
+    gap: $baseline;
+    margin-top: $baseline;
+    width: 100%;
+    align-items: start;
+    line-height: 1.4;
+
+    a {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      padding: calc(#{$baseline} / 2) calc(#{$baseline} * 0.75);
+      border: 1px solid rgba($color, 0.15);
+      border-radius: 4px;
+      text-decoration: none;
+      color: $color;
+      transition: border-color 0.2s ease-in-out;
+
+      &:hover {
+        border-color: $hover-links;
+      }
+    }
+
+    &__prev {
+      grid-column: 1;
+    }
+
+    &__next {
+      grid-column: 2;
+      text-align: right;
+    }
+
+    &__label,
+    &__title {
+      display: block;
+    }
+
+    &__label {
+      font-size: 0.8125rem;
+      opacity: 0.6;
+    }
+
+    &__title {
+      font-weight: 600;
+      color: $links;
+    }
+  }
+}
+
+.back-to-top {
+  position: fixed;
+  bottom: $baseline;
+  right: $baseline;
+  width: calc(#{$baseline} * 2);
+  height: calc(#{$baseline} * 2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba($background, 0.9);
+  border: 1px solid rgba($color, 0.2);
+  border-radius: 999px;
+  color: $color;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out, border-color 0.2s ease-in-out;
+  z-index: 20;
+
+  svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  &:hover,
+  &:focus-visible {
+    border-color: $hover-links;
+  }
+
+  &--visible {
+    opacity: 0.85;
+    pointer-events: auto;
+    transform: translateY(0);
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @import "search";
