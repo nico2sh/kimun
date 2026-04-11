@@ -1,6 +1,6 @@
 [package]
 name = "kimun-notes"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 description = "A terminal-based notes application"
 license = "MIT"
