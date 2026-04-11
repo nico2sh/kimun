@@ -40,17 +40,20 @@ theme = "Nord"
 
 Each workspace is a separate section with the naming pattern `[workspaces.<name>]`. A workspace maps a name to a directory of notes.
 
-- **`path`** — absolute path to the notes directory for this workspace. Kimün will read and write markdown files from this location.
+- **`path`** — path to the notes directory for this workspace. Supports three formats:
+  - **Absolute:** `/home/alice/notes` or `C:\Users\alice\notes`
+  - **Relative:** `../my-notes` or `personal` — resolved relative to the config file's directory
+  - **Home-relative:** `~/notes` — `~` expands to the user's home directory (`$HOME` on Linux/macOS, `%USERPROFILE%` on Windows)
 - **`inbox_path`** — vault-relative directory for quick notes (default: `/inbox`). Quick notes created via `Ctrl+W` (TUI), `kimun note quick` (CLI), or the `quick_note` MCP tool are stored here with timestamp-based filenames.
 
 Example:
 ```toml
 [workspaces.default]
-path = "/Users/alice/Documents/Notes"
+path = "~/Documents/Notes"
 inbox_path = "/inbox"
 
 [workspaces.work]
-path = "/Users/alice/work-notes"
+path = "~/work-notes"
 inbox_path = "/capture"
 
 [workspaces.archive]

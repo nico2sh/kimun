@@ -263,6 +263,7 @@ impl SettingsScreen {
                 created: chrono::Utc::now(),
                 quick_note_path: None,
                 inbox_path: None,
+                resolved_path: None,
             };
             {
                 let mut s = self.settings.write().unwrap();
@@ -300,6 +301,7 @@ impl SettingsScreen {
                     && let Some(entry) = wc.workspaces.get_mut(&name)
                 {
                     entry.path = chosen;
+                    entry.resolved_path = None;
                 }
             }
             self.workspaces_section.refresh(&self.settings.read().unwrap());
