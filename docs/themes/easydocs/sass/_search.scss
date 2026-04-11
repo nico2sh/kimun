@@ -1,28 +1,29 @@
 .search-container {
-  display: none;
-
-  &--is-visible {
-    display: block;
-    width: 100%;
-  }
+  display: block;
+  width: 100%;
+  margin-bottom: $baseline;
 
   #search {
     width: 100%;
     display: block;
-    border:none;
-    border-left: 1px solid $color;
-    padding:1px 0;
+    border: 1px solid rgba($color, 0.2);
+    border-radius: 4px;
+    padding: calc(#{$baseline} / 3) calc(#{$baseline} / 2);
     text-align: left;
     line-height: $baseline;
     font-size: $font-size;
     font-family:$font-family;
     color:$color;
     background:transparent;
+
+    &::placeholder {
+      color: rgba($color, 0.4);
+    }
   }
 
   #search:focus {
-    outline:none;
-    border:none;
+    outline: none;
+    border-color: $links;
   }
 
   .search-results {
@@ -48,14 +49,9 @@
 }
 
 #on_right {
-  display: block;
-  text-align: right;
-  margin-bottom: $baseline;
+  display: none;
 }
 
 #search-ico {
-  font-family: 'FabricMDL2Icons';
-  cursor: pointer;
-  font-size: $baseline;
-  line-height: 1;
+  display: none;
 }

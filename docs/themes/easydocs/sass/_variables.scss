@@ -5,12 +5,14 @@ $background: #1A1816;
 $color: #E8E4DC;
 $links: #82BAD5;
 $hover-links: #F9C844;
-$visited-links: #82BAD5;
+$visited-links: #6B8FA3;
 
 // Typography
 $font-size: 1.0625rem;
 $font-family: 'Atkinson Hyperlegible Mono', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+$body-font-family: 'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
 $line-height: 1.75;
+$body-line-height: 1.65;
 $code_font: 400 0.9375rem/1.75 '0xProto', 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
 
 // UI elements

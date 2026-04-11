@@ -16,19 +16,11 @@
 </head>
 <body>
 
-{% if config.extra.release -%}
-    <script>
-        fetch('{{ config.extra.release | safe }}')
-            .then((response) => {
-                return response.json();
-            })
-            .then((data) => {
-                let release_name = data.name;
-                let html_url = data.html_url;
-                release.innerHTML = `<a href='${html_url}'>${release_name}</a>`;
-            });
-    </script>
-{% endif -%}
+{# Build-time: fetch latest release tag from GitHub API, required=false so build survives API outage #}
+{%- set release_data = false -%}
+{%- if config.extra.release_api_url -%}
+    {%- set release_data = load_data(url=config.extra.release_api_url, format="json", required=false) -%}
+{%- endif -%}
 <main>
     {# Create variable to allow appending index.html at end of links if set in config #}
     {% if not config.extra.easydocs_uglyurls -%}
@@ -59,11 +51,20 @@
                 {% endif -%}
             </div>
 
-            {% if config.extra.release -%}
-                <div id="release"></div>
-            {% endif -%}
+            {%- if release_data and release_data.name -%}
+                <div id="release">
+                    <a href="{{ release_data.html_url | safe }}" target="_blank" rel="noopener noreferrer">{{ release_data.name }}</a>
+                </div>
+            {%- elif config.extra.release_fallback -%}
+                <div id="release">
+                    <a href="{{ config.extra.repo_url | safe }}/releases" target="_blank" rel="noopener noreferrer">{{ config.extra.release_fallback }}</a>
+                </div>
+            {%- endif -%}
 
-            <button onclick="burger()" id="mobile" class="ms-Icon--GlobalNavButton" aria-label="Toggle navigation"></button>
+            <button onclick="burger()" id="mobile" aria-label="Toggle navigation" aria-expanded="false">
+                <svg class="icon-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+                <svg class="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="display:none"><path d="M6 6l12 12M18 6l-12 12"/></svg>
+            </button>
             <div id="trees">
                 {% set section_ = get_section(path="_index.md") -%}
                 {% for p in section_.subsections -%}
@@ -72,8 +73,10 @@
 
                     <input class="tree-toggle" type="checkbox" id="{{ subsection.title | slugify }}"
                            {% if current_path_safe is starting_with(subsection.path) %}checked{% endif %}/>
-                    <label class="tree-toggle-label"
-                           for="{{ subsection.title | slugify }}">{{ subsection.title }}</label>
+                    <div class="tree-section">
+                        <label class="tree-toggle-label" for="{{ subsection.title | slugify }}" aria-label="Toggle {{ subsection.title }}"></label>
+                        <a class="tree-section-link{% if current_path_safe == subsection.path %} active{% endif %}" href="{{ subsection.permalink | safe }}{{ _ugly_url }}">{{ subsection.title }}</a>
+                    </div>
 
                     <ul class="subtree">
                         {% for page in subsection.pages -%}
@@ -131,17 +134,31 @@
                     </ul>
                 {% endfor -%}
             </div>
+
+            <div id="nav-footer">
+                <p class="keybinds" aria-label="Keyboard shortcuts">
+                    <kbd>/</kbd> search
+                    <span aria-hidden="true"> · </span>
+                    <kbd>n</kbd><kbd>p</kbd> nav
+                    <span aria-hidden="true"> · </span>
+                    <kbd>esc</kbd> close
+                </p>
+                {%- if config.extra.license -%}
+                    <p class="license">
+                        <a href="{{ config.extra.license_url | default(value=config.extra.repo_url) | safe }}" target="_blank" rel="noopener noreferrer">{{ config.extra.license }}</a>
+                        <span aria-hidden="true"> · </span>
+                        <span>© {{ now() | date(format="%Y") }}</span>
+                    </p>
+                {%- endif -%}
+            </div>
         </nav>
     {% endblock nav -%}
 
     <article>
 
         {% if config.build_search_index -%}
-            <div id="on_right">
-                <span id="search-ico" class="ms-Icon--Search"></span>
-            </div>
             <div class="search-container">
-                <input id="search" type="search" placeholder="Search as you type...">
+                <input id="search" type="search" placeholder="Search as you type…  (press / to focus)">
                 <div class="search-results">
                     <div class="search-results__header"></div>
                     <ul class="search-results__items"></ul>

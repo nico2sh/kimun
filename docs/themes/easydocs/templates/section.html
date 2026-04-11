@@ -6,30 +6,24 @@
     {% if section.word_count > 0 -%}
         {{ section.content | safe }}
     {% else -%}
-        <h2 class="title"> {{ section.title }} </h2>
+        <h1>{{ section.title }}</h1>
+    {% endif -%}
 
-        {% if section.subsections -%}
-            <h3>Subsections:</h3>
-            <ul>
-                {% for subsec in section.subsections -%}
-                    {% set sec_ = get_section(path=subsec) -%}
-                    <li><a href="{{ sec_.permalink | safe }}{{ _ugly_url }}">{{ sec_.title }}</a></li>
-                {% endfor %}
-            </ul>
-        {% endif -%}
-
-        <h3>Pages:</h3>
-        <ul>
-            {% if section.pages -%}
-                {% for page in section.pages -%}
-                    <li><a href="{{ page.permalink | safe }}{{ _ugly_url }}">{{ page.title }}</a></li>
-                {% endfor -%}
-            {% else -%}
-                <li>No pages</li>
-            {% endif %}
+    {% if section.pages -%}
+        <ul class="section-index">
+            {% for page in section.pages -%}
+                <li><a href="{{ page.permalink | safe }}{{ _ugly_url }}">{{ page.title }}</a></li>
+            {% endfor -%}
         </ul>
     {% endif -%}
+
+    <footer class="page-footer">
+        {%- if config.extra.edit_url -%}
+            <p class="edit-link">
+                <a href="{{ config.extra.edit_url | safe }}/{{ section.relative_path | safe }}" target="_blank" rel="noopener noreferrer">
+                    Edit this page on GitHub &rarr;
+                </a>
+            </p>
+        {%- endif -%}
+    </footer>
 {% endblock content %}
-
-
-
