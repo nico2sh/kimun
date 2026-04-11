@@ -22,7 +22,8 @@ fn tab_width_at(col: usize) -> usize {
 /// combining codepoints that follow contribute 0 additional columns, which
 /// matches the rendering behaviour of modern terminal emulators.
 fn cluster_display_width(cluster: &str) -> usize {
-    cluster.chars()
+    cluster
+        .chars()
         .next()
         .and_then(unicode_width::UnicodeWidthChar::width)
         .unwrap_or(1)
@@ -180,7 +181,11 @@ impl ParsedLine {
         detect_wikilinks(line, &mut content_vis, &mut elements);
 
         // Build O(1) lookup bitmasks from the collected element ranges.
-        debug_assert!(elements.len() < 255, "Too many elements on a single line ({})", elements.len());
+        debug_assert!(
+            elements.len() < 255,
+            "Too many elements on a single line ({})",
+            elements.len()
+        );
         let mut elem_vis = vec![false; total];
         let mut elem_index = vec![0u8; total];
         for (i, e) in elements.iter().enumerate() {
@@ -330,6 +335,7 @@ impl MarkdownSpanner {
     // ── Public API (parse-on-the-fly wrappers, used in tests only) ───────────
 
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub fn render<'a>(
         content: &'a str,
         logical_line: &'a str,
@@ -484,15 +490,18 @@ impl MarkdownSpanner {
         for cluster in logical_line.graphemes(true) {
             let pos = char_pos;
             char_pos += cluster.chars().count();
-            if pos < visual_start_col { continue; }
-            if pos >= visual_start_col + content_char_count { break; }
+            if pos < visual_start_col {
+                continue;
+            }
+            if pos >= visual_start_col + content_char_count {
+                break;
+            }
 
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
             let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
-            let in_expanded_elem = expanded.is_some_and(|i| {
-                elements[i].start_char <= pos && pos < elements[i].end_char
-            });
+            let in_expanded_elem = expanded
+                .is_some_and(|i| elements[i].start_char <= pos && pos < elements[i].end_char);
             let this_elem = parsed.elem_at(pos);
             let emit = is_content
                 || in_heading_sigil
@@ -594,17 +603,20 @@ impl MarkdownSpanner {
         let mut rendered_col = 0usize;
         let mut char_pos = 0usize;
         for cluster in logical_line.graphemes(true) {
-            if char_pos >= end { break; }
+            if char_pos >= end {
+                break;
+            }
             let pos = char_pos;
             char_pos += cluster.chars().count();
-            if pos < visual_start_col { continue; }
+            if pos < visual_start_col {
+                continue;
+            }
 
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|s_end| pos < s_end);
             let in_list_sigil = list_sigil_end.is_some_and(|s_end| pos < s_end);
-            let in_expanded_elem = expanded.is_some_and(|i| {
-                elements[i].start_char <= pos && pos < elements[i].end_char
-            });
+            let in_expanded_elem = expanded
+                .is_some_and(|i| elements[i].start_char <= pos && pos < elements[i].end_char);
             let in_any_element = parsed.in_any_element(pos);
             let visible = is_content
                 || in_heading_sigil
@@ -693,7 +705,9 @@ impl MarkdownSpanner {
         for cluster in logical_line.graphemes(true) {
             let pos = char_pos;
             char_pos += cluster.chars().count();
-            if pos < visual_start_col { continue; }
+            if pos < visual_start_col {
+                continue;
+            }
 
             if rendered_count >= rendered_col {
                 return pos;
@@ -1044,9 +1058,10 @@ mod tests {
         let line = "[[My Note]]";
         let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
         assert_eq!(text(&s), "My Note");
-        assert!(s
-            .iter()
-            .any(|sp| sp.style.add_modifier.contains(Modifier::UNDERLINED)));
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::UNDERLINED))
+        );
     }
 
     #[test]

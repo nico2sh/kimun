@@ -3,16 +3,21 @@
 // Integration tests for JSON output in search and notes commands.
 // These tests verify that --format json produces valid, well-structured JSON.
 
-use kimun_core::nfs::VaultPath;
 use kimun_core::NoteVault;
-use kimun_notes::cli::{run_cli, CliCommand};
+use kimun_core::nfs::VaultPath;
 use kimun_notes::cli::output::OutputFormat;
+use kimun_notes::cli::{CliCommand, run_cli};
 use tempfile::TempDir;
 
 /// Create a temporary vault with test notes indexed.
 async fn setup_json_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(dir.path()).await.expect("failed to create vault");
-    vault.validate_and_init().await.expect("failed to init vault");
+    let vault = NoteVault::new(dir.path())
+        .await
+        .expect("failed to create vault");
+    vault
+        .validate_and_init()
+        .await
+        .expect("failed to init vault");
 
     vault
         .create_note(
@@ -38,7 +43,10 @@ async fn setup_json_test_vault(dir: &TempDir) -> NoteVault {
         .await
         .expect("failed to create deep dive note");
 
-    vault.recreate_index().await.expect("failed to recreate index");
+    vault
+        .recreate_index()
+        .await
+        .expect("failed to recreate index");
     vault
 }
 
@@ -76,11 +84,12 @@ async fn test_search_json_output_is_valid() {
         "default",
         Some("rust"),
         false, // is_listing
-    ).await
+    )
+    .await
     .expect("format_notes_as_json should succeed");
 
-    let json: serde_json::Value = serde_json::from_str(&json_str)
-        .expect("output should be valid JSON");
+    let json: serde_json::Value =
+        serde_json::from_str(&json_str).expect("output should be valid JSON");
 
     // Verify top-level structure
     assert!(json["metadata"].is_object(), "should have metadata object");
@@ -88,7 +97,10 @@ async fn test_search_json_output_is_valid() {
 
     // Verify metadata fields
     assert_eq!(json["metadata"]["workspace"], "default");
-    assert_eq!(json["metadata"]["workspace_path"], workspace_dir.path().to_string_lossy().to_string());
+    assert_eq!(
+        json["metadata"]["workspace_path"],
+        workspace_dir.path().to_string_lossy().to_string()
+    );
     assert_eq!(json["metadata"]["query"], "rust");
     assert_eq!(json["metadata"]["is_listing"], false);
     assert!(json["metadata"]["total_results"].as_u64().unwrap() >= 1);
@@ -103,10 +115,22 @@ async fn test_search_json_output_is_valid() {
     assert!(note["hash"].is_string(), "note should have hash");
 
     // Verify nested metadata structure
-    assert!(note["metadata"].is_object(), "note should have metadata object");
-    assert!(note["metadata"]["tags"].is_array(), "metadata should have tags");
-    assert!(note["metadata"]["links"].is_array(), "metadata should have links");
-    assert!(note["metadata"]["headers"].is_array(), "metadata should have headers");
+    assert!(
+        note["metadata"].is_object(),
+        "note should have metadata object"
+    );
+    assert!(
+        note["metadata"]["tags"].is_array(),
+        "metadata should have tags"
+    );
+    assert!(
+        note["metadata"]["links"].is_array(),
+        "metadata should have links"
+    );
+    assert!(
+        note["metadata"]["headers"].is_array(),
+        "metadata should have headers"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -132,20 +156,28 @@ async fn test_notes_json_output_is_valid() {
         "my-workspace",
         None,
         true, // is_listing
-    ).await
+    )
+    .await
     .expect("format_notes_as_json should succeed");
 
-    let json: serde_json::Value = serde_json::from_str(&json_str)
-        .expect("output should be valid JSON");
+    let json: serde_json::Value =
+        serde_json::from_str(&json_str).expect("output should be valid JSON");
 
     assert_eq!(json["metadata"]["workspace"], "my-workspace");
     assert_eq!(json["metadata"]["is_listing"], true);
-    assert!(json["metadata"]["query"].is_null(), "query should be null for listing");
+    assert!(
+        json["metadata"]["query"].is_null(),
+        "query should be null for listing"
+    );
     assert!(json["notes"].as_array().unwrap().len() >= 3);
 
     // Each note should have a nested metadata object
     for note in json["notes"].as_array().unwrap() {
-        assert!(note["metadata"].is_object(), "each note should have metadata: {:?}", note["path"]);
+        assert!(
+            note["metadata"].is_object(),
+            "each note should have metadata: {:?}",
+            note["path"]
+        );
     }
 }
 
@@ -173,7 +205,8 @@ async fn test_search_json_metadata_contains_tags_and_links() {
         "default",
         Some("rust"),
         false, // is_listing
-    ).await
+    )
+    .await
     .expect("format_notes_as_json should succeed");
 
     let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -182,7 +215,10 @@ async fn test_search_json_metadata_contains_tags_and_links() {
     assert!(!notes.is_empty(), "should find the rust note");
 
     let rust_note = notes.iter().find(|n| {
-        n["path"].as_str().map(|p| p.contains("rust")).unwrap_or(false)
+        n["path"]
+            .as_str()
+            .map(|p| p.contains("rust"))
+            .unwrap_or(false)
     });
 
     assert!(rust_note.is_some(), "should find rust-intro note");
@@ -190,14 +226,18 @@ async fn test_search_json_metadata_contains_tags_and_links() {
 
     let tags = note["metadata"]["tags"].as_array().unwrap();
     assert!(
-        tags.iter().any(|t| t.as_str() == Some("programming") || t.as_str() == Some("rust")),
+        tags.iter()
+            .any(|t| t.as_str() == Some("programming") || t.as_str() == Some("rust")),
         "should extract tags from content; found: {:?}",
         tags
     );
 
     let links = note["metadata"]["links"].as_array().unwrap();
     assert!(
-        links.iter().any(|l| l.as_str().map(|s| s.contains("memory-safety") || s.contains("ownership")).unwrap_or(false)),
+        links.iter().any(|l| l
+            .as_str()
+            .map(|s| s.contains("memory-safety") || s.contains("ownership"))
+            .unwrap_or(false)),
         "should extract wiki links from content; found: {:?}",
         links
     );
@@ -222,7 +262,10 @@ async fn test_notes_json_journal_date_field_present() {
     // Create a journal note
     let journal_path = VaultPath::note_path_from("journal/2024-01-15");
     vault
-        .create_note(&journal_path, "# January 15, 2024\n\nToday's journal entry.")
+        .create_note(
+            &journal_path,
+            "# January 15, 2024\n\nToday's journal entry.",
+        )
         .await
         .expect("failed to create journal note");
 
@@ -231,12 +274,9 @@ async fn test_notes_json_journal_date_field_present() {
     let results = vault.get_all_notes().await.unwrap();
 
     let json_str = kimun_notes::cli::json_output::format_notes_as_json(
-        &vault,
-        &results,
-        "default",
-        None,
-        true, // is_listing
-    ).await
+        &vault, &results, "default", None, true, // is_listing
+    )
+    .await
     .expect("format_notes_as_json should succeed");
 
     let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -244,7 +284,10 @@ async fn test_notes_json_journal_date_field_present() {
 
     // Find the journal note
     let journal_note = notes.iter().find(|n| {
-        n["path"].as_str().map(|p| p.contains("journal")).unwrap_or(false)
+        n["path"]
+            .as_str()
+            .map(|p| p.contains("journal"))
+            .unwrap_or(false)
     });
 
     assert!(journal_note.is_some(), "should find journal note");
@@ -275,12 +318,9 @@ async fn test_notes_json_created_field_present() {
     let results = vault.get_all_notes().await.unwrap();
 
     let json_str = kimun_notes::cli::json_output::format_notes_as_json(
-        &vault,
-        &results,
-        "default",
-        None,
-        true, // is_listing
-    ).await
+        &vault, &results, "default", None, true, // is_listing
+    )
+    .await
     .expect("format_notes_as_json should succeed");
 
     let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -318,7 +358,11 @@ async fn test_search_json_via_run_cli() {
     )
     .await;
 
-    assert!(result.is_ok(), "search with JSON format should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search with JSON format should succeed: {:?}",
+        result
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +387,11 @@ async fn test_notes_json_via_run_cli() {
     )
     .await;
 
-    assert!(result.is_ok(), "notes with JSON format should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "notes with JSON format should succeed: {:?}",
+        result
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +416,11 @@ async fn test_text_format_unaffected() {
         Some(config_path.clone()),
     )
     .await;
-    assert!(result.is_ok(), "search text format should still work: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "search text format should still work: {:?}",
+        result
+    );
 
     let result = run_cli(
         CliCommand::Notes {
@@ -378,5 +430,9 @@ async fn test_text_format_unaffected() {
         Some(config_path),
     )
     .await;
-    assert!(result.is_ok(), "notes text format should still work: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "notes text format should still work: {:?}",
+        result
+    );
 }

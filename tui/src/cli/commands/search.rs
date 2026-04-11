@@ -1,8 +1,8 @@
 // tui/src/cli/commands/search.rs
+use crate::cli::json_output::format_notes_as_json;
+use crate::cli::output::{OutputFormat, format_note_entries_text_with_journal};
 use color_eyre::eyre::Result;
 use kimun_core::NoteVault;
-use crate::cli::output::{OutputFormat, format_note_entries_text_with_journal};
-use crate::cli::json_output::format_notes_as_json;
 
 pub async fn run(
     vault: &NoteVault,
@@ -30,7 +30,8 @@ pub async fn run(
                 workspace_name,
                 Some(query),
                 false, // is_listing
-            ).await
+            )
+            .await
             .map_err(|e| color_eyre::eyre::eyre!("JSON formatting error: {}", e))?;
             print!("{}", json_output);
         }

@@ -1,8 +1,8 @@
 // tui/src/cli/commands/notes.rs
+use crate::cli::json_output::format_notes_as_json;
+use crate::cli::output::{OutputFormat, format_note_entries_text_with_journal};
 use color_eyre::eyre::Result;
 use kimun_core::NoteVault;
-use crate::cli::output::{OutputFormat, format_note_entries_text_with_journal};
-use crate::cli::json_output::format_notes_as_json;
 
 pub async fn run(
     vault: &NoteVault,
@@ -15,9 +15,7 @@ pub async fn run(
 
     // Apply path filter if provided
     if let Some(prefix) = path_filter {
-        results.retain(|(entry_data, _)| {
-            entry_data.path.to_string().starts_with(prefix)
-        });
+        results.retain(|(entry_data, _)| entry_data.path.to_string().starts_with(prefix));
     }
 
     match format {
@@ -37,7 +35,8 @@ pub async fn run(
                 workspace_name,
                 None,
                 true, // is_listing
-            ).await
+            )
+            .await
             .map_err(|e| color_eyre::eyre::eyre!("JSON formatting error: {}", e))?;
             print!("{}", json_output);
         }

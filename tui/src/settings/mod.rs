@@ -368,7 +368,9 @@ impl AppSettings {
             match toml::from_str::<AppSettings>(toml.as_ref()) {
                 Ok(mut setting) => {
                     setting.config_file = Some(settings_file_path.clone());
-                    let config_dir = settings_file_path.parent().unwrap_or(std::path::Path::new("."));
+                    let config_dir = settings_file_path
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."));
                     setting.resolve_paths(config_dir);
                     if config_migration::ConfigMigration::run(&mut setting)? {
                         setting.save_to_disk()?;
@@ -576,11 +578,7 @@ impl AppSettings {
         if let Some(ref wc) = self.workspace_config
             && let Some(entry) = wc.get_current_workspace()
         {
-            return entry
-                .last_paths
-                .iter()
-                .map(VaultPath::new)
-                .collect();
+            return entry.last_paths.iter().map(VaultPath::new).collect();
         }
         self.last_paths.clone()
     }
@@ -603,6 +601,7 @@ impl AppSettings {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -820,10 +819,7 @@ mod backend_tests {
     #[test]
     fn expand_path_absolute_unchanged() {
         let base = PathBuf::from("/config/dir");
-        let result = AppSettings::expand_path(
-            std::path::Path::new("/absolute/path/notes"),
-            &base,
-        );
+        let result = AppSettings::expand_path(std::path::Path::new("/absolute/path/notes"), &base);
         assert!(result.is_absolute());
         assert!(result.to_string_lossy().contains("absolute"));
     }
@@ -834,10 +830,7 @@ mod backend_tests {
         let notes = base.path().join("notes");
         std::fs::create_dir_all(&notes).unwrap();
 
-        let result = AppSettings::expand_path(
-            std::path::Path::new("notes"),
-            base.path(),
-        );
+        let result = AppSettings::expand_path(std::path::Path::new("notes"), base.path());
         assert!(result.is_absolute());
         assert_eq!(result, notes.canonicalize().unwrap());
     }
@@ -850,10 +843,7 @@ mod backend_tests {
         let sub = base.path().join("sub");
         std::fs::create_dir_all(&sub).unwrap();
 
-        let result = AppSettings::expand_path(
-            std::path::Path::new("../sibling"),
-            &sub,
-        );
+        let result = AppSettings::expand_path(std::path::Path::new("../sibling"), &sub);
         assert!(result.is_absolute());
         assert_eq!(result, sibling.canonicalize().unwrap());
     }
@@ -861,10 +851,7 @@ mod backend_tests {
     #[test]
     fn expand_path_nonexistent_relative_still_absolute() {
         let base = PathBuf::from("/some/config/dir");
-        let result = AppSettings::expand_path(
-            std::path::Path::new("my-notes"),
-            &base,
-        );
+        let result = AppSettings::expand_path(std::path::Path::new("my-notes"), &base);
         assert!(result.is_absolute());
         assert_eq!(result, PathBuf::from("/some/config/dir/my-notes"));
     }
@@ -874,10 +861,7 @@ mod backend_tests {
     fn expand_path_tilde_uses_home_unix() {
         let home = std::env::var("HOME").expect("HOME must be set on Unix");
         let base = PathBuf::from("/irrelevant");
-        let result = AppSettings::expand_path(
-            std::path::Path::new("~/Documents/notes"),
-            &base,
-        );
+        let result = AppSettings::expand_path(std::path::Path::new("~/Documents/notes"), &base);
         assert!(result.is_absolute());
         assert!(
             result.starts_with(&home),
@@ -893,13 +877,12 @@ mod backend_tests {
     fn expand_path_tilde_alone_is_home_unix() {
         let home = std::env::var("HOME").expect("HOME must be set on Unix");
         let base = PathBuf::from("/irrelevant");
-        let result = AppSettings::expand_path(
-            std::path::Path::new("~"),
-            &base,
-        );
+        let result = AppSettings::expand_path(std::path::Path::new("~"), &base);
         assert!(result.is_absolute());
         // canonicalize may resolve symlinks, so compare canonicalized forms
-        let expected = PathBuf::from(&home).canonicalize().unwrap_or(PathBuf::from(&home));
+        let expected = PathBuf::from(&home)
+            .canonicalize()
+            .unwrap_or(PathBuf::from(&home));
         assert_eq!(result, expected);
     }
 
@@ -908,10 +891,7 @@ mod backend_tests {
     fn expand_path_tilde_uses_userprofile_windows() {
         let home = std::env::var("USERPROFILE").expect("USERPROFILE must be set on Windows");
         let base = PathBuf::from("C:\\irrelevant");
-        let result = AppSettings::expand_path(
-            std::path::Path::new("~/Documents/notes"),
-            &base,
-        );
+        let result = AppSettings::expand_path(std::path::Path::new("~/Documents/notes"), &base);
         assert!(result.is_absolute());
         assert!(
             result.starts_with(&home),
@@ -927,8 +907,7 @@ mod backend_tests {
         let notes = base.path().join("notes");
         std::fs::create_dir_all(&notes).unwrap();
 
-        let toml = format!(
-            r#"
+        let toml = r#"
 config_version = 2
 [global]
 current_workspace = "test"
@@ -937,7 +916,7 @@ path = "notes"
 last_paths = []
 created = "2026-01-01T00:00:00Z"
 "#
-        );
+        .to_string();
         let mut settings: AppSettings = toml::from_str(&toml).unwrap();
         settings.resolve_paths(base.path());
 

@@ -35,7 +35,9 @@ use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use ratatui::Terminal;
 use ratatui::crossterm::event::EnableMouseCapture;
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{EnterAlternateScreen, enable_raw_mode, supports_keyboard_enhancement};
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, enable_raw_mode, supports_keyboard_enhancement,
+};
 use ratatui::prelude::{Backend, CrosstermBackend};
 use std::io;
 
@@ -102,9 +104,7 @@ fn init_logging(log_dir: &Path) -> Option<tracing_appender::non_blocking::Worker
 
     // try_init instead of init so tests can call this without panicking on the
     // global-subscriber-already-set error.
-    let _ = tracing_subscriber::registry()
-        .with(layers)
-        .try_init();
+    let _ = tracing_subscriber::registry().with(layers).try_init();
 
     // Forward log:: crate events into the tracing pipeline.
     tracing_log::LogTracer::init().ok();
@@ -206,15 +206,15 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 
     let mut screen: Box<dyn AppScreen> = match new_screen {
         ScreenEvent::Start => Box::new(StartScreen::new(app.settings.clone(), app.vault.clone())),
-        ScreenEvent::OpenSettings => {
-            Box::new(SettingsScreen::new(app.settings.clone()))
-        }
+        ScreenEvent::OpenSettings => Box::new(SettingsScreen::new(app.settings.clone())),
         ScreenEvent::OpenSettingsWithError(msg) => {
             Box::new(SettingsScreen::new_with_error(app.settings.clone(), msg))
         }
-        ScreenEvent::OpenEditor(note_vault, vault_path) => {
-            Box::new(EditorScreen::new(note_vault, vault_path, app.settings.clone()))
-        }
+        ScreenEvent::OpenEditor(note_vault, vault_path) => Box::new(EditorScreen::new(
+            note_vault,
+            vault_path,
+            app.settings.clone(),
+        )),
         ScreenEvent::OpenBrowse(note_vault, vault_path) => Box::new(BrowseScreen::new(
             note_vault,
             vault_path,
@@ -350,7 +350,9 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             let (workspace_path, inbox_path) = {
                 let s = app.settings.read().unwrap();
                 let wp = s.resolve_workspace_path();
-                let ip = s.workspace_config.as_ref()
+                let ip = s
+                    .workspace_config
+                    .as_ref()
                     .and_then(|wc| wc.get_current_workspace())
                     .map(|e| e.effective_inbox_path());
                 (wp, ip)
@@ -398,7 +400,9 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             let (workspace_path, inbox_path) = {
                 let s = app.settings.read().unwrap();
                 let wp = s.resolve_workspace_path();
-                let ip = s.workspace_config.as_ref()
+                let ip = s
+                    .workspace_config
+                    .as_ref()
                     .and_then(|wc| wc.get_current_workspace())
                     .map(|e| e.effective_inbox_path());
                 (wp, ip)

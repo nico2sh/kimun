@@ -6,8 +6,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppTx, InputEvent};
-use crate::settings::{SortFieldSetting, SortOrderSetting};
 use crate::settings::themes::Theme;
+use crate::settings::{SortFieldSetting, SortOrderSetting};
 
 pub struct SortingSection {
     pub default_sort_field: SortFieldSetting,
@@ -166,7 +166,11 @@ impl Component for SortingSection {
             .style(Style::default().fg(theme.fg.to_ratatui())),
         ];
         let mut journal_state = ListState::default();
-        journal_state.select(if selected >= 2 { Some(selected - 2) } else { None });
+        journal_state.select(if selected >= 2 {
+            Some(selected - 2)
+        } else {
+            None
+        });
         let journal_block = Block::default()
             .title("Journal")
             .borders(Borders::ALL)

@@ -1,13 +1,13 @@
-use std::ops::Range;
-use unicode_width::UnicodeWidthStr;
+use super::markdown::{MarkdownSpanner, ParsedLine};
+use super::word_wrap::WordWrapLayout;
+use crate::settings::themes::Theme;
 use ratatui::Frame;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
-use ratatui::layout::Position;
-use crate::settings::themes::Theme;
-use super::word_wrap::WordWrapLayout;
-use super::markdown::{MarkdownSpanner, ParsedLine};
+use std::ops::Range;
+use unicode_width::UnicodeWidthStr;
 
 pub struct MarkdownEditorView {
     pub layout: WordWrapLayout,
@@ -57,9 +57,18 @@ impl MarkdownEditorView {
         }
     }
 
-    pub fn update(&mut self, lines: &[String], cursor: (usize, usize), rect: Rect, generation: u64, selection: Option<((usize, usize), (usize, usize))>) {
+    pub fn update(
+        &mut self,
+        lines: &[String],
+        cursor: (usize, usize),
+        rect: Rect,
+        generation: u64,
+        selection: Option<((usize, usize), (usize, usize))>,
+    ) {
         self.selection = selection;
-        if rect.height == 0 { return; }
+        if rect.height == 0 {
+            return;
+        }
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
         // Also guard against parsed_cache being shorter than lines (e.g. async snapshot
@@ -77,8 +86,13 @@ impl MarkdownEditorView {
         // Skip when content, width, and the *effective element expansion* are all unchanged.
         // Horizontal cursor movement within the same element (or plain text with no elements)
         // does not change any wrap boundary — no recompute needed.
-        let new_expanded = self.parsed_cache.get(cursor.0).and_then(|p| p.elem_at(cursor.1));
-        let old_expanded = self.parsed_cache.get(self.last_layout_cursor.0)
+        let new_expanded = self
+            .parsed_cache
+            .get(cursor.0)
+            .and_then(|p| p.elem_at(cursor.1));
+        let old_expanded = self
+            .parsed_cache
+            .get(self.last_layout_cursor.0)
             .and_then(|p| p.elem_at(self.last_layout_cursor.1));
         let need_layout = generation != self.last_layout_generation
             || rect.width != self.last_layout_width
@@ -92,12 +106,18 @@ impl MarkdownEditorView {
             let width_changed = rect.width != self.last_layout_width;
             if content_changed || self.rendered_cache.len() != lines.len() {
                 // Full rebuild — content or line count changed.
-                self.rendered_cache = lines.iter()
+                self.rendered_cache = lines
+                    .iter()
                     .enumerate()
                     .map(|(i, l)| {
                         let force_raw = self.is_in_code_block(i);
                         let cursor_col = if i == cursor.0 { Some(cursor.1) } else { None };
-                        MarkdownSpanner::visible_positions_with(l, &self.parsed_cache[i], cursor_col, force_raw)
+                        MarkdownSpanner::visible_positions_with(
+                            l,
+                            &self.parsed_cache[i],
+                            cursor_col,
+                            force_raw,
+                        )
                     })
                     .collect();
             } else if !width_changed {
@@ -106,13 +126,16 @@ impl MarkdownEditorView {
                 let new_row = cursor.0;
                 for row in [old_row, new_row] {
                     if let Some(l) = lines.get(row)
-                        && let Some(p) = self.parsed_cache.get(row) {
-                            let force_raw = self.is_in_code_block(row);
-                            let cursor_col = if row == new_row { Some(cursor.1) } else { None };
-                            if let Some(entry) = self.rendered_cache.get_mut(row) {
-                                *entry = MarkdownSpanner::visible_positions_with(l, p, cursor_col, force_raw);
-                            }
+                        && let Some(p) = self.parsed_cache.get(row)
+                    {
+                        let force_raw = self.is_in_code_block(row);
+                        let cursor_col = if row == new_row { Some(cursor.1) } else { None };
+                        if let Some(entry) = self.rendered_cache.get_mut(row) {
+                            *entry = MarkdownSpanner::visible_positions_with(
+                                l, p, cursor_col, force_raw,
+                            );
                         }
+                    }
                 }
             }
             // Width-only change: masks are width-independent; reuse rendered_cache as-is.
@@ -133,7 +156,9 @@ impl MarkdownEditorView {
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        if rect.height == 0 { return; }
+        if rect.height == 0 {
+            return;
+        }
         let lines = &self.lines_snapshot;
         let cursor = self.cursor_snapshot;
         let scroll = self.visual_scroll_offset;
@@ -149,8 +174,14 @@ impl MarkdownEditorView {
             .skip(scroll)
             .take(height)
             .map(|vl| {
-                let cursor_col = if vl.logical_row == cursor.0 { Some(cursor.1) } else { None };
-                let force_raw = cursor_code_block.as_ref().is_some_and(|r| r.contains(&vl.logical_row));
+                let cursor_col = if vl.logical_row == cursor.0 {
+                    Some(cursor.1)
+                } else {
+                    None
+                };
+                let force_raw = cursor_code_block
+                    .as_ref()
+                    .is_some_and(|r| r.contains(&vl.logical_row));
                 let logical_line = lines.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
                 let parsed = &parsed_cache[vl.logical_row];
                 let content = vl.content(logical_line);
@@ -172,16 +203,24 @@ impl MarkdownEditorView {
                     if row >= sel_sr && row <= sel_er {
                         let start_rendered = if row == sel_sr {
                             MarkdownSpanner::rendered_cursor_col_with(
-                                logical_line, parsed, vl.start_col, sel_sc,
-                                vl.is_first_visual_line, force_raw,
+                                logical_line,
+                                parsed,
+                                vl.start_col,
+                                sel_sc,
+                                vl.is_first_visual_line,
+                                force_raw,
                             )
                         } else {
                             0
                         };
                         let end_rendered = if row == sel_er {
                             MarkdownSpanner::rendered_cursor_col_with(
-                                logical_line, parsed, vl.start_col, sel_ec,
-                                vl.is_first_visual_line, force_raw,
+                                logical_line,
+                                parsed,
+                                vl.start_col,
+                                sel_ec,
+                                vl.is_first_visual_line,
+                                force_raw,
                             )
                         } else {
                             // Entire line is selected; use a sentinel larger than any line width.
@@ -200,8 +239,7 @@ impl MarkdownEditorView {
             .collect();
 
         f.render_widget(
-            Paragraph::new(Text::from(visible))
-                .style(theme.base_style()),
+            Paragraph::new(Text::from(visible)).style(theme.base_style()),
             rect,
         );
 
@@ -213,8 +251,12 @@ impl MarkdownEditorView {
                 let logical_line = lines.get(cursor.0).map(|s| s.as_str()).unwrap_or("");
                 let force_raw = self.is_in_code_block(cursor.0);
                 let rendered_col = MarkdownSpanner::rendered_cursor_col_with(
-                    logical_line, &self.parsed_cache[cursor.0], vl.start_col, cursor.1,
-                    vl.is_first_visual_line, force_raw,
+                    logical_line,
+                    &self.parsed_cache[cursor.0],
+                    vl.start_col,
+                    cursor.1,
+                    vl.is_first_visual_line,
+                    force_raw,
                 );
                 f.set_cursor_position(Position {
                     x: rect.x + rendered_col as u16,
@@ -225,7 +267,9 @@ impl MarkdownEditorView {
     }
 
     fn is_in_code_block(&self, row: usize) -> bool {
-        self.cursor_code_block.as_ref().is_some_and(|r| r.contains(&row))
+        self.cursor_code_block
+            .as_ref()
+            .is_some_and(|r| r.contains(&row))
     }
 
     /// Markdown-aware mouse click: maps a rendered screen column to the correct logical
@@ -237,11 +281,19 @@ impl MarkdownEditorView {
         }
         let vrow = vrow.min(vlines.len() - 1);
         let vl = &vlines[vrow];
-        let logical_line = self.lines_snapshot.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
+        let logical_line = self
+            .lines_snapshot
+            .get(vl.logical_row)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let force_raw = self.is_in_code_block(vl.logical_row);
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
-            logical_line, &self.parsed_cache[vl.logical_row], vl.start_col, vcol,
-            vl.is_first_visual_line, force_raw,
+            logical_line,
+            &self.parsed_cache[vl.logical_row],
+            vl.start_col,
+            vcol,
+            vl.is_first_visual_line,
+            force_raw,
         );
         let row = vl.logical_row.min(u16::MAX as usize) as u16;
         let col = logical_col.min(u16::MAX as usize) as u16;
@@ -277,7 +329,9 @@ impl MarkdownEditorView {
 }
 
 impl Default for MarkdownEditorView {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Returns the byte offset into `s` after consuming exactly `target_width` display columns.
@@ -329,7 +383,8 @@ fn apply_selection_highlight<'a>(
 
             let prefix_byte = byte_offset_for_display_width(content, prefix_width);
             let selected_byte_end =
-                byte_offset_for_display_width(&content[prefix_byte..], selected_width) + prefix_byte;
+                byte_offset_for_display_width(&content[prefix_byte..], selected_width)
+                    + prefix_byte;
 
             // Prefix (before selection)
             if prefix_byte > 0 {
@@ -363,7 +418,14 @@ mod tests {
     use super::*;
     use ratatui::layout::Rect;
 
-    fn rect(h: u16) -> Rect { Rect { x: 0, y: 0, width: 40, height: h } }
+    fn rect(h: u16) -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: h,
+        }
+    }
 
     #[test]
     fn new_has_zero_scroll() {
@@ -446,7 +508,11 @@ mod tests {
         let layout_gen_after_first = v.last_layout_generation;
         // Move cursor right — same row, no elements, same generation → layout must be skipped.
         v.update(&lines, (0, 5), rect(40), 1, None);
-        assert_eq!(v.last_layout_cursor, (0, 0), "layout cursor unchanged = layout was skipped");
+        assert_eq!(
+            v.last_layout_cursor,
+            (0, 0),
+            "layout cursor unchanged = layout was skipped"
+        );
         assert_eq!(v.last_layout_generation, layout_gen_after_first);
     }
 
@@ -464,7 +530,18 @@ mod tests {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello world foo bar".to_string()];
         v.update(&lines, (0, 0), rect(40), 1, None);
-        v.update(&lines, (0, 0), Rect { x: 0, y: 0, width: 10, height: 10 }, 1, None);
+        v.update(
+            &lines,
+            (0, 0),
+            Rect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            },
+            1,
+            None,
+        );
         assert_eq!(v.last_layout_width, 10);
     }
 

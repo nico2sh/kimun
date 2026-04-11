@@ -6,8 +6,7 @@ use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
     model::{PromptMessage, PromptMessageRole},
-    schemars,
-    prompt, prompt_router,
+    prompt, prompt_router, schemars,
 };
 use serde::Deserialize;
 
@@ -117,7 +116,9 @@ impl KimunHandler {
 
 #[prompt_router(vis = "pub")]
 impl KimunHandler {
-    #[prompt(description = "Load today's journal entry and ask the LLM to review the day: summarise accomplishments, identify action items, and note recurring themes.")]
+    #[prompt(
+        description = "Load today's journal entry and ask the LLM to review the day: summarise accomplishments, identify action items, and note recurring themes."
+    )]
     async fn daily_review(
         &self,
         Parameters(p): Parameters<DailyReviewParams>,
@@ -162,10 +163,15 @@ impl KimunHandler {
             3. Note any open questions or concerns that need follow-up"
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            message,
+        )])
     }
 
-    #[prompt(description = "Load a note and its backlink list, then ask the LLM to identify non-obvious conceptual connections to the rest of the vault.")]
+    #[prompt(
+        description = "Load a note and its backlink list, then ask the LLM to identify non-obvious conceptual connections to the rest of the vault."
+    )]
     async fn find_connections(
         &self,
         Parameters(p): Parameters<FindConnectionsParams>,
@@ -199,10 +205,7 @@ impl KimunHandler {
                 .iter()
                 .map(|(entry, _)| format!("- {}", entry.path))
                 .collect();
-            format!(
-                "\nNotes that link to this note:\n{}\n",
-                paths.join("\n")
-            )
+            format!("\nNotes that link to this note:\n{}\n", paths.join("\n"))
         };
 
         let message = format!(
@@ -213,10 +216,15 @@ impl KimunHandler {
             path = vault_path,
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            message,
+        )])
     }
 
-    #[prompt(description = "Search the vault using a note's section headings as queries, then ask the LLM to synthesise what is captured and identify gaps.")]
+    #[prompt(
+        description = "Search the vault using a note's section headings as queries, then ask the LLM to synthesise what is captured and identify gaps."
+    )]
     async fn research_note(
         &self,
         Parameters(p): Parameters<ResearchNoteParams>,
@@ -293,10 +301,15 @@ impl KimunHandler {
             path = vault_path,
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            message,
+        )])
     }
 
-    #[prompt(description = "Search the vault for a topic and ask the LLM to generate new ideas that build on existing notes, with a suggested note to append them to.")]
+    #[prompt(
+        description = "Search the vault for a topic and ask the LLM to generate new ideas that build on existing notes, with a suggested note to append them to."
+    )]
     async fn brainstorm(
         &self,
         Parameters(p): Parameters<BrainstormParams>,
@@ -345,10 +358,15 @@ impl KimunHandler {
             topic = p.topic,
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            message,
+        )])
     }
 
-    #[prompt(description = "Load a full week of journal entries and ask the LLM to synthesise themes, accomplishments, and carry-overs.")]
+    #[prompt(
+        description = "Load a full week of journal entries and ask the LLM to synthesise themes, accomplishments, and carry-overs."
+    )]
     async fn weekly_review(
         &self,
         Parameters(p): Parameters<WeeklyReviewParams>,
@@ -377,7 +395,15 @@ impl KimunHandler {
         let sunday = monday + Duration::days(6);
 
         // Day names for formatting
-        let day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+        let day_names = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ];
 
         let mut days_text = String::new();
         for i in 0..7 {
@@ -391,7 +417,9 @@ impl KimunHandler {
 
             let content = match self.vault.get_note_text(&journal_path).await {
                 Ok(text) => text,
-                Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => "(no entry)".to_string(),
+                Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
+                    "(no entry)".to_string()
+                }
                 Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
             };
 
@@ -413,10 +441,15 @@ impl KimunHandler {
             days_text
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            message,
+        )])
     }
 
-    #[prompt(description = "Search the vault for a topic, expand the search via backlinks and related headings from the results, then ask the LLM for a comprehensive overview of the topic and everything connected to it.")]
+    #[prompt(
+        description = "Search the vault for a topic, expand the search via backlinks and related headings from the results, then ask the LLM for a comprehensive overview of the topic and everything connected to it."
+    )]
     async fn research_topic(
         &self,
         Parameters(p): Parameters<ResearchTopicParams>,
@@ -476,9 +509,7 @@ impl KimunHandler {
             let headings = self.extract_leaf_headings(&entry.path).await?;
             for t in headings {
                 let t_lower = t.to_lowercase();
-                if t_lower != p.topic.to_lowercase()
-                    && secondary_topics_lower.insert(t_lower)
-                {
+                if t_lower != p.topic.to_lowercase() && secondary_topics_lower.insert(t_lower) {
                     secondary_topics.push(t);
                 }
             }
@@ -544,7 +575,10 @@ impl KimunHandler {
                 .map(|(path, text)| format!("=== {} ===\n{}", path, text))
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            blocks.push(format!("### Notes matching \"{}\":\n\n{}", p.topic, section));
+            blocks.push(format!(
+                "### Notes matching \"{}\":\n\n{}",
+                p.topic, section
+            ));
         }
 
         if !backlink_notes.is_empty() {
@@ -589,10 +623,15 @@ impl KimunHandler {
             topic = p.topic,
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            message,
+        )])
     }
 
-    #[prompt(description = "Find vault notes topically related to the given note but not yet linked, and ask the LLM to evaluate which connections are worth formalising.")]
+    #[prompt(
+        description = "Find vault notes topically related to the given note but not yet linked, and ask the LLM to evaluate which connections are worth formalising."
+    )]
     async fn link_suggestions(
         &self,
         Parameters(p): Parameters<LinkSuggestionsParams>,
@@ -698,10 +737,15 @@ impl KimunHandler {
             path = vault_path,
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            message,
+        )])
     }
 
-    #[prompt(description = "Review inbox notes and suggest how to organize them: move to journal, promote to a proper note with related context, or keep in inbox for later.")]
+    #[prompt(
+        description = "Review inbox notes and suggest how to organize them: move to journal, promote to a proper note with related context, or keep in inbox for later."
+    )]
     async fn triage_inbox(
         &self,
         Parameters(p): Parameters<TriageInboxParams>,
@@ -750,15 +794,9 @@ impl KimunHandler {
                 if !related.is_empty() {
                     related_section.push_str("\nRelated notes:\n");
                     for (rel_entry, rel_content) in &related {
-                        let preview: String = rel_content
-                            .title
-                            .chars()
-                            .take(200)
-                            .collect();
-                        related_section.push_str(&format!(
-                            "- {} — \"{}\"\n",
-                            rel_entry.path, preview
-                        ));
+                        let preview: String = rel_content.title.chars().take(200).collect();
+                        related_section
+                            .push_str(&format!("- {} — \"{}\"\n", rel_entry.path, preview));
                     }
                 }
             }
@@ -787,16 +825,19 @@ impl KimunHandler {
             sections = sections.join(""),
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, message)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            message,
+        )])
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::*;
-    use tempfile::TempDir;
+    use super::*;
     use kimun_core::NoteVault;
+    use tempfile::TempDir;
 
     async fn make_handler() -> (KimunHandler, TempDir) {
         let dir = TempDir::new().unwrap();
@@ -990,7 +1031,11 @@ mod tests {
             .unwrap();
         assert!(!msgs.is_empty());
         let text = first_text(&msgs);
-        assert!(text.contains("not found"), "expected not-found message: {}", text);
+        assert!(
+            text.contains("not found"),
+            "expected not-found message: {}",
+            text
+        );
     }
 
     #[tokio::test]
@@ -1063,7 +1108,11 @@ mod tests {
             .unwrap();
         assert!(!msgs.is_empty());
         let text = first_text(&msgs);
-        assert!(text.contains("not found"), "expected not-found message: {}", text);
+        assert!(
+            text.contains("not found"),
+            "expected not-found message: {}",
+            text
+        );
     }
 
     #[tokio::test]
@@ -1168,8 +1217,16 @@ mod tests {
             .unwrap();
         assert!(!msgs.is_empty());
         let text = first_text(&msgs);
-        assert!(text.contains("unique_weekly_mon_xyz"), "monday entry: {}", text);
-        assert!(text.contains("unique_weekly_wed_xyz"), "wednesday entry: {}", text);
+        assert!(
+            text.contains("unique_weekly_mon_xyz"),
+            "monday entry: {}",
+            text
+        );
+        assert!(
+            text.contains("unique_weekly_wed_xyz"),
+            "wednesday entry: {}",
+            text
+        );
         // Days without entries should show (no entry)
         assert!(text.contains("(no entry)"), "missing days: {}", text);
     }
@@ -1434,7 +1491,8 @@ mod tests {
         handler
             .create_note(Parameters(CreateNoteParams {
                 path: "dedup/alpha".to_string(),
-                content: "# Alpha\n\nunique_dedup_topic_xyz\n\n## Subtopic\n\nunique_dedup_sub_xyz".to_string(),
+                content: "# Alpha\n\nunique_dedup_topic_xyz\n\n## Subtopic\n\nunique_dedup_sub_xyz"
+                    .to_string(),
             }))
             .await
             .unwrap();

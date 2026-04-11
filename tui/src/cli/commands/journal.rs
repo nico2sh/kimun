@@ -107,10 +107,12 @@ async fn run_show(
     workspace_name: &str,
 ) -> Result<()> {
     use crate::cli::commands::note_ops::format_note_show_text;
-    use crate::cli::json_output::{JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata};
-    use crate::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
-    use kimun_core::error::{VaultError, FSError};
+    use crate::cli::json_output::{
+        JsonNoteEntry, JsonNoteMetadata, JsonOutput, JsonOutputMetadata,
+    };
+    use crate::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
     use chrono::Utc;
+    use kimun_core::error::{FSError, VaultError};
     use std::time::UNIX_EPOCH;
 
     if matches!(format, OutputFormat::Paths) {
@@ -177,7 +179,11 @@ async fn run_show(
                 created: modified_secs,
                 hash: format!("{:x}", content_data.hash),
                 journal_date,
-                metadata: JsonNoteMetadata { tags, links, headers },
+                metadata: JsonNoteMetadata {
+                    tags,
+                    links,
+                    headers,
+                },
                 backlinks: if backlink_paths.is_empty() {
                     None
                 } else {
@@ -197,8 +203,7 @@ async fn run_show(
             };
             print!(
                 "{}",
-                serde_json::to_string(&output)
-                    .map_err(|e| color_eyre::eyre::eyre!("{}", e))?
+                serde_json::to_string(&output).map_err(|e| color_eyre::eyre::eyre!("{}", e))?
             );
         }
         OutputFormat::Paths => unreachable!("guarded above"),

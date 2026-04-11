@@ -1,9 +1,9 @@
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::crossterm::event::KeyCode;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
@@ -140,11 +140,11 @@ impl Component for FileOpsMenuDialog {
             .add_modifier(Modifier::BOLD);
         let label_style = Style::default().fg(fg).bg(bg);
 
-        for (col, (key, label)) in action_cols.iter().zip([
-            ("[D]", " Delete"),
-            ("[R]", " Rename"),
-            ("[M]", " Move  "),
-        ]) {
+        for (col, (key, label)) in
+            action_cols
+                .iter()
+                .zip([("[D]", " Delete"), ("[R]", " Rename"), ("[M]", " Move  ")])
+        {
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
@@ -154,20 +154,13 @@ impl Component for FileOpsMenuDialog {
                 ])
                 .split(*col);
 
-            f.render_widget(
-                Paragraph::new(key).style(key_style),
-                chunks[1],
-            );
-            f.render_widget(
-                Paragraph::new(label).style(label_style),
-                chunks[2],
-            );
+            f.render_widget(Paragraph::new(key).style(key_style), chunks[1]);
+            f.render_widget(Paragraph::new(label).style(label_style), chunks[2]);
         }
 
         // Row 5: hint
         f.render_widget(
-            Paragraph::new("  [Esc] Cancel")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(fg_muted).bg(bg)),
             rows[5],
         );
     }

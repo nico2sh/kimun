@@ -14,8 +14,15 @@ pub enum WorkspaceConfigError {
 impl std::fmt::Display for WorkspaceConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WorkspaceConfigError::DuplicateWorkspace { name, existing_path } => {
-                write!(f, "Workspace '{}' already exists at {:?}", name, existing_path)
+            WorkspaceConfigError::DuplicateWorkspace {
+                name,
+                existing_path,
+            } => {
+                write!(
+                    f,
+                    "Workspace '{}' already exists at {:?}",
+                    name, existing_path
+                )
             }
         }
     }
@@ -50,7 +57,9 @@ impl WorkspaceEntry {
     }
 
     pub fn effective_quick_note_path(&self) -> String {
-        self.quick_note_path.clone().unwrap_or_else(|| kimun_core::nfs::VaultPath::root().to_string())
+        self.quick_note_path
+            .clone()
+            .unwrap_or_else(|| kimun_core::nfs::VaultPath::root().to_string())
     }
 
     pub fn effective_inbox_path(&self) -> String {
@@ -76,7 +85,11 @@ impl WorkspaceConfig {
         }
     }
 
-    pub fn add_workspace(&mut self, name: String, path: PathBuf) -> Result<(), WorkspaceConfigError> {
+    pub fn add_workspace(
+        &mut self,
+        name: String,
+        path: PathBuf,
+    ) -> Result<(), WorkspaceConfigError> {
         if self.workspaces.contains_key(&name) {
             return Err(WorkspaceConfigError::DuplicateWorkspace {
                 name: name.clone(),
@@ -111,10 +124,7 @@ impl WorkspaceConfig {
         self.workspaces.get(name)
     }
 
-    pub fn from_phase1_migration(
-        workspace_dir: PathBuf,
-        last_paths: Vec<String>,
-    ) -> Self {
+    pub fn from_phase1_migration(workspace_dir: PathBuf, last_paths: Vec<String>) -> Self {
         let mut config = Self::new_empty();
 
         let entry = WorkspaceEntry {

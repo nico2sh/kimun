@@ -56,11 +56,7 @@ fn mcp_smoke_tools_list() {
     let config_path = write_config(config_dir.path(), workspace_dir.path());
 
     let bin = kimun_bin();
-    assert!(
-        bin.exists(),
-        "kimun binary not found at {:?}",
-        bin
-    );
+    assert!(bin.exists(), "kimun binary not found at {:?}", bin);
 
     let mut child = Command::new(&bin)
         .args(["--config", config_path.to_str().unwrap(), "mcp"])

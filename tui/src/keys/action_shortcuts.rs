@@ -290,14 +290,8 @@ mod tests {
         assert_eq!(ActionShortcuts::FileOperations.label(), "File operations");
         assert_eq!(ActionShortcuts::FollowLink.label(), "Follow link");
         assert_eq!(ActionShortcuts::QuickNote.label(), "Quick note");
-        assert_eq!(
-            ActionShortcuts::ToggleBacklinks.label(),
-            "Toggle backlinks"
-        );
-        assert_eq!(
-            ActionShortcuts::SwitchWorkspace.label(),
-            "Switch workspace"
-        );
+        assert_eq!(ActionShortcuts::ToggleBacklinks.label(), "Toggle backlinks");
+        assert_eq!(ActionShortcuts::SwitchWorkspace.label(), "Switch workspace");
         assert_eq!(ActionShortcuts::Text(TextAction::Bold).label(), "Bold");
         assert_eq!(ActionShortcuts::Text(TextAction::Italic).label(), "Italic");
         assert_eq!(

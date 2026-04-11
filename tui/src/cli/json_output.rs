@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use crate::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
 use chrono::Utc;
-use kimun_core::nfs::NoteEntryData;
-use kimun_core::note::NoteContentData;
-use kimun_core::nfs::VaultPath;
 use kimun_core::NoteVault;
+use kimun_core::nfs::NoteEntryData;
+use kimun_core::nfs::VaultPath;
+use kimun_core::note::NoteContentData;
 use serde::{Deserialize, Serialize};
-use crate::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JsonHeader {
@@ -116,7 +116,10 @@ pub fn format_notes_with_content_as_json(
         })
         .collect();
 
-    let output = JsonOutput { metadata: output_metadata, notes };
+    let output = JsonOutput {
+        metadata: output_metadata,
+        notes,
+    };
     Ok(serde_json::to_string(&output)?)
 }
 

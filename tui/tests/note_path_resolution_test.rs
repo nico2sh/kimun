@@ -50,7 +50,10 @@ fn test_empty_path_returns_error() {
 #[test]
 fn test_whitespace_only_path_returns_error() {
     let result = resolve_note_path("   ", "/inbox");
-    assert!(result.is_err(), "whitespace-only path should return an error");
+    assert!(
+        result.is_err(),
+        "whitespace-only path should return an error"
+    );
 }
 
 // resolve_note_path: quick_note_path at root

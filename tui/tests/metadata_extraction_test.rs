@@ -1,4 +1,4 @@
-use kimun_notes::cli::metadata_extractor::{extract_tags, extract_links, extract_headers};
+use kimun_notes::cli::metadata_extractor::{extract_headers, extract_links, extract_tags};
 
 #[test]
 fn extract_tags_from_hashtags_and_frontmatter() {
@@ -13,7 +13,14 @@ Also #project-related stuff.
 "#;
 
     let tags = extract_tags(content);
-    let mut expected = vec!["project", "urgent", "meeting", "important", "todo", "project-related"];
+    let mut expected = vec![
+        "project",
+        "urgent",
+        "meeting",
+        "important",
+        "todo",
+        "project-related",
+    ];
     expected.sort();
     let mut actual = tags;
     actual.sort();
@@ -31,7 +38,12 @@ Also check [[wikilink]] and ![image](image.png).
 "#;
 
     let links = extract_links(content);
-    let expected = vec!["other-note.md", "https://example.com", "wikilink", "image.png"];
+    let expected = vec![
+        "other-note.md",
+        "https://example.com",
+        "wikilink",
+        "image.png",
+    ];
     assert_eq!(links, expected);
 }
 

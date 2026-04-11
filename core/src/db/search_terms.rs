@@ -33,15 +33,18 @@ fn prefix_table() -> [PrefixEntry; 6] {
         ("in:-", ">-", || ElementType::ExcludedIn),
         ("at:-", "@-", || ElementType::ExcludedAt),
         ("pt:-", "/-", || ElementType::ExcludedPath),
-        ("in:", ">",  || ElementType::In),
-        ("at:", "@",  || ElementType::At),
-        ("pt:", "/",  || ElementType::Path),
+        ("in:", ">", || ElementType::In),
+        ("at:", "@", || ElementType::At),
+        ("pt:", "/", || ElementType::Path),
     ]
 }
 
 fn detect_prefix(query: &str) -> Option<(ElementType, &str)> {
     for (long, short, make_type) in prefix_table() {
-        if let Some(remaining) = query.strip_prefix(long).or_else(|| query.strip_prefix(short)) {
+        if let Some(remaining) = query
+            .strip_prefix(long)
+            .or_else(|| query.strip_prefix(short))
+        {
             return Some((make_type(), remaining));
         }
     }
@@ -151,7 +154,6 @@ impl OrderBy {
             _ => None,
         }
     }
-
 }
 
 #[derive(Default, Debug)]

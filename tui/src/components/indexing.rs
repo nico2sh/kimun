@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use ratatui::Frame;
+use ratatui::layout::Alignment;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::layout::Alignment;
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
 use crate::components::events::{AppEvent, AppTx};
@@ -82,7 +82,11 @@ pub fn render_indexing_overlay(
             let content_width = (running_label.chars().count() as u16).saturating_add(2);
             let vert = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(1), Constraint::Min(0)])
+                .constraints([
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
                 .split(inner);
             let horiz = Layout::default()
                 .direction(Direction::Horizontal)
@@ -92,16 +96,21 @@ pub fn render_indexing_overlay(
                     Constraint::Min(0),
                 ])
                 .split(vert[1]);
-            let throbber = Throbber::default()
-                .label(running_label)
-                .style(Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg.to_ratatui()));
+            let throbber = Throbber::default().label(running_label).style(
+                Style::default()
+                    .fg(theme.fg.to_ratatui())
+                    .bg(theme.bg.to_ratatui()),
+            );
             f.render_stateful_widget(throbber, horiz[1], throbber_state);
         }
         IndexingProgressState::Done(dur) => {
             f.render_widget(
-                Paragraph::new(Text::raw(format!("✓  Done in {}s\n\n[ OK ]", dur.as_secs())))
-                    .alignment(Alignment::Center)
-                    .style(theme.base_style()),
+                Paragraph::new(Text::raw(format!(
+                    "✓  Done in {}s\n\n[ OK ]",
+                    dur.as_secs()
+                )))
+                .alignment(Alignment::Center)
+                .style(theme.base_style()),
                 inner,
             );
         }

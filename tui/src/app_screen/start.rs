@@ -9,9 +9,7 @@ use throbber_widgets_tui::ThrobberState;
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
-use crate::components::indexing::{
-    IndexingProgressState, render_indexing_overlay, spawn_running,
-};
+use crate::components::indexing::{IndexingProgressState, render_indexing_overlay, spawn_running};
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
@@ -167,11 +165,8 @@ mod tests {
             "overlay should be Running after on_enter with vault"
         );
         // Drain all messages and ensure none are OpenPath
-        let messages: Vec<AppEvent> =
-            std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-        let has_open_path = messages
-            .iter()
-            .any(|m| matches!(m, AppEvent::OpenPath(_)));
+        let messages: Vec<AppEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let has_open_path = messages.iter().any(|m| matches!(m, AppEvent::OpenPath(_)));
         assert!(
             !has_open_path,
             "OpenPath should not be sent immediately when vault is Some"
@@ -189,7 +184,10 @@ mod tests {
         let result = screen
             .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(1))), &tx)
             .await;
-        assert!(result.is_none(), "IndexingDone should be consumed (return None)");
+        assert!(
+            result.is_none(),
+            "IndexingDone should be consumed (return None)"
+        );
         assert!(screen.overlay.is_none(), "overlay should be cleared");
         let msg = rx.try_recv().expect("expected OpenPath message");
         assert!(
@@ -209,8 +207,14 @@ mod tests {
         let result = screen
             .handle_app_message(AppEvent::IndexingDone(Err("fail".to_string())), &tx)
             .await;
-        assert!(result.is_none(), "IndexingDone should be consumed (return None)");
-        assert!(screen.overlay.is_none(), "overlay should be cleared on error");
+        assert!(
+            result.is_none(),
+            "IndexingDone should be consumed (return None)"
+        );
+        assert!(
+            screen.overlay.is_none(),
+            "overlay should be cleared on error"
+        );
         let msg = rx.try_recv().expect("expected OpenPath message");
         assert!(
             matches!(msg, AppEvent::OpenPath(_)),
@@ -232,11 +236,8 @@ mod tests {
             "input should be consumed while overlay is running"
         );
         // Drain the ticker Redraw messages but confirm no other app-level messages
-        let messages: Vec<AppEvent> =
-            std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-        let has_non_redraw = messages
-            .iter()
-            .any(|m| !matches!(m, AppEvent::Redraw));
+        let messages: Vec<AppEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let has_non_redraw = messages.iter().any(|m| !matches!(m, AppEvent::Redraw));
         assert!(
             !has_non_redraw,
             "handle_input should not send non-Redraw messages"
@@ -271,13 +272,10 @@ mod tests {
 
         // Drain events until VaultConflict arrives; skip Redraw ticks from the spinner.
         let conflict_msg = loop {
-            let msg = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                rx.recv(),
-            )
-            .await
-            .expect("timed out waiting for VaultConflict")
-            .expect("channel closed");
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("timed out waiting for VaultConflict")
+                .expect("channel closed");
 
             match msg {
                 AppEvent::VaultConflict(details) => break details,

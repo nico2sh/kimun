@@ -7,9 +7,9 @@ pub mod output;
 
 use clap::Subcommand;
 use color_eyre::eyre::{Result, eyre};
+use commands::JournalArgs;
 use commands::note_ops::NoteSubcommand;
 use commands::workspace::WorkspaceSubcommand;
-use commands::JournalArgs;
 use helpers::{
     create_and_init_vault, load_and_resolve_workspace, load_settings, resolve_inbox_path,
     resolve_quick_note_path,

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::crossterm::event::KeyCode;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
@@ -45,9 +45,16 @@ impl HelpDialog {
 
         for (action, mut combos) in entries {
             combos.sort();
-            let keys = combos.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" / ");
+            let keys = combos
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(" / ");
             let label = action.label();
-            by_category.entry(action.category()).or_default().push((keys, label));
+            by_category
+                .entry(action.category())
+                .or_default()
+                .push((keys, label));
         }
 
         let mut rows: Vec<HelpRow> = Vec::new();
@@ -64,7 +71,11 @@ impl HelpDialog {
         }
         rows.push(HelpRow::Blank);
 
-        Self { rows, scroll: 0, last_body_height: 20 }
+        Self {
+            rows,
+            scroll: 0,
+            last_body_height: 20,
+        }
     }
 
     fn scroll_up(&mut self) {
@@ -74,7 +85,10 @@ impl HelpDialog {
     fn scroll_down(&mut self) {
         // Clamped to rows.len() so render's slice is always valid even if called
         // between renders.
-        self.scroll = self.scroll.saturating_add(1).min(self.rows.len().saturating_sub(1));
+        self.scroll = self
+            .scroll
+            .saturating_add(1)
+            .min(self.rows.len().saturating_sub(1));
     }
 
     fn page_up(&mut self) {
@@ -84,13 +98,22 @@ impl HelpDialog {
 
     fn page_down(&mut self) {
         let page = (self.last_body_height as usize).max(1);
-        self.scroll = self.scroll.saturating_add(page).min(self.rows.len().saturating_sub(1));
+        self.scroll = self
+            .scroll
+            .saturating_add(page)
+            .min(self.rows.len().saturating_sub(1));
     }
 
     /// Key handler — mirrors the `handle_key` pattern used by all other dialog types.
-    pub fn handle_key(&mut self, key: ratatui::crossterm::event::KeyEvent, tx: &AppTx) -> EventState {
+    pub fn handle_key(
+        &mut self,
+        key: ratatui::crossterm::event::KeyEvent,
+        tx: &AppTx,
+    ) -> EventState {
         match key.code {
-            KeyCode::Esc => { tx.send(AppEvent::CloseDialog).ok(); }
+            KeyCode::Esc => {
+                tx.send(AppEvent::CloseDialog).ok();
+            }
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
             KeyCode::PageUp => self.page_up(),
@@ -161,13 +184,22 @@ impl Component for HelpDialog {
             if y >= body_area.y + body_area.height {
                 break;
             }
-            let row_rect = Rect { x: body_area.x, y, width: body_area.width, height: 1 };
+            let row_rect = Rect {
+                x: body_area.x,
+                y,
+                width: body_area.width,
+                height: 1,
+            };
             match row {
                 HelpRow::Blank => {}
                 HelpRow::Header(title) => {
                     f.render_widget(
-                        Paragraph::new(format!("  {title}"))
-                            .style(Style::default().fg(fg_accent).bg(bg).add_modifier(Modifier::BOLD)),
+                        Paragraph::new(format!("  {title}")).style(
+                            Style::default()
+                                .fg(fg_accent)
+                                .bg(bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         row_rect,
                     );
                 }
@@ -223,8 +255,16 @@ mod tests {
     #[test]
     fn rows_contain_both_categories() {
         let dialog = HelpDialog::new(&bindings_with_bold_and_quit());
-        let headers: Vec<String> = dialog.rows.iter()
-            .filter_map(|r| if let HelpRow::Header(s) = r { Some(s.clone()) } else { None })
+        let headers: Vec<String> = dialog
+            .rows
+            .iter()
+            .filter_map(|r| {
+                if let HelpRow::Header(s) = r {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(headers.contains(&"Text Editing".to_string()));
         assert!(headers.contains(&"Other".to_string()));
@@ -236,8 +276,10 @@ mod tests {
     fn binding_row_has_correct_keys_and_label() {
         let dialog = HelpDialog::new(&bindings_with_bold_and_quit());
         let binding = dialog.rows.iter().find_map(|r| {
-            if let HelpRow::Binding { keys, label } = r {
-                if label == "Bold" { return Some(keys.clone()); }
+            if let HelpRow::Binding { keys, label } = r
+                && label == "Bold"
+            {
+                return Some(keys.clone());
             }
             None
         });
@@ -248,7 +290,12 @@ mod tests {
     #[test]
     fn empty_keybindings_produces_no_rows() {
         let dialog = HelpDialog::new(&KeyBindings::empty());
-        assert!(!dialog.rows.iter().any(|r| matches!(r, HelpRow::Binding { .. })));
+        assert!(
+            !dialog
+                .rows
+                .iter()
+                .any(|r| matches!(r, HelpRow::Binding { .. }))
+        );
         assert!(!dialog.rows.iter().any(|r| matches!(r, HelpRow::Header(_))));
     }
 }

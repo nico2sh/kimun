@@ -15,6 +15,7 @@ on:
   workflow_run:
     workflows: ["release-plz"]
     types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 name: docs
@@ -28,9 +29,6 @@ permissions:
 concurrency:
   group: pages
   cancel-in-progress: false
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   deploy:

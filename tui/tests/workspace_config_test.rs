@@ -1,5 +1,7 @@
 use chrono::Utc;
-use kimun_notes::settings::workspace_config::{GlobalConfig, WorkspaceConfig, WorkspaceEntry, WorkspaceConfigError};
+use kimun_notes::settings::workspace_config::{
+    GlobalConfig, WorkspaceConfig, WorkspaceConfigError, WorkspaceEntry,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -56,7 +58,10 @@ fn workspace_config_add_workspace() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
-        WorkspaceConfigError::DuplicateWorkspace { name, existing_path } => {
+        WorkspaceConfigError::DuplicateWorkspace {
+            name,
+            existing_path,
+        } => {
             assert_eq!(name, "default");
             assert_eq!(existing_path, PathBuf::from("/Users/user/notes"));
         }
@@ -66,7 +71,9 @@ fn workspace_config_add_workspace() {
 #[test]
 fn workspace_config_get_current_workspace() {
     let mut config = WorkspaceConfig::new_empty();
-    config.add_workspace("default".to_string(), PathBuf::from("/Users/user/notes")).unwrap();
+    config
+        .add_workspace("default".to_string(), PathBuf::from("/Users/user/notes"))
+        .unwrap();
 
     let current = config.get_current_workspace();
     assert!(current.is_some());
@@ -86,7 +93,9 @@ fn workspace_config_round_trip_serialization() {
     let path = PathBuf::from("/test/path");
     let last_paths = vec!["path1".to_string(), "path2".to_string()];
 
-    config.add_workspace("test".to_string(), path.clone()).unwrap();
+    config
+        .add_workspace("test".to_string(), path.clone())
+        .unwrap();
     config.workspaces.get_mut("test").unwrap().last_paths = last_paths.clone();
 
     // Serialize to TOML
@@ -96,7 +105,10 @@ fn workspace_config_round_trip_serialization() {
     let deserialized: WorkspaceConfig = toml::from_str(&toml_str).unwrap();
 
     // Verify all data is preserved
-    assert_eq!(config.global.current_workspace, deserialized.global.current_workspace);
+    assert_eq!(
+        config.global.current_workspace,
+        deserialized.global.current_workspace
+    );
     assert_eq!(config.workspaces.len(), deserialized.workspaces.len());
 
     let original_entry = config.workspaces.get("test").unwrap();
@@ -104,5 +116,8 @@ fn workspace_config_round_trip_serialization() {
     assert_eq!(original_entry.path, deserialized_entry.path);
     assert_eq!(original_entry.last_paths, deserialized_entry.last_paths);
     // DateTime should round-trip correctly
-    assert_eq!(original_entry.created.timestamp(), deserialized_entry.created.timestamp());
+    assert_eq!(
+        original_entry.created.timestamp(),
+        deserialized_entry.created.timestamp()
+    );
 }

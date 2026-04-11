@@ -3,10 +3,10 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
@@ -24,7 +24,12 @@ pub struct CreateNoteDialog {
 impl CreateNoteDialog {
     pub fn new(path: VaultPath, vault: Arc<NoteVault>) -> Self {
         let path_display = format!("  {}", path);
-        Self { path, vault, path_display, error: None }
+        Self {
+            path,
+            vault,
+            path_display,
+            error: None,
+        }
     }
 
     /// Handle a raw [`KeyEvent`]. Returns [`EventState::Consumed`] for all
@@ -92,8 +97,7 @@ impl Component for CreateNoteDialog {
         super::render_path_row(f, rows[1], &self.path_display, fg, bg);
         super::render_separator(f, rows[2], fg_muted, bg);
         f.render_widget(
-            Paragraph::new("  Note doesn't exist.")
-                .style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  Note doesn't exist.").style(Style::default().fg(fg_muted).bg(bg)),
             rows[3],
         );
         f.render_widget(
@@ -127,11 +131,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("kimun_test_vault");
         std::fs::create_dir_all(&tmp).unwrap();
 
-        let vault = Arc::new(
-            NoteVault::new(tmp)
-                .await
-                .expect("vault creation failed"),
-        );
+        let vault = Arc::new(NoteVault::new(tmp).await.expect("vault creation failed"));
         let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
         let dialog = CreateNoteDialog::new(VaultPath::root(), vault);
         assert!(dialog.error.is_none());

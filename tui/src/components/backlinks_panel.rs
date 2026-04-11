@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-use kimun_core::nfs::VaultPath;
 use kimun_core::NoteVault;
+use kimun_core::nfs::VaultPath;
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
-use ratatui::Frame;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::keys::action_shortcuts::ActionShortcuts;
-use crate::keys::{key_event_to_combo, KeyBindings};
+use crate::keys::{KeyBindings, key_event_to_combo};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -297,8 +297,7 @@ impl BacklinksPanel {
 
         if self.loading {
             f.render_widget(
-                Paragraph::new("  Loading...")
-                    .style(Style::default().fg(fg_muted).bg(bg)),
+                Paragraph::new("  Loading...").style(Style::default().fg(fg_muted).bg(bg)),
                 inner,
             );
             return;
@@ -306,8 +305,7 @@ impl BacklinksPanel {
 
         if self.entries.is_empty() {
             f.render_widget(
-                Paragraph::new("  No backlinks")
-                    .style(Style::default().fg(fg_muted).bg(bg)),
+                Paragraph::new("  No backlinks").style(Style::default().fg(fg_muted).bg(bg)),
                 inner,
             );
             return;
@@ -323,10 +321,7 @@ impl BacklinksPanel {
             if let Some(idx) = selected
                 && let Some(entry) = self.entries.get(idx)
             {
-                let text = entry
-                    .full_text
-                    .as_deref()
-                    .unwrap_or(&entry.context);
+                let text = entry.full_text.as_deref().unwrap_or(&entry.context);
 
                 // Split into fixed header (title + divider) and scrollable content.
                 let title_display = if entry.title.is_empty() {
@@ -380,10 +375,8 @@ impl BacklinksPanel {
                     let wrapped = wrap_line(line, wrap_width);
                     for wline in wrapped {
                         let spans = highlight_link(&wline, &target, fg_muted, bg, theme);
-                        let mut indented = vec![Span::styled(
-                            " ".repeat(indent),
-                            Style::default().bg(bg),
-                        )];
+                        let mut indented =
+                            vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                         indented.extend(spans);
                         lines.push(Line::from(indented));
                     }
@@ -503,10 +496,8 @@ impl BacklinksPanel {
                         link_line = Some(lines.len());
                     }
                     let spans = highlight_link(&wline, &target, fg_muted, bg, theme);
-                    let mut indented = vec![Span::styled(
-                        " ".repeat(indent),
-                        Style::default().bg(bg),
-                    )];
+                    let mut indented =
+                        vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                     indented.extend(spans);
                     lines.push(Line::from(indented));
                 }
@@ -590,10 +581,7 @@ fn extract_context(text: &str, target_name: &str) -> String {
         .to_string_with_ext()
         .to_lowercase();
     // Extract just the filename portion (after the last `/`).
-    let filename_ext = with_ext
-        .rsplit('/')
-        .next()
-        .unwrap_or(&with_ext);
+    let filename_ext = with_ext.rsplit('/').next().unwrap_or(&with_ext);
 
     // Build search needles (lowercase).
     let wikilink_full = format!("[[{}]]", target_lower);
@@ -737,11 +725,7 @@ fn highlight_link(
     let with_ext = VaultPath::note_path_from(target)
         .to_string_with_ext()
         .to_lowercase();
-    let filename_ext = with_ext
-        .rsplit('/')
-        .next()
-        .unwrap_or(&with_ext)
-        .to_string();
+    let filename_ext = with_ext.rsplit('/').next().unwrap_or(&with_ext).to_string();
 
     // Build all needles to search for.
     let needles = [

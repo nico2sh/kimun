@@ -6,8 +6,8 @@
 
 use color_eyre::eyre;
 
-use super::workspace_config::{WorkspaceConfig, WorkspaceEntry};
 use super::AppSettings;
+use super::workspace_config::{WorkspaceConfig, WorkspaceEntry};
 
 /// Current config version. Bump this when adding a new migration step.
 pub const CURRENT_CONFIG_VERSION: u32 = 2;
@@ -75,11 +75,8 @@ impl ConfigMigration {
                 ));
             }
             tracing::info!("Migrating Phase 1 config to Phase 2 format");
-            let last_paths: Vec<String> = settings
-                .last_paths
-                .iter()
-                .map(|p| p.to_string())
-                .collect();
+            let last_paths: Vec<String> =
+                settings.last_paths.iter().map(|p| p.to_string()).collect();
 
             settings.workspace_config = Some(WorkspaceConfig::from_phase1_migration(
                 workspace_dir,
@@ -102,11 +99,8 @@ impl ConfigMigration {
                     "Migrating orphaned workspace_dir into workspace_config as 'default'"
                 );
                 let name = Self::unique_workspace_name(wc, "default");
-                let last_paths: Vec<String> = settings
-                    .last_paths
-                    .iter()
-                    .map(|p| p.to_string())
-                    .collect();
+                let last_paths: Vec<String> =
+                    settings.last_paths.iter().map(|p| p.to_string()).collect();
                 let entry = WorkspaceEntry {
                     path: workspace_dir,
                     last_paths,
@@ -141,6 +135,7 @@ impl ConfigMigration {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

@@ -132,10 +132,8 @@ impl WorkspacesSection {
                 EventState::Consumed
             }
             KeyCode::Enter => {
-                if let Some((name, _, is_current)) = self
-                    .list_state
-                    .selected()
-                    .and_then(|i| self.entries.get(i))
+                if let Some((name, _, is_current)) =
+                    self.list_state.selected().and_then(|i| self.entries.get(i))
                     && !is_current
                 {
                     tx.send(AppEvent::WorkspaceSwitched(name.clone())).ok();
@@ -322,12 +320,7 @@ impl Component for WorkspacesSection {
                 .iter()
                 .map(|(name, path, is_current)| {
                     let marker = if *is_current { "\u{25CF} " } else { "  " };
-                    let line = format!(
-                        "{}{}  {}",
-                        marker,
-                        name,
-                        path.to_string_lossy()
-                    );
+                    let line = format!("{}{}  {}", marker, name, path.to_string_lossy());
                     let style = if *is_current {
                         Style::default()
                             .fg(theme.accent.to_ratatui())
@@ -401,9 +394,7 @@ impl Component for WorkspacesSection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::workspace_config::{
-        GlobalConfig, WorkspaceConfig, WorkspaceEntry,
-    };
+    use crate::settings::workspace_config::{GlobalConfig, WorkspaceConfig, WorkspaceEntry};
     use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use std::collections::HashMap;
 
@@ -460,8 +451,7 @@ mod tests {
 
     #[test]
     fn up_down_navigate() {
-        let settings =
-            make_settings(vec![("a", "/a"), ("b", "/b"), ("c", "/c")], "a");
+        let settings = make_settings(vec![("a", "/a"), ("b", "/b"), ("c", "/c")], "a");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut section = WorkspacesSection::new(&settings);
         section.list_state.select(Some(0));

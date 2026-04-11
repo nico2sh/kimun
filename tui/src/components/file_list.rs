@@ -317,7 +317,10 @@ impl FileListComponent {
     }
 
     pub fn push_entry(&mut self, entry: FileListEntry) {
-        if matches!(entry, FileListEntry::Attachment { .. } | FileListEntry::CreateNote { .. }) {
+        if matches!(
+            entry,
+            FileListEntry::Attachment { .. } | FileListEntry::CreateNote { .. }
+        ) {
             return;
         }
         self.entries.push(entry);
@@ -470,8 +473,13 @@ impl FileListComponent {
     /// Number of note entries currently visible (excludes directories, Up, attachments).
     pub fn note_count(&self) -> usize {
         match &self.display_indices {
-            None => self.entries.iter().filter(|e| matches!(e, FileListEntry::Note { .. })).count(),
-            Some(indices) => indices.iter()
+            None => self
+                .entries
+                .iter()
+                .filter(|e| matches!(e, FileListEntry::Note { .. }))
+                .count(),
+            Some(indices) => indices
+                .iter()
                 .filter(|&&i| matches!(self.entries.get(i), Some(FileListEntry::Note { .. })))
                 .count(),
         }
@@ -490,9 +498,10 @@ impl FileListComponent {
         if offset > 0 {
             *self.list_state.offset_mut() = offset - 1;
             if let Some(sel) = self.list_state.selected()
-                && sel > 0 {
-                    self.list_state.select(Some(sel - 1));
-                }
+                && sel > 0
+            {
+                self.list_state.select(Some(sel - 1));
+            }
         }
     }
 
@@ -502,9 +511,10 @@ impl FileListComponent {
         if len > 0 && offset + 1 < len {
             *self.list_state.offset_mut() = offset + 1;
             if let Some(sel) = self.list_state.selected()
-                && sel + 1 < len {
-                    self.list_state.select(Some(sel + 1));
-                }
+                && sel + 1 < len
+            {
+                self.list_state.select(Some(sel + 1));
+            }
         }
     }
 
@@ -597,7 +607,10 @@ impl FileListComponent {
         let mut y = 0u16;
         for display_idx in offset..len {
             let h = if self.create_entry.is_some() && display_idx == 0 {
-                self.create_entry.as_ref().map(|e| e.visual_height()).unwrap_or(1)
+                self.create_entry
+                    .as_ref()
+                    .map(|e| e.visual_height())
+                    .unwrap_or(1)
             } else {
                 let adjusted = if self.create_entry.is_some() {
                     display_idx - 1
@@ -608,7 +621,10 @@ impl FileListComponent {
                     None => adjusted,
                     Some(v) => v.get(adjusted).copied()?,
                 };
-                self.entries.get(entry_idx).map(|e| e.visual_height()).unwrap_or(1)
+                self.entries
+                    .get(entry_idx)
+                    .map(|e| e.visual_height())
+                    .unwrap_or(1)
             };
             if row < y + h {
                 return Some(display_idx);
@@ -644,10 +660,12 @@ impl Component for FileListComponent {
                         }
                         Some(ActionShortcuts::FileOperations) => {
                             if let Some(entry) = self.selected_entry()
-                                && !matches!(entry, FileListEntry::Up { .. }) {
-                                    tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone())).ok();
-                                    return EventState::Consumed;
-                                }
+                                && !matches!(entry, FileListEntry::Up { .. })
+                            {
+                                tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone()))
+                                    .ok();
+                                return EventState::Consumed;
+                            }
                             return EventState::NotConsumed;
                         }
                         _ => {}
@@ -825,7 +843,10 @@ mod tests {
     #[tokio::test]
     async fn schedule_filter_stores_handle_and_cancels_previous() {
         let tx = make_tx();
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
+        let mut list = FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        );
         for i in 0..20 {
             list.push_entry(make_note(&format!("{i}.md"), &format!("Note {i}")));
         }
@@ -852,7 +873,10 @@ mod tests {
     #[tokio::test]
     async fn clear_aborts_filter_task() {
         let tx = make_tx();
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
+        let mut list = FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        );
         for i in 0..20 {
             list.push_entry(make_note(&format!("{i}.md"), &format!("Note {i}")));
         }
@@ -894,7 +918,10 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
+        let mut list = FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        );
         terminal
             .draw(|f| {
                 list.render(
@@ -912,7 +939,10 @@ mod tests {
         // RED: fails to compile until FileListComponent implements Component.
         // GREEN: compiles once `impl Component for FileListComponent` is added.
         use crate::components::Component;
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
+        let mut list = FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        );
         let _: &mut dyn Component = &mut list;
     }
 
@@ -962,7 +992,10 @@ mod tests {
 
     #[test]
     fn push_entry_does_not_sort() {
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
+        let mut list = FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        );
         list.push_entry(make_note("z.md", "Z Note"));
         list.push_entry(make_note("a.md", "A Note"));
         list.push_entry(make_note("m.md", "M Note"));
@@ -972,7 +1005,10 @@ mod tests {
 
     #[test]
     fn finalize_sort_sorts_by_name() {
-        let mut list = FileListComponent::new(crate::keys::KeyBindings::empty(), crate::settings::icons::Icons::new(true));
+        let mut list = FileListComponent::new(
+            crate::keys::KeyBindings::empty(),
+            crate::settings::icons::Icons::new(true),
+        );
         list.push_entry(make_note("z.md", "Z Note"));
         list.push_entry(make_note("a.md", "A Note"));
         list.push_entry(make_note("m.md", "M Note"));
@@ -983,15 +1019,17 @@ mod tests {
     fn make_keybindings_with_file_ops() -> crate::keys::KeyBindings {
         use crate::keys::key_strike::KeyStrike;
         let mut kb = crate::keys::KeyBindings::empty();
-        kb.batch_add()
-            .add(KeyStrike::F2, crate::keys::action_shortcuts::ActionShortcuts::FileOperations);
+        kb.batch_add().add(
+            KeyStrike::F2,
+            crate::keys::action_shortcuts::ActionShortcuts::FileOperations,
+        );
         kb
     }
 
     #[tokio::test]
     async fn f2_sends_show_file_ops_menu() {
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use crate::components::events::InputEvent;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
         let kb = make_keybindings_with_file_ops();
@@ -1018,8 +1056,8 @@ mod tests {
 
     #[tokio::test]
     async fn file_ops_not_consumed_for_up_entry() {
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use crate::components::events::InputEvent;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
         let kb = make_keybindings_with_file_ops();
@@ -1036,7 +1074,10 @@ mod tests {
             "expected NotConsumed for Up entry but got {:?}",
             result
         );
-        assert!(rx.try_recv().is_err(), "no event should be sent for Up entry");
+        assert!(
+            rx.try_recv().is_err(),
+            "no event should be sent for Up entry"
+        );
     }
 
     #[test]
@@ -1067,7 +1108,10 @@ mod tests {
         }));
         list.set_create_entry(None);
         assert_eq!(list.display_len(), 1);
-        assert!(matches!(list.selected_entry(), Some(FileListEntry::Note { .. })));
+        assert!(matches!(
+            list.selected_entry(),
+            Some(FileListEntry::Note { .. })
+        ));
     }
 
     #[test]
