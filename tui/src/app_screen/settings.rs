@@ -24,6 +24,7 @@ use crate::components::indexing::{
     IndexingProgressState, fixed_centered_rect, render_indexing_overlay, spawn_running,
 };
 use crate::settings::AppSettings;
+use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
 // ── FileBrowserState ─────────────────────────────────────────────────────────
@@ -148,7 +149,7 @@ enum SettingsFocus {
 // ── SettingsScreen ────────────────────────────────────────────────────────────
 
 pub struct SettingsScreen {
-    pub settings: AppSettings,
+    pub settings: SharedSettings,
     pub initial_settings: AppSettings,
     pub theme: Theme,
     section: SettingsSection,
@@ -166,24 +167,29 @@ pub struct SettingsScreen {
 }
 
 impl SettingsScreen {
-    pub fn new(settings: AppSettings) -> Self {
-        let theme = settings.get_theme();
-        let themes = settings.theme_list();
-        let active_name = settings.get_theme().name.clone();
-        let vault_available = settings.workspace_dir.is_some();
-        let autosave_interval_secs = settings.autosave_interval_secs;
-        let use_nerd_fonts = settings.use_nerd_fonts;
-        let initial_settings = settings.clone();
+    pub fn new(settings: SharedSettings) -> Self {
+        let s = settings.read().unwrap();
+        let theme = s.get_theme();
+        let themes = s.theme_list();
+        let active_name = theme.name.clone();
+        let vault_available = s.workspace_dir.is_some()
+            || s.workspace_config.as_ref().is_some_and(|wc| wc.get_current_workspace().is_some());
+        let autosave_interval_secs = s.autosave_interval_secs;
+        let use_nerd_fonts = s.use_nerd_fonts;
+        let initial_settings = s.clone();
+        let workspaces_section = WorkspacesSection::new(&s);
+        let sorting_section = SortingSection::new(
+            s.default_sort_field,
+            s.default_sort_order,
+            s.journal_sort_field,
+            s.journal_sort_order,
+        );
+        drop(s);
         Self {
             appearance_section: AppearanceSection::new(themes, &active_name),
             display_section: DisplaySection::new(use_nerd_fonts),
-            sorting_section: SortingSection::new(
-                settings.default_sort_field,
-                settings.default_sort_order,
-                settings.journal_sort_field,
-                settings.journal_sort_order,
-            ),
-            workspaces_section: WorkspacesSection::new(&settings),
+            sorting_section,
+            workspaces_section,
             pending_create_name: None,
             indexing_section: IndexingSection::new(vault_available),
             editor_section: EditorSection::new(autosave_interval_secs),
@@ -204,19 +210,22 @@ impl SettingsScreen {
     /// The `settings` passed in should already have the workspace cleared —
     /// this is handled by the `VaultConflict` branch in `handle_app_message` (`main.rs`)
     /// before calling `switch_screen`.
-    pub fn new_with_error(settings: AppSettings, error: String) -> Self {
+    pub fn new_with_error(settings: SharedSettings, error: String) -> Self {
         let mut s = Self::new(settings);
         s.overlay = Overlay::VaultConflict(error);
         s
     }
 
     fn do_save(&mut self, tx: &AppTx) {
-        if self.settings.workspace_dir != self.initial_settings.workspace_dir {
-            let Some(workspace) = self.settings.workspace_dir.clone() else {
+        let s = self.settings.read().unwrap();
+        if s.workspace_dir != self.initial_settings.workspace_dir {
+            let Some(workspace) = s.workspace_dir.clone() else {
+                drop(s);
                 tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
                     .ok();
                 return;
             };
+            drop(s);
             self.pending_save_after_index = true;
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
@@ -234,7 +243,8 @@ impl SettingsScreen {
             });
             self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
         } else {
-            self.settings.save_to_disk().ok();
+            drop(s);
+            self.settings.read().unwrap().save_to_disk().ok();
             tx.send(AppEvent::SettingsSaved).ok();
         }
     }
@@ -252,39 +262,45 @@ impl SettingsScreen {
                 quick_note_path: None,
                 inbox_path: None,
             };
-            if self.settings.workspace_config.is_none() {
-                // Migrate Phase 1 legacy config to Phase 2 before adding.
-                if let Some(ref legacy_path) = self.settings.workspace_dir {
-                    let wc = WorkspaceConfig::from_phase1_migration(
-                        legacy_path.clone(),
-                        self.settings.last_paths.iter().map(|p| p.to_string()).collect(),
-                    );
-                    self.settings.workspace_config = Some(wc);
-                } else {
-                    self.settings.workspace_config = Some(WorkspaceConfig::new_empty());
+            {
+                let mut s = self.settings.write().unwrap();
+                if s.workspace_config.is_none() {
+                    // Migrate Phase 1 legacy config to Phase 2 before adding.
+                    if let Some(ref legacy_path) = s.workspace_dir {
+                        let wc = WorkspaceConfig::from_phase1_migration(
+                            legacy_path.clone(),
+                            s.last_paths.iter().map(|p| p.to_string()).collect(),
+                        );
+                        s.workspace_config = Some(wc);
+                    } else {
+                        s.workspace_config = Some(WorkspaceConfig::new_empty());
+                    }
+                    s.config_version = 2;
                 }
-                self.settings.config_version = 2;
-            }
-            if let Some(ref mut wc) = self.settings.workspace_config {
-                wc.workspaces.insert(name.clone(), entry);
-                // If this is the only workspace (no prior ones), make it current.
-                if wc.global.current_workspace.is_empty() {
-                    wc.global.current_workspace = name;
+                if let Some(ref mut wc) = s.workspace_config {
+                    wc.workspaces.insert(name.clone(), entry);
+                    // If this is the only workspace (no prior ones), make it current.
+                    if wc.global.current_workspace.is_empty() {
+                        wc.global.current_workspace = name;
+                    }
                 }
             }
-            self.workspaces_section.refresh(&self.settings);
+            self.workspaces_section.refresh(&self.settings.read().unwrap());
             self.indexing_section.set_vault_available(true);
         } else {
             // Browsing path for the selected workspace.
-            self.settings.set_workspace(&chosen);
-            // Also update the workspace entry in workspace_config.
-            if let Some(name) = self.workspaces_section.selected_name().map(|s| s.to_string())
-                && let Some(ref mut wc) = self.settings.workspace_config
-                && let Some(entry) = wc.workspaces.get_mut(&name)
             {
-                entry.path = chosen;
+                let mut s = self.settings.write().unwrap();
+                s.set_workspace(&chosen);
+                // Also update the workspace entry in workspace_config.
+                if let Some(name) = self.workspaces_section.selected_name().map(|s| s.to_string())
+                    && let Some(ref mut wc) = s.workspace_config
+                    && let Some(entry) = wc.workspaces.get_mut(&name)
+                {
+                    entry.path = chosen;
+                }
             }
-            self.workspaces_section.refresh(&self.settings);
+            self.workspaces_section.refresh(&self.settings.read().unwrap());
             self.indexing_section.set_vault_available(true);
         }
         self.overlay = Overlay::None;
@@ -371,7 +387,7 @@ impl AppScreen for SettingsScreen {
                     }
                     KeyCode::Enter => {
                         if *focused_button == ConfirmButton::Confirm {
-                            let Some(workspace) = self.settings.workspace_dir.clone() else {
+                            let Some(workspace) = self.settings.read().unwrap().workspace_dir.clone() else {
                                 self.overlay = Overlay::None;
                                 return EventState::Consumed;
                             };
@@ -460,7 +476,8 @@ impl AppScreen for SettingsScreen {
         };
         match key.code {
             KeyCode::Esc => {
-                if self.settings == self.initial_settings {
+                let changed = *self.settings.read().unwrap() != self.initial_settings;
+                if !changed {
                     tx.send(AppEvent::CloseSettings).ok();
                 } else {
                     self.overlay = Overlay::ConfirmSave {
@@ -513,21 +530,27 @@ impl AppScreen for SettingsScreen {
                             let r = self.appearance_section.handle_input(&app_event, tx);
                             // Live theme preview on every navigation step.
                             let name = self.appearance_section.selected_theme_name().to_string();
-                            self.settings.set_theme(name);
-                            self.theme = self.settings.get_theme();
+                            {
+                                let mut s = self.settings.write().unwrap();
+                                s.set_theme(name);
+                            }
+                            self.theme = self.settings.read().unwrap().get_theme();
                             r
                         }
                         SettingsSection::Display => {
                             let r = self.display_section.handle_input(&app_event, tx);
-                            self.settings.use_nerd_fonts = self.display_section.use_nerd_fonts;
+                            self.settings.write().unwrap().use_nerd_fonts = self.display_section.use_nerd_fonts;
                             r
                         }
                         SettingsSection::Sorting => {
                             let r = self.sorting_section.handle_input(&app_event, tx);
-                            self.settings.default_sort_field = self.sorting_section.default_sort_field;
-                            self.settings.default_sort_order = self.sorting_section.default_sort_order;
-                            self.settings.journal_sort_field = self.sorting_section.journal_sort_field;
-                            self.settings.journal_sort_order = self.sorting_section.journal_sort_order;
+                            {
+                                let mut s = self.settings.write().unwrap();
+                                s.default_sort_field = self.sorting_section.default_sort_field;
+                                s.default_sort_order = self.sorting_section.default_sort_order;
+                                s.journal_sort_field = self.sorting_section.journal_sort_field;
+                                s.journal_sort_order = self.sorting_section.journal_sort_order;
+                            }
                             r
                         }
                         SettingsSection::Workspaces => {
@@ -549,7 +572,7 @@ impl AppScreen for SettingsScreen {
                                 let name = self.workspaces_section.input().trim().to_string();
                                 if !name.is_empty() {
                                     // Check for duplicate name.
-                                    let exists = self.settings.workspace_config
+                                    let exists = self.settings.read().unwrap().workspace_config
                                         .as_ref()
                                         .is_some_and(|wc| wc.workspaces.contains_key(&name));
                                     if exists {
@@ -572,7 +595,7 @@ impl AppScreen for SettingsScreen {
                                 // Check for duplicate name.
                                 let duplicate = !new_name.is_empty()
                                     && pre_selected.as_deref() != Some(&new_name)
-                                    && self.settings.workspace_config
+                                    && self.settings.read().unwrap().workspace_config
                                         .as_ref()
                                         .is_some_and(|wc| wc.workspaces.contains_key(&new_name));
                                 if duplicate {
@@ -582,16 +605,19 @@ impl AppScreen for SettingsScreen {
                                 } else if let Some(old_name) = pre_selected.as_deref()
                                     && !new_name.is_empty()
                                     && new_name != old_name
-                                    && let Some(ref mut wc) = self.settings.workspace_config
-                                    && let Some(entry) = wc.workspaces.remove(old_name)
                                 {
-                                    wc.workspaces.insert(new_name.clone(), entry);
-                                    if wc.global.current_workspace == old_name {
-                                        wc.global.current_workspace = new_name.clone();
+                                    let mut s = self.settings.write().unwrap();
+                                    if let Some(ref mut wc) = s.workspace_config
+                                        && let Some(entry) = wc.workspaces.remove(old_name)
+                                    {
+                                        wc.workspaces.insert(new_name.clone(), entry);
+                                        if wc.global.current_workspace == old_name {
+                                            wc.global.current_workspace = new_name.clone();
+                                        }
                                     }
                                 }
                                 self.workspaces_section.reset_mode();
-                                self.workspaces_section.refresh(&self.settings);
+                                self.workspaces_section.refresh(&self.settings.read().unwrap());
                             }
 
                             // Delete confirmation: section stays in ConfirmDelete after 'y'.
@@ -599,14 +625,16 @@ impl AppScreen for SettingsScreen {
                                 && post_mode == WorkspaceMode::ConfirmDelete
                                 && key.code == KeyCode::Char('y')
                             {
-                                if let Some(name) = pre_selected.as_deref()
-                                    && let Some(ref mut wc) = self.settings.workspace_config
-                                    && name != wc.global.current_workspace
-                                {
-                                    wc.workspaces.remove(name);
+                                if let Some(name) = pre_selected.as_deref() {
+                                    let mut s = self.settings.write().unwrap();
+                                    if let Some(ref mut wc) = s.workspace_config
+                                        && name != wc.global.current_workspace
+                                    {
+                                        wc.workspaces.remove(name);
+                                    }
                                 }
                                 self.workspaces_section.reset_mode();
-                                self.workspaces_section.refresh(&self.settings);
+                                self.workspaces_section.refresh(&self.settings.read().unwrap());
                             }
 
                             r
@@ -616,7 +644,7 @@ impl AppScreen for SettingsScreen {
                         }
                         SettingsSection::Editor => {
                             let r = self.editor_section.handle_input(&app_event, tx);
-                            self.settings.autosave_interval_secs =
+                            self.settings.write().unwrap().autosave_interval_secs =
                                 self.editor_section.autosave_interval_secs;
                             r
                         }
@@ -630,7 +658,7 @@ impl AppScreen for SettingsScreen {
         match msg {
             AppEvent::OpenFileBrowser => {
                 let starting_dir = self
-                    .settings
+                    .settings.read().unwrap()
                     .workspace_dir
                     .clone()
                     .or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
@@ -641,7 +669,7 @@ impl AppScreen for SettingsScreen {
             AppEvent::TriggerFastReindex => {
                 // Fast reindex starts immediately (no confirmation overlay) — it is a
                 // low-cost incremental operation unlike full reindex.
-                let Some(workspace) = self.settings.workspace_dir.clone() else {
+                let Some(workspace) = self.settings.read().unwrap().workspace_dir.clone() else {
                     tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
                         .ok();
                     return None;
@@ -673,10 +701,10 @@ impl AppScreen for SettingsScreen {
             AppEvent::IndexingDone(result) => {
                 match result {
                     Ok(duration) => {
-                        self.settings.report_indexed();
+                        self.settings.write().unwrap().report_indexed();
                         if self.pending_save_after_index {
                             self.pending_save_after_index = false;
-                            self.settings.save_to_disk().ok();
+                            self.settings.read().unwrap().save_to_disk().ok();
                             tx.send(AppEvent::SettingsSaved).ok();
                         } else {
                             self.overlay =
@@ -1034,6 +1062,7 @@ mod file_browser_tests {
 
 #[cfg(test)]
 mod settings_screen_tests {
+    use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
     use super::*;
@@ -1049,8 +1078,12 @@ mod settings_screen_tests {
         })
     }
 
+    fn shared_defaults() -> SharedSettings {
+        Arc::new(RwLock::new(AppSettings::default()))
+    }
+
     fn make_screen() -> SettingsScreen {
-        SettingsScreen::new(AppSettings::default())
+        SettingsScreen::new(shared_defaults())
     }
 
     #[test]
@@ -1066,7 +1099,7 @@ mod settings_screen_tests {
     fn esc_shows_confirm_save_when_settings_changed() {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
-        screen.settings.set_theme("Gruvbox Light".to_string());
+        screen.settings.write().unwrap().set_theme("Gruvbox Light".to_string());
         screen.handle_input(&key(KeyCode::Esc), &tx);
         assert!(rx.try_recv().is_err(), "no message should be sent yet");
         assert!(matches!(screen.overlay, Overlay::ConfirmSave { .. }));
@@ -1076,7 +1109,7 @@ mod settings_screen_tests {
     fn confirm_save_discard_sends_close_settings() {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
-        screen.settings.set_theme("Gruvbox Light".to_string());
+        screen.settings.write().unwrap().set_theme("Gruvbox Light".to_string());
         screen.overlay = Overlay::ConfirmSave {
             focused_button: SaveButton::Discard,
         };
@@ -1089,7 +1122,7 @@ mod settings_screen_tests {
     fn confirm_save_save_vault_unchanged_sends_settings_saved() {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
-        screen.settings.set_theme("Gruvbox Light".to_string());
+        screen.settings.write().unwrap().set_theme("Gruvbox Light".to_string());
         screen.overlay = Overlay::ConfirmSave {
             focused_button: SaveButton::Save,
         };
@@ -1104,8 +1137,9 @@ mod settings_screen_tests {
         let (tx, _rx) = unbounded_channel();
         let mut settings = AppSettings::default();
         settings.set_workspace(&PathBuf::from("/original/path"));
-        let mut screen = SettingsScreen::new(settings);
-        screen.settings.set_workspace(&PathBuf::from("/new/path"));
+        let shared = Arc::new(RwLock::new(settings));
+        let mut screen = SettingsScreen::new(shared);
+        screen.settings.write().unwrap().set_workspace(&PathBuf::from("/new/path"));
         screen.overlay = Overlay::ConfirmSave {
             focused_button: SaveButton::Save,
         };
@@ -1202,8 +1236,7 @@ mod settings_screen_tests {
 
     #[test]
     fn new_with_error_sets_vault_conflict_overlay_with_message() {
-        let settings = AppSettings::default();
-        let screen = SettingsScreen::new_with_error(settings, "test error msg".to_string());
+        let screen = SettingsScreen::new_with_error(shared_defaults(), "test error msg".to_string());
         match screen.overlay {
             Overlay::VaultConflict(ref msg) => {
                 assert_eq!(msg, "test error msg");
