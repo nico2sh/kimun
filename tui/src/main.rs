@@ -17,7 +17,7 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
 
 #[derive(Parser)]
-#[command(name = "kimun", about = "Kimün notes")]
+#[command(name = "kimun", about = "Kimün notes", version)]
 struct Cli {
     /// Path to a custom config file
     #[arg(long, value_name = "FILE")]
