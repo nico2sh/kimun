@@ -218,8 +218,10 @@ impl SettingsScreen {
 
     fn do_save(&mut self, tx: &AppTx) {
         let s = self.settings.read().unwrap();
-        if s.workspace_dir != self.initial_settings.workspace_dir {
-            let Some(workspace) = s.workspace_dir.clone() else {
+        let current_path = s.resolve_workspace_path();
+        let initial_path = self.initial_settings.resolve_workspace_path();
+        if current_path != initial_path {
+            let Some(workspace) = current_path else {
                 drop(s);
                 tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
                     .ok();
@@ -387,7 +389,7 @@ impl AppScreen for SettingsScreen {
                     }
                     KeyCode::Enter => {
                         if *focused_button == ConfirmButton::Confirm {
-                            let Some(workspace) = self.settings.read().unwrap().workspace_dir.clone() else {
+                            let Some(workspace) = self.settings.read().unwrap().resolve_workspace_path() else {
                                 self.overlay = Overlay::None;
                                 return EventState::Consumed;
                             };
@@ -659,8 +661,7 @@ impl AppScreen for SettingsScreen {
             AppEvent::OpenFileBrowser => {
                 let starting_dir = self
                     .settings.read().unwrap()
-                    .workspace_dir
-                    .clone()
+                    .resolve_workspace_path()
                     .or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
                     .unwrap_or_else(|| PathBuf::from("/"));
                 self.overlay = Overlay::FileBrowser(FileBrowserState::load(starting_dir));
@@ -669,7 +670,7 @@ impl AppScreen for SettingsScreen {
             AppEvent::TriggerFastReindex => {
                 // Fast reindex starts immediately (no confirmation overlay) — it is a
                 // low-cost incremental operation unlike full reindex.
-                let Some(workspace) = self.settings.read().unwrap().workspace_dir.clone() else {
+                let Some(workspace) = self.settings.read().unwrap().resolve_workspace_path() else {
                     tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
                         .ok();
                     return None;

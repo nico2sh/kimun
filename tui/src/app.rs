@@ -28,18 +28,8 @@ impl App {
         };
         let settings: SharedSettings = Arc::new(RwLock::new(loaded_settings));
 
-        // Phase 1 configs store the workspace in `workspace_dir`.
-        // Phase 2 configs store it in `workspace_config[current_workspace].path`.
         let vault = {
-            let workspace_path = {
-                let s = settings.read().unwrap();
-                s.workspace_dir.clone().or_else(|| {
-                    s.workspace_config
-                        .as_ref()
-                        .and_then(|wc| wc.get_current_workspace())
-                        .map(|entry| entry.path.clone())
-                })
-            };
+            let workspace_path = settings.read().unwrap().resolve_workspace_path();
             if let Some(ref workspace) = workspace_path {
                 NoteVault::new(workspace).await.ok().map(|mut v| {
                     let s = settings.read().unwrap();

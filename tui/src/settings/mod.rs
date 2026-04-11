@@ -447,13 +447,6 @@ impl AppSettings {
         self.key_bindings = KeyBindings::from_hashmap(current);
     }
 
-    pub fn get_workspace_string(&self) -> String {
-        self.workspace_dir.as_ref().map_or_else(
-            || "<NONE>".to_string(),
-            |dir| dir.to_string_lossy().to_string(),
-        )
-    }
-
     // We set a new workspace to work with, remember to save the data
     // to persist it in disk
     pub fn set_workspace(&mut self, workspace_path: &PathBuf) {
@@ -486,6 +479,16 @@ impl AppSettings {
             }
             wc.global.current_workspace = String::new();
         }
+    }
+
+    /// Resolve the active workspace path from Phase 2 (workspace_config) or
+    /// Phase 1 (workspace_dir). Returns `None` if no workspace is configured.
+    pub fn resolve_workspace_path(&self) -> Option<PathBuf> {
+        self.workspace_config
+            .as_ref()
+            .and_then(|wc| wc.get_current_workspace())
+            .map(|entry| entry.path.clone())
+            .or_else(|| self.workspace_dir.clone())
     }
 
     pub fn set_theme(&mut self, theme: String) {
