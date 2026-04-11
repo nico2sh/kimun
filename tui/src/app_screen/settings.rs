@@ -235,8 +235,7 @@ impl SettingsScreen {
             self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
         } else {
             self.settings.save_to_disk().ok();
-            let settings = self.settings.clone();
-            tx.send(AppEvent::SettingsSaved(Box::new(settings))).ok();
+            tx.send(AppEvent::SettingsSaved).ok();
         }
     }
 
@@ -253,24 +252,38 @@ impl SettingsScreen {
                 quick_note_path: None,
                 inbox_path: None,
             };
+            if self.settings.workspace_config.is_none() {
+                // Migrate Phase 1 legacy config to Phase 2 before adding.
+                if let Some(ref legacy_path) = self.settings.workspace_dir {
+                    let wc = WorkspaceConfig::from_phase1_migration(
+                        legacy_path.clone(),
+                        self.settings.last_paths.iter().map(|p| p.to_string()).collect(),
+                    );
+                    self.settings.workspace_config = Some(wc);
+                } else {
+                    self.settings.workspace_config = Some(WorkspaceConfig::new_empty());
+                }
+                self.settings.config_version = 2;
+            }
             if let Some(ref mut wc) = self.settings.workspace_config {
                 wc.workspaces.insert(name.clone(), entry);
-                // If this is the first workspace, make it current.
-                if wc.workspaces.len() == 1 {
+                // If this is the only workspace (no prior ones), make it current.
+                if wc.global.current_workspace.is_empty() {
                     wc.global.current_workspace = name;
                 }
-            } else {
-                let mut wc = WorkspaceConfig::new_empty();
-                wc.workspaces.insert(name.clone(), entry);
-                wc.global.current_workspace = name;
-                self.settings.workspace_config = Some(wc);
-                self.settings.config_version = 2;
             }
             self.workspaces_section.refresh(&self.settings);
             self.indexing_section.set_vault_available(true);
         } else {
-            // Browsing path for existing/current workspace.
+            // Browsing path for the selected workspace.
             self.settings.set_workspace(&chosen);
+            // Also update the workspace entry in workspace_config.
+            if let Some(name) = self.workspaces_section.selected_name().map(|s| s.to_string())
+                && let Some(ref mut wc) = self.settings.workspace_config
+                && let Some(entry) = wc.workspaces.get_mut(&name)
+            {
+                entry.path = chosen;
+            }
             self.workspaces_section.refresh(&self.settings);
             self.indexing_section.set_vault_available(true);
         }
@@ -316,6 +329,11 @@ impl AppScreen for SettingsScreen {
                     KeyCode::Left => {
                         fb.go_up();
                     }
+                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Ctrl+Enter confirms the current directory.
+                        let chosen = fb.current_path.clone();
+                        self.confirm_file_browser(chosen, tx);
+                    }
                     KeyCode::Right | KeyCode::Enter => {
                         if let Some(idx) = fb.list_state.selected() {
                             if fb.has_parent && idx == 0 {
@@ -332,15 +350,7 @@ impl AppScreen for SettingsScreen {
                     KeyCode::Char(c) => {
                         fb.jump_to_char(c);
                     }
-                    _ => {
-                        // Ctrl+Enter confirms too
-                        if key.code == KeyCode::Enter
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            let chosen = fb.current_path.clone();
-                            self.confirm_file_browser(chosen, tx);
-                        }
-                    }
+                    _ => {}
                 }
                 return EventState::Consumed;
             }
@@ -536,10 +546,20 @@ impl AppScreen for SettingsScreen {
                                 && post_mode == WorkspaceMode::Creating
                                 && key.code == KeyCode::Enter
                             {
-                                let name = self.workspaces_section.input().to_string();
-                                if !name.trim().is_empty() {
-                                    self.pending_create_name = Some(name.trim().to_string());
-                                    self.workspaces_section.reset_mode();
+                                let name = self.workspaces_section.input().trim().to_string();
+                                if !name.is_empty() {
+                                    // Check for duplicate name.
+                                    let exists = self.settings.workspace_config
+                                        .as_ref()
+                                        .is_some_and(|wc| wc.workspaces.contains_key(&name));
+                                    if exists {
+                                        self.workspaces_section.set_error(
+                                            format!("Workspace '{}' already exists.", name),
+                                        );
+                                    } else {
+                                        self.pending_create_name = Some(name);
+                                        self.workspaces_section.reset_mode();
+                                    }
                                 }
                             }
 
@@ -548,17 +568,26 @@ impl AppScreen for SettingsScreen {
                                 && post_mode == WorkspaceMode::Renaming
                                 && key.code == KeyCode::Enter
                             {
-                                let new_name = self.workspaces_section.input().to_string();
-                                if let Some(old_name) = pre_selected.as_deref()
-                                    && !new_name.trim().is_empty()
-                                    && new_name.trim() != old_name
+                                let new_name = self.workspaces_section.input().trim().to_string();
+                                // Check for duplicate name.
+                                let duplicate = !new_name.is_empty()
+                                    && pre_selected.as_deref() != Some(&new_name)
+                                    && self.settings.workspace_config
+                                        .as_ref()
+                                        .is_some_and(|wc| wc.workspaces.contains_key(&new_name));
+                                if duplicate {
+                                    self.workspaces_section.set_error(
+                                        format!("Workspace '{}' already exists.", new_name),
+                                    );
+                                } else if let Some(old_name) = pre_selected.as_deref()
+                                    && !new_name.is_empty()
+                                    && new_name != old_name
                                     && let Some(ref mut wc) = self.settings.workspace_config
                                     && let Some(entry) = wc.workspaces.remove(old_name)
                                 {
-                                    let trimmed = new_name.trim().to_string();
-                                    wc.workspaces.insert(trimmed.clone(), entry);
+                                    wc.workspaces.insert(new_name.clone(), entry);
                                     if wc.global.current_workspace == old_name {
-                                        wc.global.current_workspace = trimmed;
+                                        wc.global.current_workspace = new_name.clone();
                                     }
                                 }
                                 self.workspaces_section.reset_mode();
@@ -572,6 +601,7 @@ impl AppScreen for SettingsScreen {
                             {
                                 if let Some(name) = pre_selected.as_deref()
                                     && let Some(ref mut wc) = self.settings.workspace_config
+                                    && name != wc.global.current_workspace
                                 {
                                     wc.workspaces.remove(name);
                                 }
@@ -647,8 +677,7 @@ impl AppScreen for SettingsScreen {
                         if self.pending_save_after_index {
                             self.pending_save_after_index = false;
                             self.settings.save_to_disk().ok();
-                            let settings = self.settings.clone();
-                            tx.send(AppEvent::SettingsSaved(Box::new(settings))).ok();
+                            tx.send(AppEvent::SettingsSaved).ok();
                         } else {
                             self.overlay =
                                 Overlay::IndexingProgress(IndexingProgressState::Done(duration));
@@ -1066,7 +1095,7 @@ mod settings_screen_tests {
         };
         screen.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppEvent::SettingsSaved(_)));
+        assert!(matches!(msg, AppEvent::SettingsSaved));
         assert!(rx.try_recv().is_err());
     }
 
@@ -1101,7 +1130,7 @@ mod settings_screen_tests {
             .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(1))), &tx)
             .await;
         let msg = rx.try_recv().expect("expected SettingsSaved");
-        assert!(matches!(msg, AppEvent::SettingsSaved(_)));
+        assert!(matches!(msg, AppEvent::SettingsSaved));
         assert!(!screen.pending_save_after_index);
     }
 

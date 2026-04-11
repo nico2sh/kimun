@@ -12,11 +12,11 @@ use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::indexing::{
     IndexingProgressState, render_indexing_overlay, spawn_running,
 };
-use crate::settings::AppSettings;
+use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
 pub struct StartScreen {
-    settings: AppSettings,
+    settings: SharedSettings,
     theme: Theme,
     vault: Option<Arc<NoteVault>>,
     overlay: Option<IndexingProgressState>,
@@ -24,8 +24,8 @@ pub struct StartScreen {
 }
 
 impl StartScreen {
-    pub fn new(settings: AppSettings, vault: Option<Arc<NoteVault>>) -> Self {
-        let theme = settings.get_theme();
+    pub fn new(settings: SharedSettings, vault: Option<Arc<NoteVault>>) -> Self {
+        let theme = settings.read().unwrap().get_theme();
         Self {
             settings,
             theme,
@@ -59,11 +59,8 @@ impl AppScreen for StartScreen {
             });
             self.overlay = Some(spawn_running(handle, tx));
         } else {
-            let path = self
-                .settings
-                .last_paths
-                .last()
-                .map_or_else(VaultPath::root, |p| p.to_owned());
+            let paths = self.settings.read().unwrap().current_last_paths();
+            let path = paths.last().map_or_else(VaultPath::root, |p| p.to_owned());
             tx.send(AppEvent::OpenPath(path)).ok();
         }
     }
@@ -82,11 +79,8 @@ impl AppScreen for StartScreen {
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
         if let AppEvent::IndexingDone(_) = &msg {
             self.overlay = None;
-            let path = self
-                .settings
-                .last_paths
-                .last()
-                .map_or_else(VaultPath::root, |p| p.to_owned());
+            let paths = self.settings.read().unwrap().current_last_paths();
+            let path = paths.last().map_or_else(VaultPath::root, |p| p.to_owned());
             tx.send(AppEvent::OpenPath(path)).ok();
             return None;
         }
@@ -116,8 +110,14 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::settings::AppSettings;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use std::sync::{Arc, RwLock};
     use tokio::sync::mpsc::unbounded_channel;
+
+    fn shared_defaults() -> SharedSettings {
+        Arc::new(RwLock::new(AppSettings::default()))
+    }
 
     async fn make_vault() -> Arc<NoteVault> {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -142,7 +142,7 @@ mod tests {
     #[tokio::test]
     async fn on_enter_vault_none_sends_open_path() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
-        let mut screen = StartScreen::new(AppSettings::default(), None);
+        let mut screen = StartScreen::new(shared_defaults(), None);
         screen.on_enter(&tx).await;
         let msg = rx.try_recv().expect("expected a message");
         assert!(
@@ -160,7 +160,7 @@ mod tests {
     async fn on_enter_vault_some_sets_overlay_and_defers_open_path() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let vault = make_vault().await;
-        let mut screen = StartScreen::new(AppSettings::default(), Some(vault));
+        let mut screen = StartScreen::new(shared_defaults(), Some(vault));
         screen.on_enter(&tx).await;
         assert!(
             matches!(screen.overlay, Some(IndexingProgressState::Running { .. })),
@@ -181,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn handle_app_message_indexing_done_ok_clears_overlay_and_sends_open_path() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
-        let mut screen = StartScreen::new(AppSettings::default(), None);
+        let mut screen = StartScreen::new(shared_defaults(), None);
         screen.overlay = Some(IndexingProgressState::Running {
             work: tokio::spawn(async {}),
             ticker: tokio::spawn(async {}),
@@ -201,7 +201,7 @@ mod tests {
     #[tokio::test]
     async fn handle_app_message_indexing_done_err_clears_overlay_and_sends_open_path() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
-        let mut screen = StartScreen::new(AppSettings::default(), None);
+        let mut screen = StartScreen::new(shared_defaults(), None);
         screen.overlay = Some(IndexingProgressState::Running {
             work: tokio::spawn(async {}),
             ticker: tokio::spawn(async {}),
@@ -221,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn handle_input_blocked_while_overlay_running() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
-        let mut screen = StartScreen::new(AppSettings::default(), None);
+        let mut screen = StartScreen::new(shared_defaults(), None);
         screen.overlay = Some(IndexingProgressState::Running {
             work: tokio::spawn(async {}),
             ticker: tokio::spawn(async {}),
@@ -246,7 +246,7 @@ mod tests {
     #[tokio::test]
     async fn handle_input_not_consumed_while_overlay_none() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let mut screen = StartScreen::new(AppSettings::default(), None);
+        let mut screen = StartScreen::new(shared_defaults(), None);
         screen.overlay = None;
         let state = screen.handle_input(&key_event(KeyCode::Enter), &tx);
         assert!(
@@ -266,7 +266,7 @@ mod tests {
 
         let vault = Arc::new(NoteVault::new(tmp.path()).await.unwrap());
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
-        let mut screen = StartScreen::new(AppSettings::default(), Some(vault));
+        let mut screen = StartScreen::new(shared_defaults(), Some(vault));
         screen.on_enter(&tx).await;
 
         // Drain events until VaultConflict arrives; skip Redraw ticks from the spinner.

@@ -11,6 +11,8 @@ use clap::Parser;
 use color_eyre::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::settings::AppSettings;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
@@ -205,15 +207,18 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 
     let mut screen: Box<dyn AppScreen> = match new_screen {
         ScreenEvent::Start => Box::new(StartScreen::new(app.settings.clone(), None)),
-        ScreenEvent::OpenSettings => Box::new(SettingsScreen::new(app.settings.clone())),
-        ScreenEvent::OpenSettingsWithError(msg) => {
-            Box::new(SettingsScreen::new_with_error(app.settings.clone(), msg))
+        ScreenEvent::OpenSettings => {
+            let s = app.settings.read().unwrap().clone();
+            Box::new(SettingsScreen::new(s))
         }
-        ScreenEvent::OpenEditor(note_vault, vault_path) => Box::new(EditorScreen::new(
-            note_vault,
-            vault_path,
-            app.settings.clone(),
-        )),
+        ScreenEvent::OpenSettingsWithError(msg) => {
+            let s = app.settings.read().unwrap().clone();
+            Box::new(SettingsScreen::new_with_error(s, msg))
+        }
+        ScreenEvent::OpenEditor(note_vault, vault_path) => {
+            let s = app.settings.read().unwrap().clone();
+            Box::new(EditorScreen::new(note_vault, vault_path, s))
+        }
         ScreenEvent::OpenBrowse(note_vault, vault_path) => Box::new(BrowseScreen::new(
             note_vault,
             vault_path,
@@ -269,12 +274,16 @@ where
                         );
                         // Global shortcuts — fire before any screen gets the event.
                         if let Some(combo) = key_event_to_combo(&key) {
-                            tracing::debug!(
-                                "COMBO: {} → {:?}",
-                                combo,
-                                app.settings.key_bindings.get_action(&combo)
-                            );
-                            match app.settings.key_bindings.get_action(&combo) {
+                            let action = {
+                                let s = app.settings.read().unwrap();
+                                tracing::debug!(
+                                    "COMBO: {} → {:?}",
+                                    combo,
+                                    s.key_bindings.get_action(&combo)
+                                );
+                                s.key_bindings.get_action(&combo)
+                            };
+                            match action {
                                 Some(ActionShortcuts::Quit) => {
                                     tx.send(AppEvent::Quit).ok();
                                     continue;
@@ -340,35 +349,37 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 }
             }
         }
-        AppEvent::SettingsSaved(new_settings) => {
+        AppEvent::SettingsSaved => {
             // Resolve workspace path from Phase 1 (workspace_dir) or Phase 2
             // (workspace_config) settings, then rebuild the vault so workspace
             // path and inbox_path changes take effect.
-            let workspace_path = new_settings.workspace_dir.clone().or_else(|| {
-                new_settings
-                    .workspace_config
-                    .as_ref()
+            let (workspace_path, inbox_path) = {
+                let s = app.settings.read().unwrap();
+                let wp = s.workspace_dir.clone().or_else(|| {
+                    s.workspace_config
+                        .as_ref()
+                        .and_then(|wc| wc.get_current_workspace())
+                        .map(|entry| entry.path.clone())
+                });
+                let ip = s.workspace_config.as_ref()
                     .and_then(|wc| wc.get_current_workspace())
-                    .map(|entry| entry.path.clone())
-            });
+                    .map(|e| e.effective_inbox_path());
+                (wp, ip)
+            };
             app.vault = if let Some(ref workspace) = workspace_path {
                 kimun_core::NoteVault::new(workspace)
                     .await
                     .ok()
                     .map(|mut v| {
-                        if let Some(ref wc) = new_settings.workspace_config
-                            && let Some(entry) = wc.get_current_workspace()
-                        {
-                            v.set_inbox_path(kimun_core::nfs::VaultPath::new(entry.effective_inbox_path()));
+                        if let Some(ref ip) = inbox_path {
+                            v.set_inbox_path(kimun_core::nfs::VaultPath::new(ip));
                         }
                         std::sync::Arc::new(v)
                     })
             } else {
                 None
             };
-            app.settings = *new_settings;
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
-            // switch_screen(app, tx, Box::new(StartScreen::new(app.settings.clone()))).await;
         }
         AppEvent::CloseSettings => {
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
@@ -377,31 +388,48 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             // The vault has structural conflicts (e.g. case-insensitive path clashes).
             // Clear the workspace so the user is not stuck in a loop, then show
             // the settings screen with the error overlay pre-populated.
-            app.settings.clear_workspace();
-            app.settings.save_to_disk().ok();
+            {
+                let mut s = app.settings.write().unwrap();
+                s.clear_workspace();
+                s.save_to_disk().ok();
+            }
             app.vault = None;
             switch_screen(app, tx, ScreenEvent::OpenSettingsWithError(msg)).await;
         }
         AppEvent::WorkspaceSwitched(name) => {
-            if let Some(ref mut wc) = app.settings.workspace_config {
-                wc.global.current_workspace = name;
+            // Reload settings from disk to pick up last_paths written by the editor.
+            {
+                let mut s = app.settings.write().unwrap();
+                if let Some(ref config_file) = s.config_file
+                    && let Ok(fresh) = AppSettings::load_from_file(config_file.clone())
+                {
+                    *s = fresh;
+                }
+                if let Some(ref mut wc) = s.workspace_config {
+                    wc.global.current_workspace = name;
+                }
+                s.save_to_disk().ok();
             }
-            app.settings.save_to_disk().ok();
 
             // Rebuild vault from the new workspace.
-            let workspace_path = app.settings.workspace_config
-                .as_ref()
-                .and_then(|wc| wc.get_current_workspace())
-                .map(|entry| entry.path.clone());
+            let (workspace_path, inbox_path) = {
+                let s = app.settings.read().unwrap();
+                let wp = s.workspace_config
+                    .as_ref()
+                    .and_then(|wc| wc.get_current_workspace())
+                    .map(|entry| entry.path.clone());
+                let ip = s.workspace_config.as_ref()
+                    .and_then(|wc| wc.get_current_workspace())
+                    .map(|e| e.effective_inbox_path());
+                (wp, ip)
+            };
             app.vault = if let Some(ref workspace) = workspace_path {
                 kimun_core::NoteVault::new(workspace)
                     .await
                     .ok()
                     .map(|mut v| {
-                        if let Some(ref wc) = app.settings.workspace_config
-                            && let Some(entry) = wc.get_current_workspace()
-                        {
-                            v.set_inbox_path(kimun_core::nfs::VaultPath::new(entry.effective_inbox_path()));
+                        if let Some(ref ip) = inbox_path {
+                            v.set_inbox_path(kimun_core::nfs::VaultPath::new(ip));
                         }
                         std::sync::Arc::new(v)
                     })
