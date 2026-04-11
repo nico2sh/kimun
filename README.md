@@ -24,6 +24,7 @@ Features:
 * Multiple workspaces, so you keep your notes in separate contexts
 * Backlink support with previews
 * Skills and MCP Server for integrating with your favorite LLM
+* Embedded Neovim mode in the editor, so you can use your search and replace commands and move with HJKL
 * FAST
 
 And more: **Check the [docs](https://nico2sh.github.io/kimun/) for more on what you can do with Kimün.**
