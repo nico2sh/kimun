@@ -12,7 +12,6 @@ use color_eyre::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::settings::AppSettings;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;
@@ -394,14 +393,8 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
             switch_screen(app, tx, ScreenEvent::OpenSettingsWithError(msg)).await;
         }
         AppEvent::WorkspaceSwitched(name) => {
-            // Reload settings from disk to pick up last_paths written by the editor.
             {
                 let mut s = app.settings.write().unwrap();
-                if let Some(ref config_file) = s.config_file
-                    && let Ok(fresh) = AppSettings::load_from_file(config_file.clone())
-                {
-                    *s = fresh;
-                }
                 if let Some(ref mut wc) = s.workspace_config {
                     wc.global.current_workspace = name;
                 }
