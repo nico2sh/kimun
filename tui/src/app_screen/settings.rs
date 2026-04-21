@@ -345,17 +345,13 @@ impl AppScreen for SettingsScreen {
                     KeyCode::Esc => {
                         self.overlay = Overlay::None;
                     }
-                    KeyCode::Up => {
-                        if total > 0 {
-                            let cur = fb.list_state.selected().unwrap_or(0);
-                            fb.list_state.select(Some((cur + total - 1) % total));
-                        }
+                    KeyCode::Up if total > 0 => {
+                        let cur = fb.list_state.selected().unwrap_or(0);
+                        fb.list_state.select(Some((cur + total - 1) % total));
                     }
-                    KeyCode::Down => {
-                        if total > 0 {
-                            let cur = fb.list_state.selected().unwrap_or(0);
-                            fb.list_state.select(Some((cur + 1) % total));
-                        }
+                    KeyCode::Down if total > 0 => {
+                        let cur = fb.list_state.selected().unwrap_or(0);
+                        fb.list_state.select(Some((cur + 1) % total));
                     }
                     KeyCode::Left => {
                         fb.go_up();

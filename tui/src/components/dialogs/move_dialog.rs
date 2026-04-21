@@ -151,7 +151,7 @@ impl MoveDialog {
                             .map(|score| (score, item))
                     })
                     .collect();
-                matched.sort_by(|a, b| b.0.cmp(&a.0));
+                matched.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
                 matched.into_iter().map(|(_, s)| s).collect::<Vec<_>>()
             })
             .await
