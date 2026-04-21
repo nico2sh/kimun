@@ -277,9 +277,10 @@ impl ParsedBuffer {
                 Event::Start(Tag::Item) => {
                     // Pulldown-cmark's Item range does not always start at the
                     // marker character — for nested items it starts at the
-                    // indentation-beyond-the-parent boundary. Scan the line
-                    // from col 0 to find leading whitespace + marker instead
-                    // of relying on `sc`.
+                    // indentation-beyond-the-parent boundary, which can be
+                    // several chars before the marker. Scan the line from col
+                    // 0 to find leading whitespace + marker instead of relying
+                    // on `sc`.
                     if sr < lines.len() && list_sigil_end[sr].is_none() {
                         let chars: Vec<char> = lines[sr].chars().collect();
                         let mut idx = 0usize;
@@ -287,24 +288,7 @@ impl ParsedBuffer {
                             idx += 1;
                         }
                         let after_ws: String = chars.iter().skip(idx).collect();
-                        let marker_len = if after_ws.starts_with("- ")
-                            || after_ws.starts_with("* ")
-                            || after_ws.starts_with("+ ")
-                        {
-                            Some(2usize)
-                        } else {
-                            let bytes = after_ws.as_bytes();
-                            let mut i = 0;
-                            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                                i += 1;
-                            }
-                            if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
-                                Some(i + 2)
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some(len) = marker_len {
+                        if let Some(len) = list_marker_len(&after_ws) {
                             list_sigil_end[sr] = Some(idx + len);
                         }
                     }
@@ -937,15 +921,28 @@ fn needs_synthetic_list_parent(line: &str) -> bool {
     if trimmed.len() == line.len() {
         return false; // no leading whitespace → nothing to compensate for
     }
-    if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
-        return true;
+    list_marker_len(trimmed).is_some()
+}
+
+/// If the string begins with an unordered list marker (`- `, `* `, `+ `) or an
+/// ordered list marker (digits followed by `. `), returns the marker's length
+/// in bytes (including the trailing space). Otherwise `None`.
+///
+/// Digits are ASCII only, so byte length == char length here.
+fn list_marker_len(s: &str) -> Option<usize> {
+    if s.starts_with("- ") || s.starts_with("* ") || s.starts_with("+ ") {
+        return Some(2);
     }
-    let bytes = trimmed.as_bytes();
+    let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() && bytes[i].is_ascii_digit() {
         i += 1;
     }
-    i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' '
+    if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
+        Some(i + 2)
+    } else {
+        None
+    }
 }
 
 /// Convert a byte offset in the joined buffer to `(row, char_col)` within
