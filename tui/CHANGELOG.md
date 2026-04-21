@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.7.2...kimun-notes-v0.7.3) - 2026-04-21
+
+### Added
+
+- use ParsedBuffer in view; delete detect_list_marker
+- add ParsedBuffer::parse for whole-buffer markdown parsing
+
+### Fixed
+
+- detect list marker by scanning from col 0
+
+### Other
+
+- fix pre-existing clippy 1.95 lints
+- collapse match guards in ParsedBuffer::parse
+- cargo fmt
+- explain line_starts sentinel intent
+- extract shared list_marker_len helper
+- pin setext heading and multi-line blockquote behaviour
+- read list_sigil_end from ParsedLine instead of re-detecting
+- add list_sigil_end field to ParsedLine
+- add nested list rendering tests (currently failing)
+
 ## [0.7.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.7.1...kimun-notes-v0.7.2) - 2026-04-11
 
 ### Other
