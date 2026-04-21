@@ -280,42 +280,40 @@ impl ParsedBuffer {
                         emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
                     }
                 }
-                Event::Start(Tag::Item) => {
+                Event::Start(Tag::Item)
                     // Pulldown-cmark's Item range does not always start at the
                     // marker character — for nested items it starts at the
                     // indentation-beyond-the-parent boundary, which can be
                     // several chars before the marker. Scan the line from col
                     // 0 to find leading whitespace + marker instead of relying
                     // on `sc`.
-                    if sr < lines.len() && list_sigil_end[sr].is_none() {
-                        let chars: Vec<char> = lines[sr].chars().collect();
-                        let mut idx = 0usize;
-                        while idx < chars.len() && (chars[idx] == ' ' || chars[idx] == '\t') {
-                            idx += 1;
-                        }
-                        let after_ws: String = chars.iter().skip(idx).collect();
-                        if let Some(len) = list_marker_len(&after_ws) {
-                            list_sigil_end[sr] = Some(idx + len);
-                        }
+                    if sr < lines.len() && list_sigil_end[sr].is_none() =>
+                {
+                    let chars: Vec<char> = lines[sr].chars().collect();
+                    let mut idx = 0usize;
+                    while idx < chars.len() && (chars[idx] == ' ' || chars[idx] == '\t') {
+                        idx += 1;
+                    }
+                    let after_ws: String = chars.iter().skip(idx).collect();
+                    if let Some(len) = list_marker_len(&after_ws) {
+                        list_sigil_end[sr] = Some(idx + len);
                     }
                 }
                 Event::End(TagEnd::Item) => {}
-                Event::Code(ref code_text) => {
+                Event::Code(ref code_text) if sr == er && sr < lines.len() => {
                     // Inline code — always single-line in practice.
-                    if sr == er && sr < lines.len() {
-                        let code_len = code_text.chars().count();
-                        let range_char_len = ec.saturating_sub(sc);
-                        let sigil_each = range_char_len.saturating_sub(code_len) / 2;
-                        let cs = sc + sigil_each;
-                        for vis in content_vis[sr].iter_mut().skip(cs).take(code_len) {
-                            *vis = true;
-                        }
-                        elements[sr].push(Element {
-                            start_char: sc,
-                            end_char: ec,
-                            kind: ElementKind::InlineCode,
-                        });
+                    let code_len = code_text.chars().count();
+                    let range_char_len = ec.saturating_sub(sc);
+                    let sigil_each = range_char_len.saturating_sub(code_len) / 2;
+                    let cs = sc + sigil_each;
+                    for vis in content_vis[sr].iter_mut().skip(cs).take(code_len) {
+                        *vis = true;
                     }
+                    elements[sr].push(Element {
+                        start_char: sc,
+                        end_char: ec,
+                        kind: ElementKind::InlineCode,
+                    });
                 }
                 Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
                     // Mark content_vis for each row the event touches.
