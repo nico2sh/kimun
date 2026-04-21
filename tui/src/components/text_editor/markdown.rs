@@ -965,6 +965,76 @@ mod tests {
         );
     }
     #[test]
+    fn nested_list_4space_link_rendered() {
+        // 4-space indent + list marker + markdown link.
+        let line = "    - [my link](url)";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        // Link styling must appear (UNDERLINED modifier) and the raw "](url)" sigils
+        // must be hidden.
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::UNDERLINED)),
+            "link text should be underlined on a 4-space-indented nested list item"
+        );
+        let rendered: String = s.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(
+            rendered.contains("my link"),
+            "link display text should be visible; got {:?}",
+            rendered
+        );
+        assert!(
+            !rendered.contains("](url)"),
+            "link URL sigil should be hidden; got {:?}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn nested_list_tab_bold_rendered() {
+        let line = "\t- **bold nested**";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::BOLD)),
+            "bold text should be styled on a tab-indented nested list item"
+        );
+        let rendered: String = s.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(
+            !rendered.contains("**"),
+            "bold markers should be hidden; got {:?}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn nested_list_4space_wikilink_rendered() {
+        let line = "    - [[Target Note]]";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        let rendered: String = s.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(
+            !rendered.contains("[["),
+            "wikilink brackets should be hidden; got {:?}",
+            rendered
+        );
+        assert!(
+            rendered.contains("Target Note"),
+            "wikilink target text should render; got {:?}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn nested_list_2space_still_renders_link() {
+        // Existing 2-space case — must not regress.
+        let line = "  - [link](url)";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::UNDERLINED))
+        );
+    }
+
+    #[test]
     fn empty_heading_shows_hash_sigil() {
         let line = "# ";
         let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
