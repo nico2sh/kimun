@@ -69,146 +69,28 @@ pub struct ParsedLine {
 }
 
 impl ParsedLine {
-    /// Single pulldown-cmark pass that builds `elements`, `content_vis`, `elem_vis`,
-    /// and `elem_index` together, halving the parse cost vs. two separate passes.
+    /// Parse a single line in isolation. Internally delegates to
+    /// `ParsedBuffer::parse`; kept for test convenience.
+    ///
+    /// When the line looks like an indented list item (e.g. `    - foo` or
+    /// `\t- foo`), pulldown-cmark treats it as an indented code block rather
+    /// than a list item on its own. To preserve the real-editor behaviour
+    /// (where context from surrounding lines resolves it as a nested list
+    /// item), prepend a synthetic parent list marker before handing the input
+    /// to `ParsedBuffer::parse` and return the result for the original line.
     pub fn parse(line: &str) -> Self {
-        let total = line.chars().count();
-        let mut content_vis = vec![false; total];
-        let mut elements: Vec<Element> = Vec::new();
-        let mut stack: Vec<(usize, ElementKind)> = Vec::new();
-
-        let parser = Parser::new_ext(line, PARSER_OPTIONS);
-        for (event, range) in parser.into_offset_iter() {
-            let sc = line[..range.start].chars().count();
-            let ec = line[..range.end].chars().count();
-            match event {
-                Event::Start(Tag::Strong) => stack.push((sc, ElementKind::Bold)),
-                Event::End(TagEnd::Strong) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Start(Tag::Emphasis) => stack.push((sc, ElementKind::Italic)),
-                Event::End(TagEnd::Emphasis) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Start(Tag::Link { .. }) => stack.push((sc, ElementKind::Link)),
-                Event::End(TagEnd::Link) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Code(ref code_text) => {
-                    // Mark only the code text chars as visible (exclude backtick sigils).
-                    let code_len = code_text.chars().count();
-                    let range_char_len = line[range.start..range.end].chars().count();
-                    let sigil_each = range_char_len.saturating_sub(code_len) / 2;
-                    let cs = sc + sigil_each;
-                    for vis in content_vis.iter_mut().skip(cs).take(code_len) {
-                        *vis = true;
-                    }
-                    elements.push(Element {
-                        start_char: sc,
-                        end_char: ec,
-                        kind: ElementKind::InlineCode,
-                    });
-                }
-                Event::Start(Tag::Heading { level, .. }) => {
-                    let kind = match level {
-                        HeadingLevel::H1 => ElementKind::HeadingH1,
-                        HeadingLevel::H2 => ElementKind::HeadingH2,
-                        _ => ElementKind::HeadingH3,
-                    };
-                    stack.push((sc, kind));
-                }
-                Event::End(TagEnd::Heading(_)) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Start(Tag::BlockQuote(_)) => stack.push((sc, ElementKind::Blockquote)),
-                Event::End(TagEnd::BlockQuote(_)) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
-                    for vis in content_vis.iter_mut().skip(sc).take(ec.saturating_sub(sc)) {
-                        *vis = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // pulldown-cmark strips trailing whitespace from heading Text events, so those
-        // spaces never appear in Event::Text and are left false in content_vis. Mark them
-        // as content so the editor keeps them visible and cursor mapping stays correct.
-        for e in &elements {
-            if matches!(
-                e.kind,
-                ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
-            ) {
-                for i in (e.start_char..e.end_char).rev() {
-                    match line.chars().nth(i) {
-                        Some(' ' | '\t') => content_vis[i] = true,
-                        _ => break,
-                    }
-                }
-            }
-        }
-
-        // Detect wikilinks ([[target]]) which pulldown-cmark treats as plain text.
-        detect_wikilinks(line, &mut content_vis, &mut elements);
-
-        // Build O(1) lookup bitmasks from the collected element ranges.
-        debug_assert!(
-            elements.len() < 255,
-            "Too many elements on a single line ({})",
-            elements.len()
-        );
-        let mut elem_vis = vec![false; total];
-        let mut elem_index = vec![0u8; total];
-        for (i, e) in elements.iter().enumerate() {
-            let tag = (i + 1).min(255) as u8; // 1-based; 0 reserved for "no element"
-            for pos in e.start_char..e.end_char {
-                if pos < total {
-                    elem_vis[pos] = true;
-                    elem_index[pos] = tag;
-                }
-            }
-        }
-
-        let list_sigil_end = detect_list_marker(line);
-
-        Self {
-            elements,
-            content_vis,
-            elem_vis,
-            elem_index,
-            list_sigil_end,
+        let owned = line.to_string();
+        if needs_synthetic_list_parent(line) {
+            // "- " opens a list at column 0; the indented `line` that follows
+            // becomes a nested list item with full context.
+            ParsedBuffer::parse(&["- ".to_string(), owned])
+                .into_iter()
+                .last()
+                .expect("ParsedBuffer::parse returns one row per input line")
+        } else {
+            ParsedBuffer::parse(std::slice::from_ref(&owned))
+                .pop()
+                .expect("ParsedBuffer::parse always returns at least one ParsedLine")
         }
     }
 
@@ -1041,6 +923,26 @@ fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Ele
     }
 }
 
+/// Detects whether a line is an indented list item (leading spaces or tab,
+/// followed by `-`/`*`/`+`/digit-dot + space). Used by `ParsedLine::parse`
+/// to decide whether to feed pulldown-cmark a synthetic parent-list context
+/// for single-line degenerate inputs.
+fn needs_synthetic_list_parent(line: &str) -> bool {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    if trimmed.len() == line.len() {
+        return false; // no leading whitespace → nothing to compensate for
+    }
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        return true;
+    }
+    let bytes = trimmed.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' '
+}
+
 /// Convert a byte offset in the joined buffer to `(row, char_col)` within
 /// `lines`. Assumes the joined buffer uses `'\n'` separators (one byte each)
 /// between consecutive lines.
@@ -1057,22 +959,6 @@ fn byte_to_row_col(byte_offset: usize, lines: &[String], line_starts: &[usize]) 
     let byte_in_line = within.min(line.len());
     let char_col = line[..byte_in_line].chars().count();
     (row, char_col)
-}
-
-/// Returns the length (in chars) of the list marker prefix, or None if not a list line.
-fn detect_list_marker(line: &str) -> Option<usize> {
-    if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
-        return Some(2);
-    }
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
-        return Some(i + 2);
-    }
-    None
 }
 
 fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -> Style {

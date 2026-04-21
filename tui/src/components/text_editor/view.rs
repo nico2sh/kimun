@@ -1,4 +1,4 @@
-use super::markdown::{MarkdownSpanner, ParsedLine};
+use super::markdown::{MarkdownSpanner, ParsedBuffer, ParsedLine};
 use super::word_wrap::WordWrapLayout;
 use crate::settings::themes::Theme;
 use ratatui::Frame;
@@ -76,7 +76,7 @@ impl MarkdownEditorView {
         if generation != self.last_seen_generation || lines.len() != self.parsed_cache.len() {
             self.lines_snapshot = lines.to_vec();
             self.cursor_code_block = Self::find_code_block(lines, cursor.0);
-            self.parsed_cache = lines.iter().map(|l| ParsedLine::parse(l)).collect();
+            self.parsed_cache = ParsedBuffer::parse(lines);
             self.last_seen_generation = generation;
         }
 
