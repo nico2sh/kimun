@@ -162,6 +162,11 @@ impl ParsedBuffer {
                 joined.push('\n');
             }
         }
+        // Sentinel past-end entry so binary_search on a byte offset that falls
+        // exactly on the last line's content still returns a valid `Err(row)`
+        // without landing on an `Ok` match at the real end. The `+ 1` ensures
+        // the sentinel is strictly greater than any real byte offset, including
+        // the trailing '\n' bytes between lines.
         line_starts.push(joined.len() + 1);
 
         // Pre-allocate per-line state.
