@@ -152,7 +152,8 @@ impl ParsedBuffer {
     /// gets its own `Element` entry covering only that row's portion.
     pub fn parse(lines: &[String]) -> Vec<ParsedLine> {
         // Build joined buffer and per-line byte-offset table.
-        let total_bytes: usize = lines.iter().map(|l| l.len()).sum::<usize>() + lines.len().saturating_sub(1);
+        let total_bytes: usize =
+            lines.iter().map(|l| l.len()).sum::<usize>() + lines.len().saturating_sub(1);
         let mut joined = String::with_capacity(total_bytes);
         let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len() + 1);
         for (i, line) in lines.iter().enumerate() {
@@ -320,7 +321,10 @@ impl ParsedBuffer {
                     // Mark content_vis for each row the event touches.
                     if sr == er {
                         if sr < content_vis.len() {
-                            for vis in content_vis[sr].iter_mut().skip(sc).take(ec.saturating_sub(sc))
+                            for vis in content_vis[sr]
+                                .iter_mut()
+                                .skip(sc)
+                                .take(ec.saturating_sub(sc))
                             {
                                 *vis = true;
                             }
@@ -329,7 +333,11 @@ impl ParsedBuffer {
                         // First row: from sc to end-of-line.
                         if sr < content_vis.len() {
                             let line_chars = content_vis[sr].len();
-                            for vis in content_vis[sr].iter_mut().skip(sc).take(line_chars.saturating_sub(sc)) {
+                            for vis in content_vis[sr]
+                                .iter_mut()
+                                .skip(sc)
+                                .take(line_chars.saturating_sub(sc))
+                            {
                                 *vis = true;
                             }
                         }
@@ -1389,7 +1397,10 @@ mod tests {
 
         // Child line has a Link element.
         assert!(
-            parsed[1].elements.iter().any(|e| e.kind == ElementKind::Link),
+            parsed[1]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Link),
             "nested list item should contain a Link element"
         );
     }
@@ -1399,7 +1410,12 @@ mod tests {
         // Regression: 2-space indent works on its own too.
         let lines = vec!["  - [link](url)".to_string()];
         let parsed = ParsedBuffer::parse(&lines);
-        assert!(parsed[0].elements.iter().any(|e| e.kind == ElementKind::Link));
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Link)
+        );
         assert_eq!(parsed[0].list_sigil_end(), Some(4));
     }
 
@@ -1408,7 +1424,12 @@ mod tests {
         // Ensure nothing about top-level rendering changed.
         let lines = vec!["- [link](url)".to_string()];
         let parsed = ParsedBuffer::parse(&lines);
-        assert!(parsed[0].elements.iter().any(|e| e.kind == ElementKind::Link));
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Link)
+        );
         assert_eq!(parsed[0].list_sigil_end(), Some(2));
     }
 
@@ -1427,10 +1448,7 @@ mod tests {
 
     #[test]
     fn buffer_parse_ordered_nested_list() {
-        let lines = vec![
-            "1. first".to_string(),
-            "    1. nested".to_string(),
-        ];
+        let lines = vec!["1. first".to_string(), "    1. nested".to_string()];
         let parsed = ParsedBuffer::parse(&lines);
         assert_eq!(parsed[0].list_sigil_end(), Some(3));
         assert_eq!(parsed[1].list_sigil_end(), Some(7));
@@ -1443,17 +1461,20 @@ mod tests {
         // whole-buffer parser, pulldown emits one HeadingH1 covering both rows and
         // row 1 has no Text events, so the underline renders in the sigil color.
         // Pin this behavior — a regression would silently un-style setext headings.
-        let lines = vec![
-            "My Heading".to_string(),
-            "==========".to_string(),
-        ];
+        let lines = vec!["My Heading".to_string(), "==========".to_string()];
         let parsed = ParsedBuffer::parse(&lines);
         assert!(
-            parsed[0].elements.iter().any(|e| e.kind == ElementKind::HeadingH1),
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::HeadingH1),
             "setext underline must tag row 0 as HeadingH1"
         );
         assert!(
-            parsed[1].elements.iter().any(|e| e.kind == ElementKind::HeadingH1),
+            parsed[1]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::HeadingH1),
             "setext underline must tag row 1 as HeadingH1"
         );
         // Row 1 has no Text events — content_vis is all false.
@@ -1467,17 +1488,20 @@ mod tests {
     fn buffer_parse_multiline_blockquote() {
         // Two blockquote lines in a row — pulldown folds them into one blockquote.
         // Both rows must carry a Blockquote element so rendering is consistent.
-        let lines = vec![
-            "> first line".to_string(),
-            "> second line".to_string(),
-        ];
+        let lines = vec!["> first line".to_string(), "> second line".to_string()];
         let parsed = ParsedBuffer::parse(&lines);
         assert!(
-            parsed[0].elements.iter().any(|e| e.kind == ElementKind::Blockquote),
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Blockquote),
             "row 0 must tag as Blockquote"
         );
         assert!(
-            parsed[1].elements.iter().any(|e| e.kind == ElementKind::Blockquote),
+            parsed[1]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Blockquote),
             "row 1 must tag as Blockquote"
         );
     }
