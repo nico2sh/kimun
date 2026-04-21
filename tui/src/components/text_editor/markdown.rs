@@ -468,7 +468,7 @@ impl MarkdownSpanner {
             None
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
-            detect_list_marker(logical_line)
+            parsed.list_sigil_end()
         } else {
             None
         };
@@ -606,7 +606,7 @@ impl MarkdownSpanner {
             None
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
-            detect_list_marker(logical_line)
+            parsed.list_sigil_end()
         } else {
             None
         };
@@ -667,7 +667,7 @@ impl MarkdownSpanner {
         let content_vis = &parsed.content_vis;
         let expanded: Option<usize> = cursor_col.and_then(|c| parsed.elem_at(c));
         let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
-        let list_sigil_end = detect_list_marker(logical_line);
+        let list_sigil_end = parsed.list_sigil_end();
 
         (0..total)
             .map(|pos| {
@@ -707,7 +707,7 @@ impl MarkdownSpanner {
             None
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
-            detect_list_marker(logical_line)
+            parsed.list_sigil_end()
         } else {
             None
         };
