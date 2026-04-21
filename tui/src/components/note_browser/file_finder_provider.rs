@@ -76,7 +76,7 @@ impl NoteBrowserProvider for FileFinderProvider {
 
         if query.is_empty() {
             let mut sorted = notes.clone();
-            sorted.sort_by(|(a, _), (b, _)| b.modified_secs.cmp(&a.modified_secs));
+            sorted.sort_by_key(|(entry, _)| std::cmp::Reverse(entry.modified_secs));
             return sorted
                 .iter()
                 .map(|(entry, content)| self.to_entry(entry, content))

@@ -179,8 +179,7 @@ impl Component for HelpDialog {
 
         // Render visible rows.
         let visible = &self.rows[self.scroll..];
-        let mut y = body_area.y;
-        for row in visible {
+        for (y, row) in (body_area.y..).zip(visible.iter()) {
             if y >= body_area.y + body_area.height {
                 break;
             }
@@ -225,7 +224,6 @@ impl Component for HelpDialog {
                     );
                 }
             }
-            y += 1;
         }
 
         f.render_widget(
