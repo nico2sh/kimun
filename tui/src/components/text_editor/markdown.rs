@@ -275,20 +275,25 @@ impl ParsedBuffer {
                     }
                 }
                 Event::Start(Tag::Item) => {
-                    // Compute sigil_end directly from the line at the Item's start
-                    // col. Pulldown-cmark reports Item range starting at the
-                    // marker char (after any leading indent). We walk past the
-                    // marker chars to find where the item's content begins.
+                    // Pulldown-cmark's Item range does not always start at the
+                    // marker character — for nested items it starts at the
+                    // indentation-beyond-the-parent boundary. Scan the line
+                    // from col 0 to find leading whitespace + marker instead
+                    // of relying on `sc`.
                     if sr < lines.len() && list_sigil_end[sr].is_none() {
-                        let chars_after: String = lines[sr].chars().skip(sc).collect();
-                        let marker_len = if chars_after.starts_with("- ")
-                            || chars_after.starts_with("* ")
-                            || chars_after.starts_with("+ ")
+                        let chars: Vec<char> = lines[sr].chars().collect();
+                        let mut idx = 0usize;
+                        while idx < chars.len() && (chars[idx] == ' ' || chars[idx] == '\t') {
+                            idx += 1;
+                        }
+                        let after_ws: String = chars.iter().skip(idx).collect();
+                        let marker_len = if after_ws.starts_with("- ")
+                            || after_ws.starts_with("* ")
+                            || after_ws.starts_with("+ ")
                         {
                             Some(2usize)
                         } else {
-                            // Ordered marker: digits followed by ". "
-                            let bytes = chars_after.as_bytes();
+                            let bytes = after_ws.as_bytes();
                             let mut i = 0;
                             while i < bytes.len() && bytes[i].is_ascii_digit() {
                                 i += 1;
@@ -300,7 +305,7 @@ impl ParsedBuffer {
                             }
                         };
                         if let Some(len) = marker_len {
-                            list_sigil_end[sr] = Some(sc + len);
+                            list_sigil_end[sr] = Some(idx + len);
                         }
                     }
                 }
@@ -1358,5 +1363,74 @@ mod tests {
         // pos 0 ('S') is plain text, rendered col = 0.
         let col2 = MarkdownSpanner::rendered_cursor_col("See [[Hi]] x", 0, 0, true, false);
         assert_eq!(col2, 0);
+    }
+
+    #[test]
+    fn buffer_parse_nested_list_under_parent() {
+        // Canonical nested-list pattern: parent at col 0, child indented 4.
+        let lines = vec![
+            "- parent".to_string(),
+            "    - [child link](url)".to_string(),
+        ];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert_eq!(parsed.len(), 2);
+
+        // Parent line: list sigil at col 2.
+        assert_eq!(parsed[0].list_sigil_end(), Some(2));
+
+        // Child line: pulldown-cmark reports the item marker at col 4.
+        assert_eq!(
+            parsed[1].list_sigil_end(),
+            Some(6),
+            "child's sigil_end should be after '    - ' (6 chars)"
+        );
+
+        // Child line has a Link element.
+        assert!(
+            parsed[1].elements.iter().any(|e| e.kind == ElementKind::Link),
+            "nested list item should contain a Link element"
+        );
+    }
+
+    #[test]
+    fn buffer_parse_standalone_2space_list_still_works() {
+        // Regression: 2-space indent works on its own too.
+        let lines = vec!["  - [link](url)".to_string()];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert!(parsed[0].elements.iter().any(|e| e.kind == ElementKind::Link));
+        assert_eq!(parsed[0].list_sigil_end(), Some(4));
+    }
+
+    #[test]
+    fn buffer_parse_top_level_unchanged() {
+        // Ensure nothing about top-level rendering changed.
+        let lines = vec!["- [link](url)".to_string()];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert!(parsed[0].elements.iter().any(|e| e.kind == ElementKind::Link));
+        assert_eq!(parsed[0].list_sigil_end(), Some(2));
+    }
+
+    #[test]
+    fn buffer_parse_empty_lines_preserved() {
+        let lines = vec![
+            "# Title".to_string(),
+            String::new(),
+            "paragraph".to_string(),
+        ];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[1].elements.len(), 0);
+        assert_eq!(parsed[1].content_vis.len(), 0);
+    }
+
+    #[test]
+    fn buffer_parse_ordered_nested_list() {
+        let lines = vec![
+            "1. first".to_string(),
+            "    1. nested".to_string(),
+        ];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert_eq!(parsed[0].list_sigil_end(), Some(3));
+        assert_eq!(parsed[1].list_sigil_end(), Some(7));
     }
 }
