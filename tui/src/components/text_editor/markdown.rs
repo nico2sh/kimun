@@ -262,6 +262,279 @@ impl ParsedLine {
     }
 }
 
+pub struct ParsedBuffer;
+
+impl ParsedBuffer {
+    /// Parse the entire editor buffer in a single pulldown-cmark pass and return
+    /// one `ParsedLine` per input row. Multi-row elements are split so each row
+    /// gets its own `Element` entry covering only that row's portion.
+    pub fn parse(lines: &[String]) -> Vec<ParsedLine> {
+        // Build joined buffer and per-line byte-offset table.
+        let total_bytes: usize = lines.iter().map(|l| l.len()).sum::<usize>() + lines.len().saturating_sub(1);
+        let mut joined = String::with_capacity(total_bytes);
+        let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len() + 1);
+        for (i, line) in lines.iter().enumerate() {
+            line_starts.push(joined.len());
+            joined.push_str(line);
+            if i + 1 < lines.len() {
+                joined.push('\n');
+            }
+        }
+        line_starts.push(joined.len() + 1);
+
+        // Pre-allocate per-line state.
+        let mut content_vis: Vec<Vec<bool>> = lines
+            .iter()
+            .map(|l| vec![false; l.chars().count()])
+            .collect();
+        let mut elements: Vec<Vec<Element>> = vec![Vec::new(); lines.len()];
+        let mut list_sigil_end: Vec<Option<usize>> = vec![None; lines.len()];
+
+        // Element stack: (start_row, start_col_char, kind).
+        // Spans are emitted on End events, split across rows they cross.
+        let mut stack: Vec<(usize, usize, ElementKind)> = Vec::new();
+
+        // `list_sigil_end[row]` is filled directly when we see `Start(Item)` on
+        // that row — we walk the line from the Item's start column past the
+        // marker (`- `, `* `, `+ `, or `N. `). This handles empty items (`- `)
+        // that have no Text event inside.
+
+        // Helper closure for pushing a multi-row span to `elements`.
+        let emit_span = |row_s: usize,
+                         col_s: usize,
+                         row_e: usize,
+                         col_e: usize,
+                         kind: ElementKind,
+                         elements: &mut Vec<Vec<Element>>,
+                         lines: &[String]| {
+            if row_s == row_e {
+                if col_e > col_s && row_s < elements.len() {
+                    elements[row_s].push(Element {
+                        start_char: col_s,
+                        end_char: col_e,
+                        kind,
+                    });
+                }
+                return;
+            }
+            // Multi-row: first row extends to end-of-line, middle rows cover whole line,
+            // last row covers 0..col_e.
+            if row_s < elements.len() {
+                let end_first = lines[row_s].chars().count();
+                if end_first > col_s {
+                    elements[row_s].push(Element {
+                        start_char: col_s,
+                        end_char: end_first,
+                        kind,
+                    });
+                }
+            }
+            for r in (row_s + 1)..row_e {
+                if r < elements.len() {
+                    let line_len = lines[r].chars().count();
+                    if line_len > 0 {
+                        elements[r].push(Element {
+                            start_char: 0,
+                            end_char: line_len,
+                            kind,
+                        });
+                    }
+                }
+            }
+            if row_e < elements.len() && col_e > 0 {
+                elements[row_e].push(Element {
+                    start_char: 0,
+                    end_char: col_e,
+                    kind,
+                });
+            }
+        };
+
+        let parser = Parser::new_ext(&joined, PARSER_OPTIONS);
+        for (event, range) in parser.into_offset_iter() {
+            let (sr, sc) = byte_to_row_col(range.start, lines, &line_starts);
+            let (er, ec) = byte_to_row_col(range.end, lines, &line_starts);
+            match event {
+                Event::Start(Tag::Strong) => stack.push((sr, sc, ElementKind::Bold)),
+                Event::End(TagEnd::Strong) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::Emphasis) => stack.push((sr, sc, ElementKind::Italic)),
+                Event::End(TagEnd::Emphasis) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::Link { .. }) => stack.push((sr, sc, ElementKind::Link)),
+                Event::End(TagEnd::Link) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::Heading { level, .. }) => {
+                    let kind = match level {
+                        HeadingLevel::H1 => ElementKind::HeadingH1,
+                        HeadingLevel::H2 => ElementKind::HeadingH2,
+                        _ => ElementKind::HeadingH3,
+                    };
+                    stack.push((sr, sc, kind));
+                }
+                Event::End(TagEnd::Heading(_)) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::BlockQuote(_)) => stack.push((sr, sc, ElementKind::Blockquote)),
+                Event::End(TagEnd::BlockQuote(_)) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::Item) => {
+                    // Compute sigil_end directly from the line at the Item's start
+                    // col. Pulldown-cmark reports Item range starting at the
+                    // marker char (after any leading indent). We walk past the
+                    // marker chars to find where the item's content begins.
+                    if sr < lines.len() && list_sigil_end[sr].is_none() {
+                        let chars_after: String = lines[sr].chars().skip(sc).collect();
+                        let marker_len = if chars_after.starts_with("- ")
+                            || chars_after.starts_with("* ")
+                            || chars_after.starts_with("+ ")
+                        {
+                            Some(2usize)
+                        } else {
+                            // Ordered marker: digits followed by ". "
+                            let bytes = chars_after.as_bytes();
+                            let mut i = 0;
+                            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                                i += 1;
+                            }
+                            if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
+                                Some(i + 2)
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(len) = marker_len {
+                            list_sigil_end[sr] = Some(sc + len);
+                        }
+                    }
+                }
+                Event::End(TagEnd::Item) => {}
+                Event::Code(ref code_text) => {
+                    // Inline code — always single-line in practice.
+                    if sr == er && sr < lines.len() {
+                        let code_len = code_text.chars().count();
+                        let range_char_len = ec.saturating_sub(sc);
+                        let sigil_each = range_char_len.saturating_sub(code_len) / 2;
+                        let cs = sc + sigil_each;
+                        for vis in content_vis[sr].iter_mut().skip(cs).take(code_len) {
+                            *vis = true;
+                        }
+                        elements[sr].push(Element {
+                            start_char: sc,
+                            end_char: ec,
+                            kind: ElementKind::InlineCode,
+                        });
+                    }
+                }
+                Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
+                    // Mark content_vis for each row the event touches.
+                    if sr == er {
+                        if sr < content_vis.len() {
+                            for vis in content_vis[sr].iter_mut().skip(sc).take(ec.saturating_sub(sc))
+                            {
+                                *vis = true;
+                            }
+                        }
+                    } else {
+                        // First row: from sc to end-of-line.
+                        if sr < content_vis.len() {
+                            let line_chars = content_vis[sr].len();
+                            for vis in content_vis[sr].iter_mut().skip(sc).take(line_chars.saturating_sub(sc)) {
+                                *vis = true;
+                            }
+                        }
+                        // Middle rows: whole line.
+                        for r in (sr + 1)..er {
+                            if r < content_vis.len() {
+                                for vis in content_vis[r].iter_mut() {
+                                    *vis = true;
+                                }
+                            }
+                        }
+                        // Last row: 0..ec.
+                        if er < content_vis.len() {
+                            for vis in content_vis[er].iter_mut().take(ec) {
+                                *vis = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Per-line post-processing: heading trailing whitespace, wikilinks, bitmasks.
+        let mut out: Vec<ParsedLine> = Vec::with_capacity(lines.len());
+        for (row, line) in lines.iter().enumerate() {
+            let mut cv = std::mem::take(&mut content_vis[row]);
+            let mut els = std::mem::take(&mut elements[row]);
+
+            // Heading trailing-whitespace fix.
+            for e in &els {
+                if matches!(
+                    e.kind,
+                    ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
+                ) {
+                    for i in (e.start_char..e.end_char).rev() {
+                        match line.chars().nth(i) {
+                            Some(' ' | '\t') => {
+                                if i < cv.len() {
+                                    cv[i] = true;
+                                }
+                            }
+                            _ => break,
+                        }
+                    }
+                }
+            }
+
+            detect_wikilinks(line, &mut cv, &mut els);
+
+            debug_assert!(
+                els.len() < 255,
+                "Too many elements on a single line ({})",
+                els.len()
+            );
+            let total = line.chars().count();
+            let mut elem_vis = vec![false; total];
+            let mut elem_index = vec![0u8; total];
+            for (i, e) in els.iter().enumerate() {
+                let tag = (i + 1).min(255) as u8;
+                for pos in e.start_char..e.end_char {
+                    if pos < total {
+                        elem_vis[pos] = true;
+                        elem_index[pos] = tag;
+                    }
+                }
+            }
+
+            out.push(ParsedLine {
+                elements: els,
+                content_vis: cv,
+                elem_vis,
+                elem_index,
+                list_sigil_end: list_sigil_end[row],
+            });
+        }
+
+        out
+    }
+}
+
 pub struct MarkdownSpanner;
 
 impl MarkdownSpanner {
@@ -766,6 +1039,24 @@ fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Ele
             kind: ElementKind::WikiLink,
         });
     }
+}
+
+/// Convert a byte offset in the joined buffer to `(row, char_col)` within
+/// `lines`. Assumes the joined buffer uses `'\n'` separators (one byte each)
+/// between consecutive lines.
+fn byte_to_row_col(byte_offset: usize, lines: &[String], line_starts: &[usize]) -> (usize, usize) {
+    // Binary-search the row whose start byte is <= byte_offset.
+    let row = match line_starts.binary_search(&byte_offset) {
+        Ok(r) => r,
+        Err(r) => r.saturating_sub(1),
+    };
+    let row = row.min(lines.len().saturating_sub(1));
+    let within = byte_offset - line_starts[row];
+    let line = &lines[row];
+    // Clamp: if `byte_offset` is the trailing '\n', treat as end-of-line.
+    let byte_in_line = within.min(line.len());
+    let char_col = line[..byte_in_line].chars().count();
+    (row, char_col)
 }
 
 /// Returns the length (in chars) of the list marker prefix, or None if not a list line.
