@@ -63,146 +63,34 @@ pub struct ParsedLine {
     /// Per-char element index, 1-based (0 = no element). Enables O(1) `elem_at`.
     /// Stored as `u8`; supports up to 255 elements per line (far more than any real line).
     elem_index: Vec<u8>,
+    /// Char offset where the list-item sigil (indent + marker + space) ends on
+    /// this line, or `None` if this line is not the first line of a list item.
+    list_sigil_end: Option<usize>,
 }
 
 impl ParsedLine {
-    /// Single pulldown-cmark pass that builds `elements`, `content_vis`, `elem_vis`,
-    /// and `elem_index` together, halving the parse cost vs. two separate passes.
+    /// Parse a single line in isolation. Internally delegates to
+    /// `ParsedBuffer::parse`; kept for test convenience.
+    ///
+    /// When the line looks like an indented list item (e.g. `    - foo` or
+    /// `\t- foo`), pulldown-cmark treats it as an indented code block rather
+    /// than a list item on its own. To preserve the real-editor behaviour
+    /// (where context from surrounding lines resolves it as a nested list
+    /// item), prepend a synthetic parent list marker before handing the input
+    /// to `ParsedBuffer::parse` and return the result for the original line.
     pub fn parse(line: &str) -> Self {
-        let total = line.chars().count();
-        let mut content_vis = vec![false; total];
-        let mut elements: Vec<Element> = Vec::new();
-        let mut stack: Vec<(usize, ElementKind)> = Vec::new();
-
-        let parser = Parser::new_ext(line, PARSER_OPTIONS);
-        for (event, range) in parser.into_offset_iter() {
-            let sc = line[..range.start].chars().count();
-            let ec = line[..range.end].chars().count();
-            match event {
-                Event::Start(Tag::Strong) => stack.push((sc, ElementKind::Bold)),
-                Event::End(TagEnd::Strong) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Start(Tag::Emphasis) => stack.push((sc, ElementKind::Italic)),
-                Event::End(TagEnd::Emphasis) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Start(Tag::Link { .. }) => stack.push((sc, ElementKind::Link)),
-                Event::End(TagEnd::Link) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Code(ref code_text) => {
-                    // Mark only the code text chars as visible (exclude backtick sigils).
-                    let code_len = code_text.chars().count();
-                    let range_char_len = line[range.start..range.end].chars().count();
-                    let sigil_each = range_char_len.saturating_sub(code_len) / 2;
-                    let cs = sc + sigil_each;
-                    for vis in content_vis.iter_mut().skip(cs).take(code_len) {
-                        *vis = true;
-                    }
-                    elements.push(Element {
-                        start_char: sc,
-                        end_char: ec,
-                        kind: ElementKind::InlineCode,
-                    });
-                }
-                Event::Start(Tag::Heading { level, .. }) => {
-                    let kind = match level {
-                        HeadingLevel::H1 => ElementKind::HeadingH1,
-                        HeadingLevel::H2 => ElementKind::HeadingH2,
-                        _ => ElementKind::HeadingH3,
-                    };
-                    stack.push((sc, kind));
-                }
-                Event::End(TagEnd::Heading(_)) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Start(Tag::BlockQuote(_)) => stack.push((sc, ElementKind::Blockquote)),
-                Event::End(TagEnd::BlockQuote(_)) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
-                    for vis in content_vis.iter_mut().skip(sc).take(ec.saturating_sub(sc)) {
-                        *vis = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // pulldown-cmark strips trailing whitespace from heading Text events, so those
-        // spaces never appear in Event::Text and are left false in content_vis. Mark them
-        // as content so the editor keeps them visible and cursor mapping stays correct.
-        for e in &elements {
-            if matches!(
-                e.kind,
-                ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
-            ) {
-                for i in (e.start_char..e.end_char).rev() {
-                    match line.chars().nth(i) {
-                        Some(' ' | '\t') => content_vis[i] = true,
-                        _ => break,
-                    }
-                }
-            }
-        }
-
-        // Detect wikilinks ([[target]]) which pulldown-cmark treats as plain text.
-        detect_wikilinks(line, &mut content_vis, &mut elements);
-
-        // Build O(1) lookup bitmasks from the collected element ranges.
-        debug_assert!(
-            elements.len() < 255,
-            "Too many elements on a single line ({})",
-            elements.len()
-        );
-        let mut elem_vis = vec![false; total];
-        let mut elem_index = vec![0u8; total];
-        for (i, e) in elements.iter().enumerate() {
-            let tag = (i + 1).min(255) as u8; // 1-based; 0 reserved for "no element"
-            for pos in e.start_char..e.end_char {
-                if pos < total {
-                    elem_vis[pos] = true;
-                    elem_index[pos] = tag;
-                }
-            }
-        }
-
-        Self {
-            elements,
-            content_vis,
-            elem_vis,
-            elem_index,
+        let owned = line.to_string();
+        if needs_synthetic_list_parent(line) {
+            // "- " opens a list at column 0; the indented `line` that follows
+            // becomes a nested list item with full context.
+            ParsedBuffer::parse(&["- ".to_string(), owned])
+                .into_iter()
+                .last()
+                .expect("ParsedBuffer::parse returns one row per input line")
+        } else {
+            ParsedBuffer::parse(std::slice::from_ref(&owned))
+                .pop()
+                .expect("ParsedBuffer::parse always returns at least one ParsedLine")
         }
     }
 
@@ -247,6 +135,285 @@ impl ParsedLine {
                 }
                 first_content
             })
+    }
+
+    /// Char offset where the list-item sigil ends on this line, or `None` if this
+    /// line is not the first line of a list item.
+    pub fn list_sigil_end(&self) -> Option<usize> {
+        self.list_sigil_end
+    }
+}
+
+pub struct ParsedBuffer;
+
+impl ParsedBuffer {
+    /// Parse the entire editor buffer in a single pulldown-cmark pass and return
+    /// one `ParsedLine` per input row. Multi-row elements are split so each row
+    /// gets its own `Element` entry covering only that row's portion.
+    pub fn parse(lines: &[String]) -> Vec<ParsedLine> {
+        // Build joined buffer and per-line byte-offset table.
+        let total_bytes: usize =
+            lines.iter().map(|l| l.len()).sum::<usize>() + lines.len().saturating_sub(1);
+        let mut joined = String::with_capacity(total_bytes);
+        let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len() + 1);
+        for (i, line) in lines.iter().enumerate() {
+            line_starts.push(joined.len());
+            joined.push_str(line);
+            if i + 1 < lines.len() {
+                joined.push('\n');
+            }
+        }
+        // Sentinel past-end entry so binary_search on a byte offset that falls
+        // exactly on the last line's content still returns a valid `Err(row)`
+        // without landing on an `Ok` match at the real end. The `+ 1` ensures
+        // the sentinel is strictly greater than any real byte offset, including
+        // the trailing '\n' bytes between lines.
+        line_starts.push(joined.len() + 1);
+
+        // Pre-allocate per-line state.
+        let mut content_vis: Vec<Vec<bool>> = lines
+            .iter()
+            .map(|l| vec![false; l.chars().count()])
+            .collect();
+        let mut elements: Vec<Vec<Element>> = vec![Vec::new(); lines.len()];
+        let mut list_sigil_end: Vec<Option<usize>> = vec![None; lines.len()];
+
+        // Element stack: (start_row, start_col_char, kind).
+        // Spans are emitted on End events, split across rows they cross.
+        let mut stack: Vec<(usize, usize, ElementKind)> = Vec::new();
+
+        // `list_sigil_end[row]` is filled directly when we see `Start(Item)` on
+        // that row — we walk the line from the Item's start column past the
+        // marker (`- `, `* `, `+ `, or `N. `). This handles empty items (`- `)
+        // that have no Text event inside.
+
+        // Helper closure for pushing a multi-row span to `elements`.
+        let emit_span = |row_s: usize,
+                         col_s: usize,
+                         row_e: usize,
+                         col_e: usize,
+                         kind: ElementKind,
+                         elements: &mut Vec<Vec<Element>>,
+                         lines: &[String]| {
+            if row_s == row_e {
+                if col_e > col_s && row_s < elements.len() {
+                    elements[row_s].push(Element {
+                        start_char: col_s,
+                        end_char: col_e,
+                        kind,
+                    });
+                }
+                return;
+            }
+            // Multi-row: first row extends to end-of-line, middle rows cover whole line,
+            // last row covers 0..col_e.
+            if row_s < elements.len() {
+                let end_first = lines[row_s].chars().count();
+                if end_first > col_s {
+                    elements[row_s].push(Element {
+                        start_char: col_s,
+                        end_char: end_first,
+                        kind,
+                    });
+                }
+            }
+            for r in (row_s + 1)..row_e {
+                if r < elements.len() {
+                    let line_len = lines[r].chars().count();
+                    if line_len > 0 {
+                        elements[r].push(Element {
+                            start_char: 0,
+                            end_char: line_len,
+                            kind,
+                        });
+                    }
+                }
+            }
+            if row_e < elements.len() && col_e > 0 {
+                elements[row_e].push(Element {
+                    start_char: 0,
+                    end_char: col_e,
+                    kind,
+                });
+            }
+        };
+
+        let parser = Parser::new_ext(&joined, PARSER_OPTIONS);
+        for (event, range) in parser.into_offset_iter() {
+            let (sr, sc) = byte_to_row_col(range.start, lines, &line_starts);
+            let (er, ec) = byte_to_row_col(range.end, lines, &line_starts);
+            match event {
+                Event::Start(Tag::Strong) => stack.push((sr, sc, ElementKind::Bold)),
+                Event::End(TagEnd::Strong) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::Emphasis) => stack.push((sr, sc, ElementKind::Italic)),
+                Event::End(TagEnd::Emphasis) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::Link { .. }) => stack.push((sr, sc, ElementKind::Link)),
+                Event::End(TagEnd::Link) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::Heading { level, .. }) => {
+                    let kind = match level {
+                        HeadingLevel::H1 => ElementKind::HeadingH1,
+                        HeadingLevel::H2 => ElementKind::HeadingH2,
+                        _ => ElementKind::HeadingH3,
+                    };
+                    stack.push((sr, sc, kind));
+                }
+                Event::End(TagEnd::Heading(_)) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::BlockQuote(_)) => stack.push((sr, sc, ElementKind::Blockquote)),
+                Event::End(TagEnd::BlockQuote(_)) => {
+                    if let Some((s_r, s_c, k)) = stack.pop() {
+                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
+                    }
+                }
+                Event::Start(Tag::Item)
+                    // Pulldown-cmark's Item range does not always start at the
+                    // marker character — for nested items it starts at the
+                    // indentation-beyond-the-parent boundary, which can be
+                    // several chars before the marker. Scan the line from col
+                    // 0 to find leading whitespace + marker instead of relying
+                    // on `sc`.
+                    if sr < lines.len() && list_sigil_end[sr].is_none() =>
+                {
+                    let chars: Vec<char> = lines[sr].chars().collect();
+                    let mut idx = 0usize;
+                    while idx < chars.len() && (chars[idx] == ' ' || chars[idx] == '\t') {
+                        idx += 1;
+                    }
+                    let after_ws: String = chars.iter().skip(idx).collect();
+                    if let Some(len) = list_marker_len(&after_ws) {
+                        list_sigil_end[sr] = Some(idx + len);
+                    }
+                }
+                Event::End(TagEnd::Item) => {}
+                Event::Code(ref code_text) if sr == er && sr < lines.len() => {
+                    // Inline code — always single-line in practice.
+                    let code_len = code_text.chars().count();
+                    let range_char_len = ec.saturating_sub(sc);
+                    let sigil_each = range_char_len.saturating_sub(code_len) / 2;
+                    let cs = sc + sigil_each;
+                    for vis in content_vis[sr].iter_mut().skip(cs).take(code_len) {
+                        *vis = true;
+                    }
+                    elements[sr].push(Element {
+                        start_char: sc,
+                        end_char: ec,
+                        kind: ElementKind::InlineCode,
+                    });
+                }
+                Event::Text(_) | Event::SoftBreak | Event::HardBreak => {
+                    // Mark content_vis for each row the event touches.
+                    if sr == er {
+                        if sr < content_vis.len() {
+                            for vis in content_vis[sr]
+                                .iter_mut()
+                                .skip(sc)
+                                .take(ec.saturating_sub(sc))
+                            {
+                                *vis = true;
+                            }
+                        }
+                    } else {
+                        // First row: from sc to end-of-line.
+                        if sr < content_vis.len() {
+                            let line_chars = content_vis[sr].len();
+                            for vis in content_vis[sr]
+                                .iter_mut()
+                                .skip(sc)
+                                .take(line_chars.saturating_sub(sc))
+                            {
+                                *vis = true;
+                            }
+                        }
+                        // Middle rows: whole line.
+                        for r in (sr + 1)..er {
+                            if r < content_vis.len() {
+                                for vis in content_vis[r].iter_mut() {
+                                    *vis = true;
+                                }
+                            }
+                        }
+                        // Last row: 0..ec.
+                        if er < content_vis.len() {
+                            for vis in content_vis[er].iter_mut().take(ec) {
+                                *vis = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Per-line post-processing: heading trailing whitespace, wikilinks, bitmasks.
+        let mut out: Vec<ParsedLine> = Vec::with_capacity(lines.len());
+        for (row, line) in lines.iter().enumerate() {
+            let mut cv = std::mem::take(&mut content_vis[row]);
+            let mut els = std::mem::take(&mut elements[row]);
+
+            // Heading trailing-whitespace fix.
+            for e in &els {
+                if matches!(
+                    e.kind,
+                    ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
+                ) {
+                    for i in (e.start_char..e.end_char).rev() {
+                        match line.chars().nth(i) {
+                            Some(' ' | '\t') => {
+                                if i < cv.len() {
+                                    cv[i] = true;
+                                }
+                            }
+                            _ => break,
+                        }
+                    }
+                }
+            }
+
+            detect_wikilinks(line, &mut cv, &mut els);
+
+            debug_assert!(
+                els.len() < 255,
+                "Too many elements on a single line ({})",
+                els.len()
+            );
+            let total = line.chars().count();
+            let mut elem_vis = vec![false; total];
+            let mut elem_index = vec![0u8; total];
+            for (i, e) in els.iter().enumerate() {
+                let tag = (i + 1).min(255) as u8;
+                for pos in e.start_char..e.end_char {
+                    if pos < total {
+                        elem_vis[pos] = true;
+                        elem_index[pos] = tag;
+                    }
+                }
+            }
+
+            out.push(ParsedLine {
+                elements: els,
+                content_vis: cv,
+                elem_vis,
+                elem_index,
+                list_sigil_end: list_sigil_end[row],
+            });
+        }
+
+        out
     }
 }
 
@@ -456,7 +623,7 @@ impl MarkdownSpanner {
             None
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
-            detect_list_marker(logical_line)
+            parsed.list_sigil_end()
         } else {
             None
         };
@@ -594,7 +761,7 @@ impl MarkdownSpanner {
             None
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
-            detect_list_marker(logical_line)
+            parsed.list_sigil_end()
         } else {
             None
         };
@@ -655,7 +822,7 @@ impl MarkdownSpanner {
         let content_vis = &parsed.content_vis;
         let expanded: Option<usize> = cursor_col.and_then(|c| parsed.elem_at(c));
         let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
-        let list_sigil_end = detect_list_marker(logical_line);
+        let list_sigil_end = parsed.list_sigil_end();
 
         (0..total)
             .map(|pos| {
@@ -695,7 +862,7 @@ impl MarkdownSpanner {
             None
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
-            detect_list_marker(logical_line)
+            parsed.list_sigil_end()
         } else {
             None
         };
@@ -756,20 +923,55 @@ fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Ele
     }
 }
 
-/// Returns the length (in chars) of the list marker prefix, or None if not a list line.
-fn detect_list_marker(line: &str) -> Option<usize> {
-    if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
+/// Detects whether a line is an indented list item (leading spaces or tab,
+/// followed by `-`/`*`/`+`/digit-dot + space). Used by `ParsedLine::parse`
+/// to decide whether to feed pulldown-cmark a synthetic parent-list context
+/// for single-line degenerate inputs.
+fn needs_synthetic_list_parent(line: &str) -> bool {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    if trimmed.len() == line.len() {
+        return false; // no leading whitespace → nothing to compensate for
+    }
+    list_marker_len(trimmed).is_some()
+}
+
+/// If the string begins with an unordered list marker (`- `, `* `, `+ `) or an
+/// ordered list marker (digits followed by `. `), returns the marker's length
+/// in bytes (including the trailing space). Otherwise `None`.
+///
+/// Digits are ASCII only, so byte length == char length here.
+fn list_marker_len(s: &str) -> Option<usize> {
+    if s.starts_with("- ") || s.starts_with("* ") || s.starts_with("+ ") {
         return Some(2);
     }
-    let bytes = line.as_bytes();
+    let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() && bytes[i].is_ascii_digit() {
         i += 1;
     }
     if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
-        return Some(i + 2);
+        Some(i + 2)
+    } else {
+        None
     }
-    None
+}
+
+/// Convert a byte offset in the joined buffer to `(row, char_col)` within
+/// `lines`. Assumes the joined buffer uses `'\n'` separators (one byte each)
+/// between consecutive lines.
+fn byte_to_row_col(byte_offset: usize, lines: &[String], line_starts: &[usize]) -> (usize, usize) {
+    // Binary-search the row whose start byte is <= byte_offset.
+    let row = match line_starts.binary_search(&byte_offset) {
+        Ok(r) => r,
+        Err(r) => r.saturating_sub(1),
+    };
+    let row = row.min(lines.len().saturating_sub(1));
+    let within = byte_offset - line_starts[row];
+    let line = &lines[row];
+    // Clamp: if `byte_offset` is the trailing '\n', treat as end-of-line.
+    let byte_in_line = within.min(line.len());
+    let char_col = line[..byte_in_line].chars().count();
+    (row, char_col)
 }
 
 fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -> Style {
@@ -965,6 +1167,76 @@ mod tests {
         );
     }
     #[test]
+    fn nested_list_4space_link_rendered() {
+        // 4-space indent + list marker + markdown link.
+        let line = "    - [my link](url)";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        // Link styling must appear (UNDERLINED modifier) and the raw "](url)" sigils
+        // must be hidden.
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::UNDERLINED)),
+            "link text should be underlined on a 4-space-indented nested list item"
+        );
+        let rendered: String = s.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(
+            rendered.contains("my link"),
+            "link display text should be visible; got {:?}",
+            rendered
+        );
+        assert!(
+            !rendered.contains("](url)"),
+            "link URL sigil should be hidden; got {:?}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn nested_list_tab_bold_rendered() {
+        let line = "\t- **bold nested**";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::BOLD)),
+            "bold text should be styled on a tab-indented nested list item"
+        );
+        let rendered: String = s.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(
+            !rendered.contains("**"),
+            "bold markers should be hidden; got {:?}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn nested_list_4space_wikilink_rendered() {
+        let line = "    - [[Target Note]]";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        let rendered: String = s.iter().map(|sp| sp.content.as_ref()).collect();
+        assert!(
+            !rendered.contains("[["),
+            "wikilink brackets should be hidden; got {:?}",
+            rendered
+        );
+        assert!(
+            rendered.contains("Target Note"),
+            "wikilink target text should render; got {:?}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn nested_list_2space_still_renders_link() {
+        // Existing 2-space case — must not regress.
+        let line = "  - [link](url)";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::UNDERLINED))
+        );
+    }
+
+    #[test]
     fn empty_heading_shows_hash_sigil() {
         let line = "# ";
         let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
@@ -1099,5 +1371,136 @@ mod tests {
         // pos 0 ('S') is plain text, rendered col = 0.
         let col2 = MarkdownSpanner::rendered_cursor_col("See [[Hi]] x", 0, 0, true, false);
         assert_eq!(col2, 0);
+    }
+
+    #[test]
+    fn buffer_parse_nested_list_under_parent() {
+        // Canonical nested-list pattern: parent at col 0, child indented 4.
+        let lines = vec![
+            "- parent".to_string(),
+            "    - [child link](url)".to_string(),
+        ];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert_eq!(parsed.len(), 2);
+
+        // Parent line: list sigil at col 2.
+        assert_eq!(parsed[0].list_sigil_end(), Some(2));
+
+        // Child line: pulldown-cmark reports the item marker at col 4.
+        assert_eq!(
+            parsed[1].list_sigil_end(),
+            Some(6),
+            "child's sigil_end should be after '    - ' (6 chars)"
+        );
+
+        // Child line has a Link element.
+        assert!(
+            parsed[1]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Link),
+            "nested list item should contain a Link element"
+        );
+    }
+
+    #[test]
+    fn buffer_parse_standalone_2space_list_still_works() {
+        // Regression: 2-space indent works on its own too.
+        let lines = vec!["  - [link](url)".to_string()];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Link)
+        );
+        assert_eq!(parsed[0].list_sigil_end(), Some(4));
+    }
+
+    #[test]
+    fn buffer_parse_top_level_unchanged() {
+        // Ensure nothing about top-level rendering changed.
+        let lines = vec!["- [link](url)".to_string()];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Link)
+        );
+        assert_eq!(parsed[0].list_sigil_end(), Some(2));
+    }
+
+    #[test]
+    fn buffer_parse_empty_lines_preserved() {
+        let lines = vec![
+            "# Title".to_string(),
+            String::new(),
+            "paragraph".to_string(),
+        ];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[1].elements.len(), 0);
+        assert_eq!(parsed[1].content_vis.len(), 0);
+    }
+
+    #[test]
+    fn buffer_parse_ordered_nested_list() {
+        let lines = vec!["1. first".to_string(), "    1. nested".to_string()];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert_eq!(parsed[0].list_sigil_end(), Some(3));
+        assert_eq!(parsed[1].list_sigil_end(), Some(7));
+    }
+
+    #[test]
+    fn buffer_parse_setext_h1_spans_two_rows() {
+        // Setext H1: the `=====` line is part of the heading span.
+        // Under the old per-line parser, row 1 rendered as plain text; under the
+        // whole-buffer parser, pulldown emits one HeadingH1 covering both rows and
+        // row 1 has no Text events, so the underline renders in the sigil color.
+        // Pin this behavior — a regression would silently un-style setext headings.
+        let lines = vec!["My Heading".to_string(), "==========".to_string()];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::HeadingH1),
+            "setext underline must tag row 0 as HeadingH1"
+        );
+        assert!(
+            parsed[1]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::HeadingH1),
+            "setext underline must tag row 1 as HeadingH1"
+        );
+        // Row 1 has no Text events — content_vis is all false.
+        assert!(
+            parsed[1].content_vis.iter().all(|v| !v),
+            "setext underline row has no content"
+        );
+    }
+
+    #[test]
+    fn buffer_parse_multiline_blockquote() {
+        // Two blockquote lines in a row — pulldown folds them into one blockquote.
+        // Both rows must carry a Blockquote element so rendering is consistent.
+        let lines = vec!["> first line".to_string(), "> second line".to_string()];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert!(
+            parsed[0]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Blockquote),
+            "row 0 must tag as Blockquote"
+        );
+        assert!(
+            parsed[1]
+                .elements
+                .iter()
+                .any(|e| e.kind == ElementKind::Blockquote),
+            "row 1 must tag as Blockquote"
+        );
     }
 }
