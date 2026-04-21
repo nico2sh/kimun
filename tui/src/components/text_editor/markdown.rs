@@ -63,6 +63,9 @@ pub struct ParsedLine {
     /// Per-char element index, 1-based (0 = no element). Enables O(1) `elem_at`.
     /// Stored as `u8`; supports up to 255 elements per line (far more than any real line).
     elem_index: Vec<u8>,
+    /// Char offset where the list-item sigil (indent + marker + space) ends on
+    /// this line, or `None` if this line is not the first line of a list item.
+    list_sigil_end: Option<usize>,
 }
 
 impl ParsedLine {
@@ -198,11 +201,14 @@ impl ParsedLine {
             }
         }
 
+        let list_sigil_end = detect_list_marker(line);
+
         Self {
             elements,
             content_vis,
             elem_vis,
             elem_index,
+            list_sigil_end,
         }
     }
 
@@ -247,6 +253,12 @@ impl ParsedLine {
                 }
                 first_content
             })
+    }
+
+    /// Char offset where the list-item sigil ends on this line, or `None` if this
+    /// line is not the first line of a list item.
+    pub fn list_sigil_end(&self) -> Option<usize> {
+        self.list_sigil_end
     }
 }
 
