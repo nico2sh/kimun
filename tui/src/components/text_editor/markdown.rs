@@ -1433,4 +1433,50 @@ mod tests {
         assert_eq!(parsed[0].list_sigil_end(), Some(3));
         assert_eq!(parsed[1].list_sigil_end(), Some(7));
     }
+
+    #[test]
+    fn buffer_parse_setext_h1_spans_two_rows() {
+        // Setext H1: the `=====` line is part of the heading span.
+        // Under the old per-line parser, row 1 rendered as plain text; under the
+        // whole-buffer parser, pulldown emits one HeadingH1 covering both rows and
+        // row 1 has no Text events, so the underline renders in the sigil color.
+        // Pin this behavior — a regression would silently un-style setext headings.
+        let lines = vec![
+            "My Heading".to_string(),
+            "==========".to_string(),
+        ];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert!(
+            parsed[0].elements.iter().any(|e| e.kind == ElementKind::HeadingH1),
+            "setext underline must tag row 0 as HeadingH1"
+        );
+        assert!(
+            parsed[1].elements.iter().any(|e| e.kind == ElementKind::HeadingH1),
+            "setext underline must tag row 1 as HeadingH1"
+        );
+        // Row 1 has no Text events — content_vis is all false.
+        assert!(
+            parsed[1].content_vis.iter().all(|v| !v),
+            "setext underline row has no content"
+        );
+    }
+
+    #[test]
+    fn buffer_parse_multiline_blockquote() {
+        // Two blockquote lines in a row — pulldown folds them into one blockquote.
+        // Both rows must carry a Blockquote element so rendering is consistent.
+        let lines = vec![
+            "> first line".to_string(),
+            "> second line".to_string(),
+        ];
+        let parsed = ParsedBuffer::parse(&lines);
+        assert!(
+            parsed[0].elements.iter().any(|e| e.kind == ElementKind::Blockquote),
+            "row 0 must tag as Blockquote"
+        );
+        assert!(
+            parsed[1].elements.iter().any(|e| e.kind == ElementKind::Blockquote),
+            "row 1 must tag as Blockquote"
+        );
+    }
 }
