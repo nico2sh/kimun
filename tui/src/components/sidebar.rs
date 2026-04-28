@@ -7,15 +7,15 @@ use kimun_core::SearchResult;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, ResultType};
 use ratatui::Frame;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry, SortField, SortOrder};
+use crate::components::{Component, rect_contains};
 use crate::keys::KeyBindings;
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
@@ -29,6 +29,10 @@ pub struct SidebarComponent {
     default_sort_order: SortOrder,
     journal_sort_field: SortField,
     journal_sort_order: SortOrder,
+    /// Full sidebar bounds (header + search + list).
+    rendered_rect: Rect,
+    /// File-list portion only — used to translate mouse rows into list indices.
+    list_rect: Rect,
 }
 
 impl SidebarComponent {
@@ -47,6 +51,8 @@ impl SidebarComponent {
             default_sort_order: SortOrder::from(settings.default_sort_order),
             journal_sort_field: SortField::from(settings.journal_sort_field),
             journal_sort_order: SortOrder::from(settings.journal_sort_order),
+            rendered_rect: Rect::default(),
+            list_rect: Rect::default(),
         }
     }
 
@@ -95,6 +101,26 @@ impl SidebarComponent {
         }
     }
 
+    /// Activate the currently-selected entry. Special-cases `CreateNote` so the
+    /// note is materialised on disk before `OpenPath` fires; regular entries go
+    /// through `FileListComponent::activate_selected` and just send `OpenPath`.
+    fn activate_selected_entry(&self, tx: &AppTx) {
+        if let Some(FileListEntry::CreateNote { path, .. }) = self.file_list.selected_entry() {
+            let path = path.clone();
+            let vault = Arc::clone(&self.vault);
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = vault.load_or_create_note(&path, None).await {
+                    tracing::warn!("create note failed for {path}: {e}");
+                    return;
+                }
+                tx2.send(AppEvent::OpenPath(path)).ok();
+            });
+            return;
+        }
+        self.file_list.activate_selected(tx);
+    }
+
     fn poll_loading(&mut self) {
         let Some(rx) = &self.pending_rx else { return };
         loop {
@@ -132,23 +158,44 @@ fn format_journal_date(date: NaiveDate) -> String {
 
 impl Component for SidebarComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        // Intercept Enter when the selected entry is a CreateNote.
-        // The sidebar owns the vault, so it creates the note here before
-        // forwarding OpenPath — mirroring the note browser modal pattern.
+        // Sidebar owns mouse handling for its full rect:
+        //   • Click in header / search box → focus only.
+        //   • Click in the list area       → focus + select / activate row.
+        //   • Scroll anywhere in sidebar   → scroll the list.
+        if let InputEvent::Mouse(mouse) = event {
+            if !rect_contains(&self.rendered_rect, mouse.column, mouse.row) {
+                return EventState::NotConsumed;
+            }
+            let in_list = rect_contains(&self.list_rect, mouse.column, mouse.row);
+            match mouse.kind {
+                MouseEventKind::Down(_) => {
+                    tx.send(AppEvent::FocusSidebar).ok();
+                    if in_list && mouse.row > self.list_rect.y {
+                        // row 0 of the list block is the border; rows start at y+1.
+                        let rel_row = mouse.row - self.list_rect.y - 1;
+                        let prev = self.file_list.selected_display_idx();
+                        if let Some(idx) = self.file_list.select_at_visual_row(rel_row)
+                            && prev == Some(idx)
+                        {
+                            self.activate_selected_entry(tx);
+                        }
+                    }
+                }
+                MouseEventKind::ScrollUp => self.file_list.scroll_up(),
+                MouseEventKind::ScrollDown => self.file_list.scroll_down(),
+                _ => {}
+            }
+            return EventState::Consumed;
+        }
+
+        // Intercept Enter so the sidebar's `activate_selected_entry` handles
+        // CreateNote (vault create + open) before the file list would just emit
+        // a bare OpenPath.
         if let InputEvent::Key(key) = event
             && key.code == KeyCode::Enter
-            && let Some(FileListEntry::CreateNote { path, .. }) = self.file_list.selected_entry()
+            && self.file_list.selected_entry().is_some()
         {
-            let path = path.clone();
-            let vault = Arc::clone(&self.vault);
-            let tx2 = tx.clone();
-            tokio::spawn(async move {
-                if let Err(e) = vault.load_or_create_note(&path, None).await {
-                    tracing::warn!("create note failed for {path}: {e}");
-                    return;
-                }
-                tx2.send(AppEvent::OpenPath(path)).ok();
-            });
+            self.activate_selected_entry(tx);
             return EventState::Consumed;
         }
 
@@ -170,6 +217,7 @@ impl Component for SidebarComponent {
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.poll_loading();
+        self.rendered_rect = rect;
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -179,6 +227,7 @@ impl Component for SidebarComponent {
                 Constraint::Min(0),
             ])
             .split(rect);
+        self.list_rect = rows[2];
 
         let border_style = theme.border_style(focused);
 
@@ -221,5 +270,188 @@ impl Component for SidebarComponent {
         }
 
         self.file_list.render(f, rows[2], theme, focused);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::AppSettings;
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    async fn make_sidebar() -> SidebarComponent {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let thread_id = std::thread::current().id();
+        let dir = std::env::temp_dir().join(format!("kimun_sidebar_test_{nonce}_{thread_id:?}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = Arc::new(NoteVault::new(&dir).await.unwrap());
+        let settings = AppSettings::default();
+        SidebarComponent::new(
+            settings.key_bindings.clone(),
+            vault,
+            settings.icons(),
+            &settings,
+        )
+    }
+
+    fn mouse_down_at(col: u16, row: u16) -> InputEvent {
+        InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// Regression: clicking on the sidebar header (directory name + note count)
+    /// or the search box must focus the sidebar, not just clicks on the file list.
+    #[tokio::test]
+    async fn mouse_down_on_header_focuses_sidebar() {
+        let mut sidebar = make_sidebar().await;
+        sidebar.rendered_rect = Rect {
+            x: 0,
+            y: 3,
+            width: 30,
+            height: 20,
+        };
+        let (tx, mut rx) = unbounded_channel();
+
+        // Click inside the header (top-of-sidebar) area.
+        let result = sidebar.handle_input(&mouse_down_at(5, 4), &tx);
+        assert_eq!(result, EventState::Consumed);
+        let evt = rx.try_recv().expect("should send a focus event");
+        assert!(matches!(evt, AppEvent::FocusSidebar));
+    }
+
+    #[tokio::test]
+    async fn mouse_down_on_search_box_focuses_sidebar() {
+        let mut sidebar = make_sidebar().await;
+        sidebar.rendered_rect = Rect {
+            x: 0,
+            y: 3,
+            width: 30,
+            height: 20,
+        };
+        let (tx, mut rx) = unbounded_channel();
+
+        // Click inside the search-box area (rows 6..9 within the sidebar layout).
+        let result = sidebar.handle_input(&mouse_down_at(5, 7), &tx);
+        assert_eq!(result, EventState::Consumed);
+        let evt = rx.try_recv().expect("should send a focus event");
+        assert!(matches!(evt, AppEvent::FocusSidebar));
+    }
+
+    fn scroll_event_at(col: u16, row: u16, kind: MouseEventKind) -> InputEvent {
+        InputEvent::Mouse(MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn push_note(sidebar: &mut SidebarComponent, name: &str) {
+        sidebar.file_list.entries.push(FileListEntry::Note {
+            path: VaultPath::note_path_from(name),
+            title: name.to_string(),
+            filename: format!("{name}.md"),
+            journal_date: None,
+        });
+    }
+
+    /// Two clicks on the same list row activate it: first selects, second sends
+    /// `OpenPath` (or, for `CreateNote`, materialises the note then opens it).
+    #[tokio::test]
+    async fn mouse_double_click_on_list_row_sends_open_path() {
+        let mut sidebar = make_sidebar().await;
+        push_note(&mut sidebar, "alpha");
+        sidebar.rendered_rect = Rect {
+            x: 0,
+            y: 3,
+            width: 30,
+            height: 20,
+        };
+        sidebar.list_rect = Rect {
+            x: 0,
+            y: 9,
+            width: 30,
+            height: 14,
+        };
+        let (tx, mut rx) = unbounded_channel();
+
+        // First click: in list area, on the first row (list_rect.y + 1).
+        sidebar.handle_input(&mouse_down_at(5, 10), &tx);
+        // Drain the FocusSidebar event from the first click.
+        let _ = rx.try_recv();
+
+        // Second click on the same row activates the entry.
+        sidebar.handle_input(&mouse_down_at(5, 10), &tx);
+        // First event from the second click is FocusSidebar; the next is OpenPath.
+        let mut events = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            events.push(evt);
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AppEvent::OpenPath(p) if p.to_string().contains("alpha"))),
+            "expected OpenPath for the activated note, got {events:?}"
+        );
+    }
+
+    /// Scroll wheel anywhere in the sidebar bounds scrolls the file list — even
+    /// when the cursor is over the header or search box.
+    #[tokio::test]
+    async fn scroll_down_in_sidebar_bounds_scrolls_list() {
+        let mut sidebar = make_sidebar().await;
+        push_note(&mut sidebar, "alpha");
+        push_note(&mut sidebar, "beta");
+        // Pin selection to index 0 so ScrollDown moves it to 1.
+        sidebar.file_list.select_at_visual_row(0);
+        sidebar.rendered_rect = Rect {
+            x: 0,
+            y: 3,
+            width: 30,
+            height: 20,
+        };
+        sidebar.list_rect = Rect {
+            x: 0,
+            y: 9,
+            width: 30,
+            height: 14,
+        };
+        let (tx, _rx) = unbounded_channel();
+        assert_eq!(sidebar.file_list.selected_display_idx(), Some(0));
+
+        // Scroll down with the cursor inside the sidebar header (not the list).
+        let result = sidebar.handle_input(&scroll_event_at(5, 4, MouseEventKind::ScrollDown), &tx);
+        assert_eq!(result, EventState::Consumed);
+        assert_eq!(
+            sidebar.file_list.selected_display_idx(),
+            Some(1),
+            "scroll-from-header should still scroll the list"
+        );
+    }
+
+    #[tokio::test]
+    async fn mouse_down_outside_sidebar_is_not_consumed() {
+        let mut sidebar = make_sidebar().await;
+        sidebar.rendered_rect = Rect {
+            x: 0,
+            y: 3,
+            width: 30,
+            height: 20,
+        };
+        let (tx, mut rx) = unbounded_channel();
+
+        // Click to the right of the sidebar (in the editor area).
+        let result = sidebar.handle_input(&mouse_down_at(50, 10), &tx);
+        assert_eq!(result, EventState::NotConsumed);
+        assert!(rx.try_recv().is_err());
     }
 }

@@ -5,7 +5,7 @@ use kimun_core::{ResultType, SearchResult};
 use nucleo::Matcher;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -271,7 +271,6 @@ pub struct FileListComponent {
     pub loading: bool,
     display_indices: Option<Vec<usize>>,
     list_state: ListState,
-    rendered_rect: Rect,
     // Search
     pub search_query: String,
     filter_rx: Option<Receiver<Vec<usize>>>,
@@ -295,7 +294,6 @@ impl FileListComponent {
             loading: false,
             display_indices: None,
             list_state: ListState::default(),
-            rendered_rect: Rect::default(),
             search_query: String::new(),
             filter_rx: None,
             filter_task: None,
@@ -537,10 +535,6 @@ impl FileListComponent {
             .select(Some(if cur == 0 { len - 1 } else { cur - 1 }));
     }
 
-    pub fn rendered_rect(&self) -> Rect {
-        self.rendered_rect
-    }
-
     /// Returns the currently selected display index (not entry index).
     pub fn selected_display_idx(&self) -> Option<usize> {
         self.list_state.selected()
@@ -575,7 +569,7 @@ impl FileListComponent {
         self.entries.get(entry_idx)
     }
 
-    fn activate_selected(&self, tx: &AppTx) {
+    pub fn activate_selected(&self, tx: &AppTx) {
         let Some(display_idx) = self.list_state.selected() else {
             return;
         };
@@ -641,114 +635,78 @@ impl FileListComponent {
 
 impl Component for FileListComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        match event {
-            InputEvent::Key(key) => {
-                // Check keybindings first for action shortcuts.
-                if let Some(combo) = key_event_to_combo(key) {
-                    match self.key_bindings.get_action(&combo) {
-                        // FocusEditor / FocusSidebar shortcuts are intercepted
-                        // at the EditorScreen level for directional navigation.
-                        Some(ActionShortcuts::CycleSortField) => {
-                            let field = self.sort_field.cycle();
-                            self.set_sort(field, self.sort_order, tx.clone());
-                            return EventState::Consumed;
-                        }
-                        Some(ActionShortcuts::SortReverseOrder) => {
-                            let order = self.sort_order.toggle();
-                            self.set_sort(self.sort_field, order, tx.clone());
-                            return EventState::Consumed;
-                        }
-                        Some(ActionShortcuts::FileOperations) => {
-                            if let Some(entry) = self.selected_entry()
-                                && !matches!(entry, FileListEntry::Up { .. })
-                            {
-                                tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone()))
-                                    .ok();
-                                return EventState::Consumed;
-                            }
-                            return EventState::NotConsumed;
-                        }
-                        _ => {}
-                    }
+        // Mouse handling lives in the parent (sidebar / note browser modal),
+        // which knows the surrounding layout and can route clicks accordingly.
+        let InputEvent::Key(key) = event else {
+            return EventState::NotConsumed;
+        };
+        // Check keybindings first for action shortcuts.
+        if let Some(combo) = key_event_to_combo(key) {
+            match self.key_bindings.get_action(&combo) {
+                // FocusEditor / FocusSidebar shortcuts are intercepted
+                // at the EditorScreen level for directional navigation.
+                Some(ActionShortcuts::CycleSortField) => {
+                    let field = self.sort_field.cycle();
+                    self.set_sort(field, self.sort_order, tx.clone());
+                    return EventState::Consumed;
                 }
-                // Navigation and search input.
-                match key.code {
-                    KeyCode::Up => {
-                        self.select_prev();
-                        EventState::Consumed
-                    }
-                    KeyCode::Down => {
-                        self.select_next();
-                        EventState::Consumed
-                    }
-                    KeyCode::Enter => {
-                        self.activate_selected(tx);
-                        EventState::Consumed
-                    }
-                    KeyCode::Char(c) => {
-                        let non_shift = key.modifiers - KeyModifiers::SHIFT;
-                        if non_shift.is_empty() {
-                            if key.modifiers.contains(KeyModifiers::SHIFT) {
-                                self.search_query.push(c.to_ascii_uppercase());
-                            } else {
-                                self.search_query.push(c);
-                            }
-                            self.schedule_filter(tx.clone());
-                        }
-                        // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
-                        // from leaking a character into the search box.
-                        EventState::Consumed
-                    }
-                    KeyCode::Backspace => {
-                        self.search_query.pop();
-                        self.schedule_filter(tx.clone());
-                        EventState::Consumed
-                    }
-                    _ => EventState::NotConsumed,
+                Some(ActionShortcuts::SortReverseOrder) => {
+                    let order = self.sort_order.toggle();
+                    self.set_sort(self.sort_field, order, tx.clone());
+                    return EventState::Consumed;
                 }
-            }
-            InputEvent::Mouse(mouse) => {
-                let r = &self.rendered_rect;
-                let in_bounds = mouse.column >= r.x
-                    && mouse.column < r.x + r.width
-                    && mouse.row >= r.y
-                    && mouse.row < r.y + r.height;
-                if !in_bounds {
+                Some(ActionShortcuts::FileOperations) => {
+                    if let Some(entry) = self.selected_entry()
+                        && !matches!(entry, FileListEntry::Up { .. })
+                    {
+                        tx.send(AppEvent::ShowFileOpsMenu(entry.path().clone()))
+                            .ok();
+                        return EventState::Consumed;
+                    }
                     return EventState::NotConsumed;
                 }
-                match mouse.kind {
-                    MouseEventKind::Down(_) => {
-                        tx.send(AppEvent::FocusSidebar).ok();
-                        // row 0 is the border/header; list starts at row 1
-                        if mouse.row > r.y {
-                            let rel_row = mouse.row - r.y - 1;
-                            if let Some(idx) = self.display_idx_at_row(rel_row) {
-                                if self.list_state.selected() == Some(idx) {
-                                    self.activate_selected(tx);
-                                } else {
-                                    self.list_state.select(Some(idx));
-                                }
-                            }
-                        }
-                        EventState::Consumed
-                    }
-                    MouseEventKind::ScrollUp => {
-                        self.scroll_up();
-                        EventState::Consumed
-                    }
-                    MouseEventKind::ScrollDown => {
-                        self.scroll_down();
-                        EventState::Consumed
-                    }
-                    _ => EventState::NotConsumed,
-                }
+                _ => {}
             }
+        }
+        // Navigation and search input.
+        match key.code {
+            KeyCode::Up => {
+                self.select_prev();
+                EventState::Consumed
+            }
+            KeyCode::Down => {
+                self.select_next();
+                EventState::Consumed
+            }
+            KeyCode::Enter => {
+                self.activate_selected(tx);
+                EventState::Consumed
+            }
+            KeyCode::Char(c) => {
+                let non_shift = key.modifiers - KeyModifiers::SHIFT;
+                if non_shift.is_empty() {
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        self.search_query.push(c.to_ascii_uppercase());
+                    } else {
+                        self.search_query.push(c);
+                    }
+                    self.schedule_filter(tx.clone());
+                }
+                // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
+                // from leaking a character into the search box.
+                EventState::Consumed
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.schedule_filter(tx.clone());
+                EventState::Consumed
+            }
+            _ => EventState::NotConsumed,
         }
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.poll_filter();
-        self.rendered_rect = rect;
         let title = self.header_title();
 
         let bg_even = theme.bg.to_ratatui();

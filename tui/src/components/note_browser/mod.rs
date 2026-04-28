@@ -10,10 +10,10 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry};
+use crate::components::{Component, rect_contains};
 use crate::keys::KeyBindings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -47,6 +47,9 @@ pub struct NoteBrowserModal {
     search_query: String,
     provider: Arc<dyn NoteBrowserProvider>,
     file_list: FileListComponent,
+    /// Bounds of the file list block — updated each render, used to route mouse
+    /// events into list-row coordinates.
+    list_rect: Rect,
     preview_text: String,
     vault: Arc<NoteVault>,
     tx: AppTx,
@@ -73,6 +76,7 @@ impl NoteBrowserModal {
             search_query: String::new(),
             provider: Arc::new(provider),
             file_list,
+            list_rect: Rect::default(),
             preview_text: String::new(),
             vault,
             tx: tx.clone(),
@@ -192,12 +196,8 @@ impl Component for NoteBrowserModal {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
 
         if let InputEvent::Mouse(mouse) = event {
-            let r = self.file_list.rendered_rect();
-            let in_bounds = mouse.column >= r.x
-                && mouse.column < r.x + r.width
-                && mouse.row >= r.y
-                && mouse.row < r.y + r.height;
-            if !in_bounds {
+            let r = self.list_rect;
+            if !rect_contains(&r, mouse.column, mouse.row) {
                 return EventState::NotConsumed;
             }
             match mouse.kind {
@@ -362,6 +362,7 @@ impl Component for NoteBrowserModal {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(rows[1]);
 
+        self.list_rect = columns[0];
         self.file_list.render(f, columns[0], theme, false);
 
         let preview_block = Block::default()
@@ -427,6 +428,87 @@ pub(super) fn format_journal_date(date: NaiveDate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::AppSettings;
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    struct EmptyProvider;
+
+    #[async_trait]
+    impl NoteBrowserProvider for EmptyProvider {
+        async fn load(&self, _query: &str) -> Vec<FileListEntry> {
+            Vec::new()
+        }
+    }
+
+    async fn make_modal() -> NoteBrowserModal {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let thread_id = std::thread::current().id();
+        let dir = std::env::temp_dir().join(format!("kimun_modal_test_{nonce}_{thread_id:?}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = Arc::new(NoteVault::new(&dir).await.unwrap());
+        let settings = AppSettings::default();
+        let (tx, _rx) = unbounded_channel();
+        NoteBrowserModal::new(
+            "test",
+            EmptyProvider,
+            vault,
+            settings.key_bindings.clone(),
+            settings.icons(),
+            tx,
+        )
+    }
+
+    fn mouse_down_at(col: u16, row: u16) -> InputEvent {
+        InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// The modal's mouse handler scopes by `list_rect` (set during render),
+    /// not by any rect carried by `FileListComponent`.  Clicks outside that
+    /// rect must not be consumed.
+    #[tokio::test]
+    async fn modal_mouse_down_outside_list_rect_is_not_consumed() {
+        let mut modal = make_modal().await;
+        modal.list_rect = Rect {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 10,
+        };
+        let (tx, _rx) = unbounded_channel();
+
+        // Click well outside the list rect.
+        let result = modal.handle_input(&mouse_down_at(0, 0), &tx);
+        assert_eq!(result, EventState::NotConsumed);
+    }
+
+    /// Mirrors the bounds-check used by `SidebarComponent`: a click on the
+    /// modal's list_rect.y row is on the block border and must not panic, and
+    /// must not select anything (the guard `mouse.row > r.y` skips it).
+    #[tokio::test]
+    async fn modal_mouse_down_on_list_border_does_not_panic() {
+        let mut modal = make_modal().await;
+        modal.list_rect = Rect {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 10,
+        };
+        let (tx, _rx) = unbounded_channel();
+        // Click the very top row of the list rect (the block border).
+        let result = modal.handle_input(&mouse_down_at(15, 10), &tx);
+        assert_eq!(result, EventState::Consumed);
+        assert!(modal.file_list.selected_display_idx().is_none());
+    }
 
     #[test]
     fn centered_rect_is_centered() {
