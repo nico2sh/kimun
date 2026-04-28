@@ -35,3 +35,9 @@ pub trait Component {
         vec![]
     }
 }
+
+/// Whether a `(col, row)` cell falls inside `rect`. Half-open on the far edges,
+/// matching ratatui's `Rect` semantics.
+pub fn rect_contains(rect: &Rect, col: u16, row: u16) -> bool {
+    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+}
