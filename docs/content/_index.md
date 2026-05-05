@@ -34,7 +34,7 @@ Kimün stores two things at your workspace root:
 
 Kimün also creates a config file for settings and workspace configuration:
 
-- **Linux/macOS:** `~/.config/kimun/kimun_config.toml`
-- **Windows:** `%USERPROFILE%\kimun\kimun_config.toml`
+- **Linux/macOS:** `~/.config/kimun/config.toml`
+- **Windows:** `%USERPROFILE%\kimun\config.toml`
 
 Everything is stored locally. No cloud, no subscriptions, no tracking.

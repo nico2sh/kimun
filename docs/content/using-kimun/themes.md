@@ -82,7 +82,7 @@ Colors can be specified in three formats:
 
 ### Activating a Custom Theme
 
-Once the file is saved, start (or restart) Kimün. Your theme will appear in the theme picker in the Settings screen alongside the built-in themes. You can also set it directly in `kimun_config.toml`:
+Once the file is saved, start (or restart) Kimün. Your theme will appear in the theme picker in the Settings screen alongside the built-in themes. You can also set it directly in `config.toml`:
 
 ```toml
 [global]
