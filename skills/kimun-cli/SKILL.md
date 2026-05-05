@@ -174,5 +174,5 @@ kimun search "meeting notes" --format paths | kimun note show
 
 - **`create` on an existing note** — it fails. Use `append` when you're not sure if the note exists.
 - **No stdin from a live terminal** — piping works (`echo "x" | kimun journal`); passing no content from an interactive terminal produces an empty write.
-- **Relative vs absolute paths** — if a `quick_note_path` is set in `kimun_config.toml`, relative paths are resolved against it. Prefix with `/` to always target the vault root explicitly.
+- **Relative vs absolute paths** — if a `quick_note_path` is set in `config.toml`, relative paths are resolved against it. Prefix with `/` to always target the vault root explicitly.
 - **`kimun journal show` — `--format paths` is not supported**; use `text` or `json`.
