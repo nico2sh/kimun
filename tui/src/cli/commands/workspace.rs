@@ -74,9 +74,11 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         .as_ref()
         .expect("workspace_config must exist after init");
 
-    // Determine workspace name
+    // Workspace name is lowercased here because it backs case-insensitive
+    // cache and history filenames; same lowering must apply to the DB path
+    // computed below and the eventual add_workspace key.
     let workspace_name = match name {
-        Some(n) => n,
+        Some(n) => n.to_lowercase(),
         None => {
             if ws_config.workspaces.is_empty() {
                 "default".to_string()
@@ -89,7 +91,6 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         }
     };
 
-    // Check for duplicates
     if ws_config.workspaces.contains_key(&workspace_name) {
         let existing_path = &ws_config.workspaces[&workspace_name].path;
         return Err(eyre!(
@@ -113,26 +114,24 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         println!("Created directory: {}", path.display());
     }
 
-    // Initialize NoteVault database (creates kimun.sqlite)
     println!("Initializing workspace database...");
-    let vault = NoteVault::new(VaultConfig::new(&canonical_path))
-        .await
-        .map_err(|e| {
-            eyre!(
-                "Failed to create vault at {}: {}",
-                canonical_path.display(),
-                e
-            )
-        })?;
+    let cache_path = settings.cache_path_for(&workspace_name);
+    let vault = NoteVault::new(
+        VaultConfig::new(&canonical_path).with_db_path(cache_path),
+    )
+    .await
+    .map_err(|e| {
+        eyre!(
+            "Failed to create vault at {}: {}",
+            canonical_path.display(),
+            e
+        )
+    })?;
     vault
         .validate_and_init()
         .await
         .map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
 
-    // Add workspace to config and save. Lowercase the name so stored
-    // keys are always lowercase (workspace names back the cache and
-    // history filenames, which are case-insensitive on Windows/macOS).
-    let workspace_name = workspace_name.to_lowercase();
     let ws_config_mut = settings
         .workspace_config
         .as_mut()
@@ -332,15 +331,19 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
 
     println!("Reindexing workspace '{}'...", workspace_name);
 
-    let vault = NoteVault::new(VaultConfig::new(entry.effective_path()))
-        .await
-        .map_err(|e| {
-            eyre!(
-                "Failed to open vault at {}: {}",
-                entry.effective_path().display(),
-                e
-            )
-        })?;
+    let cache_path = settings.cache_path_for(&workspace_name);
+    let workspace_path = entry.effective_path().clone();
+    let vault = NoteVault::new(
+        VaultConfig::new(&workspace_path).with_db_path(cache_path),
+    )
+    .await
+    .map_err(|e| {
+        eyre!(
+            "Failed to open vault at {}: {}",
+            workspace_path.display(),
+            e
+        )
+    })?;
 
     let report = match vault.recreate_index().await {
         Ok(r) => r,

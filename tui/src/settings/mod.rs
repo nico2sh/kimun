@@ -594,7 +594,7 @@ impl AppSettings {
         }
     }
 
-    fn current_workspace_name(&self) -> Option<String> {
+    pub fn current_workspace_name(&self) -> Option<String> {
         self.workspace_config
             .as_ref()
             .map(|wc| wc.global.current_workspace.clone())
