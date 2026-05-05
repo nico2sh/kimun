@@ -5,7 +5,7 @@ weight = 3
 
 # Configuration Reference
 
-Kimün stores its configuration in `kimun_config.toml`. By default it lives in your OS config directory (`~/.config/kimun/` on Linux/macOS, `%USERPROFILE%\kimun\` on Windows), and can be overridden with `kimun --config /path/to/config.toml`.
+Kimün stores its configuration in `config.toml`. By default it lives in your OS config directory (`~/.config/kimun/` on Linux/macOS, `%USERPROFILE%\kimun\` on Windows), and can be overridden with `kimun --config /path/to/config.toml`.
 
 The file has three kinds of contents:
 
