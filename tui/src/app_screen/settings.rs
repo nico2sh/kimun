@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use kimun_core::error::VaultError;
-use kimun_core::{NoteVault, NotesValidation};
+use kimun_core::{NoteVault, NotesValidation, VaultConfig};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -25,6 +25,7 @@ use crate::components::settings::sorting_section::SortingSection;
 use crate::components::settings::workspaces_section::{Mode as WorkspaceMode, WorkspacesSection};
 use crate::settings::AppSettings;
 use crate::settings::SharedSettings;
+use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::themes::Theme;
 
 // ── FileBrowserState ─────────────────────────────────────────────────────────
@@ -233,11 +234,21 @@ impl SettingsScreen {
                     .ok();
                 return;
             };
+            let workspace_name = s
+                .workspace_config
+                .as_ref()
+                .map(|wc| wc.global.current_workspace.clone())
+                .filter(|n| !n.is_empty());
+            let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
             drop(s);
             self.pending_save_after_index = true;
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
-                let event = match NoteVault::new(&workspace).await {
+                let mut config = VaultConfig::new(&workspace);
+                if let Some(path) = cache_path {
+                    config = config.with_db_path(path);
+                }
+                let event = match NoteVault::new(config).await {
                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                     Ok(vault) => match vault.recreate_index().await {
                         Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
@@ -259,22 +270,13 @@ impl SettingsScreen {
 
     /// Called when the file browser confirms a directory path (via 'c' or Ctrl+Enter).
     fn confirm_file_browser(&mut self, chosen: PathBuf, _tx: &AppTx) {
-        use crate::settings::workspace_config::{WorkspaceConfig, WorkspaceEntry};
+        use crate::settings::workspace_config::WorkspaceConfig;
 
         if let Some(name) = self.pending_create_name.take() {
-            // Creating a new workspace with the chosen path.
-            let entry = WorkspaceEntry {
-                path: chosen,
-                last_paths: Vec::new(),
-                created: chrono::Utc::now(),
-                quick_note_path: None,
-                inbox_path: None,
-                resolved_path: None,
-            };
+            let name = name.to_lowercase();
             {
                 let mut s = self.settings.write().unwrap();
                 if s.workspace_config.is_none() {
-                    // Migrate Phase 1 legacy config to Phase 2 before adding.
                     if let Some(ref legacy_path) = s.workspace_dir {
                         let wc = WorkspaceConfig::from_phase1_migration(
                             legacy_path.clone(),
@@ -284,14 +286,12 @@ impl SettingsScreen {
                     } else {
                         s.workspace_config = Some(WorkspaceConfig::new_empty());
                     }
-                    s.config_version = 2;
+                    s.config_version = CURRENT_CONFIG_VERSION;
                 }
-                if let Some(ref mut wc) = s.workspace_config {
-                    wc.workspaces.insert(name.clone(), entry);
-                    // If this is the only workspace (no prior ones), make it current.
-                    if wc.global.current_workspace.is_empty() {
-                        wc.global.current_workspace = name;
-                    }
+                if let Some(ref mut wc) = s.workspace_config
+                    && let Err(e) = wc.add_workspace(name.clone(), chosen)
+                {
+                    tracing::warn!("rejected workspace add: {}", e);
                 }
             }
             self.workspaces_section
@@ -398,15 +398,26 @@ impl AppScreen for SettingsScreen {
                     }
                     KeyCode::Enter => {
                         if *focused_button == ConfirmButton::Confirm {
-                            let Some(workspace) =
-                                self.settings.read().unwrap().resolve_workspace_path()
-                            else {
+                            let s = self.settings.read().unwrap();
+                            let Some(workspace) = s.resolve_workspace_path() else {
+                                drop(s);
                                 self.overlay = Overlay::None;
                                 return EventState::Consumed;
                             };
+                            let workspace_name = s
+                                .workspace_config
+                                .as_ref()
+                                .map(|wc| wc.global.current_workspace.clone())
+                                .filter(|n| !n.is_empty());
+                            let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+                            drop(s);
                             let tx2 = tx.clone();
                             let handle = tokio::spawn(async move {
-                                let event = match NoteVault::new(&workspace).await {
+                                let mut config = VaultConfig::new(&workspace);
+                                if let Some(path) = cache_path {
+                                    config = config.with_db_path(path);
+                                }
+                                let event = match NoteVault::new(config).await {
                                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                                     Ok(vault) => match vault.recreate_index().await {
                                         Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
@@ -699,17 +710,28 @@ impl AppScreen for SettingsScreen {
             AppEvent::TriggerFastReindex => {
                 // Fast reindex starts immediately (no confirmation overlay) — it is a
                 // low-cost incremental operation unlike full reindex.
-                let Some(workspace) = self.settings.read().unwrap().resolve_workspace_path() else {
+                let s = self.settings.read().unwrap();
+                let Some(workspace) = s.resolve_workspace_path() else {
+                    drop(s);
                     tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
                         .ok();
                     return None;
                 };
+                let workspace_name = s
+                    .workspace_config
+                    .as_ref()
+                    .map(|wc| wc.global.current_workspace.clone())
+                    .filter(|n| !n.is_empty());
+                let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+                drop(s);
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = async {
-                        let vault = NoteVault::new(&workspace)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let mut config = VaultConfig::new(&workspace);
+                        if let Some(path) = cache_path {
+                            config = config.with_db_path(path);
+                        }
+                        let vault = NoteVault::new(config).await.map_err(|e| e.to_string())?;
                         vault
                             .index_notes(NotesValidation::Fast)
                             .await

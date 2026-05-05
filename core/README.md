@@ -11,13 +11,20 @@ kimun_core = "0.3.1"
 
 ## Overview
 
-The library revolves around `NoteVault`, the main entry point. A vault is a directory of Markdown files. `kimun_core` maintains a `kimun.sqlite` index at the vault root for fast search and metadata queries.
+The library revolves around `NoteVault`, the main entry point. A vault is a directory of Markdown files. `kimun_core` maintains a SQLite index for fast search and metadata queries — by default at `<vault>/kimun.sqlite`, but the cache location is configurable per call.
 
 ```rust
-use kimun_core::NoteVault;
+use kimun_core::{NoteVault, VaultConfig};
 
-// Open a vault (creates the index if it doesn't exist)
-let vault = NoteVault::new("/path/to/notes").await?;
+// Open a vault with the default index location (<vault>/kimun.sqlite).
+let vault = NoteVault::new(VaultConfig::new("/path/to/notes")).await?;
+
+// Or place the index outside the vault, e.g. in a config dir:
+let vault = NoteVault::new(
+    VaultConfig::new("/path/to/notes")
+        .with_db_path("/path/to/cache/notes.kimuncache"),
+)
+.await?;
 
 // Validate and sync the index with the filesystem
 vault.init_and_validate().await?;
@@ -29,12 +36,12 @@ vault.init_and_validate().await?;
 
 The main handle for all vault operations: indexing, browsing, searching, and file management.
 
-| Method                  | Description                                          |
-| ----------------------- | ---------------------------------------------------- |
-| `new(path)`           | Open a vault at the given path                       |
-| `init_and_validate()` | Check the index and sync any new/removed notes       |
-| `force_rebuild()`     | Delete and fully rebuild the index                   |
-| `recreate_index()`    | Rebuild the index without deleting the database file |
+| Method                  | Description                                                   |
+| ----------------------- | ------------------------------------------------------------- |
+| `new(VaultConfig)`    | Open a vault. Use `VaultConfig::new(path)` for the default index location, or chain `.with_db_path(...)` to override it. |
+| `init_and_validate()` | Check the index and sync any new/removed notes                |
+| `force_rebuild()`     | Delete and fully rebuild the index                            |
+| `recreate_index()`    | Rebuild the index without deleting the database file          |
 
 ### `nfs` — Filesystem Abstraction
 

@@ -638,12 +638,12 @@ pub async fn run(config_path: Option<PathBuf>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kimun_core::NoteVault;
+    use kimun_core::{NoteVault, VaultConfig};
     use tempfile::TempDir;
 
     async fn make_handler() -> (KimunHandler, TempDir) {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         vault.validate_and_init().await.unwrap();
         let handler = KimunHandler::new(vault);
         (handler, dir)

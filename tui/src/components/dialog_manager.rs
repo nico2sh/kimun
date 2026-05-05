@@ -208,6 +208,7 @@ impl DialogManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kimun_core::VaultConfig;
 
     #[test]
     fn new_is_not_open() {
@@ -234,7 +235,7 @@ mod tests {
         // Chained dialog (e.g. from menu → delete) should not overwrite saved focus
         let dir = std::env::temp_dir().join("kimun_dm_test");
         std::fs::create_dir_all(&dir).ok();
-        let vault = Arc::new(NoteVault::new(&dir).await.unwrap());
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(&dir)).await.unwrap());
         dm.open(
             ActiveDialog::Delete(DeleteConfirmDialog::new(path, vault)),
             99, // this focus should be ignored

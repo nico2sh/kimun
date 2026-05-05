@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use color_eyre::eyre;
-use kimun_core::NoteVault;
+use kimun_core::{NoteVault, VaultConfig};
 
 use crate::{
     app_screen::{AppScreen, start::StartScreen},
@@ -29,16 +29,30 @@ impl App {
         let settings: SharedSettings = Arc::new(RwLock::new(loaded_settings));
 
         let vault = {
-            let workspace_path = settings.read().unwrap().resolve_workspace_path();
-            if let Some(ref workspace) = workspace_path {
-                NoteVault::new(workspace).await.ok().map(|mut v| {
-                    let s = settings.read().unwrap();
-                    if let Some(ref wc) = s.workspace_config
-                        && let Some(entry) = wc.get_current_workspace()
-                    {
-                        v.set_inbox_path(kimun_core::nfs::VaultPath::new(
-                            entry.effective_inbox_path(),
-                        ));
+            let (workspace_path, cache_path, inbox) = {
+                let s = settings.read().unwrap();
+                let path = s.resolve_workspace_path();
+                let name = s
+                    .workspace_config
+                    .as_ref()
+                    .map(|wc| wc.global.current_workspace.clone())
+                    .filter(|n| !n.is_empty());
+                let cache = name.as_ref().map(|n| s.cache_path_for(n));
+                let inbox = s
+                    .workspace_config
+                    .as_ref()
+                    .and_then(|wc| wc.get_current_workspace())
+                    .map(|entry| entry.effective_inbox_path());
+                (path, cache, inbox)
+            };
+            if let Some(workspace) = workspace_path {
+                let mut config = VaultConfig::new(&workspace);
+                if let Some(cp) = cache_path {
+                    config = config.with_db_path(cp);
+                }
+                NoteVault::new(config).await.ok().map(|mut v| {
+                    if let Some(inbox) = inbox {
+                        v.set_inbox_path(kimun_core::nfs::VaultPath::new(inbox));
                     }
                     Arc::new(v)
                 })
