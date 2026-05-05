@@ -7,7 +7,9 @@ weight = 4
 
 ## What is a Workspace
 
-A workspace is a notes directory with its own isolated SQLite search index (`kimun.sqlite`). Each workspace is completely independent — your work notes don't interfere with your personal notes, and each can have its own file structure, content, and search index.
+A workspace is a notes directory with its own isolated SQLite search index. The index lives next to your `config.toml` as `<workspace>.kimuncache` (regenerable; safe to delete) and is paired with a `<workspace>.txt` history file under `<config_dir>/history/`. Both locations are configurable — see [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).
+
+Each workspace is completely independent — your work notes don't interfere with your personal notes, and each can have its own file structure, content, and search index.
 
 Workspaces let you organize notes into separate contexts. For example:
 - **work** — Professional projects, meeting notes, documentation
@@ -36,6 +38,8 @@ kimun workspace init --name personal /Users/alice/personal-notes
 ```
 
 This creates a new entry in your config file and prepares the workspace for use. If the directory doesn't exist, Kimün will create it.
+
+The name is lowercased and validated — see the [Workspace Name Rules](@/getting-started/configuration.md#workspace-name-rules) for what characters are allowed. Invalid names (e.g. containing `/`) are rejected with an error before anything is written.
 
 ### List All Workspaces
 
@@ -73,7 +77,7 @@ After running this command, all subsequent Kimün operations (search, notes list
 
 ### Rename a Workspace
 
-Rename an existing workspace without changing its path:
+Rename an existing workspace without changing its notes directory:
 
 ```sh
 kimun workspace rename <old-name> <new-name>
@@ -85,7 +89,7 @@ kimun workspace rename <old-name> <new-name>
 kimun workspace rename work work-archive
 ```
 
-This updates your config but does not move or rename the files on disk. The workspace continues pointing to the same directory.
+The new name is lowercased and validated against the [Workspace Name Rules](@/getting-started/configuration.md#workspace-name-rules). Kimün renames the workspace key in `config.toml` and moves the cache (`<old>.kimuncache` → `<new>.kimuncache`) and history (`<old>.txt` → `<new>.txt`) files alongside it. Your notes directory is not touched. If a cache or history file already exists at the new name, the rename aborts before any change so nothing is overwritten.
 
 ### Remove a Workspace
 
@@ -101,7 +105,7 @@ kimun workspace remove <name>
 kimun workspace remove archive
 ```
 
-This removes the workspace entry from your config but **does not delete the notes directory or files**. Your notes remain untouched on disk — you can always re-add the workspace later or access the files manually.
+This removes the workspace entry from your config and deletes the workspace's cache (`<name>.kimuncache`) and history (`<name>.txt`) files. **Your notes directory is not touched** — you can always re-add the workspace later or access the files manually. If you do re-add it, the cache will be rebuilt from scratch on first use.
 
 ### Rebuild the Search Index
 
@@ -117,7 +121,7 @@ kimun workspace reindex <name>
 kimun workspace reindex work
 ```
 
-This is useful if the search index becomes corrupted or if you've manually added/modified notes outside of Kimün and want to rebuild the index.
+This is useful if the search index becomes corrupted or if you've manually added/modified notes outside of Kimün and want to rebuild the index. The cache is rewritten at the configured location (`<cache_dir>/<workspace>.kimuncache`).
 
 ## Walkthrough: Setting Up Multiple Workspaces
 
@@ -187,18 +191,16 @@ If you want to rebuild the index for the `work` workspace (perhaps you added fil
 kimun workspace reindex work
 ```
 
-This rebuilds the `kimun.sqlite` index in `/Users/alice/work-notes` without changing the active workspace.
+This rebuilds the cache file (`<config_dir>/work.kimuncache` by default) without changing the active workspace.
 
 ## Legacy Migration
 
-If you're upgrading from an older version of Kimün that used a single-workspace configuration, the migration happens automatically on first run. Your existing workspace configuration is preserved and converted to the new multi-workspace format with a default workspace name.
+If you're upgrading from an older version of Kimün, the migration happens automatically on first run. The exact sequence depends on which version you're coming from:
 
-**No manual action is required.** When you run Kimün after upgrading:
-1. Your old notes directory and search index continue to work
-2. A new config entry is created for the workspace
-3. All subsequent operations use the multi-workspace system
+- **Single-workspace (pre-`config_version = 2`):** your `workspace_dir` and `last_paths` are converted into a `default` workspace block.
+- **Multi-workspace `config_version = 2`:** your existing `<workspace>/kimun.sqlite` files are moved into the configured `cache_dir` as `<workspace>.kimuncache`, and per-workspace `last_paths` are extracted into `<history_dir>/<workspace>.txt`. A backup of the original config is written to `config.toml.bak.v2`. See [Configuration → Upgrading from `config_version = 2`](@/getting-started/configuration.md#upgrading-from-config-version-2) for details.
 
-If you want to rename the default workspace or add additional workspaces, use the workspace commands as described above.
+**No manual action is required** unless one of your existing workspace names violates the new [Workspace Name Rules](@/getting-started/configuration.md#workspace-name-rules) — in that case Kimün aborts the migration with an error listing every offending name and leaves the config at version 2 so you can rename them and relaunch.
 
 ## TUI vs CLI
 
