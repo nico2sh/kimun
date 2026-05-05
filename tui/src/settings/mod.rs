@@ -247,6 +247,7 @@ impl AppSettings {
             Theme::solarized_dark(),
             Theme::solarized_light(),
             Theme::nord(),
+            Theme::ansi_16(),
         ];
         list.append(&mut Self::load_custom_themes());
         // Merge the user's default.toml override if present.
