@@ -18,6 +18,7 @@ use kimun_core::nfs::VaultPath;
 use crate::keys::KeyBindings;
 mod config_dir;
 pub mod config_migration;
+pub mod history;
 pub mod icons;
 pub mod themes;
 pub mod workspace_config;
