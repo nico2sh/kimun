@@ -121,7 +121,7 @@ impl NoteVault {
             }))?;
         };
 
-        let vault_db = VaultDB::new(&workspace_path).await?;
+        let vault_db = VaultDB::new(workspace_path.join(crate::db::DB_FILE)).await?;
         let note_vault = Self {
             workspace_path: Arc::from(workspace_path.as_path()),
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
