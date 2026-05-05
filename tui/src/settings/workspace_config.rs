@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use kimun_core::nfs::filename::{InvalidFilenameError, validate_filename};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,6 +9,10 @@ pub enum WorkspaceConfigError {
     DuplicateWorkspace {
         name: String,
         existing_path: PathBuf,
+    },
+    InvalidName {
+        name: String,
+        error: InvalidFilenameError,
     },
 }
 
@@ -23,6 +28,9 @@ impl std::fmt::Display for WorkspaceConfigError {
                     "Workspace '{}' already exists at {:?}",
                     name, existing_path
                 )
+            }
+            WorkspaceConfigError::InvalidName { error, .. } => {
+                write!(f, "Invalid workspace {error}")
             }
         }
     }
@@ -90,6 +98,12 @@ impl WorkspaceConfig {
         name: String,
         path: PathBuf,
     ) -> Result<(), WorkspaceConfigError> {
+        if let Err(error) = validate_filename(&name) {
+            return Err(WorkspaceConfigError::InvalidName {
+                name: name.clone(),
+                error,
+            });
+        }
         if self.workspaces.contains_key(&name) {
             return Err(WorkspaceConfigError::DuplicateWorkspace {
                 name: name.clone(),
@@ -140,5 +154,38 @@ impl WorkspaceConfig {
         config.global.current_workspace = "default".to_string();
 
         config
+    }
+}
+
+#[cfg(test)]
+mod validate_tests {
+    use super::*;
+
+    #[test]
+    fn add_workspace_rejects_disallowed_chars() {
+        let mut wc = WorkspaceConfig::new_empty();
+        let err = wc
+            .add_workspace("bad/name".to_string(), PathBuf::from("/tmp/x"))
+            .unwrap_err();
+        match err {
+            WorkspaceConfigError::InvalidName { name, .. } => assert_eq!(name, "bad/name"),
+            _ => panic!("expected InvalidName"),
+        }
+    }
+
+    #[test]
+    fn add_workspace_rejects_windows_reserved() {
+        let mut wc = WorkspaceConfig::new_empty();
+        assert!(wc
+            .add_workspace("con".to_string(), PathBuf::from("/tmp/x"))
+            .is_err());
+    }
+
+    #[test]
+    fn add_workspace_accepts_simple_names() {
+        let mut wc = WorkspaceConfig::new_empty();
+        assert!(wc
+            .add_workspace("notes".to_string(), PathBuf::from("/tmp/x"))
+            .is_ok());
     }
 }
