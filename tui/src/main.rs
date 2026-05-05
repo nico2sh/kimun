@@ -361,7 +361,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 (wp, ip)
             };
             app.vault = if let Some(ref workspace) = workspace_path {
-                kimun_core::NoteVault::new(workspace)
+                kimun_core::NoteVault::new(kimun_core::VaultConfig::new(workspace))
                     .await
                     .ok()
                     .map(|mut v| {
@@ -411,7 +411,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 (wp, ip)
             };
             app.vault = if let Some(ref workspace) = workspace_path {
-                kimun_core::NoteVault::new(workspace)
+                kimun_core::NoteVault::new(kimun_core::VaultConfig::new(workspace))
                     .await
                     .ok()
                     .map(|mut v| {

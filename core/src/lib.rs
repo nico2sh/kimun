@@ -105,23 +105,26 @@ impl PartialEq for NoteVault {
 impl NoteVault {
     /// Creates a new instance of the Note Vault.
     /// Make sure you call `NoteVault::init_and_validate(&self)` to initialize the DB index if
-    /// needed
-    pub async fn new<P: AsRef<Path>>(workspace_path: P) -> Result<Self, VaultError> {
+    /// needed.
+    pub async fn new(config: VaultConfig) -> Result<Self, VaultError> {
         debug!("Creating new vault Instance");
-        let workspace_path = workspace_path.as_ref().to_path_buf();
+        let workspace_path = config.workspace_path;
         if !workspace_path.exists() {
             return Err(VaultError::VaultPathNotFound {
-                path: path_to_string(workspace_path),
+                path: path_to_string(&workspace_path),
             })?;
         }
         if !workspace_path.is_dir() {
             return Err(VaultError::FSError(FSError::InvalidPath {
-                path: path_to_string(workspace_path),
+                path: path_to_string(&workspace_path),
                 message: "Path provided is not a directory".to_string(),
             }))?;
         };
 
-        let vault_db = VaultDB::new(workspace_path.join(crate::db::DB_FILE)).await?;
+        let db_path = config
+            .db_path
+            .unwrap_or_else(|| workspace_path.join(crate::db::DB_FILE));
+        let vault_db = VaultDB::new(&db_path).await?;
         let note_vault = Self {
             workspace_path: Arc::from(workspace_path.as_path()),
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
@@ -964,7 +967,7 @@ mod tests {
 
     // Helper: build a NoteVault pointing at a temp directory (no DB needed for pure-text tests).
     async fn make_vault(dir: &std::path::Path) -> NoteVault {
-        NoteVault::new(dir).await.unwrap()
+        NoteVault::new(VaultConfig::new(dir)).await.unwrap()
     }
 
     #[tokio::test]
@@ -1087,7 +1090,7 @@ mod tests {
     /// Create a small vault with a DB, write two notes, index them, then rename one
     /// and assert that the other note's content and DB links are updated.
     async fn setup_vault_with_notes(dir: &std::path::Path) -> NoteVault {
-        let vault = NoteVault::new(dir).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir)).await.unwrap();
         vault.validate_and_init().await.unwrap();
         vault
     }
@@ -1263,7 +1266,7 @@ mod tests {
     #[tokio::test]
     async fn test_note_vault_new_with_nonexistent_path() {
         let nonexistent_path = "/this/path/does/not/exist";
-        let result = NoteVault::new(nonexistent_path).await;
+        let result = NoteVault::new(VaultConfig::new(nonexistent_path)).await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -1280,7 +1283,7 @@ mod tests {
         let temp_file = tempfile::NamedTempFile::new().unwrap();
         let file_path = temp_file.path();
 
-        let result = NoteVault::new(file_path).await;
+        let result = NoteVault::new(VaultConfig::new(file_path)).await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -1296,7 +1299,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let dir_path = temp_dir.path();
 
-        let result = NoteVault::new(dir_path).await;
+        let result = NoteVault::new(VaultConfig::new(dir_path)).await;
 
         assert!(result.is_ok());
         let vault = result.unwrap();
@@ -1307,7 +1310,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_todays_journal() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
 
         let (title, note_path) = vault.get_todays_journal();
 
@@ -1327,7 +1330,7 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_valid_journal_note() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
 
         // Create a journal note path
         let journal_note_path = vault
@@ -1345,7 +1348,7 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_invalid_date_format() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
 
         // Create a note path with invalid date format
         let invalid_journal_path = vault
@@ -1360,7 +1363,7 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_non_journal_path() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
 
         // Create a note path outside of journal directory
         let non_journal_path = VaultPath::new("/other/2023-12-25.md");
@@ -1372,7 +1375,7 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_non_note_path() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
 
         // Create a directory path (not a note)
         let directory_path = vault.journal_path.append(&VaultPath::new("2023-12-25"));
@@ -1384,7 +1387,7 @@ mod tests {
     #[tokio::test]
     async fn test_path_to_pathbuf() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(temp_dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
 
         let vault_path = VaultPath::new("/test/note.md");
         let result = vault.path_to_pathbuf(&vault_path);
@@ -1587,7 +1590,7 @@ mod tests {
         std::fs::create_dir(tmp.path().join("projects")).unwrap();
         std::fs::create_dir(tmp.path().join("Projects")).unwrap();
 
-        let vault = NoteVault::new(tmp.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(tmp.path())).await.unwrap();
         let result = vault.validate_and_init().await;
 
         match result {
@@ -1623,7 +1626,7 @@ mod tests {
     #[tokio::test]
     async fn quick_note_creates_timestamped_note_in_inbox() {
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         vault.validate_and_init().await.unwrap();
 
         let details = vault.quick_note("my quick thought").await.unwrap();
@@ -1637,7 +1640,7 @@ mod tests {
     #[tokio::test]
     async fn quick_note_resolves_conflicts() {
         let dir = tempfile::TempDir::new().unwrap();
-        let vault = NoteVault::new(dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         vault.validate_and_init().await.unwrap();
 
         let d1 = vault.quick_note("first").await.unwrap();
@@ -1651,7 +1654,7 @@ mod tests {
     #[tokio::test]
     async fn quick_note_uses_custom_inbox_path() {
         let dir = tempfile::TempDir::new().unwrap();
-        let mut vault = NoteVault::new(dir.path()).await.unwrap();
+        let mut vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         vault.validate_and_init().await.unwrap();
         vault.set_inbox_path(VaultPath::new("/capture"));
 
@@ -1663,7 +1666,7 @@ mod tests {
     #[tokio::test]
     async fn create_note_errors_when_file_exists() {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         vault.validate_and_init().await.unwrap();
 
         let path = VaultPath::new("/already.md");
@@ -1682,7 +1685,7 @@ mod tests {
     #[tokio::test]
     async fn create_directory_errors_when_dir_exists() {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         vault.validate_and_init().await.unwrap();
 
         let path = VaultPath::new("/projects");
@@ -1697,7 +1700,7 @@ mod tests {
     #[tokio::test]
     async fn rename_note_errors_when_dest_exists() {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         vault.validate_and_init().await.unwrap();
 
         let from = VaultPath::new("/source.md");
@@ -1729,7 +1732,7 @@ mod tests {
         std::fs::write(root.join("dir1/b.md"), "# B").unwrap();
         std::fs::write(root.join("dir1/sub/c.md"), "# C").unwrap();
 
-        let vault = NoteVault::new(root).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(root)).await.unwrap();
         vault.validate_and_init().await.unwrap();
 
         let all = vault.get_all_notes().await.unwrap();
@@ -1761,7 +1764,7 @@ mod tests {
         std::fs::write(dir.path().join("note.md"), "# Note\n## Sub\nbody text").unwrap();
 
         // Bring the DB up at the current version with one indexed note.
-        let vault = NoteVault::new(dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         vault.validate_and_init().await.unwrap();
         assert!(vault.validate().await.unwrap().is_ready());
 
@@ -1850,5 +1853,31 @@ mod vault_config_tests {
     fn with_db_path_overrides_default() {
         let cfg = VaultConfig::new("/tmp/ws").with_db_path("/var/cache/foo.kimuncache");
         assert_eq!(cfg.db_path.as_deref(), Some(std::path::Path::new("/var/cache/foo.kimuncache")));
+    }
+
+    #[tokio::test]
+    async fn note_vault_new_uses_vault_config_with_legacy_default() {
+        use crate::{NoteVault, VaultConfig};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(tmp.path())).await.unwrap();
+        let expected = tmp.path().join("kimun.sqlite");
+        assert!(expected.exists(), "legacy DB path should be used when db_path is None");
+        drop(vault);
+    }
+
+    #[tokio::test]
+    async fn note_vault_new_with_explicit_db_path_uses_override() {
+        use crate::{NoteVault, VaultConfig};
+        let workspace = tempfile::TempDir::new().unwrap();
+        let cache_dir = tempfile::TempDir::new().unwrap();
+        let custom_db = cache_dir.path().join("my-vault.kimuncache");
+        let vault = NoteVault::new(
+            VaultConfig::new(workspace.path()).with_db_path(&custom_db),
+        )
+        .await
+        .unwrap();
+        assert!(custom_db.exists());
+        assert!(!workspace.path().join("kimun.sqlite").exists());
+        drop(vault);
     }
 }
