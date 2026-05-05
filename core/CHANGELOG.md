@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.6...kimun_core-v0.2.7) - 2026-05-05
+
+### Added
+
+- *(core)* NoteVault::new accepts VaultConfig
+- *(core)* introduce VaultConfig builder
+- *(core)* add validate_filename for workspace-name checks
+
+### Fixed
+
+- better chunk separator and other refactors
+
+### Other
+
+- *(core)* update README for VaultConfig API
+- cargo fmt + clippy fix in app.rs vault construction
+- *(core)* VaultDB::new takes an explicit db_path
+- *(core)* extract nfs filename rules to shared module
+- db version bump
+- format
+
 ## [0.2.6](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.5...kimun_core-v0.2.6) - 2026-04-11
 
 ### Other
