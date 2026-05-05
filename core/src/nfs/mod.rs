@@ -1,3 +1,4 @@
+pub mod filename;
 pub mod visitor;
 use std::{
     fmt::Display,
@@ -20,18 +21,7 @@ use super::utilities::path_to_string;
 
 pub const PATH_SEPARATOR: char = '/';
 const NOTE_EXTENSION: &str = ".md";
-// Not allowed: \ | : * ? " < > | [ ] ^ #  plus control characters (U+0000-U+001F, U+007F)
-const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|\[\]\^\#\x00-\x1f\x7f]"#;
-// Not allowed: filenames starting with two or more dots
-const NON_VALID_PATH_NAME: &str = r#"^\.{2,}.+$"#;
-// Windows reserved device names (case-insensitive; optional extension)
-const WINDOWS_RESERVED_NAMES_REGEX: &str = r#"(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..+)?$"#;
 
-static RX_PATH_CHARS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap());
-static RX_PATH_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(NON_VALID_PATH_NAME).unwrap());
-static RX_WIN_RESERVED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(WINDOWS_RESERVED_NAMES_REGEX).unwrap());
 static RX_INCREMENT_SUFFIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"_(?P<number>[0-9]+)$").unwrap());
 
@@ -965,7 +955,7 @@ enum VaultPathSlice {
 impl VaultPathSlice {
     fn new<S: AsRef<str>>(slice: S) -> Self {
         // Replace runs of leading dots so "..foo" becomes "__foo".
-        let slice = if RX_PATH_NAME.is_match(slice.as_ref()) {
+        let slice = if filename::RX_PATH_NAME.is_match(slice.as_ref()) {
             slice.as_ref().replace(".", "_")
         } else {
             slice.as_ref().to_string()
@@ -977,10 +967,10 @@ impl VaultPathSlice {
         } else {
             // Replace invalid chars, lowercase, strip leading/trailing spaces and
             // trailing dots (Windows silently strips them, causing silent collisions).
-            let sanitized = RX_PATH_CHARS.replace_all(&slice, "_").to_lowercase();
+            let sanitized = filename::RX_PATH_CHARS.replace_all(&slice, "_").to_lowercase();
             let sanitized = sanitized.trim().trim_end_matches('.').to_string();
             // Prefix Windows reserved device names so they don't map to device handles.
-            let final_slice = if RX_WIN_RESERVED.is_match(&sanitized) {
+            let final_slice = if filename::RX_WIN_RESERVED.is_match(&sanitized) {
                 format!("_{}", sanitized)
             } else {
                 sanitized
@@ -995,9 +985,9 @@ impl VaultPathSlice {
         if slice == "." || slice == ".." {
             return true;
         }
-        !RX_PATH_CHARS.is_match(slice)
-            && !RX_PATH_NAME.is_match(slice)
-            && !RX_WIN_RESERVED.is_match(slice)
+        !filename::RX_PATH_CHARS.is_match(slice)
+            && !filename::RX_PATH_NAME.is_match(slice)
+            && !filename::RX_WIN_RESERVED.is_match(slice)
             && !slice.ends_with('.')
             && !slice.starts_with(' ')
             && !slice.ends_with(' ')
