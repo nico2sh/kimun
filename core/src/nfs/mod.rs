@@ -475,6 +475,11 @@ pub(crate) async fn delete_note<P: AsRef<Path>>(
     Ok(())
 }
 
+/// Create `dir` and all missing parents. No-op if it already exists.
+pub(crate) fn ensure_dir(dir: &Path) -> Result<(), FSError> {
+    std::fs::create_dir_all(dir).map_err(FSError::ReadFileError)
+}
+
 /// Remove a file or directory at the given OS path. Used by `NoteVault::force_rebuild`
 /// to delete the database file before recreating it.
 pub(crate) fn remove_path(path: &Path) -> Result<(), FSError> {
