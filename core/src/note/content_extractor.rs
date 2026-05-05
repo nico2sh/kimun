@@ -1086,7 +1086,10 @@ More text"#;
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
+        assert_eq!(
+            format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP),
+            content_chunks[1].get_breadcrumb()
+        );
         assert_eq!("More text", content_chunks[1].get_text());
     }
 
@@ -1107,10 +1110,16 @@ Even more text"#;
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
+        assert_eq!(
+            format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP),
+            content_chunks[1].get_breadcrumb()
+        );
         assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!(
-            format!("Title{0}Subtitle{0}Subsubtitle", crate::note::BREADCRUMB_SEP),
+            format!(
+                "Title{0}Subtitle{0}Subsubtitle",
+                crate::note::BREADCRUMB_SEP
+            ),
             content_chunks[2].get_breadcrumb()
         );
         assert_eq!("Even more text", content_chunks[2].get_text());
@@ -1136,14 +1145,23 @@ There is text here"#;
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
+        assert_eq!(
+            format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP),
+            content_chunks[1].get_breadcrumb()
+        );
         assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!(
-            format!("Title{0}Subtitle{0}Subsubtitle", crate::note::BREADCRUMB_SEP),
+            format!(
+                "Title{0}Subtitle{0}Subsubtitle",
+                crate::note::BREADCRUMB_SEP
+            ),
             content_chunks[2].get_breadcrumb()
         );
         assert_eq!("Even more text", content_chunks[2].get_text());
-        assert_eq!(format!("Title{0}Level 2 Title", crate::note::BREADCRUMB_SEP), content_chunks[3].get_breadcrumb());
+        assert_eq!(
+            format!("Title{0}Level 2 Title", crate::note::BREADCRUMB_SEP),
+            content_chunks[3].get_breadcrumb()
+        );
         assert_eq!("There is text here", content_chunks[3].get_text());
     }
 
@@ -1174,17 +1192,29 @@ Another main content
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
+        assert_eq!(
+            format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP),
+            content_chunks[1].get_breadcrumb()
+        );
         assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!(
-            format!("Title{0}Subtitle{0}Subsubtitle", crate::note::BREADCRUMB_SEP),
+            format!(
+                "Title{0}Subtitle{0}Subsubtitle",
+                crate::note::BREADCRUMB_SEP
+            ),
             content_chunks[2].get_breadcrumb()
         );
         assert_eq!("Even more text", content_chunks[2].get_text());
-        assert_eq!(format!("Title{0}Level 2 Title", crate::note::BREADCRUMB_SEP), content_chunks[3].get_breadcrumb());
+        assert_eq!(
+            format!("Title{0}Level 2 Title", crate::note::BREADCRUMB_SEP),
+            content_chunks[3].get_breadcrumb()
+        );
         assert_eq!("There is text here", content_chunks[3].get_text());
         assert_eq!(
-            format!("Title{0}Level 2 Title{0}Fourth Subsubtitle", crate::note::BREADCRUMB_SEP),
+            format!(
+                "Title{0}Level 2 Title{0}Fourth Subsubtitle",
+                crate::note::BREADCRUMB_SEP
+            ),
             content_chunks[4].get_breadcrumb()
         );
         assert_eq!("Before last text", content_chunks[4].get_text());
@@ -1219,7 +1249,10 @@ Another main content
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
+        assert_eq!(
+            format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP),
+            content_chunks[1].get_breadcrumb()
+        );
         assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!("Subsubtitle", content_chunks[2].get_breadcrumb());
         assert_eq!("Even more text", content_chunks[2].get_text());
@@ -1229,7 +1262,10 @@ Another main content
         );
         assert_eq!("There is text here", content_chunks[3].get_text());
         assert_eq!(
-            format!("Subsubtitle{0}Fourth Subsubtitle", crate::note::BREADCRUMB_SEP),
+            format!(
+                "Subsubtitle{0}Fourth Subsubtitle",
+                crate::note::BREADCRUMB_SEP
+            ),
             content_chunks[4].get_breadcrumb()
         );
         assert_eq!("Before last text", content_chunks[4].get_text());
@@ -1414,7 +1450,10 @@ ls -la ./test
         let markdown = "# Title\n## Subtitle\nSome text";
         let chunks = get_content_chunks(markdown);
         assert_eq!(1, chunks.len());
-        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), chunks[0].get_breadcrumb());
+        assert_eq!(
+            format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP),
+            chunks[0].get_breadcrumb()
+        );
         assert_eq!("Some text", chunks[0].get_text());
     }
 
@@ -1459,7 +1498,10 @@ ls -la ./test
         let markdown = "# H1\n## H2\n### H3\n#### H4\ntext";
         let chunks = get_content_chunks(markdown);
         assert_eq!(1, chunks.len());
-        assert_eq!(format!("H1{0}H2{0}H3{0}H4", crate::note::BREADCRUMB_SEP), chunks[0].get_breadcrumb());
+        assert_eq!(
+            format!("H1{0}H2{0}H3{0}H4", crate::note::BREADCRUMB_SEP),
+            chunks[0].get_breadcrumb()
+        );
         assert_eq!("text", chunks[0].get_text());
     }
 
