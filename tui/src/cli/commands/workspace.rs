@@ -116,17 +116,15 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
 
     println!("Initializing workspace database...");
     let cache_path = settings.cache_path_for(&workspace_name);
-    let vault = NoteVault::new(
-        VaultConfig::new(&canonical_path).with_db_path(cache_path),
-    )
-    .await
-    .map_err(|e| {
-        eyre!(
-            "Failed to create vault at {}: {}",
-            canonical_path.display(),
-            e
-        )
-    })?;
+    let vault = NoteVault::new(VaultConfig::new(&canonical_path).with_db_path(cache_path))
+        .await
+        .map_err(|e| {
+            eyre!(
+                "Failed to create vault at {}: {}",
+                canonical_path.display(),
+                e
+            )
+        })?;
     vault
         .validate_and_init()
         .await
@@ -232,8 +230,7 @@ fn run_use(settings: &mut AppSettings, name: String) -> Result<()> {
 
 fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) -> Result<()> {
     let new_name = new_name.to_lowercase();
-    kimun_core::nfs::filename::validate_filename(&new_name)
-        .map_err(|e| eyre!("{}", e))?;
+    kimun_core::nfs::filename::validate_filename(&new_name).map_err(|e| eyre!("{}", e))?;
 
     let ws_config = settings
         .workspace_config
@@ -387,17 +384,15 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
 
     let cache_path = settings.cache_path_for(&workspace_name);
     let workspace_path = entry.effective_path().clone();
-    let vault = NoteVault::new(
-        VaultConfig::new(&workspace_path).with_db_path(cache_path),
-    )
-    .await
-    .map_err(|e| {
-        eyre!(
-            "Failed to open vault at {}: {}",
-            workspace_path.display(),
-            e
-        )
-    })?;
+    let vault = NoteVault::new(VaultConfig::new(&workspace_path).with_db_path(cache_path))
+        .await
+        .map_err(|e| {
+            eyre!(
+                "Failed to open vault at {}: {}",
+                workspace_path.display(),
+                e
+            )
+        })?;
 
     let report = match vault.recreate_index().await {
         Ok(r) => r,
