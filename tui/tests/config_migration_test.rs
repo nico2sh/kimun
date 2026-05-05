@@ -298,3 +298,35 @@ created = "2026-01-01T00:00:00Z"
         "v3 config should never write last_paths, got:\n{raw}"
     );
 }
+
+#[test]
+fn v2_to_v3_creates_config_backup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    let workspace_dir = tempfile::TempDir::new().unwrap();
+    let original = format!(
+        r#"
+config_version = 2
+cache_dir = "."
+history_dir = "history"
+theme = "gruvbox_dark"
+
+[global]
+current_workspace = "notes"
+
+[workspaces.notes]
+path = "{}"
+last_paths = []
+created = "2026-01-01T00:00:00Z"
+"#,
+        workspace_dir.path().display()
+    );
+    std::fs::write(&cfg_path, &original).unwrap();
+
+    let _ = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+
+    let bak = cfg_path.with_extension("toml.bak.v2");
+    assert!(bak.exists(), "backup file should exist at {bak:?}");
+    let backed_up = std::fs::read_to_string(&bak).unwrap();
+    assert_eq!(backed_up, original);
+}

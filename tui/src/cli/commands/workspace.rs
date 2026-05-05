@@ -129,7 +129,10 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         .await
         .map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
 
-    // Add workspace to config and save
+    // Add workspace to config and save. Lowercase the name so stored
+    // keys are always lowercase (workspace names back the cache and
+    // history filenames, which are case-insensitive on Windows/macOS).
+    let workspace_name = workspace_name.to_lowercase();
     let ws_config_mut = settings
         .workspace_config
         .as_mut()

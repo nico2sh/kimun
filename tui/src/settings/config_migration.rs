@@ -87,6 +87,23 @@ impl ConfigMigration {
             ));
         }
 
+        // Back up the v2 config before any I/O. If config_file is unset (e.g.
+        // settings constructed directly in unit tests), skip — migration is
+        // safe to run regardless. Idempotent: don't overwrite an existing backup.
+        if let Some(ref cfg_path) = settings.config_file {
+            let bak_path = cfg_path.with_extension("toml.bak.v2");
+            if !bak_path.exists() {
+                if let Err(e) = std::fs::copy(cfg_path, &bak_path) {
+                    return Err(eyre::eyre!(
+                        "failed to back up config to {:?}: {}",
+                        bak_path,
+                        e
+                    ));
+                }
+                tracing::info!("backed up v2 config to {:?}", bak_path);
+            }
+        }
+
         // Prefer the resolved paths (set by load_from_file), but fall back to
         // the raw configured paths for callers that bypass resolution (e.g.
         // some unit tests). This mirrors `cache_path_for` / `history_path_for`.
