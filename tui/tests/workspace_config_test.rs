@@ -177,6 +177,52 @@ theme = "gruvbox_dark"
 }
 
 #[test]
+fn add_path_history_writes_to_history_file_not_config() {
+    use kimun_core::nfs::VaultPath;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        format!(
+            r#"
+config_version = 3
+cache_dir = "."
+history_dir = "history"
+theme = "gruvbox_dark"
+
+[workspaces.notes]
+path = "{}"
+last_paths = []
+created = "2026-01-01T00:00:00Z"
+
+[global]
+current_workspace = "notes"
+"#,
+            tmp.path().display()
+        ),
+    )
+    .unwrap();
+    let mut settings =
+        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+
+    settings.add_path_history(&VaultPath::new("a.md"));
+    settings.add_path_history(&VaultPath::new("b.md"));
+
+    let history_file = tmp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("history")
+        .join("notes.txt");
+    assert!(history_file.exists(), "history file should be written at {history_file:?}");
+    let loaded = settings.current_last_paths();
+    assert_eq!(
+        loaded.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+        vec!["b.md".to_string(), "a.md".to_string()]
+    );
+}
+
+#[test]
 fn cache_path_for_uses_workspace_name_and_kimuncache_extension() {
     let tmp = tempfile::TempDir::new().unwrap();
     let cfg_path = tmp.path().join("config.toml");

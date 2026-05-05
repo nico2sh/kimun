@@ -59,8 +59,6 @@ const CONFIG_DIR: &str = "kimun";
 const BASE_CONFIG_FILE: &str = "config.toml";
 const THEMES_DIR: &str = "themes";
 
-const LAST_PATH_HISTORY_SIZE: usize = 20;
-
 const CONFIG_HEADER: &str = "\
 # ─── Kimün configuration ────────────────────────────────────────────────────
 #
@@ -582,18 +580,25 @@ impl AppSettings {
         if !note_path.is_note() {
             return;
         }
-        let path_str = note_path.to_string();
-
-        // Write to the current workspace entry in workspace_config.
-        if let Some(ref mut wc) = self.workspace_config
+        let workspace_name = match self.current_workspace_name() {
+            Some(name) => name,
+            None => return,
+        };
+        let file_path = self.history_path_for(&workspace_name);
+        if let Err(e) = history::push_history(&file_path, note_path) {
+            tracing::warn!("failed to write history {:?}: {}", file_path, e);
+        } else if let Some(ref mut wc) = self.workspace_config
             && let Some(entry) = wc.workspaces.get_mut(&wc.global.current_workspace)
         {
-            entry.last_paths.retain(|p| p != &path_str);
-            while entry.last_paths.len() >= LAST_PATH_HISTORY_SIZE {
-                entry.last_paths.remove(0);
-            }
-            entry.last_paths.push(path_str);
+            entry.last_paths.clear();
         }
+    }
+
+    fn current_workspace_name(&self) -> Option<String> {
+        self.workspace_config
+            .as_ref()
+            .map(|wc| wc.global.current_workspace.clone())
+            .filter(|s| !s.is_empty())
     }
 
     pub fn cache_dir_resolved(&self) -> Option<&Path> {
@@ -626,14 +631,12 @@ impl AppSettings {
     }
 
     /// Returns the last-visited paths for the current workspace.
-    /// Reads from workspace_config (Phase 2) first, falls back to top-level (Phase 1).
     pub fn current_last_paths(&self) -> Vec<VaultPath> {
-        if let Some(ref wc) = self.workspace_config
-            && let Some(entry) = wc.get_current_workspace()
-        {
-            return entry.last_paths.iter().map(VaultPath::new).collect();
-        }
-        self.last_paths.clone()
+        let Some(name) = self.current_workspace_name() else {
+            return Vec::new();
+        };
+        let file_path = self.history_path_for(&name);
+        history::load_history(&file_path)
     }
 
     /// Build the icon set for the current `use_nerd_fonts` setting.
