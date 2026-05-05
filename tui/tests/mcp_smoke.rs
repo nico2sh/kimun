@@ -24,7 +24,7 @@ fn kimun_bin() -> std::path::PathBuf {
 
 /// Write a minimal config file that points the workspace at `workspace`.
 fn write_config(dir: &std::path::Path, workspace: &std::path::Path) -> std::path::PathBuf {
-    let config_path = dir.join("kimun_config.toml");
+    let config_path = dir.join("config.toml");
     std::fs::write(
         &config_path,
         format!(

@@ -16,8 +16,9 @@ kimun --config /path/to/config.toml <subcommand>
 ```
 
 Without `--config`, Kimün uses the default location:
-- **Linux / macOS:** `~/.config/kimun/kimun_config.toml`
-- **Windows:** `%USERPROFILE%\kimun\kimun_config.toml`
+
+- **Linux / macOS:** `~/.config/kimun/config.toml`
+- **Windows:** `%USERPROFILE%\kimun\config.toml`
 
 ## Initial Setup
 
