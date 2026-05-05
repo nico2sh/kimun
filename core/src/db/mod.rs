@@ -76,7 +76,7 @@ pub(super) struct VaultDB {
     pool: SqlitePool,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum DBStatus {
     Ready,
     Outdated,
