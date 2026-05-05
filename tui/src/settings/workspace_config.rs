@@ -30,7 +30,7 @@ impl std::fmt::Display for WorkspaceConfigError {
                 )
             }
             WorkspaceConfigError::InvalidName { error, .. } => {
-                write!(f, "Invalid workspace {error}")
+                write!(f, "Workspace {error}")
             }
         }
     }
