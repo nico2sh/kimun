@@ -233,11 +233,21 @@ impl SettingsScreen {
                     .ok();
                 return;
             };
+            let workspace_name = s
+                .workspace_config
+                .as_ref()
+                .map(|wc| wc.global.current_workspace.clone())
+                .filter(|n| !n.is_empty());
+            let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
             drop(s);
             self.pending_save_after_index = true;
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
-                let event = match NoteVault::new(VaultConfig::new(&workspace)).await {
+                let mut config = VaultConfig::new(&workspace);
+                if let Some(path) = cache_path {
+                    config = config.with_db_path(path);
+                }
+                let event = match NoteVault::new(config).await {
                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                     Ok(vault) => match vault.recreate_index().await {
                         Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
@@ -398,15 +408,26 @@ impl AppScreen for SettingsScreen {
                     }
                     KeyCode::Enter => {
                         if *focused_button == ConfirmButton::Confirm {
-                            let Some(workspace) =
-                                self.settings.read().unwrap().resolve_workspace_path()
-                            else {
+                            let s = self.settings.read().unwrap();
+                            let Some(workspace) = s.resolve_workspace_path() else {
+                                drop(s);
                                 self.overlay = Overlay::None;
                                 return EventState::Consumed;
                             };
+                            let workspace_name = s
+                                .workspace_config
+                                .as_ref()
+                                .map(|wc| wc.global.current_workspace.clone())
+                                .filter(|n| !n.is_empty());
+                            let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+                            drop(s);
                             let tx2 = tx.clone();
                             let handle = tokio::spawn(async move {
-                                let event = match NoteVault::new(VaultConfig::new(&workspace)).await {
+                                let mut config = VaultConfig::new(&workspace);
+                                if let Some(path) = cache_path {
+                                    config = config.with_db_path(path);
+                                }
+                                let event = match NoteVault::new(config).await {
                                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                                     Ok(vault) => match vault.recreate_index().await {
                                         Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
@@ -699,15 +720,28 @@ impl AppScreen for SettingsScreen {
             AppEvent::TriggerFastReindex => {
                 // Fast reindex starts immediately (no confirmation overlay) — it is a
                 // low-cost incremental operation unlike full reindex.
-                let Some(workspace) = self.settings.read().unwrap().resolve_workspace_path() else {
+                let s = self.settings.read().unwrap();
+                let Some(workspace) = s.resolve_workspace_path() else {
+                    drop(s);
                     tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
                         .ok();
                     return None;
                 };
+                let workspace_name = s
+                    .workspace_config
+                    .as_ref()
+                    .map(|wc| wc.global.current_workspace.clone())
+                    .filter(|n| !n.is_empty());
+                let cache_path = workspace_name.as_ref().map(|n| s.cache_path_for(n));
+                drop(s);
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = async {
-                        let vault = NoteVault::new(VaultConfig::new(&workspace))
+                        let mut config = VaultConfig::new(&workspace);
+                        if let Some(path) = cache_path {
+                            config = config.with_db_path(path);
+                        }
+                        let vault = NoteVault::new(config)
                             .await
                             .map_err(|e| e.to_string())?;
                         vault
