@@ -419,7 +419,8 @@ fn add_breadcrumb_query(
         if s.excluded_breadcrumb.is_empty() {
             queries.push(format!(
                 "{} WHERE notesContent.breadcrumb MATCH ?{}",
-                search_base_sql(), var_num
+                search_base_sql(),
+                var_num
             ));
             params.push(s.breadcrumb.join(" "));
         } else {
@@ -432,7 +433,8 @@ fn add_breadcrumb_query(
             }
             queries.push(format!(
                 "{} WHERE notesContent MATCH ?{}",
-                search_base_sql(), var_num
+                search_base_sql(),
+                var_num
             ));
             params.push(parts.join(" "));
         }

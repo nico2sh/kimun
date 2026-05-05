@@ -904,12 +904,7 @@ where
     let walker = nfs::get_file_walker(workspace_path, path, true);
 
     let cached_notes = db::get_notes(pool, path, true).await?;
-    let builder = NoteListVisitorBuilder::new(
-        workspace_path,
-        validation_mode,
-        cached_notes,
-        None,
-    );
+    let builder = NoteListVisitorBuilder::new(workspace_path, validation_mode, cached_notes, None);
     let builder = run_walker_blocking(walker, builder)
         .await
         .map_err(|e| match e {
@@ -1180,7 +1175,10 @@ mod tests {
         let vault = setup_vault_with_notes(dir.path()).await;
 
         vault
-            .save_note(&VaultPath::new("/target.md"), "# Target\nSee [[target]] here.")
+            .save_note(
+                &VaultPath::new("/target.md"),
+                "# Target\nSee [[target]] here.",
+            )
             .await
             .unwrap();
 
@@ -1706,7 +1704,11 @@ mod tests {
 
         assert_eq!(all.len(), 3, "expected 3 notes, got: {:?}", names);
         assert!(names.iter().any(|p| p.ends_with("/a.md")), "{:?}", names);
-        assert!(names.iter().any(|p| p.ends_with("/dir1/b.md")), "{:?}", names);
+        assert!(
+            names.iter().any(|p| p.ends_with("/dir1/b.md")),
+            "{:?}",
+            names
+        );
         assert!(
             names.iter().any(|p| p.ends_with("/dir1/sub/c.md")),
             "{:?}",

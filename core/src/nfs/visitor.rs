@@ -50,11 +50,7 @@ impl NoteListVisitor {
     /// Returns `None` only when the file could not be read; the caller treats
     /// that as "skip this iteration" so the cached entry (if any) survives
     /// untouched and will be re-checked next time.
-    fn verify_cached_note(
-        &self,
-        data: &NoteEntryData,
-        os_path: &Path,
-    ) -> Option<NoteContentData> {
+    fn verify_cached_note(&self, data: &NoteEntryData, os_path: &Path) -> Option<NoteContentData> {
         let cached_option = self.notes_to_delete.lock().unwrap().remove(&data.path);
 
         match cached_option {
@@ -170,9 +166,7 @@ impl NoteListVisitorBuilder {
     /// and we can move the Vecs out without cloning.
     pub fn into_results(self) -> VisitorResults {
         VisitorResults {
-            to_delete: take_arc_mutex(self.notes_to_delete)
-                .into_keys()
-                .collect(),
+            to_delete: take_arc_mutex(self.notes_to_delete).into_keys().collect(),
             to_add: take_arc_mutex(self.notes_to_add),
             to_modify: take_arc_mutex(self.notes_to_modify),
         }
@@ -251,12 +245,8 @@ mod tests {
         let cached_notes = vec![];
         let (sender, _receiver) = mpsc::channel();
 
-        let builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            Some(sender),
-        );
+        let builder =
+            NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, Some(sender));
 
         assert_eq!(builder.workspace_path, workspace_path);
         assert_eq!(builder.validation, validation);
@@ -270,12 +260,7 @@ mod tests {
         let validation = NotesValidation::Fast;
         let cached_notes = vec![];
 
-        let builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            None,
-        );
+        let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
 
         assert_eq!(builder.workspace_path, workspace_path);
         assert_eq!(builder.validation, validation);
@@ -298,12 +283,7 @@ mod tests {
         };
         let cached_notes = vec![(note_entry, note_content)];
 
-        let builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            None,
-        );
+        let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
 
         // Test that notes are initially in the "to delete" list
         let notes_to_delete = builder.get_notes_to_delete();
@@ -322,12 +302,7 @@ mod tests {
         let validation = NotesValidation::None;
         let cached_notes = vec![];
 
-        let builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            None,
-        );
+        let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
 
         // Test all getter methods return empty collections initially
         assert_eq!(builder.get_notes_to_delete().len(), 0);
@@ -342,12 +317,8 @@ mod tests {
         let validation = NotesValidation::None;
         let cached_notes = vec![];
 
-        let mut builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            None,
-        );
+        let mut builder =
+            NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
 
         // Test that we can build a parallel visitor
         let _visitor = builder.build();
@@ -373,12 +344,8 @@ mod tests {
         let cached_notes = vec![];
         let (sender, _receiver) = mpsc::channel();
 
-        let mut builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            Some(sender),
-        );
+        let mut builder =
+            NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, Some(sender));
 
         // Create a visitor and simulate file discovery
         let _visitor = builder.build();
@@ -411,12 +378,8 @@ mod tests {
         ];
 
         for validation in validation_modes {
-            let builder = NoteListVisitorBuilder::new(
-                workspace_path,
-                validation,
-                cached_notes.clone(),
-                None,
-            );
+            let builder =
+                NoteListVisitorBuilder::new(workspace_path, validation, cached_notes.clone(), None);
 
             assert_eq!(builder.validation, validation);
 
@@ -583,12 +546,8 @@ mod tests {
         // Supply the old cached entry (with the original size) to the builder
         let cached = vec![(note_data, content_data)];
 
-        let mut builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            NotesValidation::Fast,
-            cached,
-            None,
-        );
+        let mut builder =
+            NoteListVisitorBuilder::new(workspace_path, NotesValidation::Fast, cached, None);
 
         let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
         walker.visit(&mut builder);
@@ -636,12 +595,8 @@ mod tests {
             .await
             .unwrap();
 
-        let mut builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            NotesValidation::None,
-            cached,
-            None,
-        );
+        let mut builder =
+            NoteListVisitorBuilder::new(workspace_path, NotesValidation::None, cached, None);
 
         let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
         walker.visit(&mut builder);

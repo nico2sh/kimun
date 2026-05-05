@@ -164,7 +164,8 @@ impl VaultEntry {
     ) -> Result<Self, FSError> {
         let note_path = VaultPath::from_path(&workspace_path, &full_path)?;
         let os_path = full_path.as_ref();
-        let metadata = std::fs::metadata(os_path).map_err(|e| Self::map_metadata_err(e, os_path))?;
+        let metadata =
+            std::fs::metadata(os_path).map_err(|e| Self::map_metadata_err(e, os_path))?;
         Self::assemble(note_path, &metadata)
     }
 
@@ -203,7 +204,6 @@ impl Display for VaultEntry {
         }
     }
 }
-
 
 pub(crate) fn hash_text<S: AsRef<str>>(text: S) -> u64 {
     XxHash64::oneshot(42, text.as_ref().as_bytes())
@@ -369,11 +369,9 @@ pub(crate) async fn create_directory<P: AsRef<Path>>(
         Ok(()) => Ok(DirectoryEntryData {
             path: path.to_owned(),
         }),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            Err(FSError::AlreadyExists {
-                path: path.to_owned(),
-            })
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(FSError::AlreadyExists {
+            path: path.to_owned(),
+        }),
         Err(e) => Err(FSError::ReadFileError(e)),
     }
 }
