@@ -32,8 +32,8 @@ kimun
 
 The config file is created automatically on first run:
 
-- **Linux / macOS:** `~/.config/kimun/kimun_config.toml`
-- **Windows:** `%USERPROFILE%\kimun\kimun_config.toml`
+- **Linux / macOS:** `~/.config/kimun/config.toml`
+- **Windows:** `%USERPROFILE%\kimun\config.toml`
 
 You can also specify a custom config path:
 
