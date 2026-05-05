@@ -4,8 +4,8 @@
 
 use crate::settings::AppSettings;
 use color_eyre::eyre::Result;
-use kimun_core::{NoteVault, VaultConfig};
 use kimun_core::nfs::{PATH_SEPARATOR, VaultPath};
+use kimun_core::{NoteVault, VaultConfig};
 use std::path::PathBuf;
 
 /// Load settings from either a specific config file path or the default location.

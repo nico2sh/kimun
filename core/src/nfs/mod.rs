@@ -972,7 +972,9 @@ impl VaultPathSlice {
         } else {
             // Replace invalid chars, lowercase, strip leading/trailing spaces and
             // trailing dots (Windows silently strips them, causing silent collisions).
-            let sanitized = filename::RX_PATH_CHARS.replace_all(&slice, "_").to_lowercase();
+            let sanitized = filename::RX_PATH_CHARS
+                .replace_all(&slice, "_")
+                .to_lowercase();
             let sanitized = sanitized.trim().trim_end_matches('.').to_string();
             // Prefix Windows reserved device names so they don't map to device handles.
             let final_slice = if filename::RX_WIN_RESERVED.is_match(&sanitized) {

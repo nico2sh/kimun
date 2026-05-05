@@ -742,9 +742,7 @@ impl AppScreen for SettingsScreen {
                         if let Some(path) = cache_path {
                             config = config.with_db_path(path);
                         }
-                        let vault = NoteVault::new(config)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let vault = NoteVault::new(config).await.map_err(|e| e.to_string())?;
                         vault
                             .index_notes(NotesValidation::Fast)
                             .await

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 use color_eyre::eyre::{Result, eyre};
-use kimun_core::{NoteVault, VaultConfig};
 use kimun_core::error::VaultError;
+use kimun_core::{NoteVault, VaultConfig};
 
 use crate::settings::{
     AppSettings, config_migration::CURRENT_CONFIG_VERSION, workspace_config::WorkspaceConfig,
@@ -115,13 +115,15 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
 
     // Initialize NoteVault database (creates kimun.sqlite)
     println!("Initializing workspace database...");
-    let vault = NoteVault::new(VaultConfig::new(&canonical_path)).await.map_err(|e| {
-        eyre!(
-            "Failed to create vault at {}: {}",
-            canonical_path.display(),
-            e
-        )
-    })?;
+    let vault = NoteVault::new(VaultConfig::new(&canonical_path))
+        .await
+        .map_err(|e| {
+            eyre!(
+                "Failed to create vault at {}: {}",
+                canonical_path.display(),
+                e
+            )
+        })?;
     vault
         .validate_and_init()
         .await
@@ -327,13 +329,15 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
 
     println!("Reindexing workspace '{}'...", workspace_name);
 
-    let vault = NoteVault::new(VaultConfig::new(entry.effective_path())).await.map_err(|e| {
-        eyre!(
-            "Failed to open vault at {}: {}",
-            entry.effective_path().display(),
-            e
-        )
-    })?;
+    let vault = NoteVault::new(VaultConfig::new(entry.effective_path()))
+        .await
+        .map_err(|e| {
+            eyre!(
+                "Failed to open vault at {}: {}",
+                entry.effective_path().display(),
+                e
+            )
+        })?;
 
     let report = match vault.recreate_index().await {
         Ok(r) => r,

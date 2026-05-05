@@ -177,16 +177,18 @@ mod validate_tests {
     #[test]
     fn add_workspace_rejects_windows_reserved() {
         let mut wc = WorkspaceConfig::new_empty();
-        assert!(wc
-            .add_workspace("con".to_string(), PathBuf::from("/tmp/x"))
-            .is_err());
+        assert!(
+            wc.add_workspace("con".to_string(), PathBuf::from("/tmp/x"))
+                .is_err()
+        );
     }
 
     #[test]
     fn add_workspace_accepts_simple_names() {
         let mut wc = WorkspaceConfig::new_empty();
-        assert!(wc
-            .add_workspace("notes".to_string(), PathBuf::from("/tmp/x"))
-            .is_ok());
+        assert!(
+            wc.add_workspace("notes".to_string(), PathBuf::from("/tmp/x"))
+                .is_ok()
+        );
     }
 }
