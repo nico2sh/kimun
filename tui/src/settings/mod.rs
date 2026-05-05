@@ -58,6 +58,8 @@ const CONFIG_DIR: &str = "kimun";
 
 const BASE_CONFIG_FILE: &str = "config.toml";
 const THEMES_DIR: &str = "themes";
+const CACHE_FILE_EXT: &str = "kimuncache";
+const HISTORY_FILE_EXT: &str = "txt";
 
 const CONFIG_HEADER: &str = "\
 # ─── Kimün configuration ────────────────────────────────────────────────────
@@ -608,21 +610,27 @@ impl AppSettings {
     /// Caller must have already validated `workspace_name` via
     /// `kimun_core::nfs::filename::validate_filename`.
     pub fn cache_path_for(&self, workspace_name: &str) -> PathBuf {
-        let dir = self
-            .cache_dir_resolved
-            .clone()
-            .unwrap_or_else(|| self.cache_dir.clone());
-        dir.join(format!("{workspace_name}.kimuncache"))
+        Self::workspace_file(
+            self.cache_dir_resolved.as_ref().unwrap_or(&self.cache_dir),
+            workspace_name,
+            CACHE_FILE_EXT,
+        )
     }
 
     /// Path to the history file for the named workspace.
     /// Caller must have already validated `workspace_name`.
     pub fn history_path_for(&self, workspace_name: &str) -> PathBuf {
-        let dir = self
-            .history_dir_resolved
-            .clone()
-            .unwrap_or_else(|| self.history_dir.clone());
-        dir.join(format!("{workspace_name}.txt"))
+        Self::workspace_file(
+            self.history_dir_resolved
+                .as_ref()
+                .unwrap_or(&self.history_dir),
+            workspace_name,
+            HISTORY_FILE_EXT,
+        )
+    }
+
+    fn workspace_file(dir: &Path, workspace_name: &str, ext: &str) -> PathBuf {
+        dir.join(format!("{workspace_name}.{ext}"))
     }
 
     /// Returns the last-visited paths for the current workspace.
