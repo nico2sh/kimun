@@ -156,13 +156,18 @@ created = "2026-01-01T00:00:00Z"
     )
     .unwrap();
 
-    let settings =
-        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
 
     assert_eq!(settings.config_version, 3);
     let new_db = tmp.path().canonicalize().unwrap().join("notes.kimuncache");
-    assert!(new_db.exists(), "DB should be moved to cache dir, looked at {new_db:?}");
-    assert!(!old_db.exists(), "Old DB should no longer exist at workspace");
+    assert!(
+        new_db.exists(),
+        "DB should be moved to cache dir, looked at {new_db:?}"
+    );
+    assert!(
+        !old_db.exists(),
+        "Old DB should no longer exist at workspace"
+    );
 
     let hist_path = tmp
         .path()
@@ -170,7 +175,10 @@ created = "2026-01-01T00:00:00Z"
         .unwrap()
         .join("history")
         .join("notes.txt");
-    assert!(hist_path.exists(), "history file should be written at {hist_path:?}");
+    assert!(
+        hist_path.exists(),
+        "history file should be written at {hist_path:?}"
+    );
     let body = std::fs::read_to_string(&hist_path).unwrap();
     let lines: Vec<&str> = body.lines().collect();
     assert_eq!(lines, vec!["a.md", "b.md", "c.md"]);
@@ -207,7 +215,10 @@ created = "2026-01-01T00:00:00Z"
     let result = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone());
     let err = result.unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("bad/name"), "error should name the bad workspace: {msg}");
+    assert!(
+        msg.contains("bad/name"),
+        "error should name the bad workspace: {msg}"
+    );
 }
 
 #[test]

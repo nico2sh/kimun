@@ -3,8 +3,8 @@
 // Comprehensive integration tests for CLI Phase 2 functionality.
 // Tests multi-workspace workflows, JSON output validation, and Phase 1 migration.
 
-use kimun_core::{NoteVault, VaultConfig};
 use kimun_core::nfs::VaultPath;
+use kimun_core::{NoteVault, VaultConfig};
 use kimun_notes::cli::commands::workspace::WorkspaceSubcommand;
 use kimun_notes::cli::output::OutputFormat;
 use kimun_notes::cli::{CliCommand, run_cli};
@@ -333,7 +333,9 @@ async fn test_json_output_multi_workspace() {
     );
 
     // Verify JSON structure by directly calling the vault (since CLI output goes to stdout)
-    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path())).await.unwrap();
+    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
+        .await
+        .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.search_notes("test").await.unwrap();

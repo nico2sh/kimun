@@ -108,9 +108,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use kimun_core::VaultConfig;
     use crate::settings::AppSettings;
     use crate::test_support::{key_event, temp_vault};
+    use kimun_core::VaultConfig;
     use ratatui::crossterm::event::KeyCode;
     use std::sync::{Arc, RwLock};
     use tokio::sync::mpsc::unbounded_channel;

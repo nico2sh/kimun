@@ -132,7 +132,11 @@ mod tests {
         let tmp = std::env::temp_dir().join("kimun_test_vault");
         std::fs::create_dir_all(&tmp).unwrap();
 
-        let vault = Arc::new(NoteVault::new(VaultConfig::new(tmp)).await.expect("vault creation failed"));
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(tmp))
+                .await
+                .expect("vault creation failed"),
+        );
         let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
         let dialog = CreateNoteDialog::new(VaultPath::root(), vault);
         assert!(dialog.error.is_none());

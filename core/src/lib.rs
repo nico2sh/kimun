@@ -1310,7 +1310,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_todays_journal() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+            .await
+            .unwrap();
 
         let (title, note_path) = vault.get_todays_journal();
 
@@ -1330,7 +1332,9 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_valid_journal_note() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+            .await
+            .unwrap();
 
         // Create a journal note path
         let journal_note_path = vault
@@ -1348,7 +1352,9 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_invalid_date_format() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+            .await
+            .unwrap();
 
         // Create a note path with invalid date format
         let invalid_journal_path = vault
@@ -1363,7 +1369,9 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_non_journal_path() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+            .await
+            .unwrap();
 
         // Create a note path outside of journal directory
         let non_journal_path = VaultPath::new("/other/2023-12-25.md");
@@ -1375,7 +1383,9 @@ mod tests {
     #[tokio::test]
     async fn test_journal_date_with_non_note_path() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+            .await
+            .unwrap();
 
         // Create a directory path (not a note)
         let directory_path = vault.journal_path.append(&VaultPath::new("2023-12-25"));
@@ -1387,7 +1397,9 @@ mod tests {
     #[tokio::test]
     async fn test_path_to_pathbuf() {
         let temp_dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(VaultConfig::new(temp_dir.path())).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp_dir.path()))
+            .await
+            .unwrap();
 
         let vault_path = VaultPath::new("/test/note.md");
         let result = vault.path_to_pathbuf(&vault_path);
@@ -1852,7 +1864,10 @@ mod vault_config_tests {
     #[test]
     fn with_db_path_overrides_default() {
         let cfg = VaultConfig::new("/tmp/ws").with_db_path("/var/cache/foo.kimuncache");
-        assert_eq!(cfg.db_path.as_deref(), Some(std::path::Path::new("/var/cache/foo.kimuncache")));
+        assert_eq!(
+            cfg.db_path.as_deref(),
+            Some(std::path::Path::new("/var/cache/foo.kimuncache"))
+        );
     }
 
     #[tokio::test]
@@ -1861,7 +1876,10 @@ mod vault_config_tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let vault = NoteVault::new(VaultConfig::new(tmp.path())).await.unwrap();
         let expected = tmp.path().join("kimun.sqlite");
-        assert!(expected.exists(), "legacy DB path should be used when db_path is None");
+        assert!(
+            expected.exists(),
+            "legacy DB path should be used when db_path is None"
+        );
         drop(vault);
     }
 
@@ -1871,11 +1889,9 @@ mod vault_config_tests {
         let workspace = tempfile::TempDir::new().unwrap();
         let cache_dir = tempfile::TempDir::new().unwrap();
         let custom_db = cache_dir.path().join("my-vault.kimuncache");
-        let vault = NoteVault::new(
-            VaultConfig::new(workspace.path()).with_db_path(&custom_db),
-        )
-        .await
-        .unwrap();
+        let vault = NoteVault::new(VaultConfig::new(workspace.path()).with_db_path(&custom_db))
+            .await
+            .unwrap();
         assert!(custom_db.exists());
         assert!(!workspace.path().join("kimun.sqlite").exists());
         drop(vault);

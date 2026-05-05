@@ -144,8 +144,7 @@ theme = "gruvbox_dark"
     )
     .unwrap();
 
-    let settings =
-        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
     let resolved_cache = settings.cache_dir_resolved().unwrap();
     let resolved_hist = settings.history_dir_resolved().unwrap();
     assert_eq!(resolved_cache, tmp.path().canonicalize().unwrap());
@@ -174,8 +173,7 @@ theme = "gruvbox_dark"
     )
     .unwrap();
 
-    let settings =
-        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
     assert_eq!(
         settings.cache_dir_resolved().unwrap(),
         abs_cache.path().canonicalize().unwrap()
@@ -220,7 +218,10 @@ current_workspace = "notes"
         .unwrap()
         .join("history")
         .join("notes.txt");
-    assert!(history_file.exists(), "history file should be written at {history_file:?}");
+    assert!(
+        history_file.exists(),
+        "history file should be written at {history_file:?}"
+    );
     let loaded = settings.current_last_paths();
     assert_eq!(
         loaded.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
@@ -243,8 +244,7 @@ theme = "gruvbox_dark"
     )
     .unwrap();
 
-    let settings =
-        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
     let cache = settings.cache_path_for("myvault");
     assert_eq!(
         cache,

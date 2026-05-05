@@ -1,5 +1,5 @@
-use kimun_core::{NoteVault, VaultConfig};
 use kimun_core::nfs::VaultPath;
+use kimun_core::{NoteVault, VaultConfig};
 use kimun_notes::cli::output::OutputFormat;
 use kimun_notes::cli::{CliCommand, run_cli};
 use kimun_notes::settings::AppSettings;

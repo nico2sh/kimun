@@ -138,7 +138,9 @@ mod tests {
 
     #[test]
     fn disallowed_chars_match_legacy_set() {
-        for c in ['\\', '/', ':', '*', '?', '"', '<', '>', '|', '[', ']', '^', '#'] {
+        for c in [
+            '\\', '/', ':', '*', '?', '"', '<', '>', '|', '[', ']', '^', '#',
+        ] {
             assert!(is_disallowed_char(c), "{c:?} should be disallowed");
         }
         for c in ['\u{0000}', '\u{001f}', '\u{007f}'] {
@@ -151,7 +153,9 @@ mod tests {
 
     #[test]
     fn windows_reserved_detection() {
-        for n in ["CON", "con", "Prn.txt", "AUX", "nul", "com1", "COM9", "lpt1", "LPT9"] {
+        for n in [
+            "CON", "con", "Prn.txt", "AUX", "nul", "com1", "COM9", "lpt1", "LPT9",
+        ] {
             assert!(is_windows_reserved(n), "{n} should be reserved");
         }
         for n in ["console", "communicator", "lptest", "foo"] {
@@ -194,7 +198,9 @@ mod tests {
     fn validate_rejects_windows_reserved_case_insensitive() {
         for name in ["con", "CON", "Prn", "nul.txt"] {
             let err = validate_filename(name).unwrap_err();
-            assert!(err.reasons.contains(&InvalidNameReason::ReservedWindowsName));
+            assert!(err
+                .reasons
+                .contains(&InvalidNameReason::ReservedWindowsName));
         }
     }
 
@@ -228,7 +234,10 @@ mod tests {
         let err = validate_filename(&name).unwrap_err();
         assert!(err.reasons.iter().any(|r| matches!(
             r,
-            InvalidNameReason::TooLong { actual: 65, max: 64 }
+            InvalidNameReason::TooLong {
+                actual: 65,
+                max: 64
+            }
         )));
     }
 
@@ -236,7 +245,9 @@ mod tests {
     fn validate_collects_multiple_reasons() {
         let err = validate_filename(" CON/foo. ").unwrap_err();
         let reasons = err.reasons;
-        assert!(reasons.iter().any(|r| matches!(r, InvalidNameReason::DisallowedChars(_))));
+        assert!(reasons
+            .iter()
+            .any(|r| matches!(r, InvalidNameReason::DisallowedChars(_))));
         assert!(reasons.contains(&InvalidNameReason::LeadingOrTrailingWhitespace));
         assert!(reasons.contains(&InvalidNameReason::TrailingDot));
     }
