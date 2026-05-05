@@ -231,6 +231,10 @@ fn run_use(settings: &mut AppSettings, name: String) -> Result<()> {
 }
 
 fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) -> Result<()> {
+    let new_name = new_name.to_lowercase();
+    kimun_core::nfs::filename::validate_filename(&new_name)
+        .map_err(|e| eyre!("{}", e))?;
+
     let ws_config = settings
         .workspace_config
         .as_ref()
@@ -247,19 +251,58 @@ fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) ->
         ));
     }
 
+    // Move cache and history files BEFORE mutating config so a failed
+    // file move doesn't leave the config pointing at a workspace whose
+    // cache is in the wrong place.
+    let old_cache = settings.cache_path_for(&old_name);
+    let new_cache = settings.cache_path_for(&new_name);
+    let old_history = settings.history_path_for(&old_name);
+    let new_history = settings.history_path_for(&new_name);
+
+    if new_cache.exists() {
+        return Err(eyre!(
+            "Destination cache already exists at {}. Refusing to overwrite.",
+            new_cache.display()
+        ));
+    }
+    if new_history.exists() {
+        return Err(eyre!(
+            "Destination history already exists at {}. Refusing to overwrite.",
+            new_history.display()
+        ));
+    }
+    if old_cache.exists() {
+        std::fs::rename(&old_cache, &new_cache).map_err(|e| {
+            eyre!(
+                "failed to move cache {} -> {}: {}",
+                old_cache.display(),
+                new_cache.display(),
+                e
+            )
+        })?;
+    }
+    if old_history.exists() {
+        std::fs::rename(&old_history, &new_history).map_err(|e| {
+            eyre!(
+                "failed to move history {} -> {}: {}",
+                old_history.display(),
+                new_history.display(),
+                e
+            )
+        })?;
+    }
+
     let ws_config_mut = settings
         .workspace_config
         .as_mut()
         .expect("workspace_config must exist after init");
 
-    // Move entry to new key
     let entry = ws_config_mut
         .workspaces
         .remove(&old_name)
         .expect("entry must exist (checked above)");
     ws_config_mut.workspaces.insert(new_name.clone(), entry);
 
-    // Update current_workspace reference if needed
     if ws_config_mut.global.current_workspace == old_name {
         ws_config_mut.global.current_workspace = new_name.clone();
     }
@@ -280,7 +323,6 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
         return Err(eyre!("Workspace '{}' not found.", name));
     }
 
-    // Prevent removing the current workspace
     if ws_config.global.current_workspace == name {
         return Err(eyre!(
             "Cannot remove the current workspace '{}'. \
@@ -288,6 +330,9 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
             name
         ));
     }
+
+    let cache_path = settings.cache_path_for(&name);
+    let history_path = settings.history_path_for(&name);
 
     settings
         .workspace_config
@@ -297,6 +342,15 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
         .remove(&name);
 
     settings.save_to_disk()?;
+
+    for path in [&cache_path, &history_path] {
+        if path.exists() {
+            match std::fs::remove_file(path) {
+                Ok(()) => tracing::info!("removed {}", path.display()),
+                Err(e) => tracing::warn!("failed to remove {}: {}", path.display(), e),
+            }
+        }
+    }
 
     println!("Workspace '{}' removed.", name);
     Ok(())
