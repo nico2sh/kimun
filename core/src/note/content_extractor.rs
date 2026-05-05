@@ -56,12 +56,13 @@ pub struct LinkSpan {
 /// Cheaper than `link_char_spans` when markdown links are not needed (e.g. the
 /// per-frame editor render path).
 pub fn wikilink_char_spans(text: &str) -> Vec<LinkSpan> {
+    let mut cursor = ByteToCharCursor::new(text);
     WIKILINK_RX
         .captures_iter(text)
         .map(|caps| {
             let m = caps.get(0).unwrap();
-            let start = text[..m.start()].chars().count();
-            let end = text[..m.end()].chars().count();
+            let start = cursor.advance_to(m.start());
+            let end = cursor.advance_to(m.end());
             let inner = &caps["link_text"];
             let target = inner.split('|').next().unwrap_or(inner).to_string();
             LinkSpan {
@@ -80,37 +81,69 @@ pub fn wikilink_char_spans(text: &str) -> Vec<LinkSpan> {
 /// Suitable for syntax highlighting, editor decoration, and lightweight
 /// link extraction without full vault-path resolution.
 pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
-    let mut spans: Vec<LinkSpan> = Vec::new();
+    // Collect each iterator's matches as (byte_start, byte_end, kind, target),
+    // sort by byte_start, then walk a single byte→char cursor over the sorted
+    // list — total O(N + K log K) instead of O(K · N) char-counting per match.
+    let mut raw: Vec<(usize, usize, LinkSpanKind, String)> = Vec::new();
 
     for caps in WIKILINK_RX.captures_iter(text) {
         let m = caps.get(0).unwrap();
-        let start = text[..m.start()].chars().count();
-        let end = text[..m.end()].chars().count();
         let inner = &caps["link_text"];
         let target = inner.split('|').next().unwrap_or(inner).to_string();
-        spans.push(LinkSpan {
-            start,
-            end,
-            kind: LinkSpanKind::WikiLink,
-            target,
-        });
+        raw.push((m.start(), m.end(), LinkSpanKind::WikiLink, target));
     }
-
     for caps in MD_LINK_RX.captures_iter(text) {
         let m = caps.get(0).unwrap();
-        let start = text[..m.start()].chars().count();
-        let end = text[..m.end()].chars().count();
         let target = caps["link"].trim().to_string();
-        spans.push(LinkSpan {
-            start,
-            end,
-            kind: LinkSpanKind::Markdown,
-            target,
-        });
+        raw.push((m.start(), m.end(), LinkSpanKind::Markdown, target));
+    }
+    raw.sort_by_key(|r| r.0);
+
+    let mut cursor = ByteToCharCursor::new(text);
+    raw.into_iter()
+        .map(|(byte_start, byte_end, kind, target)| {
+            let start = cursor.advance_to(byte_start);
+            let end = cursor.advance_to(byte_end);
+            LinkSpan {
+                start,
+                end,
+                kind,
+                target,
+            }
+        })
+        .collect()
+}
+
+/// Streaming byte-offset → char-offset converter.
+///
+/// Callers MUST pass monotonically non-decreasing byte offsets to
+/// `advance_to`; violating this contract produces stale char offsets in
+/// release builds (debug builds panic via `debug_assert!`). Total work
+/// over a full scan of `text` is O(text.len()), regardless of the number
+/// of `advance_to` calls.
+struct ByteToCharCursor<'a> {
+    text: &'a str,
+    byte_pos: usize,
+    char_pos: usize,
+}
+
+impl<'a> ByteToCharCursor<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            byte_pos: 0,
+            char_pos: 0,
+        }
     }
 
-    spans.sort_by_key(|s| s.start);
-    spans
+    fn advance_to(&mut self, byte_target: usize) -> usize {
+        debug_assert!(byte_target >= self.byte_pos);
+        if byte_target > self.byte_pos {
+            self.char_pos += self.text[self.byte_pos..byte_target].chars().count();
+            self.byte_pos = byte_target;
+        }
+        self.char_pos
+    }
 }
 
 /// Returns chunks and links in a single pass, avoiding double markdown parsing.
@@ -141,7 +174,7 @@ pub fn get_content_chunks<S: AsRef<str>>(md_text: S) -> Vec<ContentChunk> {
 
     if !frontmatter.is_empty() {
         content_chunks.push(ContentChunk {
-            breadcrumb: vec!["FrontMatter".to_string()],
+            breadcrumb: "FrontMatter".to_string(),
             text: frontmatter,
         })
     }
@@ -387,43 +420,49 @@ fn parse_text(md_text: &str) -> Vec<ContentChunk> {
     for text_line in result {
         match text_line {
             TextLine::Header(level, text) => {
-                // Save current chunk if we have content
                 if !current_breadcrumb.is_empty() || !current_content.is_empty() {
                     let content = crate::utilities::remove_diacritics(&current_content.join("\n"));
                     if !content.trim().is_empty() {
                         content_chunks.push(ContentChunk {
-                            breadcrumb: current_breadcrumb.iter().map(|(_, t)| t.clone()).collect(),
+                            breadcrumb: join_breadcrumb(&current_breadcrumb),
                             text: content,
                         });
                     }
                 }
 
-                // Update breadcrumb for new header
                 current_breadcrumb.retain(|(lvl, _)| *lvl < level);
                 current_breadcrumb.push((level, text));
                 current_content.clear();
             }
-            TextLine::Empty => {
-                // Skip empty lines
-            }
+            TextLine::Empty => {}
             _ => {
                 current_content.push(text_line.to_text());
             }
         }
     }
 
-    // Save final chunk
     if !current_breadcrumb.is_empty() || !current_content.is_empty() {
         let content = crate::utilities::remove_diacritics(&current_content.join("\n"));
         if !content.trim().is_empty() {
             content_chunks.push(ContentChunk {
-                breadcrumb: current_breadcrumb.iter().map(|(_, t)| t.clone()).collect(),
+                breadcrumb: join_breadcrumb(&current_breadcrumb),
                 text: content,
             });
         }
     }
 
     content_chunks
+}
+
+fn join_breadcrumb(stack: &[(u8, String)]) -> String {
+    let mut out = String::new();
+    for (i, (_, t)) in stack.iter().enumerate() {
+        if i > 0 {
+            out.push_str(crate::note::BREADCRUMB_SEP);
+        }
+        out.push_str(t);
+    }
+    out
 }
 
 fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
@@ -676,7 +715,52 @@ mod test {
         },
     };
 
-    use super::{get_markdown_and_links, replace_note_links};
+    use super::{get_markdown_and_links, link_char_spans, replace_note_links, wikilink_char_spans};
+
+    // ---- ByteToCharCursor / span tests on multi-byte input ----
+
+    #[test]
+    fn wikilink_char_spans_after_emoji() {
+        // "👋 hello " = 8 chars (emoji = 1 char even though 4 bytes).
+        let text = "👋 hello [[target]] world";
+        let spans = wikilink_char_spans(text);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 8);
+        // "👋 hello [[target]]" = 8 + len("[[target]]")=10 = 18 chars.
+        assert_eq!(spans[0].end, 18);
+        assert_eq!(spans[0].target, "target");
+    }
+
+    #[test]
+    fn link_char_spans_mixed_after_multibyte() {
+        // 4-byte emoji + 2-byte é — verify byte→char conversion stays correct.
+        let text = "café 🎯 [[wiki]] then [link](http://x) end";
+        let spans = link_char_spans(text);
+        assert_eq!(spans.len(), 2);
+        let wiki = &spans[0];
+        let md = &spans[1];
+        // "café 🎯 " char count: c-a-f-é-space-🎯-space = 7 chars.
+        assert_eq!(wiki.start, 7);
+        // "[[wiki]]" = 8 chars; ends at 7+8=15.
+        assert_eq!(wiki.end, 15);
+        // " then " = 6 chars; md starts at 15+6=21; "[link](http://x)" = 16 chars.
+        assert_eq!(md.start, 21);
+        assert_eq!(md.end, 37);
+    }
+
+    #[test]
+    fn wikilink_char_spans_back_to_back_after_multibyte() {
+        // 🌍 = 1 char (4 bytes). Adjacent wikilinks must keep monotonic spans.
+        let text = "🌍[[a]][[b]]";
+        let spans = wikilink_char_spans(text);
+        assert_eq!(spans.len(), 2);
+        // "[[a]]" = 5 chars; first wiki at [1, 6).
+        assert_eq!(spans[0].start, 1);
+        assert_eq!(spans[0].end, 6);
+        // Second wiki immediately after.
+        assert_eq!(spans[1].start, 6);
+        assert_eq!(spans[1].end, 11);
+    }
 
     // ---- replace_note_links tests ----
 
@@ -1002,7 +1086,7 @@ More text"#;
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
         assert_eq!("More text", content_chunks[1].get_text());
     }
 
@@ -1023,10 +1107,10 @@ Even more text"#;
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
         assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!(
-            "Title>Subtitle>Subsubtitle",
+            format!("Title{0}Subtitle{0}Subsubtitle", crate::note::BREADCRUMB_SEP),
             content_chunks[2].get_breadcrumb()
         );
         assert_eq!("Even more text", content_chunks[2].get_text());
@@ -1052,14 +1136,14 @@ There is text here"#;
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
         assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!(
-            "Title>Subtitle>Subsubtitle",
+            format!("Title{0}Subtitle{0}Subsubtitle", crate::note::BREADCRUMB_SEP),
             content_chunks[2].get_breadcrumb()
         );
         assert_eq!("Even more text", content_chunks[2].get_text());
-        assert_eq!("Title>Level 2 Title", content_chunks[3].get_breadcrumb());
+        assert_eq!(format!("Title{0}Level 2 Title", crate::note::BREADCRUMB_SEP), content_chunks[3].get_breadcrumb());
         assert_eq!("There is text here", content_chunks[3].get_text());
     }
 
@@ -1090,17 +1174,17 @@ Another main content
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
         assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!(
-            "Title>Subtitle>Subsubtitle",
+            format!("Title{0}Subtitle{0}Subsubtitle", crate::note::BREADCRUMB_SEP),
             content_chunks[2].get_breadcrumb()
         );
         assert_eq!("Even more text", content_chunks[2].get_text());
-        assert_eq!("Title>Level 2 Title", content_chunks[3].get_breadcrumb());
+        assert_eq!(format!("Title{0}Level 2 Title", crate::note::BREADCRUMB_SEP), content_chunks[3].get_breadcrumb());
         assert_eq!("There is text here", content_chunks[3].get_text());
         assert_eq!(
-            "Title>Level 2 Title>Fourth Subsubtitle",
+            format!("Title{0}Level 2 Title{0}Fourth Subsubtitle", crate::note::BREADCRUMB_SEP),
             content_chunks[4].get_breadcrumb()
         );
         assert_eq!("Before last text", content_chunks[4].get_text());
@@ -1135,17 +1219,17 @@ Another main content
         assert_eq!("Title".to_string(), data.title);
         assert_eq!("Title", content_chunks[0].get_breadcrumb());
         assert_eq!("Some text", content_chunks[0].get_text());
-        assert_eq!("Title>Subtitle", content_chunks[1].get_breadcrumb());
+        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), content_chunks[1].get_breadcrumb());
         assert_eq!("More text", content_chunks[1].get_text());
         assert_eq!("Subsubtitle", content_chunks[2].get_breadcrumb());
         assert_eq!("Even more text", content_chunks[2].get_text());
         assert_eq!(
-            "Subsubtitle>Level 2 Title",
+            format!("Subsubtitle{0}Level 2 Title", crate::note::BREADCRUMB_SEP),
             content_chunks[3].get_breadcrumb()
         );
         assert_eq!("There is text here", content_chunks[3].get_text());
         assert_eq!(
-            "Subsubtitle>Fourth Subsubtitle",
+            format!("Subsubtitle{0}Fourth Subsubtitle", crate::note::BREADCRUMB_SEP),
             content_chunks[4].get_breadcrumb()
         );
         assert_eq!("Before last text", content_chunks[4].get_text());
@@ -1330,7 +1414,7 @@ ls -la ./test
         let markdown = "# Title\n## Subtitle\nSome text";
         let chunks = get_content_chunks(markdown);
         assert_eq!(1, chunks.len());
-        assert_eq!("Title>Subtitle", chunks[0].get_breadcrumb());
+        assert_eq!(format!("Title{0}Subtitle", crate::note::BREADCRUMB_SEP), chunks[0].get_breadcrumb());
         assert_eq!("Some text", chunks[0].get_text());
     }
 
@@ -1375,8 +1459,20 @@ ls -la ./test
         let markdown = "# H1\n## H2\n### H3\n#### H4\ntext";
         let chunks = get_content_chunks(markdown);
         assert_eq!(1, chunks.len());
-        assert_eq!("H1>H2>H3>H4", chunks[0].get_breadcrumb());
+        assert_eq!(format!("H1{0}H2{0}H3{0}H4", crate::note::BREADCRUMB_SEP), chunks[0].get_breadcrumb());
         assert_eq!("text", chunks[0].get_text());
+    }
+
+    #[test]
+    fn breadcrumb_preserves_heading_with_gt_char() {
+        // Heading text containing `>` must round-trip through breadcrumb_parts
+        // — earlier representations split on `>` and fabricated phantom parents.
+        let markdown = "# Foo > Bar\nbody text\n";
+        let chunks = get_content_chunks(markdown);
+        assert_eq!(1, chunks.len());
+        let parts: Vec<&str> = chunks[0].breadcrumb_parts().collect();
+        assert_eq!(parts, vec!["Foo > Bar"]);
+        assert_eq!(chunks[0].breadcrumb_last(), Some("Foo > Bar"));
     }
 
     #[test]
