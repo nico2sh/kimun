@@ -10,7 +10,7 @@ use super::AppSettings;
 use super::workspace_config::{WorkspaceConfig, WorkspaceEntry};
 
 /// Current config version. Bump this when adding a new migration step.
-pub const CURRENT_CONFIG_VERSION: u32 = 2;
+pub const CURRENT_CONFIG_VERSION: u32 = 3;
 
 /// Runs all necessary migrations on `settings`, mutating it in place.
 /// Returns `true` if any migration was applied (caller should persist).
@@ -43,14 +43,124 @@ impl ConfigMigration {
             migrated = true;
         }
 
+        // v2 → v3: move per-workspace SQLite cache + extract last_paths history.
+        if settings.config_version < 3 {
+            Self::migrate_to_v3(settings)?;
+            migrated = true;
+        }
+
         // Future migrations go here, gated on config_version:
-        // if settings.config_version < 3 { ... migrated = true; }
+        // if settings.config_version < 4 { ... migrated = true; }
 
         if migrated {
             settings.config_version = CURRENT_CONFIG_VERSION;
         }
 
         Ok(migrated)
+    }
+
+    /// v2 → v3: move `<workspace>/kimun.sqlite` to
+    /// `<cache_dir>/<workspace>.kimuncache` and extract per-workspace
+    /// `last_paths` to `<history_dir>/<workspace>.txt`. Then clear the
+    /// in-memory `last_paths` so the next save does not re-write them.
+    ///
+    /// Pre-flight: validates every workspace name; aborts with a single
+    /// error listing every bad name. Idempotent: skips any step whose
+    /// destination already exists.
+    fn migrate_to_v3(settings: &mut AppSettings) -> eyre::Result<()> {
+        let Some(ref wc) = settings.workspace_config else {
+            return Ok(()); // Nothing to migrate.
+        };
+
+        // Pre-flight: validate every workspace name. Abort with a single error
+        // listing all bad names; do not mutate state.
+        let mut invalid = Vec::new();
+        for name in wc.workspaces.keys() {
+            if let Err(e) = kimun_core::nfs::filename::validate_filename(name) {
+                invalid.push(format!("{e}"));
+            }
+        }
+        if !invalid.is_empty() {
+            return Err(eyre::eyre!(
+                "Cannot migrate to v3: invalid workspace names:\n  - {}",
+                invalid.join("\n  - ")
+            ));
+        }
+
+        // Prefer the resolved paths (set by load_from_file), but fall back to
+        // the raw configured paths for callers that bypass resolution (e.g.
+        // some unit tests). This mirrors `cache_path_for` / `history_path_for`.
+        let cache_dir = settings
+            .cache_dir_resolved()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| settings.cache_dir.clone());
+        let history_dir = settings
+            .history_dir_resolved()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| settings.history_dir.clone());
+
+        // Snapshot work to avoid mutable-borrow-while-iterating.
+        let work: Vec<(String, std::path::PathBuf, Vec<String>)> = wc
+            .workspaces
+            .iter()
+            .map(|(name, entry)| {
+                (
+                    name.clone(),
+                    entry.effective_path().clone(),
+                    entry.last_paths.clone(),
+                )
+            })
+            .collect();
+
+        for (name, ws_path, last_paths) in work {
+            let old_db = ws_path.join("kimun.sqlite");
+            let new_db = cache_dir.join(format!("{name}.kimuncache"));
+            if old_db.exists() {
+                if new_db.exists() {
+                    tracing::warn!(
+                        "destination cache {:?} already exists, leaving old DB at {:?}",
+                        new_db,
+                        old_db
+                    );
+                } else {
+                    std::fs::create_dir_all(&cache_dir).map_err(|e| {
+                        eyre::eyre!("failed to create cache dir {:?}: {}", cache_dir, e)
+                    })?;
+                    if let Err(rename_err) = std::fs::rename(&old_db, &new_db) {
+                        if rename_err.raw_os_error() == Some(libc_exdev_code()) {
+                            std::fs::copy(&old_db, &new_db)?;
+                            std::fs::remove_file(&old_db)?;
+                        } else {
+                            return Err(eyre::eyre!(
+                                "failed to move {:?} -> {:?}: {}",
+                                old_db,
+                                new_db,
+                                rename_err
+                            ));
+                        }
+                    }
+                    tracing::info!("migrated {:?} -> {:?}", old_db, new_db);
+                }
+            }
+
+            if !last_paths.is_empty() {
+                let hist_path = history_dir.join(format!("{name}.txt"));
+                if !hist_path.exists() {
+                    std::fs::create_dir_all(&history_dir)?;
+                    let body = last_paths.join("\n") + "\n";
+                    std::fs::write(&hist_path, body)?;
+                }
+            }
+        }
+
+        // Clear in-memory last_paths so the next save does not write them.
+        if let Some(ref mut wc) = settings.workspace_config {
+            for entry in wc.workspaces.values_mut() {
+                entry.last_paths.clear();
+            }
+        }
+
+        Ok(())
     }
 
     /// Migrate the legacy `workspace_dir` field into `workspace_config`.
@@ -132,6 +242,15 @@ impl ConfigMigration {
             n += 1;
         }
     }
+}
+
+#[cfg(unix)]
+fn libc_exdev_code() -> i32 {
+    18 // EXDEV on Linux
+}
+#[cfg(not(unix))]
+fn libc_exdev_code() -> i32 {
+    -1
 }
 
 #[cfg(test)]
@@ -227,6 +346,7 @@ mod tests {
     #[test]
     fn no_migration_when_no_legacy_fields() {
         let mut settings = AppSettings::default();
+        settings.config_version = CURRENT_CONFIG_VERSION;
         settings.workspace_config = Some(WorkspaceConfig::new_empty());
 
         let migrated = ConfigMigration::run(&mut settings).unwrap();

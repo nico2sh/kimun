@@ -11,8 +11,10 @@ use tempfile::TempDir;
 /// The `note` CLI command only calls `validate()` (not `validate_and_init()`) for speed,
 /// so tests must pre-initialise the vault themselves.
 async fn write_config(config_path: &std::path::Path, workspace_dir: &std::path::Path) {
+    // v3 config — already at the current version, so no migration runs and
+    // the in-workspace `kimun.sqlite` we initialise below is left alone.
     let content = format!(
-        r#"config_version = 2
+        r#"config_version = 3
 [global]
 current_workspace = "default"
 theme = "Nord"
@@ -104,7 +106,7 @@ async fn test_note_create_uses_quick_note_path() {
     let workspace_dir = TempDir::new().unwrap();
 
     let content = format!(
-        r#"config_version = 2
+        r#"config_version = 3
 [global]
 current_workspace = "default"
 theme = "Nord"
@@ -148,7 +150,7 @@ async fn test_note_create_absolute_path_ignores_quick_note_path() {
     let workspace_dir = TempDir::new().unwrap();
 
     let content = format!(
-        r#"config_version = 2
+        r#"config_version = 3
 [global]
 current_workspace = "default"
 theme = "Nord"
