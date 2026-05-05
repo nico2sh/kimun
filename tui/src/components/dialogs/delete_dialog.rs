@@ -144,6 +144,7 @@ impl Component for DeleteConfirmDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kimun_core::VaultConfig;
     use tokio::sync::mpsc;
 
     /// Smoke test: constructing a `DeleteConfirmDialog` with a root `VaultPath`
@@ -187,7 +188,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
 
         let vault = Arc::new(
-            NoteVault::new(PathBuf::from(&tmp))
+            NoteVault::new(VaultConfig::new(PathBuf::from(&tmp)))
                 .await
                 .expect("vault creation failed"),
         );
@@ -223,7 +224,7 @@ mod tests {
             std::fs::create_dir_all(&tmp).unwrap();
 
             // Attempt to open vault; if it fails (no DB), skip gracefully.
-            let vault_result = NoteVault::new(tmp).await;
+            let vault_result = NoteVault::new(VaultConfig::new(tmp)).await;
             let Ok(vault) = vault_result else {
                 // No vault available in CI — skip.
                 return;

@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use color_eyre::eyre;
-use kimun_core::NoteVault;
+use kimun_core::{NoteVault, VaultConfig};
 
 use crate::{
     app_screen::{AppScreen, start::StartScreen},
@@ -31,7 +31,7 @@ impl App {
         let vault = {
             let workspace_path = settings.read().unwrap().resolve_workspace_path();
             if let Some(ref workspace) = workspace_path {
-                NoteVault::new(workspace).await.ok().map(|mut v| {
+                NoteVault::new(VaultConfig::new(workspace)).await.ok().map(|mut v| {
                     let s = settings.read().unwrap();
                     if let Some(ref wc) = s.workspace_config
                         && let Some(entry) = wc.get_current_workspace()

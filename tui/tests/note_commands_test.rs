@@ -25,7 +25,7 @@ created = "2026-01-01T00:00:00Z"
         workspace_dir.display()
     );
     std::fs::write(config_path, content).unwrap();
-    let vault = kimun_core::NoteVault::new(workspace_dir).await.unwrap();
+    let vault = kimun_core::NoteVault::new(kimun_core::VaultConfig::new(workspace_dir)).await.unwrap();
     vault.validate_and_init().await.unwrap();
 }
 
@@ -118,7 +118,7 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
-    kimun_core::NoteVault::new(workspace_dir.path())
+    kimun_core::NoteVault::new(kimun_core::VaultConfig::new(workspace_dir.path()))
         .await
         .unwrap()
         .validate_and_init()
@@ -162,7 +162,7 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
-    kimun_core::NoteVault::new(workspace_dir.path())
+    kimun_core::NoteVault::new(kimun_core::VaultConfig::new(workspace_dir.path()))
         .await
         .unwrap()
         .validate_and_init()
@@ -570,7 +570,7 @@ async fn test_note_show_format_paths_returns_error() {
     use kimun_core::nfs::VaultPath;
     use kimun_notes::cli::output::OutputFormat;
     let dir = TempDir::new().unwrap();
-    let vault = kimun_core::NoteVault::new(dir.path()).await.unwrap();
+    let vault = kimun_core::NoteVault::new(kimun_core::VaultConfig::new(dir.path())).await.unwrap();
     vault.validate_and_init().await.unwrap();
     vault
         .create_note(

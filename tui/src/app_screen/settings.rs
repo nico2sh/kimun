@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use kimun_core::error::VaultError;
-use kimun_core::{NoteVault, NotesValidation};
+use kimun_core::{NoteVault, NotesValidation, VaultConfig};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -237,7 +237,7 @@ impl SettingsScreen {
             self.pending_save_after_index = true;
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
-                let event = match NoteVault::new(&workspace).await {
+                let event = match NoteVault::new(VaultConfig::new(&workspace)).await {
                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                     Ok(vault) => match vault.recreate_index().await {
                         Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
@@ -406,7 +406,7 @@ impl AppScreen for SettingsScreen {
                             };
                             let tx2 = tx.clone();
                             let handle = tokio::spawn(async move {
-                                let event = match NoteVault::new(&workspace).await {
+                                let event = match NoteVault::new(VaultConfig::new(&workspace)).await {
                                     Err(e) => AppEvent::IndexingDone(Err(e.to_string())),
                                     Ok(vault) => match vault.recreate_index().await {
                                         Ok(r) => AppEvent::IndexingDone(Ok(r.duration)),
@@ -707,7 +707,7 @@ impl AppScreen for SettingsScreen {
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = async {
-                        let vault = NoteVault::new(&workspace)
+                        let vault = NoteVault::new(VaultConfig::new(&workspace))
                             .await
                             .map_err(|e| e.to_string())?;
                         vault
