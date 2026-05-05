@@ -68,11 +68,11 @@ use super::{
 // 0.5: BREADCRUMB_SEP changed from `>` to `\x1f`. Bump forces a clean
 //      reindex so stale rows with the old separator are rewritten.
 const VERSION: &str = "0.5";
-const DB_FILE: &str = "kimun.sqlite";
+pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone)]
 pub(super) struct VaultDB {
-    workspace_path: PathBuf,
+    db_path: PathBuf,
     pool: SqlitePool,
 }
 
@@ -103,9 +103,11 @@ impl Display for DBStatus {
 }
 
 impl VaultDB {
-    pub(super) async fn new<P: AsRef<Path>>(workspace_path: P) -> Result<Self, DBError> {
-        let workspace_path = workspace_path.as_ref().to_owned();
-        let db_path = workspace_path.join(DB_FILE);
+    pub(super) async fn new<P: AsRef<Path>>(db_path: P) -> Result<Self, DBError> {
+        let db_path = db_path.as_ref().to_owned();
+        if let Some(parent) = db_path.parent() {
+            crate::nfs::ensure_dir(parent).map_err(|e| DBError::Other(e.to_string()))?;
+        }
         let connection_string = format!("sqlite:{}?mode=rwc", db_path.display());
 
         let pool = SqlitePoolOptions::new()
@@ -114,10 +116,7 @@ impl VaultDB {
             .connect(&connection_string)
             .await?;
 
-        Ok(Self {
-            workspace_path,
-            pool,
-        })
+        Ok(Self { db_path, pool })
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -125,7 +124,7 @@ impl VaultDB {
     }
 
     pub fn get_db_path(&self) -> PathBuf {
-        self.workspace_path.join(DB_FILE)
+        self.db_path.clone()
     }
 
     pub async fn check_db(&self) -> Result<DBStatus, DBError> {
@@ -1181,6 +1180,20 @@ async fn delete_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn vault_db_new_creates_parent_dir_for_db_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let nested = tmp.path().join("nested/dir/cache.kimuncache");
+        // Parent dir does not exist yet.
+        assert!(!nested.parent().unwrap().exists());
+
+        let db = super::VaultDB::new(&nested).await.unwrap();
+        assert_eq!(db.get_db_path(), nested);
+        assert!(nested.parent().unwrap().exists());
+        assert!(nested.exists());
+        db.close().await.unwrap();
+    }
 
     #[test]
     fn test_search_terms_query_empty() {

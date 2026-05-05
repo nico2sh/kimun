@@ -24,8 +24,10 @@ memory/
 **/.DS_Store
 **/*.log
 *.sqlite
+*.kimuncache
 tui/kimun_config.toml
 /test_config.toml
 docs/public/
 .worktrees/
 example/*/kimun.sqlite
+example/history/

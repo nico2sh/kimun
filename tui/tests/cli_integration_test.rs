@@ -1,5 +1,5 @@
-use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
+use kimun_core::{NoteVault, VaultConfig};
 use kimun_notes::cli::output::OutputFormat;
 use kimun_notes::cli::{CliCommand, run_cli};
 use kimun_notes::settings::AppSettings;
@@ -7,7 +7,7 @@ use tempfile::TempDir;
 
 /// Create a temporary vault with test notes indexed.
 async fn setup_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(dir.path())
+    let vault = NoteVault::new(VaultConfig::new(dir.path()))
         .await
         .expect("failed to create vault");
 
@@ -206,7 +206,7 @@ async fn test_cli_custom_config() {
 
 /// Create a temporary vault with notes designed for exclusion testing.
 async fn setup_exclusion_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(dir.path())
+    let vault = NoteVault::new(VaultConfig::new(dir.path()))
         .await
         .expect("failed to create vault");
     vault
@@ -553,7 +553,7 @@ async fn test_paths_format_empty_results() {
 #[tokio::test]
 async fn test_paths_format_path_with_spaces() {
     let dir = TempDir::new().unwrap();
-    let vault = NoteVault::new(dir.path()).await.unwrap();
+    let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
     vault.validate_and_init().await.unwrap();
 
     // Create two notes whose paths contain spaces

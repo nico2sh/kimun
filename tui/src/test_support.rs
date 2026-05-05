@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use kimun_core::NoteVault;
+use kimun_core::{NoteVault, VaultConfig};
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -22,7 +22,7 @@ pub async fn temp_vault(prefix: &str) -> Arc<NoteVault> {
     let thread_id = std::thread::current().id();
     let dir = std::env::temp_dir().join(format!("kimun_{prefix}_test_{nonce}_{thread_id:?}"));
     std::fs::create_dir_all(&dir).unwrap();
-    Arc::new(NoteVault::new(&dir).await.unwrap())
+    Arc::new(NoteVault::new(VaultConfig::new(&dir)).await.unwrap())
 }
 
 pub fn key_event(code: KeyCode) -> InputEvent {

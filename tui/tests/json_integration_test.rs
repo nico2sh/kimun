@@ -3,15 +3,15 @@
 // Integration tests for JSON output in search and notes commands.
 // These tests verify that --format json produces valid, well-structured JSON.
 
-use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
+use kimun_core::{NoteVault, VaultConfig};
 use kimun_notes::cli::output::OutputFormat;
 use kimun_notes::cli::{CliCommand, run_cli};
 use tempfile::TempDir;
 
 /// Create a temporary vault with test notes indexed.
 async fn setup_json_test_vault(dir: &TempDir) -> NoteVault {
-    let vault = NoteVault::new(dir.path())
+    let vault = NoteVault::new(VaultConfig::new(dir.path()))
         .await
         .expect("failed to create vault");
     vault
@@ -73,7 +73,9 @@ async fn test_search_json_output_is_valid() {
     write_config(&config_path, workspace_dir.path());
 
     // Capture stdout by using the vault directly
-    let vault = NoteVault::new(workspace_dir.path()).await.unwrap();
+    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
+        .await
+        .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.search_notes("rust").await.unwrap();
@@ -146,7 +148,9 @@ async fn test_notes_json_output_is_valid() {
     setup_json_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    let vault = NoteVault::new(workspace_dir.path()).await.unwrap();
+    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
+        .await
+        .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.get_all_notes().await.unwrap();
@@ -194,7 +198,9 @@ async fn test_search_json_metadata_contains_tags_and_links() {
     setup_json_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    let vault = NoteVault::new(workspace_dir.path()).await.unwrap();
+    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
+        .await
+        .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.search_notes("rust").await.unwrap();
@@ -256,7 +262,9 @@ async fn test_notes_json_journal_date_field_present() {
     setup_json_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    let vault = NoteVault::new(workspace_dir.path()).await.unwrap();
+    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
+        .await
+        .unwrap();
     vault.validate_and_init().await.unwrap();
 
     // Create a journal note
@@ -312,7 +320,9 @@ async fn test_notes_json_created_field_present() {
 
     setup_json_test_vault(&workspace_dir).await;
 
-    let vault = NoteVault::new(workspace_dir.path()).await.unwrap();
+    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
+        .await
+        .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let results = vault.get_all_notes().await.unwrap();
