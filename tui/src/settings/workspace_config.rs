@@ -46,6 +46,7 @@ pub struct GlobalConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceEntry {
     pub path: PathBuf,
+    #[serde(default, skip_serializing)]
     pub last_paths: Vec<String>,
     pub created: DateTime<Utc>,
     #[serde(default)]
