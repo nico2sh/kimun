@@ -135,7 +135,11 @@ pub fn resolve_content(content: Option<String>) -> color_eyre::eyre::Result<Stri
 pub async fn create_and_init_vault(config_path: Option<PathBuf>) -> Result<(NoteVault, String)> {
     let (settings, workspace_path, workspace_name) = load_and_resolve_workspace(config_path)?;
 
-    let mut vault = NoteVault::new(VaultConfig::new(&workspace_path)).await?;
+    let cache_path = settings.cache_path_for(&workspace_name);
+    let mut vault = NoteVault::new(
+        VaultConfig::new(&workspace_path).with_db_path(cache_path),
+    )
+    .await?;
     let inbox = resolve_inbox_path(&settings);
     vault.set_inbox_path(kimun_core::nfs::VaultPath::new(&inbox));
     vault.validate_and_init().await?;
