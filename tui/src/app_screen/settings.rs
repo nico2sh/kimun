@@ -270,22 +270,13 @@ impl SettingsScreen {
 
     /// Called when the file browser confirms a directory path (via 'c' or Ctrl+Enter).
     fn confirm_file_browser(&mut self, chosen: PathBuf, _tx: &AppTx) {
-        use crate::settings::workspace_config::{WorkspaceConfig, WorkspaceEntry};
+        use crate::settings::workspace_config::WorkspaceConfig;
 
         if let Some(name) = self.pending_create_name.take() {
-            // Creating a new workspace with the chosen path.
-            let entry = WorkspaceEntry {
-                path: chosen,
-                last_paths: Vec::new(),
-                created: chrono::Utc::now(),
-                quick_note_path: None,
-                inbox_path: None,
-                resolved_path: None,
-            };
+            let name = name.to_lowercase();
             {
                 let mut s = self.settings.write().unwrap();
                 if s.workspace_config.is_none() {
-                    // Migrate Phase 1 legacy config to Phase 2 before adding.
                     if let Some(ref legacy_path) = s.workspace_dir {
                         let wc = WorkspaceConfig::from_phase1_migration(
                             legacy_path.clone(),
@@ -297,12 +288,10 @@ impl SettingsScreen {
                     }
                     s.config_version = CURRENT_CONFIG_VERSION;
                 }
-                if let Some(ref mut wc) = s.workspace_config {
-                    wc.workspaces.insert(name.clone(), entry);
-                    // If this is the only workspace (no prior ones), make it current.
-                    if wc.global.current_workspace.is_empty() {
-                        wc.global.current_workspace = name;
-                    }
+                if let Some(ref mut wc) = s.workspace_config
+                    && let Err(e) = wc.add_workspace(name.clone(), chosen)
+                {
+                    tracing::warn!("rejected workspace add: {}", e);
                 }
             }
             self.workspaces_section
