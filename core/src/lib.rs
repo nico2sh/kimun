@@ -111,6 +111,14 @@ impl NoteVault {
         &self.workspace_path
     }
 
+    /// Test-only handle to the underlying SQLite pool. Used by migration
+    /// tests that need to mutate stored state directly to simulate older
+    /// schema versions.
+    #[cfg(test)]
+    pub(crate) fn db_pool(&self) -> &sqlx::SqlitePool {
+        self.vault_db.pool()
+    }
+
     pub async fn validate(&self) -> Result<DBStatus, VaultError> {
         self.vault_db.check_db().await.map_err(VaultError::DBError)
     }
@@ -1713,6 +1721,90 @@ mod tests {
             names.iter().any(|p| p.ends_with("/dir1/sub/c.md")),
             "{:?}",
             names
+        );
+    }
+
+    /// On a stored DB version older than the current `VERSION`, `check_db`
+    /// must report `Outdated` and `validate_and_init` must drop + rebuild the
+    /// index. After migration, stale `>`-separated breadcrumb rows are gone
+    /// and the new `\x1f` separator is in place.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn validate_and_init_migrates_outdated_db() {
+        use sqlx::Row;
+
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("note.md"), "# Note\n## Sub\nbody text").unwrap();
+
+        // Bring the DB up at the current version with one indexed note.
+        let vault = NoteVault::new(dir.path()).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+        assert!(vault.validate().await.unwrap().is_ready());
+
+        // Force the schema backwards: stamp version `0.4` and rewrite stored
+        // breadcrumbs in the legacy `>`-joined form to simulate a vault
+        // upgraded across the separator change.
+        let pool = vault.db_pool();
+        sqlx::query("UPDATE appData SET value = '0.4' WHERE name = 'version'")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE notesContent SET breadcrumb = REPLACE(breadcrumb, x'1f', '>')")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // Sanity: the stale row really does contain `>`.
+        let stale: Vec<String> =
+            sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
+                .fetch_all(pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|r| r.try_get("breadcrumb").unwrap())
+                .collect();
+        assert!(
+            stale.iter().any(|b| b.contains('>')),
+            "expected legacy `>` separator in: {:?}",
+            stale
+        );
+
+        // Migration: validate flags Outdated, then validate_and_init rebuilds.
+        assert_eq!(vault.validate().await.unwrap(), DBStatus::Outdated);
+        vault.validate_and_init().await.unwrap();
+        assert!(vault.validate().await.unwrap().is_ready());
+
+        // Post-migration: no row carries the legacy separator; non-empty
+        // breadcrumbs use `\x1f`.
+        let pool = vault.db_pool();
+        let after: Vec<String> =
+            sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
+                .fetch_all(pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|r| r.try_get("breadcrumb").unwrap())
+                .collect();
+        assert!(
+            after.iter().all(|b| !b.contains('>')),
+            "stale `>` separator survived migration: {:?}",
+            after
+        );
+
+        // The note is still indexed and `get_note_chunks` exposes a sane
+        // `breadcrumb_last` (no `>` artifacts).
+        let chunks = vault
+            .get_note_chunks(&VaultPath::new("/note.md"))
+            .await
+            .unwrap();
+        let leaves: Vec<String> = chunks
+            .values()
+            .flatten()
+            .filter_map(|c| c.breadcrumb_last().map(|s| s.to_string()))
+            .collect();
+        assert!(
+            leaves.iter().any(|l| l == "Note" || l == "Sub"),
+            "expected Note/Sub leaves, got: {:?}",
+            leaves
         );
     }
 }
