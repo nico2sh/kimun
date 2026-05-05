@@ -65,6 +65,7 @@ fn workspace_config_add_workspace() {
             assert_eq!(name, "default");
             assert_eq!(existing_path, PathBuf::from("/Users/user/notes"));
         }
+        _ => panic!("expected DuplicateWorkspace"),
     }
 }
 
