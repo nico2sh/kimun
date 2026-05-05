@@ -4,7 +4,7 @@ use crate::settings::config_dir::get_or_create_config_dir;
 use crate::settings::themes::Theme;
 use crate::settings::workspace_config::WorkspaceConfig;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use std::fs::{self, File};
@@ -105,6 +105,15 @@ pub struct AppSettings {
     // Preserved fields
     #[serde(default)]
     pub theme: String,
+    #[serde(default = "default_cache_dir")]
+    pub cache_dir: PathBuf,
+    #[serde(skip)]
+    cache_dir_resolved: Option<PathBuf>,
+
+    #[serde(default = "default_history_dir")]
+    pub history_dir: PathBuf,
+    #[serde(skip)]
+    history_dir_resolved: Option<PathBuf>,
     #[serde(skip, default = "yes")]
     needs_indexing: bool,
     #[serde(default = "default_keybindings")]
@@ -192,6 +201,14 @@ fn default_autosave_interval() -> u64 {
     5
 }
 
+fn default_cache_dir() -> PathBuf {
+    PathBuf::from(".")
+}
+
+fn default_history_dir() -> PathBuf {
+    PathBuf::from("history")
+}
+
 fn default_use_nerd_fonts() -> bool {
     false
 }
@@ -220,6 +237,10 @@ impl Default for AppSettings {
             last_paths: vec![],
             workspace_dir: None,
             theme: Default::default(),
+            cache_dir: default_cache_dir(),
+            cache_dir_resolved: None,
+            history_dir: default_history_dir(),
+            history_dir_resolved: None,
             needs_indexing: true,
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
@@ -517,6 +538,8 @@ impl AppSettings {
                 }
             }
         }
+        self.cache_dir_resolved = Some(Self::expand_path(&self.cache_dir, base));
+        self.history_dir_resolved = Some(Self::expand_path(&self.history_dir, base));
     }
 
     /// Expand `~` to the home directory and resolve relative paths against `base`.
@@ -570,6 +593,35 @@ impl AppSettings {
             }
             entry.last_paths.push(path_str);
         }
+    }
+
+    pub fn cache_dir_resolved(&self) -> Option<&Path> {
+        self.cache_dir_resolved.as_deref()
+    }
+
+    pub fn history_dir_resolved(&self) -> Option<&Path> {
+        self.history_dir_resolved.as_deref()
+    }
+
+    /// Path to the SQLite cache file for the named workspace.
+    /// Caller must have already validated `workspace_name` via
+    /// `kimun_core::nfs::filename::validate_filename`.
+    pub fn cache_path_for(&self, workspace_name: &str) -> PathBuf {
+        let dir = self
+            .cache_dir_resolved
+            .clone()
+            .unwrap_or_else(|| self.cache_dir.clone());
+        dir.join(format!("{workspace_name}.kimuncache"))
+    }
+
+    /// Path to the history file for the named workspace.
+    /// Caller must have already validated `workspace_name`.
+    pub fn history_path_for(&self, workspace_name: &str) -> PathBuf {
+        let dir = self
+            .history_dir_resolved
+            .clone()
+            .unwrap_or_else(|| self.history_dir.clone());
+        dir.join(format!("{workspace_name}.txt"))
     }
 
     /// Returns the last-visited paths for the current workspace.

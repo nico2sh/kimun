@@ -121,3 +121,92 @@ fn workspace_config_round_trip_serialization() {
         deserialized_entry.created.timestamp()
     );
 }
+
+#[test]
+fn cache_dir_defaults_to_config_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        r#"
+config_version = 3
+cache_dir = "."
+history_dir = "history"
+theme = "gruvbox_dark"
+"#,
+    )
+    .unwrap();
+
+    let settings =
+        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    let resolved_cache = settings.cache_dir_resolved().unwrap();
+    let resolved_hist = settings.history_dir_resolved().unwrap();
+    assert_eq!(resolved_cache, tmp.path().canonicalize().unwrap());
+    assert_eq!(
+        resolved_hist,
+        tmp.path().canonicalize().unwrap().join("history")
+    );
+}
+
+#[test]
+fn cache_dir_supports_absolute_path() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    let abs_cache = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        &cfg_path,
+        format!(
+            r#"
+config_version = 3
+cache_dir = "{}"
+history_dir = "history"
+theme = "gruvbox_dark"
+"#,
+            abs_cache.path().display()
+        ),
+    )
+    .unwrap();
+
+    let settings =
+        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    assert_eq!(
+        settings.cache_dir_resolved().unwrap(),
+        abs_cache.path().canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn cache_path_for_uses_workspace_name_and_kimuncache_extension() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        r#"
+config_version = 3
+cache_dir = "."
+history_dir = "history"
+theme = "gruvbox_dark"
+"#,
+    )
+    .unwrap();
+
+    let settings =
+        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    let cache = settings.cache_path_for("myvault");
+    assert_eq!(
+        cache,
+        tmp.path()
+            .canonicalize()
+            .unwrap()
+            .join("myvault.kimuncache")
+    );
+    let hist = settings.history_path_for("myvault");
+    assert_eq!(
+        hist,
+        tmp.path()
+            .canonicalize()
+            .unwrap()
+            .join("history")
+            .join("myvault.txt")
+    );
+}
