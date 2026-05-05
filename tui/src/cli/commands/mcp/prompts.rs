@@ -98,7 +98,7 @@ impl KimunHandler {
         let mut topics: Vec<String> = Vec::new();
         for chunks in chunks_map.values() {
             for chunk in chunks {
-                if let Some(leaf) = chunk.breadcrumb.last() {
+                if let Some(leaf) = chunk.breadcrumb_last() {
                     let t = leaf.trim().to_string();
                     if !t.is_empty() && seen.insert(t.clone()) {
                         topics.push(t);

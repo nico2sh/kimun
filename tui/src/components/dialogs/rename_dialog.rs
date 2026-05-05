@@ -87,7 +87,7 @@ impl RenameDialog {
             } else {
                 parent.append(&VaultPath::new(&input))
             };
-            let exists = vault.exists(&candidate).await.is_some();
+            let exists = vault.exists(&candidate).await;
             // `true` means the name is *available* (does not exist yet).
             tx_clone
                 .send(AppEvent::RenameValidation { available: !exists })

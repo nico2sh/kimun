@@ -41,8 +41,8 @@ impl BrowseScreen {
 
     async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
         let (options, rx) = VaultBrowseOptionsBuilder::new(&dir)
-            .non_recursive()
-            .full_validation()
+            .recursive(false)
+            .validation(kimun_core::NotesValidation::Full)
             .build();
         self.path = dir.clone();
         let vault = self.vault.clone();

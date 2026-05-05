@@ -350,7 +350,7 @@ async fn run_show(
             let output = JsonOutput {
                 metadata: JsonOutputMetadata {
                     workspace: workspace_name.to_string(),
-                    workspace_path: vault.workspace_path.to_string_lossy().to_string(),
+                    workspace_path: vault.workspace_path().to_string_lossy().to_string(),
                     total_results: notes.len(),
                     query: None,
                     is_listing: false,

@@ -36,7 +36,6 @@ futures-channel = "0.3"
 futures-util = "0.3"
 ## Async stuff
 tokio = { workspace = true }
-async-recursion = "1.1"
 
 [dev-dependencies]
 tempfile = "3.23"

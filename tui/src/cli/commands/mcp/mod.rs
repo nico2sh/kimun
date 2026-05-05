@@ -349,7 +349,9 @@ impl KimunHandler {
         let mut lines: Vec<String> = Vec::new();
         for chunks in chunks_map.values() {
             for chunk in chunks {
-                let breadcrumb = chunk.breadcrumb.join(" > ");
+                let breadcrumb = chunk
+                    .breadcrumb
+                    .replace(kimun_core::note::BREADCRUMB_SEP, " > ");
                 lines.push(format!("[{}] {}", breadcrumb, chunk.text.trim()));
             }
         }
