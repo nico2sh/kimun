@@ -580,17 +580,12 @@ impl AppSettings {
         if !note_path.is_note() {
             return;
         }
-        let workspace_name = match self.current_workspace_name() {
-            Some(name) => name,
-            None => return,
+        let Some(workspace_name) = self.current_workspace_name() else {
+            return;
         };
         let file_path = self.history_path_for(&workspace_name);
         if let Err(e) = history::push_history(&file_path, note_path) {
             tracing::warn!("failed to write history {:?}: {}", file_path, e);
-        } else if let Some(ref mut wc) = self.workspace_config
-            && let Some(entry) = wc.workspaces.get_mut(&wc.global.current_workspace)
-        {
-            entry.last_paths.clear();
         }
     }
 

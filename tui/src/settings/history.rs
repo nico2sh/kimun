@@ -1,6 +1,5 @@
 //! Per-workspace open-file history.
 //!
-//! Stored as plain UTF-8 text, one vault path per line, newest first.
 //! Atomic writes (write to .tmp then rename) avoid partial writes
 //! corrupting the file on crash mid-edit.
 
@@ -37,11 +36,14 @@ pub fn load_history(path: &Path) -> Vec<VaultPath> {
     out
 }
 
-/// Push `path` to the front of the history at `file_path`. Dedups existing
-/// occurrences. Truncates to LAST_PATH_HISTORY_SIZE. Atomic write.
-/// Creates parent dir if missing.
+/// Push `path` to the front of the history at `file_path`. Dedups, truncates
+/// to LAST_PATH_HISTORY_SIZE, atomic write. No-op if `path` is already at the
+/// front (common case: re-opening the same note).
 pub fn push_history(file_path: &Path, path: &VaultPath) -> std::io::Result<()> {
     let mut existing = load_history(file_path);
+    if existing.first() == Some(path) {
+        return Ok(());
+    }
     existing.retain(|p| p != path);
     existing.insert(0, path.clone());
     if existing.len() > LAST_PATH_HISTORY_SIZE {

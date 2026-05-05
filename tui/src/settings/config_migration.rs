@@ -69,11 +69,9 @@ impl ConfigMigration {
     /// destination already exists.
     fn migrate_to_v3(settings: &mut AppSettings) -> eyre::Result<()> {
         let Some(ref wc) = settings.workspace_config else {
-            return Ok(()); // Nothing to migrate.
+            return Ok(());
         };
 
-        // Pre-flight: validate every workspace name. Abort with a single error
-        // listing all bad names; do not mutate state.
         let mut invalid = Vec::new();
         for name in wc.workspaces.keys() {
             if let Err(e) = kimun_core::nfs::filename::validate_filename(name) {
@@ -87,26 +85,16 @@ impl ConfigMigration {
             ));
         }
 
-        // Back up the v2 config before any I/O. If config_file is unset (e.g.
-        // settings constructed directly in unit tests), skip — migration is
-        // safe to run regardless. Idempotent: don't overwrite an existing backup.
         if let Some(ref cfg_path) = settings.config_file {
             let bak_path = cfg_path.with_extension("toml.bak.v2");
             if !bak_path.exists() {
-                if let Err(e) = std::fs::copy(cfg_path, &bak_path) {
-                    return Err(eyre::eyre!(
-                        "failed to back up config to {:?}: {}",
-                        bak_path,
-                        e
-                    ));
-                }
+                std::fs::copy(cfg_path, &bak_path).map_err(|e| {
+                    eyre::eyre!("failed to back up config to {:?}: {}", bak_path, e)
+                })?;
                 tracing::info!("backed up v2 config to {:?}", bak_path);
             }
         }
 
-        // Prefer the resolved paths (set by load_from_file), but fall back to
-        // the raw configured paths for callers that bypass resolution (e.g.
-        // some unit tests). This mirrors `cache_path_for` / `history_path_for`.
         let cache_dir = settings
             .cache_dir_resolved()
             .map(|p| p.to_path_buf())
@@ -116,7 +104,6 @@ impl ConfigMigration {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| settings.history_dir.clone());
 
-        // Snapshot work to avoid mutable-borrow-while-iterating.
         let work: Vec<(String, std::path::PathBuf, Vec<String>)> = wc
             .workspaces
             .iter()
@@ -144,6 +131,8 @@ impl ConfigMigration {
                         eyre::eyre!("failed to create cache dir {:?}: {}", cache_dir, e)
                     })?;
                     if let Err(rename_err) = std::fs::rename(&old_db, &new_db) {
+                        // EXDEV: source and destination on different filesystems —
+                        // rename(2) cannot cross mount points; fall back to copy + unlink.
                         if rename_err.raw_os_error() == Some(libc_exdev_code()) {
                             std::fs::copy(&old_db, &new_db)?;
                             std::fs::remove_file(&old_db)?;
@@ -170,7 +159,6 @@ impl ConfigMigration {
             }
         }
 
-        // Clear in-memory last_paths so the next save does not write them.
         if let Some(ref mut wc) = settings.workspace_config {
             for entry in wc.workspaces.values_mut() {
                 entry.last_paths.clear();
