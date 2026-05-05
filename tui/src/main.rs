@@ -7,6 +7,9 @@ pub mod keys;
 pub mod settings;
 pub mod ui;
 
+#[cfg(test)]
+mod test_support;
+
 use clap::Parser;
 use color_eyre::Result;
 use std::fs;

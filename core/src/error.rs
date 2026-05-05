@@ -2,8 +2,6 @@ use thiserror::Error;
 
 use crate::nfs::VaultPath;
 
-// use super::db::async_sqlite::Command;
-
 #[derive(Error, Debug)]
 pub enum VaultError {
     #[error("Path {path} doesn't exist")]
@@ -20,6 +18,14 @@ pub enum VaultError {
     DirectoryExists { path: VaultPath },
     #[error("Case-sensitivity conflicts detected in vault:\n{}", conflicts.join("\n"))]
     CaseConflict { conflicts: Vec<String> },
+    #[error("Background task failed: {0}")]
+    TaskJoin(String),
+}
+
+impl From<sqlx::Error> for VaultError {
+    fn from(e: sqlx::Error) -> Self {
+        VaultError::DBError(DBError::from(e))
+    }
 }
 
 #[derive(Error, Debug)]
@@ -34,6 +40,17 @@ pub enum FSError {
     InvalidPath { path: String, message: String },
     #[error("Path doesn't exists at: {path}")]
     VaultPathNotFound { path: VaultPath },
+    #[error("Path already exists at: {path}")]
+    AlreadyExists { path: VaultPath },
+}
+
+impl FSError {
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            FSError::VaultPathNotFound { .. } | FSError::NoFileOrDirectoryFound { .. }
+        )
+    }
 }
 
 #[derive(Error, Debug)]

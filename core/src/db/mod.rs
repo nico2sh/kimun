@@ -22,24 +22,52 @@ fn row_to_note_entry(
     let modified: i64 = row.try_get("modified")?;
     let hash: String = row.try_get("hash")?;
 
+    let hash_val: u64 = hash.parse().unwrap_or_else(|e| {
+        // A non-numeric hash means a corrupt row (or schema drift). Falling
+        // back to 0 lets indexing continue but flags the issue loudly so the
+        // operator can rebuild the index.
+        log::warn!(
+            "Non-numeric hash in DB for {}: {} ({}). Treating as 0.",
+            path,
+            hash,
+            e
+        );
+        0
+    });
+
     let note_path = VaultPath::new(&path);
     let entry = NoteEntryData {
         path: note_path,
         size: size as u64,
         modified_secs: modified as u64,
     };
-    let content = NoteContentData::new(title, hash.parse().unwrap_or(0));
+    let content = NoteContentData::new(title, hash_val);
     Ok((entry, content))
 }
 
 use super::error::DBError;
+
+/// Column list shared by every `SELECT … FROM notes` query that maps rows
+/// through `row_to_note_entry`. Order must match the `try_get` calls there.
+const NOTE_COLUMNS: &str = "path, title, size, modified, hash, noteName";
+
+/// Prefixes each comma-separated column name in `cols` with `prefix.`, useful
+/// for join queries that disambiguate which table a column comes from.
+fn qualify_columns(prefix: &str, cols: &str) -> String {
+    cols.split(", ")
+        .map(|c| format!("{}.{}", prefix, c))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 use super::{
     nfs::{NoteEntryData, PATH_SEPARATOR},
     VaultPath,
 };
 
-const VERSION: &str = "0.4";
+// 0.5: BREADCRUMB_SEP changed from `>` to `\x1f`. Bump forces a clean
+//      reindex so stale rows with the old separator are rewritten.
+const VERSION: &str = "0.5";
 const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone)]
@@ -305,171 +333,205 @@ fn add_exclusion_conditions(
     }
 }
 
+/// Base query for the search fan-out. Aliases `notes.path` to `path` so the
+/// shared `row_to_note_entry` mapper finds all `NOTE_COLUMNS` keys. First
+/// column is qualified to disambiguate the `notesContent`/`notes` join; the
+/// rest are unique to `notes` and need no prefix.
+static SEARCH_BASE_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let rest = NOTE_COLUMNS.split_once(", ").unwrap().1;
+    format!(
+        "SELECT DISTINCT notes.path as path, {} FROM notesContent JOIN notes ON notesContent.path = notes.path",
+        rest
+    )
+});
+
+fn search_base_sql() -> &'static str {
+    &SEARCH_BASE_SQL
+}
+
 fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<String>) {
     let mut var_num = 1;
-    let base_sql = "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path";
-    let mut params = vec![];
-    let mut queries = vec![];
-    if !search_terms.terms.is_empty() || !search_terms.excluded_terms.is_empty() {
-        if !search_terms.terms.is_empty() {
-            // Positive content terms
-            if search_terms.excluded_terms.is_empty() {
-                // No exclusions: simple FTS4 MATCH
-                let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
-                queries.push(terms_sql);
-                params.push(search_terms.terms.join(" "));
-                var_num += 1;
-            } else {
-                // Mixed positive + exclusions: use NOT IN subqueries to avoid FTS4 path column bug
-                let mut exclusion_conditions = vec![];
-                add_exclusion_conditions(
-                    &search_terms.excluded_terms,
-                    &mut var_num,
-                    &mut exclusion_conditions,
-                    &mut params,
-                );
+    let mut params: Vec<String> = vec![];
+    let mut queries: Vec<String> = vec![];
 
-                let terms_sql = format!(
-                    "{} WHERE notesContent MATCH ?{} AND {}",
-                    base_sql,
-                    var_num,
-                    exclusion_conditions.join(" AND ")
-                );
-                queries.push(terms_sql);
-                params.push(search_terms.terms.join(" "));
-                var_num += 1;
-            }
-        } else if !search_terms.excluded_terms.is_empty() {
-            // Exclusion-only content query: FTS4 doesn't support pure exclusions
-            // Use NOT IN approach with subquery for each excluded term
-            let mut exclusion_conditions = vec![];
-            add_exclusion_conditions(
-                &search_terms.excluded_terms,
-                &mut var_num,
-                &mut exclusion_conditions,
-                &mut params,
-            );
-
-            // Use base_sql to get all notes, then exclude matching ones
-            let terms_sql = format!("{} WHERE {}", base_sql, exclusion_conditions.join(" AND "));
-            queries.push(terms_sql);
-        }
-    }
-    if !search_terms.breadcrumb.is_empty() || !search_terms.excluded_breadcrumb.is_empty() {
-        if !search_terms.breadcrumb.is_empty() {
-            if search_terms.excluded_breadcrumb.is_empty() {
-                // Positive-only breadcrumb terms: use column-specific MATCH syntax
-                let terms_sql = format!(
-                    "{} WHERE notesContent.breadcrumb MATCH ?{}",
-                    base_sql, var_num
-                );
-                queries.push(terms_sql);
-                params.push(search_terms.breadcrumb.join(" "));
-                var_num += 1;
-            } else {
-                // Positive breadcrumb terms with exclusions: use column-prefix syntax in notesContent MATCH
-                let mut breadcrumb_parts = vec![];
-
-                // Add positive breadcrumb terms with column prefix
-                for breadcrumb in &search_terms.breadcrumb {
-                    breadcrumb_parts.push(format!("breadcrumb: {}", breadcrumb));
-                }
-
-                // Add excluded breadcrumb terms with column prefix
-                for excluded in &search_terms.excluded_breadcrumb {
-                    breadcrumb_parts.push(format!("breadcrumb: -{}", excluded));
-                }
-
-                let terms_sql = format!("{} WHERE notesContent MATCH ?{}", base_sql, var_num);
-                queries.push(terms_sql);
-                params.push(breadcrumb_parts.join(" "));
-                var_num += 1;
-            }
-        } else if !search_terms.excluded_breadcrumb.is_empty() {
-            // Exclusion-only breadcrumb query: use NOT IN approach for breadcrumb column
-            let mut exclusion_conditions = vec![];
-            for excluded in &search_terms.excluded_breadcrumb {
-                exclusion_conditions.push(format!(
-                    "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
-                    var_num
-                ));
-                params.push(format!("breadcrumb: {}", excluded));
-                var_num += 1;
-            }
-
-            let terms_sql = format!("{} WHERE {}", base_sql, exclusion_conditions.join(" AND "));
-            queries.push(terms_sql);
-        }
-    }
-    if !search_terms.filename.is_empty() || !search_terms.excluded_filename.is_empty() {
-        if let Some(final_where) = build_like_conditions(
-            &search_terms.filename,
-            &search_terms.excluded_filename,
-            |n| format!("notes.noteName LIKE ('%' || ?{} || '%')", n),
-            |n| format!("notes.noteName NOT LIKE ('%' || ?{} || '%')", n),
-            &mut var_num,
-            &mut params,
-            |t| t.clone(),
-        ) {
-            let terms_sql = format!("{} WHERE {}", base_sql, final_where);
-            queries.push(terms_sql);
-        }
-    }
-    if !search_terms.path.is_empty() || !search_terms.excluded_path.is_empty() {
-        let mut positive_conditions = vec![];
-        let mut negative_conditions = vec![];
-
-        for path in &search_terms.path {
-            if !path.is_empty() {
-                match path.strip_suffix("/") {
-                    Some(absolute) => {
-                        positive_conditions.push(format!("notes.basePath = ('/' || ?{})", var_num));
-                        params.push(absolute.to_string());
-                    }
-                    None => {
-                        positive_conditions
-                            .push(format!("notes.basePath LIKE ('/' || ?{} || '%')", var_num));
-                        params.push(path.to_string());
-                    }
-                }
-                var_num += 1;
-            }
-        }
-
-        for excluded in &search_terms.excluded_path {
-            if !excluded.is_empty() {
-                match excluded.strip_suffix("/") {
-                    Some(absolute) => {
-                        negative_conditions
-                            .push(format!("notes.basePath != ('/' || ?{})", var_num));
-                        params.push(absolute.to_string());
-                    }
-                    None => {
-                        negative_conditions.push(format!(
-                            "notes.basePath NOT LIKE ('/' || ?{} || '%')",
-                            var_num
-                        ));
-                        params.push(excluded.to_string());
-                    }
-                }
-                var_num += 1;
-            }
-        }
-
-        if let Some(final_where) = combine_conditions(positive_conditions, negative_conditions) {
-            let terms_sql = format!("{} WHERE {}", base_sql, final_where);
-            queries.push(terms_sql);
-        }
-    }
+    add_content_terms_query(search_terms, &mut var_num, &mut params, &mut queries);
+    add_breadcrumb_query(search_terms, &mut var_num, &mut params, &mut queries);
+    add_filename_query(search_terms, &mut var_num, &mut params, &mut queries);
+    add_path_query(search_terms, &mut var_num, &mut params, &mut queries);
 
     if queries.is_empty() {
         debug!("No query provided");
         return (String::new(), vec![]);
     }
+    (queries.join(" INTERSECT "), params)
+}
 
-    let sql = queries.join(" INTERSECT ");
+/// Free-text content terms: positive matches use FTS4 `MATCH`; exclusions use
+/// `NOT IN` subqueries because FTS4 doesn't support pure-negative queries.
+fn add_content_terms_query(
+    s: &SearchTerms,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+) {
+    if s.terms.is_empty() && s.excluded_terms.is_empty() {
+        return;
+    }
+    let mut exclusions = vec![];
+    add_exclusion_conditions(&s.excluded_terms, var_num, &mut exclusions, params);
 
-    (sql, params)
+    if !s.terms.is_empty() {
+        let where_clause = if exclusions.is_empty() {
+            format!("notesContent MATCH ?{}", var_num)
+        } else {
+            format!(
+                "notesContent MATCH ?{} AND {}",
+                var_num,
+                exclusions.join(" AND ")
+            )
+        };
+        queries.push(format!("{} WHERE {}", search_base_sql(), where_clause));
+        params.push(s.terms.join(" "));
+        *var_num += 1;
+    } else if !exclusions.is_empty() {
+        // Pure exclusion: scan all notes, drop those matching the excluded terms.
+        queries.push(format!(
+            "{} WHERE {}",
+            search_base_sql(),
+            exclusions.join(" AND ")
+        ));
+    }
+}
+
+/// Breadcrumb (heading-path) FTS column. Positive-only uses the column-scoped
+/// `MATCH`; mixed positive + exclusions inline column prefixes with `-`;
+/// exclusion-only uses `NOT IN`.
+fn add_breadcrumb_query(
+    s: &SearchTerms,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+) {
+    if s.breadcrumb.is_empty() && s.excluded_breadcrumb.is_empty() {
+        return;
+    }
+    if !s.breadcrumb.is_empty() {
+        if s.excluded_breadcrumb.is_empty() {
+            queries.push(format!(
+                "{} WHERE notesContent.breadcrumb MATCH ?{}",
+                search_base_sql(),
+                var_num
+            ));
+            params.push(s.breadcrumb.join(" "));
+        } else {
+            let mut parts = Vec::with_capacity(s.breadcrumb.len() + s.excluded_breadcrumb.len());
+            for b in &s.breadcrumb {
+                parts.push(format!("breadcrumb: {}", b));
+            }
+            for b in &s.excluded_breadcrumb {
+                parts.push(format!("breadcrumb: -{}", b));
+            }
+            queries.push(format!(
+                "{} WHERE notesContent MATCH ?{}",
+                search_base_sql(),
+                var_num
+            ));
+            params.push(parts.join(" "));
+        }
+        *var_num += 1;
+        return;
+    }
+    // Exclusion-only: NOT IN with column-prefixed term per excluded breadcrumb.
+    let mut exclusions = vec![];
+    for excluded in &s.excluded_breadcrumb {
+        exclusions.push(format!(
+            "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
+            var_num
+        ));
+        params.push(format!("breadcrumb: {}", excluded));
+        *var_num += 1;
+    }
+    queries.push(format!(
+        "{} WHERE {}",
+        search_base_sql(),
+        exclusions.join(" AND ")
+    ));
+}
+
+fn add_filename_query(
+    s: &SearchTerms,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+) {
+    if s.filename.is_empty() && s.excluded_filename.is_empty() {
+        return;
+    }
+    if let Some(final_where) = build_like_conditions(
+        &s.filename,
+        &s.excluded_filename,
+        |n| format!("notes.noteName LIKE ('%' || ?{} || '%')", n),
+        |n| format!("notes.noteName NOT LIKE ('%' || ?{} || '%')", n),
+        var_num,
+        params,
+        |t| t.clone(),
+    ) {
+        queries.push(format!("{} WHERE {}", search_base_sql(), final_where));
+    }
+}
+
+fn add_path_query(
+    s: &SearchTerms,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+) {
+    if s.path.is_empty() && s.excluded_path.is_empty() {
+        return;
+    }
+    let positive_conditions = path_term_conditions(&s.path, var_num, params, true);
+    let negative_conditions = path_term_conditions(&s.excluded_path, var_num, params, false);
+    if let Some(final_where) = combine_conditions(positive_conditions, negative_conditions) {
+        queries.push(format!("{} WHERE {}", search_base_sql(), final_where));
+    }
+}
+
+/// Builds basePath conditions for path-style search terms. A trailing
+/// `PATH_SEPARATOR` means an exact directory match; otherwise the term is a
+/// prefix. `positive` selects the operator family (`=` / `LIKE` vs.
+/// `!=` / `NOT LIKE`).
+fn path_term_conditions(
+    terms: &[String],
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    positive: bool,
+) -> Vec<String> {
+    let mut out = vec![];
+    for term in terms {
+        if term.is_empty() {
+            continue;
+        }
+        let (cond, value) = match term.strip_suffix(PATH_SEPARATOR) {
+            Some(absolute) => {
+                let op = if positive { "=" } else { "!=" };
+                (
+                    format!("notes.basePath {} ('/' || ?{})", op, var_num),
+                    absolute.to_string(),
+                )
+            }
+            None => {
+                let op = if positive { "LIKE" } else { "NOT LIKE" };
+                (
+                    format!("notes.basePath {} ('/' || ?{} || '%')", op, var_num),
+                    term.to_string(),
+                )
+            }
+        };
+        out.push(cond);
+        params.push(value);
+        *var_num += 1;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -481,10 +543,8 @@ fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
 pub async fn get_all_notes(
     pool: &SqlitePool,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let query = "SELECT DISTINCT path, title, size, modified, hash, noteName FROM notes";
-
-    let rows = sqlx::query(query).fetch_all(pool).await?;
-
+    let query = format!("SELECT DISTINCT {} FROM notes", NOTE_COLUMNS);
+    let rows = sqlx::query(&query).fetch_all(pool).await?;
     rows.iter().map(row_to_note_entry).collect()
 }
 
@@ -551,31 +611,13 @@ pub async fn search_terms<S: AsRef<str>>(
     Ok(result)
 }
 
-async fn note_exists(pool: &SqlitePool, path: &VaultPath) -> Result<bool, DBError> {
-    let sql = "SELECT count(*) FROM notes where path = ?";
-    let count: i64 = sqlx::query_scalar(sql)
-        .bind(path.to_string())
-        .fetch_one(pool)
-        .await?;
-
-    match count {
-        0 => Ok(false),
-        1 => Ok(true),
-        _ => Err(DBError::Other(format!(
-            "Unexpected error, the DB contains more than one ({}) entry for path {}",
-            count, path
-        ))),
-    }
-}
-
 pub async fn search_note_by_name<S: AsRef<str>>(
     pool: &SqlitePool,
     name: S,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let name = name.as_ref().to_lowercase();
-    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where noteName = ?";
-
-    let rows = sqlx::query(sql).bind(&name).fetch_all(pool).await?;
+    let sql = format!("SELECT {} FROM notes where noteName = ?", NOTE_COLUMNS);
+    let rows = sqlx::query(&sql).bind(&name).fetch_all(pool).await?;
 
     rows.iter().map(row_to_note_entry).collect()
 }
@@ -584,10 +626,9 @@ pub async fn search_note_by_path(
     pool: &SqlitePool,
     path: &VaultPath,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let sql = "SELECT path, title, size, modified, hash, noteName FROM notes where path = ?";
+    let sql = format!("SELECT {} FROM notes where path = ?", NOTE_COLUMNS);
     let path_string = path.to_string();
-
-    let rows = sqlx::query(sql).bind(&path_string).fetch_all(pool).await?;
+    let rows = sqlx::query(&sql).bind(&path_string).fetch_all(pool).await?;
 
     // Should always return one or zero
     rows.iter().map(row_to_note_entry).collect()
@@ -598,13 +639,13 @@ pub async fn get_notes(
     path: &VaultPath,
     recursive: bool,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let sql = if recursive {
-        "SELECT path, title, size, modified, hash, noteName FROM notes where basePath LIKE (? || '%')"
+    let where_clause = if recursive {
+        "basePath LIKE (? || '%')"
     } else {
-        "SELECT path, title, size, modified, hash, noteName FROM notes where basePath = ?"
+        "basePath = ?"
     };
-
-    let rows = sqlx::query(sql)
+    let sql = format!("SELECT {} FROM notes where {}", NOTE_COLUMNS, where_clause);
+    let rows = sqlx::query(&sql)
         .bind(path.to_string())
         .fetch_all(pool)
         .await?;
@@ -617,12 +658,14 @@ pub async fn get_backlinks(
     path: &VaultPath,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     // Match notes that link to the full path OR by filename only (wikilinks stored without path)
-    let sql = "SELECT DISTINCT n.path, n.title, n.size, n.modified, n.hash, n.noteName \
-               FROM notes n \
-               JOIN links l ON n.path = l.source \
-               WHERE l.destination = ? OR l.destination = ?";
-
-    let rows = sqlx::query(sql)
+    let sql = format!(
+        "SELECT DISTINCT {cols} \
+         FROM notes n \
+         JOIN links l ON n.path = l.source \
+         WHERE l.destination = ? OR l.destination = ?",
+        cols = qualify_columns("n", NOTE_COLUMNS),
+    );
+    let rows = sqlx::query(&sql)
         .bind(path.to_string())
         .bind(path.get_name())
         .fetch_all(pool)
@@ -662,14 +705,8 @@ pub async fn get_notes_sections(
         let text: String = row.try_get("text")?;
 
         let path = VaultPath::new(path);
-        let breadcrumb = breadcrumb
-            .split(">")
-            .map(|e| e.to_string())
-            .collect::<Vec<String>>();
-
         let chunk = ContentChunk { breadcrumb, text };
-        let chunks = result.entry(path).or_insert_with(Vec::new);
-        chunks.push(chunk);
+        result.entry(path).or_insert_with(Vec::new).push(chunk);
     }
 
     Ok(result)
@@ -679,39 +716,35 @@ pub async fn insert_notes(
     tx: &mut Transaction<'_, Sqlite>,
     notes: &[(NoteEntryData, String)],
 ) -> Result<(), DBError> {
-    if !notes.is_empty() {
-        debug!("Inserting {} notes", notes.len());
-        for (entry_data, text) in notes {
-            let note_details = NoteDetails::new(&entry_data.path, text);
-            insert_note(tx, entry_data, &note_details).await?;
-        }
+    if notes.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    debug!("Inserting {} notes", notes.len());
+    upsert_notes_batched(tx, notes).await
 }
 
 pub async fn update_notes(
     tx: &mut Transaction<'_, Sqlite>,
     notes: &[(NoteEntryData, String)],
 ) -> Result<(), DBError> {
-    if !notes.is_empty() {
-        debug!("Updating {} notes", notes.len());
-        for (entry_data, text) in notes {
-            let note_details = NoteDetails::new(&entry_data.path, text);
-            update_note(tx, entry_data, &note_details).await?;
-        }
+    if notes.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    debug!("Updating {} notes", notes.len());
+    upsert_notes_batched(tx, notes).await
 }
 
 pub async fn delete_notes(
     tx: &mut Transaction<'_, Sqlite>,
     paths: &[VaultPath],
 ) -> Result<(), DBError> {
-    if !paths.is_empty() {
-        for path in paths {
-            delete_note(tx, path).await?;
-        }
+    if paths.is_empty() {
+        return Ok(());
     }
+    let path_strings: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+    bulk_delete_in(tx, "notes", &["path"], &path_strings).await?;
+    bulk_delete_in(tx, "notesContent", &["path"], &path_strings).await?;
+    bulk_delete_in(tx, "links", &["source", "destination"], &path_strings).await?;
     Ok(())
 }
 
@@ -720,145 +753,287 @@ pub async fn save_note(
     entry_data: &NoteEntryData,
     note_details: &NoteDetails,
 ) -> Result<(), DBError> {
-    let exists = note_exists(pool, &entry_data.path).await?;
+    // The caller already parsed `note_details`, so reuse it instead of paying
+    // for another `NoteDetails::new` clone of the raw text.
+    let data = note_details.get_content_data();
+    let (chunks, links) = note_details.get_chunks_and_links();
+    let mut batch = NoteBatch::with_capacity(1, chunks.len(), links.len());
+    batch.push(entry_data, data, chunks, links);
+
     let mut tx = pool.begin().await?;
-    if exists {
-        update_note(&mut tx, entry_data, note_details).await
-    } else {
-        insert_note(&mut tx, entry_data, note_details).await
-    }?;
+    batch.flush(&mut tx).await?;
     tx.commit().await?;
     Ok(())
 }
 
-async fn insert_note(
+// SQLite default parameter limit is 999. Stay under for safety.
+const SQLITE_PARAM_BUDGET: usize = 900;
+
+struct NoteRow {
+    path_idx: usize,
+    title: String,
+    size: i64,
+    modified: i64,
+    hash: String,
+    base_path: String,
+    name: String,
+}
+
+struct ChunkRow {
+    path_idx: usize,
+    breadcrumb: String,
+    text: String,
+}
+
+struct LinkRow {
+    path_idx: usize,
+    destination: String,
+}
+
+/// Bulk-upserts a slice of notes plus their chunks and links inside the given
+/// transaction. Each note's raw text is parsed once; chunks/links are bound by
+/// `path_idx` into a shared `paths` table to avoid per-row clones. Inserts
+/// chunk via `bulk_insert` so binds-per-statement stay under
+/// `SQLITE_PARAM_BUDGET`.
+async fn upsert_notes_batched(
     tx: &mut Transaction<'_, Sqlite>,
-    entry_data: &NoteEntryData,
-    note_details: &NoteDetails,
+    notes: &[(NoteEntryData, String)],
 ) -> Result<(), DBError> {
-    let (parent_path, name) = entry_data.path.get_parent_path();
-    let path_string = entry_data.path.to_string();
-    let data = note_details.get_content_data();
-
-    sqlx::query(
-        "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    )
-    .bind(&path_string)
-    .bind(&data.title)
-    .bind(entry_data.size as i64)
-    .bind(entry_data.modified_secs as i64)
-    .bind(data.hash.to_string())
-    .bind(parent_path.to_string())
-    .bind(&name)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| {
-        error!("Error inserting note: {}\nDetails: {}", e, note_details);
-        DBError::DBError(e)
-    })?;
-
-    let (chunks, links) = note_details.get_chunks_and_links();
-    for chunk in &chunks {
-        let breadcrumb = chunk.get_breadcrumb();
-        let chunk_text = &chunk.text;
-        sqlx::query("INSERT INTO notesContent (path, breadcrumb, text) VALUES (?, ?, ?)")
-            .bind(&path_string)
-            .bind(&breadcrumb)
-            .bind(chunk_text)
-            .execute(&mut **tx)
-            .await?;
+    if notes.is_empty() {
+        return Ok(());
     }
+    let mut batch = NoteBatch::with_capacity(notes.len(), 0, 0);
+    for (entry_data, text) in notes {
+        // Avoid `NoteDetails::new` — it would clone the raw text purely to be
+        // re-borrowed for each parse pass below. The free functions take the
+        // text by `AsRef<str>` and keep it borrowed.
+        let data = crate::note::content_extractor::get_content_data(text);
+        let (chunks, links) =
+            crate::note::content_extractor::get_chunks_and_links(&entry_data.path, text);
+        batch.push(entry_data, data, chunks, links);
+    }
+    batch.flush(tx).await
+}
 
-    for link in &links {
-        if let LinkType::Note(path) = &link.ltype {
-            sqlx::query("INSERT INTO links (source, destination) VALUES (?, ?)")
-                .bind(&path_string)
-                .bind(path.to_string())
-                .execute(&mut **tx)
-                .await?;
+/// Accumulates the per-note row sets for a multi-note write. `paths` holds
+/// each note's path once; chunk and link rows reference paths by index, so
+/// no path string is cloned per row.
+struct NoteBatch {
+    paths: Vec<String>,
+    notes: Vec<NoteRow>,
+    chunks: Vec<ChunkRow>,
+    links: Vec<LinkRow>,
+}
+
+impl NoteBatch {
+    fn with_capacity(notes: usize, chunks: usize, links: usize) -> Self {
+        Self {
+            paths: Vec::with_capacity(notes),
+            notes: Vec::with_capacity(notes),
+            chunks: Vec::with_capacity(chunks),
+            links: Vec::with_capacity(links),
         }
     }
 
-    Ok(())
-}
-
-async fn update_note(
-    tx: &mut Transaction<'_, Sqlite>,
-    entry_data: &NoteEntryData,
-    note_details: &NoteDetails,
-) -> Result<(), DBError> {
-    let data = note_details.get_content_data();
-    let title = data.title.clone();
-    let hash = data.hash.to_string();
-    let path_string = entry_data.path.to_string();
-
-    sqlx::query("UPDATE notes SET title = ?, size = ?, modified = ?, hash = ? WHERE path = ?")
-        .bind(&title)
-        .bind(entry_data.size as i64)
-        .bind(entry_data.modified_secs as i64)
-        .bind(&hash)
-        .bind(&path_string)
-        .execute(&mut **tx)
-        .await?;
-
-    sqlx::query("DELETE FROM notesContent WHERE path = ?")
-        .bind(&path_string)
-        .execute(&mut **tx)
-        .await?;
-
-    let (chunks, links) = note_details.get_chunks_and_links();
-    for chunk in &chunks {
-        let breadcrumb = chunk.get_breadcrumb();
-        let chunk_text = &chunk.text;
-        sqlx::query("INSERT INTO notesContent (path, breadcrumb, text) VALUES (?, ?, ?)")
-            .bind(&path_string)
-            .bind(&breadcrumb)
-            .bind(chunk_text)
-            .execute(&mut **tx)
-            .await?;
-    }
-
-    sqlx::query("DELETE FROM links WHERE source = ?")
-        .bind(&path_string)
-        .execute(&mut **tx)
-        .await?;
-
-    for link in &links {
-        if let LinkType::Note(path) = &link.ltype {
-            sqlx::query("INSERT INTO links (source, destination) VALUES (?, ?)")
-                .bind(&path_string)
-                .bind(path.to_string())
-                .execute(&mut **tx)
-                .await?;
+    fn push(
+        &mut self,
+        entry_data: &NoteEntryData,
+        data: NoteContentData,
+        chunks: Vec<ContentChunk>,
+        links: Vec<crate::note::NoteLink>,
+    ) {
+        let idx = self.paths.len();
+        let (parent_path, name) = entry_data.path.get_parent_path();
+        self.paths.push(entry_data.path.to_string());
+        self.notes.push(NoteRow {
+            path_idx: idx,
+            title: data.title,
+            size: entry_data.size as i64,
+            modified: entry_data.modified_secs as i64,
+            hash: data.hash.to_string(),
+            base_path: parent_path.to_string(),
+            name,
+        });
+        for c in chunks {
+            self.chunks.push(ChunkRow {
+                path_idx: idx,
+                breadcrumb: c.breadcrumb,
+                text: c.text,
+            });
+        }
+        for l in links {
+            if let LinkType::Note(p) = &l.ltype {
+                self.links.push(LinkRow {
+                    path_idx: idx,
+                    destination: p.to_string(),
+                });
+            }
         }
     }
 
+    async fn flush(self, tx: &mut Transaction<'_, Sqlite>) -> Result<(), DBError> {
+        bulk_upsert_note_rows(tx, &self.notes, &self.paths).await?;
+        bulk_delete_in(tx, "notesContent", &["path"], &self.paths).await?;
+        bulk_delete_in(tx, "links", &["source"], &self.paths).await?;
+        bulk_insert(tx, &self.chunks, &self.paths).await?;
+        bulk_insert(tx, &self.links, &self.paths).await?;
+        Ok(())
+    }
+}
+
+async fn bulk_upsert_note_rows(
+    tx: &mut Transaction<'_, Sqlite>,
+    rows: &[NoteRow],
+    paths: &[String],
+) -> Result<(), DBError> {
+    bulk_insert(tx, rows, paths).await.map_err(|e| match e {
+        DBError::DBError(inner) => {
+            error!("Error upserting {} notes: {}", rows.len(), inner);
+            DBError::DBError(inner)
+        }
+        other => other,
+    })
+}
+
+fn placeholders(rows: usize, cols: usize) -> String {
+    let one = format!("({})", vec!["?"; cols].join(", "));
+    std::iter::repeat_n(one.as_str(), rows)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `DELETE FROM <table> WHERE <col1> IN (?, ?, …) [OR <col2> IN (...) …]`,
+/// chunked by parameter budget. With multiple columns each value is bound
+/// once per column; budget halves accordingly.
+///
+/// `table` and `columns` are interpolated into the SQL — never accept
+/// untrusted input here. The `&'static str` bound prevents passing
+/// caller-derived strings.
+async fn bulk_delete_in(
+    tx: &mut Transaction<'_, Sqlite>,
+    table: &'static str,
+    columns: &[&'static str],
+    values: &[String],
+) -> Result<(), DBError> {
+    if values.is_empty() || columns.is_empty() {
+        return Ok(());
+    }
+    let max_per_chunk = SQLITE_PARAM_BUDGET / columns.len();
+    for chunk in values.chunks(max_per_chunk) {
+        let ph = vec!["?"; chunk.len()].join(", ");
+        let where_clause = columns
+            .iter()
+            .map(|c| format!("{} IN ({})", c, ph))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = format!("DELETE FROM {} WHERE {}", table, where_clause);
+        let mut q = sqlx::query(&sql);
+        for _ in columns {
+            for v in chunk {
+                q = q.bind(v);
+            }
+        }
+        q.execute(&mut **tx).await?;
+    }
     Ok(())
 }
 
-async fn delete_note(tx: &mut Transaction<'_, Sqlite>, path: &VaultPath) -> Result<(), DBError> {
-    let path_string = path.to_string();
+/// Trait for rows that can be batch-inserted via `bulk_insert`. Each impl
+/// provides the SQL framing constants and a per-row `bind_to` method.
+trait BulkInsertRow {
+    /// Statement prefix ending in `VALUES `.
+    const HEADER: &'static str;
+    /// Optional clause appended after the placeholders (e.g. `ON CONFLICT …`).
+    const FOOTER: &'static str;
+    /// Number of `?` placeholders per row.
+    const COLS: usize;
 
-    sqlx::query("DELETE FROM notes WHERE path = ?")
-        .bind(&path_string)
-        .execute(&mut **tx)
-        .await?;
+    fn bind_to<'q>(
+        &'q self,
+        q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+        paths: &'q [String],
+    ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>;
+}
 
-    sqlx::query("DELETE FROM notesContent WHERE path = ?")
-        .bind(&path_string)
-        .execute(&mut **tx)
-        .await?;
+impl BulkInsertRow for NoteRow {
+    const HEADER: &'static str =
+        "INSERT INTO notes (path, title, size, modified, hash, basePath, noteName) VALUES ";
+    const FOOTER: &'static str = " ON CONFLICT(path) DO UPDATE SET \
+                                   title = excluded.title, \
+                                   size = excluded.size, \
+                                   modified = excluded.modified, \
+                                   hash = excluded.hash";
+    const COLS: usize = 7;
 
-    sqlx::query("DELETE FROM links WHERE source = ?")
-        .bind(&path_string)
-        .execute(&mut **tx)
-        .await?;
+    fn bind_to<'q>(
+        &'q self,
+        q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+        paths: &'q [String],
+    ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        q.bind(&paths[self.path_idx])
+            .bind(&self.title)
+            .bind(self.size)
+            .bind(self.modified)
+            .bind(&self.hash)
+            .bind(&self.base_path)
+            .bind(&self.name)
+    }
+}
 
-    sqlx::query("DELETE FROM links WHERE destination = ?")
-        .bind(&path_string)
-        .execute(&mut **tx)
-        .await?;
+impl BulkInsertRow for ChunkRow {
+    const HEADER: &'static str = "INSERT INTO notesContent (path, breadcrumb, text) VALUES ";
+    const FOOTER: &'static str = "";
+    const COLS: usize = 3;
 
+    fn bind_to<'q>(
+        &'q self,
+        q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+        paths: &'q [String],
+    ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        q.bind(&paths[self.path_idx])
+            .bind(&self.breadcrumb)
+            .bind(&self.text)
+    }
+}
+
+impl BulkInsertRow for LinkRow {
+    const HEADER: &'static str = "INSERT INTO links (source, destination) VALUES ";
+    const FOOTER: &'static str = "";
+    const COLS: usize = 2;
+
+    fn bind_to<'q>(
+        &'q self,
+        q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+        paths: &'q [String],
+    ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        q.bind(&paths[self.path_idx]).bind(&self.destination)
+    }
+}
+
+/// Generic chunked multi-row INSERT. Builds `<HEADER>(?, …), (?, …)<FOOTER>`,
+/// chunking so binds-per-statement stays under `SQLITE_PARAM_BUDGET`.
+async fn bulk_insert<R: BulkInsertRow>(
+    tx: &mut Transaction<'_, Sqlite>,
+    rows: &[R],
+    paths: &[String],
+) -> Result<(), DBError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let max_rows = SQLITE_PARAM_BUDGET / R::COLS;
+    for chunk in rows.chunks(max_rows) {
+        let sql = format!(
+            "{}{}{}",
+            R::HEADER,
+            placeholders(chunk.len(), R::COLS),
+            R::FOOTER
+        );
+        let mut q = sqlx::query(&sql);
+        for r in chunk {
+            q = r.bind_to(q, paths);
+        }
+        q.execute(&mut **tx).await?;
+    }
     Ok(())
 }
 
@@ -992,7 +1167,10 @@ async fn delete_directory(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("DELETE FROM links WHERE source LIKE (? || '%')")
+    // Clear both sides of the links table — outbound (source) and inbound
+    // (destination) — so backlinks pointing to deleted notes don't linger.
+    sqlx::query("DELETE FROM links WHERE source LIKE (? || '%') OR destination LIKE (? || '%')")
+        .bind(&path_string)
         .bind(&path_string)
         .execute(&mut **tx)
         .await?;
