@@ -57,6 +57,31 @@ impl IndexReport {
     }
 }
 
+/// Configuration passed to [`NoteVault::new`].
+///
+/// `workspace_path` is the OS path to the vault's root directory.
+/// `db_path` overrides where the SQLite cache is stored. When `None`,
+/// the cache lives at `<workspace_path>/kimun.sqlite` (legacy default).
+#[derive(Debug, Clone)]
+pub struct VaultConfig {
+    pub workspace_path: std::path::PathBuf,
+    pub db_path: Option<std::path::PathBuf>,
+}
+
+impl VaultConfig {
+    pub fn new(workspace_path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            workspace_path: workspace_path.into(),
+            db_path: None,
+        }
+    }
+
+    pub fn with_db_path(mut self, db_path: impl Into<std::path::PathBuf>) -> Self {
+        self.db_path = Some(db_path.into());
+        self
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NoteVault {
     /// Stored as `Arc<Path>` (not `Arc<PathBuf>`) because (a) it impls
@@ -1806,5 +1831,24 @@ mod tests {
             "expected Note/Sub leaves, got: {:?}",
             leaves
         );
+    }
+}
+
+#[cfg(test)]
+mod vault_config_tests {
+    use super::VaultConfig;
+    use std::path::PathBuf;
+
+    #[test]
+    fn new_sets_workspace_and_no_db_path() {
+        let cfg = VaultConfig::new("/tmp/ws");
+        assert_eq!(cfg.workspace_path, PathBuf::from("/tmp/ws"));
+        assert!(cfg.db_path.is_none());
+    }
+
+    #[test]
+    fn with_db_path_overrides_default() {
+        let cfg = VaultConfig::new("/tmp/ws").with_db_path("/var/cache/foo.kimuncache");
+        assert_eq!(cfg.db_path.as_deref(), Some(std::path::Path::new("/var/cache/foo.kimuncache")));
     }
 }
