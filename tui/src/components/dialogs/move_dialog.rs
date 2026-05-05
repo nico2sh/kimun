@@ -196,7 +196,7 @@ impl MoveDialog {
             } else {
                 dest_dir.append(&VaultPath::new(&filename))
             };
-            let exists = vault.exists(&candidate).await.is_some();
+            let exists = vault.exists(&candidate).await;
             tx_clone
                 .send(AppEvent::MoveDestValidation { available: !exists })
                 .ok();

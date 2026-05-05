@@ -62,7 +62,7 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             let mut vault = NoteVault::new(&workspace_path).await?;
             vault.set_inbox_path(kimun_core::nfs::VaultPath::new(&inbox_path));
             match vault.validate().await? {
-                kimun_core::db::DBStatus::Ready => {
+                kimun_core::DBStatus::Ready => {
                     commands::note_ops::run(subcommand, &vault, &quick_note_path, &workspace_name)
                         .await
                 }

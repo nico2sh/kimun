@@ -41,7 +41,7 @@ created = "2026-04-01T00:00:00Z"
 
 [workspaces.work]
 path = "work"
-last_paths = ["/journal/2026-04-10.md", "/journal/2026-04-09.md", "/people/carlos.md"]
+last_paths = ["/journal/2026-04-10.md", "/journal/2026-04-09.md", "/people/manager-notas.md", "/people/manager-notes.md", "/people/carlos.md"]
 created = "2026-04-01T00:00:00Z"
 
 [key_bindings]

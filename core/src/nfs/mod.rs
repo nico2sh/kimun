@@ -1,16 +1,15 @@
 pub mod visitor;
-// Contains the structs to support the data types
 use std::{
     fmt::Display,
     hash::Hash,
     path::{Path, PathBuf},
     str::FromStr,
+    sync::LazyLock,
     time::UNIX_EPOCH,
 };
 
-// use gxhash::gxhash64;
 use ignore::{WalkBuilder, WalkParallel};
-use log::{info, warn};
+use log::warn;
 use regex::Regex;
 use serde::{de::Visitor, Deserialize, Serialize};
 use twox_hash::XxHash64;
@@ -21,16 +20,23 @@ use super::utilities::path_to_string;
 
 pub const PATH_SEPARATOR: char = '/';
 const NOTE_EXTENSION: &str = ".md";
-// non valid chars
 // Not allowed: \ | : * ? " < > | [ ] ^ #  plus control characters (U+0000-U+001F, U+007F)
 const NON_VALID_PATH_CHARS_REGEX: &str = r#"[\\/:*?"<>|\[\]\^\#\x00-\x1f\x7f]"#;
-// Not allowed files starting with two dots
+// Not allowed: filenames starting with two or more dots
 const NON_VALID_PATH_NAME: &str = r#"^\.{2,}.+$"#;
 // Windows reserved device names (case-insensitive; optional extension)
 const WINDOWS_RESERVED_NAMES_REGEX: &str = r#"(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..+)?$"#;
 
+static RX_PATH_CHARS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap());
+static RX_PATH_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(NON_VALID_PATH_NAME).unwrap());
+static RX_WIN_RESERVED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(WINDOWS_RESERVED_NAMES_REGEX).unwrap());
+static RX_INCREMENT_SUFFIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"_(?P<number>[0-9]+)$").unwrap());
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VaultEntry {
+pub(crate) struct VaultEntry {
     pub path: VaultPath,
     pub path_string: String,
     pub data: EntryData,
@@ -43,7 +49,7 @@ impl AsRef<str> for VaultEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum EntryData {
+pub(crate) enum EntryData {
     Note(NoteEntryData),
     Directory(DirectoryEntryData),
     Attachment,
@@ -58,6 +64,7 @@ pub struct NoteEntryData {
 }
 
 impl NoteEntryData {
+    #[cfg(test)]
     pub async fn load_details<P: AsRef<Path>>(
         &self,
         workspace_path: P,
@@ -67,18 +74,30 @@ impl NoteEntryData {
         Ok(NoteDetails::new(path, content))
     }
 
+    /// Reads the file at `os_path` directly (no case-insensitive resolution).
+    /// Use when the real on-disk path is already known (e.g. from the walker).
+    pub(crate) fn load_details_from_os_path(&self, os_path: &Path) -> Result<NoteDetails, FSError> {
+        let bytes = std::fs::read(os_path)?;
+        let text = String::from_utf8(bytes)?;
+        Ok(NoteDetails::new(&self.path, text))
+    }
+
     async fn from_os_path(path: &VaultPath, file_path: &Path) -> Result<NoteEntryData, FSError> {
         let metadata = tokio::fs::metadata(file_path).await?;
+        Ok(Self::from_metadata(path, &metadata))
+    }
+
+    fn from_metadata(path: &VaultPath, metadata: &std::fs::Metadata) -> NoteEntryData {
         let size = metadata.len();
         let modified_secs = metadata
             .modified()
             .map(|t| t.duration_since(UNIX_EPOCH).unwrap().as_secs())
-            .unwrap_or_else(|_e| 0);
-        Ok(NoteEntryData {
+            .unwrap_or(0);
+        NoteEntryData {
             path: path.flatten(),
             size,
             modified_secs,
-        })
+        }
     }
 }
 
@@ -94,69 +113,85 @@ impl DirectoryEntryData {
     }
 }
 
-async fn _get_dir_content_size<P: AsRef<Path>>(
-    workspace_path: P,
-    path: &VaultPath,
-) -> Result<u64, FSError> {
-    let os_path = path.to_pathbuf(&workspace_path);
-    let walker = ignore::WalkBuilder::new(&os_path)
-        .max_depth(Some(1))
-        .filter_entry(filter_files)
-        .build();
-    let mut content_size = 0;
-    for entry in walker.flatten() {
-        let entry_path = entry.path();
-        if entry_path.is_file() && entry_path.extension().is_some_and(|ext| ext == "md") {
-            let metadata = tokio::fs::metadata(&os_path).await?;
-            let file_size = metadata.len();
-            content_size += file_size;
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) enum VaultEntryDetails {
+    Note(NoteDetails),
+    #[allow(dead_code)]
+    Directory(DirectoryDetails),
+    None,
+}
+
+#[cfg(test)]
+impl VaultEntryDetails {
+    pub fn get_title(&mut self) -> String {
+        match self {
+            VaultEntryDetails::Note(note_details) => note_details.get_title(),
+            VaultEntryDetails::Directory(_) => String::new(),
+            VaultEntryDetails::None => String::new(),
         }
     }
-    Ok(content_size)
 }
 
 impl VaultEntry {
+    #[cfg(test)]
     pub async fn new<P: AsRef<Path>>(workspace_path: P, path: VaultPath) -> Result<Self, FSError> {
         let os_path = resolve_path_on_disk(&workspace_path, &path).await;
-        Self::from_vault_and_os_path(path, &os_path).await
-    }
-
-    /// Creates a `VaultEntry` when the real on-disk path is already known,
-    /// skipping the case-insensitive resolve step.
-    async fn from_vault_and_os_path(path: VaultPath, os_path: &Path) -> Result<Self, FSError> {
-        let metadata = tokio::fs::metadata(os_path)
+        let metadata = tokio::fs::metadata(&os_path)
             .await
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => FSError::NoFileOrDirectoryFound {
-                    path: path_to_string(os_path),
-                },
-                _ => FSError::ReadFileError(e),
-            })?;
-
-        let kind = if metadata.is_dir() {
-            EntryData::Directory(DirectoryEntryData { path: path.clone() })
-        } else if path.is_note() {
-            let note_entry_data = NoteEntryData::from_os_path(&path, os_path).await?;
-            EntryData::Note(note_entry_data)
-        } else {
-            EntryData::Attachment
-        };
-        let path_string = path.to_string();
-
-        Ok(VaultEntry {
-            path,
-            path_string,
-            data: kind,
-        })
+            .map_err(|e| Self::map_metadata_err(e, &os_path))?;
+        Self::assemble(path, &metadata)
     }
 
+    #[cfg(test)]
     pub async fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
         workspace_path: P,
         full_path: F,
     ) -> Result<Self, FSError> {
         let note_path = VaultPath::from_path(&workspace_path, &full_path)?;
-        // full_path is the real disk path already provided by the OS walker — no re-resolve needed.
-        Self::from_vault_and_os_path(note_path, full_path.as_ref()).await
+        let os_path = full_path.as_ref();
+        let metadata = tokio::fs::metadata(os_path)
+            .await
+            .map_err(|e| Self::map_metadata_err(e, os_path))?;
+        Self::assemble(note_path, &metadata)
+    }
+
+    /// Sync sibling of `from_path`. Used by the parallel-walker visitor where
+    /// the OS path is already known and the calling thread is synchronous.
+    pub(crate) fn from_path_sync<P: AsRef<Path>, F: AsRef<Path>>(
+        workspace_path: P,
+        full_path: F,
+    ) -> Result<Self, FSError> {
+        let note_path = VaultPath::from_path(&workspace_path, &full_path)?;
+        let os_path = full_path.as_ref();
+        let metadata =
+            std::fs::metadata(os_path).map_err(|e| Self::map_metadata_err(e, os_path))?;
+        Self::assemble(note_path, &metadata)
+    }
+
+    fn map_metadata_err(e: std::io::Error, os_path: &Path) -> FSError {
+        match e.kind() {
+            std::io::ErrorKind::NotFound => FSError::NoFileOrDirectoryFound {
+                path: path_to_string(os_path),
+            },
+            _ => FSError::ReadFileError(e),
+        }
+    }
+
+    fn assemble(path: VaultPath, metadata: &std::fs::Metadata) -> Result<Self, FSError> {
+        let data = if metadata.is_dir() {
+            EntryData::Directory(DirectoryEntryData { path: path.clone() })
+        } else if path.is_note() {
+            EntryData::Note(NoteEntryData::from_metadata(&path, metadata))
+        } else {
+            EntryData::Attachment
+        };
+        let path_string = path.to_string();
+        Ok(VaultEntry {
+            path,
+            path_string,
+            data,
+        })
     }
 }
 
@@ -170,37 +205,26 @@ impl Display for VaultEntry {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum VaultEntryDetails {
-    // Hash
-    Note(NoteDetails),
-    Directory(DirectoryDetails),
-    None,
-}
-
-impl VaultEntryDetails {
-    pub fn get_title(&mut self) -> String {
-        match self {
-            VaultEntryDetails::Note(note_details) => note_details.get_title(),
-            VaultEntryDetails::Directory(_directory_details) => String::new(),
-            VaultEntryDetails::None => String::new(),
-        }
-    }
-}
-
 pub(crate) fn hash_text<S: AsRef<str>>(text: S) -> u64 {
-    // XxHash3_64::oneshot(text.as_ref().as_bytes())
     XxHash64::oneshot(42, text.as_ref().as_bytes())
-    // gxhash64(text.as_ref().as_bytes(), 0)
 }
 
 /// Resolves a VaultPath to the real PathBuf on disk by matching each component
 /// case-insensitively. When a component doesn't exist on disk yet, the stored
 /// (lowercase) name is used for the remainder of the path.
+///
+/// Fast path: stored paths are always lowercase, so `vault_path.to_pathbuf` is
+/// the canonical form. We try it directly first; only fall back to the
+/// per-slice walk when something exists on disk under a different case
+/// (legacy mixed-case files imported from outside Kimun).
 pub(crate) async fn resolve_path_on_disk<P: AsRef<Path>>(
     workspace_path: P,
     vault_path: &VaultPath,
 ) -> PathBuf {
+    let canonical = vault_path.to_pathbuf(&workspace_path);
+    if matches!(tokio::fs::try_exists(&canonical).await, Ok(true)) {
+        return canonical;
+    }
     let mut current = workspace_path.as_ref().to_path_buf();
     for slice in &vault_path.flatten().slices {
         let name = slice.to_string();
@@ -225,6 +249,10 @@ pub(crate) fn resolve_path_on_disk_sync<P: AsRef<Path>>(
     workspace_path: P,
     vault_path: &VaultPath,
 ) -> PathBuf {
+    let canonical = vault_path.to_pathbuf(&workspace_path);
+    if canonical.exists() {
+        return canonical;
+    }
     let mut current = workspace_path.as_ref().to_path_buf();
     for slice in &vault_path.flatten().slices {
         let name = slice.to_string();
@@ -325,22 +353,27 @@ pub(crate) async fn load_note<P: AsRef<Path>>(
     }
 }
 
+/// Creates a new directory at `path`. Returns `FSError::AlreadyExists` if the
+/// directory (or any case-insensitive variant) is already present.
 pub(crate) async fn create_directory<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,
 ) -> Result<DirectoryEntryData, FSError> {
-    if path.is_note() {
-        return Err(FSError::InvalidPath {
-            path: path.to_string(),
-            message: "Path provided is a note".to_string(),
-        });
-    }
+    path.ensure_directory()?;
 
     let full_path = resolve_path_on_disk(&workspace_path, path).await;
-    tokio::fs::create_dir_all(full_path).await?;
-    Ok(DirectoryEntryData {
-        path: path.to_owned(),
-    })
+    if let Some(parent) = full_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    match tokio::fs::create_dir(&full_path).await {
+        Ok(()) => Ok(DirectoryEntryData {
+            path: path.to_owned(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(FSError::AlreadyExists {
+            path: path.to_owned(),
+        }),
+        Err(e) => Err(FSError::ReadFileError(e)),
+    }
 }
 
 pub(crate) async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
@@ -348,12 +381,7 @@ pub(crate) async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     path: &VaultPath,
     text: S,
 ) -> Result<NoteEntryData, FSError> {
-    if !path.is_note() {
-        return Err(FSError::InvalidPath {
-            path: path.to_string(),
-            message: "Path provided is not a note".to_string(),
-        });
-    }
+    path.ensure_note()?;
     // Resolve the full path case-insensitively so an existing `MyNote.md` is
     // written in place rather than creating a new lowercase `mynote.md` alongside it.
     let full_path = resolve_path_on_disk(&workspace_path, path).await;
@@ -366,37 +394,48 @@ pub(crate) async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     Ok(entry)
 }
 
+/// Creates a new note at `path` exclusively. Returns `FSError::AlreadyExists` if
+/// any file (case-insensitive) already occupies the resolved path.
+pub(crate) async fn create_note_exclusive<P: AsRef<Path>, S: AsRef<str>>(
+    workspace_path: P,
+    path: &VaultPath,
+    text: S,
+) -> Result<NoteEntryData, FSError> {
+    path.ensure_note()?;
+    let full_path = resolve_path_on_disk(&workspace_path, path).await;
+    if let Some(base_path) = full_path.parent() {
+        tokio::fs::create_dir_all(base_path).await?;
+    }
+    let mut file = match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&full_path)
+        .await
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(FSError::AlreadyExists {
+                path: path.to_owned(),
+            });
+        }
+        Err(e) => return Err(FSError::ReadFileError(e)),
+    };
+    use tokio::io::AsyncWriteExt;
+    file.write_all(text.as_ref().as_bytes()).await?;
+    file.flush().await?;
+    drop(file);
+
+    NoteEntryData::from_os_path(path, &full_path).await
+}
+
 pub(crate) async fn rename_note<P: AsRef<Path>>(
     workspace_path: P,
     from: &VaultPath,
     to: &VaultPath,
 ) -> Result<(), FSError> {
-    if !from.is_note() {
-        return Err(FSError::InvalidPath {
-            path: from.to_string(),
-            message: "Path is not a note".to_string(),
-        });
-    }
-    if !to.is_note() {
-        return Err(FSError::InvalidPath {
-            path: to.to_string(),
-            message: "Path is not a note".to_string(),
-        });
-    }
-
-    let full_from_path = resolve_path_on_disk(&workspace_path, from).await;
-    let (to_parent, to_name) = to.get_parent_path();
-    let to_base = resolve_path_on_disk(&workspace_path, &to_parent).await;
-    let full_to_path = to_base.join(&to_name);
-    // We create the destination directory if doesn't exist
-    match tokio::fs::metadata(&to_base).await {
-        Ok(m) if m.is_dir() => {}
-        _ => {
-            tokio::fs::create_dir_all(&to_base).await?;
-        }
-    }
-    tokio::fs::rename(full_from_path, full_to_path).await?;
-    Ok(())
+    from.ensure_note()?;
+    to.ensure_note()?;
+    rename_path(workspace_path, from, to).await
 }
 
 pub(crate) async fn rename_directory<P: AsRef<Path>>(
@@ -404,24 +443,30 @@ pub(crate) async fn rename_directory<P: AsRef<Path>>(
     from: &VaultPath,
     to: &VaultPath,
 ) -> Result<(), FSError> {
-    if from.is_note() {
-        return Err(FSError::InvalidPath {
-            path: from.to_string(),
-            message: "Path is not a directory".to_string(),
-        });
-    }
-    if to.is_note() {
-        return Err(FSError::InvalidPath {
-            path: to.to_string(),
-            message: "Path is not a Directory".to_string(),
-        });
-    }
+    from.ensure_directory()?;
+    to.ensure_directory()?;
+    rename_path(workspace_path, from, to).await
+}
 
+/// Resolves both endpoints, ensures the destination's parent directory exists,
+/// and renames atomically. Returns `FSError::AlreadyExists` if the destination
+/// is occupied (the OS rename would silently overwrite on Linux otherwise).
+async fn rename_path<P: AsRef<Path>>(
+    workspace_path: P,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<(), FSError> {
     let full_from_path = resolve_path_on_disk(&workspace_path, from).await;
     let (to_parent, to_name) = to.get_parent_path();
     let to_base = resolve_path_on_disk(&workspace_path, &to_parent).await;
     let full_to_path = to_base.join(&to_name);
-    // We create the destination directory if doesn't exist
+
+    if matches!(tokio::fs::try_exists(&full_to_path).await, Ok(true)) {
+        return Err(FSError::AlreadyExists {
+            path: to.to_owned(),
+        });
+    }
+
     match tokio::fs::metadata(&to_base).await {
         Ok(m) if m.is_dir() => {}
         _ => {
@@ -450,6 +495,17 @@ pub(crate) fn remove_path(path: &Path) -> Result<(), FSError> {
         std::fs::remove_file(path).map_err(FSError::ReadFileError)?;
     }
     Ok(())
+}
+
+/// Returns true if anything (file or directory) exists at the resolved
+/// disk path for `path`. Cheaper than `load_note` when the contents are
+/// not needed.
+pub(crate) async fn path_exists<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<bool, FSError> {
+    let full_path = resolve_path_on_disk(&workspace_path, path).await;
+    Ok(tokio::fs::try_exists(&full_path).await?)
 }
 
 pub(crate) async fn delete_directory<P: AsRef<Path>>(
@@ -669,16 +725,13 @@ impl VaultPath {
 
     fn increment<S: AsRef<str>>(name: S) -> String {
         let name = name.as_ref();
-        let re = Regex::new(r"_(?P<number>[0-9]+)$").unwrap();
-        let (n, suffix_num) = if let Some(caps) = re.captures(name) {
+        let (n, suffix_num) = if let Some(caps) = RX_INCREMENT_SUFFIX.captures(name) {
             let suffix = &caps["number"];
-            info!("Suffix: {}", suffix);
             let n = name
                 .strip_suffix(&format!("_{}", suffix))
                 .map_or_else(|| name.to_string(), |s| s.to_string());
             (n, suffix.parse::<u64>().map_or_else(|_e| 0, |n| n + 1))
         } else {
-            info!("Suffix not found, new one: {}", 0);
             (name.to_string(), 0)
         };
         format!("{}_{}", n, suffix_num)
@@ -804,6 +857,30 @@ impl VaultPath {
         }
     }
 
+    /// Returns Ok if the path looks like a note path; otherwise an `InvalidPath` error.
+    pub fn ensure_note(&self) -> Result<(), FSError> {
+        if self.is_note() {
+            Ok(())
+        } else {
+            Err(FSError::InvalidPath {
+                path: self.to_string(),
+                message: "The path is not a note".to_string(),
+            })
+        }
+    }
+
+    /// Returns Ok if the path does not have a note extension; otherwise an `InvalidPath` error.
+    pub fn ensure_directory(&self) -> Result<(), FSError> {
+        if self.is_note() {
+            Err(FSError::InvalidPath {
+                path: self.to_string(),
+                message: "The path is not a directory".to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn is_relative(&self) -> bool {
         !self.absolute
     }
@@ -878,13 +955,6 @@ impl Display for VaultPath {
     }
 }
 
-// #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-// enum SliceKind {
-//     Note,
-//     // This can be either an attachment or a dir path
-//     Other,
-// }
-//
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum VaultPathSlice {
     PathSlice(String),
@@ -894,10 +964,9 @@ enum VaultPathSlice {
 
 impl VaultPathSlice {
     fn new<S: AsRef<str>>(slice: S) -> Self {
-        // We don't want filenames or directories starting with two dots or more
-        let rx_dot = regex::Regex::new(NON_VALID_PATH_NAME).unwrap();
-        let slice = if rx_dot.is_match(slice.as_ref()) {
-            slice.as_ref().to_string().replace(".", "_")
+        // Replace runs of leading dots so "..foo" becomes "__foo".
+        let slice = if RX_PATH_NAME.is_match(slice.as_ref()) {
+            slice.as_ref().replace(".", "_")
         } else {
             slice.as_ref().to_string()
         };
@@ -906,14 +975,12 @@ impl VaultPathSlice {
         } else if slice.eq(".") {
             VaultPathSlice::Current
         } else {
-            let rx_chars = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
-            // Replace invalid chars, lowercase, then strip leading/trailing spaces
-            // and trailing dots (Windows silently strips them, causing silent collisions).
-            let sanitized = rx_chars.replace_all(slice.as_ref(), "_").to_lowercase();
+            // Replace invalid chars, lowercase, strip leading/trailing spaces and
+            // trailing dots (Windows silently strips them, causing silent collisions).
+            let sanitized = RX_PATH_CHARS.replace_all(&slice, "_").to_lowercase();
             let sanitized = sanitized.trim().trim_end_matches('.').to_string();
             // Prefix Windows reserved device names so they don't map to device handles.
-            let rx_reserved = regex::Regex::new(WINDOWS_RESERVED_NAMES_REGEX).unwrap();
-            let final_slice = if rx_reserved.is_match(&sanitized) {
+            let final_slice = if RX_WIN_RESERVED.is_match(&sanitized) {
                 format!("_{}", sanitized)
             } else {
                 sanitized
@@ -925,16 +992,12 @@ impl VaultPathSlice {
 
     fn is_valid<S: AsRef<str>>(slice: S) -> bool {
         let slice = slice.as_ref();
-        // `.` (current dir) and `..` (parent dir) are always valid path components.
         if slice == "." || slice == ".." {
             return true;
         }
-        let rx_chars = regex::Regex::new(NON_VALID_PATH_CHARS_REGEX).unwrap();
-        let rx_dot = regex::Regex::new(NON_VALID_PATH_NAME).unwrap();
-        let rx_reserved = regex::Regex::new(WINDOWS_RESERVED_NAMES_REGEX).unwrap();
-        !rx_chars.is_match(slice)
-            && !rx_dot.is_match(slice)
-            && !rx_reserved.is_match(slice)
+        !RX_PATH_CHARS.is_match(slice)
+            && !RX_PATH_NAME.is_match(slice)
+            && !RX_WIN_RESERVED.is_match(slice)
             && !slice.ends_with('.')
             && !slice.starts_with(' ')
             && !slice.ends_with(' ')
@@ -1669,7 +1732,7 @@ mod tests {
 
         match result.unwrap_err() {
             FSError::InvalidPath { message, .. } => {
-                assert_eq!(message, "Path provided is a note");
+                assert_eq!(message, "The path is not a directory");
             }
             _ => panic!("Expected InvalidPath error"),
         }
@@ -1686,7 +1749,7 @@ mod tests {
 
         match result.unwrap_err() {
             FSError::InvalidPath { message, .. } => {
-                assert_eq!(message, "Path provided is not a note");
+                assert_eq!(message, "The path is not a note");
             }
             _ => panic!("Expected InvalidPath error"),
         }
