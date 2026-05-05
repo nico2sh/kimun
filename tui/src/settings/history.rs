@@ -55,12 +55,16 @@ fn write_atomic(file_path: &Path, paths: &[VaultPath]) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = file_path.with_extension("txt.tmp");
-    {
+    let result = (|| -> std::io::Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
         for p in paths {
             writeln!(f, "{}", p)?;
         }
-        f.sync_all()?;
+        f.sync_all()
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
     std::fs::rename(&tmp, file_path)
 }
