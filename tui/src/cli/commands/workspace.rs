@@ -9,7 +9,9 @@ use color_eyre::eyre::{Result, eyre};
 use kimun_core::{NoteVault, VaultConfig};
 use kimun_core::error::VaultError;
 
-use crate::settings::{AppSettings, workspace_config::WorkspaceConfig};
+use crate::settings::{
+    AppSettings, config_migration::CURRENT_CONFIG_VERSION, workspace_config::WorkspaceConfig,
+};
 
 #[derive(Subcommand, Debug)]
 pub enum WorkspaceSubcommand {
@@ -134,7 +136,7 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         .add_workspace(workspace_name.clone(), canonical_path.clone())
         .map_err(|e| eyre!("{}", e))?;
 
-    settings.config_version = 2;
+    settings.config_version = CURRENT_CONFIG_VERSION;
     settings.save_to_disk()?;
 
     println!(

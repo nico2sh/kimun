@@ -243,3 +243,47 @@ created = "2026-01-01T00:00:00Z"
     let s = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
     assert_eq!(s.config_version, 3);
 }
+
+#[test]
+fn v3_save_does_not_write_last_paths() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    let workspace_dir = tempfile::TempDir::new().unwrap();
+
+    std::fs::write(
+        &cfg_path,
+        format!(
+            r#"
+config_version = 3
+cache_dir = "."
+history_dir = "history"
+theme = "gruvbox_dark"
+
+[global]
+current_workspace = "notes"
+
+[workspaces.notes]
+path = "{}"
+created = "2026-01-01T00:00:00Z"
+"#,
+            workspace_dir.path().display()
+        ),
+    )
+    .unwrap();
+
+    let mut settings =
+        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    if let Some(wc) = settings.workspace_config.as_mut() {
+        wc.workspaces
+            .get_mut("notes")
+            .unwrap()
+            .last_paths
+            .push("ghost.md".into());
+    }
+    settings.save_to_disk().unwrap();
+    let raw = std::fs::read_to_string(&cfg_path).unwrap();
+    assert!(
+        !raw.contains("last_paths"),
+        "v3 config should never write last_paths, got:\n{raw}"
+    );
+}

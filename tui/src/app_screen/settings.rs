@@ -25,6 +25,7 @@ use crate::components::settings::sorting_section::SortingSection;
 use crate::components::settings::workspaces_section::{Mode as WorkspaceMode, WorkspacesSection};
 use crate::settings::AppSettings;
 use crate::settings::SharedSettings;
+use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::themes::Theme;
 
 // ── FileBrowserState ─────────────────────────────────────────────────────────
@@ -294,7 +295,7 @@ impl SettingsScreen {
                     } else {
                         s.workspace_config = Some(WorkspaceConfig::new_empty());
                     }
-                    s.config_version = 2;
+                    s.config_version = CURRENT_CONFIG_VERSION;
                 }
                 if let Some(ref mut wc) = s.workspace_config {
                     wc.workspaces.insert(name.clone(), entry);

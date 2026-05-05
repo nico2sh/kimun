@@ -92,6 +92,9 @@ fn workspace_config_empty_has_no_current_workspace() {
 fn workspace_config_round_trip_serialization() {
     let mut config = WorkspaceConfig::new_empty();
     let path = PathBuf::from("/test/path");
+    // last_paths is intentionally not serialized in v3 — the history file is the
+    // source of truth. The in-memory field exists only as a temporary v2 → v3
+    // migration buffer, so it always round-trips as empty.
     let last_paths = vec!["path1".to_string(), "path2".to_string()];
 
     config
@@ -115,7 +118,10 @@ fn workspace_config_round_trip_serialization() {
     let original_entry = config.workspaces.get("test").unwrap();
     let deserialized_entry = deserialized.workspaces.get("test").unwrap();
     assert_eq!(original_entry.path, deserialized_entry.path);
-    assert_eq!(original_entry.last_paths, deserialized_entry.last_paths);
+    // last_paths is skip_serializing, so the deserialized side comes back empty
+    // even though the original had entries.
+    assert!(deserialized_entry.last_paths.is_empty());
+    assert!(!toml_str.contains("last_paths"));
     // DateTime should round-trip correctly
     assert_eq!(
         original_entry.created.timestamp(),
