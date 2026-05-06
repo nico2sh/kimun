@@ -303,6 +303,33 @@ impl NvimBackend {
         });
     }
 
+    /// Insert `text` at nvim's current cursor position via `nvim_paste`.
+    /// Honours nvim's current mode (insert/normal/visual) — visual replaces the
+    /// selection, normal/insert insert at cursor — so it works as a drop-in
+    /// for the textarea backend's insert/replace flow.
+    pub fn paste(&self, text: &str, tx: AppTx) {
+        self.ensure_refresh_task(&tx);
+        let nvim = self.nvim.clone();
+        let is_dead = self.is_dead.clone();
+        let key_tx = self.key_tx.clone();
+        let payload = text.to_string();
+        tokio::spawn(async move {
+            // phase = -1 → single-chunk paste (not part of a streamed sequence).
+            match nvim.paste(&payload, false, -1).await {
+                Ok(_) => {
+                    key_tx.send_modify(|v| *v = v.wrapping_add(1));
+                }
+                Err(e) => {
+                    if e.is_channel_closed() {
+                        is_dead.store(true, Ordering::SeqCst);
+                        tx.send(AppEvent::Redraw).ok();
+                    }
+                    tracing::debug!("nvim_paste error: {e}");
+                }
+            }
+        });
+    }
+
     /// Forward a keystroke to nvim.
     pub fn handle_key(&self, key: &ratatui::crossterm::event::KeyEvent, tx: AppTx) {
         self.ensure_refresh_task(&tx);

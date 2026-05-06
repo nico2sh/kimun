@@ -255,7 +255,7 @@ impl TextEditorComponent {
     }
 
     /// Paste text from the system clipboard at the cursor, replacing any active selection.
-    fn paste_from_clipboard(&mut self) {
+    fn paste_from_clipboard(&mut self, tx: &AppTx) {
         let text = match &mut self.clipboard {
             Some(cb) => match cb.get_text() {
                 Ok(t) if !t.is_empty() => t,
@@ -263,7 +263,7 @@ impl TextEditorComponent {
             },
             None => return,
         };
-        self.paste_text(&text);
+        self.paste_text(&text, tx);
     }
 
     /// Inserts `text` at the cursor, replacing any active selection. When `text`
@@ -271,27 +271,40 @@ impl TextEditorComponent {
     /// selection is wrapped as a markdown link `[selection](url)` instead of
     /// being replaced by the raw URL.
     ///
-    /// Used both by the Ctrl+V handler and by the screen layer to deliver
-    /// bracketed-paste payloads (so macOS Cmd+V routes through here too).
-    pub fn paste_text(&mut self, text: &str) {
+    /// On the Nvim backend the URL-wrap shortcut is skipped (would require
+    /// reading the visual selection from nvim) — `text` is forwarded via
+    /// `nvim_paste`, which honours the current mode (insert/normal/visual).
+    pub fn paste_text(&mut self, text: &str, tx: &AppTx) {
         if text.is_empty() {
             return;
         }
-        if let BackendState::Textarea(ta) = &mut self.backend {
-            let selection = linkable_url(text).and_then(|_| selection_text(ta));
-            let wrapped = try_build_markdown_link(text, selection.as_deref());
-            if ta.selection_range().is_some() {
-                ta.cut();
+        match &mut self.backend {
+            BackendState::Textarea(ta) => {
+                let selection = linkable_url(text).and_then(|_| selection_text(ta));
+                let wrapped = try_build_markdown_link(text, selection.as_deref());
+                if ta.selection_range().is_some() {
+                    ta.cut();
+                }
+                ta.insert_str(wrapped.as_deref().unwrap_or(text));
+                self.selection = ta.selection_range();
+                self.edit_generation = self.edit_generation.wrapping_add(1);
             }
-            ta.insert_str(wrapped.as_deref().unwrap_or(text));
-            self.selection = ta.selection_range();
-            self.edit_generation = self.edit_generation.wrapping_add(1);
+            BackendState::Nvim(nvim) => {
+                nvim.paste(text, tx.clone());
+                self.edit_generation = self.edit_generation.wrapping_add(1);
+            }
         }
     }
 
-    /// Inserts `text` at the cursor, replacing any active selection. No-op on the
-    /// Nvim backend.
-    pub fn insert_at_cursor(&mut self, text: &str) {
+    /// Inserts `text` at the cursor, replacing any active selection. Routes
+    /// through `nvim_paste` on the Nvim backend (delegates to [`paste_text`]
+    /// for that case — URL-wrap is a no-op when nothing in the supplied text
+    /// matches `linkable_url`, so the two paths are equivalent on Nvim).
+    pub fn insert_at_cursor(&mut self, text: &str, tx: &AppTx) {
+        if matches!(self.backend, BackendState::Nvim(_)) {
+            self.paste_text(text, tx);
+            return;
+        }
         if let BackendState::Textarea(ta) = &mut self.backend {
             if ta.selection_range().is_some() {
                 ta.cut();
@@ -661,7 +674,7 @@ impl TextEditorComponent {
     fn handle_textarea_key(
         &mut self,
         key: &ratatui::crossterm::event::KeyEvent,
-        _tx: &AppTx,
+        tx: &AppTx,
     ) -> EventState {
         // System clipboard shortcuts — intercept before passing to textarea.
         if key.modifiers == KeyModifiers::CONTROL {
@@ -671,7 +684,7 @@ impl TextEditorComponent {
                     return EventState::Consumed;
                 }
                 KeyCode::Char('v') => {
-                    self.paste_from_clipboard();
+                    self.paste_from_clipboard(tx);
                     return EventState::Consumed;
                 }
                 KeyCode::Char('x') => {
@@ -1003,6 +1016,10 @@ mod tests {
         )
     }
 
+    fn dummy_tx() -> AppTx {
+        tokio::sync::mpsc::unbounded_channel().0
+    }
+
     fn get_ta(editor: &mut TextEditorComponent) -> &mut TextArea<'static> {
         match &mut editor.backend {
             BackendState::Textarea(ta) => ta,
@@ -1196,7 +1213,7 @@ mod tests {
             let ta = get_ta(&mut editor);
             ta.move_cursor(ratatui_textarea::CursorMove::End);
         }
-        editor.insert_at_cursor(" world");
+        editor.insert_at_cursor(" world", &dummy_tx());
         assert_eq!(editor.get_text(), "hello world");
     }
 
@@ -1210,7 +1227,7 @@ mod tests {
             ta.start_selection();
             ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
         }
-        editor.insert_at_cursor("HEY ");
+        editor.insert_at_cursor("HEY ", &dummy_tx());
         assert_eq!(editor.get_text(), "HEY world");
     }
 

@@ -450,7 +450,7 @@ impl AppScreen for EditorScreen {
             && let InputEvent::Paste(text) = event
         {
             if !self.try_paste_image(tx) && !text.is_empty() {
-                self.editor.paste_text(text);
+                self.editor.paste_text(text, tx);
             }
             return EventState::Consumed;
         }
@@ -893,7 +893,7 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::InsertAtCursor(text) => {
                 if matches!(self.focus, Focus::Editor) {
-                    self.editor.insert_at_cursor(&text);
+                    self.editor.insert_at_cursor(&text, tx);
                 }
                 None
             }
