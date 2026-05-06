@@ -15,6 +15,12 @@ fn tab_width_at(col: usize) -> usize {
     TAB_STOP - (col % TAB_STOP)
 }
 
+/// Sum of grapheme-cluster display widths across a string. Used to size
+/// synthetic spans (e.g. image-link placeholders) injected during render.
+fn string_display_width(s: &str) -> usize {
+    s.graphemes(true).map(cluster_display_width).sum()
+}
+
 /// Display width of a grapheme cluster.
 ///
 /// For multi-codepoint clusters (ZWJ sequences like 👨‍👩‍👧‍👦, variation selectors,
@@ -48,6 +54,19 @@ pub enum ElementKind {
     HeadingH3,
     Blockquote,
     WikiLink,
+    Image,
+}
+
+/// A single image-link span on a parsed line, replaced visually with a
+/// placeholder when rendering. `start_char`..`end_char` covers the full
+/// `![alt](url)` source range. `placeholder_width` is precomputed so the
+/// per-render hot path does not re-walk the placeholder graphemes.
+#[derive(Debug, Clone)]
+pub struct ImagePlaceholder {
+    pub start_char: usize,
+    pub end_char: usize,
+    pub placeholder: String,
+    pub placeholder_width: usize,
 }
 
 /// Pre-parsed result for a single logical line.
@@ -67,6 +86,10 @@ pub struct ParsedLine {
     /// Char offset where the list-item sigil (indent + marker + space) ends on
     /// this line, or `None` if this line is not the first line of a list item.
     list_sigil_end: Option<usize>,
+    /// Image-link spans on this line, sorted by `start_char`. Their underlying
+    /// chars are hidden (`content_vis = false`) and replaced visually by
+    /// `placeholder` when rendering.
+    pub image_placeholders: Vec<ImagePlaceholder>,
 }
 
 impl ParsedLine {
@@ -362,6 +385,7 @@ impl ParsedBuffer {
             }
 
             detect_wikilinks(line, &mut cv, &mut els);
+            let image_placeholders = detect_image_placeholders(line, &mut cv, &mut els);
 
             debug_assert!(
                 els.len() < 255,
@@ -387,6 +411,7 @@ impl ParsedBuffer {
                 elem_vis,
                 elem_index,
                 list_sigil_end: list_sigil_end[row],
+                image_placeholders,
             });
         }
 
@@ -442,16 +467,16 @@ impl MarkdownSpanner {
 
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    pub fn render<'a>(
-        content: &'a str,
-        logical_line: &'a str,
+    pub fn render(
+        content: &str,
+        logical_line: &str,
         visual_start_col: usize,
         cursor_col: Option<usize>,
         is_first_visual_line: bool,
         force_raw: bool,
         available_width: u16,
         theme: &Theme,
-    ) -> Vec<Span<'a>> {
+    ) -> Vec<Span<'static>> {
         let parsed = ParsedLine::parse(logical_line);
         Self::render_with(
             content,
@@ -464,6 +489,9 @@ impl MarkdownSpanner {
             available_width,
             theme,
         )
+        .into_iter()
+        .map(|s| Span::styled(s.content.into_owned(), s.style))
+        .collect()
     }
 
     #[cfg(test)]
@@ -520,7 +548,7 @@ impl MarkdownSpanner {
     pub fn render_with<'a>(
         content: &'a str,
         logical_line: &'a str,
-        parsed: &ParsedLine,
+        parsed: &'a ParsedLine,
         visual_start_col: usize,
         cursor_col: Option<usize>,
         is_first_visual_line: bool,
@@ -601,6 +629,37 @@ impl MarkdownSpanner {
             }
             if pos >= visual_start_col + content_char_count {
                 break;
+            }
+
+            // Image placeholder: at the start of an `![..](..)` range, emit a
+            // single styled placeholder span and let the existing emit logic
+            // skip the underlying chars (they have content_vis=false). When the
+            // cursor sits inside the image element we fall through and render
+            // the raw markdown instead, matching the "expanded element" UX.
+            if let Some(img) = parsed
+                .image_placeholders
+                .iter()
+                .find(|p| p.start_char == pos)
+            {
+                let cursor_in_image = expanded.is_some_and(|i| {
+                    elements[i].start_char == img.start_char
+                        && elements[i].end_char == img.end_char
+                });
+                if !cursor_in_image {
+                    flush(
+                        &mut seg_str,
+                        seg_elem,
+                        seg_is_sigil,
+                        seg_is_expanded,
+                        &mut spans,
+                    );
+                    let style = span_style(Some(ElementKind::Image), false, theme);
+                    visual_col += img.placeholder_width;
+                    spans.push(Span::styled(img.placeholder.as_str(), style));
+                    seg_elem = None;
+                    seg_is_sigil = false;
+                    seg_is_expanded = false;
+                }
             }
 
             let is_content = pos < content_vis.len() && content_vis[pos];
@@ -718,6 +777,22 @@ impl MarkdownSpanner {
                 continue;
             }
 
+            // Account for placeholder width when crossing the start of an image
+            // span — kept consistent with `render_with`'s placeholder injection.
+            if let Some(img) = parsed
+                .image_placeholders
+                .iter()
+                .find(|p| p.start_char == pos)
+            {
+                let cursor_in_image = expanded.is_some_and(|i| {
+                    elements[i].start_char == img.start_char
+                        && elements[i].end_char == img.end_char
+                });
+                if !cursor_in_image {
+                    rendered_col += img.placeholder_width;
+                }
+            }
+
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|s_end| pos < s_end);
             let in_list_sigil = list_sigil_end.is_some_and(|s_end| pos < s_end);
@@ -818,6 +893,19 @@ impl MarkdownSpanner {
             if rendered_count >= rendered_col {
                 return pos;
             }
+            // A click landing inside the placeholder region maps back to the
+            // start of the image span (the only logical position that visually
+            // corresponds to the placeholder).
+            if let Some(img) = parsed
+                .image_placeholders
+                .iter()
+                .find(|p| p.start_char == pos)
+            {
+                if rendered_count + img.placeholder_width > rendered_col {
+                    return pos;
+                }
+                rendered_count += img.placeholder_width;
+            }
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
             let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
@@ -860,6 +948,50 @@ fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Ele
             kind: ElementKind::WikiLink,
         });
     }
+}
+
+/// Detects `![alt](url)` image-link spans on `line`, hides their underlying
+/// chars (`content_vis = false`) so the renderer skips them, registers an
+/// `Image` element for styling, and returns one [`ImagePlaceholder`] per span
+/// containing the rendered placeholder text (`[filename]`).
+fn detect_image_placeholders(
+    line: &str,
+    content_vis: &mut [bool],
+    elements: &mut Vec<Element>,
+) -> Vec<ImagePlaceholder> {
+    use kimun_core::note::{link_char_spans, link_target_filename, LinkSpanKind};
+
+    let mut out = Vec::new();
+    for span in link_char_spans(line) {
+        if span.kind != LinkSpanKind::Image {
+            continue;
+        }
+        // Hide every char of the image syntax — including the alt text that
+        // pulldown-cmark would otherwise mark as content.
+        for vis in content_vis.iter_mut().take(span.end).skip(span.start) {
+            *vis = false;
+        }
+        elements.push(Element {
+            start_char: span.start,
+            end_char: span.end,
+            kind: ElementKind::Image,
+        });
+        let name = link_target_filename(&span.target);
+        let placeholder = if name.is_empty() {
+            "[image]".to_string()
+        } else {
+            format!("[{name}]")
+        };
+        let placeholder_width = string_display_width(&placeholder);
+        out.push(ImagePlaceholder {
+            start_char: span.start,
+            end_char: span.end,
+            placeholder,
+            placeholder_width,
+        });
+    }
+    out.sort_by_key(|p| p.start_char);
+    out
 }
 
 /// Detects whether a line is an indented list item (leading spaces or tab,
@@ -965,6 +1097,9 @@ fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -
         Some(ElementKind::Link) => Style::default()
             .fg(theme.accent.to_ratatui())
             .add_modifier(Modifier::UNDERLINED),
+        Some(ElementKind::Image) => Style::default()
+            .fg(theme.accent.to_ratatui())
+            .add_modifier(Modifier::ITALIC),
         Some(ElementKind::HeadingH1) => {
             if is_sigil_region {
                 Style::default().fg(theme.fg_muted.to_ratatui())
@@ -1055,6 +1190,77 @@ mod tests {
                 .iter()
                 .any(|e| e.kind == ElementKind::Link)
         );
+    }
+
+    #[test]
+    fn parse_image_emits_image_element_and_placeholder() {
+        let line = "see ![alt](../assets/img.png) here";
+        let parsed = ParsedLine::parse(line);
+        let img = parsed
+            .elements
+            .iter()
+            .find(|e| e.kind == ElementKind::Image)
+            .expect("image element");
+        assert_eq!(line.chars().nth(img.start_char), Some('!'));
+        assert_eq!(line.chars().nth(img.end_char - 1), Some(')'));
+        let ph = parsed
+            .image_placeholders
+            .iter()
+            .find(|p| p.start_char == img.start_char)
+            .expect("placeholder for image");
+        assert_eq!(ph.placeholder, "[img.png]");
+        for pos in img.start_char..img.end_char {
+            assert!(
+                !parsed.content_vis[pos],
+                "char {pos} should be hidden inside image span"
+            );
+        }
+    }
+
+    #[test]
+    fn render_image_substitutes_placeholder_text() {
+        let line = "before ![alt](pic.gif) after";
+        let parsed = ParsedLine::parse(line);
+        let spans = MarkdownSpanner::render_with(
+            line, line, &parsed, 0, None, true, false, 80, &t(),
+        );
+        let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("[pic.gif]"),
+            "rendered text {rendered:?} should include placeholder"
+        );
+        assert!(
+            !rendered.contains("![alt]"),
+            "raw image syntax should not appear in rendered output: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn render_image_with_empty_alt_uses_filename() {
+        let line = "![](image.png)";
+        let parsed = ParsedLine::parse(line);
+        let spans = MarkdownSpanner::render_with(
+            line, line, &parsed, 0, None, true, false, 40, &t(),
+        );
+        let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "[image.png]");
+    }
+
+    #[test]
+    fn rendered_cursor_col_accounts_for_placeholder_width() {
+        // "![](x.png)" → placeholder "[x.png]" (7 chars) replaces 10 source chars.
+        let line = "a ![](x.png) b";
+        let parsed = ParsedLine::parse(line);
+        let after_placeholder = MarkdownSpanner::rendered_cursor_col_with(
+            line,
+            &parsed,
+            0,
+            "a ![](x.png) b".chars().count(), // cursor at end
+            true,
+            false,
+        );
+        // "a " (2) + "[x.png]" (7) + " b" (2) = 11.
+        assert_eq!(after_placeholder, 11);
     }
     #[test]
     fn parse_h1() {

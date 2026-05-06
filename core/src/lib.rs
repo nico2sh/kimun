@@ -29,6 +29,7 @@ use crate::nfs::DirectoryEntryData;
 
 pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
 pub const DEFAULT_INBOX_PATH: &str = "/inbox";
+pub const DEFAULT_ASSETS_PATH: &str = "/assets";
 
 /// Maximum number of concurrent FS read/write tasks during backlink rewriting.
 /// Caps file-descriptor pressure on hub-style notes with thousands of links.
@@ -576,6 +577,41 @@ impl NoteVault {
         let content_data = note_details.get_content_data();
         db::save_note(self.vault_db.pool(), &entry_data, &note_details).await?;
         Ok((entry_data, content_data))
+    }
+
+    /// Default attachments directory (e.g. `/assets`) inside the workspace.
+    pub fn default_attachments_path(&self) -> VaultPath {
+        VaultPath::new(DEFAULT_ASSETS_PATH)
+    }
+
+    /// Builds a candidate path for a new attachment under
+    /// [`default_attachments_path`], using `prefix` and `ext` plus the current
+    /// unix-nanosecond timestamp for uniqueness. Nanoseconds (rather than
+    /// millis) make same-instant collisions vanishingly unlikely for
+    /// human-driven actions like clipboard paste.
+    ///
+    /// Does not check for collisions; callers that need stronger uniqueness
+    /// guarantees should retry with [`exists`] or use a different strategy.
+    pub fn generate_attachment_path(&self, prefix: &str, ext: &str) -> VaultPath {
+        let ts = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let filename = format!("{prefix}_{ts}.{ext}");
+        self.default_attachments_path()
+            .append(&VaultPath::new(filename))
+    }
+
+    /// Writes an attachment (raw bytes — e.g. an encoded PNG) to `path` under
+    /// the workspace. Creates parent directories as needed. The attachment is
+    /// not added to the notes index.
+    pub async fn save_attachment(
+        &self,
+        path: &VaultPath,
+        bytes: &[u8],
+    ) -> Result<(), VaultError> {
+        nfs::save_attachment(self.workspace_path(), path, bytes).await?;
+        Ok(())
     }
 
     /// If the path looks like a specific note (has the note extension), search by name;
