@@ -366,6 +366,22 @@ pub(crate) async fn create_directory<P: AsRef<Path>>(
     }
 }
 
+/// Writes raw bytes (e.g. an image attachment) at `path` under the workspace,
+/// creating parent directories as needed. Unlike [`save_note`], does not require
+/// the path to be a note file and bypasses the case-insensitive note resolver.
+pub(crate) async fn save_attachment<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+    bytes: &[u8],
+) -> Result<(), FSError> {
+    let full_path = path.flatten().to_pathbuf(workspace_path);
+    if let Some(parent) = full_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&full_path, bytes).await?;
+    Ok(())
+}
+
 pub(crate) async fn save_note<P: AsRef<Path>, S: AsRef<str>>(
     workspace_path: P,
     path: &VaultPath,
@@ -782,6 +798,19 @@ impl VaultPath {
         })
     }
 
+    /// Returns the path of `self` written relative to a note file's *directory*.
+    ///
+    /// Markdown engines resolve relative links against the containing folder,
+    /// not the note file itself. Linking from `/notes/journal/today.md` to
+    /// `/assets/img.png` therefore produces `../../assets/img.png` (two `..`s
+    /// — for `journal/` and `notes/`), not three. This wraps
+    /// [`get_relative_to`] using the note's parent path so callers get the
+    /// markdown-correct result.
+    pub fn relative_link_from_note(&self, note_path: &VaultPath) -> VaultPath {
+        let (parent, _) = note_path.flatten().get_parent_path();
+        self.flatten().get_relative_to(&parent)
+    }
+
     pub fn get_relative_to(&self, reference_path: &VaultPath) -> VaultPath {
         let mut slices = vec![];
         let ref_slices = reference_path.slices.clone();
@@ -1063,6 +1092,8 @@ pub(crate) fn get_file_walker<P: AsRef<Path>>(
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use super::save_attachment;
+
     /// Returns true if the filesystem at `dir` is case-sensitive.
     /// Used to skip "no duplicate lowercase entry" assertions on macOS and other
     /// platforms that use a case-insensitive filesystem by default.
@@ -1247,6 +1278,36 @@ mod tests {
         let rel = path2.get_relative_to(&path1);
 
         assert_eq!("sub/deep".to_string(), rel.to_string());
+    }
+
+    #[test]
+    fn relative_link_from_note_uses_parent_dir() {
+        let note = VaultPath::new("/notes/journal/today.md");
+        let asset = VaultPath::new("/assets/img.png");
+        assert_eq!(
+            "../../assets/img.png",
+            asset.relative_link_from_note(&note).to_string()
+        );
+    }
+
+    #[test]
+    fn relative_link_from_root_note_to_assets() {
+        let note = VaultPath::new("/note.md");
+        let asset = VaultPath::new("/assets/img.png");
+        assert_eq!(
+            "assets/img.png",
+            asset.relative_link_from_note(&note).to_string()
+        );
+    }
+
+    #[test]
+    fn relative_link_to_sibling_dir() {
+        let note = VaultPath::new("/notes/today.md");
+        let asset = VaultPath::new("/notes/assets/img.png");
+        assert_eq!(
+            "assets/img.png",
+            asset.relative_link_from_note(&note).to_string()
+        );
     }
 
     #[test]
@@ -1733,6 +1794,22 @@ mod tests {
             }
             _ => panic!("Expected InvalidPath error"),
         }
+    }
+
+    #[tokio::test]
+    async fn save_attachment_writes_bytes_and_creates_parent_dirs() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        let path = VaultPath::new("/assets/img.png");
+        let bytes = b"\x89PNG\r\n\x1a\n stub".to_vec();
+
+        save_attachment(workspace, &path, &bytes).await.unwrap();
+
+        let on_disk = workspace.join("assets").join("img.png");
+        let read_back = tokio::fs::read(&on_disk).await.unwrap();
+        assert_eq!(read_back, bytes);
     }
 
     #[tokio::test]

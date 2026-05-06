@@ -20,7 +20,9 @@ static HASHTAG_RX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"#(?P<ht_text>[A-Za-z0-9_]+)"#).unwrap());
 
 static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?P<bang>!?)(?:\[(?P<text>[^\]]+)\])\((?P<link>[^\)]+?)\)"#).unwrap()
+    // `text` accepts an empty match so empty-alt image links like `![](path)`
+    // — which the editor generates on image paste — are still recognised.
+    Regex::new(r#"(?P<bang>!?)(?:\[(?P<text>[^\]]*)\])\((?P<link>[^\)]+?)\)"#).unwrap()
 });
 
 static URL_RX: LazyLock<Regex> = LazyLock::new(|| {
@@ -32,8 +34,10 @@ static URL_RX: LazyLock<Regex> = LazyLock::new(|| {
 pub enum LinkSpanKind {
     /// A `[[page]]` or `[[page|display]]` wikilink.
     WikiLink,
-    /// A `[text](url)` or `![alt](url)` markdown link.
+    /// A plain `[text](url)` markdown link.
     Markdown,
+    /// A `![alt](url)` markdown image embed.
+    Image,
 }
 
 /// A resolved inline link span within a text string.
@@ -95,7 +99,12 @@ pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
     for caps in MD_LINK_RX.captures_iter(text) {
         let m = caps.get(0).unwrap();
         let target = caps["link"].trim().to_string();
-        raw.push((m.start(), m.end(), LinkSpanKind::Markdown, target));
+        let kind = if caps["bang"].is_empty() {
+            LinkSpanKind::Markdown
+        } else {
+            LinkSpanKind::Image
+        };
+        raw.push((m.start(), m.end(), kind, target));
     }
     raw.sort_by_key(|r| r.0);
 
@@ -112,6 +121,40 @@ pub fn link_char_spans(text: &str) -> Vec<LinkSpan> {
             }
         })
         .collect()
+}
+
+/// Recognised image extensions, lowercase. Used by [`target_looks_like_image`].
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tiff", "tif", "ico", "avif",
+];
+
+/// Returns `true` if `target` looks like a path or URL referencing an image
+/// file, based on extension. Case-insensitive. Strips `#fragment` and
+/// `?query` first so query-string parameters don't fool the check.
+pub fn target_looks_like_image(target: &str) -> bool {
+    let name = link_target_filename(target);
+    let ext = match name.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() => ext,
+        _ => return false,
+    };
+    IMAGE_EXTENSIONS
+        .iter()
+        .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+}
+
+/// Extracts a display-friendly filename from a link target.
+///
+/// Strips any URL fragment (`#...`) and query string (`?...`), then returns
+/// the last `/`-separated segment. Useful for rendering image-link
+/// placeholders like `[image_xxx.png]` in editors.
+pub fn link_target_filename(target: &str) -> &str {
+    let without_fragment = target.split('#').next().unwrap_or(target);
+    let without_query = without_fragment.split('?').next().unwrap_or(without_fragment);
+    let trimmed = without_query.trim_end_matches(crate::nfs::PATH_SEPARATOR);
+    match trimmed.rsplit_once(crate::nfs::PATH_SEPARATOR) {
+        Some((_, name)) if !name.is_empty() => name,
+        _ => trimmed,
+    }
 }
 
 /// Streaming byte-offset → char-offset converter.
@@ -715,7 +758,10 @@ mod test {
         },
     };
 
-    use super::{get_markdown_and_links, link_char_spans, replace_note_links, wikilink_char_spans};
+    use super::{
+        get_markdown_and_links, link_char_spans, link_target_filename, replace_note_links,
+        target_looks_like_image, wikilink_char_spans, LinkSpanKind,
+    };
 
     // ---- ByteToCharCursor / span tests on multi-byte input ----
 
@@ -746,6 +792,56 @@ mod test {
         // " then " = 6 chars; md starts at 15+6=21; "[link](http://x)" = 16 chars.
         assert_eq!(md.start, 21);
         assert_eq!(md.end, 37);
+    }
+
+    #[test]
+    fn link_char_spans_distinguishes_image_from_markdown() {
+        let text = "see ![alt](img.png) and [click](http://x)";
+        let spans = link_char_spans(text);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].kind, LinkSpanKind::Image);
+        assert_eq!(spans[0].target, "img.png");
+        assert_eq!(spans[1].kind, LinkSpanKind::Markdown);
+        assert_eq!(spans[1].target, "http://x");
+    }
+
+    #[test]
+    fn target_looks_like_image_extension_check() {
+        assert!(target_looks_like_image("img.png"));
+        assert!(target_looks_like_image("foo/bar.JPG"));
+        assert!(target_looks_like_image("/assets/image_123.gif"));
+        assert!(target_looks_like_image("https://example.com/x.webp?v=1"));
+        assert!(target_looks_like_image("a.svg#frag"));
+        assert!(!target_looks_like_image("note.md"));
+        assert!(!target_looks_like_image("plain"));
+        assert!(!target_looks_like_image("https://example.com"));
+    }
+
+    #[test]
+    fn link_target_filename_returns_last_segment() {
+        assert_eq!(link_target_filename("img.png"), "img.png");
+        assert_eq!(
+            link_target_filename("../../assets/image_123.png"),
+            "image_123.png"
+        );
+        assert_eq!(
+            link_target_filename("/assets/image_123.png"),
+            "image_123.png"
+        );
+        assert_eq!(
+            link_target_filename("https://example.com/path/img.png"),
+            "img.png"
+        );
+        assert_eq!(
+            link_target_filename("https://example.com/img.png?v=1"),
+            "img.png"
+        );
+        assert_eq!(
+            link_target_filename("https://example.com/img.png#frag"),
+            "img.png"
+        );
+        assert_eq!(link_target_filename(""), "");
+        assert_eq!(link_target_filename("/"), "");
     }
 
     #[test]

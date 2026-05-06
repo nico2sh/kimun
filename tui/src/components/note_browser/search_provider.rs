@@ -50,10 +50,9 @@ impl NoteBrowserProvider for SearchNotesProvider {
                 .map(|(entry, content)| (entry.path.clone(), (entry, content)))
                 .collect();
 
-            // last_paths is most-recent-last; iterate in reverse for most-recent-first.
+            // last_paths is most-recent-first; iterate as-is.
             self.last_paths
                 .iter()
-                .rev()
                 .filter_map(|path| by_path.remove(path))
                 .map(|(entry, content)| self.to_entry(entry, content))
                 .collect()

@@ -79,6 +79,16 @@ fn selection_text(ta: &TextArea<'_>) -> Option<String> {
     })
 }
 
+/// Owned RGBA image data lifted from the system clipboard. Returned by
+/// [`TextEditorComponent::take_clipboard_image`] so the screen layer can
+/// encode + persist without holding the editor's clipboard borrow.
+#[derive(Debug, Clone)]
+pub struct ClipboardImage {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+}
+
 /// If `s` (after trimming) parses as a URL with a markdown-friendly scheme
 /// (http, https, ftp, ftps, mailto), returns the trimmed slice.
 ///
@@ -251,12 +261,7 @@ impl TextEditorComponent {
     }
 
     /// Paste text from the system clipboard at the cursor, replacing any active selection.
-    ///
-    /// When the clipboard contains a URL (http, https, ftp, ftps, or mailto) and
-    /// there is an active selection, the selection is wrapped as a markdown link
-    /// `[selection](url)` instead of being replaced by the raw URL.
     fn paste_from_clipboard(&mut self) {
-        // Get text from clipboard first (releasing that borrow), then access backend.
         let text = match &mut self.clipboard {
             Some(cb) => match cb.get_text() {
                 Ok(t) if !t.is_empty() => t,
@@ -264,18 +269,56 @@ impl TextEditorComponent {
             },
             None => return,
         };
+        self.paste_text(&text);
+    }
+
+    /// Inserts `text` at the cursor, replacing any active selection. When `text`
+    /// is a URL (http/https/ftp/ftps/mailto) and a selection is active, the
+    /// selection is wrapped as a markdown link `[selection](url)` instead of
+    /// being replaced by the raw URL.
+    ///
+    /// Used both by the Ctrl+V handler and by the screen layer to deliver
+    /// bracketed-paste payloads (so macOS Cmd+V routes through here too).
+    pub fn paste_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
         if let BackendState::Textarea(ta) = &mut self.backend {
-            // Only fetch selection text when the clipboard is a URL — avoids
-            // allocating selection contents on every plain-text paste.
-            let selection = linkable_url(&text).and_then(|_| selection_text(ta));
-            let wrapped = try_build_markdown_link(&text, selection.as_deref());
+            let selection = linkable_url(text).and_then(|_| selection_text(ta));
+            let wrapped = try_build_markdown_link(text, selection.as_deref());
             if ta.selection_range().is_some() {
                 ta.cut();
             }
-            ta.insert_str(wrapped.as_deref().unwrap_or(&text));
+            ta.insert_str(wrapped.as_deref().unwrap_or(text));
             self.selection = ta.selection_range();
             self.edit_generation = self.edit_generation.wrapping_add(1);
         }
+    }
+
+    /// Inserts `text` at the cursor, replacing any active selection. No-op on the
+    /// Nvim backend.
+    pub fn insert_at_cursor(&mut self, text: &str) {
+        if let BackendState::Textarea(ta) = &mut self.backend {
+            if ta.selection_range().is_some() {
+                ta.cut();
+            }
+            ta.insert_str(text);
+            self.selection = ta.selection_range();
+            self.edit_generation = self.edit_generation.wrapping_add(1);
+        }
+    }
+
+    /// Snapshot of the system clipboard image, if any. Returns owned RGBA bytes
+    /// plus the image dimensions. The screen layer is responsible for encoding
+    /// (e.g. PNG) and persisting via the vault.
+    pub fn take_clipboard_image(&mut self) -> Option<ClipboardImage> {
+        let cb = self.clipboard.as_mut()?;
+        let img = cb.get_image().ok()?;
+        Some(ClipboardImage {
+            width: img.width,
+            height: img.height,
+            rgba: img.bytes.into_owned(),
+        })
     }
 
     /// Wrap a selection in (or insert at the cursor) markdown markers for
@@ -882,6 +925,9 @@ impl Component for TextEditorComponent {
                 self.handle_textarea_key(key, tx)
             }
             InputEvent::Mouse(mouse) => self.handle_mouse(mouse, tx),
+            // Bracketed paste is intercepted by EditorScreen so it can run the
+            // image-paste flow first. It never reaches us here.
+            InputEvent::Paste(_) => EventState::NotConsumed,
         }
     }
 
@@ -1137,6 +1183,32 @@ mod tests {
             try_build_markdown_link("mailto:user@example.com", Some("email me")).as_deref(),
             Some("[email me](mailto:user@example.com)"),
         );
+    }
+
+    #[test]
+    fn insert_at_cursor_appends_text() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        editor.insert_at_cursor(" world");
+        assert_eq!(editor.get_text(), "hello world");
+    }
+
+    #[test]
+    fn insert_at_cursor_replaces_selection() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.start_selection();
+            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        }
+        editor.insert_at_cursor("HEY ");
+        assert_eq!(editor.get_text(), "HEY world");
     }
 
     #[test]

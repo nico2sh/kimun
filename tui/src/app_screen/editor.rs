@@ -98,12 +98,106 @@ impl EditorScreen {
     }
 }
 
+/// Encodes raw RGBA pixels as a PNG byte stream.
+fn encode_rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut buf, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        writer
+            .write_image_data(rgba)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    }
+    Ok(buf)
+}
+
 impl EditorScreen {
+    /// Pulls an image off the system clipboard, encodes it to PNG, saves it as
+    /// an attachment under the vault's `/assets` directory, and inserts a
+    /// markdown image link (relative to the current note) at the cursor.
+    ///
+    /// Returns `true` if a clipboard image was found and the paste was
+    /// dispatched — even if the encode/save is still in flight. Returns
+    /// `false` if the clipboard contained no image, so the caller can fall
+    /// through to a regular text paste.
+    fn try_paste_image(&mut self, tx: &AppTx) -> bool {
+        let img = match self.editor.take_clipboard_image() {
+            Some(i) if !i.rgba.is_empty() && i.width > 0 && i.height > 0 => i,
+            _ => return false,
+        };
+        // arboard contract: rgba length == width * height * 4. A mismatch means
+        // a misbehaving clipboard provider — refuse rather than encode garbage.
+        let expected = img
+            .width
+            .checked_mul(img.height)
+            .and_then(|n| n.checked_mul(4));
+        if expected != Some(img.rgba.len()) {
+            self.footer
+                .flash("Clipboard image size mismatch".to_string());
+            return true;
+        }
+        let asset_path = self.vault.generate_attachment_path("image", "png");
+        let link_path = asset_path.relative_link_from_note(&self.path);
+        let markdown = format!("![]({link_path})");
+        let vault = self.vault.clone();
+        let tx2 = tx.clone();
+        let width = img.width as u32;
+        let height = img.height as u32;
+        let rgba = img.rgba;
+        tokio::spawn(async move {
+            // PNG encoding is CPU-bound — keep it off the runtime worker threads.
+            let png_bytes = match tokio::task::spawn_blocking(move || {
+                encode_rgba_to_png(width, height, &rgba)
+            })
+            .await
+            {
+                Ok(Ok(b)) => b,
+                Ok(Err(e)) => {
+                    tx2.send(AppEvent::DialogError(format!("Image encode failed: {e}")))
+                        .ok();
+                    return;
+                }
+                Err(e) => {
+                    tx2.send(AppEvent::DialogError(format!("Image encode task failed: {e}")))
+                        .ok();
+                    return;
+                }
+            };
+            match vault.save_attachment(&asset_path, &png_bytes).await {
+                Ok(()) => {
+                    tx2.send(AppEvent::InsertAtCursor(markdown)).ok();
+                }
+                Err(e) => {
+                    tx2.send(AppEvent::DialogError(format!("Image save failed: {e}")))
+                        .ok();
+                }
+            }
+        });
+        true
+    }
+
     async fn follow_link(&mut self, target: String, tx: &AppTx) {
         // External URL — hand off to the OS browser/handler.
         if target.starts_with("http://") || target.starts_with("https://") {
             if let Err(e) = open::that_detached(&target) {
                 self.footer.flash(format!("Cannot open URL: {e}"));
+            }
+            return;
+        }
+
+        // Image attachment — resolve the (potentially relative) path against
+        // the current note's directory, convert to an OS path, hand off to the
+        // OS default handler. Images are not notes, so skip the note lookup.
+        if kimun_core::note::target_looks_like_image(&target) {
+            let parent = self.path.get_parent_path().0;
+            let resolved = parent.append(&VaultPath::new(target.trim()));
+            let os_path = self.vault.path_to_pathbuf(&resolved);
+            if let Err(e) = open::that_detached(&os_path) {
+                self.footer.flash(format!("Cannot open image: {e}"));
             }
             return;
         }
@@ -347,6 +441,28 @@ impl AppScreen for EditorScreen {
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        // Bracketed paste (terminal-level) — fired by Cmd+V on macOS and by
+        // terminal-paste shortcuts on every platform. Try image first; if the
+        // clipboard does not hold an image, fall back to the pasted text. The
+        // payload string may be empty (e.g. clipboard contains image only).
+        if matches!(self.focus, Focus::Editor)
+            && let InputEvent::Paste(text) = event
+        {
+            if !self.try_paste_image(tx) && !text.is_empty() {
+                self.editor.paste_text(text);
+            }
+            return EventState::Consumed;
+        }
+        // Intercept Ctrl+V to handle image paste before the editor consumes it
+        // for a regular text paste. Falls through if the clipboard is not an image.
+        if matches!(self.focus, Focus::Editor)
+            && let InputEvent::Key(key) = event
+            && key.modifiers == ratatui::crossterm::event::KeyModifiers::CONTROL
+            && key.code == ratatui::crossterm::event::KeyCode::Char('v')
+            && self.try_paste_image(tx)
+        {
+            return EventState::Consumed;
+        }
         if let InputEvent::Key(key) = event
             && let Some(combo) = key_event_to_combo(key)
         {
@@ -772,6 +888,12 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::BacklinksLoaded(entries) => {
                 self.backlinks_panel.on_loaded(entries);
+                None
+            }
+            AppEvent::InsertAtCursor(text) => {
+                if matches!(self.focus, Focus::Editor) {
+                    self.editor.insert_at_cursor(&text);
+                }
                 None
             }
             other => Some(other),
