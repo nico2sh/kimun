@@ -27,14 +27,19 @@ kimun --help
 
 ## Where Your Data Lives
 
-Kimün stores two things at your workspace root:
+Your workspace directory holds only your **`.md` files** — plain Markdown, totally portable.
 
-- **`kimun.sqlite`** — The search index (created automatically, safe to delete and rebuild)
-- **Your `.md` files** — Your actual notes (plain Markdown, totally portable)
+Kimün's own files live under your config directory, separate from your notes:
 
-Kimün also creates a config file for settings and workspace configuration:
+- **Linux/macOS:** `~/.config/kimun/`
+- **Windows:** `%USERPROFILE%\kimun\`
 
-- **Linux/macOS:** `~/.config/kimun/kimun_config.toml`
-- **Windows:** `%USERPROFILE%\kimun\kimun_config.toml`
+That directory contains:
+
+- `config.toml` — your settings and workspace configuration
+- `<workspace>.kimuncache` — per-workspace search index (regenerable; safe to delete)
+- `history/<workspace>.txt` — per-workspace history of recently-opened notes
+
+Both the cache and history locations are configurable — see [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).
 
 Everything is stored locally. No cloud, no subscriptions, no tracking.

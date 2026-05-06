@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.7.3...kimun-notes-v0.8.0) - 2026-05-05
+
+### Added
+
+- *(tui)* omit last_paths from config writes
+- *(tui)* v2->v3 migration moves DB and extracts history
+- *(tui)* place SQLite cache in config dir per workspace
+- *(tui)* add per-workspace history file module
+- *(tui)* validate workspace name on add_workspace
+- *(tui)* add cache_dir and history_dir to AppSettings
+- *(core)* NoteVault::new accepts VaultConfig
+
+### Fixed
+
+- *(tui)* workspace rename/remove relocate cache and history files
+- *(tui)* wire cache_path_for through every NoteVault::new
+- *(tui)* lowercase workspace names + back up config before v3 migration
+- *(tui)* clean up tmp file on history write failure
+- better chunk separator and other refactors
+- fixed sidebar focus on click
+
+### Other
+
+- cargo fmt
+- gitignore *.kimuncache and untrack existing ones
+- updated the example config
+- *(tui)* extract path-extension constants and join helper
+- *(tui)* polish history + migration internals
+- cargo fmt + clippy fix in app.rs vault construction
+- *(tui)* route add_path_history through history file
+- align all config filename references with actual written filename
+- small refactor
+
 ## [0.7.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.7.2...kimun-notes-v0.7.3) - 2026-04-21
 
 ### Added

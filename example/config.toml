@@ -21,8 +21,10 @@
 #   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
 #
 # ─────────────────────────────────────────────────────────────────────────────
-config_version = 2
+config_version = 3
 theme = "dark"
+cache_dir = "."
+history_dir = "history"
 autosave_interval_secs = 5
 use_nerd_fonts = true
 editor_backend = "textarea"
@@ -32,16 +34,14 @@ journal_sort_field = "name"
 journal_sort_order = "descending"
 
 [global]
-current_workspace = "work"
-
-[workspaces.personal]
-path = "personal"
-last_paths = ["/journal/2026-04-10.md", "/ideas/companion-planting.md", "/projects/garden-plan.md"]
-created = "2026-04-01T00:00:00Z"
+current_workspace = "personal"
 
 [workspaces.work]
 path = "work"
-last_paths = ["/journal/2026-04-10.md", "/journal/2026-04-09.md", "/people/carlos.md"]
+created = "2026-04-01T00:00:00Z"
+
+[workspaces.personal]
+path = "personal"
 created = "2026-04-01T00:00:00Z"
 
 [key_bindings]

@@ -85,7 +85,7 @@ The `example/` directory contains two sample workspaces (personal and work) with
 # Clone and run from source
 git clone https://github.com/nico2sh/kimun.git
 cd kimun
-cargo run -- --config example/kimun_config.toml
+cargo run -- --config example/config.toml
 ```
 
 The first launch initializes the search index. After that, you can:

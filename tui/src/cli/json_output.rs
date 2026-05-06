@@ -131,21 +131,24 @@ pub async fn format_notes_as_json(
     query: Option<&str>,
     is_listing: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let workspace_path = vault.workspace_path.to_string_lossy().to_string();
+    let workspace_path = vault.workspace_path().to_string_lossy().to_string();
 
-    // Fetch actual content for each note concurrently to enable metadata extraction
-    let content_futures: Vec<_> = entries
-        .iter()
-        .map(|(entry_data, _)| async {
-            let path = entry_data.path.clone();
+    // Fetch actual content for each note concurrently — bounded so a vault
+    // with thousands of entries doesn't open thousands of file descriptors.
+    const JSON_FETCH_CONCURRENCY: usize = 32;
+    use futures::stream::StreamExt;
+    let content_results: Vec<_> = futures::stream::iter(entries.iter().map(|(entry_data, _)| {
+        let path = entry_data.path.clone();
+        async move {
             match vault.get_note_text(&path).await {
                 Ok(content) => Some((path, content)),
                 Err(_) => None,
             }
-        })
-        .collect();
-
-    let content_results = futures::future::join_all(content_futures).await;
+        }
+    }))
+    .buffered(JSON_FETCH_CONCURRENCY)
+    .collect()
+    .await;
     let content_map: Vec<_> = content_results.into_iter().flatten().collect();
 
     format_notes_with_content_as_json(

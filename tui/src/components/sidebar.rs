@@ -7,15 +7,15 @@ use kimun_core::SearchResult;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, ResultType};
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, MouseEventKind};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEventKind};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry, SortField, SortOrder};
-use crate::components::{Component, rect_contains};
 use crate::keys::KeyBindings;
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
@@ -29,9 +29,7 @@ pub struct SidebarComponent {
     default_sort_order: SortOrder,
     journal_sort_field: SortField,
     journal_sort_order: SortOrder,
-    /// Full sidebar bounds (header + search + list).
     rendered_rect: Rect,
-    /// File-list portion only — used to translate mouse rows into list indices.
     list_rect: Rect,
 }
 
@@ -101,9 +99,6 @@ impl SidebarComponent {
         }
     }
 
-    /// Activate the currently-selected entry. Special-cases `CreateNote` so the
-    /// note is materialised on disk before `OpenPath` fires; regular entries go
-    /// through `FileListComponent::activate_selected` and just send `OpenPath`.
     fn activate_selected_entry(&self, tx: &AppTx) {
         if let Some(FileListEntry::CreateNote { path, .. }) = self.file_list.selected_entry() {
             let path = path.clone();
@@ -158,19 +153,18 @@ fn format_journal_date(date: NaiveDate) -> String {
 
 impl Component for SidebarComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        // Sidebar owns mouse handling for its full rect:
-        //   • Click in header / search box → focus only.
-        //   • Click in the list area       → focus + select / activate row.
-        //   • Scroll anywhere in sidebar   → scroll the list.
         if let InputEvent::Mouse(mouse) = event {
-            if !rect_contains(&self.rendered_rect, mouse.column, mouse.row) {
+            let pos = Position {
+                x: mouse.column,
+                y: mouse.row,
+            };
+            if !self.rendered_rect.contains(pos) {
                 return EventState::NotConsumed;
             }
-            let in_list = rect_contains(&self.list_rect, mouse.column, mouse.row);
             match mouse.kind {
-                MouseEventKind::Down(_) => {
+                MouseEventKind::Down(MouseButton::Left) => {
                     tx.send(AppEvent::FocusSidebar).ok();
-                    if in_list && mouse.row > self.list_rect.y {
+                    if self.list_rect.contains(pos) && mouse.row > self.list_rect.y {
                         // row 0 of the list block is the border; rows start at y+1.
                         let rel_row = mouse.row - self.list_rect.y - 1;
                         let prev = self.file_list.selected_display_idx();
@@ -188,12 +182,8 @@ impl Component for SidebarComponent {
             return EventState::Consumed;
         }
 
-        // Intercept Enter so the sidebar's `activate_selected_entry` handles
-        // CreateNote (vault create + open) before the file list would just emit
-        // a bare OpenPath.
         if let InputEvent::Key(key) = event
             && key.code == KeyCode::Enter
-            && self.file_list.selected_entry().is_some()
         {
             self.activate_selected_entry(tx);
             return EventState::Consumed;
@@ -277,19 +267,12 @@ impl Component for SidebarComponent {
 mod tests {
     use super::*;
     use crate::settings::AppSettings;
-    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crate::test_support::{mouse_down_at, temp_vault};
+    use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
     use tokio::sync::mpsc::unbounded_channel;
 
     async fn make_sidebar() -> SidebarComponent {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos();
-        let thread_id = std::thread::current().id();
-        let dir = std::env::temp_dir().join(format!("kimun_sidebar_test_{nonce}_{thread_id:?}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        let vault = Arc::new(NoteVault::new(&dir).await.unwrap());
+        let vault = temp_vault("sidebar").await;
         let settings = AppSettings::default();
         SidebarComponent::new(
             settings.key_bindings.clone(),
@@ -297,15 +280,6 @@ mod tests {
             settings.icons(),
             &settings,
         )
-    }
-
-    fn mouse_down_at(col: u16, row: u16) -> InputEvent {
-        InputEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: col,
-            row,
-            modifiers: KeyModifiers::NONE,
-        })
     }
 
     /// Regression: clicking on the sidebar header (directory name + note count)

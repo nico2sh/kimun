@@ -7,6 +7,9 @@ pub mod keys;
 pub mod settings;
 pub mod ui;
 
+#[cfg(test)]
+mod test_support;
+
 use clap::Parser;
 use color_eyre::Result;
 use std::fs;
@@ -199,6 +202,38 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Build a fresh `NoteVault` for whatever workspace the settings currently
+/// resolve to, wiring the configured cache path and the workspace's inbox
+/// path. Returns `None` if no workspace is configured or the vault fails to
+/// open.
+async fn rebuild_vault(
+    settings: &crate::settings::SharedSettings,
+) -> Option<std::sync::Arc<kimun_core::NoteVault>> {
+    let (workspace_path, cache_path, inbox_path) = {
+        let s = settings.read().unwrap();
+        let wp = s.resolve_workspace_path();
+        let name = s.current_workspace_name();
+        let cache = name.as_ref().map(|n| s.cache_path_for(n));
+        let ip = s
+            .workspace_config
+            .as_ref()
+            .and_then(|wc| wc.get_current_workspace())
+            .map(|e| e.effective_inbox_path());
+        (wp, cache, ip)
+    };
+    let workspace = workspace_path?;
+    let mut config = kimun_core::VaultConfig::new(&workspace);
+    if let Some(cp) = cache_path {
+        config = config.with_db_path(cp);
+    }
+    kimun_core::NoteVault::new(config).await.ok().map(|mut v| {
+        if let Some(ref ip) = inbox_path {
+            v.set_inbox_path(kimun_core::nfs::VaultPath::new(ip));
+        }
+        std::sync::Arc::new(v)
+    })
+}
+
 async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
     if let Some(current) = app.current_screen.as_mut() {
         current.on_exit(tx).await;
@@ -347,29 +382,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         }
         AppEvent::SettingsSaved => {
             // Rebuild the vault so workspace path and inbox_path changes take effect.
-            let (workspace_path, inbox_path) = {
-                let s = app.settings.read().unwrap();
-                let wp = s.resolve_workspace_path();
-                let ip = s
-                    .workspace_config
-                    .as_ref()
-                    .and_then(|wc| wc.get_current_workspace())
-                    .map(|e| e.effective_inbox_path());
-                (wp, ip)
-            };
-            app.vault = if let Some(ref workspace) = workspace_path {
-                kimun_core::NoteVault::new(workspace)
-                    .await
-                    .ok()
-                    .map(|mut v| {
-                        if let Some(ref ip) = inbox_path {
-                            v.set_inbox_path(kimun_core::nfs::VaultPath::new(ip));
-                        }
-                        std::sync::Arc::new(v)
-                    })
-            } else {
-                None
-            };
+            app.vault = rebuild_vault(&app.settings).await;
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
         }
         AppEvent::CloseSettings => {
@@ -395,32 +408,7 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
                 }
                 s.save_to_disk().ok();
             }
-
-            // Rebuild vault from the new workspace.
-            let (workspace_path, inbox_path) = {
-                let s = app.settings.read().unwrap();
-                let wp = s.resolve_workspace_path();
-                let ip = s
-                    .workspace_config
-                    .as_ref()
-                    .and_then(|wc| wc.get_current_workspace())
-                    .map(|e| e.effective_inbox_path());
-                (wp, ip)
-            };
-            app.vault = if let Some(ref workspace) = workspace_path {
-                kimun_core::NoteVault::new(workspace)
-                    .await
-                    .ok()
-                    .map(|mut v| {
-                        if let Some(ref ip) = inbox_path {
-                            v.set_inbox_path(kimun_core::nfs::VaultPath::new(ip));
-                        }
-                        std::sync::Arc::new(v)
-                    })
-            } else {
-                None
-            };
-
+            app.vault = rebuild_vault(&app.settings).await;
             tx.send(AppEvent::OpenScreen(ScreenEvent::Start)).ok();
         }
         other => {

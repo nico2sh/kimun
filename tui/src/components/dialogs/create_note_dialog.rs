@@ -114,6 +114,7 @@ impl Component for CreateNoteDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kimun_core::VaultConfig;
     use tokio::sync::mpsc;
 
     /// Full smoke test: creates a `CreateNoteDialog` with a temporary vault
@@ -131,7 +132,11 @@ mod tests {
         let tmp = std::env::temp_dir().join("kimun_test_vault");
         std::fs::create_dir_all(&tmp).unwrap();
 
-        let vault = Arc::new(NoteVault::new(tmp).await.expect("vault creation failed"));
+        let vault = Arc::new(
+            NoteVault::new(VaultConfig::new(tmp))
+                .await
+                .expect("vault creation failed"),
+        );
         let (_tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
         let dialog = CreateNoteDialog::new(VaultPath::root(), vault);
         assert!(dialog.error.is_none());
@@ -146,7 +151,7 @@ mod tests {
             let tmp = std::env::temp_dir().join("kimun_create_esc_test");
             std::fs::create_dir_all(&tmp).unwrap();
 
-            let vault_result = NoteVault::new(tmp).await;
+            let vault_result = NoteVault::new(VaultConfig::new(tmp)).await;
             let Ok(vault) = vault_result else { return };
             let vault = Arc::new(vault);
 
@@ -171,7 +176,7 @@ mod tests {
             let tmp = std::env::temp_dir().join("kimun_create_enter_test");
             std::fs::create_dir_all(&tmp).unwrap();
 
-            let vault_result = NoteVault::new(tmp).await;
+            let vault_result = NoteVault::new(VaultConfig::new(tmp)).await;
             let Ok(vault) = vault_result else { return };
             let vault = Arc::new(vault);
 

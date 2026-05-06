@@ -109,7 +109,9 @@ mod tests {
 
     use super::*;
     use crate::settings::AppSettings;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use crate::test_support::{key_event, temp_vault};
+    use kimun_core::VaultConfig;
+    use ratatui::crossterm::event::KeyCode;
     use std::sync::{Arc, RwLock};
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -118,23 +120,7 @@ mod tests {
     }
 
     async fn make_vault() -> Arc<NoteVault> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos();
-        let dir = std::env::temp_dir().join(format!("kimun_start_test_{nonce}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        Arc::new(NoteVault::new(&dir).await.unwrap())
-    }
-
-    fn key_event(code: KeyCode) -> InputEvent {
-        InputEvent::Key(KeyEvent {
-            code,
-            modifiers: KeyModifiers::NONE,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        })
+        temp_vault("start").await
     }
 
     #[tokio::test]
@@ -265,7 +251,7 @@ mod tests {
         std::fs::write(tmp.path().join("note.md"), "a").unwrap();
         std::fs::write(tmp.path().join("Note.md"), "b").unwrap();
 
-        let vault = Arc::new(NoteVault::new(tmp.path()).await.unwrap());
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(tmp.path())).await.unwrap());
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let mut screen = StartScreen::new(shared_defaults(), Some(vault));
         screen.on_enter(&tx).await;

@@ -6,10 +6,12 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 use color_eyre::eyre::{Result, eyre};
-use kimun_core::NoteVault;
 use kimun_core::error::VaultError;
+use kimun_core::{NoteVault, VaultConfig};
 
-use crate::settings::{AppSettings, workspace_config::WorkspaceConfig};
+use crate::settings::{
+    AppSettings, config_migration::CURRENT_CONFIG_VERSION, workspace_config::WorkspaceConfig,
+};
 
 #[derive(Subcommand, Debug)]
 pub enum WorkspaceSubcommand {
@@ -72,9 +74,11 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         .as_ref()
         .expect("workspace_config must exist after init");
 
-    // Determine workspace name
+    // Workspace name is lowercased here because it backs case-insensitive
+    // cache and history filenames; same lowering must apply to the DB path
+    // computed below and the eventual add_workspace key.
     let workspace_name = match name {
-        Some(n) => n,
+        Some(n) => n.to_lowercase(),
         None => {
             if ws_config.workspaces.is_empty() {
                 "default".to_string()
@@ -87,7 +91,6 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         }
     };
 
-    // Check for duplicates
     if ws_config.workspaces.contains_key(&workspace_name) {
         let existing_path = &ws_config.workspaces[&workspace_name].path;
         return Err(eyre!(
@@ -111,21 +114,22 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         println!("Created directory: {}", path.display());
     }
 
-    // Initialize NoteVault database (creates kimun.sqlite)
     println!("Initializing workspace database...");
-    let vault = NoteVault::new(&canonical_path).await.map_err(|e| {
-        eyre!(
-            "Failed to create vault at {}: {}",
-            canonical_path.display(),
-            e
-        )
-    })?;
+    let cache_path = settings.cache_path_for(&workspace_name);
+    let vault = NoteVault::new(VaultConfig::new(&canonical_path).with_db_path(cache_path))
+        .await
+        .map_err(|e| {
+            eyre!(
+                "Failed to create vault at {}: {}",
+                canonical_path.display(),
+                e
+            )
+        })?;
     vault
         .validate_and_init()
         .await
         .map_err(|e| eyre!("Failed to initialize vault database: {}", e))?;
 
-    // Add workspace to config and save
     let ws_config_mut = settings
         .workspace_config
         .as_mut()
@@ -134,7 +138,7 @@ async fn run_init(settings: &mut AppSettings, name: Option<String>, path: PathBu
         .add_workspace(workspace_name.clone(), canonical_path.clone())
         .map_err(|e| eyre!("{}", e))?;
 
-    settings.config_version = 2;
+    settings.config_version = CURRENT_CONFIG_VERSION;
     settings.save_to_disk()?;
 
     println!(
@@ -225,6 +229,9 @@ fn run_use(settings: &mut AppSettings, name: String) -> Result<()> {
 }
 
 fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) -> Result<()> {
+    let new_name = new_name.to_lowercase();
+    kimun_core::nfs::filename::validate_filename(&new_name).map_err(|e| eyre!("{}", e))?;
+
     let ws_config = settings
         .workspace_config
         .as_ref()
@@ -241,19 +248,58 @@ fn run_rename(settings: &mut AppSettings, old_name: String, new_name: String) ->
         ));
     }
 
+    // Move cache and history files BEFORE mutating config so a failed
+    // file move doesn't leave the config pointing at a workspace whose
+    // cache is in the wrong place.
+    let old_cache = settings.cache_path_for(&old_name);
+    let new_cache = settings.cache_path_for(&new_name);
+    let old_history = settings.history_path_for(&old_name);
+    let new_history = settings.history_path_for(&new_name);
+
+    if new_cache.exists() {
+        return Err(eyre!(
+            "Destination cache already exists at {}. Refusing to overwrite.",
+            new_cache.display()
+        ));
+    }
+    if new_history.exists() {
+        return Err(eyre!(
+            "Destination history already exists at {}. Refusing to overwrite.",
+            new_history.display()
+        ));
+    }
+    if old_cache.exists() {
+        std::fs::rename(&old_cache, &new_cache).map_err(|e| {
+            eyre!(
+                "failed to move cache {} -> {}: {}",
+                old_cache.display(),
+                new_cache.display(),
+                e
+            )
+        })?;
+    }
+    if old_history.exists() {
+        std::fs::rename(&old_history, &new_history).map_err(|e| {
+            eyre!(
+                "failed to move history {} -> {}: {}",
+                old_history.display(),
+                new_history.display(),
+                e
+            )
+        })?;
+    }
+
     let ws_config_mut = settings
         .workspace_config
         .as_mut()
         .expect("workspace_config must exist after init");
 
-    // Move entry to new key
     let entry = ws_config_mut
         .workspaces
         .remove(&old_name)
         .expect("entry must exist (checked above)");
     ws_config_mut.workspaces.insert(new_name.clone(), entry);
 
-    // Update current_workspace reference if needed
     if ws_config_mut.global.current_workspace == old_name {
         ws_config_mut.global.current_workspace = new_name.clone();
     }
@@ -274,7 +320,6 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
         return Err(eyre!("Workspace '{}' not found.", name));
     }
 
-    // Prevent removing the current workspace
     if ws_config.global.current_workspace == name {
         return Err(eyre!(
             "Cannot remove the current workspace '{}'. \
@@ -282,6 +327,9 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
             name
         ));
     }
+
+    let cache_path = settings.cache_path_for(&name);
+    let history_path = settings.history_path_for(&name);
 
     settings
         .workspace_config
@@ -291,6 +339,15 @@ fn run_remove(settings: &mut AppSettings, name: String) -> Result<()> {
         .remove(&name);
 
     settings.save_to_disk()?;
+
+    for path in [&cache_path, &history_path] {
+        if path.exists() {
+            match std::fs::remove_file(path) {
+                Ok(()) => tracing::info!("removed {}", path.display()),
+                Err(e) => tracing::warn!("failed to remove {}: {}", path.display(), e),
+            }
+        }
+    }
 
     println!("Workspace '{}' removed.", name);
     Ok(())
@@ -325,13 +382,17 @@ async fn run_reindex(settings: &AppSettings, name: Option<String>) -> Result<()>
 
     println!("Reindexing workspace '{}'...", workspace_name);
 
-    let vault = NoteVault::new(entry.effective_path()).await.map_err(|e| {
-        eyre!(
-            "Failed to open vault at {}: {}",
-            entry.effective_path().display(),
-            e
-        )
-    })?;
+    let cache_path = settings.cache_path_for(&workspace_name);
+    let workspace_path = entry.effective_path().clone();
+    let vault = NoteVault::new(VaultConfig::new(&workspace_path).with_db_path(cache_path))
+        .await
+        .map_err(|e| {
+            eyre!(
+                "Failed to open vault at {}: {}",
+                workspace_path.display(),
+                e
+            )
+        })?;
 
     let report = match vault.recreate_index().await {
         Ok(r) => r,

@@ -196,7 +196,7 @@ impl MoveDialog {
             } else {
                 dest_dir.append(&VaultPath::new(&filename))
             };
-            let exists = vault.exists(&candidate).await.is_some();
+            let exists = vault.exists(&candidate).await;
             tx_clone
                 .send(AppEvent::MoveDestValidation { available: !exists })
                 .ok();
@@ -452,6 +452,7 @@ impl Component for MoveDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kimun_core::VaultConfig;
     use tokio::sync::mpsc;
 
     /// Compile-time smoke test: verify that the struct fields and key types
@@ -487,7 +488,7 @@ mod tests {
             let tmp = std::env::temp_dir().join("kimun_move_esc_test");
             std::fs::create_dir_all(&tmp).unwrap();
 
-            let vault_result = NoteVault::new(tmp).await;
+            let vault_result = NoteVault::new(VaultConfig::new(tmp)).await;
             let Ok(vault) = vault_result else {
                 // No vault available in CI — skip gracefully.
                 return;
@@ -531,7 +532,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
 
         let vault = Arc::new(
-            NoteVault::new(PathBuf::from(&tmp))
+            NoteVault::new(VaultConfig::new(PathBuf::from(&tmp)))
                 .await
                 .expect("vault creation failed"),
         );

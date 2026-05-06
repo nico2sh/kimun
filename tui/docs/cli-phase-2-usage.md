@@ -53,7 +53,7 @@ The TUI provides a Settings screen for workspace configuration and will automati
 
 - **Workspace**: An isolated notes environment with its own directory and search index
 - **Current Workspace**: The active workspace for search and notes operations
-- **Workspace Configuration**: Stored in `~/.config/kimun/kimun_config.toml` (Linux/macOS) or `%USERPROFILE%\kimun\kimun_config.toml` (Windows)
+- **Workspace Configuration**: Stored in `~/.config/kimun/config.toml` (Linux/macOS) or `%USERPROFILE%\kimun\config.toml` (Windows)
 
 ### Workspace Commands
 
@@ -324,8 +324,8 @@ current_hash=$(kimun notes --format json | jq '.notes[] | .hash' | sort | md5sum
 
 ### Config File Location
 
-- **Linux/macOS**: `~/.config/kimun/kimun_config.toml`
-- **Windows**: `%USERPROFILE%\kimun\kimun_config.toml`
+- **Linux/macOS**: `~/.config/kimun/config.toml`
+- **Windows**: `%USERPROFILE%\kimun\config.toml`
 
 ### Custom Config Path
 
@@ -501,7 +501,7 @@ kimun workspace list | grep -E "^\s*\*?\s*\w+" | while read line; do
 done
 
 # Export configuration
-cp ~/.config/kimun/kimun_config.toml "$backup_dir/"
+cp ~/.config/kimun/config.toml "$backup_dir/"
 ```
 
 ### Integration with External Tools
@@ -625,10 +625,10 @@ done
 
 ```sh
 # Backup current config
-cp ~/.config/kimun/kimun_config.toml ~/.config/kimun/kimun_config.toml.backup
+cp ~/.config/kimun/config.toml ~/.config/kimun/config.toml.backup
 
 # Reset to defaults (will prompt for workspace setup)
-rm ~/.config/kimun/kimun_config.toml
+rm ~/.config/kimun/config.toml
 kimun workspace init --name default /path/to/notes
 ```
 
@@ -640,7 +640,7 @@ ls -la ~/.config/kimun/
 
 # Fix permissions
 chmod 755 ~/.config/kimun/
-chmod 644 ~/.config/kimun/kimun_config.toml
+chmod 644 ~/.config/kimun/config.toml
 ```
 
 ### Debug Mode
