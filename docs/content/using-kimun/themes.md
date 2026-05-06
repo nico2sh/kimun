@@ -20,6 +20,7 @@ The following themes are included out of the box:
 - **Solarized Dark**
 - **Solarized Light**
 - **Nord**
+- **ANSI** *(uses your terminal's own 16-color palette)*
 
 Switch between them via the Settings screen in the TUI, or by setting the `theme` field in your config file:
 
