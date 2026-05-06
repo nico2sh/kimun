@@ -55,7 +55,6 @@ impl ThemeColor {
     /// - RGB: "rgb(255, 128, 0)"
     /// - 3-char hex: "#abc" (expanded to #aabbcc)
     /// - 6-char hex: "#aabbcc"
-    /// - ANSI index: "ansi:4"
     pub fn from_string(s: &str) -> Result<Self, String> {
         let s = s.trim();
 
@@ -63,12 +62,6 @@ impl ThemeColor {
             Self::from_hex(s)
         } else if s.starts_with("rgb(") && s.ends_with(')') {
             Self::from_rgb_string(s)
-        } else if s == "reset" {
-            Ok(ThemeColor::Reset)
-        } else if let Some(rest) = s.strip_prefix("ansi:") {
-            rest.parse::<u8>()
-                .map(ThemeColor::Ansi)
-                .map_err(|_| format!("Invalid ANSI color index: {}", rest))
         } else {
             Err(format!("Invalid color format: {}", s))
         }
@@ -431,20 +424,20 @@ impl Theme {
 
     /// Uses the terminal's 16 ANSI colors so the theme adapts to whatever
     /// palette the user has configured in their terminal emulator.
-    pub fn ansi_16() -> Self {
+    pub fn ansi() -> Self {
         Theme {
-            name: "ANSI 16".to_string(),
+            name: "ANSI".to_string(),
             bg: ThemeColor::Reset,
             bg_panel: ThemeColor::Ansi(0),    // black
             bg_selected: ThemeColor::Ansi(4), // blue
             fg: ThemeColor::Reset,
-            fg_secondary: ThemeColor::Ansi(7),  // white
-            fg_muted: ThemeColor::Ansi(8),      // bright black
-            fg_selected: ThemeColor::Ansi(15),  // bright white
-            border: ThemeColor::Ansi(8),        // bright black
-            border_focused: ThemeColor::Ansi(6), // cyan
-            accent: ThemeColor::Ansi(6),         // cyan
-            color_directory: ThemeColor::Ansi(12), // bright blue
+            fg_secondary: ThemeColor::Ansi(7),        // white
+            fg_muted: ThemeColor::Ansi(8),            // bright black
+            fg_selected: ThemeColor::Ansi(15),        // bright white
+            border: ThemeColor::Ansi(8),              // bright black
+            border_focused: ThemeColor::Ansi(6),      // cyan
+            accent: ThemeColor::Ansi(6),              // cyan
+            color_directory: ThemeColor::Ansi(12),    // bright blue
             color_journal_date: ThemeColor::Ansi(10), // bright green
             color_search_match: ThemeColor::Ansi(11), // bright yellow
         }
@@ -567,23 +560,6 @@ mod tests {
             ThemeColor::from_string("  #ff8800  ").unwrap(),
             ThemeColor::Rgb(255, 136, 0)
         );
-    }
-
-    #[test]
-    fn test_from_ansi_index() {
-        assert_eq!(
-            ThemeColor::from_string("ansi:4").unwrap(),
-            ThemeColor::Ansi(4)
-        );
-        assert_eq!(
-            ThemeColor::from_string("ansi:255").unwrap(),
-            ThemeColor::Ansi(255)
-        );
-    }
-
-    #[test]
-    fn test_from_reset() {
-        assert_eq!(ThemeColor::from_string("reset").unwrap(), ThemeColor::Reset);
     }
 
     #[test]
@@ -789,7 +765,6 @@ mod tests {
     #[test]
     fn test_all_builtin_themes_serialize() {
         let themes = vec![
-            Theme::ansi_16(),
             Theme::gruvbox_dark(),
             Theme::gruvbox_light(),
             Theme::catppuccin_mocha(),
@@ -806,5 +781,15 @@ mod tests {
             assert_eq!(theme.name, roundtrip.name);
             assert_eq!(theme.bg, roundtrip.bg);
         }
+    }
+
+    #[test]
+    fn test_ansi_theme() {
+        let theme = Theme::ansi();
+        assert_eq!(theme.name, "ANSI");
+        assert_eq!(theme.bg, ThemeColor::Reset);
+        assert_eq!(theme.fg, ThemeColor::Reset);
+        assert_eq!(theme.bg_selected, ThemeColor::Ansi(4));
+        assert_eq!(theme.color_directory, ThemeColor::Ansi(12));
     }
 }
