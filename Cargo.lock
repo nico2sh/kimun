@@ -1553,7 +1553,6 @@ dependencies = [
  "tracing-subscriber",
  "unicode-segmentation",
  "unicode-width",
- "url",
 ]
 
 [[package]]
@@ -1577,6 +1576,7 @@ dependencies = [
  "tokio",
  "toml",
  "twox-hash",
+ "url",
 ]
 
 [[package]]

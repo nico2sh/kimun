@@ -10,7 +10,6 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui_textarea::{CursorMove, TextArea};
-use url::Url;
 
 /// Move or extend the selection by `movement`.
 ///
@@ -89,18 +88,13 @@ pub struct ClipboardImage {
     pub rgba: Vec<u8>,
 }
 
-/// If `s` (after trimming) parses as a URL with a markdown-friendly scheme
-/// (http, https, ftp, ftps, mailto), returns the trimmed slice.
-///
-/// Rejects strings containing internal whitespace: `Url::parse` is lenient about
-/// embedded newlines/tabs, which would yield an invalid markdown link target.
+/// Schemes the paste-over-selection flow recognises as "linkable" — broader
+/// than `core::is_remote_url` (http/https only) because users routinely paste
+/// `mailto:` and FTP links and expect them wrapped as markdown links too.
+const LINKABLE_PASTE_SCHEMES: &[&str] = &["http", "https", "ftp", "ftps", "mailto"];
+
 fn linkable_url(s: &str) -> Option<&str> {
-    let trimmed = s.trim();
-    if trimmed.contains(char::is_whitespace) {
-        return None;
-    }
-    let url = Url::parse(trimmed).ok()?;
-    matches!(url.scheme(), "http" | "https" | "ftp" | "ftps" | "mailto").then_some(trimmed)
+    kimun_core::note::url_with_allowed_scheme(s, LINKABLE_PASTE_SCHEMES)
 }
 
 /// If `clip` is a linkable URL and `selection` is non-empty, returns
@@ -1095,12 +1089,18 @@ mod tests {
 
     #[test]
     fn linkable_url_accepts_supported_schemes() {
-        assert_eq!(linkable_url("https://example.com"), Some("https://example.com"));
+        assert_eq!(
+            linkable_url("https://example.com"),
+            Some("https://example.com")
+        );
         assert_eq!(
             linkable_url("http://example.com/path?q=1#frag"),
             Some("http://example.com/path?q=1#frag"),
         );
-        assert_eq!(linkable_url("  https://example.com  "), Some("https://example.com"));
+        assert_eq!(
+            linkable_url("  https://example.com  "),
+            Some("https://example.com")
+        );
         assert_eq!(
             linkable_url("ftp://files.example.com/x"),
             Some("ftp://files.example.com/x"),
@@ -1158,7 +1158,10 @@ mod tests {
 
     #[test]
     fn try_build_markdown_link_returns_none_when_selection_empty() {
-        assert_eq!(try_build_markdown_link("https://example.com", Some("")), None);
+        assert_eq!(
+            try_build_markdown_link("https://example.com", Some("")),
+            None
+        );
     }
 
     #[test]

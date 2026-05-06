@@ -48,7 +48,6 @@ tokio-util = { version = "0.7", features = ["compat"] }
 rmpv = "1"
 unicode-width = "0.2"
 unicode-segmentation = "1"
-url = "2"
 png = "0.18"
 
 [dev-dependencies]
