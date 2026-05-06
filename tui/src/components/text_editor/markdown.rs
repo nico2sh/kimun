@@ -40,6 +40,7 @@ pub struct Element {
 pub enum ElementKind {
     Bold,
     Italic,
+    Strikethrough,
     InlineCode,
     Link,
     HeadingH1,
@@ -243,39 +244,17 @@ impl ParsedBuffer {
             let (sr, sc) = byte_to_row_col(range.start, lines, &line_starts);
             let (er, ec) = byte_to_row_col(range.end, lines, &line_starts);
             match event {
-                Event::Start(Tag::Strong) => stack.push((sr, sc, ElementKind::Bold)),
-                Event::End(TagEnd::Strong) => {
-                    if let Some((s_r, s_c, k)) = stack.pop() {
-                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
-                    }
-                }
-                Event::Start(Tag::Emphasis) => stack.push((sr, sc, ElementKind::Italic)),
-                Event::End(TagEnd::Emphasis) => {
-                    if let Some((s_r, s_c, k)) = stack.pop() {
-                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
-                    }
-                }
-                Event::Start(Tag::Link { .. }) => stack.push((sr, sc, ElementKind::Link)),
-                Event::End(TagEnd::Link) => {
-                    if let Some((s_r, s_c, k)) = stack.pop() {
-                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
-                    }
-                }
-                Event::Start(Tag::Heading { level, .. }) => {
-                    let kind = match level {
-                        HeadingLevel::H1 => ElementKind::HeadingH1,
-                        HeadingLevel::H2 => ElementKind::HeadingH2,
-                        _ => ElementKind::HeadingH3,
-                    };
+                Event::Start(ref tag) if let Some(kind) = tag_to_kind(tag) => {
                     stack.push((sr, sc, kind));
                 }
-                Event::End(TagEnd::Heading(_)) => {
-                    if let Some((s_r, s_c, k)) = stack.pop() {
-                        emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
-                    }
-                }
-                Event::Start(Tag::BlockQuote(_)) => stack.push((sr, sc, ElementKind::Blockquote)),
-                Event::End(TagEnd::BlockQuote(_)) => {
+                Event::End(
+                    TagEnd::Strong
+                    | TagEnd::Emphasis
+                    | TagEnd::Strikethrough
+                    | TagEnd::Link
+                    | TagEnd::Heading(_)
+                    | TagEnd::BlockQuote(_),
+                ) => {
                     if let Some((s_r, s_c, k)) = stack.pop() {
                         emit_span(s_r, s_c, er, ec, k, &mut elements, lines);
                     }
@@ -289,14 +268,12 @@ impl ParsedBuffer {
                     // on `sc`.
                     if sr < lines.len() && list_sigil_end[sr].is_none() =>
                 {
-                    let chars: Vec<char> = lines[sr].chars().collect();
-                    let mut idx = 0usize;
-                    while idx < chars.len() && (chars[idx] == ' ' || chars[idx] == '\t') {
-                        idx += 1;
-                    }
-                    let after_ws: String = chars.iter().skip(idx).collect();
-                    if let Some(len) = list_marker_len(&after_ws) {
-                        list_sigil_end[sr] = Some(idx + len);
+                    let line = lines[sr].as_str();
+                    let ws_end = leading_ws_byte_len(line);
+                    if let Some(len) = list_marker_len(&line[ws_end..]) {
+                        // ws_end is byte length but ASCII whitespace makes it
+                        // equal to the char count.
+                        list_sigil_end[sr] = Some(ws_end + len);
                     }
                 }
                 Event::End(TagEnd::Item) => {}
@@ -429,28 +406,17 @@ impl MarkdownSpanner {
             let sc = line[..range.start].chars().count();
             let ec = line[..range.end].chars().count();
             match event {
-                Event::Start(Tag::Strong) => stack.push((sc, ElementKind::Bold)),
-                Event::End(TagEnd::Strong) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
+                Event::Start(ref tag) if let Some(kind) = tag_to_kind(tag) => {
+                    stack.push((sc, kind));
                 }
-                Event::Start(Tag::Emphasis) => stack.push((sc, ElementKind::Italic)),
-                Event::End(TagEnd::Emphasis) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Start(Tag::Link { .. }) => stack.push((sc, ElementKind::Link)),
-                Event::End(TagEnd::Link) => {
+                Event::End(
+                    TagEnd::Strong
+                    | TagEnd::Emphasis
+                    | TagEnd::Strikethrough
+                    | TagEnd::Link
+                    | TagEnd::Heading(_)
+                    | TagEnd::BlockQuote(_),
+                ) => {
                     if let Some((s, k)) = stack.pop() {
                         elements.push(Element {
                             start_char: s,
@@ -464,33 +430,6 @@ impl MarkdownSpanner {
                     end_char: ec,
                     kind: ElementKind::InlineCode,
                 }),
-                Event::Start(Tag::Heading { level, .. }) => {
-                    let kind = match level {
-                        HeadingLevel::H1 => ElementKind::HeadingH1,
-                        HeadingLevel::H2 => ElementKind::HeadingH2,
-                        _ => ElementKind::HeadingH3,
-                    };
-                    stack.push((sc, kind));
-                }
-                Event::End(TagEnd::Heading(_)) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
-                Event::Start(Tag::BlockQuote(_)) => stack.push((sc, ElementKind::Blockquote)),
-                Event::End(TagEnd::BlockQuote(_)) => {
-                    if let Some((s, k)) = stack.pop() {
-                        elements.push(Element {
-                            start_char: s,
-                            end_char: ec,
-                            kind: k,
-                        });
-                    }
-                }
                 _ => {}
             }
         }
@@ -940,7 +879,35 @@ fn needs_synthetic_list_parent(line: &str) -> bool {
 /// in bytes (including the trailing space). Otherwise `None`.
 ///
 /// Digits are ASCII only, so byte length == char length here.
-fn list_marker_len(s: &str) -> Option<usize> {
+/// Byte length of the leading run of ASCII space/tab characters in `line`.
+/// Equal to the char count for that run (whitespace is ASCII).
+pub(super) fn leading_ws_byte_len(line: &str) -> usize {
+    line.bytes()
+        .take_while(|b| *b == b' ' || *b == b'\t')
+        .count()
+}
+
+/// Maps a pulldown-cmark start `Tag` to its corresponding `ElementKind`, for
+/// the tags whose end events emit a stacked element via the standard
+/// push-on-start / pop-on-end pattern. Tags handled specially (e.g. `Item`,
+/// `Code`) return `None`.
+fn tag_to_kind(tag: &Tag) -> Option<ElementKind> {
+    Some(match tag {
+        Tag::Strong => ElementKind::Bold,
+        Tag::Emphasis => ElementKind::Italic,
+        Tag::Strikethrough => ElementKind::Strikethrough,
+        Tag::Link { .. } => ElementKind::Link,
+        Tag::BlockQuote(_) => ElementKind::Blockquote,
+        Tag::Heading { level, .. } => match level {
+            HeadingLevel::H1 => ElementKind::HeadingH1,
+            HeadingLevel::H2 => ElementKind::HeadingH2,
+            _ => ElementKind::HeadingH3,
+        },
+        _ => return None,
+    })
+}
+
+pub(super) fn list_marker_len(s: &str) -> Option<usize> {
     if s.starts_with("- ") || s.starts_with("* ") || s.starts_with("+ ") {
         return Some(2);
     }
@@ -989,6 +956,9 @@ fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -
         Some(ElementKind::Italic) => Style::default()
             .fg(theme.fg_secondary.to_ratatui())
             .add_modifier(Modifier::ITALIC),
+        Some(ElementKind::Strikethrough) => Style::default()
+            .fg(theme.fg_secondary.to_ratatui())
+            .add_modifier(Modifier::CROSSED_OUT),
         Some(ElementKind::InlineCode) => Style::default()
             .fg(theme.fg.to_ratatui())
             .bg(theme.bg_selected.to_ratatui()),
@@ -1050,6 +1020,24 @@ mod tests {
             MarkdownSpanner::parse_elements("*hi*")
                 .iter()
                 .any(|e| e.kind == ElementKind::Italic)
+        );
+    }
+    #[test]
+    fn parse_strikethrough() {
+        let e = MarkdownSpanner::parse_elements("~~gone~~");
+        let s = e
+            .iter()
+            .find(|x| x.kind == ElementKind::Strikethrough)
+            .unwrap();
+        assert_eq!((s.start_char, s.end_char), (0, 8));
+    }
+    #[test]
+    fn strikethrough_renders_with_crossed_out_modifier() {
+        let s = MarkdownSpanner::render("~~gone~~", "~~gone~~", 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "gone");
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::CROSSED_OUT))
         );
     }
     #[test]
