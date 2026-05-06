@@ -153,7 +153,7 @@ zola serve docs/
 - [ ] Inline tags and search by tag (`#important`)
 - [ ] Resolve relative paths on links and images
 - [ ] Paste images into notes
-- [ ] Auto-continue list formatting on Enter
+- [X] Auto-continue list formatting on Enter
 - [X] Quick add note
 - [X] Multiple workspaces
 - [X] Search under Markdown sections
