@@ -21,7 +21,7 @@ use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
-use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::keys::key_event_to_combo;
 use crate::keys::key_strike::KeyStrike;
 use crate::settings::SharedSettings;
@@ -470,6 +470,12 @@ impl AppScreen for EditorScreen {
                     self.dialogs
                         .open_quick_note(self.vault.clone(), self.focus_index());
                     self.focus = Focus::Dialog;
+                    return EventState::Consumed;
+                }
+                Some(ActionShortcuts::Text(
+                    action @ (TextAction::Bold | TextAction::Italic | TextAction::Strikethrough),
+                )) if matches!(self.focus, Focus::Editor) => {
+                    self.editor.apply_text_action(action);
                     return EventState::Consumed;
                 }
                 _ => {
