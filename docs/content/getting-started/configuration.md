@@ -5,7 +5,7 @@ weight = 3
 
 # Configuration Reference
 
-Kimün stores its configuration in `kimun_config.toml`. By default it lives in your OS config directory (`~/.config/kimun/` on Linux/macOS, `%USERPROFILE%\kimun\` on Windows), and can be overridden with `kimun --config /path/to/config.toml`.
+Kimün stores its configuration in `config.toml`. By default it lives in your OS config directory (`~/.config/kimun/` on Linux/macOS, `%USERPROFILE%\kimun\` on Windows), and can be overridden with `kimun --config /path/to/config.toml`.
 
 The file has three kinds of contents:
 
@@ -16,11 +16,24 @@ The file has three kinds of contents:
 
 You don't need to write this file by hand. Kimün creates it on first run and updates it when you change settings from the TUI's Settings screen. This page is the reference for when you *do* want to edit it.
 
+## Files Kimün Stores on Disk
+
+Alongside `config.toml`, Kimün writes two more kinds of files. By default both live next to `config.toml`, but you can relocate them via the `cache_dir` and `history_dir` settings below.
+
+| File | Default location | Purpose |
+|---|---|---|
+| `<workspace>.kimuncache` | `<config_dir>/<workspace>.kimuncache` | Per-workspace SQLite search index. Regenerable — safe to delete; Kimün will rebuild it on the next run. |
+| `<workspace>.txt` | `<config_dir>/history/<workspace>.txt` | Per-workspace history of recently-opened notes. Plain text, one path per line, newest first. |
+
+Why separate files instead of keeping everything inside the workspace directory? The cache and history change frequently (every note open) while the workspace itself is just your Markdown files. Keeping them out of the workspace makes it easier to sync your notes with tools like Syncthing, iCloud, or Git without churning through SQLite blobs and history rewrites.
+
 ## Top-Level Fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `config_version` | integer | `2` | Schema version. Managed by the config migration system — do not edit. |
+| `config_version` | integer | `3` | Schema version. Managed by the config migration system — do not edit. |
+| `cache_dir` | string | `"."` | Directory where per-workspace SQLite caches (`<workspace>.kimuncache`) are stored. Resolved relative to the config file's directory. Accepts `~`, relative paths, or absolute paths. |
+| `history_dir` | string | `"history"` | Directory where per-workspace history files (`<workspace>.txt`) are stored. Same path resolution as `cache_dir`. |
 | `theme` | string | `""` | Active TUI theme name (e.g. `"Nord"`). An empty string uses the built-in default. See [Themes](@/using-kimun/themes.md). |
 | `autosave_interval_secs` | integer | `5` | How often unsaved changes are written to disk (seconds). |
 | `use_nerd_fonts` | boolean | `false` | Enable Nerd Font glyphs in the TUI. Leave `false` if your terminal's font doesn't include Nerd Font patches. |
@@ -46,7 +59,7 @@ current_workspace = "default"
 
 ## `[workspaces.<name>]` Sections
 
-Each workspace is a separate block. The `<name>` after the dot is the identifier you reference from `[global].current_workspace` and from the workspace switcher in the TUI.
+Each workspace is a separate block. The `<name>` after the dot is the identifier you reference from `[global].current_workspace` and from the workspace switcher in the TUI. It also names the workspace's cache and history files (`<name>.kimuncache`, `<name>.txt`), so it must be a valid filename — see [Workspace Name Rules](#workspace-name-rules) below.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -54,7 +67,19 @@ Each workspace is a separate block. The `<name>` after the dot is the identifier
 | `inbox_path` | string | `"/inbox"` | Vault-relative directory for quick-captured notes. |
 | `quick_note_path` | string | `"/"` | Vault-relative directory where `QuickNote` saves its output. Defaults to the vault root. |
 | `created` | string (RFC 3339 timestamp) | *(set by Kimün)* | Creation timestamp. Managed automatically — do not edit. |
-| `last_paths` | array of strings | *(set by Kimün)* | Internal history of recently-opened notes. Managed automatically — do not edit. |
+
+The history of recently-opened notes for each workspace lives in a separate `<name>.txt` file under `history_dir`, not inside this section.
+
+### Workspace Name Rules
+
+Workspace names back the cache and history filenames, so they must obey cross-platform filename rules. New workspaces are rejected if the name:
+
+- contains any of `\ / : * ? " < > | [ ] ^ #` or control characters
+- is one of the Windows reserved names (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`)
+- starts with two or more dots, ends with a dot, or has leading/trailing whitespace
+- exceeds 64 characters
+
+The TUI and CLI both lowercase the name before validating, so `MyVault` and `myvault` are stored identically.
 
 ### Path formats
 
@@ -202,7 +227,9 @@ TextEditor-Image = ["ctrl+shift&L"]
 A complete, minimal config file:
 
 ```toml
-config_version = 2
+config_version = 3
+cache_dir = "."
+history_dir = "history"
 autosave_interval_secs = 5
 use_nerd_fonts = false
 editor_backend = "textarea"
@@ -225,3 +252,15 @@ OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
 QuickNote = ["ctrl&W"]
 ```
+
+## Upgrading from `config_version = 2`
+
+If your existing config still says `config_version = 2`, the next launch upgrades it automatically:
+
+1. Validates every workspace name against the rules above. If any fails, Kimün aborts the upgrade with an error listing every offending name and leaves `config.toml` at version 2 — rename them and relaunch.
+2. Writes a backup at `config.toml.bak.v2` next to your original config, in case you want to roll back.
+3. Moves each workspace's `<workspace>/kimun.sqlite` to `<cache_dir>/<workspace>.kimuncache` (defaults to your config dir).
+4. Extracts each workspace's `last_paths` into `<history_dir>/<workspace>.txt`.
+5. Drops `last_paths` from `config.toml` going forward.
+
+The migration is idempotent: re-running it on an already-upgraded config does nothing, and any step whose destination already exists is skipped.

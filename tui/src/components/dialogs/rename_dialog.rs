@@ -87,7 +87,7 @@ impl RenameDialog {
             } else {
                 parent.append(&VaultPath::new(&input))
             };
-            let exists = vault.exists(&candidate).await.is_some();
+            let exists = vault.exists(&candidate).await;
             // `true` means the name is *available* (does not exist yet).
             tx_clone
                 .send(AppEvent::RenameValidation { available: !exists })
@@ -301,6 +301,7 @@ impl Component for RenameDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kimun_core::VaultConfig;
     use tokio::sync::mpsc;
 
     /// Compile-time smoke test: verify all `ValidationState` variants are
@@ -344,7 +345,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
 
         let vault = Arc::new(
-            NoteVault::new(PathBuf::from(&tmp))
+            NoteVault::new(VaultConfig::new(PathBuf::from(&tmp)))
                 .await
                 .expect("vault creation failed"),
         );
@@ -368,7 +369,7 @@ mod tests {
             let tmp = std::env::temp_dir().join("kimun_rename_esc_test");
             std::fs::create_dir_all(&tmp).unwrap();
 
-            let vault_result = NoteVault::new(tmp).await;
+            let vault_result = NoteVault::new(VaultConfig::new(tmp)).await;
             let Ok(vault) = vault_result else {
                 // No vault available in CI — skip gracefully.
                 return;

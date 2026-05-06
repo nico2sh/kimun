@@ -1,13 +1,15 @@
-use kimun_core::NoteVault;
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
+use kimun_core::{NoteVault, VaultConfig};
 use kimun_notes::cli::json_output::format_notes_with_content_as_json;
 use tempfile::TempDir;
 
 #[tokio::test]
 async fn json_output_includes_required_fields() {
     let workspace_dir = TempDir::new().unwrap();
-    let vault = NoteVault::new(workspace_dir.path()).await.unwrap();
+    let vault = NoteVault::new(VaultConfig::new(workspace_dir.path()))
+        .await
+        .unwrap();
     vault.validate_and_init().await.unwrap();
 
     let entries = vec![(

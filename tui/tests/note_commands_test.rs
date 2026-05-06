@@ -7,12 +7,16 @@ use kimun_notes::cli::commands::{JournalArgs, NoteSubcommand};
 use kimun_notes::cli::{CliCommand, run_cli};
 use tempfile::TempDir;
 
-/// Helper: write a minimal Phase 2 config and initialise the vault index.
-/// The `note` CLI command only calls `validate()` (not `validate_and_init()`) for speed,
-/// so tests must pre-initialise the vault themselves.
+/// Helper: write a minimal v3 config and initialise the vault index at the
+/// configured cache path. The `note` CLI command only calls `validate()`
+/// (not `validate_and_init()`) for speed, so tests must pre-initialise the
+/// vault themselves.
 async fn write_config(config_path: &std::path::Path, workspace_dir: &std::path::Path) {
+    let config_dir = config_path.parent().unwrap();
     let content = format!(
-        r#"config_version = 2
+        r#"config_version = 3
+cache_dir = "."
+history_dir = "history"
 [global]
 current_workspace = "default"
 theme = "Nord"
@@ -25,7 +29,12 @@ created = "2026-01-01T00:00:00Z"
         workspace_dir.display()
     );
     std::fs::write(config_path, content).unwrap();
-    let vault = kimun_core::NoteVault::new(workspace_dir).await.unwrap();
+    let cache_path = config_dir.join("default.kimuncache");
+    let vault = kimun_core::NoteVault::new(
+        kimun_core::VaultConfig::new(workspace_dir).with_db_path(cache_path),
+    )
+    .await
+    .unwrap();
     vault.validate_and_init().await.unwrap();
 }
 
@@ -104,7 +113,9 @@ async fn test_note_create_uses_quick_note_path() {
     let workspace_dir = TempDir::new().unwrap();
 
     let content = format!(
-        r#"config_version = 2
+        r#"config_version = 3
+cache_dir = "."
+history_dir = "history"
 [global]
 current_workspace = "default"
 theme = "Nord"
@@ -118,12 +129,15 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
-    kimun_core::NoteVault::new(workspace_dir.path())
-        .await
-        .unwrap()
-        .validate_and_init()
-        .await
-        .unwrap();
+    let cache_path = config_dir.path().join("default.kimuncache");
+    kimun_core::NoteVault::new(
+        kimun_core::VaultConfig::new(workspace_dir.path()).with_db_path(cache_path),
+    )
+    .await
+    .unwrap()
+    .validate_and_init()
+    .await
+    .unwrap();
 
     let result = run_cli(
         CliCommand::Note {
@@ -148,7 +162,9 @@ async fn test_note_create_absolute_path_ignores_quick_note_path() {
     let workspace_dir = TempDir::new().unwrap();
 
     let content = format!(
-        r#"config_version = 2
+        r#"config_version = 3
+cache_dir = "."
+history_dir = "history"
 [global]
 current_workspace = "default"
 theme = "Nord"
@@ -162,12 +178,15 @@ quick_note_path = "/inbox"
         workspace_dir.path().display()
     );
     std::fs::write(&config_path, content).unwrap();
-    kimun_core::NoteVault::new(workspace_dir.path())
-        .await
-        .unwrap()
-        .validate_and_init()
-        .await
-        .unwrap();
+    let cache_path = config_dir.path().join("default.kimuncache");
+    kimun_core::NoteVault::new(
+        kimun_core::VaultConfig::new(workspace_dir.path()).with_db_path(cache_path),
+    )
+    .await
+    .unwrap()
+    .validate_and_init()
+    .await
+    .unwrap();
 
     let result = run_cli(
         CliCommand::Note {
@@ -570,7 +589,9 @@ async fn test_note_show_format_paths_returns_error() {
     use kimun_core::nfs::VaultPath;
     use kimun_notes::cli::output::OutputFormat;
     let dir = TempDir::new().unwrap();
-    let vault = kimun_core::NoteVault::new(dir.path()).await.unwrap();
+    let vault = kimun_core::NoteVault::new(kimun_core::VaultConfig::new(dir.path()))
+        .await
+        .unwrap();
     vault.validate_and_init().await.unwrap();
     vault
         .create_note(

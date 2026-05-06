@@ -98,7 +98,7 @@ impl KimunHandler {
         let mut topics: Vec<String> = Vec::new();
         for chunks in chunks_map.values() {
             for chunk in chunks {
-                if let Some(leaf) = chunk.breadcrumb.last() {
+                if let Some(leaf) = chunk.breadcrumb_last() {
                     let t = leaf.trim().to_string();
                     if !t.is_empty() && seen.insert(t.clone()) {
                         topics.push(t);
@@ -836,12 +836,12 @@ impl KimunHandler {
 mod tests {
     use super::super::*;
     use super::*;
-    use kimun_core::NoteVault;
+    use kimun_core::{NoteVault, VaultConfig};
     use tempfile::TempDir;
 
     async fn make_handler() -> (KimunHandler, TempDir) {
         let dir = TempDir::new().unwrap();
-        let vault = NoteVault::new(dir.path()).await.unwrap();
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         vault.validate_and_init().await.unwrap();
         let handler = KimunHandler::new(vault);
         (handler, dir)

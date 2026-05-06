@@ -5,11 +5,10 @@ use std::{
 };
 
 use ignore::{ParallelVisitor, ParallelVisitorBuilder};
-use log::error;
-use tokio::runtime::Handle;
+use log::{error, warn};
 
 use crate::{
-    nfs::{DirectoryDetails, EntryData, NoteEntryData, VaultEntry, VaultPath},
+    nfs::{EntryData, NoteEntryData, VaultEntry, VaultPath},
     note::NoteContentData,
     NotesValidation, SearchResult,
 };
@@ -20,27 +19,21 @@ struct NoteListVisitor {
     notes_to_delete: Arc<Mutex<HashMap<VaultPath, (NoteEntryData, NoteContentData)>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
     notes_to_add: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
-    directories_found: Arc<Mutex<Vec<VaultPath>>>,
     sender: Option<Sender<SearchResult>>,
-    handle: Handle,
 }
 
 impl NoteListVisitor {
-    fn verify_cache(&self, entry: &VaultEntry) {
+    fn verify_cache(&self, entry: &VaultEntry, os_path: &Path) {
         let result = match &entry.data {
-            EntryData::Note(note_data) => {
-                SearchResult::note(&note_data.path, &self.verify_cached_note(note_data))
-            }
-            EntryData::Directory(directory_data) => {
-                let details = DirectoryDetails {
-                    path: directory_data.path.clone(),
-                };
-                self.directories_found
-                    .lock()
-                    .unwrap()
-                    .push(directory_data.path.clone());
-                SearchResult::directory(&details.path)
-            }
+            EntryData::Note(note_data) => match self.verify_cached_note(note_data, os_path) {
+                Some(content) => SearchResult::note(&note_data.path, &content),
+                // Read failed; the entry stays in `notes_to_delete` if it was
+                // already cached, or simply isn't indexed if it's new — both
+                // cases will be retried on the next index pass. Don't emit a
+                // misleading SearchResult to the UI.
+                None => return,
+            },
+            EntryData::Directory(directory_data) => SearchResult::directory(&directory_data.path),
             EntryData::Attachment => SearchResult::attachment(&entry.path),
         };
         if let Some(sender) = &self.sender {
@@ -50,64 +43,70 @@ impl NoteListVisitor {
         }
     }
 
-    // We only check the size and modified
-    fn has_changed_fast_check(&self, cached: &NoteEntryData, disk: &NoteEntryData) -> bool {
-        let modified_secs = disk.modified_secs;
-        let size = disk.size;
-        let modified_sec_cached = cached.modified_secs;
-        let size_cached = cached.size;
-        size != size_cached || modified_secs != modified_sec_cached
+    fn has_changed_fast_check(cached: &NoteEntryData, disk: &NoteEntryData) -> bool {
+        cached.size != disk.size || cached.modified_secs != disk.modified_secs
     }
 
-    // We check the content hash
-    fn has_changed_deep_check(&self, cached: &mut NoteContentData, disk: &NoteEntryData) -> bool {
-        let details = self
-            .handle
-            .block_on(disk.load_details(&self.workspace_path, &disk.path))
-            .unwrap();
-        let details_hash = details.get_content_data().hash;
-        let cached_hash = cached.hash;
-        !details_hash.eq(&cached_hash)
-    }
+    /// Returns `None` only when the file could not be read; the caller treats
+    /// that as "skip this iteration" so the cached entry (if any) survives
+    /// untouched and will be re-checked next time.
+    fn verify_cached_note(&self, data: &NoteEntryData, os_path: &Path) -> Option<NoteContentData> {
+        let cached_option = self.notes_to_delete.lock().unwrap().remove(&data.path);
 
-    fn verify_cached_note(&self, data: &NoteEntryData) -> NoteContentData {
-        let mut ntd = self.notes_to_delete.lock().unwrap();
-        let cached_option = ntd.remove(&data.path);
-
-        let content_data = if let Some((cached_data, mut cached_details)) = cached_option {
-            // entry exists
-            let changed = match self.validation {
-                NotesValidation::Full => self.has_changed_deep_check(&mut cached_details, data),
-                NotesValidation::Fast => self.has_changed_fast_check(&cached_data, data),
-                NotesValidation::None => false,
-            };
-            if changed {
-                let details = self
-                    .handle
-                    .block_on(data.load_details(&self.workspace_path, &data.path))
-                    .expect("Can't get details for note");
-                let text = details.raw_text.clone();
-                self.notes_to_modify
-                    .lock()
-                    .unwrap()
-                    .push((data.to_owned(), text));
-                details.get_content_data()
-            } else {
-                cached_details
+        match cached_option {
+            Some((cached_data, cached_details)) => {
+                let needs_reload = match self.validation {
+                    NotesValidation::Full => true,
+                    NotesValidation::Fast => Self::has_changed_fast_check(&cached_data, data),
+                    NotesValidation::None => false,
+                };
+                if !needs_reload {
+                    return Some(cached_details);
+                }
+                match data.load_details_from_os_path(os_path) {
+                    Ok(details) => {
+                        let new_content = details.get_content_data();
+                        if self.validation == NotesValidation::Full
+                            && new_content.hash == cached_details.hash
+                        {
+                            return Some(cached_details);
+                        }
+                        self.notes_to_modify
+                            .lock()
+                            .unwrap()
+                            .push((data.to_owned(), details.raw_text));
+                        Some(new_content)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Could not read note {}: {}; reinstating cached entry",
+                            data.path, e
+                        );
+                        // Put the cached entry back into the delete map so it
+                        // doesn't get treated as "deleted from disk" at flush.
+                        self.notes_to_delete
+                            .lock()
+                            .unwrap()
+                            .insert(data.path.clone(), (cached_data, cached_details.clone()));
+                        Some(cached_details)
+                    }
+                }
             }
-        } else {
-            let details = self
-                .handle
-                .block_on(data.load_details(&self.workspace_path, &data.path))
-                .expect("Can't get Details for note");
-            let text = details.raw_text.clone();
-            self.notes_to_add
-                .lock()
-                .unwrap()
-                .push((data.to_owned(), text));
-            details.get_content_data()
-        };
-        content_data
+            None => match data.load_details_from_os_path(os_path) {
+                Ok(details) => {
+                    let content = details.get_content_data();
+                    self.notes_to_add
+                        .lock()
+                        .unwrap()
+                        .push((data.to_owned(), details.raw_text));
+                    Some(content)
+                }
+                Err(e) => {
+                    warn!("Could not read new note {}: {}; skipping", data.path, e);
+                    None
+                }
+            },
+        }
     }
 }
 
@@ -115,17 +114,10 @@ impl ParallelVisitor for NoteListVisitor {
     fn visit(&mut self, entry: Result<ignore::DirEntry, ignore::Error>) -> ignore::WalkState {
         match entry {
             Ok(dir) => {
-                // debug!("Scanning: {}", dir.path().as_os_str().to_string_lossy());
-                let npe = self
-                    .handle
-                    .block_on(VaultEntry::from_path(&self.workspace_path, dir.path()));
-                match npe {
-                    Ok(entry) => {
-                        self.verify_cache(&entry);
-                    }
-                    Err(e) => {
-                        error!("{}", e);
-                    }
+                let os_path = dir.path();
+                match VaultEntry::from_path_sync(&self.workspace_path, os_path) {
+                    Ok(entry) => self.verify_cache(&entry, os_path),
+                    Err(e) => error!("{}", e),
                 }
                 ignore::WalkState::Continue
             }
@@ -143,9 +135,7 @@ pub struct NoteListVisitorBuilder {
     notes_to_delete: Arc<Mutex<HashMap<VaultPath, (NoteEntryData, NoteContentData)>>>,
     notes_to_modify: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
     notes_to_add: Arc<Mutex<Vec<(NoteEntryData, String)>>>,
-    directories_found: Arc<Mutex<Vec<VaultPath>>>,
     sender: Option<Sender<SearchResult>>,
-    handle: Handle,
 }
 
 impl NoteListVisitorBuilder {
@@ -154,7 +144,6 @@ impl NoteListVisitorBuilder {
         validation: NotesValidation,
         cached_notes: Vec<(NoteEntryData, NoteContentData)>,
         sender: Option<Sender<SearchResult>>,
-        handle: Handle,
     ) -> Self {
         let mut notes_to_delete = HashMap::new();
         for cached in cached_notes {
@@ -167,62 +156,77 @@ impl NoteListVisitorBuilder {
             notes_to_delete: Arc::new(Mutex::new(notes_to_delete)),
             notes_to_modify: Arc::new(Mutex::new(Vec::new())),
             notes_to_add: Arc::new(Mutex::new(Vec::new())),
-            directories_found: Arc::new(Mutex::new(Vec::new())),
             sender,
-            handle,
         }
     }
 
+    /// Consumes the builder and returns the accumulated diff. Must be called
+    /// after the parallel walker has finished — at that point all visitor
+    /// clones are dropped, so the inner `Arc<Mutex<...>>` are uniquely owned
+    /// and we can move the Vecs out without cloning.
+    pub fn into_results(self) -> VisitorResults {
+        VisitorResults {
+            to_delete: take_arc_mutex(self.notes_to_delete).into_keys().collect(),
+            to_add: take_arc_mutex(self.notes_to_add),
+            to_modify: take_arc_mutex(self.notes_to_modify),
+        }
+    }
+
+    #[cfg(test)]
     pub fn get_notes_to_delete(&self) -> Vec<VaultPath> {
         self.notes_to_delete
             .lock()
             .unwrap()
-            .iter()
-            .map(|n| n.0.to_owned())
+            .keys()
+            .cloned()
             .collect()
     }
 
+    #[cfg(test)]
     pub fn get_notes_to_add(&self) -> Vec<(NoteEntryData, String)> {
-        self.notes_to_add
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|n| n.to_owned())
-            .collect()
+        self.notes_to_add.lock().unwrap().clone()
     }
 
+    #[cfg(test)]
     pub fn get_notes_to_modify(&self) -> Vec<(NoteEntryData, String)> {
-        self.notes_to_modify
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|n| n.to_owned())
-            .collect()
+        self.notes_to_modify.lock().unwrap().clone()
     }
+}
 
-    pub fn get_directories_found(&self) -> Vec<VaultPath> {
-        self.directories_found
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|n| n.to_owned())
-            .collect()
+/// Diff produced by a `NoteListVisitorBuilder` after the parallel walker
+/// finishes. The order of `to_add` and `to_modify` is non-deterministic —
+/// they are populated by parallel worker threads and entries land in the
+/// order each thread completes its file read.
+pub struct VisitorResults {
+    pub to_delete: Vec<VaultPath>,
+    pub to_add: Vec<(NoteEntryData, String)>,
+    pub to_modify: Vec<(NoteEntryData, String)>,
+}
+
+fn take_arc_mutex<T: Default>(arc: Arc<Mutex<T>>) -> T {
+    match Arc::try_unwrap(arc) {
+        Ok(mutex) => mutex.into_inner().expect("visitor mutex poisoned"),
+        // Walker should drop every visitor clone before returning. If a
+        // worker thread leaked its visitor (e.g. mid-panic), take the data
+        // via the surviving lock so the index op still completes rather
+        // than aborting the whole walk.
+        Err(arc) => {
+            log::warn!("visitor Arc still shared after walker exit — taking via lock");
+            std::mem::take(&mut *arc.lock().expect("visitor mutex poisoned"))
+        }
     }
 }
 
 impl<'s> ParallelVisitorBuilder<'s> for NoteListVisitorBuilder {
     fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {
-        let dbv = NoteListVisitor {
+        Box::new(NoteListVisitor {
             workspace_path: self.workspace_path.clone(),
             validation: self.validation,
             notes_to_delete: self.notes_to_delete.clone(),
             notes_to_modify: self.notes_to_modify.clone(),
             notes_to_add: self.notes_to_add.clone(),
-            directories_found: self.directories_found.clone(),
             sender: self.sender.clone(),
-            handle: self.handle.clone(),
-        };
-        Box::new(dbv)
+        })
     }
 }
 
@@ -241,13 +245,8 @@ mod tests {
         let cached_notes = vec![];
         let (sender, _receiver) = mpsc::channel();
 
-        let builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            Some(sender),
-            Handle::current(),
-        );
+        let builder =
+            NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, Some(sender));
 
         assert_eq!(builder.workspace_path, workspace_path);
         assert_eq!(builder.validation, validation);
@@ -261,13 +260,7 @@ mod tests {
         let validation = NotesValidation::Fast;
         let cached_notes = vec![];
 
-        let builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            None,
-            Handle::current(),
-        );
+        let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
 
         assert_eq!(builder.workspace_path, workspace_path);
         assert_eq!(builder.validation, validation);
@@ -290,13 +283,7 @@ mod tests {
         };
         let cached_notes = vec![(note_entry, note_content)];
 
-        let builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            None,
-            Handle::current(),
-        );
+        let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
 
         // Test that notes are initially in the "to delete" list
         let notes_to_delete = builder.get_notes_to_delete();
@@ -306,7 +293,6 @@ mod tests {
         // Initially, no notes to add or modify
         assert_eq!(builder.get_notes_to_add().len(), 0);
         assert_eq!(builder.get_notes_to_modify().len(), 0);
-        assert_eq!(builder.get_directories_found().len(), 0);
     }
 
     #[tokio::test]
@@ -316,19 +302,12 @@ mod tests {
         let validation = NotesValidation::None;
         let cached_notes = vec![];
 
-        let builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            None,
-            Handle::current(),
-        );
+        let builder = NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
 
         // Test all getter methods return empty collections initially
         assert_eq!(builder.get_notes_to_delete().len(), 0);
         assert_eq!(builder.get_notes_to_add().len(), 0);
         assert_eq!(builder.get_notes_to_modify().len(), 0);
-        assert_eq!(builder.get_directories_found().len(), 0);
     }
 
     #[tokio::test]
@@ -338,13 +317,8 @@ mod tests {
         let validation = NotesValidation::None;
         let cached_notes = vec![];
 
-        let mut builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            None,
-            Handle::current(),
-        );
+        let mut builder =
+            NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, None);
 
         // Test that we can build a parallel visitor
         let _visitor = builder.build();
@@ -370,13 +344,8 @@ mod tests {
         let cached_notes = vec![];
         let (sender, _receiver) = mpsc::channel();
 
-        let mut builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            validation,
-            cached_notes,
-            Some(sender),
-            Handle::current(),
-        );
+        let mut builder =
+            NoteListVisitorBuilder::new(workspace_path, validation, cached_notes, Some(sender));
 
         // Create a visitor and simulate file discovery
         let _visitor = builder.build();
@@ -409,13 +378,8 @@ mod tests {
         ];
 
         for validation in validation_modes {
-            let builder = NoteListVisitorBuilder::new(
-                workspace_path,
-                validation,
-                cached_notes.clone(),
-                None,
-                Handle::current(),
-            );
+            let builder =
+                NoteListVisitorBuilder::new(workspace_path, validation, cached_notes.clone(), None);
 
             assert_eq!(builder.validation, validation);
 
@@ -438,7 +402,6 @@ mod tests {
             validation,
             cached_notes,
             Some(sender.clone()),
-            Handle::current(),
         );
 
         // Test that we can send a search result through the channel
@@ -484,7 +447,6 @@ mod tests {
             NotesValidation::None,
             vec![],
             Some(sender),
-            Handle::current(),
         );
 
         let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
@@ -584,13 +546,8 @@ mod tests {
         // Supply the old cached entry (with the original size) to the builder
         let cached = vec![(note_data, content_data)];
 
-        let mut builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            NotesValidation::Fast,
-            cached,
-            None,
-            Handle::current(),
-        );
+        let mut builder =
+            NoteListVisitorBuilder::new(workspace_path, NotesValidation::Fast, cached, None);
 
         let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
         walker.visit(&mut builder);
@@ -638,13 +595,8 @@ mod tests {
             .await
             .unwrap();
 
-        let mut builder = NoteListVisitorBuilder::new(
-            workspace_path,
-            NotesValidation::None,
-            cached,
-            None,
-            Handle::current(),
-        );
+        let mut builder =
+            NoteListVisitorBuilder::new(workspace_path, NotesValidation::None, cached, None);
 
         let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
         walker.visit(&mut builder);

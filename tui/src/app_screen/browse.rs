@@ -41,8 +41,8 @@ impl BrowseScreen {
 
     async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
         let (options, rx) = VaultBrowseOptionsBuilder::new(&dir)
-            .non_recursive()
-            .full_validation()
+            .recursive(false)
+            .validation(kimun_core::NotesValidation::Full)
             .build();
         self.path = dir.clone();
         let vault = self.vault.clone();
@@ -118,6 +118,7 @@ impl AppScreen for BrowseScreen {
 mod tests {
     use super::*;
     use crate::settings::AppSettings;
+    use crate::test_support::{key_event, temp_vault};
     use ratatui::crossterm::event::KeyCode;
     use std::sync::RwLock;
     use tokio::sync::mpsc::unbounded_channel;
@@ -127,24 +128,7 @@ mod tests {
     }
 
     async fn make_vault() -> Arc<NoteVault> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos();
-        let thread_id = std::thread::current().id();
-        let dir = std::env::temp_dir().join(format!("kimun_browse_test_{nonce}_{thread_id:?}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        Arc::new(NoteVault::new(&dir).await.unwrap())
-    }
-
-    fn key_event(code: KeyCode) -> InputEvent {
-        InputEvent::Key(ratatui::crossterm::event::KeyEvent {
-            code,
-            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
-            kind: ratatui::crossterm::event::KeyEventKind::Press,
-            state: ratatui::crossterm::event::KeyEventState::NONE,
-        })
+        temp_vault("browse").await
     }
 
     #[tokio::test]

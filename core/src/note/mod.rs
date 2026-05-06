@@ -12,9 +12,7 @@ use crate::nfs::VaultPath;
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoteDetails {
     pub path: VaultPath,
-    // pub data: NoteContentData,
     pub raw_text: String,
-    // pub content_chunks: Vec<ContentChunk>,
 }
 
 impl Display for NoteDetails {
@@ -47,7 +45,6 @@ impl NoteDetails {
         get_content_chunks(&self.raw_text)
     }
 
-    /// Returns both content chunks and links in one call, avoiding two separate parses.
     pub fn get_chunks_and_links(&self) -> (Vec<ContentChunk>, Vec<NoteLink>) {
         get_chunks_and_links(&self.path, &self.raw_text)
     }
@@ -82,15 +79,40 @@ impl Display for NoteContentData {
     }
 }
 
+/// Separator used to flatten the heading hierarchy of a chunk into the single
+/// `breadcrumb` string stored in the FTS column and in memory.
+///
+/// Uses ASCII Unit Separator (U+001F) so heading text containing visible
+/// punctuation — including `>`, `/`, `|`, `:` — round-trips correctly through
+/// `breadcrumb_parts()` / `breadcrumb_last()`. Not the `>` used as the search
+/// query operator in `db::search_terms`.
+pub const BREADCRUMB_SEP: &str = "\x1f";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentChunk {
-    pub breadcrumb: Vec<String>,
+    pub breadcrumb: String,
     pub text: String,
 }
 
 impl ContentChunk {
-    pub fn get_breadcrumb(&self) -> String {
-        self.breadcrumb.join(">")
+    pub fn get_breadcrumb(&self) -> &str {
+        &self.breadcrumb
+    }
+
+    /// Iterator over the heading components from outermost to innermost.
+    /// Empty breadcrumb yields no items.
+    pub fn breadcrumb_parts(&self) -> impl Iterator<Item = &str> {
+        self.breadcrumb
+            .split(BREADCRUMB_SEP)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Last (innermost) heading in the breadcrumb, if any. O(last-segment-len)
+    /// — scans backward from the end, short-circuiting at the first separator.
+    pub fn breadcrumb_last(&self) -> Option<&str> {
+        self.breadcrumb
+            .rsplit(BREADCRUMB_SEP)
+            .find(|s| !s.is_empty())
     }
 
     pub fn get_text(&self) -> &str {

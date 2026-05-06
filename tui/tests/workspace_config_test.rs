@@ -65,6 +65,7 @@ fn workspace_config_add_workspace() {
             assert_eq!(name, "default");
             assert_eq!(existing_path, PathBuf::from("/Users/user/notes"));
         }
+        _ => panic!("expected DuplicateWorkspace"),
     }
 }
 
@@ -91,6 +92,9 @@ fn workspace_config_empty_has_no_current_workspace() {
 fn workspace_config_round_trip_serialization() {
     let mut config = WorkspaceConfig::new_empty();
     let path = PathBuf::from("/test/path");
+    // last_paths is intentionally not serialized in v3 — the history file is the
+    // source of truth. The in-memory field exists only as a temporary v2 → v3
+    // migration buffer, so it always round-trips as empty.
     let last_paths = vec!["path1".to_string(), "path2".to_string()];
 
     config
@@ -114,10 +118,148 @@ fn workspace_config_round_trip_serialization() {
     let original_entry = config.workspaces.get("test").unwrap();
     let deserialized_entry = deserialized.workspaces.get("test").unwrap();
     assert_eq!(original_entry.path, deserialized_entry.path);
-    assert_eq!(original_entry.last_paths, deserialized_entry.last_paths);
+    // last_paths is skip_serializing, so the deserialized side comes back empty
+    // even though the original had entries.
+    assert!(deserialized_entry.last_paths.is_empty());
+    assert!(!toml_str.contains("last_paths"));
     // DateTime should round-trip correctly
     assert_eq!(
         original_entry.created.timestamp(),
         deserialized_entry.created.timestamp()
+    );
+}
+
+#[test]
+fn cache_dir_defaults_to_config_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        r#"
+config_version = 3
+cache_dir = "."
+history_dir = "history"
+theme = "gruvbox_dark"
+"#,
+    )
+    .unwrap();
+
+    let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    let resolved_cache = settings.cache_dir_resolved().unwrap();
+    let resolved_hist = settings.history_dir_resolved().unwrap();
+    assert_eq!(resolved_cache, tmp.path().canonicalize().unwrap());
+    assert_eq!(
+        resolved_hist,
+        tmp.path().canonicalize().unwrap().join("history")
+    );
+}
+
+#[test]
+fn cache_dir_supports_absolute_path() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    let abs_cache = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        &cfg_path,
+        format!(
+            r#"
+config_version = 3
+cache_dir = "{}"
+history_dir = "history"
+theme = "gruvbox_dark"
+"#,
+            abs_cache.path().display()
+        ),
+    )
+    .unwrap();
+
+    let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    assert_eq!(
+        settings.cache_dir_resolved().unwrap(),
+        abs_cache.path().canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn add_path_history_writes_to_history_file_not_config() {
+    use kimun_core::nfs::VaultPath;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        format!(
+            r#"
+config_version = 3
+cache_dir = "."
+history_dir = "history"
+theme = "gruvbox_dark"
+
+[workspaces.notes]
+path = "{}"
+last_paths = []
+created = "2026-01-01T00:00:00Z"
+
+[global]
+current_workspace = "notes"
+"#,
+            tmp.path().display()
+        ),
+    )
+    .unwrap();
+    let mut settings =
+        kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+
+    settings.add_path_history(&VaultPath::new("a.md"));
+    settings.add_path_history(&VaultPath::new("b.md"));
+
+    let history_file = tmp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("history")
+        .join("notes.txt");
+    assert!(
+        history_file.exists(),
+        "history file should be written at {history_file:?}"
+    );
+    let loaded = settings.current_last_paths();
+    assert_eq!(
+        loaded.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+        vec!["b.md".to_string(), "a.md".to_string()]
+    );
+}
+
+#[test]
+fn cache_path_for_uses_workspace_name_and_kimuncache_extension() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        r#"
+config_version = 3
+cache_dir = "."
+history_dir = "history"
+theme = "gruvbox_dark"
+"#,
+    )
+    .unwrap();
+
+    let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
+    let cache = settings.cache_path_for("myvault");
+    assert_eq!(
+        cache,
+        tmp.path()
+            .canonicalize()
+            .unwrap()
+            .join("myvault.kimuncache")
+    );
+    let hist = settings.history_path_for("myvault");
+    assert_eq!(
+        hist,
+        tmp.path()
+            .canonicalize()
+            .unwrap()
+            .join("history")
+            .join("myvault.txt")
     );
 }

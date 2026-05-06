@@ -6,14 +6,14 @@ use chrono::NaiveDate;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry};
-use crate::components::{Component, rect_contains};
 use crate::keys::KeyBindings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -47,8 +47,6 @@ pub struct NoteBrowserModal {
     search_query: String,
     provider: Arc<dyn NoteBrowserProvider>,
     file_list: FileListComponent,
-    /// Bounds of the file list block — updated each render, used to route mouse
-    /// events into list-row coordinates.
     list_rect: Rect,
     preview_text: String,
     vault: Arc<NoteVault>,
@@ -169,6 +167,26 @@ impl NoteBrowserModal {
         }
     }
 
+    fn open_selected_entry(&self, tx: &AppTx) {
+        let Some(entry) = self.file_list.selected_entry() else {
+            return;
+        };
+        if let FileListEntry::CreateNote { path, .. } = entry {
+            let path = path.clone();
+            let vault = Arc::clone(&self.vault);
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                vault.load_or_create_note(&path, None).await.ok();
+                tx.send(AppEvent::OpenPath(path)).ok();
+                tx.send(AppEvent::CloseNoteBrowser).ok();
+            });
+            return;
+        }
+        let path = entry.path().clone();
+        tx.send(AppEvent::OpenPath(path)).ok();
+        tx.send(AppEvent::CloseNoteBrowser).ok();
+    }
+
     /// Called after selection changes to kick off a preview load for the
     /// highlighted note, or clear the preview if a non-note entry is selected.
     fn refresh_preview(&mut self) {
@@ -193,40 +211,24 @@ impl NoteBrowserModal {
 
 impl Component for NoteBrowserModal {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
         if let InputEvent::Mouse(mouse) = event {
             let r = self.list_rect;
-            if !rect_contains(&r, mouse.column, mouse.row) {
+            if !r.contains(Position {
+                x: mouse.column,
+                y: mouse.row,
+            }) {
                 return EventState::NotConsumed;
             }
             match mouse.kind {
-                MouseEventKind::Down(_) => {
+                MouseEventKind::Down(MouseButton::Left) => {
                     if mouse.row > r.y {
                         let rel_row = mouse.row - r.y - 1;
                         let prev = self.file_list.selected_display_idx();
                         if let Some(idx) = self.file_list.select_at_visual_row(rel_row) {
                             if prev == Some(idx) {
-                                // Second click on the same row — open the note.
-                                if let Some(entry) = self.file_list.selected_entry() {
-                                    match entry {
-                                        FileListEntry::CreateNote { path, .. } => {
-                                            let path = path.clone();
-                                            let vault = Arc::clone(&self.vault);
-                                            let tx = tx.clone();
-                                            tokio::spawn(async move {
-                                                vault.load_or_create_note(&path, None).await.ok();
-                                                tx.send(AppEvent::OpenPath(path)).ok();
-                                                tx.send(AppEvent::CloseNoteBrowser).ok();
-                                            });
-                                        }
-                                        _ => {
-                                            let path = entry.path().clone();
-                                            tx.send(AppEvent::OpenPath(path)).ok();
-                                            tx.send(AppEvent::CloseNoteBrowser).ok();
-                                        }
-                                    }
-                                }
+                                self.open_selected_entry(tx);
                             } else {
                                 self.refresh_preview();
                             }
@@ -242,7 +244,7 @@ impl Component for NoteBrowserModal {
                     self.file_list.scroll_down();
                     EventState::Consumed
                 }
-                _ => EventState::Consumed, // consume all other mouse events while modal is open
+                _ => EventState::Consumed,
             }
         } else {
             let InputEvent::Key(key) = event else {
@@ -254,25 +256,7 @@ impl Component for NoteBrowserModal {
                     EventState::Consumed
                 }
                 KeyCode::Enter => {
-                    if let Some(entry) = self.file_list.selected_entry() {
-                        match entry {
-                            FileListEntry::CreateNote { path, .. } => {
-                                let path = path.clone();
-                                let vault = Arc::clone(&self.vault);
-                                let tx = tx.clone();
-                                tokio::spawn(async move {
-                                    vault.load_or_create_note(&path, None).await.ok();
-                                    tx.send(AppEvent::OpenPath(path)).ok();
-                                    tx.send(AppEvent::CloseNoteBrowser).ok();
-                                });
-                            }
-                            _ => {
-                                let path = entry.path().clone();
-                                tx.send(AppEvent::OpenPath(path)).ok();
-                                tx.send(AppEvent::CloseNoteBrowser).ok();
-                            }
-                        }
-                    }
+                    self.open_selected_entry(tx);
                     EventState::Consumed
                 }
                 KeyCode::Up => {
@@ -306,7 +290,7 @@ impl Component for NoteBrowserModal {
                 }
                 _ => EventState::NotConsumed,
             }
-        } // end key else branch
+        }
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, _focused: bool) {
@@ -429,7 +413,7 @@ pub(super) fn format_journal_date(date: NaiveDate) -> String {
 mod tests {
     use super::*;
     use crate::settings::AppSettings;
-    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crate::test_support::{mouse_down_at, temp_vault};
     use tokio::sync::mpsc::unbounded_channel;
 
     struct EmptyProvider;
@@ -442,15 +426,7 @@ mod tests {
     }
 
     async fn make_modal() -> NoteBrowserModal {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos();
-        let thread_id = std::thread::current().id();
-        let dir = std::env::temp_dir().join(format!("kimun_modal_test_{nonce}_{thread_id:?}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        let vault = Arc::new(NoteVault::new(&dir).await.unwrap());
+        let vault = temp_vault("modal").await;
         let settings = AppSettings::default();
         let (tx, _rx) = unbounded_channel();
         NoteBrowserModal::new(
@@ -461,15 +437,6 @@ mod tests {
             settings.icons(),
             tx,
         )
-    }
-
-    fn mouse_down_at(col: u16, row: u16) -> InputEvent {
-        InputEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: col,
-            row,
-            modifiers: KeyModifiers::NONE,
-        })
     }
 
     /// The modal's mouse handler scopes by `list_rect` (set during render),
