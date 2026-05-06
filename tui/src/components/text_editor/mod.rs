@@ -33,12 +33,58 @@ use self::backend::BackendState;
 use self::snapshot::NvimMode;
 use self::view::MarkdownEditorView;
 
+/// If `marker` is an ordered-list marker like `"3. "`, returns the next marker
+/// (`"4. "`). Returns `None` for unordered markers or unrecognized input.
+fn increment_ordered_marker(marker: &str) -> Option<String> {
+    let trimmed = marker.trim_end_matches(' ');
+    let dot = trimmed.strip_suffix('.')?;
+    let n: u32 = dot.parse().ok()?;
+    Some(format!("{}. ", n + 1))
+}
+
+/// Returns the text covered by the textarea's current selection, or `None` if
+/// there is no selection or the range is empty.
+///
+/// `selection_range()` returns char-column coordinates, so they must be
+/// converted to byte offsets before slicing to support multi-byte UTF-8 text.
+fn selection_text(ta: &TextArea<'_>) -> Option<String> {
+    let ((sr, sc), (er, ec)) = ta.selection_range()?;
+    if sr == er && sc == ec {
+        return None;
+    }
+    let lines = ta.lines();
+    let char_to_byte = |line: &str, char_col: usize| -> usize {
+        line.char_indices()
+            .nth(char_col)
+            .map(|(b, _)| b)
+            .unwrap_or(line.len())
+    };
+    Some(if sr == er {
+        let line = &lines[sr];
+        let sb = char_to_byte(line, sc);
+        let eb = char_to_byte(line, ec);
+        line[sb..eb].to_string()
+    } else {
+        let first = &lines[sr];
+        let sb = char_to_byte(first, sc);
+        let mut parts = vec![first[sb..].to_string()];
+        for line in &lines[(sr + 1)..er] {
+            parts.push(line.clone());
+        }
+        let last = &lines[er];
+        let eb = char_to_byte(last, ec);
+        parts.push(last[..eb].to_string());
+        parts.join("\n")
+    })
+}
+
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
 use crate::keys::KeyBindings;
+use crate::keys::action_shortcuts::TextAction;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -165,26 +211,15 @@ impl TextEditorComponent {
 
     /// Copy selected text to the system clipboard.
     fn copy_selection_to_clipboard(&mut self) {
-        // Scope the borrow of self.backend so self.clipboard can be borrowed after.
         let text = {
             let BackendState::Textarea(ta) = &self.backend else {
                 return;
             };
-            let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
-                return;
-            };
-            let lines = ta.lines();
-            if sr == er {
-                lines[sr].get(sc..ec).unwrap_or("").to_string()
-            } else {
-                let mut parts = vec![lines[sr].get(sc..).unwrap_or("").to_string()];
-                for line in &lines[(sr + 1)..er] {
-                    parts.push(line.to_string());
-                }
-                parts.push(lines[er].get(..ec).unwrap_or("").to_string());
-                parts.join("\n")
+            match selection_text(ta) {
+                Some(t) => t,
+                None => return,
             }
-        }; // borrow of self.backend ends here
+        };
         if let Some(cb) = &mut self.clipboard {
             let _ = cb.set_text(text);
         }
@@ -205,6 +240,225 @@ impl TextEditorComponent {
                 ta.cut();
             }
             ta.insert_str(&text);
+            self.selection = ta.selection_range();
+            self.edit_generation = self.edit_generation.wrapping_add(1);
+        }
+    }
+
+    /// Wrap a selection in (or insert at the cursor) markdown markers for
+    /// Bold/Italic/Strikethrough. No-op for other actions and on the Nvim backend.
+    pub fn apply_text_action(&mut self, action: TextAction) {
+        let marker = match action {
+            TextAction::Bold => "**",
+            TextAction::Italic => "*",
+            TextAction::Strikethrough => "~~",
+            _ => return,
+        };
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            return;
+        };
+        match selection_text(ta) {
+            Some(text) => {
+                ta.insert_str(format!("{marker}{text}{marker}"));
+            }
+            None => {
+                ta.insert_str(format!("{marker}{marker}"));
+                for _ in 0..marker.len() {
+                    ta.move_cursor(CursorMove::Back);
+                }
+            }
+        }
+        self.selection = ta.selection_range();
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+    }
+
+    /// Smart Enter: continue list markers, preserve indent, dedent on empty
+    /// indent-only lines, clear empty list markers. Returns `true` if handled
+    /// (caller should not insert a plain newline). Always `false` on Nvim
+    /// backend or when there is an active selection.
+    pub fn smart_enter(&mut self) -> bool {
+        enum Action {
+            ClearLine { chars: usize },
+            InsertPrefix(String),
+            Dedent,
+        }
+        let action = {
+            let BackendState::Textarea(ta) = &self.backend else {
+                return false;
+            };
+            if ta.selection_range().is_some() {
+                return false;
+            }
+            let (row, col) = ta.cursor();
+            let Some(line) = ta.lines().get(row) else {
+                return false;
+            };
+            let total_chars = line.chars().count();
+            if col != total_chars {
+                return false;
+            }
+            // ASCII whitespace, so byte index == char index here.
+            let ws_end = markdown::leading_ws_byte_len(line);
+            let (ws, after_ws) = line.split_at(ws_end);
+            if let Some(marker_len) = markdown::list_marker_len(after_ws) {
+                if after_ws.len() == marker_len {
+                    // Empty list item: dedent first if indented, then clear
+                    // the marker once fully unindented.
+                    if ws_end > 0 {
+                        Action::Dedent
+                    } else {
+                        Action::ClearLine { chars: total_chars }
+                    }
+                } else {
+                    let marker_str = &after_ws[..marker_len];
+                    let next_marker = increment_ordered_marker(marker_str)
+                        .unwrap_or_else(|| marker_str.to_string());
+                    Action::InsertPrefix(format!("{ws}{next_marker}"))
+                }
+            } else if ws_end > 0 && total_chars == ws_end {
+                Action::Dedent
+            } else if ws_end > 0 {
+                Action::InsertPrefix(ws.to_string())
+            } else {
+                return false;
+            }
+        };
+
+        match action {
+            Action::Dedent => {
+                self.indent_lines(true);
+                return true;
+            }
+            Action::ClearLine { chars } => {
+                let BackendState::Textarea(ta) = &mut self.backend else {
+                    unreachable!()
+                };
+                ta.move_cursor(CursorMove::Head);
+                ta.delete_str(chars);
+            }
+            Action::InsertPrefix(prefix) => {
+                let BackendState::Textarea(ta) = &mut self.backend else {
+                    unreachable!()
+                };
+                ta.insert_newline();
+                ta.insert_str(prefix);
+            }
+        }
+        let BackendState::Textarea(ta) = &self.backend else {
+            unreachable!()
+        };
+        self.selection = ta.selection_range();
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+        true
+    }
+
+    /// Indent or dedent whole lines. Tab unit is `\t` if `hard_tab_indent` is
+    /// on, else `tab_length` spaces. Dedent counts a leading tab as one unit.
+    /// No-op on Nvim backend.
+    pub fn indent_lines(&mut self, dedent: bool) {
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            return;
+        };
+        let tab_len = ta.tab_length() as usize;
+        let hard_tab = ta.hard_tab_indent();
+        let indent: String = if hard_tab {
+            "\t".to_string()
+        } else {
+            " ".repeat(tab_len)
+        };
+        if indent.is_empty() {
+            return;
+        }
+        let indent_chars = indent.len();
+
+        let sel = ta.selection_range();
+        let saved_cursor = if sel.is_none() {
+            Some(ta.cursor())
+        } else {
+            None
+        };
+        let (start_row, end_row) = match sel {
+            Some(((sr, _), (er, ec))) => {
+                // A selection that ends at column 0 of a row visually doesn't
+                // include that row, so don't indent it.
+                let last = if ec == 0 && er > sr { er - 1 } else { er };
+                (sr, last)
+            }
+            None => {
+                let (r, _) = saved_cursor.unwrap();
+                (r, r)
+            }
+        };
+
+        let row_count = end_row.saturating_sub(start_row) + 1;
+        let mut row_deltas: Vec<isize> = Vec::with_capacity(row_count);
+        let mut any_change = false;
+
+        for row in start_row..=end_row {
+            if dedent {
+                let count = {
+                    let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
+                    let max_remove = if hard_tab { 1 } else { tab_len };
+                    let mut count = 0usize;
+                    for (i, c) in line.chars().enumerate() {
+                        if i >= max_remove {
+                            break;
+                        }
+                        if c == '\t' {
+                            count += 1;
+                            break;
+                        } else if c == ' ' && !hard_tab {
+                            count += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    count
+                };
+                if count > 0 {
+                    ta.move_cursor(CursorMove::Jump(row as u16, 0));
+                    ta.delete_str(count);
+                    any_change = true;
+                }
+                row_deltas.push(-(count as isize));
+            } else {
+                ta.move_cursor(CursorMove::Jump(row as u16, 0));
+                ta.insert_str(&indent);
+                row_deltas.push(indent_chars as isize);
+                any_change = true;
+            }
+        }
+
+        let adj = |row: usize, col: usize| -> usize {
+            if row >= start_row && row <= end_row {
+                let d = row_deltas[row - start_row];
+                if d >= 0 {
+                    col + d as usize
+                } else {
+                    col.saturating_sub((-d) as usize)
+                }
+            } else {
+                col
+            }
+        };
+
+        match sel {
+            Some(((ssr, ssc), (ser, sec))) => {
+                ta.cancel_selection();
+                let new_ssc = adj(ssr, ssc);
+                let new_sec = adj(ser, sec);
+                ta.move_cursor(CursorMove::Jump(ssr as u16, new_ssc as u16));
+                ta.start_selection();
+                ta.move_cursor(CursorMove::Jump(ser as u16, new_sec as u16));
+            }
+            None => {
+                let (cr, cc) = saved_cursor.expect("captured when sel is None");
+                let new_col = adj(cr, cc);
+                ta.move_cursor(CursorMove::Jump(cr as u16, new_col as u16));
+            }
+        }
+
+        if any_change {
             self.selection = ta.selection_range();
             self.edit_generation = self.edit_generation.wrapping_add(1);
         }
@@ -496,6 +750,28 @@ impl TextEditorComponent {
             self.edit_generation = self.edit_generation.wrapping_add(1);
             return EventState::Consumed;
         }
+
+        // BackTab is what most terminals emit for Shift+Tab.
+        match (key.modifiers, key.code) {
+            (m, KeyCode::Tab)
+                if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
+            {
+                self.indent_lines(m.contains(KeyModifiers::SHIFT));
+                return EventState::Consumed;
+            }
+            (_, KeyCode::BackTab) => {
+                self.indent_lines(true);
+                return EventState::Consumed;
+            }
+            _ => {}
+        }
+        if key.code == KeyCode::Enter && key.modifiers.is_empty() && self.smart_enter() {
+            return EventState::Consumed;
+        }
+
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            unreachable!("handle_textarea_key called with non-Textarea backend")
+        };
         ta.input_without_shortcuts(*key);
         self.selection = ta.selection_range();
         self.edit_generation = self.edit_generation.wrapping_add(1);
@@ -746,6 +1022,323 @@ mod tests {
         ta.move_cursor(ratatui_textarea::CursorMove::End);
         ta.insert_str(" world");
         assert_eq!(editor.get_text(), "hello world");
+    }
+
+    #[test]
+    fn bold_action_with_no_selection_inserts_pair_and_centers_cursor() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "hello****");
+        let ta = get_ta(&mut editor);
+        assert_eq!(ta.cursor(), (0, 7));
+    }
+
+    #[test]
+    fn italic_action_with_no_selection_inserts_single_pair() {
+        let mut editor = make_editor();
+        editor.set_text(String::new());
+        editor.apply_text_action(TextAction::Italic);
+        assert_eq!(editor.get_text(), "**");
+        let ta = get_ta(&mut editor);
+        assert_eq!(ta.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn strikethrough_action_with_selection_wraps_text() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.start_selection();
+            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        }
+        editor.apply_text_action(TextAction::Strikethrough);
+        assert_eq!(editor.get_text(), "~~hello ~~world");
+    }
+
+    #[test]
+    fn bold_action_wraps_non_ascii_selection() {
+        let mut editor = make_editor();
+        editor.set_text("hello 你好 world".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+            ta.start_selection();
+            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        }
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "hello **你好 **world");
+    }
+
+    #[test]
+    fn bold_action_wraps_selected_text() {
+        let mut editor = make_editor();
+        editor.set_text("foo bar".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.start_selection();
+            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        }
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "**foo **bar");
+    }
+
+    #[test]
+    fn indent_no_selection_indents_current_line() {
+        let mut editor = make_editor();
+        editor.set_text("foo\nbar".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Bottom);
+        }
+        editor.indent_lines(false);
+        let lines = get_ta(&mut editor).lines();
+        assert_eq!(lines[0], "foo");
+        assert!(lines[1].starts_with(' ') || lines[1].starts_with('\t'));
+        assert!(lines[1].trim_start() == "bar");
+    }
+
+    #[test]
+    fn indent_with_selection_indents_all_touched_lines() {
+        let mut editor = make_editor();
+        editor.set_text("foo\nbar\nbaz".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Top);
+            ta.start_selection();
+            ta.move_cursor(ratatui_textarea::CursorMove::Down);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        editor.indent_lines(false);
+        let lines: Vec<String> = get_ta(&mut editor).lines().to_vec();
+        assert_eq!(lines[0].trim_start(), "foo");
+        assert_eq!(lines[1].trim_start(), "bar");
+        assert_eq!(lines[2], "baz");
+        assert!(lines[0].len() > 3);
+        assert!(lines[1].len() > 3);
+    }
+
+    #[test]
+    fn dedent_removes_leading_indent() {
+        let mut editor = make_editor();
+        editor.set_text("    foo\n  bar\nbaz".to_string());
+        let tab_len = get_ta(&mut editor).tab_length() as usize;
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Top);
+            ta.start_selection();
+            ta.move_cursor(ratatui_textarea::CursorMove::Bottom);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        editor.indent_lines(true);
+        let lines: Vec<String> = get_ta(&mut editor).lines().to_vec();
+        // line 0 had 4 leading spaces; up to tab_len removed.
+        assert_eq!(lines[0], format!("{}foo", " ".repeat(4 - tab_len.min(4))));
+        // line 1 had 2 leading spaces; up to min(2, tab_len) removed.
+        assert_eq!(
+            lines[1],
+            format!("{}bar", " ".repeat(2usize.saturating_sub(tab_len)))
+        );
+        assert_eq!(lines[2], "baz");
+    }
+
+    #[test]
+    fn dedent_no_leading_whitespace_is_noop_for_that_line() {
+        let mut editor = make_editor();
+        editor.set_text("foo".to_string());
+        editor.indent_lines(true);
+        assert_eq!(editor.get_text(), "foo");
+    }
+
+    #[test]
+    fn smart_enter_continues_unordered_list() {
+        let mut editor = make_editor();
+        editor.set_text("- foo".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "- foo\n- ");
+    }
+
+    #[test]
+    fn smart_enter_continues_ordered_list_increments() {
+        let mut editor = make_editor();
+        editor.set_text("1. foo".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "1. foo\n2. ");
+    }
+
+    #[test]
+    fn smart_enter_on_empty_list_marker_clears_line() {
+        let mut editor = make_editor();
+        editor.set_text("- ".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "");
+    }
+
+    #[test]
+    fn smart_enter_preserves_indent() {
+        let mut editor = make_editor();
+        editor.set_text("    body".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "    body\n    ");
+    }
+
+    #[test]
+    fn smart_enter_on_empty_indent_dedents() {
+        let mut editor = make_editor();
+        editor.set_text("    ".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        let tab_len = get_ta(&mut editor).tab_length() as usize;
+        assert!(editor.smart_enter());
+        assert_eq!(
+            editor.get_text(),
+            " ".repeat(4usize.saturating_sub(tab_len))
+        );
+    }
+
+    #[test]
+    fn smart_enter_no_indent_no_marker_returns_false() {
+        let mut editor = make_editor();
+        editor.set_text("plain".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(!editor.smart_enter());
+        assert_eq!(editor.get_text(), "plain");
+    }
+
+    #[test]
+    fn smart_enter_mid_line_returns_false() {
+        let mut editor = make_editor();
+        editor.set_text("- foo".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.move_cursor(ratatui_textarea::CursorMove::Forward);
+            ta.move_cursor(ratatui_textarea::CursorMove::Forward);
+        }
+        assert!(!editor.smart_enter());
+    }
+
+    #[test]
+    fn smart_enter_on_empty_indented_list_marker_dedents_keeping_marker() {
+        let mut editor = make_editor();
+        let tab_len = get_ta(&mut editor).tab_length() as usize;
+        let indent = " ".repeat(tab_len);
+        editor.set_text(format!("{indent}- "));
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "- ");
+    }
+
+    #[test]
+    fn smart_enter_on_empty_list_marker_clears_line_after_full_dedent() {
+        let mut editor = make_editor();
+        let tab_len = get_ta(&mut editor).tab_length() as usize;
+        let indent = " ".repeat(tab_len);
+        editor.set_text(format!("{indent}- "));
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        // First Enter: dedent to "- ".
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "- ");
+        // Second Enter at column == end-of-line: now cursor is at col 2 (end of "- ").
+        // Need to position cursor at end after the dedent.
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "");
+    }
+
+    #[test]
+    fn smart_enter_continues_list_with_non_ascii_content() {
+        let mut editor = make_editor();
+        editor.set_text("- 你好".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "- 你好\n- ");
+    }
+
+    #[test]
+    fn smart_enter_preserves_tab_indent() {
+        let mut editor = make_editor();
+        editor.set_text("\tbody".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "\tbody\n\t");
+    }
+
+    #[test]
+    fn smart_enter_on_tab_only_line_dedents() {
+        let mut editor = make_editor();
+        editor.set_text("\t\t".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        // tab counts as one indent unit, regardless of tab_length spaces.
+        assert_eq!(editor.get_text(), "\t");
+    }
+
+    #[test]
+    fn smart_enter_continues_indented_list() {
+        let mut editor = make_editor();
+        editor.set_text("  - foo".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        assert!(editor.smart_enter());
+        assert_eq!(editor.get_text(), "  - foo\n  - ");
+    }
+
+    #[test]
+    fn unsupported_text_action_is_noop() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        editor.apply_text_action(TextAction::Underline);
+        assert_eq!(editor.get_text(), "hello");
     }
 
     #[test]
