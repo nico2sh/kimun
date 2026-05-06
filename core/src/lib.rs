@@ -505,20 +505,19 @@ impl NoteVault {
         // the full path can only be resolved from here as we have the vault path
         let (md_text, image_links) =
             note::content_extractor::process_image_links(&md_text, |alt_text, raw_path| {
-                let resolved =
-                    if raw_path.starts_with("http://") || raw_path.starts_with("https://") {
-                        raw_path.to_string()
+                let resolved = if note::is_remote_url(raw_path) {
+                    raw_path.to_string()
+                } else {
+                    let image_vault_path = if raw_path.starts_with('/') {
+                        VaultPath::new(raw_path)
                     } else {
-                        let image_vault_path = if raw_path.starts_with('/') {
-                            VaultPath::new(raw_path)
-                        } else {
-                            note_parent.append(&VaultPath::new(raw_path)).flatten()
-                        };
-                        image_vault_path
-                            .to_pathbuf(self.workspace_path())
-                            .display()
-                            .to_string()
+                        note_parent.append(&VaultPath::new(raw_path)).flatten()
                     };
+                    image_vault_path
+                        .to_pathbuf(self.workspace_path())
+                        .display()
+                        .to_string()
+                };
                 let link = note::NoteLink::image(&resolved, alt_text, raw_path);
                 (resolved, link)
             });
@@ -605,11 +604,7 @@ impl NoteVault {
     /// Writes an attachment (raw bytes — e.g. an encoded PNG) to `path` under
     /// the workspace. Creates parent directories as needed. The attachment is
     /// not added to the notes index.
-    pub async fn save_attachment(
-        &self,
-        path: &VaultPath,
-        bytes: &[u8],
-    ) -> Result<(), VaultError> {
+    pub async fn save_attachment(&self, path: &VaultPath, bytes: &[u8]) -> Result<(), VaultError> {
         nfs::save_attachment(self.workspace_path(), path, bytes).await?;
         Ok(())
     }

@@ -642,8 +642,7 @@ impl MarkdownSpanner {
                 .find(|p| p.start_char == pos)
             {
                 let cursor_in_image = expanded.is_some_and(|i| {
-                    elements[i].start_char == img.start_char
-                        && elements[i].end_char == img.end_char
+                    elements[i].start_char == img.start_char && elements[i].end_char == img.end_char
                 });
                 if !cursor_in_image {
                     flush(
@@ -785,8 +784,7 @@ impl MarkdownSpanner {
                 .find(|p| p.start_char == pos)
             {
                 let cursor_in_image = expanded.is_some_and(|i| {
-                    elements[i].start_char == img.start_char
-                        && elements[i].end_char == img.end_char
+                    elements[i].start_char == img.start_char && elements[i].end_char == img.end_char
                 });
                 if !cursor_in_image {
                     rendered_col += img.placeholder_width;
@@ -959,7 +957,7 @@ fn detect_image_placeholders(
     content_vis: &mut [bool],
     elements: &mut Vec<Element>,
 ) -> Vec<ImagePlaceholder> {
-    use kimun_core::note::{link_char_spans, link_target_filename, LinkSpanKind};
+    use kimun_core::note::{LinkSpanKind, link_char_spans, link_target_filename};
 
     let mut out = Vec::new();
     for span in link_char_spans(line) {
@@ -1221,9 +1219,8 @@ mod tests {
     fn render_image_substitutes_placeholder_text() {
         let line = "before ![alt](pic.gif) after";
         let parsed = ParsedLine::parse(line);
-        let spans = MarkdownSpanner::render_with(
-            line, line, &parsed, 0, None, true, false, 80, &t(),
-        );
+        let spans =
+            MarkdownSpanner::render_with(line, line, &parsed, 0, None, true, false, 80, &t());
         let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             rendered.contains("[pic.gif]"),
@@ -1239,9 +1236,8 @@ mod tests {
     fn render_image_with_empty_alt_uses_filename() {
         let line = "![](image.png)";
         let parsed = ParsedLine::parse(line);
-        let spans = MarkdownSpanner::render_with(
-            line, line, &parsed, 0, None, true, false, 40, &t(),
-        );
+        let spans =
+            MarkdownSpanner::render_with(line, line, &parsed, 0, None, true, false, 40, &t());
         let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(rendered, "[image.png]");
     }

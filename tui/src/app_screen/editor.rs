@@ -150,23 +150,24 @@ impl EditorScreen {
         let rgba = img.rgba;
         tokio::spawn(async move {
             // PNG encoding is CPU-bound — keep it off the runtime worker threads.
-            let png_bytes = match tokio::task::spawn_blocking(move || {
-                encode_rgba_to_png(width, height, &rgba)
-            })
-            .await
-            {
-                Ok(Ok(b)) => b,
-                Ok(Err(e)) => {
-                    tx2.send(AppEvent::DialogError(format!("Image encode failed: {e}")))
+            let png_bytes =
+                match tokio::task::spawn_blocking(move || encode_rgba_to_png(width, height, &rgba))
+                    .await
+                {
+                    Ok(Ok(b)) => b,
+                    Ok(Err(e)) => {
+                        tx2.send(AppEvent::DialogError(format!("Image encode failed: {e}")))
+                            .ok();
+                        return;
+                    }
+                    Err(e) => {
+                        tx2.send(AppEvent::DialogError(format!(
+                            "Image encode task failed: {e}"
+                        )))
                         .ok();
-                    return;
-                }
-                Err(e) => {
-                    tx2.send(AppEvent::DialogError(format!("Image encode task failed: {e}")))
-                        .ok();
-                    return;
-                }
-            };
+                        return;
+                    }
+                };
             match vault.save_attachment(&asset_path, &png_bytes).await {
                 Ok(()) => {
                     tx2.send(AppEvent::InsertAtCursor(markdown)).ok();
@@ -182,7 +183,7 @@ impl EditorScreen {
 
     async fn follow_link(&mut self, target: String, tx: &AppTx) {
         // External URL — hand off to the OS browser/handler.
-        if target.starts_with("http://") || target.starts_with("https://") {
+        if kimun_core::note::is_remote_url(&target) {
             if let Err(e) = open::that_detached(&target) {
                 self.footer.flash(format!("Cannot open URL: {e}"));
             }

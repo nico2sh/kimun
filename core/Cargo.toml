@@ -28,6 +28,8 @@ ignore = "0.4"
 twox-hash = "2.1"
 ## Regular Expressions
 regex = "1.12"
+## URL parsing (replaces hand-rolled URL_RX)
+url = "2"
 # Markdown parsing
 pulldown-cmark = { workspace = true }
 chrono = { workspace = true }
