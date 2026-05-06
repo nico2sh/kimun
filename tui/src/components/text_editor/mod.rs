@@ -10,6 +10,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui_textarea::{CursorMove, TextArea};
+use url::Url;
 
 /// Move or extend the selection by `movement`.
 ///
@@ -76,6 +77,30 @@ fn selection_text(ta: &TextArea<'_>) -> Option<String> {
         parts.push(last[..eb].to_string());
         parts.join("\n")
     })
+}
+
+/// If `s` (after trimming) parses as a URL with a markdown-friendly scheme
+/// (http, https, ftp, ftps, mailto), returns the trimmed slice.
+///
+/// Rejects strings containing internal whitespace: `Url::parse` is lenient about
+/// embedded newlines/tabs, which would yield an invalid markdown link target.
+fn linkable_url(s: &str) -> Option<&str> {
+    let trimmed = s.trim();
+    if trimmed.contains(char::is_whitespace) {
+        return None;
+    }
+    let url = Url::parse(trimmed).ok()?;
+    matches!(url.scheme(), "http" | "https" | "ftp" | "ftps" | "mailto").then_some(trimmed)
+}
+
+/// If `clip` is a linkable URL and `selection` is non-empty, returns
+/// `Some("[escaped_selection](url)")`. Otherwise returns `None`, signalling the
+/// caller to insert `clip` verbatim.
+fn try_build_markdown_link(clip: &str, selection: Option<&str>) -> Option<String> {
+    let url = linkable_url(clip)?;
+    let sel = selection.filter(|s| !s.is_empty())?;
+    let escaped = sel.replace('\\', r"\\").replace(']', r"\]");
+    Some(format!("[{escaped}]({url})"))
 }
 
 use crate::components::Component;
@@ -226,6 +251,10 @@ impl TextEditorComponent {
     }
 
     /// Paste text from the system clipboard at the cursor, replacing any active selection.
+    ///
+    /// When the clipboard contains a URL (http, https, ftp, ftps, or mailto) and
+    /// there is an active selection, the selection is wrapped as a markdown link
+    /// `[selection](url)` instead of being replaced by the raw URL.
     fn paste_from_clipboard(&mut self) {
         // Get text from clipboard first (releasing that borrow), then access backend.
         let text = match &mut self.clipboard {
@@ -236,10 +265,14 @@ impl TextEditorComponent {
             None => return,
         };
         if let BackendState::Textarea(ta) = &mut self.backend {
+            // Only fetch selection text when the clipboard is a URL — avoids
+            // allocating selection contents on every plain-text paste.
+            let selection = linkable_url(&text).and_then(|_| selection_text(ta));
+            let wrapped = try_build_markdown_link(&text, selection.as_deref());
             if ta.selection_range().is_some() {
                 ta.cut();
             }
-            ta.insert_str(&text);
+            ta.insert_str(wrapped.as_deref().unwrap_or(&text));
             self.selection = ta.selection_range();
             self.edit_generation = self.edit_generation.wrapping_add(1);
         }
@@ -1012,6 +1045,98 @@ mod tests {
             lines[sr][sc..].to_string()
         };
         assert_eq!(selected, "hello ");
+    }
+
+    #[test]
+    fn linkable_url_accepts_supported_schemes() {
+        assert_eq!(linkable_url("https://example.com"), Some("https://example.com"));
+        assert_eq!(
+            linkable_url("http://example.com/path?q=1#frag"),
+            Some("http://example.com/path?q=1#frag"),
+        );
+        assert_eq!(linkable_url("  https://example.com  "), Some("https://example.com"));
+        assert_eq!(
+            linkable_url("ftp://files.example.com/x"),
+            Some("ftp://files.example.com/x"),
+        );
+        assert_eq!(
+            linkable_url("ftps://files.example.com/x"),
+            Some("ftps://files.example.com/x"),
+        );
+        assert_eq!(
+            linkable_url("mailto:user@example.com"),
+            Some("mailto:user@example.com"),
+        );
+        assert_eq!(
+            linkable_url("mailto:user@example.com?subject=hi"),
+            Some("mailto:user@example.com?subject=hi"),
+        );
+    }
+
+    #[test]
+    fn linkable_url_rejects_other_schemes_and_plain_text() {
+        assert_eq!(linkable_url("file:///etc/passwd"), None);
+        assert_eq!(linkable_url("ssh://host"), None);
+        assert_eq!(linkable_url("javascript:alert(1)"), None);
+        assert_eq!(linkable_url("example.com"), None);
+        assert_eq!(linkable_url("not a url"), None);
+        assert_eq!(linkable_url(""), None);
+        assert_eq!(linkable_url("https://example.com\nmore"), None);
+    }
+
+    #[test]
+    fn try_build_markdown_link_wraps_selection_when_clip_is_url() {
+        assert_eq!(
+            try_build_markdown_link("https://example.com", Some("click here")).as_deref(),
+            Some("[click here](https://example.com)"),
+        );
+    }
+
+    #[test]
+    fn try_build_markdown_link_trims_url_whitespace() {
+        assert_eq!(
+            try_build_markdown_link("  https://example.com\n", Some("link")).as_deref(),
+            Some("[link](https://example.com)"),
+        );
+    }
+
+    #[test]
+    fn try_build_markdown_link_returns_none_when_no_selection() {
+        assert_eq!(try_build_markdown_link("https://example.com", None), None);
+    }
+
+    #[test]
+    fn try_build_markdown_link_returns_none_when_not_url() {
+        assert_eq!(try_build_markdown_link("plain text", Some("sel")), None);
+    }
+
+    #[test]
+    fn try_build_markdown_link_returns_none_when_selection_empty() {
+        assert_eq!(try_build_markdown_link("https://example.com", Some("")), None);
+    }
+
+    #[test]
+    fn try_build_markdown_link_escapes_close_bracket_in_selection() {
+        assert_eq!(
+            try_build_markdown_link("https://example.com", Some("a]b")).as_deref(),
+            Some(r"[a\]b](https://example.com)"),
+        );
+    }
+
+    #[test]
+    fn try_build_markdown_link_wraps_ftp_url() {
+        assert_eq!(
+            try_build_markdown_link("ftp://files.example.com/x", Some("download")).as_deref(),
+            Some("[download](ftp://files.example.com/x)"),
+        );
+    }
+
+    #[test]
+    fn try_build_markdown_link_wraps_mailto_url() {
+        assert_eq!(
+            try_build_markdown_link("mailto:user@example.com", Some("email me")).as_deref(),
+            Some("[email me](mailto:user@example.com)"),
+        );
     }
 
     #[test]
