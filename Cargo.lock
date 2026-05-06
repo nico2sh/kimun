@@ -1552,6 +1552,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-segmentation",
  "unicode-width",
+ "url",
 ]
 
 [[package]]
