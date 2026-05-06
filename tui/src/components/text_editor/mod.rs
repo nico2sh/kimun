@@ -372,7 +372,11 @@ impl TextEditorComponent {
         let indent_chars = indent.len();
 
         let sel = ta.selection_range();
-        let saved_cursor = if sel.is_none() { Some(ta.cursor()) } else { None };
+        let saved_cursor = if sel.is_none() {
+            Some(ta.cursor())
+        } else {
+            None
+        };
         let (start_row, end_row) = match sel {
             Some(((sr, _), (er, ec))) => {
                 // A selection that ends at column 0 of a row visually doesn't
@@ -1212,7 +1216,10 @@ mod tests {
         }
         let tab_len = get_ta(&mut editor).tab_length() as usize;
         assert!(editor.smart_enter());
-        assert_eq!(editor.get_text(), " ".repeat(4usize.saturating_sub(tab_len)));
+        assert_eq!(
+            editor.get_text(),
+            " ".repeat(4usize.saturating_sub(tab_len))
+        );
     }
 
     #[test]
