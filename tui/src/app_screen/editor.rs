@@ -184,8 +184,9 @@ impl EditorScreen {
     async fn follow_link(&mut self, target: String, tx: &AppTx) {
         // External URL — hand off to the OS browser/handler.
         if kimun_core::note::is_remote_url(&target) {
-            if let Err(e) = open::that_detached(&target) {
-                self.footer.flash(format!("Cannot open URL: {e}"));
+            match open::that_detached(&target) {
+                Ok(()) => self.footer.flash(format!("Opening {target}")),
+                Err(e) => self.footer.flash(format!("Cannot open URL: {e}")),
             }
             return;
         }
@@ -197,8 +198,9 @@ impl EditorScreen {
             let parent = self.path.get_parent_path().0;
             let resolved = parent.append(&VaultPath::new(target.trim()));
             let os_path = self.vault.path_to_pathbuf(&resolved);
-            if let Err(e) = open::that_detached(&os_path) {
-                self.footer.flash(format!("Cannot open image: {e}"));
+            match open::that_detached(&os_path) {
+                Ok(()) => self.footer.flash(format!("Opening {target}")),
+                Err(e) => self.footer.flash(format!("Cannot open image: {e}")),
             }
             return;
         }
