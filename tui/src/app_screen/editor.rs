@@ -72,6 +72,7 @@ impl EditorScreen {
             first_key(&ActionShortcuts::OpenSettings),
             first_key(&ActionShortcuts::Quit),
             first_key(&ActionShortcuts::ToggleSidebar),
+            first_key(&ActionShortcuts::ToggleBacklinks),
         );
         let icons = s.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &s);
@@ -137,7 +138,7 @@ impl EditorScreen {
             .and_then(|n| n.checked_mul(4));
         if expected != Some(img.rgba.len()) {
             self.footer
-                .flash("Clipboard image size mismatch".to_string());
+                .flash("Clipboard image size mismatch".to_string(), tx);
             return true;
         }
         let asset_path = self.vault.generate_attachment_path("image", "png");
@@ -185,8 +186,8 @@ impl EditorScreen {
         // External URL — hand off to the OS browser/handler.
         if kimun_core::note::is_remote_url(&target) {
             match open::that_detached(&target) {
-                Ok(()) => self.footer.flash(format!("Opening {target}")),
-                Err(e) => self.footer.flash(format!("Cannot open URL: {e}")),
+                Ok(()) => self.footer.flash(format!("Opening {target}"), tx),
+                Err(e) => self.footer.flash(format!("Cannot open URL: {e}"), tx),
             }
             return;
         }
@@ -199,8 +200,8 @@ impl EditorScreen {
             let resolved = parent.append(&VaultPath::new(target.trim()));
             let os_path = self.vault.path_to_pathbuf(&resolved);
             match open::that_detached(&os_path) {
-                Ok(()) => self.footer.flash(format!("Opening {target}")),
-                Err(e) => self.footer.flash(format!("Cannot open image: {e}")),
+                Ok(()) => self.footer.flash(format!("Opening {target}"), tx),
+                Err(e) => self.footer.flash(format!("Cannot open image: {e}"), tx),
             }
             return;
         }
@@ -237,7 +238,7 @@ impl EditorScreen {
                 self.focus = Focus::NoteBrowser;
             }
             Err(e) => {
-                self.footer.flash(format!("Link error: {e}"));
+                self.footer.flash(format!("Link error: {e}"), tx);
             }
         }
     }
@@ -489,13 +490,7 @@ impl AppScreen for EditorScreen {
                     && combo.key >= KeyStrike::KeyA
                     && combo.key <= KeyStrike::KeyZ)
             {
-                // We display for two seconds the key combination pressed in the footer
-                self.footer.flash(combo.to_string());
-                let tx2 = tx.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    tx2.send(AppEvent::Redraw).ok();
-                });
+                self.footer.flash(combo.to_string(), tx);
             }
             let action = {
                 let s = self.settings.read().unwrap();
