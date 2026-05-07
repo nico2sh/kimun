@@ -5,7 +5,10 @@ use std::fmt::Display;
 use content_extractor::{
     extract_title, get_chunks_and_links, get_content_chunks, get_content_data,
 };
-pub use content_extractor::{link_char_spans, wikilink_char_spans, LinkSpan, LinkSpanKind};
+pub use content_extractor::{
+    is_remote_url, link_char_spans, link_target_filename, target_looks_like_image,
+    url_with_allowed_scheme, wikilink_char_spans, LinkSpan, LinkSpanKind,
+};
 
 use crate::nfs::VaultPath;
 

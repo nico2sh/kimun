@@ -25,3 +25,5 @@
 - Basic country loaf
 - Sourdough pizza dough
 - Sourdough pancakes (great use for discard)
+
+[Nico](https://nico.red)

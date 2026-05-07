@@ -58,7 +58,7 @@ impl AppScreen for StartScreen {
             self.overlay = Some(spawn_running(handle, tx));
         } else {
             let paths = self.settings.read().unwrap().current_last_paths();
-            let path = paths.last().map_or_else(VaultPath::root, |p| p.to_owned());
+            let path = paths.first().map_or_else(VaultPath::root, |p| p.to_owned());
             tx.send(AppEvent::OpenPath(path)).ok();
         }
     }
@@ -78,7 +78,7 @@ impl AppScreen for StartScreen {
         if let AppEvent::IndexingDone(_) = &msg {
             self.overlay = None;
             let paths = self.settings.read().unwrap().current_last_paths();
-            let path = paths.last().map_or_else(VaultPath::root, |p| p.to_owned());
+            let path = paths.first().map_or_else(VaultPath::root, |p| p.to_owned());
             tx.send(AppEvent::OpenPath(path)).ok();
             return None;
         }

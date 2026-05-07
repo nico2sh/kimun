@@ -78,6 +78,35 @@ fn selection_text(ta: &TextArea<'_>) -> Option<String> {
     })
 }
 
+/// Owned RGBA image data lifted from the system clipboard. Returned by
+/// [`TextEditorComponent::take_clipboard_image`] so the screen layer can
+/// encode + persist without holding the editor's clipboard borrow.
+#[derive(Debug, Clone)]
+pub struct ClipboardImage {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+}
+
+/// Schemes the paste-over-selection flow recognises as "linkable" — broader
+/// than `core::is_remote_url` (http/https only) because users routinely paste
+/// `mailto:` and FTP links and expect them wrapped as markdown links too.
+const LINKABLE_PASTE_SCHEMES: &[&str] = &["http", "https", "ftp", "ftps", "mailto"];
+
+fn linkable_url(s: &str) -> Option<&str> {
+    kimun_core::note::url_with_allowed_scheme(s, LINKABLE_PASTE_SCHEMES)
+}
+
+/// If `clip` is a linkable URL and `selection` is non-empty, returns
+/// `Some("[escaped_selection](url)")`. Otherwise returns `None`, signalling the
+/// caller to insert `clip` verbatim.
+fn try_build_markdown_link(clip: &str, selection: Option<&str>) -> Option<String> {
+    let url = linkable_url(clip)?;
+    let sel = selection.filter(|s| !s.is_empty())?;
+    let escaped = sel.replace('\\', r"\\").replace(']', r"\]");
+    Some(format!("[{escaped}]({url})"))
+}
+
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
@@ -226,8 +255,7 @@ impl TextEditorComponent {
     }
 
     /// Paste text from the system clipboard at the cursor, replacing any active selection.
-    fn paste_from_clipboard(&mut self) {
-        // Get text from clipboard first (releasing that borrow), then access backend.
+    fn paste_from_clipboard(&mut self, tx: &AppTx) {
         let text = match &mut self.clipboard {
             Some(cb) => match cb.get_text() {
                 Ok(t) if !t.is_empty() => t,
@@ -235,14 +263,69 @@ impl TextEditorComponent {
             },
             None => return,
         };
+        self.paste_text(&text, tx);
+    }
+
+    /// Inserts `text` at the cursor, replacing any active selection. When `text`
+    /// is a URL (http/https/ftp/ftps/mailto) and a selection is active, the
+    /// selection is wrapped as a markdown link `[selection](url)` instead of
+    /// being replaced by the raw URL.
+    ///
+    /// On the Nvim backend the URL-wrap shortcut is skipped (would require
+    /// reading the visual selection from nvim) — `text` is forwarded via
+    /// `nvim_paste`, which honours the current mode (insert/normal/visual).
+    pub fn paste_text(&mut self, text: &str, tx: &AppTx) {
+        if text.is_empty() {
+            return;
+        }
+        match &mut self.backend {
+            BackendState::Textarea(ta) => {
+                let selection = linkable_url(text).and_then(|_| selection_text(ta));
+                let wrapped = try_build_markdown_link(text, selection.as_deref());
+                if ta.selection_range().is_some() {
+                    ta.cut();
+                }
+                ta.insert_str(wrapped.as_deref().unwrap_or(text));
+                self.selection = ta.selection_range();
+                self.edit_generation = self.edit_generation.wrapping_add(1);
+            }
+            BackendState::Nvim(nvim) => {
+                nvim.paste(text, tx.clone());
+                self.edit_generation = self.edit_generation.wrapping_add(1);
+            }
+        }
+    }
+
+    /// Inserts `text` at the cursor, replacing any active selection. Routes
+    /// through `nvim_paste` on the Nvim backend (delegates to [`paste_text`]
+    /// for that case — URL-wrap is a no-op when nothing in the supplied text
+    /// matches `linkable_url`, so the two paths are equivalent on Nvim).
+    pub fn insert_at_cursor(&mut self, text: &str, tx: &AppTx) {
+        if matches!(self.backend, BackendState::Nvim(_)) {
+            self.paste_text(text, tx);
+            return;
+        }
         if let BackendState::Textarea(ta) = &mut self.backend {
             if ta.selection_range().is_some() {
                 ta.cut();
             }
-            ta.insert_str(&text);
+            ta.insert_str(text);
             self.selection = ta.selection_range();
             self.edit_generation = self.edit_generation.wrapping_add(1);
         }
+    }
+
+    /// Snapshot of the system clipboard image, if any. Returns owned RGBA bytes
+    /// plus the image dimensions. The screen layer is responsible for encoding
+    /// (e.g. PNG) and persisting via the vault.
+    pub fn take_clipboard_image(&mut self) -> Option<ClipboardImage> {
+        let cb = self.clipboard.as_mut()?;
+        let img = cb.get_image().ok()?;
+        Some(ClipboardImage {
+            width: img.width,
+            height: img.height,
+            rgba: img.bytes.into_owned(),
+        })
     }
 
     /// Wrap a selection in (or insert at the cursor) markdown markers for
@@ -591,7 +674,7 @@ impl TextEditorComponent {
     fn handle_textarea_key(
         &mut self,
         key: &ratatui::crossterm::event::KeyEvent,
-        _tx: &AppTx,
+        tx: &AppTx,
     ) -> EventState {
         // System clipboard shortcuts — intercept before passing to textarea.
         if key.modifiers == KeyModifiers::CONTROL {
@@ -601,7 +684,7 @@ impl TextEditorComponent {
                     return EventState::Consumed;
                 }
                 KeyCode::Char('v') => {
-                    self.paste_from_clipboard();
+                    self.paste_from_clipboard(tx);
                     return EventState::Consumed;
                 }
                 KeyCode::Char('x') => {
@@ -849,6 +932,9 @@ impl Component for TextEditorComponent {
                 self.handle_textarea_key(key, tx)
             }
             InputEvent::Mouse(mouse) => self.handle_mouse(mouse, tx),
+            // Bracketed paste is intercepted by EditorScreen so it can run the
+            // image-paste flow first. It never reaches us here.
+            InputEvent::Paste(_) => EventState::NotConsumed,
         }
     }
 
@@ -928,6 +1014,10 @@ mod tests {
             KeyBindings::empty(),
             &crate::settings::AppSettings::default(),
         )
+    }
+
+    fn dummy_tx() -> AppTx {
+        tokio::sync::mpsc::unbounded_channel().0
     }
 
     fn get_ta(editor: &mut TextEditorComponent) -> &mut TextArea<'static> {
@@ -1012,6 +1102,133 @@ mod tests {
             lines[sr][sc..].to_string()
         };
         assert_eq!(selected, "hello ");
+    }
+
+    #[test]
+    fn linkable_url_accepts_supported_schemes() {
+        assert_eq!(
+            linkable_url("https://example.com"),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            linkable_url("http://example.com/path?q=1#frag"),
+            Some("http://example.com/path?q=1#frag"),
+        );
+        assert_eq!(
+            linkable_url("  https://example.com  "),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            linkable_url("ftp://files.example.com/x"),
+            Some("ftp://files.example.com/x"),
+        );
+        assert_eq!(
+            linkable_url("ftps://files.example.com/x"),
+            Some("ftps://files.example.com/x"),
+        );
+        assert_eq!(
+            linkable_url("mailto:user@example.com"),
+            Some("mailto:user@example.com"),
+        );
+        assert_eq!(
+            linkable_url("mailto:user@example.com?subject=hi"),
+            Some("mailto:user@example.com?subject=hi"),
+        );
+    }
+
+    #[test]
+    fn linkable_url_rejects_other_schemes_and_plain_text() {
+        assert_eq!(linkable_url("file:///etc/passwd"), None);
+        assert_eq!(linkable_url("ssh://host"), None);
+        assert_eq!(linkable_url("javascript:alert(1)"), None);
+        assert_eq!(linkable_url("example.com"), None);
+        assert_eq!(linkable_url("not a url"), None);
+        assert_eq!(linkable_url(""), None);
+        assert_eq!(linkable_url("https://example.com\nmore"), None);
+    }
+
+    #[test]
+    fn try_build_markdown_link_wraps_selection_when_clip_is_url() {
+        assert_eq!(
+            try_build_markdown_link("https://example.com", Some("click here")).as_deref(),
+            Some("[click here](https://example.com)"),
+        );
+    }
+
+    #[test]
+    fn try_build_markdown_link_trims_url_whitespace() {
+        assert_eq!(
+            try_build_markdown_link("  https://example.com\n", Some("link")).as_deref(),
+            Some("[link](https://example.com)"),
+        );
+    }
+
+    #[test]
+    fn try_build_markdown_link_returns_none_when_no_selection() {
+        assert_eq!(try_build_markdown_link("https://example.com", None), None);
+    }
+
+    #[test]
+    fn try_build_markdown_link_returns_none_when_not_url() {
+        assert_eq!(try_build_markdown_link("plain text", Some("sel")), None);
+    }
+
+    #[test]
+    fn try_build_markdown_link_returns_none_when_selection_empty() {
+        assert_eq!(
+            try_build_markdown_link("https://example.com", Some("")),
+            None
+        );
+    }
+
+    #[test]
+    fn try_build_markdown_link_escapes_close_bracket_in_selection() {
+        assert_eq!(
+            try_build_markdown_link("https://example.com", Some("a]b")).as_deref(),
+            Some(r"[a\]b](https://example.com)"),
+        );
+    }
+
+    #[test]
+    fn try_build_markdown_link_wraps_ftp_url() {
+        assert_eq!(
+            try_build_markdown_link("ftp://files.example.com/x", Some("download")).as_deref(),
+            Some("[download](ftp://files.example.com/x)"),
+        );
+    }
+
+    #[test]
+    fn try_build_markdown_link_wraps_mailto_url() {
+        assert_eq!(
+            try_build_markdown_link("mailto:user@example.com", Some("email me")).as_deref(),
+            Some("[email me](mailto:user@example.com)"),
+        );
+    }
+
+    #[test]
+    fn insert_at_cursor_appends_text() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::End);
+        }
+        editor.insert_at_cursor(" world", &dummy_tx());
+        assert_eq!(editor.get_text(), "hello world");
+    }
+
+    #[test]
+    fn insert_at_cursor_replaces_selection() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        {
+            let ta = get_ta(&mut editor);
+            ta.move_cursor(ratatui_textarea::CursorMove::Head);
+            ta.start_selection();
+            ta.move_cursor(ratatui_textarea::CursorMove::WordForward);
+        }
+        editor.insert_at_cursor("HEY ", &dummy_tx());
+        assert_eq!(editor.get_text(), "HEY world");
     }
 
     #[test]
