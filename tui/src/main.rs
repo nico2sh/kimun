@@ -31,8 +31,8 @@ struct Cli {
 }
 
 use crossterm::event::{
-    DisableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use ratatui::Terminal;
@@ -169,7 +169,12 @@ async fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     // Enable enhanced keyboard protocol when the terminal supports it (e.g. Kitty, WezTerm).
     // This is required to correctly receive F-keys and other special keys in those terminals.
     if supports_keyboard_enhancement().unwrap_or(false) {
@@ -193,7 +198,8 @@ async fn main() -> Result<()> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
 
@@ -341,6 +347,11 @@ where
                     InputEvent::Mouse(mouse_event) => {
                         if let Some(screen) = &mut app.current_screen {
                             screen.handle_input(&InputEvent::Mouse(mouse_event), &tx);
+                        }
+                    }
+                    InputEvent::Paste(text) => {
+                        if let Some(screen) = &mut app.current_screen {
+                            screen.handle_input(&InputEvent::Paste(text), &tx);
                         }
                     }
                 }

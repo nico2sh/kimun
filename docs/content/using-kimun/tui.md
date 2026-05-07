@@ -78,7 +78,7 @@ Focus moves directionally through the visible panels. If the target panel is hid
 - **`Ctrl+F`** — Toggle the note browser panel visibility
 - **`Ctrl+Y`** — Toggle the preview pane (Editor only)
 - **`Ctrl+E`** — Toggle the backlinks panel (right side)
-- **`Ctrl+B`** — Toggle the sidebar (context-sensitive; see Key Bindings below)
+- **`Ctrl+T`** — Toggle the sidebar
 
 ### Sorting
 
@@ -108,6 +108,36 @@ When the cursor is inside a link in the editor, **`Ctrl+G`** follows it:
 - **Wikilink (`[[note name]]`)** — opens the matching note directly, or shows a picker if multiple notes match
 - **Markdown link (`[text](path)`)** — opens the linked note; fragment suffixes (e.g. `#section`) are ignored during lookup
 - **URL (`https://...`)** — opens the URL in your default browser
+- **Image link (`![alt](path)`)** — opens the image file with the OS default image viewer. Relative paths resolve against the current note's directory; absolute vault paths (e.g. `/assets/foo.png`) resolve from the workspace root
+
+### Text Formatting
+
+While the cursor is in the editor, format shortcuts wrap the current selection (or insert empty markers at the cursor when no selection is active):
+
+| Action | Default Binding | Effect |
+|--------|-----------------|--------|
+| Bold | `Ctrl+B` | wraps selection in `**…**` |
+| Italic | `Ctrl+I` | wraps selection in `*…*` |
+| Strikethrough | `Ctrl+S` | wraps selection in `~~…~~` |
+
+Examples:
+
+- Selecting `important` and pressing `Ctrl+B` produces `**important**`.
+- Pressing `Ctrl+I` on an empty cursor inserts `**` and places the cursor between the markers.
+
+### Pasting Content
+
+The editor adapts paste behaviour to the clipboard contents. Both **`Ctrl+V`** and the terminal's native paste shortcut are supported (on macOS this is `Cmd+V`; the TUI receives it through bracketed paste).
+
+**Plain text** — inserted at the cursor, replacing any active selection.
+
+**URL over selection** — if the clipboard holds an `http`, `https`, `ftp`, `ftps`, or `mailto` URL **and** there is an active selection, the selection is wrapped as a markdown link instead of being replaced:
+
+- Select `Nico`, copy `https://nico.red` to the clipboard, paste → produces `[Nico](https://nico.red)`.
+
+**Image** — if the clipboard contains image bytes (e.g. a screenshot), the image is saved as a PNG under the workspace's `/assets/` directory and a markdown image link is inserted at the cursor, relative to the current note. Generated filenames are time-stamped (e.g. `image_<unix_nanos>.png`) so multiple pastes do not collide.
+
+The inserted image link renders as a placeholder (`[image_<…>.png]`) in the editor for readability — press `Ctrl+G` over the placeholder to open the image with your OS default viewer.
 
 ## Key Bindings
 
@@ -125,10 +155,10 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 | Quick note | `Ctrl+W` |
 | Toggle backlinks panel | `Ctrl+E` |
 | Switch workspace | `F4` |
-| Toggle sidebar / Bold (context-sensitive) | `Ctrl+B` |
+| Toggle sidebar | `Ctrl+T` |
+| Bold | `Ctrl+B` |
 | Italic | `Ctrl+I` |
 | Strikethrough | `Ctrl+S` |
-| Toggle header | `Ctrl+T` |
 | Focus right (Sidebar → Editor → Backlinks) | `Ctrl+L` |
 | Focus left (Backlinks → Editor → Sidebar) | `Ctrl+H` |
 | Cycle sort field (name/title) | `Ctrl+N` |
@@ -137,13 +167,6 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 | File operations (rename/move/delete) | `F2` |
 
 ### Context-Sensitive Bindings
-
-**`Ctrl+B` — Toggle sidebar / Bold:**
-
-- When focus is on the **file browser/sidebar:** Toggles the sidebar's visibility
-- When the cursor is **inside the editor pane:** Applies or removes **bold** formatting to the selected text or word
-
-This dual purpose allows efficient use of keyboard space while maintaining logical behavior based on context.
 
 **`Ctrl+G` — Follow link (editor only):**
 

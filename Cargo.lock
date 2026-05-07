@@ -1533,6 +1533,7 @@ dependencies = [
  "nucleo",
  "nvim-rs",
  "open",
+ "png",
  "pulldown-cmark",
  "ratatui",
  "ratatui-textarea",
@@ -1575,6 +1576,7 @@ dependencies = [
  "tokio",
  "toml",
  "twox-hash",
+ "url",
 ]
 
 [[package]]
