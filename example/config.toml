@@ -22,7 +22,7 @@
 #
 # ─────────────────────────────────────────────────────────────────────────────
 config_version = 3
-theme = "dark"
+theme = "ANSI"
 cache_dir = "."
 history_dir = "history"
 autosave_interval_secs = 5
@@ -36,12 +36,12 @@ journal_sort_order = "descending"
 [global]
 current_workspace = "personal"
 
-[workspaces.work]
-path = "work"
-created = "2026-04-01T00:00:00Z"
-
 [workspaces.personal]
 path = "personal"
+created = "2026-04-01T00:00:00Z"
+
+[workspaces.work]
+path = "work"
 created = "2026-04-01T00:00:00Z"
 
 [key_bindings]

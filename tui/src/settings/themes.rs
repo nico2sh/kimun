@@ -43,10 +43,33 @@ impl ThemeColor {
     }
 
     /// Convert to the corresponding ratatui `Color`.
+    ///
+    /// ANSI indices 0–15 map to ratatui's named color variants so they emit
+    /// the standard SGR codes (30–37 / 90–97) the terminal's palette is keyed
+    /// to, rather than the 256-color `38;5;n` form which some terminals
+    /// remap inconsistently for the low 16 slots.
     pub fn to_ratatui(&self) -> Color {
         match self {
             ThemeColor::Rgb(r, g, b) => Color::Rgb(*r, *g, *b),
-            ThemeColor::Ansi(n) => Color::Indexed(*n),
+            ThemeColor::Ansi(n) => match n {
+                0 => Color::Black,
+                1 => Color::Red,
+                2 => Color::Green,
+                3 => Color::Yellow,
+                4 => Color::Blue,
+                5 => Color::Magenta,
+                6 => Color::Cyan,
+                7 => Color::Gray,
+                8 => Color::DarkGray,
+                9 => Color::LightRed,
+                10 => Color::LightGreen,
+                11 => Color::LightYellow,
+                12 => Color::LightBlue,
+                13 => Color::LightMagenta,
+                14 => Color::LightCyan,
+                15 => Color::White,
+                _ => Color::Indexed(*n),
+            },
             ThemeColor::Reset => Color::Reset,
         }
     }
@@ -431,10 +454,13 @@ impl Theme {
     }
 
     /// Uses the terminal's 16 ANSI colors so the theme adapts to whatever
-    /// palette the user has configured in their terminal emulator (dark variant).
-    pub fn ansi_dark() -> Self {
+    /// palette the user has configured in their terminal emulator. Works for
+    /// both light and dark terminal palettes because backgrounds and primary
+    /// foregrounds use `Reset` (the terminal's defaults) and accents are
+    /// chromatic ANSI slots whose hue is stable across palettes.
+    pub fn ansi() -> Self {
         Theme {
-            name: "ANSI Dark".to_string(),
+            name: "ANSI".to_string(),
             bg: ThemeColor::Reset,
             bg_panel: ThemeColor::Ansi(0),
             bg_selected: ThemeColor::Ansi(4), // blue
@@ -448,27 +474,6 @@ impl Theme {
             color_directory: ThemeColor::Ansi(12),    // bright blue
             color_journal_date: ThemeColor::Ansi(10), // bright green
             color_search_match: ThemeColor::Ansi(11), // bright yellow
-        }
-    }
-
-    /// Uses the terminal's 16 ANSI colors so the theme adapts to whatever
-    /// palette the user has configured in their terminal emulator (light variant).
-    pub fn ansi_light() -> Self {
-        Theme {
-            name: "ANSI Light".to_string(),
-            bg: ThemeColor::Reset,
-            bg_panel: ThemeColor::Ansi(7),    // light gray
-            bg_selected: ThemeColor::Ansi(4), // blue
-            fg: ThemeColor::Reset,
-            fg_secondary: ThemeColor::Ansi(8),       // dark gray
-            fg_muted: ThemeColor::Ansi(7),           // light gray
-            fg_selected: ThemeColor::Ansi(15),       // bright white
-            border: ThemeColor::Ansi(7),             // light gray
-            border_focused: ThemeColor::Ansi(4),     // blue
-            accent: ThemeColor::Ansi(4),             // blue
-            color_directory: ThemeColor::Ansi(4),    // blue
-            color_journal_date: ThemeColor::Ansi(2), // green
-            color_search_match: ThemeColor::Ansi(3), // yellow/amber
         }
     }
 }
@@ -593,7 +598,14 @@ mod tests {
 
     #[test]
     fn test_ansi_to_ratatui() {
-        assert_eq!(ThemeColor::Ansi(4).to_ratatui(), Color::Indexed(4));
+        // Low 16 ANSI indices map to named ratatui variants
+        assert_eq!(ThemeColor::Ansi(0).to_ratatui(), Color::Black);
+        assert_eq!(ThemeColor::Ansi(4).to_ratatui(), Color::Blue);
+        assert_eq!(ThemeColor::Ansi(7).to_ratatui(), Color::Gray);
+        assert_eq!(ThemeColor::Ansi(8).to_ratatui(), Color::DarkGray);
+        assert_eq!(ThemeColor::Ansi(15).to_ratatui(), Color::White);
+        // Indices >= 16 still use 256-color
+        assert_eq!(ThemeColor::Ansi(42).to_ratatui(), Color::Indexed(42));
         assert_eq!(ThemeColor::Reset.to_ratatui(), Color::Reset);
     }
 
@@ -811,8 +823,7 @@ mod tests {
     #[test]
     fn test_all_builtin_themes_serialize() {
         let themes = vec![
-            Theme::ansi_dark(),
-            Theme::ansi_light(),
+            Theme::ansi(),
             Theme::gruvbox_dark(),
             Theme::gruvbox_light(),
             Theme::catppuccin_mocha(),
@@ -832,25 +843,13 @@ mod tests {
     }
 
     #[test]
-    fn test_ansi_dark_theme() {
-        let theme = Theme::ansi_dark();
-        assert_eq!(theme.name, "ANSI Dark");
+    fn test_ansi_theme() {
+        let theme = Theme::ansi();
+        assert_eq!(theme.name, "ANSI");
         assert_eq!(theme.bg, ThemeColor::Reset);
         assert_eq!(theme.fg, ThemeColor::Reset);
         assert_eq!(theme.bg_selected, ThemeColor::Ansi(4));
         assert_eq!(theme.border_focused, ThemeColor::Ansi(6));
         assert_eq!(theme.color_directory, ThemeColor::Ansi(12));
-    }
-
-    #[test]
-    fn test_ansi_light_theme() {
-        let theme = Theme::ansi_light();
-        assert_eq!(theme.name, "ANSI Light");
-        assert_eq!(theme.bg, ThemeColor::Reset);
-        assert_eq!(theme.fg, ThemeColor::Reset);
-        assert_eq!(theme.bg_selected, ThemeColor::Ansi(4));
-        assert_eq!(theme.border_focused, ThemeColor::Ansi(4));
-        assert_eq!(theme.color_directory, ThemeColor::Ansi(4));
-        assert_eq!(theme.color_search_match, ThemeColor::Ansi(3));
     }
 }
