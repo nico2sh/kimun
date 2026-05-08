@@ -462,7 +462,7 @@ impl Theme {
         Theme {
             name: "ANSI".to_string(),
             bg: ThemeColor::Reset,
-            bg_panel: ThemeColor::Ansi(0),
+            bg_panel: ThemeColor::Reset,
             bg_selected: ThemeColor::Ansi(4), // blue
             fg: ThemeColor::Reset,
             fg_secondary: ThemeColor::Ansi(7),        // white
