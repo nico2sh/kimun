@@ -20,7 +20,8 @@ The following themes are included out of the box:
 - **Solarized Dark**
 - **Solarized Light**
 - **Nord**
-- **ANSI** *(uses your terminal's own 16-color palette)*
+- **ANSI Dark**
+- **ANSI Light**
 
 Switch between them via the Settings screen in the TUI, or by setting the `theme` field in your config file:
 
@@ -73,13 +74,15 @@ color_search_match = "#a6e3a1" # Highlighted search match text
 
 ### Color Formats
 
-Colors can be specified in three formats:
+Colors can be specified in the following formats:
 
-| Format | Example |
-|---|---|
-| 6-digit hex | `"#1e1e2e"` |
-| 3-digit hex (shorthand) | `"#abc"` → expands to `#aabbcc` |
-| RGB function | `"rgb(30, 30, 46)"` |
+| Format | Example | Notes |
+|---|---|---|
+| 6-digit hex | `"#1e1e2e"` | |
+| 3-digit hex (shorthand) | `"#abc"` | Expands to `#aabbcc` |
+| RGB function | `"rgb(30, 30, 46)"` | |
+| ANSI index | `"ansi:4"` | 0-255 |
+| Terminal default | `"reset"` | Uses the terminal's default fg or bg |
 
 ### Activating a Custom Theme
 
