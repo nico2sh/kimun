@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.8.0...kimun-notes-v0.9.0) - 2026-05-09
+
+### Added
+
+- *(themes)* add ANSI dark and light built-in themes
+
+### Fixed
+
+- reset on panel
+- mapping of ansi colors to ratatui's
+
+### Other
+
+- Merge pull request #77 from MGross21/feat/ansi-colors
+- *(themes)* simplify ANSI theme — built-in only, not a color format
+- Merge remote-tracking branch 'origin' into feat/ansi-colors
+
 ## [0.8.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.7.3...kimun-notes-v0.8.0) - 2026-05-05
 
 ### Added
