@@ -22,7 +22,7 @@
 #
 # ─────────────────────────────────────────────────────────────────────────────
 config_version = 3
-theme = "dark"
+theme = "ANSI"
 cache_dir = "."
 history_dir = "history"
 autosave_interval_secs = 5

@@ -3,10 +3,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::Display;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ThemeColor {
-    r: u8,
-    g: u8,
-    b: u8,
+pub enum ThemeColor {
+    Rgb(u8, u8, u8),
+    /// Terminal ANSI color index (0–15 for the standard palette, up to 255 for
+    /// 256-color mode). The actual color is determined by the user's terminal.
+    Ansi(u8),
+    /// The terminal's default foreground or background color.
+    Reset,
 }
 
 impl Serialize for ThemeColor {
@@ -14,8 +17,13 @@ impl Serialize for ThemeColor {
     where
         S: Serializer,
     {
-        let hex = format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b);
-        serializer.serialize_str(&hex)
+        match self {
+            ThemeColor::Rgb(r, g, b) => {
+                serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}", r, g, b))
+            }
+            ThemeColor::Ansi(n) => serializer.serialize_str(&format!("ansi:{}", n)),
+            ThemeColor::Reset => serializer.serialize_str("reset"),
+        }
     }
 }
 
@@ -31,18 +39,47 @@ impl<'de> Deserialize<'de> for ThemeColor {
 
 impl ThemeColor {
     pub fn new(r: u8, g: u8, b: u8) -> Self {
-        ThemeColor { r, g, b }
+        ThemeColor::Rgb(r, g, b)
     }
 
-    /// Convert to a ratatui `Color::Rgb` value for use in widget styles.
+    /// Convert to the corresponding ratatui `Color`.
+    ///
+    /// ANSI indices 0–15 map to ratatui's named color variants so they emit
+    /// the standard SGR codes (30–37 / 90–97) the terminal's palette is keyed
+    /// to, rather than the 256-color `38;5;n` form which some terminals
+    /// remap inconsistently for the low 16 slots.
     pub fn to_ratatui(&self) -> Color {
-        Color::Rgb(self.r, self.g, self.b)
+        match self {
+            ThemeColor::Rgb(r, g, b) => Color::Rgb(*r, *g, *b),
+            ThemeColor::Ansi(n) => match n {
+                0 => Color::Black,
+                1 => Color::Red,
+                2 => Color::Green,
+                3 => Color::Yellow,
+                4 => Color::Blue,
+                5 => Color::Magenta,
+                6 => Color::Cyan,
+                7 => Color::Gray,
+                8 => Color::DarkGray,
+                9 => Color::LightRed,
+                10 => Color::LightGreen,
+                11 => Color::LightYellow,
+                12 => Color::LightBlue,
+                13 => Color::LightMagenta,
+                14 => Color::LightCyan,
+                15 => Color::White,
+                _ => Color::Indexed(*n),
+            },
+            ThemeColor::Reset => Color::Reset,
+        }
     }
 
     /// Parse a color from a string in various formats:
     /// - RGB: "rgb(255, 128, 0)"
     /// - 3-char hex: "#abc" (expanded to #aabbcc)
     /// - 6-char hex: "#aabbcc"
+    /// - ANSI index: "ansi:4" (0–255)
+    /// - Terminal default: "reset"
     pub fn from_string(s: &str) -> Result<Self, String> {
         let s = s.trim();
 
@@ -50,6 +87,12 @@ impl ThemeColor {
             Self::from_hex(s)
         } else if s.starts_with("rgb(") && s.ends_with(')') {
             Self::from_rgb_string(s)
+        } else if s == "reset" {
+            Ok(ThemeColor::Reset)
+        } else if let Some(rest) = s.strip_prefix("ansi:") {
+            rest.parse::<u8>()
+                .map(ThemeColor::Ansi)
+                .map_err(|_| format!("Invalid ANSI color index: {}", rest))
         } else {
             Err(format!("Invalid color format: {}", s))
         }
@@ -86,7 +129,7 @@ impl ThemeColor {
         let b = u8::from_str_radix(&hex[2..3].repeat(2), 16)
             .map_err(|_| format!("Invalid hex character in blue component: {}", &hex[2..3]))?;
 
-        Ok(ThemeColor { r, g, b })
+        Ok(ThemeColor::Rgb(r, g, b))
     }
 
     /// Parse 6-character hex color (e.g., "aabbcc")
@@ -102,7 +145,7 @@ impl ThemeColor {
         let b = u8::from_str_radix(&hex[4..6], 16)
             .map_err(|_| format!("Invalid hex characters in blue component: {}", &hex[4..6]))?;
 
-        Ok(ThemeColor { r, g, b })
+        Ok(ThemeColor::Rgb(r, g, b))
     }
 
     /// Parse RGB string format (e.g., "rgb(255, 128, 0)")
@@ -128,13 +171,17 @@ impl ThemeColor {
             .parse::<u8>()
             .map_err(|_| format!("Invalid blue value: {}", parts[2]))?;
 
-        Ok(ThemeColor { r, g, b })
+        Ok(ThemeColor::Rgb(r, g, b))
     }
 }
 
 impl Display for ThemeColor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "rgb({},{},{})", self.r, self.g, self.b)
+        match self {
+            ThemeColor::Rgb(r, g, b) => write!(f, "rgb({},{},{})", r, g, b),
+            ThemeColor::Ansi(n) => write!(f, "ansi:{}", n),
+            ThemeColor::Reset => write!(f, "reset"),
+        }
     }
 }
 
@@ -405,6 +452,30 @@ impl Theme {
             color_search_match: ThemeColor::from_string("#a3be8c").unwrap(),
         }
     }
+
+    /// Uses the terminal's 16 ANSI colors so the theme adapts to whatever
+    /// palette the user has configured in their terminal emulator. Works for
+    /// both light and dark terminal palettes because backgrounds and primary
+    /// foregrounds use `Reset` (the terminal's defaults) and accents are
+    /// chromatic ANSI slots whose hue is stable across palettes.
+    pub fn ansi() -> Self {
+        Theme {
+            name: "ANSI".to_string(),
+            bg: ThemeColor::Reset,
+            bg_panel: ThemeColor::Reset,
+            bg_selected: ThemeColor::Ansi(4), // blue
+            fg: ThemeColor::Reset,
+            fg_secondary: ThemeColor::Ansi(7),        // white
+            fg_muted: ThemeColor::Ansi(8),            // bright black
+            fg_selected: ThemeColor::Ansi(15),        // bright white
+            border: ThemeColor::Ansi(8),              // bright black
+            border_focused: ThemeColor::Ansi(6),      // cyan
+            accent: ThemeColor::Ansi(6),              // cyan
+            color_directory: ThemeColor::Ansi(12),    // bright blue
+            color_journal_date: ThemeColor::Ansi(10), // bright green
+            color_search_match: ThemeColor::Ansi(11), // bright yellow
+        }
+    }
 }
 
 #[cfg(test)]
@@ -431,98 +502,111 @@ mod tests {
 
     #[test]
     fn test_from_hex_6char() {
-        let color = ThemeColor::from_string("#ff8800").unwrap();
-        assert_eq!(color.r, 255);
-        assert_eq!(color.g, 136);
-        assert_eq!(color.b, 0);
+        assert_eq!(
+            ThemeColor::from_string("#ff8800").unwrap(),
+            ThemeColor::Rgb(255, 136, 0)
+        );
     }
 
     #[test]
     fn test_from_hex_6char_lowercase() {
-        let color = ThemeColor::from_string("#abcdef").unwrap();
-        assert_eq!(color.r, 171);
-        assert_eq!(color.g, 205);
-        assert_eq!(color.b, 239);
+        assert_eq!(
+            ThemeColor::from_string("#abcdef").unwrap(),
+            ThemeColor::Rgb(171, 205, 239)
+        );
     }
 
     #[test]
     fn test_from_hex_6char_uppercase() {
-        let color = ThemeColor::from_string("#ABCDEF").unwrap();
-        assert_eq!(color.r, 171);
-        assert_eq!(color.g, 205);
-        assert_eq!(color.b, 239);
+        assert_eq!(
+            ThemeColor::from_string("#ABCDEF").unwrap(),
+            ThemeColor::Rgb(171, 205, 239)
+        );
     }
 
     #[test]
     fn test_from_hex_3char() {
-        let color = ThemeColor::from_string("#f80").unwrap();
-        assert_eq!(color.r, 255);
-        assert_eq!(color.g, 136);
-        assert_eq!(color.b, 0);
+        assert_eq!(
+            ThemeColor::from_string("#f80").unwrap(),
+            ThemeColor::Rgb(255, 136, 0)
+        );
     }
 
     #[test]
     fn test_from_hex_3char_expansion() {
-        let color = ThemeColor::from_string("#abc").unwrap();
-        assert_eq!(color.r, 170);
-        assert_eq!(color.g, 187);
-        assert_eq!(color.b, 204);
+        assert_eq!(
+            ThemeColor::from_string("#abc").unwrap(),
+            ThemeColor::Rgb(170, 187, 204)
+        );
     }
 
     #[test]
     fn test_from_hex_3char_black() {
-        let color = ThemeColor::from_string("#000").unwrap();
-        assert_eq!(color.r, 0);
-        assert_eq!(color.g, 0);
-        assert_eq!(color.b, 0);
+        assert_eq!(
+            ThemeColor::from_string("#000").unwrap(),
+            ThemeColor::Rgb(0, 0, 0)
+        );
     }
 
     #[test]
     fn test_from_hex_3char_white() {
-        let color = ThemeColor::from_string("#fff").unwrap();
-        assert_eq!(color.r, 255);
-        assert_eq!(color.g, 255);
-        assert_eq!(color.b, 255);
+        assert_eq!(
+            ThemeColor::from_string("#fff").unwrap(),
+            ThemeColor::Rgb(255, 255, 255)
+        );
     }
 
     #[test]
     fn test_from_rgb_string() {
-        let color = ThemeColor::from_string("rgb(255, 128, 0)").unwrap();
-        assert_eq!(color.r, 255);
-        assert_eq!(color.g, 128);
-        assert_eq!(color.b, 0);
+        assert_eq!(
+            ThemeColor::from_string("rgb(255, 128, 0)").unwrap(),
+            ThemeColor::Rgb(255, 128, 0)
+        );
     }
 
     #[test]
     fn test_from_rgb_string_no_spaces() {
-        let color = ThemeColor::from_string("rgb(255,128,0)").unwrap();
-        assert_eq!(color.r, 255);
-        assert_eq!(color.g, 128);
-        assert_eq!(color.b, 0);
+        assert_eq!(
+            ThemeColor::from_string("rgb(255,128,0)").unwrap(),
+            ThemeColor::Rgb(255, 128, 0)
+        );
     }
 
     #[test]
     fn test_from_rgb_string_extra_spaces() {
-        let color = ThemeColor::from_string("rgb( 255 , 128 , 0 )").unwrap();
-        assert_eq!(color.r, 255);
-        assert_eq!(color.g, 128);
-        assert_eq!(color.b, 0);
+        assert_eq!(
+            ThemeColor::from_string("rgb( 255 , 128 , 0 )").unwrap(),
+            ThemeColor::Rgb(255, 128, 0)
+        );
     }
 
     #[test]
     fn test_from_rgb_string_min_max() {
-        let color = ThemeColor::from_string("rgb(0, 255, 0)").unwrap();
-        assert_eq!(color.r, 0);
-        assert_eq!(color.g, 255);
-        assert_eq!(color.b, 0);
+        assert_eq!(
+            ThemeColor::from_string("rgb(0, 255, 0)").unwrap(),
+            ThemeColor::Rgb(0, 255, 0)
+        );
     }
 
     #[test]
     fn test_from_string_with_whitespace() {
-        let color = ThemeColor::from_string("  #ff8800  ").unwrap();
-        assert_eq!(color.r, 255);
-        assert_eq!(color.g, 136);
-        assert_eq!(color.b, 0);
+        assert_eq!(
+            ThemeColor::from_string("  #ff8800  ").unwrap(),
+            ThemeColor::Rgb(255, 136, 0)
+        );
+    }
+
+    #[test]
+    fn test_ansi_to_ratatui() {
+        // Low 16 ANSI indices map to named ratatui variants
+        assert_eq!(ThemeColor::Ansi(0).to_ratatui(), Color::Black);
+        assert_eq!(ThemeColor::Ansi(4).to_ratatui(), Color::Blue);
+        assert_eq!(ThemeColor::Ansi(7).to_ratatui(), Color::Gray);
+        assert_eq!(ThemeColor::Ansi(8).to_ratatui(), Color::DarkGray);
+        assert_eq!(ThemeColor::Ansi(15).to_ratatui(), Color::White);
+        // Indices >= 16 still use 256-color
+        assert_eq!(ThemeColor::Ansi(42).to_ratatui(), Color::Indexed(42));
+        assert_eq!(ThemeColor::Reset.to_ratatui(), Color::Reset);
     }
 
     #[test]
@@ -586,10 +670,7 @@ mod tests {
 
     #[test]
     fn test_new_constructor() {
-        let color = ThemeColor::new(255, 128, 0);
-        assert_eq!(color.r, 255);
-        assert_eq!(color.g, 128);
-        assert_eq!(color.b, 0);
+        assert_eq!(ThemeColor::new(255, 128, 0), ThemeColor::Rgb(255, 128, 0));
     }
 
     #[test]
@@ -619,9 +700,7 @@ mod tests {
         }
         let toml_str = r###"color = "#3b82f6""###;
         let wrapper: Wrapper = toml::from_str(toml_str).unwrap();
-        assert_eq!(wrapper.color.r, 59);
-        assert_eq!(wrapper.color.g, 130);
-        assert_eq!(wrapper.color.b, 246);
+        assert_eq!(wrapper.color, ThemeColor::Rgb(59, 130, 246));
     }
 
     #[test]
@@ -710,9 +789,7 @@ mod tests {
         }
         let toml_str = r###"color = "#ABCDEF""###;
         let wrapper: Wrapper = toml::from_str(toml_str).unwrap();
-        assert_eq!(wrapper.color.r, 171);
-        assert_eq!(wrapper.color.g, 205);
-        assert_eq!(wrapper.color.b, 239);
+        assert_eq!(wrapper.color, ThemeColor::Rgb(171, 205, 239));
     }
 
     #[test]
@@ -723,14 +800,30 @@ mod tests {
         }
         let toml_str = r###"color = "#abc""###;
         let wrapper: Wrapper = toml::from_str(toml_str).unwrap();
-        assert_eq!(wrapper.color.r, 170);
-        assert_eq!(wrapper.color.g, 187);
-        assert_eq!(wrapper.color.b, 204);
+        assert_eq!(wrapper.color, ThemeColor::Rgb(170, 187, 204));
+    }
+
+    #[test]
+    fn test_from_ansi_index() {
+        assert_eq!(
+            ThemeColor::from_string("ansi:4").unwrap(),
+            ThemeColor::Ansi(4)
+        );
+        assert_eq!(
+            ThemeColor::from_string("ansi:255").unwrap(),
+            ThemeColor::Ansi(255)
+        );
+    }
+
+    #[test]
+    fn test_from_reset() {
+        assert_eq!(ThemeColor::from_string("reset").unwrap(), ThemeColor::Reset);
     }
 
     #[test]
     fn test_all_builtin_themes_serialize() {
         let themes = vec![
+            Theme::ansi(),
             Theme::gruvbox_dark(),
             Theme::gruvbox_light(),
             Theme::catppuccin_mocha(),
@@ -747,5 +840,16 @@ mod tests {
             assert_eq!(theme.name, roundtrip.name);
             assert_eq!(theme.bg, roundtrip.bg);
         }
+    }
+
+    #[test]
+    fn test_ansi_theme() {
+        let theme = Theme::ansi();
+        assert_eq!(theme.name, "ANSI");
+        assert_eq!(theme.bg, ThemeColor::Reset);
+        assert_eq!(theme.fg, ThemeColor::Reset);
+        assert_eq!(theme.bg_selected, ThemeColor::Ansi(4));
+        assert_eq!(theme.border_focused, ThemeColor::Ansi(6));
+        assert_eq!(theme.color_directory, ThemeColor::Ansi(12));
     }
 }
