@@ -10,6 +10,7 @@ pub mod indexing;
 pub mod note_browser;
 pub mod settings;
 pub mod sidebar;
+pub mod single_line_input;
 pub mod text_editor;
 
 use ratatui::Frame;

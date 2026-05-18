@@ -15,6 +15,7 @@ use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 use crate::components::events::{AppTx, InputEvent};
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_event_to_combo;
@@ -272,7 +273,7 @@ pub struct FileListComponent {
     display_indices: Option<Vec<usize>>,
     list_state: ListState,
     // Search
-    pub search_query: String,
+    pub search_query: SingleLineInput,
     filter_rx: Option<Receiver<Vec<usize>>>,
     filter_task: Option<tokio::task::JoinHandle<()>>,
     // Sort
@@ -294,7 +295,7 @@ impl FileListComponent {
             loading: false,
             display_indices: None,
             list_state: ListState::default(),
-            search_query: String::new(),
+            search_query: SingleLineInput::new(),
             filter_rx: None,
             filter_task: None,
             sort_field: SortField::Name,
@@ -404,7 +405,7 @@ impl FileListComponent {
             .filter_map(|(i, e)| e.search_str().map(|text| MatchEntry { idx: i, text }))
             .collect();
 
-        let query = self.search_query.clone();
+        let query = self.search_query.value().to_string();
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         self.filter_rx = Some(result_rx);
 
@@ -668,40 +669,36 @@ impl Component for FileListComponent {
                 _ => {}
             }
         }
-        // Navigation and search input.
+        // Navigation handled directly; everything else goes to the text input.
         match key.code {
             KeyCode::Up => {
                 self.select_prev();
-                EventState::Consumed
+                return EventState::Consumed;
             }
             KeyCode::Down => {
                 self.select_next();
-                EventState::Consumed
+                return EventState::Consumed;
             }
-            KeyCode::Enter => {
+            _ => {}
+        }
+        // Drop Ctrl/Alt-modified chars so combos (e.g. Ctrl+K) don't leak as text.
+        if let KeyCode::Char(_) = key.code {
+            let non_shift = key.modifiers - KeyModifiers::SHIFT;
+            if !non_shift.is_empty() {
+                return EventState::Consumed;
+            }
+        }
+        match self.search_query.handle_key(key) {
+            InputOutcome::Submit => {
                 self.activate_selected(tx);
                 EventState::Consumed
             }
-            KeyCode::Char(c) => {
-                let non_shift = key.modifiers - KeyModifiers::SHIFT;
-                if non_shift.is_empty() {
-                    if key.modifiers.contains(KeyModifiers::SHIFT) {
-                        self.search_query.push(c.to_ascii_uppercase());
-                    } else {
-                        self.search_query.push(c);
-                    }
-                    self.schedule_filter(tx.clone());
-                }
-                // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
-                // from leaking a character into the search box.
-                EventState::Consumed
-            }
-            KeyCode::Backspace => {
-                self.search_query.pop();
+            InputOutcome::Changed => {
                 self.schedule_filter(tx.clone());
                 EventState::Consumed
             }
-            _ => EventState::NotConsumed,
+            InputOutcome::Consumed | InputOutcome::Cancel => EventState::Consumed,
+            InputOutcome::NotConsumed => EventState::NotConsumed,
         }
     }
 
@@ -809,7 +806,7 @@ mod tests {
             list.push_entry(make_note(&format!("{i}.md"), &format!("Note {i}")));
         }
 
-        list.search_query = "note".to_string();
+        list.search_query.set_value("note");
         list.schedule_filter(tx.clone());
 
         // After scheduling, a task handle must be stored.
@@ -819,7 +816,7 @@ mod tests {
         );
 
         // Schedule again — the implementation must abort the old task and store a new handle.
-        list.search_query = "note 1".to_string();
+        list.search_query.set_value("note 1");
         list.schedule_filter(tx.clone());
 
         assert!(
@@ -838,7 +835,7 @@ mod tests {
         for i in 0..20 {
             list.push_entry(make_note(&format!("{i}.md"), &format!("Note {i}")));
         }
-        list.search_query = "note".to_string();
+        list.search_query.set_value("note");
         list.schedule_filter(tx);
 
         assert!(list.filter_task.is_some());
