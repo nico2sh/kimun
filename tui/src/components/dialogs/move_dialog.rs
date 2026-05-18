@@ -8,7 +8,6 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use tokio::task::JoinHandle;
 
@@ -16,6 +15,7 @@ use crate::components::Component;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ pub struct MoveDialog {
     /// Pre-computed `"  {path}"` for zero-allocation rendering.
     pub path_display: String,
     /// Current text in the search / filter input.
-    pub search_query: String,
+    pub search_query: SingleLineInput,
     /// Full list of directories returned by the vault (populated once load completes).
     pub all_dirs: Vec<VaultPath>,
     /// Handle to the directory-load background task.
@@ -66,7 +66,7 @@ impl MoveDialog {
             path,
             vault,
             path_display,
-            search_query: String::new(),
+            search_query: SingleLineInput::new(),
             all_dirs: vec![],
             load_task: None,
             filter_task: None,
@@ -134,7 +134,7 @@ impl MoveDialog {
             return;
         }
 
-        let query = self.search_query.clone();
+        let query = self.search_query.value().to_string();
         let items: Vec<String> = self.all_dirs.iter().map(|p| p.to_string()).collect();
         let tx_clone = tx.clone();
 
@@ -213,13 +213,14 @@ impl MoveDialog {
     /// Handle a raw [`KeyEvent`].  Returns [`EventState::Consumed`] for keys
     /// this dialog acts on; callers should forward only key events.
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
+        // List navigation — handle directly before forwarding to the text input.
         match key.code {
             KeyCode::Up => {
                 if let Some(idx) = self.list_state.selected() {
                     self.list_state.select(Some(idx.saturating_sub(1)));
                     self.spawn_validation(tx);
                 }
-                EventState::Consumed
+                return EventState::Consumed;
             }
             KeyCode::Down => {
                 if !self.results().is_empty() {
@@ -230,26 +231,19 @@ impl MoveDialog {
                     self.list_state.select(Some(next));
                     self.spawn_validation(tx);
                 }
-                EventState::Consumed
+                return EventState::Consumed;
             }
-            KeyCode::Char(c) => {
-                let non_shift = key.modifiers - KeyModifiers::SHIFT;
-                if non_shift.is_empty() {
-                    self.search_query.push(c);
-                    self.schedule_filter(tx);
-                    self.dest_validation = ValidationState::Idle;
-                }
-                // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
-                // from leaking a character into the search box.
-                EventState::Consumed
+            _ => {}
+        }
+        // Drop Ctrl/Alt-modified chars so combos (e.g. Ctrl+K) don't leak as text.
+        if let KeyCode::Char(_) = key.code {
+            let non_shift = key.modifiers - KeyModifiers::SHIFT;
+            if !non_shift.is_empty() {
+                return EventState::Consumed;
             }
-            KeyCode::Backspace => {
-                self.search_query.pop();
-                self.schedule_filter(tx);
-                self.dest_validation = ValidationState::Idle;
-                EventState::Consumed
-            }
-            KeyCode::Enter => {
+        }
+        match self.search_query.handle_key(&key) {
+            InputOutcome::Submit => {
                 if self.dest_validation == ValidationState::Taken {
                     return EventState::Consumed;
                 }
@@ -287,11 +281,17 @@ impl MoveDialog {
                 }
                 EventState::Consumed
             }
-            KeyCode::Esc => {
+            InputOutcome::Cancel => {
                 tx.send(AppEvent::CloseDialog).ok();
                 EventState::Consumed
             }
-            _ => EventState::NotConsumed,
+            InputOutcome::Changed => {
+                self.schedule_filter(tx);
+                self.dest_validation = ValidationState::Idle;
+                EventState::Consumed
+            }
+            InputOutcome::Consumed => EventState::Consumed,
+            InputOutcome::NotConsumed => EventState::NotConsumed,
         }
     }
 }
@@ -371,14 +371,8 @@ impl Component for MoveDialog {
             .style(Style::default().bg(bg));
         let input_inner = input_block.inner(rows[4]);
         f.render_widget(input_block, rows[4]);
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::raw(self.search_query.as_str()),
-                Span::raw("|"),
-            ]))
-            .style(Style::default().fg(fg).bg(bg)),
-            input_inner,
-        );
+        self.search_query
+            .render(f, input_inner, Style::default().fg(fg).bg(bg), 0, true);
 
         // Row 5: directory list (or loading placeholder).
         let list_items: Vec<ListItem> = if self.results().is_empty() {
@@ -463,9 +457,9 @@ mod tests {
         fn _check_error_field(d: &MoveDialog) -> Option<&String> {
             d.error.as_ref()
         }
-        // Verify the `search_query` field exists and is `String`.
+        // Verify the `search_query` field exists and exposes its value as `&str`.
         fn _check_search_query(d: &MoveDialog) -> &str {
-            &d.search_query
+            d.search_query.value()
         }
         // Verify `results()` accessor returns a slice.
         fn _check_results(d: &MoveDialog) -> &[VaultPath] {

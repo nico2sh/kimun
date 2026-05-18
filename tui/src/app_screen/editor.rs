@@ -586,6 +586,10 @@ impl AppScreen for EditorScreen {
                     self.focus = Focus::Dialog;
                     return EventState::Consumed;
                 }
+                Some(ActionShortcuts::FindInBuffer) if matches!(self.focus, Focus::Editor) => {
+                    self.editor.open_or_advance_search();
+                    return EventState::Consumed;
+                }
                 Some(ActionShortcuts::Text(
                     action @ (TextAction::Bold | TextAction::Italic | TextAction::Strikethrough),
                 )) if matches!(self.focus, Focus::Editor) => {

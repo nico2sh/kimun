@@ -14,6 +14,7 @@ use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry};
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::keys::KeyBindings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -44,7 +45,7 @@ pub trait NoteBrowserProvider: Send + Sync {
 
 pub struct NoteBrowserModal {
     title: String,
-    search_query: String,
+    search_query: SingleLineInput,
     provider: Arc<dyn NoteBrowserProvider>,
     file_list: FileListComponent,
     list_rect: Rect,
@@ -71,7 +72,7 @@ impl NoteBrowserModal {
         let file_list = FileListComponent::new(key_bindings, icons);
         let mut modal = Self {
             title: title.into(),
-            search_query: String::new(),
+            search_query: SingleLineInput::new(),
             provider: Arc::new(provider),
             file_list,
             list_rect: Rect::default(),
@@ -93,7 +94,7 @@ impl NoteBrowserModal {
         if let Some(handle) = self.load_task.take() {
             handle.abort();
         }
-        let query = self.search_query.clone();
+        let query = self.search_query.value().to_string();
         let provider = Arc::clone(&self.provider);
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         self.load_rx = Some(result_rx);
@@ -250,45 +251,42 @@ impl Component for NoteBrowserModal {
             let InputEvent::Key(key) = event else {
                 return EventState::NotConsumed;
             };
+            // List nav handled directly; everything else forwards to the input.
             match key.code {
-                KeyCode::Esc => {
-                    tx.send(AppEvent::CloseNoteBrowser).ok();
-                    EventState::Consumed
-                }
-                KeyCode::Enter => {
-                    self.open_selected_entry(tx);
-                    EventState::Consumed
-                }
                 KeyCode::Up => {
                     self.file_list.select_prev();
                     self.refresh_preview();
-                    EventState::Consumed
+                    return EventState::Consumed;
                 }
                 KeyCode::Down => {
                     self.file_list.select_next();
                     self.refresh_preview();
+                    return EventState::Consumed;
+                }
+                _ => {}
+            }
+            // Drop Ctrl/Alt-modified chars so combos don't leak as text.
+            if let KeyCode::Char(_) = key.code {
+                let non_shift = key.modifiers - KeyModifiers::SHIFT;
+                if !non_shift.is_empty() {
+                    return EventState::Consumed;
+                }
+            }
+            match self.search_query.handle_key(key) {
+                InputOutcome::Cancel => {
+                    tx.send(AppEvent::CloseNoteBrowser).ok();
                     EventState::Consumed
                 }
-                KeyCode::Char(c) => {
-                    let non_shift = key.modifiers - KeyModifiers::SHIFT;
-                    if non_shift.is_empty() {
-                        if key.modifiers.contains(KeyModifiers::SHIFT) {
-                            self.search_query.push(c.to_ascii_uppercase());
-                        } else {
-                            self.search_query.push(c);
-                        }
-                        self.schedule_load(tx.clone());
-                    }
-                    // Consume regardless — prevents modifier combos (e.g. Ctrl+K)
-                    // from leaking a character into the search box.
+                InputOutcome::Submit => {
+                    self.open_selected_entry(tx);
                     EventState::Consumed
                 }
-                KeyCode::Backspace => {
-                    self.search_query.pop();
+                InputOutcome::Changed => {
                     self.schedule_load(tx.clone());
                     EventState::Consumed
                 }
-                _ => EventState::NotConsumed,
+                InputOutcome::Consumed => EventState::Consumed,
+                InputOutcome::NotConsumed => EventState::NotConsumed,
             }
         }
     }
@@ -327,18 +325,15 @@ impl Component for NoteBrowserModal {
             .style(theme.panel_style());
         let search_inner = search_block.inner(rows[0]);
         f.render_widget(search_block, rows[0]);
-        f.render_widget(
-            Paragraph::new(self.search_query.as_str()).style(
-                Style::default()
-                    .fg(theme.fg.to_ratatui())
-                    .bg(theme.bg_panel.to_ratatui()),
-            ),
+        self.search_query.render(
+            f,
             search_inner,
+            Style::default()
+                .fg(theme.fg.to_ratatui())
+                .bg(theme.bg_panel.to_ratatui()),
+            0,
+            true,
         );
-        // Cursor at end of search text, clamped to box width.
-        let cursor_x = (search_inner.x + self.search_query.chars().count() as u16)
-            .min(search_inner.x + search_inner.width.saturating_sub(1));
-        f.set_cursor_position((cursor_x, search_inner.y));
 
         // ── List + Preview ────────────────────────────────────────────────
         let columns = Layout::default()
