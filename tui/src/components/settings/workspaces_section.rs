@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -24,8 +25,7 @@ pub struct WorkspacesSection {
     entries: Vec<(String, PathBuf, bool)>,
     list_state: ListState,
     mode: Mode,
-    input: String,
-    input_cursor: usize,
+    input: SingleLineInput,
     error: Option<String>,
 }
 
@@ -35,8 +35,7 @@ impl WorkspacesSection {
             entries: Vec::new(),
             list_state: ListState::default(),
             mode: Mode::Normal,
-            input: String::new(),
-            input_cursor: 0,
+            input: SingleLineInput::new(),
             error: None,
         };
         section.refresh(settings);
@@ -48,7 +47,7 @@ impl WorkspacesSection {
     }
 
     pub fn input(&self) -> &str {
-        &self.input
+        self.input.value()
     }
 
     pub fn selected_name(&self) -> Option<&str> {
@@ -91,7 +90,6 @@ impl WorkspacesSection {
     pub fn reset_mode(&mut self) {
         self.mode = Mode::Normal;
         self.input.clear();
-        self.input_cursor = 0;
         self.error = None;
     }
 
@@ -142,21 +140,18 @@ impl WorkspacesSection {
             }
             KeyCode::Char('n') => {
                 self.mode = Mode::Creating;
-                if self.entries.is_empty() {
-                    self.input = "default".to_string();
-                    self.input_cursor = self.input.len();
+                self.input = if self.entries.is_empty() {
+                    SingleLineInput::with_value("default")
                 } else {
-                    self.input.clear();
-                    self.input_cursor = 0;
-                }
+                    SingleLineInput::new()
+                };
                 self.error = None;
                 EventState::Consumed
             }
             KeyCode::Char('r') => {
                 if let Some(name) = self.selected_name().map(|s| s.to_string()) {
                     self.mode = Mode::Renaming;
-                    self.input = name;
-                    self.input_cursor = self.input.len();
+                    self.input = SingleLineInput::with_value(name);
                     self.error = None;
                 }
                 EventState::Consumed
@@ -176,66 +171,19 @@ impl WorkspacesSection {
         }
     }
 
-    fn handle_text_input(&mut self, code: KeyCode) -> EventState {
-        match code {
-            KeyCode::Esc => {
+    fn handle_text_input(&mut self, key: &KeyEvent) -> EventState {
+        match self.input.handle_key(key) {
+            InputOutcome::Cancel => {
                 self.reset_mode();
                 EventState::Consumed
             }
-            KeyCode::Enter => {
-                // Caller (SettingsScreen) checks mode + input
-                EventState::Consumed
-            }
-            KeyCode::Backspace => {
-                if self.input_cursor > 0 {
-                    let prev = self.input[..self.input_cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    self.input.drain(prev..self.input_cursor);
-                    self.input_cursor = prev;
-                }
-                EventState::Consumed
-            }
-            KeyCode::Delete => {
-                if self.input_cursor < self.input.len() {
-                    let next = self.input[self.input_cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| self.input_cursor + i)
-                        .unwrap_or(self.input.len());
-                    self.input.drain(self.input_cursor..next);
-                }
-                EventState::Consumed
-            }
-            KeyCode::Left => {
-                if self.input_cursor > 0 {
-                    self.input_cursor = self.input[..self.input_cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                }
-                EventState::Consumed
-            }
-            KeyCode::Right => {
-                if self.input_cursor < self.input.len() {
-                    self.input_cursor = self.input[self.input_cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| self.input_cursor + i)
-                        .unwrap_or(self.input.len());
-                }
-                EventState::Consumed
-            }
-            KeyCode::Char(c) => {
+            // Caller (SettingsScreen) handles Enter via mode + input().
+            InputOutcome::Submit | InputOutcome::Consumed => EventState::Consumed,
+            InputOutcome::Changed => {
                 self.error = None;
-                self.input.insert(self.input_cursor, c);
-                self.input_cursor += c.len_utf8();
                 EventState::Consumed
             }
-            _ => EventState::NotConsumed,
+            InputOutcome::NotConsumed => EventState::NotConsumed,
         }
     }
 
@@ -264,13 +212,13 @@ impl Component for WorkspacesSection {
             Mode::Creating | Mode::Renaming => {
                 if key.code == KeyCode::Enter {
                     // For Creating: signal OpenFileBrowser so SettingsScreen can pick up
-                    if self.mode == Mode::Creating && !self.input.trim().is_empty() {
+                    if self.mode == Mode::Creating && !self.input.value().trim().is_empty() {
                         tx.send(AppEvent::OpenFileBrowser).ok();
                     }
                     // For both modes the caller inspects mode() + input()
                     return EventState::Consumed;
                 }
-                self.handle_text_input(key.code)
+                self.handle_text_input(key)
             }
             Mode::ConfirmDelete => self.handle_confirm_delete(key.code),
         }
@@ -347,10 +295,9 @@ impl Component for WorkspacesSection {
                 " [Enter] Switch  [n] New  [r] Rename  [d] Delete  [b] Browse path".to_string()
             }
             Mode::Creating => {
-                let visible_cursor = self.input[..self.input_cursor].chars().count();
-                let display = format!(" Name: {}", self.input);
-                // Set cursor position
-                let cursor_x = rows[hint_idx].x + 7 + visible_cursor as u16;
+                let display = format!(" Name: {}", self.input.value());
+                let visible_cursor = self.input.cursor_display_col() as u16;
+                let cursor_x = rows[hint_idx].x + 7 + visible_cursor;
                 let cursor_y = rows[hint_idx].y;
                 if cursor_x < rows[hint_idx].x + rows[hint_idx].width {
                     f.set_cursor_position((cursor_x, cursor_y));
@@ -358,9 +305,9 @@ impl Component for WorkspacesSection {
                 display
             }
             Mode::Renaming => {
-                let visible_cursor = self.input[..self.input_cursor].chars().count();
-                let display = format!(" New name: {}", self.input);
-                let cursor_x = rows[hint_idx].x + 11 + visible_cursor as u16;
+                let display = format!(" New name: {}", self.input.value());
+                let visible_cursor = self.input.cursor_display_col() as u16;
+                let cursor_x = rows[hint_idx].x + 11 + visible_cursor;
                 let cursor_y = rows[hint_idx].y;
                 if cursor_x < rows[hint_idx].x + rows[hint_idx].width {
                     f.set_cursor_position((cursor_x, cursor_y));
@@ -617,16 +564,16 @@ mod tests {
         section.handle_input(&key(KeyCode::Char('a')), &tx);
         section.handle_input(&key(KeyCode::Char('b')), &tx);
         section.handle_input(&key(KeyCode::Char('c')), &tx);
-        assert_eq!(section.input_cursor, 3);
+        assert_eq!(section.input.cursor_char_offset(), 3);
 
         section.handle_input(&key(KeyCode::Left), &tx);
-        assert_eq!(section.input_cursor, 2);
+        assert_eq!(section.input.cursor_char_offset(), 2);
 
         section.handle_input(&key(KeyCode::Left), &tx);
-        assert_eq!(section.input_cursor, 1);
+        assert_eq!(section.input.cursor_char_offset(), 1);
 
         section.handle_input(&key(KeyCode::Right), &tx);
-        assert_eq!(section.input_cursor, 2);
+        assert_eq!(section.input.cursor_char_offset(), 2);
     }
 
     #[test]
@@ -652,7 +599,7 @@ mod tests {
         section.reset_mode();
         assert_eq!(*section.mode(), Mode::Normal);
         assert!(section.input().is_empty());
-        assert_eq!(section.input_cursor, 0);
+        assert_eq!(section.input.cursor_char_offset(), 0);
         assert!(section.error.is_none());
     }
 

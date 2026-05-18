@@ -182,7 +182,8 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
         .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)
-        .add(KeyStrike::KeyE, ActionShortcuts::ToggleBacklinks);
+        .add(KeyStrike::KeyE, ActionShortcuts::ToggleBacklinks)
+        .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer);
 
     // File operations menu (F2 — no modifier, reliable in all terminals).
     kb.batch_add()

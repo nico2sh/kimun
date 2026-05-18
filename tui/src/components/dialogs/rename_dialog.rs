@@ -3,10 +3,9 @@ use std::sync::Arc;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tokio::task::JoinHandle;
 
@@ -14,6 +13,7 @@ use crate::components::Component;
 use crate::components::dialogs::ValidationState;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ pub struct RenameDialog {
     /// Pre-computed `"  {path}"` for zero-allocation rendering.
     pub path_display: String,
     /// Current text in the input field.
-    pub input: String,
+    pub input: SingleLineInput,
     /// Result of the most-recent validation check.
     pub validation_state: ValidationState,
     /// Handle to the running validation task so we can abort it on new input.
@@ -54,7 +54,7 @@ impl RenameDialog {
             path,
             vault,
             path_display,
-            input: filename,
+            input: SingleLineInput::with_value(filename),
             validation_state: ValidationState::Idle,
             validation_task: None,
             error: None,
@@ -76,7 +76,7 @@ impl RenameDialog {
         }
 
         let vault = Arc::clone(&self.vault);
-        let input = self.input.clone();
+        let input = self.input.value().to_string();
         let path = self.path.clone();
         let tx_clone = tx.clone();
 
@@ -105,25 +105,16 @@ impl RenameDialog {
     /// Handle a raw [`KeyEvent`].  Returns [`EventState::Consumed`] for keys
     /// this dialog acts on; callers should forward only key events.
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
-        match key.code {
-            KeyCode::Char(c) => {
-                self.input.push(c);
-                self.spawn_validation(tx);
-                EventState::Consumed
-            }
-            KeyCode::Backspace => {
-                self.input.pop();
-                self.spawn_validation(tx);
-                EventState::Consumed
-            }
-            KeyCode::Enter => {
+        match self.input.handle_key(&key) {
+            InputOutcome::Submit => {
                 if self.validation_state == ValidationState::Available {
                     let from = self.path.clone();
                     let parent = from.get_parent_path().0;
+                    let new_name = self.input.value();
                     let new_path = if from.is_note() {
-                        parent.append(&VaultPath::note_path_from(&self.input))
+                        parent.append(&VaultPath::note_path_from(new_name))
                     } else {
-                        parent.append(&VaultPath::new(&self.input))
+                        parent.append(&VaultPath::new(new_name))
                     };
                     let vault = Arc::clone(&self.vault);
                     let tx2 = tx.clone();
@@ -143,15 +134,18 @@ impl RenameDialog {
                         }
                     });
                 }
-                // In all cases (Available or not) consume the key so Enter
-                // doesn't propagate to the underlying panel.
                 EventState::Consumed
             }
-            KeyCode::Esc => {
+            InputOutcome::Cancel => {
                 tx.send(AppEvent::CloseDialog).ok();
                 EventState::Consumed
             }
-            _ => EventState::NotConsumed,
+            InputOutcome::Changed => {
+                self.spawn_validation(tx);
+                EventState::Consumed
+            }
+            InputOutcome::Consumed => EventState::Consumed,
+            InputOutcome::NotConsumed => EventState::NotConsumed,
         }
     }
 }
@@ -238,14 +232,8 @@ impl Component for RenameDialog {
             .style(Style::default().bg(bg));
         let input_inner = input_block.inner(input_chunks[0]);
         f.render_widget(input_block, input_chunks[0]);
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::raw(self.input.as_str()),
-                Span::raw("_"),
-            ]))
-            .style(Style::default().fg(fg).bg(bg)),
-            input_inner,
-        );
+        self.input
+            .render(f, input_inner, Style::default().fg(fg).bg(bg), 0, true);
 
         // Validation indicator glyph, centred vertically in the 3-row area.
         let (indicator_text, indicator_style) = match self.validation_state {
@@ -355,14 +343,14 @@ mod tests {
         let (_, expected_filename) = path.get_parent_path();
 
         let dialog = RenameDialog::new(path, vault);
-        assert_eq!(dialog.input, expected_filename);
+        assert_eq!(dialog.input.value(), expected_filename);
     }
 
     /// Verifies that pressing `Esc` sends `AppEvent::CloseDialog` and returns
     /// `EventState::Consumed`, without touching the vault.
     #[test]
     fn esc_sends_close_dialog() {
-        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
