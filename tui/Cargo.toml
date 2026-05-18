@@ -34,7 +34,7 @@ tracing-log = "0.2"
 tokio = { workspace = true }
 async-trait = "0.1"
 futures = "0.3"
-ratatui-textarea = { version = "0.8.0", features = ["search"] }
+ratatui-textarea = { version = "0.9.1", features = ["search"] }
 nucleo = "0.5"
 throbber-widgets-tui = "0.11"
 chrono = { workspace = true }
