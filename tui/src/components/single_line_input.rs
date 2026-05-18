@@ -132,9 +132,7 @@ impl SingleLineInput {
             }
             // Accept only plain or Shift-modified chars; Ctrl/Alt combos are
             // not text input and must bubble up to the caller for shortcuts.
-            (m, KeyCode::Char(c))
-                if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
+            (m, KeyCode::Char(c)) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 self.value.insert(self.cursor, c);
                 self.cursor += c.len_utf8();
                 InputOutcome::Changed
@@ -237,10 +235,7 @@ mod tests {
     fn backspace_at_start_is_noop() {
         let mut i = SingleLineInput::with_value("abc");
         i.handle_key(&k(KeyCode::Home));
-        assert_eq!(
-            i.handle_key(&k(KeyCode::Backspace)),
-            InputOutcome::Consumed
-        );
+        assert_eq!(i.handle_key(&k(KeyCode::Backspace)), InputOutcome::Consumed);
         assert_eq!(i.value(), "abc");
     }
 

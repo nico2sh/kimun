@@ -153,13 +153,7 @@ impl SearchStatus {
 const FIND_PROMPT: &str = "Find: ";
 const FIND_HINTS: &str = "  [Enter] next  [Shift+Enter] prev  [Esc] close";
 
-fn render_search_bar(
-    f: &mut Frame,
-    rect: Rect,
-    state: &SearchState,
-    theme: &Theme,
-    focused: bool,
-) {
+fn render_search_bar(f: &mut Frame, rect: Rect, state: &SearchState, theme: &Theme, focused: bool) {
     let base = theme.base_style();
     let muted = Style::default()
         .fg(theme.fg_muted.to_ratatui())
@@ -832,7 +826,11 @@ impl TextEditorComponent {
     /// `MarkdownEditorView` does not render the textarea library's built-in
     /// search highlights.
     fn highlight_current_match(&mut self, found: bool) {
-        self.selection = if found { self.compute_match_selection() } else { None };
+        self.selection = if found {
+            self.compute_match_selection()
+        } else {
+            None
+        };
     }
 
     /// Locate the regex match starting at the textarea cursor and return its
@@ -862,9 +860,7 @@ impl TextEditorComponent {
             return false;
         };
         // Ctrl+F while open advances to next match.
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('f'))
-        {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('f')) {
             self.search_advance(false);
             return true;
         }
