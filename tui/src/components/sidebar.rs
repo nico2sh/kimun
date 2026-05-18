@@ -91,7 +91,7 @@ impl SidebarComponent {
         } else {
             let path = self
                 .current_dir
-                .append(&VaultPath::note_path_from(&self.file_list.search_query))
+                .append(&VaultPath::note_path_from(self.file_list.search_query.value()))
                 .flatten();
             let filename = path.to_string();
             self.file_list
@@ -244,20 +244,15 @@ impl Component for SidebarComponent {
             .style(theme.panel_style());
         let search_inner = search_block.inner(rows[1]);
         f.render_widget(search_block, rows[1]);
-        f.render_widget(
-            Paragraph::new(self.file_list.search_query.as_str()).style(
-                Style::default()
-                    .fg(theme.fg.to_ratatui())
-                    .bg(theme.bg_panel.to_ratatui()),
-            ),
+        self.file_list.search_query.render(
+            f,
             search_inner,
+            Style::default()
+                .fg(theme.fg.to_ratatui())
+                .bg(theme.bg_panel.to_ratatui()),
+            0,
+            focused,
         );
-
-        // Cursor at end of search query when focused.
-        if focused {
-            let cursor_x = search_inner.x + self.file_list.search_query.chars().count() as u16;
-            f.set_cursor_position((cursor_x, search_inner.y));
-        }
 
         self.file_list.render(f, rows[2], theme, focused);
     }

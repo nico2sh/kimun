@@ -9,6 +9,9 @@ use arboard::Clipboard;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 
 /// Convert `TextArea::cursor()` from the library's `DataCursor` newtype to a
@@ -120,10 +123,80 @@ use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::TextAction;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
+
+struct SearchState {
+    input: SingleLineInput,
+    status: SearchStatus,
+}
+
+enum SearchStatus {
+    Empty,
+    Match,
+    NoMatch,
+    Invalid(String),
+}
+
+impl SearchStatus {
+    fn from_found(found: bool) -> Self {
+        if found { Self::Match } else { Self::NoMatch }
+    }
+}
+
+const FIND_PROMPT: &str = "Find: ";
+const FIND_HINTS: &str = "  [Enter] next  [Shift+Enter] prev  [Esc] close";
+
+fn render_search_bar(
+    f: &mut Frame,
+    rect: Rect,
+    state: &SearchState,
+    theme: &Theme,
+    focused: bool,
+) {
+    let base = theme.base_style();
+    let muted = Style::default()
+        .fg(theme.fg_muted.to_ratatui())
+        .bg(theme.bg.to_ratatui());
+    let err = Style::default()
+        .fg(ratatui::style::Color::Red)
+        .bg(theme.bg.to_ratatui());
+    let prompt_cols = unicode_width::UnicodeWidthStr::width(FIND_PROMPT) as u16;
+    // Tail sits after the full value (in display columns, accounting for
+    // wide/CJK chars), not after the caret — otherwise it would overlap the
+    // trailing characters when the user moves the cursor mid-string.
+    let value_total_cols = state.input.display_width() as u16;
+    let tail: Option<(String, Style)> = match &state.status {
+        SearchStatus::Empty => None,
+        SearchStatus::Match => Some((FIND_HINTS.to_string(), muted)),
+        SearchStatus::NoMatch => Some(("  no match".to_string(), err)),
+        SearchStatus::Invalid(msg) => Some((format!("  invalid regex: {msg}"), err)),
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            FIND_PROMPT,
+            base.add_modifier(Modifier::BOLD),
+        )))
+        .style(base),
+        Rect {
+            width: prompt_cols.min(rect.width),
+            ..rect
+        },
+    );
+    state.input.render(f, rect, base, prompt_cols, focused);
+    if let Some((text, style)) = tail {
+        let consumed = prompt_cols.saturating_add(value_total_cols);
+        let tail_rect = Rect {
+            x: rect.x.saturating_add(consumed),
+            width: rect.width.saturating_sub(consumed),
+            ..rect
+        };
+        f.render_widget(Paragraph::new(text).style(style), tail_rect);
+    }
+}
 
 pub struct TextEditorComponent {
     backend: BackendState,
@@ -143,6 +216,8 @@ pub struct TextEditorComponent {
     /// `true` after a `Z` keypress in Normal mode; cleared on the next key.
     /// Lets us intercept `ZZ` (write+quit) and `ZQ` (quit) without forwarding them to nvim.
     nvim_pending_z: bool,
+    /// Active Ctrl+F find bar; `None` when not searching.
+    search: Option<SearchState>,
 }
 
 impl TextEditorComponent {
@@ -160,6 +235,7 @@ impl TextEditorComponent {
             selection: None,
             clipboard: Clipboard::new().ok(),
             nvim_pending_z: false,
+            search: None,
         }
     }
 
@@ -678,12 +754,105 @@ impl TextEditorComponent {
         Some(EventState::Consumed)
     }
 
+    fn open_or_advance_search(&mut self) {
+        if !matches!(self.backend, BackendState::Textarea(_)) {
+            return;
+        }
+        if self.search.is_some() {
+            self.search_advance(false);
+            return;
+        }
+        self.search = Some(SearchState {
+            input: SingleLineInput::new(),
+            status: SearchStatus::Empty,
+        });
+    }
+
+    fn close_search(&mut self) {
+        if let BackendState::Textarea(ta) = &mut self.backend {
+            let _ = ta.set_search_pattern("");
+        }
+        self.search = None;
+    }
+
+    /// Push pattern to the textarea. When `jump` is true and the query compiles,
+    /// also jumps to the first match at or after the cursor (live preview).
+    fn refresh_search_pattern(&mut self, jump: bool) {
+        let Some(state) = self.search.as_mut() else {
+            return;
+        };
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            return;
+        };
+        if state.input.is_empty() {
+            let _ = ta.set_search_pattern("");
+            state.status = SearchStatus::Empty;
+            return;
+        }
+        if let Err(e) = ta.set_search_pattern(state.input.value()) {
+            state.status = SearchStatus::Invalid(e.to_string());
+            return;
+        }
+        if !jump {
+            state.status = SearchStatus::Match;
+            return;
+        }
+        state.status = SearchStatus::from_found(ta.search_forward(true));
+        self.selection = ta.selection_range();
+    }
+
+    fn search_advance(&mut self, backward: bool) {
+        let Some(state) = self.search.as_mut() else {
+            return;
+        };
+        if state.input.is_empty() {
+            return;
+        }
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            return;
+        };
+        let found = if backward {
+            ta.search_back(false)
+        } else {
+            ta.search_forward(false)
+        };
+        state.status = SearchStatus::from_found(found);
+        self.selection = ta.selection_range();
+    }
+
+    /// Returns `true` when the key was consumed by the find bar.
+    fn handle_search_key(&mut self, key: &ratatui::crossterm::event::KeyEvent) -> bool {
+        let Some(state) = self.search.as_mut() else {
+            return false;
+        };
+        // Ctrl+F while open advances to next match.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('f'))
+        {
+            self.search_advance(false);
+            return true;
+        }
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match state.input.handle_key(key) {
+            InputOutcome::Cancel => self.close_search(),
+            InputOutcome::Submit => self.search_advance(shift),
+            InputOutcome::Changed => self.refresh_search_pattern(true),
+            InputOutcome::Consumed | InputOutcome::NotConsumed => {}
+        }
+        true
+    }
+
     /// Handle a key event when using the Textarea backend.
     fn handle_textarea_key(
         &mut self,
         key: &ratatui::crossterm::event::KeyEvent,
         tx: &AppTx,
     ) -> EventState {
+        // Find bar — intercept ALL keys while active.
+        if self.handle_search_key(key) {
+            return EventState::Consumed;
+        }
+
         // System clipboard shortcuts — intercept before passing to textarea.
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
@@ -704,6 +873,10 @@ impl TextEditorComponent {
                         self.selection = ta.selection_range();
                     }
                     self.edit_generation = self.edit_generation.wrapping_add(1);
+                    return EventState::Consumed;
+                }
+                KeyCode::Char('f') => {
+                    self.open_or_advance_search();
                     return EventState::Consumed;
                 }
                 _ => {}
@@ -947,16 +1120,39 @@ impl Component for TextEditorComponent {
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        self.rect = rect;
+        // Reserve the bottom row for the find bar when active.
+        let (editor_rect, search_rect) = if self.search.is_some() && rect.height > 1 {
+            (
+                Rect {
+                    height: rect.height - 1,
+                    ..rect
+                },
+                Some(Rect {
+                    y: rect.y + rect.height - 1,
+                    height: 1,
+                    ..rect
+                }),
+            )
+        } else {
+            (rect, None)
+        };
+        // Store the editor area (not the full rect) so mouse hit-testing ignores
+        // clicks on the find-bar row.
+        self.rect = editor_rect;
         match &self.backend {
             BackendState::Textarea(ta) => {
                 let cursor = cursor_tuple(ta);
                 let lines = ta.lines();
-                self.view
-                    .update(lines, cursor, rect, self.edit_generation, self.selection);
+                self.view.update(
+                    lines,
+                    cursor,
+                    editor_rect,
+                    self.edit_generation,
+                    self.selection,
+                );
             }
             BackendState::Nvim(nvim) => {
-                nvim.maybe_resize(rect.width, rect.height);
+                nvim.maybe_resize(editor_rect.width, editor_rect.height);
                 let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                 let cursor = snap.cursor;
                 let lines = snap.lines.clone();
@@ -964,10 +1160,17 @@ impl Component for TextEditorComponent {
                 let visual_selection = snap.visual_selection;
                 drop(snap);
                 self.view
-                    .update(&lines, cursor, rect, content_gen, visual_selection);
+                    .update(&lines, cursor, editor_rect, content_gen, visual_selection);
             }
         }
-        self.view.render(f, rect, theme, focused);
+        // When the find bar is active, draw it AFTER the editor so its caret
+        // (set via set_cursor_position) wins over the editor's caret call.
+        let bar_focused = self.search.is_some() && focused;
+        let editor_focused = focused && !bar_focused;
+        self.view.render(f, editor_rect, theme, editor_focused);
+        if let (Some(state), Some(bar_rect)) = (self.search.as_ref(), search_rect) {
+            render_search_bar(f, bar_rect, state, theme, bar_focused);
+        }
     }
 
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
@@ -1203,6 +1406,83 @@ mod tests {
             try_build_markdown_link("ftp://files.example.com/x", Some("download")).as_deref(),
             Some("[download](ftp://files.example.com/x)"),
         );
+    }
+
+    fn key(code: KeyCode, mods: KeyModifiers) -> ratatui::crossterm::event::KeyEvent {
+        ratatui::crossterm::event::KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn ctrl_f_opens_find_bar_with_empty_query() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        let tx = dummy_tx();
+        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        let state = editor.search.as_ref().expect("find bar opened");
+        assert!(state.input.is_empty());
+        assert!(matches!(state.status, SearchStatus::Empty));
+    }
+
+    #[test]
+    fn typing_in_find_bar_jumps_cursor_to_first_match() {
+        let mut editor = make_editor();
+        editor.set_text("foo bar baz".to_string());
+        let tx = dummy_tx();
+        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        for ch in ['b', 'a', 'r'] {
+            editor.handle_textarea_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+        }
+        let state = editor.search.as_ref().unwrap();
+        assert_eq!(state.input.value(), "bar");
+        assert!(matches!(state.status, SearchStatus::Match));
+        let DataCursor(_, col) = get_ta(&mut editor).cursor();
+        assert_eq!(col, 4, "cursor jumped to start of 'bar'");
+    }
+
+    #[test]
+    fn enter_in_find_bar_advances_to_next_match() {
+        let mut editor = make_editor();
+        editor.set_text("ab ab ab".to_string());
+        let tx = dummy_tx();
+        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
+        editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
+        // first match is at col 0 (match_cursor=true on type)
+        editor.handle_textarea_key(&key(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        let DataCursor(_, col) = get_ta(&mut editor).cursor();
+        assert_eq!(col, 3, "Enter advances to second match");
+    }
+
+    #[test]
+    fn esc_in_find_bar_closes_it() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        let tx = dummy_tx();
+        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        assert!(editor.search.is_some());
+        editor.handle_textarea_key(&key(KeyCode::Esc, KeyModifiers::NONE), &tx);
+        assert!(editor.search.is_none());
+    }
+
+    #[test]
+    fn find_bar_consumes_typing_so_editor_text_is_unchanged() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        let tx = dummy_tx();
+        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.handle_textarea_key(&key(KeyCode::Char('x'), KeyModifiers::NONE), &tx);
+        assert_eq!(editor.get_text(), "hello");
+    }
+
+    #[test]
+    fn no_match_status_when_query_absent() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        let tx = dummy_tx();
+        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.handle_textarea_key(&key(KeyCode::Char('z'), KeyModifiers::NONE), &tx);
+        let state = editor.search.as_ref().unwrap();
+        assert!(matches!(state.status, SearchStatus::NoMatch));
     }
 
     #[test]

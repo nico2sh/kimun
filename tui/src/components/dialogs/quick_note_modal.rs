@@ -9,11 +9,11 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
 
 pub struct QuickNoteModal {
-    input: String,
-    cursor: usize,
+    input: SingleLineInput,
     vault: Arc<NoteVault>,
     pub error: Option<String>,
 }
@@ -21,106 +21,38 @@ pub struct QuickNoteModal {
 impl QuickNoteModal {
     pub fn new(vault: Arc<NoteVault>) -> Self {
         Self {
-            input: String::new(),
-            cursor: 0,
+            input: SingleLineInput::new(),
             vault,
             error: None,
         }
     }
 
-    /// Number of visible characters before the cursor (for display positioning).
-    fn cursor_char_offset(&self) -> usize {
-        self.input[..self.cursor].chars().count()
-    }
-
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
-        match (key.modifiers, key.code) {
-            (m, KeyCode::Enter) if m.contains(KeyModifiers::SHIFT) => {
-                if self.input.trim().is_empty() {
-                    tx.send(AppEvent::CloseDialog).ok();
-                } else {
-                    self.submit(tx, true);
-                }
-                EventState::Consumed
+        // Enter — possibly with Shift to open the new note after creating it.
+        if let KeyCode::Enter = key.code {
+            if self.input.value().trim().is_empty() {
+                tx.send(AppEvent::CloseDialog).ok();
+            } else {
+                self.submit(tx, key.modifiers.contains(KeyModifiers::SHIFT));
             }
-            (_, KeyCode::Enter) => {
-                if self.input.trim().is_empty() {
-                    tx.send(AppEvent::CloseDialog).ok();
-                } else {
-                    self.submit(tx, false);
-                }
-                EventState::Consumed
-            }
-            (_, KeyCode::Esc) => {
+            return EventState::Consumed;
+        }
+        match self.input.handle_key(&key) {
+            InputOutcome::Cancel => {
                 tx.send(AppEvent::CloseDialog).ok();
                 EventState::Consumed
             }
-            (_, KeyCode::Backspace) => {
+            InputOutcome::Changed => {
                 self.error = None;
-                if self.cursor > 0 {
-                    // Move cursor back to the previous char boundary
-                    let prev = self.input[..self.cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    self.input.drain(prev..self.cursor);
-                    self.cursor = prev;
-                }
                 EventState::Consumed
             }
-            (_, KeyCode::Delete) => {
-                if self.cursor < self.input.len() {
-                    // Find the end of the current char
-                    let next = self.input[self.cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| self.cursor + i)
-                        .unwrap_or(self.input.len());
-                    self.input.drain(self.cursor..next);
-                }
-                EventState::Consumed
-            }
-            (_, KeyCode::Left) => {
-                if self.cursor > 0 {
-                    self.cursor = self.input[..self.cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                }
-                EventState::Consumed
-            }
-            (_, KeyCode::Right) => {
-                if self.cursor < self.input.len() {
-                    self.cursor = self.input[self.cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| self.cursor + i)
-                        .unwrap_or(self.input.len());
-                }
-                EventState::Consumed
-            }
-            (_, KeyCode::Home) => {
-                self.cursor = 0;
-                EventState::Consumed
-            }
-            (_, KeyCode::End) => {
-                self.cursor = self.input.len();
-                EventState::Consumed
-            }
-            (_, KeyCode::Char(c)) => {
-                self.error = None;
-                self.input.insert(self.cursor, c);
-                self.cursor += c.len_utf8();
-                EventState::Consumed
-            }
-            _ => EventState::NotConsumed,
+            InputOutcome::Consumed | InputOutcome::Submit => EventState::Consumed,
+            InputOutcome::NotConsumed => EventState::NotConsumed,
         }
     }
 
     fn submit(&self, tx: &AppTx, open_after: bool) {
-        let text = self.input.clone();
+        let text = self.input.value().to_string();
         let vault = Arc::clone(&self.vault);
         let tx_clone = tx.clone();
         tokio::spawn(async move {
@@ -170,22 +102,19 @@ impl QuickNoteModal {
             ])
             .split(inner);
 
-        let display_text = if self.input.is_empty() {
-            "  Type your thought...".to_string()
+        if self.input.is_empty() {
+            // Placeholder text + caret in muted style.
+            f.render_widget(
+                Paragraph::new("  Type your thought...")
+                    .style(Style::default().fg(fg_muted).bg(bg)),
+                rows[1],
+            );
+            f.set_cursor_position((rows[1].x + 2, rows[1].y));
         } else {
-            format!("  {}", self.input)
-        };
-        let input_style = if self.input.is_empty() {
-            Style::default().fg(fg_muted).bg(bg)
-        } else {
-            Style::default().fg(fg).bg(bg)
-        };
-        f.render_widget(Paragraph::new(display_text).style(input_style), rows[1]);
-
-        // Place cursor (use char count for display, not byte offset)
-        let cursor_x = rows[1].x + 2 + self.cursor_char_offset() as u16;
-        let cursor_y = rows[1].y;
-        f.set_cursor_position((cursor_x, cursor_y));
+            // 2-space indent matches the placeholder above.
+            self.input
+                .render(f, rows[1], Style::default().fg(fg).bg(bg), 2, true);
+        }
 
         super::render_separator(f, rows[2], fg_muted, bg);
 
