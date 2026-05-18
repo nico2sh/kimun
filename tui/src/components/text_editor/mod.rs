@@ -9,7 +9,15 @@ use arboard::Clipboard;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui_textarea::{CursorMove, TextArea};
+use ratatui_textarea::{CursorMove, DataCursor, TextArea};
+
+/// Convert `TextArea::cursor()` from the library's `DataCursor` newtype to a
+/// plain `(row, col)` tuple — the neutral interchange type shared with the
+/// Nvim backend (whose `NvimSnapshot::cursor` is already a tuple).
+fn cursor_tuple(ta: &TextArea<'_>) -> (usize, usize) {
+    let DataCursor(r, c) = ta.cursor();
+    (r, c)
+}
 
 /// Move or extend the selection by `movement`.
 ///
@@ -221,7 +229,7 @@ impl TextEditorComponent {
     pub fn link_at_cursor(&self) -> Option<String> {
         let (_row, col, line) = match &self.backend {
             BackendState::Textarea(ta) => {
-                let (row, col) = ta.cursor();
+                let (row, col) = cursor_tuple(ta);
                 let line = ta.lines().get(row)?.to_string();
                 (row, col, line)
             }
@@ -372,7 +380,7 @@ impl TextEditorComponent {
             if ta.selection_range().is_some() {
                 return false;
             }
-            let (row, col) = ta.cursor();
+            let (row, col) = cursor_tuple(ta);
             let Some(line) = ta.lines().get(row) else {
                 return false;
             };
@@ -456,7 +464,7 @@ impl TextEditorComponent {
 
         let sel = ta.selection_range();
         let saved_cursor = if sel.is_none() {
-            Some(ta.cursor())
+            Some(cursor_tuple(ta))
         } else {
             None
         };
@@ -942,7 +950,7 @@ impl Component for TextEditorComponent {
         self.rect = rect;
         match &self.backend {
             BackendState::Textarea(ta) => {
-                let cursor = ta.cursor();
+                let cursor = cursor_tuple(ta);
                 let lines = ta.lines();
                 self.view
                     .update(lines, cursor, rect, self.edit_generation, self.selection);
