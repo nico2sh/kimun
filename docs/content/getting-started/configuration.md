@@ -183,6 +183,7 @@ Use these action names exactly as shown.
 - `QuickNote` — Open the quick capture dialog
 - `FollowLink` — Follow the wiki link under the cursor
 - `FileOperations` — Open the file operations menu (delete, rename, move)
+- `FindInBuffer` — Open the in-note find bar; press again to advance to the next match (Textarea backend only — the Nvim backend uses its own `/` search)
 
 **Sorting**
 
@@ -216,6 +217,7 @@ TogglePreview = ["ctrl&Y"]
 FileOperations = ["F2"]
 SwitchWorkspace = ["F4"]
 FollowLink = ["ctrl&G"]
+FindInBuffer = ["ctrl&F"]
 TextEditor-Bold = ["ctrl&B"]
 TextEditor-Italic = ["ctrl&I"]
 TextEditor-Link = ["ctrl&L"]

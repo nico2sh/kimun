@@ -49,6 +49,9 @@ pub enum ActionShortcuts {
     ToggleBacklinks,
     // Workspace
     SwitchWorkspace,
+    // In-buffer find (Ctrl+F by default; reopens / advances to next match if
+    // already open).
+    FindInBuffer,
 }
 
 impl ActionShortcuts {
@@ -67,7 +70,8 @@ impl ActionShortcuts {
             | ActionShortcuts::NewJournal
             | ActionShortcuts::FileOperations
             | ActionShortcuts::FollowLink
-            | ActionShortcuts::QuickNote => ShortcutCategory::Notes,
+            | ActionShortcuts::QuickNote
+            | ActionShortcuts::FindInBuffer => ShortcutCategory::Notes,
 
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
 
@@ -95,6 +99,7 @@ impl ActionShortcuts {
             ActionShortcuts::QuickNote => "Quick note".into(),
             ActionShortcuts::ToggleBacklinks => "Toggle backlinks".into(),
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
+            ActionShortcuts::FindInBuffer => "Find in note".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),
@@ -129,6 +134,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::QuickNote => "QuickNote".to_string(),
             ActionShortcuts::ToggleBacklinks => "ToggleBacklinks".to_string(),
             ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
+            ActionShortcuts::FindInBuffer => "FindInBuffer".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -155,6 +161,7 @@ impl TryFrom<String> for ActionShortcuts {
             "QuickNote" => ActionShortcuts::QuickNote,
             "ToggleBacklinks" => ActionShortcuts::ToggleBacklinks,
             "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
+            "FindInBuffer" => ActionShortcuts::FindInBuffer,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
@@ -250,6 +257,10 @@ mod tests {
             ActionShortcuts::QuickNote.category(),
             ShortcutCategory::Notes
         );
+        assert_eq!(
+            ActionShortcuts::FindInBuffer.category(),
+            ShortcutCategory::Notes
+        );
 
         assert_eq!(
             ActionShortcuts::Text(TextAction::Bold).category(),
@@ -292,6 +303,7 @@ mod tests {
         assert_eq!(ActionShortcuts::QuickNote.label(), "Quick note");
         assert_eq!(ActionShortcuts::ToggleBacklinks.label(), "Toggle backlinks");
         assert_eq!(ActionShortcuts::SwitchWorkspace.label(), "Switch workspace");
+        assert_eq!(ActionShortcuts::FindInBuffer.label(), "Find in note");
         assert_eq!(ActionShortcuts::Text(TextAction::Bold).label(), "Bold");
         assert_eq!(ActionShortcuts::Text(TextAction::Italic).label(), "Italic");
         assert_eq!(

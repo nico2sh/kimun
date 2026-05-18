@@ -751,7 +751,10 @@ impl TextEditorComponent {
         Some(EventState::Consumed)
     }
 
-    fn open_or_advance_search(&mut self) {
+    /// Open the find bar; if already open, advance to the next match. No-op
+    /// on the Nvim backend (which has its own `/` search). Public so
+    /// `EditorScreen` can route the configurable `FindInBuffer` shortcut here.
+    pub fn open_or_advance_search(&mut self) {
         if !matches!(self.backend, BackendState::Textarea(_)) {
             return;
         }
@@ -859,11 +862,6 @@ impl TextEditorComponent {
         let Some(state) = self.search.as_mut() else {
             return false;
         };
-        // Ctrl+F while open advances to next match.
-        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('f')) {
-            self.search_advance(false);
-            return true;
-        }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match state.input.handle_key(key) {
             InputOutcome::Cancel => self.close_search(),
@@ -905,10 +903,6 @@ impl TextEditorComponent {
                         self.selection = ta.selection_range();
                     }
                     self.edit_generation = self.edit_generation.wrapping_add(1);
-                    return EventState::Consumed;
-                }
-                KeyCode::Char('f') => {
-                    self.open_or_advance_search();
                     return EventState::Consumed;
                 }
                 _ => {}
@@ -1236,6 +1230,7 @@ impl Component for TextEditorComponent {
             (ActionShortcuts::FocusSidebar, "\u{2190} sidebar"),
             (ActionShortcuts::FocusEditor, "backlinks \u{2192}"),
             (ActionShortcuts::FileOperations, "file ops"),
+            (ActionShortcuts::FindInBuffer, "find"),
         ]
         .iter()
         .filter_map(|(action, label)| {
@@ -1445,14 +1440,27 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_f_opens_find_bar_with_empty_query() {
+    fn open_or_advance_search_opens_find_bar_with_empty_query() {
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
-        let tx = dummy_tx();
-        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.open_or_advance_search();
         let state = editor.search.as_ref().expect("find bar opened");
         assert!(state.input.is_empty());
         assert!(matches!(state.status, SearchStatus::Empty));
+    }
+
+    #[test]
+    fn open_or_advance_search_advances_when_already_open() {
+        let mut editor = make_editor();
+        editor.set_text("ab ab ab".to_string());
+        let tx = dummy_tx();
+        editor.open_or_advance_search();
+        editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
+        editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
+        // Cursor now at first match (col 0). Re-invoking advances to second.
+        editor.open_or_advance_search();
+        let DataCursor(_, col) = get_ta(&mut editor).cursor();
+        assert_eq!(col, 3, "second invocation advances to next match");
     }
 
     #[test]
@@ -1460,7 +1468,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("foo bar baz".to_string());
         let tx = dummy_tx();
-        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.open_or_advance_search();
         for ch in ['b', 'a', 'r'] {
             editor.handle_textarea_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
         }
@@ -1476,7 +1484,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("ab ab ab".to_string());
         let tx = dummy_tx();
-        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.open_or_advance_search();
         editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
         editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
         // first match is at col 0 (match_cursor=true on type)
@@ -1490,7 +1498,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("foo bar baz".to_string());
         let tx = dummy_tx();
-        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.open_or_advance_search();
         for ch in ['b', 'a', 'r'] {
             editor.handle_textarea_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
         }
@@ -1503,7 +1511,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
-        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.open_or_advance_search();
         editor.handle_textarea_key(&key(KeyCode::Char('z'), KeyModifiers::NONE), &tx);
         assert_eq!(editor.selection, None);
     }
@@ -1513,7 +1521,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("foo bar".to_string());
         let tx = dummy_tx();
-        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.open_or_advance_search();
         editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
         editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
         editor.handle_textarea_key(&key(KeyCode::Char('r'), KeyModifiers::NONE), &tx);
@@ -1527,7 +1535,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
-        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.open_or_advance_search();
         assert!(editor.search.is_some());
         editor.handle_textarea_key(&key(KeyCode::Esc, KeyModifiers::NONE), &tx);
         assert!(editor.search.is_none());
@@ -1538,7 +1546,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
-        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.open_or_advance_search();
         editor.handle_textarea_key(&key(KeyCode::Char('x'), KeyModifiers::NONE), &tx);
         assert_eq!(editor.get_text(), "hello");
     }
@@ -1548,7 +1556,7 @@ mod tests {
         let mut editor = make_editor();
         editor.set_text("hello".to_string());
         let tx = dummy_tx();
-        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.open_or_advance_search();
         editor.handle_textarea_key(&key(KeyCode::Char('z'), KeyModifiers::NONE), &tx);
         let state = editor.search.as_ref().unwrap();
         assert!(matches!(state.status, SearchStatus::NoMatch));
