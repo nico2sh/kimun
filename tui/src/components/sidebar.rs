@@ -91,7 +91,9 @@ impl SidebarComponent {
         } else {
             let path = self
                 .current_dir
-                .append(&VaultPath::note_path_from(self.file_list.search_query.value()))
+                .append(&VaultPath::note_path_from(
+                    self.file_list.search_query.value(),
+                ))
                 .flatten();
             let filename = path.to_string();
             self.file_list
