@@ -53,6 +53,15 @@ fn increment_ordered_marker(marker: &str) -> Option<String> {
     Some(format!("{}. ", n + 1))
 }
 
+/// Convert a 0-based character column into a byte offset within `line`.
+/// Out-of-range columns return `line.len()`.
+fn char_col_to_byte(line: &str, char_col: usize) -> usize {
+    line.char_indices()
+        .nth(char_col)
+        .map(|(b, _)| b)
+        .unwrap_or(line.len())
+}
+
 /// Returns the text covered by the textarea's current selection, or `None` if
 /// there is no selection or the range is empty.
 ///
@@ -64,26 +73,20 @@ fn selection_text(ta: &TextArea<'_>) -> Option<String> {
         return None;
     }
     let lines = ta.lines();
-    let char_to_byte = |line: &str, char_col: usize| -> usize {
-        line.char_indices()
-            .nth(char_col)
-            .map(|(b, _)| b)
-            .unwrap_or(line.len())
-    };
     Some(if sr == er {
         let line = &lines[sr];
-        let sb = char_to_byte(line, sc);
-        let eb = char_to_byte(line, ec);
+        let sb = char_col_to_byte(line, sc);
+        let eb = char_col_to_byte(line, ec);
         line[sb..eb].to_string()
     } else {
         let first = &lines[sr];
-        let sb = char_to_byte(first, sc);
+        let sb = char_col_to_byte(first, sc);
         let mut parts = vec![first[sb..].to_string()];
         for line in &lines[(sr + 1)..er] {
             parts.push(line.clone());
         }
         let last = &lines[er];
-        let eb = char_to_byte(last, ec);
+        let eb = char_col_to_byte(last, ec);
         parts.push(last[..eb].to_string());
         parts.join("\n")
     })
@@ -773,6 +776,7 @@ impl TextEditorComponent {
             let _ = ta.set_search_pattern("");
         }
         self.search = None;
+        self.selection = None;
     }
 
     /// Push pattern to the textarea. When `jump` is true and the query compiles,
@@ -787,18 +791,21 @@ impl TextEditorComponent {
         if state.input.is_empty() {
             let _ = ta.set_search_pattern("");
             state.status = SearchStatus::Empty;
+            self.selection = None;
             return;
         }
         if let Err(e) = ta.set_search_pattern(state.input.value()) {
             state.status = SearchStatus::Invalid(e.to_string());
+            self.selection = None;
             return;
         }
         if !jump {
             state.status = SearchStatus::Match;
             return;
         }
-        state.status = SearchStatus::from_found(ta.search_forward(true));
-        self.selection = ta.selection_range();
+        let found = ta.search_forward(true);
+        state.status = SearchStatus::from_found(found);
+        self.highlight_current_match(found);
     }
 
     fn search_advance(&mut self, backward: bool) {
@@ -817,7 +824,36 @@ impl TextEditorComponent {
             ta.search_forward(false)
         };
         state.status = SearchStatus::from_found(found);
-        self.selection = ta.selection_range();
+        self.highlight_current_match(found);
+    }
+
+    /// After a search step, paint the match at the textarea's cursor as the
+    /// editor selection so the user can see where the match is — our custom
+    /// `MarkdownEditorView` does not render the textarea library's built-in
+    /// search highlights.
+    fn highlight_current_match(&mut self, found: bool) {
+        self.selection = if found { self.compute_match_selection() } else { None };
+    }
+
+    /// Locate the regex match starting at the textarea cursor and return its
+    /// span as a `(row, char_col)` pair. Returns `None` when no pattern is set,
+    /// the cursor is out of range, or the cursor is not on a match — guards
+    /// against stale cursor/pattern state if callers ever invoke without a
+    /// fresh search step.
+    fn compute_match_selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        let BackendState::Textarea(ta) = &self.backend else {
+            return None;
+        };
+        let re = ta.search_pattern()?;
+        let DataCursor(row, col_chars) = ta.cursor();
+        let line = ta.lines().get(row)?;
+        let byte_off = char_col_to_byte(line, col_chars);
+        let m = re.find_at(line, byte_off)?;
+        if m.start() != byte_off {
+            return None;
+        }
+        let match_chars = line[m.range()].chars().count();
+        Some(((row, col_chars), (row, col_chars + match_chars)))
     }
 
     /// Returns `true` when the key was consumed by the find bar.
@@ -1451,6 +1487,43 @@ mod tests {
         editor.handle_textarea_key(&key(KeyCode::Enter, KeyModifiers::NONE), &tx);
         let DataCursor(_, col) = get_ta(&mut editor).cursor();
         assert_eq!(col, 3, "Enter advances to second match");
+    }
+
+    #[test]
+    fn match_is_highlighted_as_selection_after_search() {
+        let mut editor = make_editor();
+        editor.set_text("foo bar baz".to_string());
+        let tx = dummy_tx();
+        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        for ch in ['b', 'a', 'r'] {
+            editor.handle_textarea_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+        }
+        // "bar" lives at cols 4..7 on row 0.
+        assert_eq!(editor.selection, Some(((0, 4), (0, 7))));
+    }
+
+    #[test]
+    fn no_match_clears_selection() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        let tx = dummy_tx();
+        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.handle_textarea_key(&key(KeyCode::Char('z'), KeyModifiers::NONE), &tx);
+        assert_eq!(editor.selection, None);
+    }
+
+    #[test]
+    fn esc_in_find_bar_clears_selection_highlight() {
+        let mut editor = make_editor();
+        editor.set_text("foo bar".to_string());
+        let tx = dummy_tx();
+        editor.handle_textarea_key(&key(KeyCode::Char('f'), KeyModifiers::CONTROL), &tx);
+        editor.handle_textarea_key(&key(KeyCode::Char('b'), KeyModifiers::NONE), &tx);
+        editor.handle_textarea_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &tx);
+        editor.handle_textarea_key(&key(KeyCode::Char('r'), KeyModifiers::NONE), &tx);
+        assert!(editor.selection.is_some());
+        editor.handle_textarea_key(&key(KeyCode::Esc, KeyModifiers::NONE), &tx);
+        assert!(editor.selection.is_none());
     }
 
     #[test]
