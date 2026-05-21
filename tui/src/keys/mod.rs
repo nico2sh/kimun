@@ -38,18 +38,72 @@ impl<'de> Visitor<'de> for DeserializeKeyBindingsVisitor {
     type Value = KeyBindings;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("A valid path with `/` separators, no need of starting `/`")
+        formatter.write_str("a keybindings map of action names to lists of key combos")
     }
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: serde::de::MapAccess<'de>,
     {
+        use serde::de::{Error, IgnoredAny, IntoDeserializer};
+
         let mut bindings: HashMap<ActionShortcuts, Vec<KeyCombo>> =
             HashMap::with_capacity(map.size_hint().unwrap_or(0));
-        // TODO: If an entry fails, ignore
-        while let Some((key, value)) = map.next_entry()? {
-            bindings.insert(key, value);
+
+        loop {
+            // Read the key as a raw String so a bad action name is recoverable.
+            let key_str: String = match map.next_key::<String>() {
+                Ok(Some(s)) => s,
+                Ok(None) => break,
+                Err(e) => return Err(e),
+            };
+
+            // Parse the action name; on failure, discard the value and continue.
+            // The explicit error type pins the generic on `IntoDeserializer`.
+            let action = match ActionShortcuts::deserialize(key_str.clone().into_deserializer()) {
+                Ok(a) => a,
+                Err(e) => {
+                    let e: serde::de::value::Error = e;
+                    let _ = map.next_value::<IgnoredAny>();
+                    tracing::warn!(
+                        "Skipping unknown action '{}' in keybindings config: {}",
+                        key_str,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            match map.next_value::<Vec<KeyCombo>>() {
+                Ok(value) => {
+                    bindings.insert(action, value);
+                }
+                Err(e) => {
+                    tracing::warn!("Skipping keybindings entry for action '{}': {}", action, e);
+                }
+            }
         }
+
+        // Essential-action safety net: Quit must always have a binding.
+        if !bindings.contains_key(&ActionShortcuts::Quit) {
+            let quit_combo = default_quit_combo();
+
+            let conflicting_action = bindings
+                .iter()
+                .find(|(_, combos)| combos.iter().any(|c| c == &quit_combo))
+                .map(|(action, _)| action.clone());
+
+            if let Some(other) = conflicting_action {
+                return Err(A::Error::custom(format!(
+                    "Quit action has no binding and the default combo Ctrl+Q is already mapped to '{}'. \
+                     Add a valid Quit binding to your keybindings config.",
+                    other
+                )));
+            }
+
+            tracing::warn!("Quit action missing from keybindings; restoring default Ctrl+Q");
+            bindings.insert(ActionShortcuts::Quit, vec![quit_combo]);
+        }
+
         Ok(KeyBindings::from_hashmap(bindings))
     }
 }
@@ -161,6 +215,13 @@ impl KeyBindings {
         }
         kb
     }
+}
+
+/// Canonical default combo for [`ActionShortcuts::Quit`]. Sourced once so the
+/// deserialize safety net and [`crate::settings::default_keybindings`] can't
+/// drift.
+pub fn default_quit_combo() -> KeyCombo {
+    KeyCombo::new(KeyModifiers::new().and_ctrl(), KeyStrike::KeyQ)
 }
 
 pub struct KeyBindBatch<'k> {
@@ -372,16 +433,106 @@ TextEditor-Bold = ["ctrl&H", "ctrl+alt&L"]
             .with_ctrl()
             .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
             .add(KeyStrike::KeyH, ActionShortcuts::Text(TextAction::Bold))
+            .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
             .with_alt()
             .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Bold));
 
         let km_str = r#"TogglePreview = ["ctrl & N"]
 TextEditor-Bold = ["ctrl & H", "ctrl+alt & L"]
+Quit = ["ctrl & Q"]
 "#
         .to_string();
 
         let km = toml::from_str(&km_str).unwrap();
 
         assert_eq!(expected_km, km);
+    }
+
+    #[test]
+    fn deserialize_skips_entry_with_unknown_action() {
+        let toml_str = r#"TogglePreview = ["ctrl & N"]
+NotARealAction = ["ctrl & X"]
+Quit = ["ctrl & Q"]
+"#;
+
+        let km: KeyBindings = toml::from_str(toml_str).expect("should not error");
+
+        let mut expected = KeyBindings::empty();
+        expected
+            .batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
+
+        assert_eq!(expected, km);
+    }
+
+    #[test]
+    fn deserialize_skips_entry_with_malformed_combo() {
+        let toml_str = r#"TogglePreview = ["ctrl & N"]
+OpenNote = ["bogus & ZZZZ"]
+Quit = ["ctrl & Q"]
+"#;
+
+        let km: KeyBindings = toml::from_str(toml_str).expect("should not error");
+
+        let mut expected = KeyBindings::empty();
+        expected
+            .batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
+
+        assert_eq!(expected, km);
+    }
+
+    #[test]
+    fn deserialize_injects_default_quit_when_missing() {
+        let toml_str = r#"TogglePreview = ["ctrl & N"]
+"#;
+
+        let km: KeyBindings = toml::from_str(toml_str).expect("should not error");
+
+        let mut expected = KeyBindings::empty();
+        expected
+            .batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
+
+        assert_eq!(expected, km);
+    }
+
+    #[test]
+    fn deserialize_errors_when_quit_missing_and_default_taken() {
+        let toml_str = r#"OpenNote = ["ctrl & Q"]
+"#;
+
+        let result: Result<KeyBindings, _> = toml::from_str(toml_str);
+        assert!(result.is_err(), "expected deserialize to fail");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Quit") && err_msg.contains("Ctrl+Q"),
+            "error message should mention Quit and Ctrl+Q, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn deserialize_recovers_quit_when_quit_entry_is_malformed() {
+        let toml_str = r#"TogglePreview = ["ctrl & N"]
+Quit = ["bogus & ZZZZ"]
+"#;
+
+        let km: KeyBindings = toml::from_str(toml_str).expect("should not error");
+
+        let mut expected = KeyBindings::empty();
+        expected
+            .batch_add()
+            .with_ctrl()
+            .add(KeyStrike::KeyN, ActionShortcuts::TogglePreview)
+            .add(KeyStrike::KeyQ, ActionShortcuts::Quit);
+
+        assert_eq!(expected, km);
     }
 }
