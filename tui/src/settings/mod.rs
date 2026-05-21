@@ -170,6 +170,8 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyL, ActionShortcuts::Text(TextAction::Image));
 
     // TUI navigation shortcuts (always Ctrl — terminal apps don't use Cmd/Meta).
+    // NOTE: the `Quit` entry must match `crate::keys::default_quit_combo()`,
+    // which the deserialize safety net uses to recover an unreachable app.
     kb.batch_add()
         .with_ctrl()
         .add(KeyStrike::KeyP, ActionShortcuts::OpenSettings)
@@ -691,6 +693,18 @@ mod tests {
         assert!(
             !path.exists(),
             "corrupt file must be removed, not recreated"
+        );
+    }
+
+    #[test]
+    fn default_keybindings_quit_matches_canonical_combo() {
+        let kb = default_keybindings();
+        let combo = crate::keys::default_quit_combo();
+        assert_eq!(
+            kb.get_action(&combo),
+            Some(ActionShortcuts::Quit),
+            "default_keybindings() must bind default_quit_combo() to Quit so the \
+             deserialize safety net can recover an unreachable app"
         );
     }
 
