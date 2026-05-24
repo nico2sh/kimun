@@ -47,6 +47,10 @@ fn row_to_note_entry(
 
 use super::error::DBError;
 
+/// All columns after `path` for `SELECT … FROM notes` queries. Used to build
+/// qualified column lists without `.split_once` + `.unwrap()`.
+const NOTE_COLUMNS_REST: &str = "title, size, modified, hash, noteName";
+
 /// Column list shared by every `SELECT … FROM notes` query that maps rows
 /// through `row_to_note_entry`. Order must match the `try_get` calls there.
 const NOTE_COLUMNS: &str = "path, title, size, modified, hash, noteName";
@@ -65,11 +69,15 @@ use super::{
     VaultPath,
 };
 
+// 0.7: Dropped the redundant `labels_by_name` index (the PK autoindex
+//      sqlite_autoindex_labels_1 already covers WHERE name = ? lookups).
+//      Bump forces a clean reindex so existing 0.6 installs drop the dead
+//      index on next launch.
 // 0.6: Added `labels` table populated from hashtags in note bodies. Bump
 //      forces a clean reindex so the table is filled for existing vaults.
 // 0.5: BREADCRUMB_SEP changed from `>` to `\x1f`. Bump forces a clean
 //      reindex so stale rows with the old separator are rewritten.
-const VERSION: &str = "0.6";
+const VERSION: &str = "0.7";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone)]
@@ -280,13 +288,6 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     .await?;
 
     sqlx::query(
-        "CREATE INDEX labels_by_name
-            ON labels(name)",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
         "CREATE INDEX labels_by_path
             ON labels(path)",
     )
@@ -363,10 +364,9 @@ fn add_exclusion_conditions(
 /// column is qualified to disambiguate the `notesContent`/`notes` join; the
 /// rest are unique to `notes` and need no prefix.
 static SEARCH_BASE_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    let rest = NOTE_COLUMNS.split_once(", ").unwrap().1;
     format!(
         "SELECT DISTINCT notes.path as path, {} FROM notesContent JOIN notes ON notesContent.path = notes.path",
-        rest
+        NOTE_COLUMNS_REST
     )
 });
 
@@ -526,10 +526,9 @@ fn add_path_query(
 /// don't pay an FTS scan. Same columns as `SEARCH_BASE_SQL` so INTERSECT
 /// branches line up.
 static LABEL_BASE_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    let rest = NOTE_COLUMNS.split_once(", ").unwrap().1;
     format!(
         "SELECT DISTINCT notes.path as path, {} FROM notes",
-        rest
+        NOTE_COLUMNS_REST
     )
 });
 
@@ -858,7 +857,11 @@ pub async fn save_note(
     // for another `NoteDetails::new` clone of the raw text.
     let data = note_details.get_content_data();
     let (chunks, links) = note_details.get_chunks_and_links();
-    let mut batch = NoteBatch::with_capacity(1, chunks.len(), links.len());
+    let label_count = links
+        .iter()
+        .filter(|l| matches!(l.ltype, LinkType::Hashtag))
+        .count();
+    let mut batch = NoteBatch::with_capacity(1, chunks.len(), links.len(), label_count);
     batch.push(entry_data, data, chunks, links);
 
     let mut tx = pool.begin().await?;
@@ -908,7 +911,7 @@ async fn upsert_notes_batched(
     if notes.is_empty() {
         return Ok(());
     }
-    let mut batch = NoteBatch::with_capacity(notes.len(), 0, 0);
+    let mut batch = NoteBatch::with_capacity(notes.len(), 0, 0, notes.len() * 4);
     for (entry_data, text) in notes {
         // Avoid `NoteDetails::new` — it would clone the raw text purely to be
         // re-borrowed for each parse pass below. The free functions take the
@@ -933,13 +936,13 @@ struct NoteBatch {
 }
 
 impl NoteBatch {
-    fn with_capacity(notes: usize, chunks: usize, links: usize) -> Self {
+    fn with_capacity(notes: usize, chunks: usize, links: usize, labels: usize) -> Self {
         Self {
             paths: Vec::with_capacity(notes),
             notes: Vec::with_capacity(notes),
             chunks: Vec::with_capacity(chunks),
             links: Vec::with_capacity(links),
-            labels: Vec::with_capacity(notes),
+            labels: Vec::with_capacity(labels),
         }
     }
 
@@ -1133,8 +1136,8 @@ impl BulkInsertRow for LinkRow {
 }
 
 impl BulkInsertRow for LabelRow {
-    const HEADER: &'static str = "INSERT OR IGNORE INTO labels (name, path) VALUES ";
-    const FOOTER: &'static str = "";
+    const HEADER: &'static str = "INSERT INTO labels (name, path) VALUES ";
+    const FOOTER: &'static str = " ON CONFLICT(name, path) DO NOTHING";
     const COLS: usize = 2;
 
     fn bind_to<'q>(
@@ -1171,6 +1174,23 @@ async fn bulk_insert<R: BulkInsertRow>(
         q.execute(&mut **tx).await?;
     }
     Ok(())
+}
+
+/// Escapes SQLite LIKE pattern metacharacters (`\`, `%`, `_`) in `s` so the
+/// result can be used as a safe literal prefix before appending `%`.
+/// Must be paired with `ESCAPE '\\'` in the SQL clause.
+fn escape_like_pattern(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        match c {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(c);
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 pub async fn rename_note(
@@ -1245,43 +1265,45 @@ pub async fn rename_directory(
         }
     };
 
-    let notes_sql = "UPDATE notes SET path = ? || SUBSTR(path, LENGTH(?) + 1), basePath = ? || SUBSTR(basePath, LENGTH(?) + 1) WHERE basePath LIKE (? || '%')";
+    let from_escaped = escape_like_pattern(&from);
+
+    let notes_sql = "UPDATE notes SET path = ? || SUBSTR(path, LENGTH(?) + 1), basePath = ? || SUBSTR(basePath, LENGTH(?) + 1) WHERE basePath LIKE (? || '%') ESCAPE '\\'";
     sqlx::query(notes_sql)
         .bind(&to)
         .bind(&from)
         .bind(&to)
         .bind(&from)
-        .bind(&from)
+        .bind(&from_escaped)
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE notesContent SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%')")
+    sqlx::query("UPDATE notesContent SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%') ESCAPE '\\'")
         .bind(&to)
         .bind(&from)
-        .bind(&from)
+        .bind(&from_escaped)
         .execute(&mut **tx)
         .await?;
 
     sqlx::query(
-        "UPDATE links SET source = ? || SUBSTR(source, LENGTH(?) + 1) WHERE source LIKE (? || '%')",
+        "UPDATE links SET source = ? || SUBSTR(source, LENGTH(?) + 1) WHERE source LIKE (? || '%') ESCAPE '\\'",
     )
     .bind(&to)
     .bind(&from)
-    .bind(&from)
+    .bind(&from_escaped)
     .execute(&mut **tx)
     .await?;
 
-    sqlx::query("UPDATE links SET destination = ? || SUBSTR(destination, LENGTH(?) + 1) WHERE destination LIKE (? || '%')")
+    sqlx::query("UPDATE links SET destination = ? || SUBSTR(destination, LENGTH(?) + 1) WHERE destination LIKE (? || '%') ESCAPE '\\'")
         .bind(&to)
         .bind(&from)
-        .bind(&from)
+        .bind(&from_escaped)
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE labels SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%')")
+    sqlx::query("UPDATE labels SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%') ESCAPE '\\'")
         .bind(&to)
         .bind(&from)
-        .bind(&from)
+        .bind(&from_escaped)
         .execute(&mut **tx)
         .await?;
 
@@ -1305,27 +1327,28 @@ async fn delete_directory(
     directory_path: &VaultPath,
 ) -> Result<(), DBError> {
     let path_string = directory_path.to_string();
+    let pattern = escape_like_pattern(&path_string);
 
-    sqlx::query("DELETE FROM notes WHERE path LIKE (? || '%')")
-        .bind(&path_string)
+    sqlx::query("DELETE FROM notes WHERE path LIKE (? || '%') ESCAPE '\\'")
+        .bind(&pattern)
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("DELETE FROM notesContent WHERE path LIKE (? || '%')")
-        .bind(&path_string)
+    sqlx::query("DELETE FROM notesContent WHERE path LIKE (? || '%') ESCAPE '\\'")
+        .bind(&pattern)
         .execute(&mut **tx)
         .await?;
 
     // Clear both sides of the links table — outbound (source) and inbound
     // (destination) — so backlinks pointing to deleted notes don't linger.
-    sqlx::query("DELETE FROM links WHERE source LIKE (? || '%') OR destination LIKE (? || '%')")
-        .bind(&path_string)
-        .bind(&path_string)
+    sqlx::query("DELETE FROM links WHERE source LIKE (? || '%') ESCAPE '\\' OR destination LIKE (? || '%') ESCAPE '\\'")
+        .bind(&pattern)
+        .bind(&pattern)
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("DELETE FROM labels WHERE path LIKE (? || '%')")
-        .bind(&path_string)
+    sqlx::query("DELETE FROM labels WHERE path LIKE (? || '%') ESCAPE '\\'")
+        .bind(&pattern)
         .execute(&mut **tx)
         .await?;
 
@@ -1714,6 +1737,7 @@ mod tests {
         .unwrap();
         assert_eq!(row.0, 1, "labels table should exist");
 
+        // labels_by_name was removed in 0.7; the PK autoindex covers it.
         let idx_name: (i64,) = sqlx::query_as(
             "SELECT count(*) FROM sqlite_master \
              WHERE type='index' AND name='labels_by_name'",
@@ -1721,7 +1745,7 @@ mod tests {
         .fetch_one(db.pool())
         .await
         .unwrap();
-        assert_eq!(idx_name.0, 1, "labels_by_name index should exist");
+        assert_eq!(idx_name.0, 0, "labels_by_name index must not exist (dropped in 0.7)");
 
         let idx_path: (i64,) = sqlx::query_as(
             "SELECT count(*) FROM sqlite_master \
@@ -1926,10 +1950,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn label_search_uses_labels_by_name_index() {
-        // Confirms the labels_by_name index is on the query plan for label
-        // filters. Without the index a hashtag filter would degrade to a
-        // table scan against `labels`.
+    async fn label_search_uses_index() {
+        // Confirms the PK autoindex (sqlite_autoindex_labels_1) is used for
+        // label lookups after the explicit labels_by_name index was dropped in
+        // 0.7. A hashtag filter must not degrade to a full table scan.
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
@@ -1956,14 +1980,11 @@ mod tests {
             .map(|(_, _, _, detail)| detail.as_str())
             .collect::<Vec<_>>()
             .join(" | ");
-        // SQLite may use either the explicit `labels_by_name` index or the
-        // primary-key autoindex (sqlite_autoindex_labels_1) — both serve a
-        // fast lookup on `name`. What matters is that `labels` is scanned
-        // using *some* index rather than a full table scan.
+        // The PK autoindex sqlite_autoindex_labels_1 covers WHERE name = ?
+        // lookups on (name, path). No explicit labels_by_name index any more.
         assert!(
-            plan_text.contains("labels_by_name")
-                || plan_text.contains("sqlite_autoindex_labels_1"),
-            "labels lookup should use an index on name: {}",
+            plan_text.contains("sqlite_autoindex_labels_1"),
+            "labels lookup should use sqlite_autoindex_labels_1: {}",
             plan_text
         );
 
@@ -2083,5 +2104,82 @@ mod tests {
         assert_eq!(count.0, 0);
 
         db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_directory_with_underscore_does_not_touch_siblings() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let target = VaultPath::note_path_from("/my_dir/a.md");
+        let sibling = VaultPath::note_path_from("/myXdir/b.md");
+        let entries = vec![
+            (
+                NoteEntryData {
+                    path: target.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x #t".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: sibling.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y #s".to_string(),
+            ),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        super::delete_directories(&mut tx, &[VaultPath::new("/my_dir")])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let remaining: Vec<(String,)> =
+            sqlx::query_as("SELECT path FROM notes ORDER BY path")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            remaining.into_iter().map(|(p,)| p).collect::<Vec<_>>(),
+            vec![sibling.to_string()],
+            "sibling /myXdir/b.md must be untouched"
+        );
+
+        let sibling_label: (i64,) =
+            sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
+                .bind(sibling.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(sibling_label.0, 1, "sibling label preserved");
+
+        db.close().await.unwrap();
+    }
+
+    #[test]
+    fn escape_like_pattern_escapes_metacharacters() {
+        assert_eq!(super::escape_like_pattern("/my_dir/"), "/my\\_dir/");
+        assert_eq!(super::escape_like_pattern("/a%b/"), "/a\\%b/");
+        assert_eq!(super::escape_like_pattern("/a\\b/"), "/a\\\\b/");
+        assert_eq!(super::escape_like_pattern("/normal/"), "/normal/");
+    }
+
+    #[cfg(test)]
+    mod note_columns_consistency {
+        #[test]
+        fn note_columns_is_path_plus_rest() {
+            assert_eq!(
+                super::super::NOTE_COLUMNS,
+                format!("path, {}", super::super::NOTE_COLUMNS_REST),
+                "NOTE_COLUMNS must equal 'path, ' + NOTE_COLUMNS_REST"
+            );
+        }
     }
 }

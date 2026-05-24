@@ -17,7 +17,7 @@ const _MAX_TITLE_LENGTH: usize = 40;
 static WIKILINK_RX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#).unwrap());
 
-static HASHTAG_RX: LazyLock<Regex> =
+pub(crate) static HASHTAG_RX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"#(?P<ht_text>[A-Za-z0-9_]+)"#).unwrap());
 
 static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
@@ -331,6 +331,35 @@ fn cleanup_hashtags(md_text: &str) -> String {
         .into_owned()
 }
 
+/// Internal label iterator that powers [`crate::note::label_matches`].
+///
+/// Encapsulates the regex match + the word-boundary guard (a `#tag`
+/// immediately following an alphanumeric/underscore character is treated as
+/// mid-word and skipped). Code-span / HTML / link overlap suppression is left
+/// to the caller because those checks are context-specific.
+pub(crate) fn label_matches_inner(
+    text: &str,
+) -> impl Iterator<Item = crate::note::LabelMatch<'_>> + '_ {
+    HASHTAG_RX.captures_iter(text).filter_map(move |caps| {
+        let m = caps.get(0)?;
+        let preceding_is_label_char = m.start() != 0
+            && text[..m.start()]
+                .chars()
+                .next_back()
+                .map(|c| c.is_ascii_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        if preceding_is_label_char {
+            return None;
+        }
+        let name = caps.name("ht_text")?.as_str();
+        Some(crate::note::LabelMatch {
+            byte_start: m.start(),
+            byte_end: m.end(),
+            name,
+        })
+    })
+}
+
 /// Returns the converted text into Markdown (replacing note wikilinks to markdown links)
 /// Normalizes the links urls when needed (lowercasing the path for vault paths)
 /// And a list of the links existing in the note, relative links are transformed to absolute links.
@@ -410,37 +439,30 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
         format!("[{}]({})", text, clean_link)
     });
 
-    // Process hashtags and convert them to links, skipping any match that
-    // overlaps a code span, an HTML region, or a markdown-link span, and
-    // requiring a word boundary before the `#` so that `foo#bar` does not
-    // turn `bar` into a label.
+    // Process hashtags and convert them to links. The label_matches_inner
+    // iterator already enforces the word-boundary rule (a `#tag` preceded by
+    // an alphanumeric/underscore char is skipped). Here we additionally skip
+    // any label that overlaps a code span, an HTML region, or a markdown-link
+    // span — those are call-site concerns.
     let code_ranges = code_char_ranges(&md_text);
     let link_ranges = md_link_char_ranges(&md_text);
     let mut out = String::with_capacity(md_text.len());
     let mut last_end = 0usize;
-    for caps in HASHTAG_RX.captures_iter(&md_text) {
-        let m = caps.get(0).unwrap();
-        let preceding_is_label_char = m.start() != 0
-            && md_text[..m.start()]
-                .chars()
-                .next_back()
-                .map(|c| c.is_ascii_alphanumeric() || c == '_')
-                .unwrap_or(false);
+    for lm in label_matches_inner(&md_text) {
         let in_code = code_ranges
             .iter()
-            .any(|(s, e)| m.start() >= *s && m.end() <= *e);
+            .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e);
         let in_link = link_ranges
             .iter()
-            .any(|(s, e)| m.start() >= *s && m.end() <= *e);
-        out.push_str(&md_text[last_end..m.start()]);
-        if preceding_is_label_char || in_code || in_link {
-            out.push_str(m.as_str());
+            .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e);
+        out.push_str(&md_text[last_end..lm.byte_start]);
+        if in_code || in_link {
+            out.push_str(&md_text[lm.byte_start..lm.byte_end]);
         } else {
-            let tag = &caps["ht_text"];
-            links.push(NoteLink::hashtag(tag));
-            out.push_str(&format!("[#{}](#{})", tag, tag));
+            links.push(NoteLink::hashtag(lm.name));
+            out.push_str(&format!("[#{}](#{})", lm.name, lm.name));
         }
-        last_end = m.end();
+        last_end = lm.byte_end;
     }
     out.push_str(&md_text[last_end..]);
     let clean_md_text: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(out);
