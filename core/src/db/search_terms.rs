@@ -222,6 +222,9 @@ impl SearchTerms {
             }
         }
 
+        dedup_preserving_order(&mut labels);
+        dedup_preserving_order(&mut excluded_labels);
+
         Self {
             breadcrumb,
             filename,
@@ -236,6 +239,11 @@ impl SearchTerms {
             excluded_labels,
         }
     }
+}
+
+fn dedup_preserving_order(v: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|x| seen.insert(x.clone()));
 }
 
 #[cfg(test)]
@@ -434,5 +442,20 @@ mod tests {
         let s = SearchTerms::from_query_string("#");
         assert!(s.labels.is_empty());
         assert!(s.terms.is_empty());
+    }
+
+    #[test]
+    fn search_labels_are_deduped() {
+        let s = SearchTerms::from_query_string("#foo #foo lb:foo #bar");
+        assert_eq!(s.labels, vec!["foo".to_string(), "bar".to_string()]);
+    }
+
+    #[test]
+    fn excluded_labels_are_deduped() {
+        let s = SearchTerms::from_query_string("#-draft lb:-draft #-old");
+        assert_eq!(
+            s.excluded_labels,
+            vec!["draft".to_string(), "old".to_string()]
+        );
     }
 }
