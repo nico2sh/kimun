@@ -25,3 +25,5 @@ Notes from research on companion planting for the [[garden-plan]].
 
 - "Carrots Love Tomatoes" by Louise Riotte
 - Local nursery handout
+
+Labels: #reading

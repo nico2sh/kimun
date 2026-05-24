@@ -19,3 +19,5 @@ Infrastructure engineer. Manages Redis, databases, and deployment pipelines.
 - 2026-04-07: Requested Redis cluster credentials for caching project
 - 2026-04-09: Got the credentials, tested staging cluster
 - 2026-04-10: Tagged on caching PR for Redis integration review
+
+Labels: #perf #review

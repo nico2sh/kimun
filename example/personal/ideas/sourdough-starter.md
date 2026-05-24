@@ -26,4 +26,6 @@
 - Sourdough pizza dough
 - Sourdough pancakes (great use for discard)
 
+Labels: #brewing #recipe
+
 [Nico](https://nico.red)
