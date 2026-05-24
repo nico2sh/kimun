@@ -1747,7 +1747,7 @@ mod tests {
 
         let mut tx = db.pool().begin().await.unwrap();
         super::insert_notes(&mut tx, &[(entry, body)]).await.unwrap();
-        super::delete_notes(&mut tx, &[path.clone()]).await.unwrap();
+        super::delete_notes(&mut tx, std::slice::from_ref(&path)).await.unwrap();
         tx.commit().await.unwrap();
 
         let count: (i64,) =
