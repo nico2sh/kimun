@@ -29,6 +29,22 @@ pub fn label_matches(text: &str) -> impl Iterator<Item = LabelMatch<'_>> + '_ {
     content_extractor::label_matches_inner(text)
 }
 
+/// Returns the deduplicated lowercase label names extracted from `text`
+/// according to the same rules used by the indexer (skips frontmatter,
+/// code, HTML, markdown links, wikilinks; applies word-boundary on both
+/// sides of the match).
+pub fn extract_labels(text: &str) -> Vec<String> {
+    let path = crate::nfs::VaultPath::root();
+    let (_md, links) = content_extractor::get_markdown_and_links(&path, text);
+    let mut seen = std::collections::BTreeSet::new();
+    for l in links {
+        if let LinkType::Hashtag = l.ltype {
+            seen.insert(l.text.to_lowercase());
+        }
+    }
+    seen.into_iter().collect()
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoteDetails {
     pub path: VaultPath,
