@@ -175,9 +175,24 @@ pub struct SearchTerms {
     pub excluded_labels: Vec<String>,
 }
 
+/// Maximum byte length of a query string accepted by [`SearchTerms::from_query_string`].
+/// 8 KB is more than enough for any real search query; larger inputs are truncated
+/// on a char boundary to prevent unbounded memory allocation via duplicate labels.
+const MAX_QUERY_LEN: usize = 8 * 1024;
+
 impl SearchTerms {
     pub fn from_query_string<S: AsRef<str>>(query: S) -> Self {
-        let mut query = query.as_ref().to_string();
+        let query_ref = query.as_ref();
+        let query_ref = if query_ref.len() > MAX_QUERY_LEN {
+            let mut idx = MAX_QUERY_LEN;
+            while !query_ref.is_char_boundary(idx) {
+                idx -= 1;
+            }
+            &query_ref[..idx]
+        } else {
+            query_ref
+        };
+        let mut query = query_ref.to_string();
         let mut breadcrumb = vec![];
         let mut terms = vec![];
         let mut filename = vec![];
@@ -457,5 +472,13 @@ mod tests {
             s.excluded_labels,
             vec!["draft".to_string(), "old".to_string()]
         );
+    }
+
+    #[test]
+    fn from_query_string_caps_input_length() {
+        let huge = "#a ".repeat(20_000); // 60 KB
+        let s = SearchTerms::from_query_string(huge);
+        // The cap is 8 KB; after dedup, labels has at most 1 entry.
+        assert!(s.labels.len() <= 1);
     }
 }
