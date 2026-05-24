@@ -496,11 +496,11 @@ fn add_filename_query(
     if let Some(final_where) = build_like_conditions(
         &s.filename,
         &s.excluded_filename,
-        |n| format!("notes.noteName LIKE ('%' || ?{} || '%')", n),
-        |n| format!("notes.noteName NOT LIKE ('%' || ?{} || '%')", n),
+        |n| format!("notes.noteName LIKE ('%' || ?{} || '%') ESCAPE '\\'", n),
+        |n| format!("notes.noteName NOT LIKE ('%' || ?{} || '%') ESCAPE '\\'", n),
         var_num,
         params,
-        |t| t.clone(),
+        |t: &String| escape_like_pattern(t),
     ) {
         queries.push(format!("{} WHERE {}", search_base_sql(), final_where));
     }
@@ -1448,7 +1448,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("@filename");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], "filename");
@@ -1459,7 +1459,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("at:directory");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], "directory");
@@ -1470,7 +1470,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("@file1 at:file2");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') OR notes.noteName LIKE ('%' || ?2 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\' OR notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "file1");
@@ -1494,7 +1494,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword @file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "keyword");
@@ -1506,7 +1506,7 @@ mod tests {
         let (sql, params) = build_search_sql_query(">heading @file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "heading");
@@ -1518,7 +1518,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword >heading @file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 3);
         assert_eq!(params[0], "keyword");
@@ -1608,7 +1608,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword >section @file ^title");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 3);
         assert_eq!(params[0], "keyword");
@@ -2230,6 +2230,30 @@ mod tests {
         let results = super::search_terms(db.pool(), "pt:my_notes").await.unwrap();
         let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
         assert_eq!(paths, vec![target.to_string()], "underscore must be literal in path search");
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn filename_search_with_underscore_does_not_treat_as_wildcard() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let target = VaultPath::note_path_from("/my_note.md");
+        let sibling = VaultPath::note_path_from("/myXnote.md");
+        let entries = vec![
+            (NoteEntryData { path: target.clone(), size: 10, modified_secs: 0 }, "x".to_string()),
+            (NoteEntryData { path: sibling.clone(), size: 10, modified_secs: 0 }, "y".to_string()),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let results = super::search_terms(db.pool(), "@my_note").await.unwrap();
+        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(paths, vec![target.to_string()], "underscore must be literal in filename search");
         db.close().await.unwrap();
     }
 
