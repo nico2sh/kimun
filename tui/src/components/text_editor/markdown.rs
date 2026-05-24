@@ -2,7 +2,12 @@ use crate::settings::themes::Theme;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
+use regex::Regex;
+use std::sync::LazyLock;
 use unicode_segmentation::UnicodeSegmentation;
+
+static HASHTAG_RX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"#(?P<ht_text>[A-Za-z0-9_]+)").unwrap());
 
 /// Shared parser options used by all pulldown-cmark call sites in this module.
 const PARSER_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
@@ -55,6 +60,7 @@ pub enum ElementKind {
     Blockquote,
     WikiLink,
     Image,
+    Label,
 }
 
 /// A single image-link span on a parsed line, replaced visually with a
@@ -386,6 +392,28 @@ impl ParsedBuffer {
 
             detect_wikilinks(line, &mut cv, &mut els);
             let image_placeholders = detect_image_placeholders(line, &mut cv, &mut els);
+
+            // Scan for #hashtag spans and emit Label elements, skipping ranges
+            // that overlap existing InlineCode elements.
+            let line_str = line.as_str();
+            for caps in HASHTAG_RX.captures_iter(line_str) {
+                let m = caps.get(0).unwrap();
+                let start_char = line_str[..m.start()].chars().count();
+                let end_char = start_char + m.as_str().chars().count();
+                let overlaps_code = els.iter().any(|e| {
+                    matches!(e.kind, ElementKind::InlineCode)
+                        && !(end_char <= e.start_char || start_char >= e.end_char)
+                });
+                if !overlaps_code {
+                    els.push(Element {
+                        start_char,
+                        end_char,
+                        kind: ElementKind::Label,
+                    });
+                }
+            }
+            // Re-sort so elem_vis / elem_index precomputation sees elements in line order.
+            els.sort_by_key(|e| e.start_char);
 
             debug_assert!(
                 els.len() < 255,
@@ -1127,6 +1155,9 @@ fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -
         Some(ElementKind::WikiLink) => Style::default()
             .fg(theme.color_directory.to_ratatui())
             .add_modifier(Modifier::UNDERLINED),
+        Some(ElementKind::Label) => Style::default()
+            .fg(theme.color_tag.to_ratatui())
+            .add_modifier(Modifier::BOLD),
     }
 }
 
@@ -1692,5 +1723,29 @@ mod tests {
                 .any(|e| e.kind == ElementKind::Blockquote),
             "row 1 must tag as Blockquote"
         );
+    }
+
+    #[test]
+    fn parse_line_emits_label_for_hashtag() {
+        let line = "see #rust later";
+        let parsed = ParsedLine::parse(line);
+        let label = parsed
+            .elements
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Label));
+        assert!(label.is_some(), "expected Label element: {:?}", parsed.elements);
+        let l = label.unwrap();
+        let span: String = line.chars().skip(l.start_char).take(l.end_char - l.start_char).collect();
+        assert_eq!(span, "#rust");
+    }
+
+    #[test]
+    fn parse_line_skips_label_inside_inline_code() {
+        let parsed = ParsedLine::parse("use `#foo` here");
+        let has_label = parsed
+            .elements
+            .iter()
+            .any(|e| matches!(e.kind, ElementKind::Label));
+        assert!(!has_label, "should not emit Label inside inline code");
     }
 }

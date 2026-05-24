@@ -248,6 +248,15 @@ pub struct Theme {
     pub color_journal_date: ThemeColor,
     /// Color for highlighted search-match text.
     pub color_search_match: ThemeColor,
+    /// Color for #hashtag label spans in the editor.
+    #[serde(default = "default_color_tag")]
+    pub color_tag: ThemeColor,
+}
+
+/// Serde default for `color_tag` — used when deserializing older theme TOML
+/// files that do not contain the field. Falls back to Gruvbox Dark's orange.
+fn default_color_tag() -> ThemeColor {
+    ThemeColor::from_string("#fe8019").unwrap()
 }
 
 impl Default for Theme {
@@ -275,6 +284,7 @@ impl Theme {
             color_directory: ThemeColor::from_string("#83a598").unwrap(),
             color_journal_date: ThemeColor::from_string("#8ec07c").unwrap(),
             color_search_match: ThemeColor::from_string("#b8bb26").unwrap(),
+            color_tag: ThemeColor::from_string("#fe8019").unwrap(),
         }
     }
 
@@ -294,6 +304,7 @@ impl Theme {
             color_directory: ThemeColor::from_string("#458588").unwrap(),
             color_journal_date: ThemeColor::from_string("#689d6a").unwrap(),
             color_search_match: ThemeColor::from_string("#98971a").unwrap(),
+            color_tag: ThemeColor::from_string("#af3a03").unwrap(),
         }
     }
 
@@ -313,6 +324,7 @@ impl Theme {
             color_directory: ThemeColor::from_string("#89dceb").unwrap(),
             color_journal_date: ThemeColor::from_string("#94e2d5").unwrap(),
             color_search_match: ThemeColor::from_string("#a6e3a1").unwrap(),
+            color_tag: ThemeColor::from_string("#fab387").unwrap(),
         }
     }
 
@@ -332,6 +344,7 @@ impl Theme {
             color_directory: ThemeColor::from_string("#04a5e5").unwrap(),
             color_journal_date: ThemeColor::from_string("#179299").unwrap(),
             color_search_match: ThemeColor::from_string("#40a02b").unwrap(),
+            color_tag: ThemeColor::from_string("#fe640b").unwrap(),
         }
     }
 
@@ -351,6 +364,7 @@ impl Theme {
             color_directory: ThemeColor::from_string("#7dcfff").unwrap(),
             color_journal_date: ThemeColor::from_string("#73daca").unwrap(),
             color_search_match: ThemeColor::from_string("#9ece6a").unwrap(),
+            color_tag: ThemeColor::from_string("#ff9e64").unwrap(),
         }
     }
 
@@ -370,6 +384,7 @@ impl Theme {
             color_directory: ThemeColor::from_string("#7dcfff").unwrap(),
             color_journal_date: ThemeColor::from_string("#73daca").unwrap(),
             color_search_match: ThemeColor::from_string("#9ece6a").unwrap(),
+            color_tag: ThemeColor::from_string("#ff9e64").unwrap(),
         }
     }
 
@@ -389,6 +404,7 @@ impl Theme {
             color_directory: ThemeColor::from_string("#2aa198").unwrap(),
             color_journal_date: ThemeColor::from_string("#859900").unwrap(),
             color_search_match: ThemeColor::from_string("#b58900").unwrap(),
+            color_tag: ThemeColor::from_string("#cb4b16").unwrap(),
         }
     }
 
@@ -408,6 +424,7 @@ impl Theme {
             color_directory: ThemeColor::from_string("#2aa198").unwrap(),
             color_journal_date: ThemeColor::from_string("#859900").unwrap(),
             color_search_match: ThemeColor::from_string("#b58900").unwrap(),
+            color_tag: ThemeColor::from_string("#cb4b16").unwrap(),
         }
     }
 
@@ -450,6 +467,7 @@ impl Theme {
             color_directory: ThemeColor::from_string("#81a1c1").unwrap(),
             color_journal_date: ThemeColor::from_string("#8fbcbb").unwrap(),
             color_search_match: ThemeColor::from_string("#a3be8c").unwrap(),
+            color_tag: ThemeColor::from_string("#d08770").unwrap(),
         }
     }
 
@@ -474,6 +492,7 @@ impl Theme {
             color_directory: ThemeColor::Ansi(12),    // bright blue
             color_journal_date: ThemeColor::Ansi(10), // bright green
             color_search_match: ThemeColor::Ansi(11), // bright yellow
+            color_tag: ThemeColor::Ansi(3),           // yellow
         }
     }
 }
@@ -746,6 +765,7 @@ mod tests {
             color_directory    = "#83a598"
             color_journal_date = "#8ec07c"
             color_search_match = "#b8bb26"
+            color_tag          = "#fe8019"
         "###;
 
         let theme: Theme = toml::from_str(toml_str).unwrap();
