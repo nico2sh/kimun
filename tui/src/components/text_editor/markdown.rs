@@ -2,12 +2,7 @@ use crate::settings::themes::Theme;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
-use regex::Regex;
-use std::sync::LazyLock;
 use unicode_segmentation::UnicodeSegmentation;
-
-static HASHTAG_RX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"#(?P<ht_text>[A-Za-z0-9_]+)").unwrap());
 
 /// Shared parser options used by all pulldown-cmark call sites in this module.
 const PARSER_OPTIONS: Options = Options::ENABLE_STRIKETHROUGH;
@@ -87,8 +82,8 @@ pub struct ParsedLine {
     /// Enables O(1) `in_any_element` without iterating `elements`.
     elem_vis: Vec<bool>,
     /// Per-char element index, 1-based (0 = no element). Enables O(1) `elem_at`.
-    /// Stored as `u8`; supports up to 255 elements per line (far more than any real line).
-    elem_index: Vec<u8>,
+    /// Stored as `u16`; supports up to 65535 elements per line.
+    elem_index: Vec<u16>,
     /// Char offset where the list-item sigil (indent + marker + space) ends on
     /// this line, or `None` if this line is not the first line of a list item.
     list_sigil_end: Option<usize>,
@@ -268,11 +263,32 @@ impl ParsedBuffer {
             }
         };
 
+        // Track fenced/indented code block byte ranges for F4 (label suppression).
+        // Populated during the main parser pass below and converted to per-line
+        // flags before the per-line label scan.
+        let mut code_block_byte_ranges: Vec<(usize, usize)> = Vec::new();
+        let mut code_block_depth = 0u32;
+        let mut code_block_start: Option<usize> = None;
+
         let parser = Parser::new_ext(&joined, PARSER_OPTIONS);
         for (event, range) in parser.into_offset_iter() {
             let (sr, sc) = byte_to_row_col(range.start, lines, &line_starts);
             let (er, ec) = byte_to_row_col(range.end, lines, &line_starts);
             match event {
+                Event::Start(Tag::CodeBlock(_)) => {
+                    if code_block_depth == 0 {
+                        code_block_start = Some(range.start);
+                    }
+                    code_block_depth += 1;
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    code_block_depth = code_block_depth.saturating_sub(1);
+                    if code_block_depth == 0
+                        && let Some(start) = code_block_start.take()
+                    {
+                        code_block_byte_ranges.push((start, range.end));
+                    }
+                }
                 Event::Start(ref tag) if let Some(kind) = tag_to_kind(tag) => {
                     stack.push((sr, sc, kind));
                 }
@@ -365,6 +381,28 @@ impl ParsedBuffer {
             }
         }
 
+        // Build a per-line flag: `true` = this line is inside a fenced/indented code block.
+        // Lines whose byte range overlaps any code-block range are suppressed from label scan.
+        let line_in_code_block: Vec<bool> = {
+            let mut flags = vec![false; lines.len()];
+            for (cb_start, cb_end) in &code_block_byte_ranges {
+                // Find all lines that overlap [cb_start, cb_end).
+                for (row, &ls) in line_starts[..lines.len()].iter().enumerate() {
+                    let le = ls + lines[row].len();
+                    // Overlap when line_start < cb_end and line_end > cb_start.
+                    // We skip the fence delimiter lines (which contain the ``` markers)
+                    // by checking if the line's content byte range overlaps the code
+                    // block's content range. The CodeBlock event range in pulldown-cmark
+                    // covers the opening fence through the closing fence, so this
+                    // conservative check marks all lines within the span as in-block.
+                    if ls < *cb_end && le > *cb_start {
+                        flags[row] = true;
+                    }
+                }
+            }
+            flags
+        };
+
         // Per-line post-processing: heading trailing whitespace, wikilinks, bitmasks.
         let mut out: Vec<ParsedLine> = Vec::with_capacity(lines.len());
         for (row, line) in lines.iter().enumerate() {
@@ -393,38 +431,50 @@ impl ParsedBuffer {
             detect_wikilinks(line, &mut cv, &mut els);
             let image_placeholders = detect_image_placeholders(line, &mut cv, &mut els);
 
-            // Scan for #hashtag spans and emit Label elements, skipping ranges
-            // that overlap existing InlineCode elements.
-            let line_str = line.as_str();
-            for caps in HASHTAG_RX.captures_iter(line_str) {
-                let m = caps.get(0).unwrap();
-                let start_char = line_str[..m.start()].chars().count();
-                let end_char = start_char + m.as_str().chars().count();
-                let overlaps_code = els.iter().any(|e| {
-                    matches!(e.kind, ElementKind::InlineCode)
-                        && !(end_char <= e.start_char || start_char >= e.end_char)
-                });
-                if !overlaps_code {
-                    els.push(Element {
-                        start_char,
-                        end_char,
-                        kind: ElementKind::Label,
+            // Scan for #hashtag spans and emit Label elements.
+            // Guards (all must pass):
+            //   F4: skip if this line is inside a fenced code block
+            //   F2: word-boundary guard (handled inside label_matches)
+            //   F3: skip if the span overlaps InlineCode, Link, WikiLink, or Image
+            if !line_in_code_block[row] {
+                let line_str = line.as_str();
+                for lm in kimun_core::note::label_matches(line_str) {
+                    // Convert byte offsets to char offsets for Element storage.
+                    let start_char = line_str[..lm.byte_start].chars().count();
+                    let end_char = start_char + line_str[lm.byte_start..lm.byte_end].chars().count();
+                    // F3: overlap guard (InlineCode + Link + WikiLink + Image)
+                    let overlaps_existing = els.iter().any(|e| {
+                        matches!(
+                            e.kind,
+                            ElementKind::InlineCode
+                                | ElementKind::Link
+                                | ElementKind::WikiLink
+                                | ElementKind::Image
+                        ) && !(end_char <= e.start_char || start_char >= e.end_char)
                     });
+                    if !overlaps_existing {
+                        els.push(Element {
+                            start_char,
+                            end_char,
+                            kind: ElementKind::Label,
+                        });
+                    }
                 }
             }
             // Re-sort so elem_vis / elem_index precomputation sees elements in line order.
             els.sort_by_key(|e| e.start_char);
 
+            // F6: use u16 for elem_index (supports up to 65535 elements per line)
             debug_assert!(
-                els.len() < 255,
+                els.len() < u16::MAX as usize,
                 "Too many elements on a single line ({})",
                 els.len()
             );
             let total = line.chars().count();
             let mut elem_vis = vec![false; total];
-            let mut elem_index = vec![0u8; total];
+            let mut elem_index = vec![0u16; total];
             for (i, e) in els.iter().enumerate() {
-                let tag = (i + 1).min(255) as u8;
+                let tag = (i + 1) as u16;
                 for pos in e.start_char..e.end_char {
                     if pos < total {
                         elem_vis[pos] = true;
@@ -1747,5 +1797,70 @@ mod tests {
             .iter()
             .any(|e| matches!(e.kind, ElementKind::Label));
         assert!(!has_label, "should not emit Label inside inline code");
+    }
+
+    // ── New label-parity tests (F2, F3, F4) ──────────────────────────────────
+
+    #[test]
+    fn parse_line_skips_label_inside_markdown_link() {
+        let parsed = ParsedLine::parse("[see docs](#section) and #real");
+        let labels: Vec<_> = parsed
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Label))
+            .collect();
+        assert_eq!(labels.len(), 1, "only #real should be a label, not #section in the link");
+        let l = labels[0];
+        let span: String = "[see docs](#section) and #real"
+            .chars()
+            .skip(l.start_char)
+            .take(l.end_char - l.start_char)
+            .collect();
+        assert_eq!(span, "#real");
+    }
+
+    #[test]
+    fn parse_line_skips_label_inside_link_display_text() {
+        let parsed = ParsedLine::parse("[#todo](notes/project.md)");
+        let has_label = parsed
+            .elements
+            .iter()
+            .any(|e| matches!(e.kind, ElementKind::Label));
+        assert!(!has_label, "hashtag inside link display text should not become Label");
+    }
+
+    #[test]
+    fn parse_line_skips_label_after_label_char() {
+        let parsed = ParsedLine::parse("foo#bar baz");
+        let has_label = parsed
+            .elements
+            .iter()
+            .any(|e| matches!(e.kind, ElementKind::Label));
+        assert!(!has_label, "word#tag should not emit Label without word boundary");
+    }
+
+    #[test]
+    fn parse_buffer_skips_label_inside_fenced_block() {
+        let buffer = vec![
+            "before".to_string(),
+            "```".to_string(),
+            "#inside".to_string(),
+            "```".to_string(),
+            "after #outside".to_string(),
+        ];
+        let lines = ParsedBuffer::parse(&buffer);
+        let inside_labels: Vec<_> = lines[2]
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Label))
+            .collect();
+        assert!(inside_labels.is_empty(), "no Label emitted for hashtags in fenced blocks");
+
+        let outside_labels: Vec<_> = lines[4]
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Label))
+            .collect();
+        assert_eq!(outside_labels.len(), 1, "#outside still extracted");
     }
 }
