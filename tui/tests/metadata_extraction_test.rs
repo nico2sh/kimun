@@ -24,6 +24,20 @@ Also #project-related stuff.
 }
 
 #[test]
+fn extract_tags_lowercases_frontmatter_for_parity_with_body() {
+    // Frontmatter `DevOps` and body `#devops` must dedupe to one entry,
+    // matching how core's labels index stores names (lowercase).
+    let content = r#"---
+tags: ["DevOps", "Important"]
+---
+body with #devops and #important
+"#;
+    let mut tags = extract_tags(content);
+    tags.sort();
+    assert_eq!(tags, vec!["devops".to_string(), "important".to_string()]);
+}
+
+#[test]
 fn extract_markdown_links() {
     let content = r#"
 # Notes

@@ -16,7 +16,7 @@ pub fn extract_tags(content: &str) -> Vec<String> {
         && let Some(yaml_tags) = extract_frontmatter_tags(&frontmatter)
     {
         for tag in yaml_tags {
-            tags.insert(tag);
+            tags.insert(tag.to_lowercase());
         }
     }
 
