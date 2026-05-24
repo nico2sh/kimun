@@ -95,6 +95,10 @@ Reviewed the quarterly numbers today. #finance #q2 #review
 - **Allowed characters:** letters, digits, and underscores (`[A-Za-z0-9_]+`). A hashtag ends at the first character outside that set, so `#tag-with-dash` yields the label `tag`.
 - **Case-insensitive:** labels are stored in lowercase. `#Finance` and `#finance` are the same label.
 - **Code is excluded:** hashtags inside inline code spans (`` `#tag` ``) and fenced code blocks are not indexed as labels.
+- **Frontmatter is excluded:** hashtags inside YAML (`---`) or TOML (`+++`) frontmatter blocks are not indexed as labels.
+- **HTML is excluded:** hashtags inside HTML blocks or inline HTML (e.g. `<span data-tag="#foo">`) are not indexed as labels.
+- **Link bodies are excluded:** hashtags inside markdown link spans `[text](url#fragment)` — including URL fragments — are not indexed as labels.
+- **Wikilinks are excluded:** hashtags inside wikilink spans `[[...]]` (e.g. `[[#section]]`) are not indexed as labels.
 
 ### Searching by label
 

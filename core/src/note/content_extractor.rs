@@ -325,6 +325,18 @@ pub(crate) fn md_link_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// Returns byte-offset ranges (start, end) within `md_text` covering every
+/// `[[wikilink]]` form, including invalid wikilinks (those that were not
+/// rewritten to standard markdown links earlier in the pipeline, e.g.
+/// `[[#tag]]`). Used to exclude hashtag extraction inside wikilink spans so
+/// that `[[#wiki_tag]]` is not indexed as a label.
+pub(crate) fn md_wikilink_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
+    WIKILINK_RX
+        .find_iter(md_text)
+        .map(|m| (m.start(), m.end()))
+        .collect()
+}
+
 fn cleanup_hashtags(md_text: &str) -> String {
     HASHTAG_RX
         .replace_all(md_text, |caps: &Captures| caps["ht_text"].to_string())
@@ -455,6 +467,7 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
     let fm_end = frontmatter_end_byte(&md_text);
     let code_ranges = code_char_ranges(&md_text);
     let link_ranges = md_link_char_ranges(&md_text);
+    let wikilink_ranges = md_wikilink_char_ranges(&md_text);
     let mut out = String::with_capacity(md_text.len());
     let mut last_end = 0usize;
     for lm in label_matches_inner(&md_text) {
@@ -464,7 +477,10 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
             .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e);
         let in_link = link_ranges
             .iter()
-            .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e);
+            .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e)
+            || wikilink_ranges
+                .iter()
+                .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e);
         out.push_str(&md_text[last_end..lm.byte_start]);
         if in_frontmatter || in_code || in_link {
             out.push_str(&md_text[lm.byte_start..lm.byte_end]);
@@ -2130,5 +2146,20 @@ ls -la ./test
             })
             .collect();
         assert_eq!(names, vec!["real"], "frontmatter hashtag must not be extracted regardless of line endings");
+    }
+
+    #[test]
+    fn hashtag_inside_wikilink_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "[[#wiki_tag]] and plain #real";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["real"], "hashtag inside wikilink (invalid form) must not become a label");
     }
 }
