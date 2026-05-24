@@ -573,6 +573,26 @@ pub async fn get_all_notes(
     rows.iter().map(row_to_note_entry).collect()
 }
 
+pub async fn list_labels(pool: &SqlitePool) -> Result<Vec<String>, DBError> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT name FROM labels")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(n,)| n).collect())
+}
+
+pub async fn notes_with_label(
+    pool: &SqlitePool,
+    name: &str,
+) -> Result<Vec<VaultPath>, DBError> {
+    let normalized = name.to_lowercase();
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT path FROM labels WHERE name = ?")
+            .bind(&normalized)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(p,)| VaultPath::new(p)).collect())
+}
+
 pub async fn search_terms<S: AsRef<str>>(
     pool: &SqlitePool,
     search_query: S,
