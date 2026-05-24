@@ -107,6 +107,25 @@ kimun search "#important #-archived"
 kimun search "rust" --format json | jq '.notes[] | select(.metadata.tags[] == "rust")'
 ```
 
+## Labels
+
+List every hashtag label in your vault with note counts:
+
+```sh
+kimun labels                  # alphabetical list with counts
+kimun labels --format paths   # bare labels, one per line (pipeable)
+kimun labels --format json    # JSON with total + per-label note_count
+```
+
+Labels come from in-text `#hashtag` tokens (see [Search](@/using-kimun/search.md#labels) for full label rules).
+
+```sh
+# Pipe label names into search to count notes per label
+kimun labels --format paths | while read l; do
+  echo "$l: $(kimun search "#$l" --format paths | wc -l)"
+done
+```
+
 ## Notes
 
 List all notes in the current workspace:

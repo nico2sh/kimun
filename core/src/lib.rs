@@ -416,6 +416,13 @@ impl NoteVault {
         Ok(db::list_labels(self.vault_db.pool()).await?)
     }
 
+    /// Returns every distinct label in the vault paired with the number of
+    /// notes carrying it. Labels are returned sorted alphabetically.
+    pub async fn label_counts(&self) -> Result<Vec<(String, usize)>, VaultError> {
+        let rows = db::label_counts(self.vault_db.pool()).await?;
+        Ok(rows.into_iter().map(|(n, c)| (n, c as usize)).collect())
+    }
+
     /// Returns every note path that carries the given label. The label
     /// argument is lowercased before lookup, matching how labels are stored.
     pub async fn notes_with_label<S: AsRef<str>>(
@@ -1995,5 +2002,39 @@ mod label_api_tests {
             .unwrap();
         let paths = vault.notes_with_label("nosuch").await.unwrap();
         assert!(paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn label_counts_returns_count_per_label() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&VaultPath::note_path_from("/a.md"), "x #foo #bar")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/b.md"), "y #foo")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/c.md"), "z #baz")
+            .await
+            .unwrap();
+
+        let counts = vault.label_counts().await.unwrap();
+        assert_eq!(
+            counts,
+            vec![
+                ("bar".to_string(), 1usize),
+                ("baz".to_string(), 1usize),
+                ("foo".to_string(), 2usize),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn label_counts_empty_vault_returns_empty() {
+        let (_tmp, vault) = new_vault().await;
+        let counts = vault.label_counts().await.unwrap();
+        assert!(counts.is_empty());
     }
 }
