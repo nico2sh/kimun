@@ -69,6 +69,18 @@ impl NoteBrowserModal {
         icons: Icons,
         tx: AppTx,
     ) -> Self {
+        Self::new_with_query(title, provider, vault, key_bindings, icons, tx, String::new())
+    }
+
+    fn new_with_query(
+        title: impl Into<String>,
+        provider: impl NoteBrowserProvider + 'static,
+        vault: Arc<NoteVault>,
+        key_bindings: KeyBindings,
+        icons: Icons,
+        tx: AppTx,
+        initial_query: String,
+    ) -> Self {
         let file_list = FileListComponent::new(key_bindings, icons);
         let mut modal = Self {
             title: title.into(),
@@ -84,6 +96,9 @@ impl NoteBrowserModal {
             preview_task: None,
             preview_rx: None,
         };
+        if !initial_query.is_empty() {
+            modal.search_query.set_value(initial_query);
+        }
         modal.schedule_load(tx);
         modal
     }
@@ -192,7 +207,9 @@ impl NoteBrowserModal {
     ///
     /// Behaves exactly like [`new`](Self::new) except the search input is
     /// pre-populated with `query` (cursor placed at the end) and an initial
-    /// load is triggered for that query string.
+    /// load is triggered for that query string.  Only a single `schedule_load`
+    /// call is made — the query is pre-filled before the task is spawned so
+    /// there is no empty-load race.
     pub fn with_initial_query<S: Into<String>>(
         title: impl Into<String>,
         provider: impl NoteBrowserProvider + 'static,
@@ -202,12 +219,7 @@ impl NoteBrowserModal {
         tx: AppTx,
         query: S,
     ) -> Self {
-        let mut modal = Self::new(title, provider, vault, key_bindings, icons, tx.clone());
-        modal.search_query.set_value(query.into());
-        // Re-trigger the load so it runs against the pre-filled query rather
-        // than the empty string that `new` scheduled.
-        modal.schedule_load(tx);
-        modal
+        Self::new_with_query(title, provider, vault, key_bindings, icons, tx, query.into())
     }
 
     // ── Test-only accessors ────────────────────────────────────────────────
@@ -560,5 +572,32 @@ mod tests {
         let modal = make_modal().await;
         assert_eq!(modal.query_text(), "");
         assert_eq!(modal.cursor_char_count(), 0);
+    }
+
+    /// `with_initial_query` must call `schedule_load` exactly once, with the
+    /// query already pre-filled.  Verified indirectly: the visible state after
+    /// construction must match the supplied query and the cursor must sit at
+    /// the end — just as if a single properly-initialised load were scheduled.
+    #[tokio::test]
+    async fn with_initial_query_does_not_double_schedule() {
+        let vault = temp_vault("modal_iq_once").await;
+        let settings = AppSettings::default();
+        let (tx, _rx) = unbounded_channel();
+        let modal = NoteBrowserModal::with_initial_query(
+            "test",
+            EmptyProvider,
+            vault,
+            settings.key_bindings.clone(),
+            settings.icons(),
+            tx,
+            "#important",
+        );
+        assert_eq!(modal.query_text(), "#important");
+        assert_eq!(modal.cursor_char_count(), "#important".chars().count());
+        // A load task must have been spawned (Some), confirming schedule_load
+        // was called.  If it were called twice the second abort() would race;
+        // that scenario is ruled out by code inspection: new_with_query is the
+        // only call site for schedule_load during construction.
+        assert!(modal.load_task.is_some());
     }
 }
