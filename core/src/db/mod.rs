@@ -354,7 +354,7 @@ fn add_exclusion_conditions(
             "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
             var_num
         ));
-        params.push(excluded.clone());
+        params.push(fts4_quote(excluded));
         *var_num += 1;
     }
 }
@@ -417,7 +417,8 @@ fn add_content_terms_query(
             )
         };
         queries.push(format!("{} WHERE {}", search_base_sql(), where_clause));
-        params.push(s.terms.join(" "));
+        let quoted: Vec<String> = s.terms.iter().map(|t| fts4_quote(t)).collect();
+        params.push(quoted.join(" "));
         *var_num += 1;
     } else if !exclusions.is_empty() {
         // Pure exclusion: scan all notes, drop those matching the excluded terms.
@@ -448,14 +449,14 @@ fn add_breadcrumb_query(
                 search_base_sql(),
                 var_num
             ));
-            params.push(s.breadcrumb.join(" "));
+            params.push(s.breadcrumb.iter().map(|b| fts4_quote(b)).collect::<Vec<_>>().join(" "));
         } else {
             let mut parts = Vec::with_capacity(s.breadcrumb.len() + s.excluded_breadcrumb.len());
             for b in &s.breadcrumb {
-                parts.push(format!("breadcrumb: {}", b));
+                parts.push(format!("breadcrumb: {}", fts4_quote(b)));
             }
             for b in &s.excluded_breadcrumb {
-                parts.push(format!("breadcrumb: -{}", b));
+                parts.push(format!("breadcrumb: -{}", fts4_quote(b)));
             }
             queries.push(format!(
                 "{} WHERE notesContent MATCH ?{}",
@@ -474,7 +475,7 @@ fn add_breadcrumb_query(
             "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
             var_num
         ));
-        params.push(format!("breadcrumb: {}", excluded));
+        params.push(format!("breadcrumb: {}", fts4_quote(excluded)));
         *var_num += 1;
     }
     queries.push(format!(
@@ -1179,6 +1180,15 @@ async fn bulk_insert<R: BulkInsertRow>(
     Ok(())
 }
 
+/// Wraps a user-supplied FTS4 term in double quotes so SQLite treats it
+/// as a literal phrase, neutralising any FTS4 metacharacters the user
+/// may have typed (`(`, `)`, `*`, `"`, `:`, etc.) that would otherwise
+/// cause SQLite to reject the query at runtime.
+fn fts4_quote(term: &str) -> String {
+    let escaped = term.replace('"', "\"\"");
+    format!("\"{}\"", escaped)
+}
+
 /// Escapes SQLite LIKE pattern metacharacters (`\`, `%`, `_`) in `s` so the
 /// result can be used as a safe literal prefix before appending `%`.
 /// Must be paired with `ESCAPE '\\'` in the SQL clause.
@@ -1396,7 +1406,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "foo bar");
+        assert_eq!(params[0], "\"foo\" \"bar\"");
     }
 
     #[test]
@@ -1407,7 +1417,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1418,7 +1428,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "heading");
+        assert_eq!(params[0], "\"heading\"");
     }
 
     #[test]
@@ -1429,7 +1439,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "section");
+        assert_eq!(params[0], "\"section\"");
     }
 
     #[test]
@@ -1440,7 +1450,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "heading1 heading2");
+        assert_eq!(params[0], "\"heading1\" \"heading2\"");
     }
 
     #[test]
@@ -1485,8 +1495,8 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
         );
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "section");
+        assert_eq!(params[0], "\"keyword\"");
+        assert_eq!(params[1], "\"section\"");
     }
 
     #[test]
@@ -1497,7 +1507,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
         assert_eq!(params[1], "file");
     }
 
@@ -1509,7 +1519,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "heading");
+        assert_eq!(params[0], "\"heading\"");
         assert_eq!(params[1], "file");
     }
 
@@ -1521,8 +1531,8 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 3);
-        assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "heading");
+        assert_eq!(params[0], "\"keyword\"");
+        assert_eq!(params[1], "\"heading\"");
         assert_eq!(params[2], "file");
     }
 
@@ -1534,7 +1544,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "exact phrase keyword");
+        assert_eq!(params[0], "\"exact phrase\" \"keyword\"");
     }
 
     #[test]
@@ -1545,7 +1555,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1556,7 +1566,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1567,7 +1577,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1578,7 +1588,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1589,7 +1599,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1600,7 +1610,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1611,8 +1621,8 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 3);
-        assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "section");
+        assert_eq!(params[0], "\"keyword\"");
+        assert_eq!(params[1], "\"section\"");
         assert_eq!(params[2], "file");
     }
 
@@ -1631,7 +1641,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1642,8 +1652,8 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
         );
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "section");
+        assert_eq!(params[0], "\"keyword\"");
+        assert_eq!(params[1], "\"section\"");
     }
 
     #[test]
@@ -1658,8 +1668,8 @@ mod tests {
         ));
         // params: first is the excluded term (NOT IN subquery), second is the positive term
         assert_eq!(params.len(), 2);
-        assert!(params.contains(&"cancelled".to_string()));
-        assert!(params.contains(&"meeting".to_string()));
+        assert!(params.contains(&"\"cancelled\"".to_string()));
+        assert!(params.contains(&"\"meeting\"".to_string()));
 
         assert!(sql.contains("SELECT DISTINCT"));
     }
@@ -1677,7 +1687,7 @@ mod tests {
             "SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"
         ));
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "cancelled");
+        assert_eq!(params[0], "\"cancelled\"");
     }
 
     #[test]
@@ -1686,7 +1696,7 @@ mod tests {
 
         assert!(sql.contains("notesContent MATCH"));
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "breadcrumb: project breadcrumb: -draft");
+        assert_eq!(params[0], "breadcrumb: \"project\" breadcrumb: -\"draft\"");
     }
 
     #[test]
@@ -2254,6 +2264,71 @@ mod tests {
         let results = super::search_terms(db.pool(), "@my_note").await.unwrap();
         let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
         assert_eq!(paths, vec![target.to_string()], "underscore must be literal in filename search");
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fts_term_with_metachar_does_not_error() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entry = NoteEntryData {
+            path: VaultPath::note_path_from("/a.md"),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "some meeting note".to_string())])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Each of these would have produced an FTS4 syntax error before the fix.
+        for q in &["(meeting", "*", "meet*ing", "title:value", "a^b"] {
+            let res = super::search_terms(db.pool(), q).await;
+            assert!(
+                res.is_ok(),
+                "query {:?} must not error; got {:?}",
+                q,
+                res.err()
+            );
+        }
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn breadcrumb_term_with_metachar_does_not_error() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entry = NoteEntryData {
+            path: VaultPath::note_path_from("/a.md"),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "# Heading\n\ntext".to_string())])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        for q in &[">(heading", ">*", "in:title:"] {
+            let res = super::search_terms(db.pool(), q).await;
+            assert!(
+                res.is_ok(),
+                "breadcrumb query {:?} must not error; got {:?}",
+                q,
+                res.err()
+            );
+        }
+
         db.close().await.unwrap();
     }
 
