@@ -65,9 +65,11 @@ use super::{
     VaultPath,
 };
 
+// 0.6: Added `labels` table populated from hashtags in note bodies. Bump
+//      forces a clean reindex so the table is filled for existing vaults.
 // 0.5: BREADCRUMB_SEP changed from `>` to `\x1f`. Bump forces a clean
 //      reindex so stale rows with the old separator are rewritten.
-const VERSION: &str = "0.5";
+const VERSION: &str = "0.6";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone)]
@@ -263,6 +265,30 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
             breadcrumb,
             text
         )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE labels (
+            name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            PRIMARY KEY (name, path)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX labels_by_name
+            ON labels(name)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX labels_by_path
+            ON labels(path)",
     )
     .execute(&mut *tx)
     .await?;
@@ -1541,5 +1567,42 @@ mod tests {
         assert!(sql.contains("notes.basePath NOT LIKE"));
         assert!(!sql.contains("notes.basePath LIKE ('/'"));
         assert_eq!(params.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn labels_table_exists_after_create_tables() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let row: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM sqlite_master \
+             WHERE type='table' AND name='labels'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(row.0, 1, "labels table should exist");
+
+        let idx_name: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM sqlite_master \
+             WHERE type='index' AND name='labels_by_name'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(idx_name.0, 1, "labels_by_name index should exist");
+
+        let idx_path: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM sqlite_master \
+             WHERE type='index' AND name='labels_by_path'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(idx_path.0, 1, "labels_by_path index should exist");
+
+        db.close().await.unwrap();
     }
 }
