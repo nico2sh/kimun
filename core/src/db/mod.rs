@@ -2287,7 +2287,7 @@ mod tests {
         tx.commit().await.unwrap();
 
         // Each of these would have produced an FTS4 syntax error before the fix.
-        for q in &["(meeting", "*", "meet*ing", "title:value", "a^b"] {
+        for q in &["(meeting", "*", "meet*ing", "title:value", "a^b", ">", "-", ">-", "in:", "at:"] {
             let res = super::search_terms(db.pool(), q).await;
             assert!(
                 res.is_ok(),
