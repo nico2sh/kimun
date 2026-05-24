@@ -396,12 +396,30 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
         format!("[{}]({})", text, clean_link)
     });
 
-    // Process hashtags and convert them to links
-    let clean_md_text = HASHTAG_RX.replace_all(&md_text, |caps: &Captures| {
-        let tag = &caps["ht_text"];
-        links.push(NoteLink::hashtag(tag));
-        format!("[#{}](#{})", tag, tag)
-    });
+    // Process hashtags and convert them to links, skipping any match that
+    // overlaps a code span or fenced code block. Hashtag extraction runs
+    // against `md_text` (post-link-rewrite); code regions are calculated
+    // against the same text.
+    let code_ranges = code_char_ranges(&md_text);
+    let mut out = String::with_capacity(md_text.len());
+    let mut last_end = 0usize;
+    for caps in HASHTAG_RX.captures_iter(&md_text) {
+        let m = caps.get(0).unwrap();
+        let in_code = code_ranges
+            .iter()
+            .any(|(s, e)| m.start() >= *s && m.end() <= *e);
+        out.push_str(&md_text[last_end..m.start()]);
+        if in_code {
+            out.push_str(m.as_str());
+        } else {
+            let tag = &caps["ht_text"];
+            links.push(NoteLink::hashtag(tag));
+            out.push_str(&format!("[#{}](#{})", tag, tag));
+        }
+        last_end = m.end();
+    }
+    out.push_str(&md_text[last_end..]);
+    let clean_md_text: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(out);
 
     (clean_md_text.to_string(), links)
 }
@@ -1777,5 +1795,59 @@ ls -la ./test
         let md = "no code here, just #tags";
         let ranges = super::code_char_ranges(md);
         assert!(ranges.is_empty(), "plain text yields no code ranges");
+    }
+
+    #[test]
+    fn hashtag_in_inline_code_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (text, links) =
+            super::get_markdown_and_links(&path, "use `#notalabel` and tag #real");
+        assert!(
+            links.iter().all(|l| !matches!(&l.ltype, super::super::LinkType::Hashtag)
+                || l.text != "notalabel"),
+            "hashtag inside inline code must not become a hashtag link"
+        );
+        assert!(
+            links.iter().any(|l| matches!(&l.ltype, super::super::LinkType::Hashtag)
+                && l.text == "real"),
+            "hashtag outside code is still extracted"
+        );
+        assert!(
+            text.contains("`#notalabel`"),
+            "inline code literal is preserved in rendered output: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn hashtag_in_fenced_block_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "before\n```\n#inside\n```\nafter #outside";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["outside"]);
+    }
+
+    #[test]
+    fn hashtag_terminates_at_non_label_char() {
+        // Per spec: `#tag-with-dash` yields the label `tag` and the rest
+        // (`-with-dash`) is treated as following text. `HASHTAG_RX` already
+        // enforces this because `[A-Za-z0-9_]+` stops at `-`.
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (_text, links) = super::get_markdown_and_links(&path, "x #tag-with-dash y");
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["tag"]);
     }
 }
