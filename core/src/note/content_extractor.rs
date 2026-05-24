@@ -637,28 +637,35 @@ fn join_breadcrumb(stack: &[(u8, String)]) -> String {
     out
 }
 
+/// Returns the byte offset immediately after the closing `\n` of the opening
+/// delimiter line, or `None` if the text does not start with a valid frontmatter
+/// delimiter (`---` or `+++`).  Strips a trailing `\r` so CRLF files work the
+/// same as LF files.
+fn frontmatter_delimiter(text: &str) -> Option<(&str, usize)> {
+    let newline_pos = text.find('\n')?;
+    let raw_first = &text[..newline_pos];
+    let first_line = raw_first.trim_end_matches('\r');
+    if first_line != "---" && first_line != "+++" {
+        return None;
+    }
+    // Return the canonical delimiter (without \r) and the byte offset just
+    // after the opening '\n'.
+    Some((first_line, newline_pos + 1))
+}
+
 /// Returns the byte offset of the first character after the closing delimiter
 /// of a YAML/TOML frontmatter block (`---` or `+++`), or `0` if no valid
-/// frontmatter is present. The logic mirrors `remove_frontmatter`.
+/// frontmatter is present. Tolerates both LF and CRLF line endings.
 fn frontmatter_end_byte(text: &str) -> usize {
-    let mut lines = text.splitn(usize::MAX, '\n');
-
-    let first_line = match lines.next() {
-        Some(l) => l,
+    let (delimiter, mut offset) = match frontmatter_delimiter(text) {
+        Some(d) => d,
         None => return 0,
     };
 
-    if first_line != "---" && first_line != "+++" {
-        return 0;
-    }
-
-    let delimiter = first_line;
-    // Start after "---\n"
-    let mut offset = first_line.len() + 1; // +1 for '\n'
-
-    for line in lines {
-        if line == delimiter {
-            // Advance past this closing delimiter line (and its '\n' if present)
+    for line in text[offset..].split('\n') {
+        let trimmed = line.trim_end_matches('\r');
+        if trimmed == delimiter {
+            // Advance past this closing delimiter line (and its '\n' if present).
             offset += line.len();
             if text.as_bytes().get(offset) == Some(&b'\n') {
                 offset += 1;
@@ -2056,5 +2063,21 @@ ls -la ./test
             })
             .collect();
         assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn hashtag_in_crlf_frontmatter_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        // Windows CRLF line endings.
+        let body = "---\r\ndescription: see #wip note\r\n---\r\nbody with #real";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["real"], "frontmatter hashtag must not be extracted regardless of line endings");
     }
 }
