@@ -1214,6 +1214,12 @@ pub async fn rename_note(
         .execute(&mut **tx)
         .await?;
 
+    sqlx::query("UPDATE labels SET path = ? WHERE path = ?")
+        .bind(to.to_string())
+        .bind(from.to_string())
+        .execute(&mut **tx)
+        .await?;
+
     Ok(())
 }
 
@@ -1272,6 +1278,13 @@ pub async fn rename_directory(
         .execute(&mut **tx)
         .await?;
 
+    sqlx::query("UPDATE labels SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%')")
+        .bind(&to)
+        .bind(&from)
+        .bind(&from)
+        .execute(&mut **tx)
+        .await?;
+
     Ok(())
 }
 
@@ -1307,6 +1320,11 @@ async fn delete_directory(
     // (destination) — so backlinks pointing to deleted notes don't linger.
     sqlx::query("DELETE FROM links WHERE source LIKE (? || '%') OR destination LIKE (? || '%')")
         .bind(&path_string)
+        .bind(&path_string)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("DELETE FROM labels WHERE path LIKE (? || '%')")
         .bind(&path_string)
         .execute(&mut **tx)
         .await?;
@@ -1948,6 +1966,121 @@ mod tests {
             "labels lookup should use an index on name: {}",
             plan_text
         );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_note_updates_labels() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let from = VaultPath::note_path_from("/old.md");
+        let to = VaultPath::note_path_from("/new.md");
+        let entry = NoteEntryData {
+            path: from.clone(),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "x #foo".to_string())])
+            .await
+            .unwrap();
+        super::rename_note(&mut tx, &from, &to).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let old_rows: (i64,) = sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
+            .bind(from.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(old_rows.0, 0, "no label rows should remain at old path");
+
+        let new_rows: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM labels WHERE path = ? ORDER BY name")
+                .bind(to.to_string())
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            new_rows.into_iter().map(|(n,)| n).collect::<Vec<_>>(),
+            vec!["foo".to_string()],
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_directory_updates_labels() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let note_path = VaultPath::note_path_from("/old_dir/note.md");
+        let entry = NoteEntryData {
+            path: note_path.clone(),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "x #moved".to_string())])
+            .await
+            .unwrap();
+        super::rename_directory(
+            &mut tx,
+            &VaultPath::new("/old_dir"),
+            &VaultPath::new("/new_dir"),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT name, path FROM labels")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![("moved".to_string(), "/new_dir/note.md".to_string())],
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_directory_removes_labels() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let note_path = VaultPath::note_path_from("/sub/note.md");
+        let entry = NoteEntryData {
+            path: note_path.clone(),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "x #gone".to_string())])
+            .await
+            .unwrap();
+        super::delete_directories(&mut tx, &[VaultPath::new("/sub")])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM labels")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0);
 
         db.close().await.unwrap();
     }
