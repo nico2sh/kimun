@@ -188,6 +188,42 @@ impl NoteBrowserModal {
         tx.send(AppEvent::CloseNoteBrowser).ok();
     }
 
+    /// Construct the modal with a pre-filled search query.
+    ///
+    /// Behaves exactly like [`new`](Self::new) except the search input is
+    /// pre-populated with `query` (cursor placed at the end) and an initial
+    /// load is triggered for that query string.
+    pub fn with_initial_query<S: Into<String>>(
+        title: impl Into<String>,
+        provider: impl NoteBrowserProvider + 'static,
+        vault: Arc<NoteVault>,
+        key_bindings: KeyBindings,
+        icons: Icons,
+        tx: AppTx,
+        query: S,
+    ) -> Self {
+        let mut modal = Self::new(title, provider, vault, key_bindings, icons, tx.clone());
+        modal.search_query.set_value(query.into());
+        // Re-trigger the load so it runs against the pre-filled query rather
+        // than the empty string that `new` scheduled.
+        modal.schedule_load(tx);
+        modal
+    }
+
+    // ── Test-only accessors ────────────────────────────────────────────────
+
+    /// Returns the current search input text. Test-only.
+    #[cfg(test)]
+    pub(super) fn query_text(&self) -> &str {
+        self.search_query.value()
+    }
+
+    /// Returns the cursor position as a char count (not bytes). Test-only.
+    #[cfg(test)]
+    pub(super) fn cursor_char_count(&self) -> usize {
+        self.search_query.cursor_char_offset()
+    }
+
     /// Called after selection changes to kick off a preview load for the
     /// highlighted note, or clear the preview if a non-note entry is selected.
     fn refresh_preview(&mut self) {
@@ -497,5 +533,32 @@ mod tests {
             height: 5,
         };
         let _ = centered_rect(80, 75, area);
+    }
+
+    // ── initial-query tests ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn modal_constructed_with_initial_query_prefills_input() {
+        let vault = temp_vault("modal_iq").await;
+        let settings = AppSettings::default();
+        let (tx, _rx) = unbounded_channel();
+        let modal = NoteBrowserModal::with_initial_query(
+            "test",
+            EmptyProvider,
+            vault,
+            settings.key_bindings.clone(),
+            settings.icons(),
+            tx,
+            "#important",
+        );
+        assert_eq!(modal.query_text(), "#important");
+        assert_eq!(modal.cursor_char_count(), "#important".chars().count());
+    }
+
+    #[tokio::test]
+    async fn modal_new_has_empty_query() {
+        let modal = make_modal().await;
+        assert_eq!(modal.query_text(), "");
+        assert_eq!(modal.cursor_char_count(), 0);
     }
 }
