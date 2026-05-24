@@ -29,3 +29,5 @@ Eric Brewer later clarified: when there is no Partition, you still face a trade-
 
 - How does CockroachDB claim to be both consistent and available? (Answer: it's CP but with very fast failover, so the "unavailability" window is small)
 - What consistency model does our [[search-caching]] use? (Answer: eventual, with 5-minute TTL)
+
+Labels: #systems #question

@@ -18,3 +18,5 @@ Senior backend engineer. Works on authentication and authorization.
 - 2026-04-07: Reviewed her auth middleware changes, looks solid
 - 2026-04-08: Auth flow meeting — decided on PKCE + authorization code
 - 2026-04-10: Tagged her on the caching PR for review
+
+Labels: #api #review

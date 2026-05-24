@@ -17,3 +17,5 @@
 - "Clean Code" by Robert C. Martin (2024)
 - "The Pragmatic Programmer" by Hunt & Thomas (2024)
 - "Carrots Love Tomatoes" by Louise Riotte (2026) — useful for [[companion-planting]]
+
+Labels: #reading

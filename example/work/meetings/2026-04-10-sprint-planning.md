@@ -38,3 +38,5 @@
 
 - Redis cluster sizing depends on production traffic patterns — may need to iterate
 - OAuth2 timeline is aggressive — [[maria]] flagged potential scope creep with token revocation
+
+Labels: #meeting #planning
