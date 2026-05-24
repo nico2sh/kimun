@@ -167,13 +167,11 @@ pub struct SearchTerms {
     pub order_by: Vec<OrderBy>,
     pub filename: Vec<String>,
     pub path: Vec<String>,
-    #[allow(dead_code)]
     pub labels: Vec<String>,
     pub excluded_terms: Vec<String>,
     pub excluded_breadcrumb: Vec<String>,
     pub excluded_filename: Vec<String>,
     pub excluded_path: Vec<String>,
-    #[allow(dead_code)]
     pub excluded_labels: Vec<String>,
 }
 

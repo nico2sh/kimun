@@ -383,6 +383,7 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
     add_breadcrumb_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_filename_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_path_query(search_terms, &mut var_num, &mut params, &mut queries);
+    add_labels_query(search_terms, &mut var_num, &mut params, &mut queries);
 
     if queries.is_empty() {
         debug!("No query provided");
@@ -518,6 +519,60 @@ fn add_path_query(
     let negative_conditions = path_term_conditions(&s.excluded_path, var_num, params, false);
     if let Some(final_where) = combine_conditions(positive_conditions, negative_conditions) {
         queries.push(format!("{} WHERE {}", search_base_sql(), final_where));
+    }
+}
+
+/// Notes-only base SELECT (no `notesContent` join) so label-only queries
+/// don't pay an FTS scan. Same columns as `SEARCH_BASE_SQL` so INTERSECT
+/// branches line up.
+static LABEL_BASE_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let rest = NOTE_COLUMNS.split_once(", ").unwrap().1;
+    format!(
+        "SELECT DISTINCT notes.path as path, {} FROM notes",
+        rest
+    )
+});
+
+fn label_base_sql() -> &'static str {
+    &LABEL_BASE_SQL
+}
+
+fn add_labels_query(
+    s: &SearchTerms,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+) {
+    // Each positive label is its own INTERSECT branch backed by the
+    // labels_by_name index via an IN subquery against `labels`.
+    for label in &s.labels {
+        let q = format!(
+            "{} WHERE notes.path IN (SELECT path FROM labels WHERE name = ?{})",
+            label_base_sql(),
+            var_num
+        );
+        queries.push(q);
+        params.push(label.clone());
+        *var_num += 1;
+    }
+
+    // Excluded labels: bundled into a single notes-only SELECT with a
+    // chain of NOT IN clauses (so the INTERSECT machinery still composes).
+    if !s.excluded_labels.is_empty() {
+        let mut clauses = Vec::with_capacity(s.excluded_labels.len());
+        for label in &s.excluded_labels {
+            clauses.push(format!(
+                "notes.path NOT IN (SELECT path FROM labels WHERE name = ?{})",
+                var_num
+            ));
+            params.push(label.clone());
+            *var_num += 1;
+        }
+        queries.push(format!(
+            "{} WHERE {}",
+            label_base_sql(),
+            clauses.join(" AND ")
+        ));
     }
 }
 
@@ -1777,6 +1832,122 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count.0, 0);
+
+        db.close().await.unwrap();
+    }
+
+    #[test]
+    fn test_search_terms_query_label_only() {
+        let (sql, params) = build_search_sql_query("#important");
+        assert_eq!(params, vec!["important".to_string()]);
+        assert!(
+            sql.contains("FROM notes") && sql.contains("labels"),
+            "query should join notes with labels: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_search_terms_query_two_labels_intersect() {
+        let (sql, params) = build_search_sql_query("#a #b");
+        assert_eq!(params.len(), 2);
+        assert!(sql.contains("INTERSECT"), "two labels should INTERSECT: {}", sql);
+    }
+
+    #[tokio::test]
+    async fn search_by_label_returns_matching_notes() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entries: Vec<(NoteEntryData, String)> = vec![
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/a.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "a #important #todo".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/b.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "b #todo".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/c.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "c plain".to_string(),
+            ),
+        ];
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let results = super::search_terms(db.pool(), "#important").await.unwrap();
+        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(paths, vec!["/a.md".to_string()]);
+
+        let results = super::search_terms(db.pool(), "#important #todo").await.unwrap();
+        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(paths, vec!["/a.md".to_string()]);
+
+        let results = super::search_terms(db.pool(), "#nope").await.unwrap();
+        assert!(results.is_empty());
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn label_search_uses_labels_by_name_index() {
+        // Confirms the labels_by_name index is on the query plan for label
+        // filters. Without the index a hashtag filter would degrade to a
+        // table scan against `labels`.
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entry = NoteEntryData {
+            path: VaultPath::note_path_from("/a.md"),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "x #important".to_string())])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let (sql, _) = super::build_search_sql_query("#important");
+        let plan_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+        let rows: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as(&plan_sql).bind("important").fetch_all(db.pool()).await.unwrap();
+        let plan_text = rows
+            .iter()
+            .map(|(_, _, _, detail)| detail.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        // SQLite may use either the explicit `labels_by_name` index or the
+        // primary-key autoindex (sqlite_autoindex_labels_1) — both serve a
+        // fast lookup on `name`. What matters is that `labels` is scanned
+        // using *some* index rather than a full table scan.
+        assert!(
+            plan_text.contains("labels_by_name")
+                || plan_text.contains("sqlite_autoindex_labels_1"),
+            "labels lookup should use an index on name: {}",
+            plan_text
+        );
 
         db.close().await.unwrap();
     }
