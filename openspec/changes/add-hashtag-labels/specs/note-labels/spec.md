@@ -16,9 +16,37 @@ When a note is indexed, the system SHALL scan the note body for hashtag tokens o
 - **WHEN** a note contains `` `#notalabel` `` inside an inline code span or a fenced code block
 - **THEN** no label is created for `notalabel`
 
+#### Scenario: Hashtag inside YAML or TOML frontmatter is not a label
+- **WHEN** a note opens with a `---...---` or `+++...+++` frontmatter block containing `#wip`
+- **THEN** no label is created for `wip`; both `---` and `+++` delimiters are honored with CRLF tolerance
+
+#### Scenario: Hashtag inside an HTML block or inline HTML span is not a label
+- **WHEN** a note contains `<!-- #internal -->` or `<span data-tag="#bar">` in an HTML region
+- **THEN** no label is created for `internal` or `bar`
+
+#### Scenario: Hashtag inside a markdown link body is not a label
+- **WHEN** a note contains `[docs](https://example.com#section)`
+- **THEN** no label is created for `section`; URL fragments inside link bodies are excluded
+
 #### Scenario: Hashtag adjacent to non-label characters terminates the label
 - **WHEN** a note contains `#tag-with-dash`
 - **THEN** the label `tag` is created and `-with-dash` is treated as following text
+
+#### Scenario: Hashtag immediately followed by a Unicode alphanumeric character is not a label
+- **WHEN** a note contains `#naïve` (the regex matches `#na` but the next char `ï` is alphanumeric)
+- **THEN** no label is created; a `#` must not start a label when the character immediately after the ASCII match is alphanumeric (Unicode-aware) or `_`
+
+#### Scenario: Hashtag immediately preceded by a Unicode alphanumeric character is not a label
+- **WHEN** a note contains `café#draft`
+- **THEN** no label is created for `draft`; the word-boundary rule applies to Unicode characters before `#` as well as ASCII
+
+#### Scenario: Label names use the ASCII character set only
+- **WHEN** a hashtag is scanned, the label name is formed by the pattern `[A-Za-z0-9_]+`
+- **THEN** non-ASCII letters (e.g. `ï`, `é`, `ü`) cannot appear in a label name; any such character terminates the token and triggers the trailing word-boundary check above
+
+#### Scenario: Long search queries are truncated at 8 KB
+- **WHEN** a search query longer than 8192 bytes is submitted
+- **THEN** the query is truncated on a UTF-8 character boundary to at most 8192 bytes before processing
 
 ### Requirement: Labels SHALL be persisted in a queryable database table
 

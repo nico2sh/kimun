@@ -351,6 +351,14 @@ pub(crate) fn label_matches_inner(
         if preceding_is_label_char {
             return None;
         }
+        let following_is_label_char = text[m.end()..]
+            .chars()
+            .next()
+            .map(|c| c.is_alphanumeric() || c == '_')
+            .unwrap_or(false);
+        if following_is_label_char {
+            return None;
+        }
         let name = caps.name("ht_text")?.as_str();
         Some(crate::note::LabelMatch {
             byte_start: m.start(),
@@ -2077,6 +2085,35 @@ ls -la ./test
             })
             .collect();
         assert_eq!(names, vec!["real"], "Unicode letter before # must suppress label extraction");
+    }
+
+    #[test]
+    fn hashtag_followed_by_unicode_letter_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (_text, links) = super::get_markdown_and_links(&path, "#naïve and plain #real");
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["real"], "non-ASCII letter immediately after match must suppress label");
+    }
+
+    #[test]
+    fn hashtag_followed_by_dash_still_extracted() {
+        // Confirms #tag-with-dash still produces label `tag`.
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (_text, links) = super::get_markdown_and_links(&path, "#tag-with-dash");
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["tag"], "ASCII non-alphanumeric (dash) after match still allows extraction");
     }
 
     #[test]

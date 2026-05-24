@@ -191,7 +191,7 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Search notes by query. Supports @filename, >heading, /path prefix, #label (or lb:label) for hashtag-derived labels, and - prefix for exclusion (e.g. -term, #-label, lb:-label)."
+        description = "Search notes by query. Supports @filename, >heading, /path prefix, #label (or lb:label) for hashtag-derived labels, and - prefix for exclusion (e.g. -term, #-label, lb:-label). Hashtag labels (#label) are extracted from note body text only — hashtags inside YAML/TOML frontmatter, fenced code blocks, inline code, HTML, and markdown link bodies are not indexed. Label names are ASCII [A-Za-z0-9_]+ and matched case-insensitively. Long queries are truncated at 8 KB."
     )]
     async fn search_notes(
         &self,
