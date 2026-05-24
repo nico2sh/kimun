@@ -635,6 +635,15 @@ pub async fn list_labels(pool: &SqlitePool) -> Result<Vec<String>, DBError> {
     Ok(rows.into_iter().map(|(n,)| n).collect())
 }
 
+pub async fn label_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, DBError> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT name, COUNT(*) as cnt FROM labels GROUP BY name ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn notes_with_label(
     pool: &SqlitePool,
     name: &str,
