@@ -191,7 +191,7 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Search notes by query. Supports @filename, >heading, /path prefix, and -exclusion operators."
+        description = "Search notes by query. Supports @filename, >heading, /path prefix, #label (or lb:label) for hashtag-derived labels, and - prefix for exclusion (e.g. -term, #-label, lb:-label)."
     )]
     async fn search_notes(
         &self,
