@@ -1989,4 +1989,20 @@ ls -la ./test
             .collect();
         assert_eq!(hashtag_names, vec!["first", "second"]);
     }
+
+    #[test]
+    fn label_matches_skips_after_label_char() {
+        let v: Vec<&str> = crate::note::label_matches("foo#bar and #real")
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(v, vec!["real"]);
+    }
+
+    #[test]
+    fn label_matches_at_start() {
+        let v: Vec<&str> = crate::note::label_matches("#first and #second")
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(v, vec!["first", "second"]);
+    }
 }

@@ -12,6 +12,23 @@ pub use content_extractor::{
 
 use crate::nfs::VaultPath;
 
+/// A label token detected in note text, with byte-offset range and the
+/// label name (without leading `#`).
+#[derive(Debug, Clone, Copy)]
+pub struct LabelMatch<'a> {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub name: &'a str,
+}
+
+/// Yields every label token in `text` that satisfies the label rules:
+/// matches the label character set AND is preceded by a non-label character
+/// (or the start of input). Code-span / HTML / link-span exclusion is the
+/// caller's responsibility because those concerns are context-specific.
+pub fn label_matches(text: &str) -> impl Iterator<Item = LabelMatch<'_>> + '_ {
+    content_extractor::label_matches_inner(text)
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoteDetails {
     pub path: VaultPath,
