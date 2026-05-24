@@ -208,26 +208,58 @@ impl SearchTerms {
             let qp = QueryTermExtractor::extract_and_consume(query);
             query = qp.remainder;
             match qp.el_type {
-                ElementType::Term => terms.push(qp.term),
-                ElementType::In => breadcrumb.push(qp.term),
-                ElementType::At => filename.push(qp.term),
+                ElementType::Term => {
+                    if !qp.term.is_empty() {
+                        terms.push(qp.term);
+                    }
+                }
+                ElementType::In => {
+                    if !qp.term.is_empty() {
+                        breadcrumb.push(qp.term);
+                    }
+                }
+                ElementType::At => {
+                    if !qp.term.is_empty() {
+                        filename.push(qp.term);
+                    }
+                }
                 ElementType::OrderBy { asc } => {
                     if let Some(o) = OrderBy::from_term(&qp.term, asc) {
                         order_by.push(o);
                     }
                 }
                 ElementType::Invalid => {}
-                ElementType::Path => path.push(qp.term),
+                ElementType::Path => {
+                    if !qp.term.is_empty() {
+                        path.push(qp.term);
+                    }
+                }
                 ElementType::Label => {
                     let n = qp.term.to_lowercase();
                     if !n.is_empty() {
                         labels.push(n);
                     }
                 }
-                ElementType::ExcludedTerm => excluded_terms.push(qp.term),
-                ElementType::ExcludedIn => excluded_breadcrumb.push(qp.term),
-                ElementType::ExcludedAt => excluded_filename.push(qp.term),
-                ElementType::ExcludedPath => excluded_path.push(qp.term),
+                ElementType::ExcludedTerm => {
+                    if !qp.term.is_empty() {
+                        excluded_terms.push(qp.term);
+                    }
+                }
+                ElementType::ExcludedIn => {
+                    if !qp.term.is_empty() {
+                        excluded_breadcrumb.push(qp.term);
+                    }
+                }
+                ElementType::ExcludedAt => {
+                    if !qp.term.is_empty() {
+                        excluded_filename.push(qp.term);
+                    }
+                }
+                ElementType::ExcludedPath => {
+                    if !qp.term.is_empty() {
+                        excluded_path.push(qp.term);
+                    }
+                }
                 ElementType::ExcludedLabel => {
                     let n = qp.term.to_lowercase();
                     if !n.is_empty() {
@@ -480,5 +512,21 @@ mod tests {
         let s = SearchTerms::from_query_string(huge);
         // The cap is 8 KB; after dedup, labels has at most 1 entry.
         assert!(s.labels.len() <= 1);
+    }
+
+    #[test]
+    fn bare_prefix_terms_are_dropped() {
+        // None of these bare prefixes should produce a term.
+        for q in &[">", "-", ">-", "in:", "at:", "pt:", "/", "@", "/-", "@-"] {
+            let s = SearchTerms::from_query_string(*q);
+            assert!(s.terms.is_empty(), "{:?} produced terms: {:?}", q, s.terms);
+            assert!(s.breadcrumb.is_empty(), "{:?} produced breadcrumb: {:?}", q, s.breadcrumb);
+            assert!(s.filename.is_empty(), "{:?} produced filename: {:?}", q, s.filename);
+            assert!(s.path.is_empty(), "{:?} produced path: {:?}", q, s.path);
+            assert!(s.excluded_terms.is_empty(), "{:?} produced excluded_terms: {:?}", q, s.excluded_terms);
+            assert!(s.excluded_breadcrumb.is_empty(), "{:?} produced excluded_breadcrumb: {:?}", q, s.excluded_breadcrumb);
+            assert!(s.excluded_filename.is_empty(), "{:?} produced excluded_filename: {:?}", q, s.excluded_filename);
+            assert!(s.excluded_path.is_empty(), "{:?} produced excluded_path: {:?}", q, s.excluded_path);
+        }
     }
 }
