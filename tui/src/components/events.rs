@@ -38,6 +38,8 @@ pub enum AppEvent {
     CloseNoteBrowser,
     /// Follow the link under the editor cursor: note name/path or external URL.
     FollowLink(String),
+    /// Open the search modal pre-filled with `#<name>` to browse notes by label.
+    FollowLabel(String),
     /// Insert raw text at the editor's cursor (replacing any active selection).
     /// Used by the screen layer to deliver async results back to the editor —
     /// e.g. the markdown link generated after a clipboard image is saved as an attachment.

@@ -564,8 +564,15 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FollowLink) if matches!(self.focus, Focus::Editor) => {
-                    if let Some(target) = self.editor.link_at_cursor() {
-                        tx.send(AppEvent::FollowLink(target)).ok();
+                    use crate::components::text_editor::LinkTarget;
+                    match self.editor.link_at_cursor() {
+                        Some(LinkTarget::Note(target)) => {
+                            tx.send(AppEvent::FollowLink(target)).ok();
+                        }
+                        Some(LinkTarget::Label(name)) => {
+                            tx.send(AppEvent::FollowLabel(name)).ok();
+                        }
+                        None => {}
                     }
                     return EventState::Consumed;
                 }
@@ -863,6 +870,24 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::FollowLink(target) => {
                 self.follow_link(target, tx).await;
+                None
+            }
+            AppEvent::FollowLabel(name) => {
+                let initial = format!("#{name}");
+                let s = self.settings.read().unwrap();
+                let provider =
+                    SearchNotesProvider::new(self.vault.clone(), s.current_last_paths());
+                self.note_browser = Some(NoteBrowserModal::with_initial_query(
+                    "Note Browser",
+                    provider,
+                    self.vault.clone(),
+                    s.key_bindings.clone(),
+                    s.icons(),
+                    tx.clone(),
+                    initial,
+                ));
+                drop(s);
+                self.focus = Focus::NoteBrowser;
                 None
             }
             AppEvent::EntryCreated(path) => {
