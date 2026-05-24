@@ -277,6 +277,40 @@ where
         .into_owned()
 }
 
+/// Returns byte-offset ranges (start, end) within `md_text` covering every
+/// inline code span and fenced/indented code block. Used to exclude these
+/// regions from hashtag extraction so `#tag` inside code is not promoted to
+/// a label.
+pub(crate) fn code_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
+    let parser = Parser::new(md_text).into_offset_iter();
+    let mut ranges = Vec::new();
+    let mut depth = 0u32;
+    let mut current_start: Option<usize> = None;
+    for (event, range) in parser {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                if depth == 0 {
+                    current_start = Some(range.start);
+                }
+                depth += 1;
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some(start) = current_start.take() {
+                        ranges.push((start, range.end));
+                    }
+                }
+            }
+            Event::Code(_) => {
+                ranges.push((range.start, range.end));
+            }
+            _ => {}
+        }
+    }
+    ranges
+}
+
 fn cleanup_hashtags(md_text: &str) -> String {
     HASHTAG_RX
         .replace_all(md_text, |caps: &Captures| caps["ht_text"].to_string())
@@ -1708,5 +1742,40 @@ ls -la ./test
         assert!(links
             .iter()
             .any(|link| link.text.eq("another_tag") && link.ltype.eq(&LinkType::Hashtag)));
+    }
+
+    #[test]
+    fn code_char_ranges_inline_code() {
+        let md = "hello `#notalabel` and #real";
+        let ranges = super::code_char_ranges(md);
+        assert!(
+            ranges.iter().any(|(s, e)| md[*s..*e].contains("notalabel")),
+            "inline code span must be reported"
+        );
+        assert!(
+            ranges.iter().all(|(s, e)| !md[*s..*e].contains("#real")),
+            "non-code text must not be reported"
+        );
+    }
+
+    #[test]
+    fn code_char_ranges_fenced_block() {
+        let md = "before\n```\n#inside\n```\nafter #outside";
+        let ranges = super::code_char_ranges(md);
+        assert!(
+            ranges.iter().any(|(s, e)| md[*s..*e].contains("#inside")),
+            "fenced block content must be reported"
+        );
+        assert!(
+            ranges.iter().all(|(s, e)| !md[*s..*e].contains("#outside")),
+            "text after fence must not be reported"
+        );
+    }
+
+    #[test]
+    fn code_char_ranges_none_for_plain_text() {
+        let md = "no code here, just #tags";
+        let ranges = super::code_char_ranges(md);
+        assert!(ranges.is_empty(), "plain text yields no code ranges");
     }
 }
