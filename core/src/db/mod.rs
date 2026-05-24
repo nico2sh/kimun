@@ -770,6 +770,7 @@ pub async fn delete_notes(
     bulk_delete_in(tx, "notes", &["path"], &path_strings).await?;
     bulk_delete_in(tx, "notesContent", &["path"], &path_strings).await?;
     bulk_delete_in(tx, "links", &["source", "destination"], &path_strings).await?;
+    bulk_delete_in(tx, "labels", &["path"], &path_strings).await?;
     Ok(())
 }
 
@@ -815,6 +816,11 @@ struct LinkRow {
     destination: String,
 }
 
+struct LabelRow {
+    path_idx: usize,
+    name: String,
+}
+
 /// Bulk-upserts a slice of notes plus their chunks and links inside the given
 /// transaction. Each note's raw text is parsed once; chunks/links are bound by
 /// `path_idx` into a shared `paths` table to avoid per-row clones. Inserts
@@ -848,6 +854,7 @@ struct NoteBatch {
     notes: Vec<NoteRow>,
     chunks: Vec<ChunkRow>,
     links: Vec<LinkRow>,
+    labels: Vec<LabelRow>,
 }
 
 impl NoteBatch {
@@ -857,6 +864,7 @@ impl NoteBatch {
             notes: Vec::with_capacity(notes),
             chunks: Vec::with_capacity(chunks),
             links: Vec::with_capacity(links),
+            labels: Vec::with_capacity(notes),
         }
     }
 
@@ -886,12 +894,24 @@ impl NoteBatch {
                 text: c.text,
             });
         }
-        for l in links {
-            if let LinkType::Note(p) = &l.ltype {
-                self.links.push(LinkRow {
-                    path_idx: idx,
-                    destination: p.to_string(),
-                });
+        for l in &links {
+            match &l.ltype {
+                LinkType::Note(p) => {
+                    self.links.push(LinkRow {
+                        path_idx: idx,
+                        destination: p.to_string(),
+                    });
+                }
+                LinkType::Hashtag => {
+                    let normalized = l.text.to_lowercase();
+                    if !normalized.is_empty() {
+                        self.labels.push(LabelRow {
+                            path_idx: idx,
+                            name: normalized,
+                        });
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -900,8 +920,10 @@ impl NoteBatch {
         bulk_upsert_note_rows(tx, &self.notes, &self.paths).await?;
         bulk_delete_in(tx, "notesContent", &["path"], &self.paths).await?;
         bulk_delete_in(tx, "links", &["source"], &self.paths).await?;
+        bulk_delete_in(tx, "labels", &["path"], &self.paths).await?;
         bulk_insert(tx, &self.chunks, &self.paths).await?;
         bulk_insert(tx, &self.links, &self.paths).await?;
+        bulk_insert(tx, &self.labels, &self.paths).await?;
         Ok(())
     }
 }
@@ -1032,6 +1054,20 @@ impl BulkInsertRow for LinkRow {
         paths: &'q [String],
     ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
         q.bind(&paths[self.path_idx]).bind(&self.destination)
+    }
+}
+
+impl BulkInsertRow for LabelRow {
+    const HEADER: &'static str = "INSERT OR IGNORE INTO labels (name, path) VALUES ";
+    const FOOTER: &'static str = "";
+    const COLS: usize = 2;
+
+    fn bind_to<'q>(
+        &'q self,
+        q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+        paths: &'q [String],
+    ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        q.bind(&self.name).bind(&paths[self.path_idx])
     }
 }
 
@@ -1602,6 +1638,125 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(idx_path.0, 1, "labels_by_path index should exist");
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn labels_are_persisted_on_note_insert() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let path = VaultPath::note_path_from("/n.md");
+        let body = "Title\n\nbody with #foo and #Foo and #bar".to_string();
+        let entry = NoteEntryData {
+            path: path.clone(),
+            size: body.len() as u64,
+            modified_secs: 0,
+        };
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, body)]).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT name, path FROM labels ORDER BY name")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("bar".to_string(), path.to_string()),
+                ("foo".to_string(), path.to_string()),
+            ],
+            "labels stored deduped + lowercased"
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reindexing_a_note_drops_removed_labels() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let path = VaultPath::note_path_from("/n.md");
+        let body_v1 = "before #draft #keep".to_string();
+        let entry_v1 = NoteEntryData {
+            path: path.clone(),
+            size: body_v1.len() as u64,
+            modified_secs: 0,
+        };
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry_v1, body_v1)]).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let body_v2 = "after #keep only".to_string();
+        let entry_v2 = NoteEntryData {
+            path: path.clone(),
+            size: body_v2.len() as u64,
+            modified_secs: 1,
+        };
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::update_notes(&mut tx, &[(entry_v2, body_v2)]).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM labels WHERE path = ? ORDER BY name",
+        )
+        .bind(path.to_string())
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            rows.into_iter().map(|(n,)| n).collect::<Vec<_>>(),
+            vec!["keep".to_string()],
+            "reindex must drop labels no longer present"
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn labels_are_removed_on_note_delete() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let path = VaultPath::note_path_from("/n.md");
+        let body = "x #drop".to_string();
+        let entry = NoteEntryData {
+            path: path.clone(),
+            size: body.len() as u64,
+            modified_secs: 0,
+        };
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, body)]).await.unwrap();
+        super::delete_notes(&mut tx, &[path.clone()]).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let count: (i64,) =
+            sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
+                .bind(path.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(count.0, 0);
 
         db.close().await.unwrap();
     }
