@@ -442,13 +442,15 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
     // Process hashtags and convert them to links. The label_matches_inner
     // iterator already enforces the word-boundary rule (a `#tag` preceded by
     // an alphanumeric/underscore char is skipped). Here we additionally skip
-    // any label that overlaps a code span, an HTML region, or a markdown-link
-    // span — those are call-site concerns.
+    // any label that overlaps a code span, an HTML region, a markdown-link
+    // span, or the YAML/TOML frontmatter — those are call-site concerns.
+    let fm_end = frontmatter_end_byte(&md_text);
     let code_ranges = code_char_ranges(&md_text);
     let link_ranges = md_link_char_ranges(&md_text);
     let mut out = String::with_capacity(md_text.len());
     let mut last_end = 0usize;
     for lm in label_matches_inner(&md_text) {
+        let in_frontmatter = lm.byte_start < fm_end;
         let in_code = code_ranges
             .iter()
             .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e);
@@ -456,7 +458,7 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
             .iter()
             .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e);
         out.push_str(&md_text[last_end..lm.byte_start]);
-        if in_code || in_link {
+        if in_frontmatter || in_code || in_link {
             out.push_str(&md_text[lm.byte_start..lm.byte_end]);
         } else {
             links.push(NoteLink::hashtag(lm.name));
@@ -633,6 +635,41 @@ fn join_breadcrumb(stack: &[(u8, String)]) -> String {
         out.push_str(t);
     }
     out
+}
+
+/// Returns the byte offset of the first character after the closing delimiter
+/// of a YAML/TOML frontmatter block (`---` or `+++`), or `0` if no valid
+/// frontmatter is present. The logic mirrors `remove_frontmatter`.
+fn frontmatter_end_byte(text: &str) -> usize {
+    let mut lines = text.splitn(usize::MAX, '\n');
+
+    let first_line = match lines.next() {
+        Some(l) => l,
+        None => return 0,
+    };
+
+    if first_line != "---" && first_line != "+++" {
+        return 0;
+    }
+
+    let delimiter = first_line;
+    // Start after "---\n"
+    let mut offset = first_line.len() + 1; // +1 for '\n'
+
+    for line in lines {
+        if line == delimiter {
+            // Advance past this closing delimiter line (and its '\n' if present)
+            offset += line.len();
+            if text.as_bytes().get(offset) == Some(&b'\n') {
+                offset += 1;
+            }
+            return offset;
+        }
+        offset += line.len() + 1; // +1 for '\n'
+    }
+
+    // No closing delimiter found — treat as no frontmatter
+    0
 }
 
 fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
@@ -2004,5 +2041,20 @@ ls -la ./test
             .map(|m| m.name)
             .collect();
         assert_eq!(v, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn hashtag_in_frontmatter_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "---\ndescription: see #wip note\n---\nbody with #real";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["real"]);
     }
 }

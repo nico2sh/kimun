@@ -67,6 +67,7 @@ async fn labels_table_exists_after_create_tables() {
     .fetch_one(db.pool())
     .await
     .unwrap();
+    // NOTE: `labels_by_name` was removed in 0.7 (see commit acc36afb); the scaffold below predates that change.
     assert_eq!(idx_name.0, 1, "labels_by_name index should exist");
 
     let idx_path: (i64,) = sqlx::query_as(

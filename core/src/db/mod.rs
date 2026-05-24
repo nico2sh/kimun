@@ -601,8 +601,8 @@ fn path_term_conditions(
             None => {
                 let op = if positive { "LIKE" } else { "NOT LIKE" };
                 (
-                    format!("notes.basePath {} ('/' || ?{} || '%')", op, var_num),
-                    term.to_string(),
+                    format!("notes.basePath {} ('/' || ?{} || '%') ESCAPE '\\'", op, var_num),
+                    escape_like_pattern(term),
                 )
             }
         };
@@ -738,14 +738,17 @@ pub async fn get_notes(
     path: &VaultPath,
     recursive: bool,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let where_clause = if recursive {
-        "basePath LIKE (? || '%')"
+    let (where_clause, bind_value) = if recursive {
+        (
+            "basePath LIKE (? || '%') ESCAPE '\\'".to_string(),
+            escape_like_pattern(&path.to_string()),
+        )
     } else {
-        "basePath = ?"
+        ("basePath = ?".to_string(), path.to_string())
     };
     let sql = format!("SELECT {} FROM notes where {}", NOTE_COLUMNS, where_clause);
     let rows = sqlx::query(&sql)
-        .bind(path.to_string())
+        .bind(bind_value)
         .fetch_all(pool)
         .await?;
 
@@ -782,21 +785,21 @@ pub async fn get_notes_sections(
     let (sql, bind_value) = if path.is_note() {
         // Exact note path
         (
-            "SELECT path, breadcrumb, text FROM notesContent WHERE path = ?",
+            "SELECT path, breadcrumb, text FROM notesContent WHERE path = ?".to_string(),
             path.to_string(),
         )
     } else if recursive {
         // All notes under this directory tree
         (
-            "SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%')",
-            path.to_string(),
+            "SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%') ESCAPE '\\'".to_string(),
+            escape_like_pattern(&path.to_string()),
         )
     } else {
         // Only notes directly in this directory (basePath join)
-        ("SELECT nc.path, nc.breadcrumb, nc.text FROM notesContent nc JOIN notes n ON nc.path = n.path WHERE n.basePath = ?", path.to_string())
+        ("SELECT nc.path, nc.breadcrumb, nc.text FROM notesContent nc JOIN notes n ON nc.path = n.path WHERE n.basePath = ?".to_string(), path.to_string())
     };
 
-    let rows = sqlx::query(sql).bind(bind_value).fetch_all(pool).await?;
+    let rows = sqlx::query(&sql).bind(bind_value).fetch_all(pool).await?;
 
     for row in rows {
         let path: String = row.try_get("path")?;
@@ -1326,8 +1329,13 @@ async fn delete_directory(
     tx: &mut Transaction<'_, Sqlite>,
     directory_path: &VaultPath,
 ) -> Result<(), DBError> {
-    let path_string = directory_path.to_string();
-    let pattern = escape_like_pattern(&path_string);
+    let path_str = directory_path.to_string();
+    let normalized = if path_str.ends_with(PATH_SEPARATOR) {
+        path_str
+    } else {
+        format!("{path_str}{PATH_SEPARATOR}")
+    };
+    let pattern = escape_like_pattern(&normalized);
 
     sqlx::query("DELETE FROM notes WHERE path LIKE (? || '%') ESCAPE '\\'")
         .bind(&pattern)
@@ -1980,11 +1988,12 @@ mod tests {
             .map(|(_, _, _, detail)| detail.as_str())
             .collect::<Vec<_>>()
             .join(" | ");
-        // The PK autoindex sqlite_autoindex_labels_1 covers WHERE name = ?
-        // lookups on (name, path). No explicit labels_by_name index any more.
+        // The PK autoindex covers WHERE name = ? lookups on (name, path).
+        // No explicit labels_by_name index any more (removed in 0.7).
+        // Accept any sqlite_autoindex_labels_ suffix to tolerate DROP+CREATE migration changes.
         assert!(
-            plan_text.contains("sqlite_autoindex_labels_1"),
-            "labels lookup should use sqlite_autoindex_labels_1: {}",
+            plan_text.contains("sqlite_autoindex_labels_"),
+            "expected PK autoindex on labels in plan: {}",
             plan_text
         );
 
@@ -2169,6 +2178,59 @@ mod tests {
         assert_eq!(super::escape_like_pattern("/a%b/"), "/a\\%b/");
         assert_eq!(super::escape_like_pattern("/a\\b/"), "/a\\\\b/");
         assert_eq!(super::escape_like_pattern("/normal/"), "/normal/");
+    }
+
+    #[tokio::test]
+    async fn delete_directory_no_trailing_slash_does_not_match_sibling_prefix() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let target = VaultPath::note_path_from("/notes/a.md");
+        let sibling = VaultPath::note_path_from("/notes_archive/b.md");
+        let entries = vec![
+            (NoteEntryData { path: target.clone(), size: 10, modified_secs: 0 }, "x".to_string()),
+            (NoteEntryData { path: sibling.clone(), size: 10, modified_secs: 0 }, "y".to_string()),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        super::delete_directories(&mut tx, &[VaultPath::new("/notes")]).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM notes ORDER BY path")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+        let paths: Vec<String> = rows.into_iter().map(|(p,)| p).collect();
+        assert_eq!(paths, vec![sibling.to_string()], "sibling /notes_archive/ must not be deleted");
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn path_search_with_underscore_does_not_treat_as_wildcard() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let target = VaultPath::note_path_from("/my_notes/a.md");
+        let sibling = VaultPath::note_path_from("/myXnotes/b.md");
+        let entries = vec![
+            (NoteEntryData { path: target.clone(), size: 10, modified_secs: 0 }, "x".to_string()),
+            (NoteEntryData { path: sibling.clone(), size: 10, modified_secs: 0 }, "y".to_string()),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // pt:my_notes search must only match /my_notes/, not /myXnotes/.
+        let results = super::search_terms(db.pool(), "pt:my_notes").await.unwrap();
+        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(paths, vec![target.to_string()], "underscore must be literal in path search");
+        db.close().await.unwrap();
     }
 
     #[cfg(test)]
