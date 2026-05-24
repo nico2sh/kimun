@@ -305,10 +305,24 @@ pub(crate) fn code_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
             Event::Code(_) => {
                 ranges.push((range.start, range.end));
             }
+            Event::Html(_) | Event::InlineHtml(_) => {
+                ranges.push((range.start, range.end));
+            }
             _ => {}
         }
     }
     ranges
+}
+
+/// Returns byte-offset ranges (start, end) within `md_text` covering every
+/// markdown link `[text](href)` (full span including the `[]` brackets and
+/// the `()` around the href). Used to exclude hashtag extraction inside
+/// link bodies — particularly URL fragments like `https://example.com#section`.
+pub(crate) fn md_link_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
+    MD_LINK_RX
+        .find_iter(md_text)
+        .map(|m| (m.start(), m.end()))
+        .collect()
 }
 
 fn cleanup_hashtags(md_text: &str) -> String {
@@ -397,19 +411,29 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
     });
 
     // Process hashtags and convert them to links, skipping any match that
-    // overlaps a code span or fenced code block. Hashtag extraction runs
-    // against `md_text` (post-link-rewrite); code regions are calculated
-    // against the same text.
+    // overlaps a code span, an HTML region, or a markdown-link span, and
+    // requiring a word boundary before the `#` so that `foo#bar` does not
+    // turn `bar` into a label.
     let code_ranges = code_char_ranges(&md_text);
+    let link_ranges = md_link_char_ranges(&md_text);
     let mut out = String::with_capacity(md_text.len());
     let mut last_end = 0usize;
     for caps in HASHTAG_RX.captures_iter(&md_text) {
         let m = caps.get(0).unwrap();
+        let preceding_is_label_char = m.start() != 0
+            && md_text[..m.start()]
+                .chars()
+                .next_back()
+                .map(|c| c.is_ascii_alphanumeric() || c == '_')
+                .unwrap_or(false);
         let in_code = code_ranges
             .iter()
             .any(|(s, e)| m.start() >= *s && m.end() <= *e);
+        let in_link = link_ranges
+            .iter()
+            .any(|(s, e)| m.start() >= *s && m.end() <= *e);
         out.push_str(&md_text[last_end..m.start()]);
-        if in_code {
+        if preceding_is_label_char || in_code || in_link {
             out.push_str(m.as_str());
         } else {
             let tag = &caps["ht_text"];
@@ -1849,5 +1873,98 @@ ls -la ./test
             })
             .collect();
         assert_eq!(hashtag_names, vec!["tag"]);
+    }
+
+    #[test]
+    fn hashtag_inside_markdown_link_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "see [docs](https://example.com#section) and #real";
+        let (text, links) = super::get_markdown_and_links(&path, body);
+
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["real"], "URL fragment must not become a label");
+
+        assert!(
+            text.contains("https://example.com#section"),
+            "link href must be preserved verbatim: {}",
+            text
+        );
+        assert!(
+            !text.contains("[#section](#section)"),
+            "URL fragment must not be rewritten into a nested markdown link: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn hashtag_inside_html_comment_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "<!-- #internal -->\nplain #real";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["real"]);
+    }
+
+    #[test]
+    fn hashtag_inside_inline_html_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = r##"text <a data-foo="#bar">label</a> and #real"##;
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["real"]);
+    }
+
+    #[test]
+    fn hashtag_needs_word_boundary_before() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+
+        // Hex colour in prose: `#ffcc00` IS at a word boundary (preceded by space)
+        // so it counts. That's the existing behavior; we don't change it. But
+        // glued-to-text variants must NOT match.
+        let (_text, links) = super::get_markdown_and_links(&path, "foo#bar baz#qux");
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            hashtag_names.is_empty(),
+            "no label should be extracted when `#` is preceded by a label-character: {:?}",
+            hashtag_names
+        );
+    }
+
+    #[test]
+    fn hashtag_at_start_of_line_still_works() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (_text, links) = super::get_markdown_and_links(&path, "#first line\nsecond #second");
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["first", "second"]);
     }
 }
