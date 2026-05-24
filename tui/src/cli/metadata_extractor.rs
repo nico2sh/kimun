@@ -3,11 +3,6 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-fn hashtag_regex() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| Regex::new(r"#([a-zA-Z0-9_-]+)").unwrap())
-}
-
 fn header_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| Regex::new(r"^(#{1,6})\s+(.+)$").unwrap())
@@ -25,11 +20,11 @@ pub fn extract_tags(content: &str) -> Vec<String> {
         }
     }
 
-    // Extract hashtags from content
-    for capture in hashtag_regex().captures_iter(content) {
-        if let Some(tag) = capture.get(1) {
-            tags.insert(tag.as_str().to_string());
-        }
+    // Extract hashtags from content (consistent with core's label_matches:
+    // applies word-boundary, ASCII-only label name, and skips frontmatter/
+    // code/HTML/markdown-link/wikilink zones — matching what core indexes.)
+    for tag in kimun_core::note::extract_labels(content) {
+        tags.insert(tag);
     }
 
     let mut result: Vec<String> = tags.into_iter().collect();
@@ -197,5 +192,22 @@ title: "Test Note""#;
 
         let tags = extract_frontmatter_tags(frontmatter).unwrap();
         assert_eq!(tags, vec!["meeting"]);
+    }
+
+    #[test]
+    fn extract_tags_matches_core_label_rules() {
+        let body = "---\ntags: [yaml_tag]\n---\nplain #body and #tag-with-dash\n```\n#code_tag\n```";
+        let tags = extract_tags(body);
+        // Expected: yaml_tag (frontmatter), body (extracted), tag (dash-terminated).
+        // NOT expected: code_tag (in fence), tag-with-dash (dash not in label).
+        assert!(tags.contains(&"yaml_tag".to_string()));
+        assert!(tags.contains(&"body".to_string()));
+        assert!(tags.contains(&"tag".to_string()));
+        assert!(!tags.contains(&"code_tag".to_string()), "got: {:?}", tags);
+        assert!(
+            !tags.contains(&"tag-with-dash".to_string()),
+            "got: {:?}",
+            tags
+        );
     }
 }

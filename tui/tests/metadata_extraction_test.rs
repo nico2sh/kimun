@@ -13,14 +13,9 @@ Also #project-related stuff.
 "#;
 
     let tags = extract_tags(content);
-    let mut expected = vec![
-        "project",
-        "urgent",
-        "meeting",
-        "important",
-        "todo",
-        "project-related",
-    ];
+    // `#project-related` → only `project` is extracted; dash is not a valid
+    // label character per core rules, so the match stops before the `-`.
+    let mut expected = vec!["project", "urgent", "meeting", "important", "todo"];
     expected.sort();
     let mut actual = tags;
     actual.sort();
