@@ -644,6 +644,104 @@ pub async fn list_labels(pool: &SqlitePool) -> Result<Vec<String>, DBError> {
     Ok(rows.into_iter().map(|(n,)| n).collect())
 }
 
+/// A note suggestion for the autocomplete popup.
+///
+/// `name` is the note's filename without extension — the string a wikilink
+/// actually targets, since wikilinks are stored by name, not by full vault
+/// path (see `get_backlinks` and the surrounding `noteName` column).
+/// `path` is carried so the UI can disambiguate when multiple notes share a
+/// name, but the wikilink target inserted on accept is `name`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteSuggestion {
+    pub name: String,
+    pub path: VaultPath,
+}
+
+/// A tag suggestion for the autocomplete popup. `usage_count` is computed
+/// per-query via `COUNT(*) GROUP BY name` over the `labels` table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagSuggestion {
+    pub label: String,
+    pub usage_count: u32,
+}
+
+/// Returns notes whose `noteName` starts with `prefix` (case-insensitive),
+/// capped at `limit`. Empty prefix returns the top `limit` notes by name.
+///
+/// Results are ordered alphabetically by name. Notes that share a name are
+/// both returned as separate rows; callers (the autocomplete UI) are
+/// responsible for disambiguating them via `path`.
+///
+/// The returned `name` is the note's filename with the extension stripped
+/// (via `VaultPath::get_clean_name`) — i.e. the exact text a wikilink
+/// targets. Filenames in the index are already lowercased on insert
+/// (see `VaultPathSlice::new`), so callers get lowercase names back.
+pub async fn suggest_notes_by_prefix(
+    pool: &SqlitePool,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<NoteSuggestion>, DBError> {
+    let pattern = format!("{}%", escape_like_pattern(&prefix.to_lowercase()));
+    // `noteName` is lowercased on insert, so `LIKE` against a lowercased
+    // pattern is naturally case-insensitive; the explicit `LOWER()` is a
+    // defensive belt-and-braces against any future code path that might
+    // insert mixed case.
+    let sql = "SELECT path \
+               FROM notes \
+               WHERE LOWER(noteName) LIKE ?1 ESCAPE '\\' \
+               ORDER BY noteName ASC, path ASC \
+               LIMIT ?2";
+    let rows: Vec<(String,)> = sqlx::query_as(sql)
+        .bind(&pattern)
+        .bind(limit as i64)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(path,)| {
+            let vault_path = VaultPath::new(path);
+            let name = vault_path.get_clean_name();
+            NoteSuggestion {
+                name,
+                path: vault_path,
+            }
+        })
+        .collect())
+}
+
+/// Returns tag labels whose name starts with `prefix` (case-insensitive),
+/// each paired with how many notes carry the tag, capped at `limit`. Empty
+/// prefix returns the top `limit` tags by usage.
+///
+/// The `labels` table is stored lowercased, so prefix matching is naturally
+/// case-insensitive once we lowercase the input. Ranking is `usage_count
+/// DESC, label ASC` so the most-used tags surface first.
+pub async fn suggest_tags_by_prefix(
+    pool: &SqlitePool,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<TagSuggestion>, DBError> {
+    let pattern = format!("{}%", escape_like_pattern(&prefix.to_lowercase()));
+    let sql = "SELECT name, COUNT(*) AS cnt \
+               FROM labels \
+               WHERE name LIKE ?1 ESCAPE '\\' \
+               GROUP BY name \
+               ORDER BY cnt DESC, name ASC \
+               LIMIT ?2";
+    let rows: Vec<(String, i64)> = sqlx::query_as(sql)
+        .bind(&pattern)
+        .bind(limit as i64)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(label, cnt)| TagSuggestion {
+            label,
+            usage_count: cnt.max(0) as u32,
+        })
+        .collect())
+}
+
 pub async fn label_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, DBError> {
     let rows: Vec<(String, i64)> =
         sqlx::query_as("SELECT name, COUNT(*) as cnt FROM labels GROUP BY name ORDER BY name")
