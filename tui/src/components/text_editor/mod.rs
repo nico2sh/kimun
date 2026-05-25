@@ -330,6 +330,16 @@ impl TextEditorComponent {
         }
     }
 
+    /// Total byte length of the textarea buffer, or 0 for the Nvim
+    /// backend. Used to detect whether a key event actually mutated the
+    /// text (vs. a cursor-only or selection-only event).
+    fn textarea_buffer_len(&self) -> usize {
+        let BackendState::Textarea(ta) = &self.backend else {
+            return 0;
+        };
+        ta.lines().iter().map(|l| l.len() + 1).sum::<usize>().saturating_sub(1)
+    }
+
     /// Recompute the popup's trigger context from the current buffer and
     /// cursor. Call after any mutating key handle (typed letter, paste,
     /// backspace, cursor movement, etc.).
@@ -1303,14 +1313,16 @@ impl Component for TextEditorComponent {
                 if let Some(state) = self.handle_nvim_key(key, tx) {
                     return state;
                 }
-                let gen_before = self.edit_generation;
+                // Detect *actual* text edits by comparing total buffer
+                // length before/after. `edit_generation` is bumped on
+                // every input including cursor moves, so it cannot be
+                // used here. Length change isn't a perfect proxy
+                // (overwrite-mode would miss) but ratatui-textarea has
+                // no overwrite mode.
+                let len_before = self.textarea_buffer_len();
                 let result = self.handle_textarea_key(key, tx);
-                // Only trigger the popup on actual edits — pure cursor
-                // movement (arrows, Home/End, Ctrl+G-to-follow, mouse
-                // click) must not pop the autocomplete open. If the popup
-                // is already open and the cursor moves out of the trigger
-                // range, close it; otherwise leave it alone.
-                if self.edit_generation != gen_before {
+                let len_after = self.textarea_buffer_len();
+                if len_after != len_before {
                     self.sync_autocomplete();
                 } else if let Some(c) = self.autocomplete.as_mut() {
                     c.close();
