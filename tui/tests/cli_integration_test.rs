@@ -318,10 +318,10 @@ async fn test_cli_search_compound_exclusions() {
     let vault = setup_exclusion_test_vault(&workspace_dir).await;
     write_config(&config_path, workspace_dir.path());
 
-    // Test filename exclusion: @project @-draft
+    // Test filename exclusion: @project -@draft
     let result = run_cli(
         CliCommand::Search {
-            query: "@project @-draft".to_string(),
+            query: "@project -@draft".to_string(),
             format: OutputFormat::Text,
         },
         Some(config_path.clone()),
@@ -336,7 +336,7 @@ async fn test_cli_search_compound_exclusions() {
 
     // Validate directly against vault: "project-final" should appear, "project-draft" should not
     let search_results = vault
-        .search_notes("@project @-draft")
+        .search_notes("@project -@draft")
         .await
         .expect("direct search should work");
 
@@ -356,10 +356,10 @@ async fn test_cli_search_compound_exclusions() {
         paths
     );
 
-    // Test filename exclusion: @final @-draft (another combination)
+    // Test filename exclusion: @final -@draft (another combination)
     let result = run_cli(
         CliCommand::Search {
-            query: "@final @-draft".to_string(),
+            query: "@final -@draft".to_string(),
             format: OutputFormat::Text,
         },
         Some(config_path.clone()),
@@ -374,7 +374,7 @@ async fn test_cli_search_compound_exclusions() {
 
     // Validate directly against vault: "project-final" should appear
     let search_results = vault
-        .search_notes("@final @-draft")
+        .search_notes("@final -@draft")
         .await
         .expect("direct search should work");
 
@@ -474,7 +474,7 @@ async fn test_cli_search_exclusion_only() {
     // Test pure title exclusion
     let result = run_cli(
         CliCommand::Search {
-            query: ">-draft".to_string(),
+            query: "-<draft".to_string(),
             format: OutputFormat::Text,
         },
         Some(config_path),
@@ -489,7 +489,7 @@ async fn test_cli_search_exclusion_only() {
 
     // Validate directly against vault: "project-draft" should be excluded
     let search_results = vault
-        .search_notes(">-draft")
+        .search_notes("-<draft")
         .await
         .expect("direct search should work");
 
