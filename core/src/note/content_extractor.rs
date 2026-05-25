@@ -2259,7 +2259,11 @@ ls -la ./test
     fn exclusion_zone_plain_text_returns_false() {
         let text = "some plain text without anything special";
         for i in 0..=text.len() {
-            assert!(!is_inside_exclusion_zone(text, i), "offset {} should not be in zone", i);
+            assert!(
+                !is_inside_exclusion_zone(text, i),
+                "offset {} should not be in zone",
+                i
+            );
         }
     }
 

@@ -326,10 +326,7 @@ impl TextEditorComponent {
     pub fn set_vault(&mut self, vault: Arc<NoteVault>) {
         self.autocomplete_vault = Some(vault.clone());
         if matches!(self.backend, BackendState::Textarea(_)) {
-            self.autocomplete = Some(AutocompleteController::new(
-                vault,
-                AutocompleteMode::Both,
-            ));
+            self.autocomplete = Some(AutocompleteController::new(vault, AutocompleteMode::Both));
         }
     }
 
@@ -347,10 +344,7 @@ impl TextEditorComponent {
         let Some(vault) = self.autocomplete_vault.clone() else {
             return;
         };
-        self.autocomplete = Some(AutocompleteController::new(
-            vault,
-            AutocompleteMode::Both,
-        ));
+        self.autocomplete = Some(AutocompleteController::new(vault, AutocompleteMode::Both));
         // Fresh controller — `bind_autocomplete_redraw` must rebind
         // on the next handle_input.
         self.autocomplete_redraw_bound = false;
@@ -365,8 +359,7 @@ impl TextEditorComponent {
         };
         let lines: Vec<String> = ta.lines().iter().map(|l| l.to_string()).collect();
         let (row, col) = cursor_tuple(ta);
-        let cursor_byte =
-            autocomplete_glue::row_char_col_to_byte(&lines, row, col);
+        let cursor_byte = autocomplete_glue::row_char_col_to_byte(&lines, row, col);
         Some(EditorHostSnapshot {
             lines,
             cursor_byte,
@@ -1399,16 +1392,16 @@ impl Component for TextEditorComponent {
                 // falls through to the normal textarea flow (and then we
                 // resync the popup so the typed letter refines the query
                 // or breaks the trigger context).
-                if let (Some(host), Some(controller)) =
-                    (self.autocomplete_host_snapshot(), self.autocomplete.as_mut())
-                {
+                if let (Some(host), Some(controller)) = (
+                    self.autocomplete_host_snapshot(),
+                    self.autocomplete.as_mut(),
+                ) {
                     if controller.is_open() {
                         match controller.handle_key(*key, &host) {
                             HandleKeyOutcome::Accepted(action) => {
                                 if let BackendState::Textarea(ta) = &mut self.backend {
                                     apply_accept_to_textarea(ta, &action);
-                                    self.edit_generation =
-                                        self.edit_generation.wrapping_add(1);
+                                    self.edit_generation = self.edit_generation.wrapping_add(1);
                                     self.selection = ta.selection_range();
                                 }
                                 return EventState::Consumed;

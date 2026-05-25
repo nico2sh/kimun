@@ -113,11 +113,11 @@ pub fn render(frame: &mut Frame, state: &AutocompleteState, screen: Rect, theme:
     }
 
     let content_width = visible_content_width(state, start, end);
-    let desired_width = (content_width as u16).saturating_add(BORDERS).min(MAX_WIDTH);
-    let popup_width = desired_width.min(screen.width);
-    let popup_height = visible_rows
+    let desired_width = (content_width as u16)
         .saturating_add(BORDERS)
-        .min(screen.height);
+        .min(MAX_WIDTH);
+    let popup_width = desired_width.min(screen.width);
+    let popup_height = visible_rows.saturating_add(BORDERS).min(screen.height);
 
     let (anchor_col, anchor_row) = state.anchor;
     let screen_right = screen.x.saturating_add(screen.width);
@@ -255,7 +255,11 @@ fn render_overflow_marker(
     if area.width < 3 {
         return;
     }
-    let y = if on_top { area.y } else { area.y + area.height - 1 };
+    let y = if on_top {
+        area.y
+    } else {
+        area.y + area.height - 1
+    };
     let label = format!(" {} {} more ", glyph, hidden_count);
     let label_chars: Vec<char> = label.chars().collect();
     let label_width = label_chars.len() as u16;
@@ -284,12 +288,12 @@ fn render_overflow_marker(
 
 #[cfg(test)]
 mod tests {
-    use super::super::state::Suggestion;
     use super::super::TriggerKind;
+    use super::super::state::Suggestion;
     use super::*;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyCode;
-    use ratatui::Terminal;
 
     fn sample_state(n: usize) -> AutocompleteState {
         let mut st = AutocompleteState::new(TriggerKind::Hashtag, (0, 0));

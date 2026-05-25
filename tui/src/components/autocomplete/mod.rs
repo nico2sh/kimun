@@ -8,8 +8,8 @@ pub use controller::{
     AcceptAction, AutocompleteController, AutocompleteMode, HandleKeyOutcome, RedrawCallback,
 };
 pub use host::AutocompleteHost;
-pub use popup::{handle_key, render, PopupAction, PopupOutcome};
-pub use state::{AutocompleteState, Suggestion, DEFAULT_MAX_VISIBLE_ROWS};
+pub use popup::{PopupAction, PopupOutcome, handle_key, render};
+pub use state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
 pub use trigger::{
-    detect_trigger, detect_trigger_with, TriggerContext, TriggerKind, TriggerOptions,
+    TriggerContext, TriggerKind, TriggerOptions, detect_trigger, detect_trigger_with,
 };

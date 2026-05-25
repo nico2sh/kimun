@@ -2084,10 +2084,7 @@ mod suggest_api_tests {
         let (_tmp, vault) = new_vault().await;
         for name in ["Alpha", "Beta", "Gamma"] {
             vault
-                .create_note(
-                    &VaultPath::note_path_from(format!("/{name}.md")),
-                    "body",
-                )
+                .create_note(&VaultPath::note_path_from(format!("/{name}.md")), "body")
                 .await
                 .unwrap();
         }
@@ -2115,8 +2112,7 @@ mod suggest_api_tests {
             .unwrap();
 
         let got = vault.suggest_notes_by_prefix("ME", 50).await.unwrap();
-        let names: std::collections::HashSet<String> =
-            got.into_iter().map(|s| s.name).collect();
+        let names: std::collections::HashSet<String> = got.into_iter().map(|s| s.name).collect();
         assert!(names.contains("meeting"));
         assert!(names.contains("melon"));
         assert!(!names.contains("zebra"));
@@ -2127,10 +2123,7 @@ mod suggest_api_tests {
         let (_tmp, vault) = new_vault().await;
         for i in 0..10 {
             vault
-                .create_note(
-                    &VaultPath::note_path_from(format!("/note{i}.md")),
-                    "x",
-                )
+                .create_note(&VaultPath::note_path_from(format!("/note{i}.md")), "x")
                 .await
                 .unwrap();
         }
@@ -2141,14 +2134,8 @@ mod suggest_api_tests {
     #[tokio::test]
     async fn suggest_notes_keeps_same_name_at_different_paths_separate() {
         let (_tmp, vault) = new_vault().await;
-        vault
-            .create_directory(&VaultPath::new("/a"))
-            .await
-            .unwrap();
-        vault
-            .create_directory(&VaultPath::new("/b"))
-            .await
-            .unwrap();
+        vault.create_directory(&VaultPath::new("/a")).await.unwrap();
+        vault.create_directory(&VaultPath::new("/b")).await.unwrap();
         vault
             .create_note(&VaultPath::note_path_from("/a/Shared.md"), "x")
             .await
@@ -2158,10 +2145,7 @@ mod suggest_api_tests {
             .await
             .unwrap();
 
-        let got = vault
-            .suggest_notes_by_prefix("Shared", 50)
-            .await
-            .unwrap();
+        let got = vault.suggest_notes_by_prefix("Shared", 50).await.unwrap();
         assert_eq!(got.len(), 2, "duplicates by name must not be deduped");
         let mut paths: Vec<String> = got.iter().map(|s| s.path.to_string()).collect();
         paths.sort();

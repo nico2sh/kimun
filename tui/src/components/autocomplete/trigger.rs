@@ -158,9 +158,7 @@ pub fn detect_trigger_with(
         // reopen-mid-target case the spec wants to support). Only
         // applied when the caller is editing Markdown (search box
         // disables this).
-        if opts.apply_exclusion_zone
-            && is_inside_code_link_or_frontmatter(text, cursor)
-        {
+        if opts.apply_exclusion_zone && is_inside_code_link_or_frontmatter(text, cursor) {
             return None;
         }
         let query = text[inner_start..cursor].to_string();
@@ -194,8 +192,7 @@ pub fn detect_trigger_with(
         // support Markdown headers (the editor); the search box turns
         // this off via `TriggerOptions`.
         if opts.disambiguate_header {
-            let at_line_start =
-                hash == 0 || text.as_bytes().get(hash - 1) == Some(&b'\n');
+            let at_line_start = hash == 0 || text.as_bytes().get(hash - 1) == Some(&b'\n');
             if at_line_start {
                 if cursor == inner_start {
                     return None;

@@ -123,14 +123,12 @@ impl NoteBrowserModal {
         // column-0 header disambiguation (no headers to confuse with)
         // and disable the exclusion-zone check (literal `` ` `` /
         // brackets in a query shouldn't suppress hashtag triggers).
-        let mut autocomplete = AutocompleteController::new(
-            vault.clone(),
-            AutocompleteMode::HashtagOnly,
-        )
-        .with_trigger_opts(TriggerOptions {
-            disambiguate_header: false,
-            apply_exclusion_zone: false,
-        });
+        let mut autocomplete =
+            AutocompleteController::new(vault.clone(), AutocompleteMode::HashtagOnly)
+                .with_trigger_opts(TriggerOptions {
+                    disambiguate_header: false,
+                    apply_exclusion_zone: false,
+                });
         autocomplete.set_redraw_callback(redraw_callback(tx.clone()));
         let mut modal = Self {
             title: title.into(),
@@ -321,7 +319,6 @@ impl NoteBrowserModal {
             caret_pos: self.search_query.last_caret_pos(),
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -542,9 +539,7 @@ impl Component for NoteBrowserModal {
         // border into the cleared backdrop.
         self.autocomplete.poll_results();
         let live_anchor = self.search_query.last_caret_pos();
-        if let (Some(state), Some(anchor)) =
-            (self.autocomplete.state_mut(), live_anchor)
-        {
+        if let (Some(state), Some(anchor)) = (self.autocomplete.state_mut(), live_anchor) {
             state.anchor = anchor;
         }
         if let Some(state) = self.autocomplete.state() {
@@ -722,10 +717,7 @@ mod tests {
         let vault = temp_vault("search_autocomplete").await;
         vault.validate_and_init().await.unwrap();
         vault
-            .create_note(
-                &VaultPath::note_path_from("/a.md"),
-                "body #projects",
-            )
+            .create_note(&VaultPath::note_path_from("/a.md"), "body #projects")
             .await
             .unwrap();
         let settings = AppSettings::default();

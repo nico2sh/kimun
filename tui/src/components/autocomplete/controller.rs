@@ -2,12 +2,12 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use kimun_core::NoteVault;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::host::AutocompleteHost;
-use super::popup::{handle_key as popup_handle_key, PopupAction, PopupOutcome};
-use super::state::{AutocompleteState, Suggestion, DEFAULT_MAX_VISIBLE_ROWS};
-use super::trigger::{detect_trigger_with, TriggerKind, TriggerOptions};
+use super::popup::{PopupAction, PopupOutcome, handle_key as popup_handle_key};
+use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
+use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with};
 
 /// Hard cap on suggestions fetched from core per query. The popup itself
 /// only shows `max_visible_rows` at a time and scrolls inside the fetched
@@ -518,7 +518,8 @@ mod tests {
         }
 
         fn apply(&mut self, action: &AcceptAction) {
-            self.buffer.replace_range(action.range.clone(), &action.new_text);
+            self.buffer
+                .replace_range(action.range.clone(), &action.new_text);
             self.cursor = action.new_cursor_byte;
         }
     }
@@ -535,7 +536,10 @@ mod tests {
         }
     }
 
-    async fn new_vault_with(notes: &[&str], tag_notes: &[(&str, &str)]) -> (TempDir, Arc<NoteVault>) {
+    async fn new_vault_with(
+        notes: &[&str],
+        tag_notes: &[(&str, &str)],
+    ) -> (TempDir, Arc<NoteVault>) {
         let tmp = TempDir::new().unwrap();
         let cfg = VaultConfig::new(tmp.path().to_path_buf());
         let vault = NoteVault::new(cfg).await.unwrap();
@@ -601,8 +605,7 @@ mod tests {
         // into a Wikilink context must NOT replace the popup with a
         // wikilink one — close it instead. Opening a wikilink popup
         // on cursor movement violates the refresh-only contract.
-        let (_tmp, vault) =
-            new_vault_with(&["meeting"], &[("a", "x #proj")]).await;
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[("a", "x #proj")]).await;
         let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("#pro [[me", 4); // cursor after `#pro`
         c.sync(&host);
@@ -631,8 +634,7 @@ mod tests {
         // and accept (e.g. an async event truncated the buffer).
         host.buffer = "see [".into();
         host.cursor = 5;
-        let outcome =
-            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
         assert_eq!(outcome, HandleKeyOutcome::NotHandled);
         assert!(c.state().is_none(), "popup must close even on fallthrough");
     }
@@ -730,8 +732,7 @@ mod tests {
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome =
-            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
         let HandleKeyOutcome::Accepted(action) = outcome else {
             panic!("expected Accepted, got {:?}", outcome);
         };
@@ -753,8 +754,7 @@ mod tests {
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome =
-            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
         let HandleKeyOutcome::Accepted(action) = outcome else {
             panic!("expected Accepted, got {:?}", outcome);
         };
@@ -773,8 +773,7 @@ mod tests {
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome =
-            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
         let HandleKeyOutcome::Accepted(action) = outcome else {
             panic!("expected Accepted, got {:?}", outcome);
         };
@@ -792,8 +791,7 @@ mod tests {
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome =
-            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
         let HandleKeyOutcome::Accepted(action) = outcome else {
             panic!("expected Accepted, got {:?}", outcome);
         };
@@ -811,8 +809,7 @@ mod tests {
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome =
-            c.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &host);
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &host);
         let HandleKeyOutcome::Accepted(action) = outcome else {
             panic!("expected Accepted, got {:?}", outcome);
         };
@@ -829,8 +826,7 @@ mod tests {
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome =
-            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
         let HandleKeyOutcome::Accepted(action) = outcome else {
             panic!("expected Accepted, got {:?}", outcome);
         };
@@ -847,8 +843,7 @@ mod tests {
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let outcome =
-            c.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &host);
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &host);
         assert_eq!(outcome, HandleKeyOutcome::Dismissed);
         assert_eq!(host.buffer, "see [[me");
         assert!(!c.is_open());
