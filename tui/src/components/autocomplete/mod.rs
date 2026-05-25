@@ -4,7 +4,9 @@ pub mod popup;
 pub mod state;
 pub mod trigger;
 
-pub use controller::{AcceptAction, AutocompleteController, AutocompleteMode, HandleKeyOutcome};
+pub use controller::{
+    AcceptAction, AutocompleteController, AutocompleteMode, HandleKeyOutcome, RedrawCallback,
+};
 pub use host::AutocompleteHost;
 pub use popup::{handle_key, render, PopupAction, PopupOutcome};
 pub use state::{AutocompleteState, Suggestion, DEFAULT_MAX_VISIBLE_ROWS};

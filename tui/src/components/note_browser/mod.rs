@@ -16,7 +16,7 @@ use crate::components::autocomplete::{
     TriggerOptions,
 };
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::file_list::{FileListComponent, FileListEntry};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::keys::KeyBindings;
@@ -123,7 +123,7 @@ impl NoteBrowserModal {
         // column-0 header disambiguation (no headers to confuse with)
         // and disable the exclusion-zone check (literal `` ` `` /
         // brackets in a query shouldn't suppress hashtag triggers).
-        let autocomplete = AutocompleteController::new(
+        let mut autocomplete = AutocompleteController::new(
             vault.clone(),
             AutocompleteMode::HashtagOnly,
         )
@@ -131,6 +131,7 @@ impl NoteBrowserModal {
             disambiguate_header: false,
             apply_exclusion_zone: false,
         });
+        autocomplete.set_redraw_callback(redraw_callback(tx.clone()));
         let mut modal = Self {
             title: title.into(),
             search_query: SingleLineInput::new(),

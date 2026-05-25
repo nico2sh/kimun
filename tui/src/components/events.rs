@@ -140,6 +140,16 @@ pub enum ScreenEvent {
 /// Convenience alias used throughout the codebase.
 pub type AppTx = UnboundedSender<AppEvent>;
 
+/// Build a `Send + Sync` callback that fires `AppEvent::Redraw` on the
+/// app event bus. Used by long-lived components (autocomplete query
+/// task, etc.) that need to wake the render loop from a background
+/// thread but should not be aware of `AppEvent` themselves.
+pub fn redraw_callback(tx: AppTx) -> Arc<dyn Fn() + Send + Sync + 'static> {
+    Arc::new(move || {
+        let _ = tx.send(AppEvent::Redraw);
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
