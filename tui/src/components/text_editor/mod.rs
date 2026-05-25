@@ -1446,13 +1446,25 @@ impl Component for TextEditorComponent {
             render_search_bar(f, bar_rect, state, theme, bar_focused);
         }
 
-        // Autocomplete popup sits on top of the editor (and the find bar
-        // when present). Drain any pending async query results first so
-        // the popup reflects the latest typed prefix.
+        // Autocomplete popup sits on top of the editor. Drain async
+        // query results first so the popup reflects the latest prefix,
+        // then re-anchor on the cursor's freshly-rendered screen
+        // position (otherwise the anchor lags one frame behind on the
+        // very first popup-opening keystroke). Clamp against
+        // `editor_rect`, not the full `rect`, so the popup never lands
+        // on the find-bar row.
         self.poll_autocomplete();
+        let live_anchor = self.view.last_cursor_screen;
+        if let (Some(controller), Some(anchor)) =
+            (self.autocomplete.as_mut(), live_anchor)
+        {
+            if let Some(state) = controller.state_mut() {
+                state.anchor = anchor;
+            }
+        }
         if let Some(controller) = self.autocomplete.as_ref() {
             if let Some(state) = controller.state() {
-                autocomplete::render(f, state, rect, theme);
+                autocomplete::render(f, state, editor_rect, theme);
             }
         }
     }
