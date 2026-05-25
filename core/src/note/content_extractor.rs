@@ -378,6 +378,29 @@ pub fn is_inside_exclusion_zone(text: &str, byte_offset: usize) -> bool {
         || in_range(&md_wikilink_char_ranges(text))
 }
 
+/// Like `is_inside_exclusion_zone` but does NOT include already-closed
+/// `[[wikilink]]` spans. Wikilink autocomplete uses this so the user
+/// can reopen the popup with the cursor inside a closed wikilink's
+/// target to edit it. Code spans, frontmatter, and standard markdown
+/// link bodies still suppress.
+pub fn is_inside_code_link_or_frontmatter(text: &str, byte_offset: usize) -> bool {
+    if byte_offset > text.len() {
+        return false;
+    }
+
+    if byte_offset < frontmatter_end_byte(text) {
+        return true;
+    }
+
+    let in_range = |ranges: &[(usize, usize)]| -> bool {
+        ranges
+            .iter()
+            .any(|(s, e)| byte_offset > *s && byte_offset < *e)
+    };
+
+    in_range(&code_char_ranges(text)) || in_range(&md_link_char_ranges(text))
+}
+
 fn cleanup_hashtags(md_text: &str) -> String {
     HASHTAG_RX
         .replace_all(md_text, |caps: &Captures| caps["ht_text"].to_string())

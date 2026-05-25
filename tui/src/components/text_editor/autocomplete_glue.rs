@@ -46,24 +46,28 @@ pub fn row_char_col_to_byte(lines: &[String], row: usize, char_col: usize) -> us
             .unwrap_or(line.len())
 }
 
-/// Apply an `AcceptAction` from the autocomplete controller to a textarea.
-/// Selects the byte range, cuts it, inserts the new text, then places the
-/// cursor at the absolute byte offset returned by the controller.
+/// Apply an `AcceptAction` from the autocomplete controller to a
+/// textarea. Positions the cursor at the start of the trigger range,
+/// deletes forward by the range's char count using `delete_str` (NOT
+/// `cut` — `cut` writes the deleted text into the textarea's yank
+/// buffer, clobbering anything the user had previously copied), then
+/// inserts the replacement and moves the cursor to the requested
+/// post-replacement byte offset.
 pub fn apply_accept_to_textarea(ta: &mut TextArea<'_>, action: &AcceptAction) {
     let before: Vec<String> = ta.lines().iter().map(|l| l.to_string()).collect();
     let Some((start_row, start_col)) = byte_to_row_char_col(&before, action.range.start) else {
         return;
     };
-    let Some((end_row, end_col)) = byte_to_row_char_col(&before, action.range.end) else {
+    let Some(_) = byte_to_row_char_col(&before, action.range.end) else {
         return;
     };
 
     ta.cancel_selection();
     ta.move_cursor(CursorMove::Jump(start_row as u16, start_col as u16));
     if action.range.end > action.range.start {
-        ta.start_selection();
-        ta.move_cursor(CursorMove::Jump(end_row as u16, end_col as u16));
-        ta.cut();
+        let joined: String = before.join("\n");
+        let char_count = joined[action.range.clone()].chars().count();
+        ta.delete_str(char_count);
     }
     ta.insert_str(&action.new_text);
 

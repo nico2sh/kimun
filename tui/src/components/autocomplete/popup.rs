@@ -4,6 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
+use unicode_width::UnicodeWidthStr;
 
 use crate::settings::themes::Theme;
 
@@ -34,7 +35,15 @@ pub enum PopupAction {
 /// process it as normal typing — the host then recomputes the trigger
 /// context, which may close or refresh the popup naturally.
 pub fn handle_key(state: &mut AutocompleteState, key: KeyEvent) -> PopupOutcome {
-    if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+    // System-modifier combos (Ctrl, Alt, Cmd/SUPER, Win/META) are
+    // never the popup's to consume — let the host route them as
+    // shortcuts. Otherwise macOS Cmd+Tab / Cmd+Esc / Cmd+arrows
+    // would be swallowed as Accept/Dismiss/Navigate.
+    const SYSTEM_MODS: KeyModifiers = KeyModifiers::CONTROL
+        .union(KeyModifiers::ALT)
+        .union(KeyModifiers::SUPER)
+        .union(KeyModifiers::META);
+    if key.modifiers.intersects(SYSTEM_MODS) {
         return PopupOutcome::NotHandled;
     }
     match key.code {
@@ -90,6 +99,13 @@ pub fn render(frame: &mut Frame, state: &AutocompleteState, screen: Rect, theme:
     const MAX_WIDTH: u16 = 60;
     const BORDERS: u16 = 2;
 
+    // Below the minimum drawable size the popup can't render a
+    // border + a row of content, so just bail. ratatui can render
+    // smaller, but the result is uninterpretable to the user.
+    if screen.width < BORDERS + 1 || screen.height < BORDERS + 1 {
+        return;
+    }
+
     let (start, end) = state.visible_window();
     let visible_rows = (end - start) as u16;
     if visible_rows == 0 {
@@ -97,30 +113,31 @@ pub fn render(frame: &mut Frame, state: &AutocompleteState, screen: Rect, theme:
     }
 
     let content_width = visible_content_width(state, start, end);
-    let desired_width = (content_width as u16 + BORDERS).min(MAX_WIDTH);
-    let popup_width = desired_width.min(screen.width.max(BORDERS));
-    let popup_height = visible_rows + BORDERS;
+    let desired_width = (content_width as u16).saturating_add(BORDERS).min(MAX_WIDTH);
+    let popup_width = desired_width.min(screen.width);
+    let popup_height = visible_rows
+        .saturating_add(BORDERS)
+        .min(screen.height);
 
     let (anchor_col, anchor_row) = state.anchor;
-    let popup_x = if anchor_col + popup_width > screen.x + screen.width {
-        screen.x + screen.width.saturating_sub(popup_width)
+    let screen_right = screen.x.saturating_add(screen.width);
+    let popup_x = if anchor_col.saturating_add(popup_width) > screen_right {
+        screen_right.saturating_sub(popup_width)
     } else {
-        anchor_col
+        anchor_col.max(screen.x)
     };
 
     // Prefer below the trigger; flip above when there is no room.
-    let space_below = screen
-        .y
-        .saturating_add(screen.height)
-        .saturating_sub(anchor_row + 1);
+    let screen_bottom = screen.y.saturating_add(screen.height);
+    let space_below = screen_bottom.saturating_sub(anchor_row.saturating_add(1));
     let popup_y = if space_below >= popup_height {
-        anchor_row + 1
-    } else if anchor_row >= popup_height {
-        anchor_row - popup_height
+        anchor_row.saturating_add(1)
+    } else if anchor_row >= popup_height.saturating_add(screen.y) {
+        anchor_row.saturating_sub(popup_height)
     } else {
         // Last resort: clamp inside the screen, accepting that the popup
         // may cover the trigger line. Better than rendering off-screen.
-        screen.y + screen.height.saturating_sub(popup_height)
+        screen_bottom.saturating_sub(popup_height).max(screen.y)
     };
 
     let area = Rect {
@@ -173,13 +190,15 @@ fn visible_title(state: &AutocompleteState) -> String {
 }
 
 fn visible_content_width(state: &AutocompleteState, start: usize, end: usize) -> usize {
-    let mut widest = visible_title(state).chars().count();
+    // Measure display cells (handles CJK, emoji) — `chars().count()`
+    // is wrong for any text wider than ASCII.
+    let mut widest = visible_title(state).width();
     for item in &state.items[start..end] {
-        let primary = item.display.chars().count();
+        let primary = item.display.width();
         let secondary = item
             .secondary
             .as_deref()
-            .map(|s| s.chars().count() + 2)
+            .map(|s| s.width() + 2)
             .unwrap_or(0);
         widest = widest.max(primary + secondary);
     }
@@ -207,9 +226,9 @@ fn build_row<'a>(
         .fg(theme.fg_muted.to_ratatui())
         .add_modifier(Modifier::DIM);
 
-    let primary_len = item.display.chars().count();
+    let primary_len = item.display.width();
     let secondary_text = item.secondary.as_deref().unwrap_or("");
-    let secondary_len = secondary_text.chars().count();
+    let secondary_len = secondary_text.width();
     let separator = if secondary_text.is_empty() { 0 } else { 1 };
 
     let total = primary_len + separator + secondary_len;
