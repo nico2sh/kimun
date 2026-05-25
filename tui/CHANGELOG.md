@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.10.0...kimun-notes-v0.11.0) - 2026-05-25
+
+### Added
+
+- *(cli)* add `kimun labels` command to list vault labels with note counts
+- *(tui/editor)* follow-link on #label opens search modal pre-filled
+- *(tui/note_browser)* accept pre-filled initial query on open
+- *(tui/editor)* highlight #hashtag spans as Label elements
+
+### Fixed
+
+- *(cli/metadata)* lowercase frontmatter tags for case parity with body labels
+- *(cli/metadata)* delegate hashtag extraction to core for parity with index
+- *(core)* symmetric word-boundary check + sync spec/MCP docs with extraction rules
+- *(tui/editor)* delegate label detection to core, skip labels inside links/code/fences, widen elem_index to u16
+- *(tui/note_browser)* single schedule_load in with_initial_query, eliminating empty-load race
+- bad shortcuts config don't break config
+
+### Other
+
+- cargo fmt --all
+- tasks in readme
+- *(mcp)* include [[wikilink]] in search_notes hashtag-exclusion list
+- *(mcp)* mention #label / lb:label syntax in search_notes tool description
+
 ## [0.10.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.9.0...kimun-notes-v0.10.0) - 2026-05-18
 
 ### Added
