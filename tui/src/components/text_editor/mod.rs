@@ -237,12 +237,20 @@ impl AutocompleteHost for EditorHostSnapshot {
         self.cursor_byte
     }
     fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
-        // We anchor at the cursor's last-rendered screen position. The
-        // controller passes `anchor_col` (byte offset of the start of the
-        // typed query) but visually anchoring at the cursor is fine — the
-        // popup sits adjacent to the typed text either way and avoids
-        // re-walking the wrap layout for an arbitrary byte offset.
-        self.cursor_screen
+        // Anchor at the cursor's last-rendered screen position. The
+        // controller passes `anchor_col` (byte offset of the start of
+        // the typed query) but visually anchoring at the cursor is
+        // fine — the popup sits adjacent to the typed text either way
+        // and avoids re-walking the wrap layout for an arbitrary byte
+        // offset.
+        //
+        // When `cursor_screen` is None (no prior render — e.g. the
+        // user opens a note and types `[[` before the first frame),
+        // return a placeholder so the controller still opens the
+        // popup. The editor's render path skips drawing it until
+        // `view.last_cursor_screen` is available, then re-anchors and
+        // draws with the correct position.
+        Some(self.cursor_screen.unwrap_or((0, 0)))
     }
 }
 
@@ -1522,16 +1530,21 @@ impl Component for TextEditorComponent {
         // `editor_rect`, not the full `rect`, so the popup never lands
         // on the find-bar row.
         self.poll_autocomplete();
-        let live_anchor = self.view.last_cursor_screen;
-        if let (Some(controller), Some(anchor)) =
-            (self.autocomplete.as_mut(), live_anchor)
+        // The popup anchors on the cursor's just-rendered screen
+        // position. When the cursor is off-screen
+        // (`last_cursor_screen == None`) we skip rendering entirely
+        // rather than draw at a stale anchor — the popup state is
+        // preserved, so the popup reappears at the correct position
+        // once the cursor scrolls back into view.
+        if let (Some(controller), Some(live_anchor)) =
+            (self.autocomplete.as_mut(), self.view.last_cursor_screen)
         {
             if let Some(state) = controller.state_mut() {
-                state.anchor = anchor;
+                state.anchor = live_anchor;
             }
-        }
-        if let Some(state) = self.autocomplete.as_ref().and_then(|c| c.state()) {
-            autocomplete::render(f, state, editor_rect, theme);
+            if let Some(state) = controller.state() {
+                autocomplete::render(f, state, editor_rect, theme);
+            }
         }
     }
 

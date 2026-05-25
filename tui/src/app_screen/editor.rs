@@ -356,11 +356,16 @@ impl EditorScreen {
     }
 
     fn restore_focus(&mut self) {
-        self.focus = self
+        let restored = self
             .dialogs
             .close()
             .map(Self::focus_from_index)
             .unwrap_or(Focus::Editor);
+        // Route through set_focus so the autocomplete-close invariant
+        // (no popup while another component owns focus) holds even on
+        // post-dialog focus restoration. Harmless when target is
+        // Editor — set_focus only closes when transitioning AWAY.
+        self.set_focus(restored);
     }
 
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {

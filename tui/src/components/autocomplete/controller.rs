@@ -110,14 +110,29 @@ impl AutocompleteController {
         self.state.as_ref().is_some_and(|s| !s.items.is_empty())
     }
 
+    /// Borrow the popup state for read-only inspection (rendering,
+    /// query introspection, tests). Returns `None` whenever the popup
+    /// is not active.
     pub fn state(&self) -> Option<&AutocompleteState> {
         self.state.as_ref()
     }
 
+    /// Borrow the popup state mutably. The only legitimate
+    /// caller-side use today is the host's render path, which
+    /// re-anchors `state.anchor` from the freshly rendered caret
+    /// position so the popup follows the cursor without a one-frame
+    /// lag. Mutating `items` / `highlighted` / `scroll_offset` from
+    /// outside the controller will desync the popup; use the
+    /// dedicated `sync` / `refresh_if_open` / `handle_key` entry
+    /// points for those.
     pub fn state_mut(&mut self) -> Option<&mut AutocompleteState> {
         self.state.as_mut()
     }
 
+    /// Close the popup immediately. Safe to call when already closed.
+    /// Use whenever focus moves away from the host or the host
+    /// triggers a buffer-replacement that invalidates the trigger
+    /// context (e.g. `set_text`).
     pub fn close(&mut self) {
         self.state = None;
     }

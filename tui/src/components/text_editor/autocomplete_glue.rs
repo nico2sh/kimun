@@ -48,26 +48,33 @@ pub fn row_char_col_to_byte(lines: &[String], row: usize, char_col: usize) -> us
 
 /// Apply an `AcceptAction` from the autocomplete controller to a
 /// textarea. Positions the cursor at the start of the trigger range,
-/// deletes forward by the range's char count using `delete_str` (NOT
-/// `cut` — `cut` writes the deleted text into the textarea's yank
-/// buffer, clobbering anything the user had previously copied), then
-/// inserts the replacement and moves the cursor to the requested
+/// deletes forward by the range's char count, inserts the
+/// replacement, then moves the cursor to the requested
 /// post-replacement byte offset.
+///
+/// Both `delete_str` and `cut` write the removed text into the
+/// textarea's yank buffer (see `ratatui_textarea::TextArea::delete_str`
+/// — `self.yank = removed.clone().into()`). To avoid clobbering
+/// anything the user had previously yanked (Ctrl+X / Ctrl+C →
+/// ratatui-textarea yank ring), this function snapshots the yank
+/// buffer before the delete and restores it afterwards.
 pub fn apply_accept_to_textarea(ta: &mut TextArea<'_>, action: &AcceptAction) {
     let before: Vec<String> = ta.lines().iter().map(|l| l.to_string()).collect();
     let Some((start_row, start_col)) = byte_to_row_char_col(&before, action.range.start) else {
         return;
     };
-    let Some(_) = byte_to_row_char_col(&before, action.range.end) else {
+    if byte_to_row_char_col(&before, action.range.end).is_none() {
         return;
-    };
+    }
 
     ta.cancel_selection();
     ta.move_cursor(CursorMove::Jump(start_row as u16, start_col as u16));
     if action.range.end > action.range.start {
+        let preserved_yank = ta.yank_text();
         let joined: String = before.join("\n");
         let char_count = joined[action.range.clone()].chars().count();
         ta.delete_str(char_count);
+        ta.set_yank_text(preserved_yank);
     }
     ta.insert_str(&action.new_text);
 
@@ -188,6 +195,23 @@ mod tests {
         // After insert, cursor should be at end of `]]`.
         let ratatui_textarea::DataCursor(row, col) = ta.cursor();
         assert_eq!((row, col), (0, 15));
+    }
+
+    #[test]
+    fn apply_accept_preserves_textarea_yank_buffer() {
+        // User Ctrl+X's some text into the yank ring, then accepts an
+        // autocomplete suggestion. The yank buffer must survive — the
+        // ratatui-textarea `delete_str` overwrites it by default.
+        let mut ta = TextArea::from(vec!["see [[me".to_string()]);
+        ta.set_yank_text("previously yanked text");
+        ta.move_cursor(CursorMove::End);
+        let action = AcceptAction {
+            range: 6..8,
+            new_text: "meeting]]".to_string(),
+            new_cursor_byte: 15,
+        };
+        apply_accept_to_textarea(&mut ta, &action);
+        assert_eq!(ta.yank_text(), "previously yanked text");
     }
 
     #[test]

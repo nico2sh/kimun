@@ -86,10 +86,10 @@ impl SingleLineInput {
 
     /// Overwrite a byte `range` of the value with `new_text`, then place
     /// the cursor at byte offset `new_cursor_byte` in the updated value.
-    /// Used by the hashtag autocomplete to apply an `AcceptAction`. Both
-    /// `range.start` and `range.end` must be on char boundaries (the
-    /// controller computes them off `value`, so this is always the case
-    /// in practice — debug-asserted).
+    /// Used by the hashtag autocomplete to apply an `AcceptAction`. All
+    /// three positions must be on char boundaries; the controller
+    /// computes them off `value` so this holds in practice — checked
+    /// via debug_assert.
     pub fn replace_range_bytes(
         &mut self,
         range: std::ops::Range<usize>,
@@ -99,7 +99,12 @@ impl SingleLineInput {
         debug_assert!(self.value.is_char_boundary(range.start));
         debug_assert!(self.value.is_char_boundary(range.end));
         self.value.replace_range(range, new_text);
-        self.cursor = new_cursor_byte.min(self.value.len());
+        let clamped = new_cursor_byte.min(self.value.len());
+        debug_assert!(
+            self.value.is_char_boundary(clamped),
+            "new_cursor_byte must land on a char boundary"
+        );
+        self.cursor = clamped;
     }
 
     /// Replace the value; cursor jumps to end.
