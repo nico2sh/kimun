@@ -341,6 +341,10 @@ impl Component for NoteBrowserModal {
             }) {
                 return EventState::NotConsumed;
             }
+            // Any mouse interaction takes focus away from the search
+            // input — close the popup so it doesn't paint stale at the
+            // old caret coords over the list/preview.
+            self.autocomplete.close();
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
                     if mouse.row > r.y {
@@ -531,14 +535,19 @@ impl Component for NoteBrowserModal {
         );
 
         // ── Autocomplete popup ───────────────────────────────────────────
-        // Drain any pending async query results so the popup reflects
-        // the latest typed prefix. Do NOT re-sync here — sync runs only
-        // on actual text mutations (see `handle_input`); calling it on
-        // every render would re-open the popup whenever the cursor is
-        // over an existing hashtag, even on pure movement.
+        // Drain async results, re-anchor on the search input's freshly
+        // rendered caret position, and clamp the popup to `popup_rect`
+        // (the modal's bounds) so it never spills past the modal's
+        // border into the cleared backdrop.
         self.autocomplete.poll_results();
+        let live_anchor = self.search_query.last_caret_pos();
+        if let (Some(state), Some(anchor)) =
+            (self.autocomplete.state_mut(), live_anchor)
+        {
+            state.anchor = anchor;
+        }
         if let Some(state) = self.autocomplete.state() {
-            autocomplete::render(f, state, area, theme);
+            autocomplete::render(f, state, popup_rect, theme);
         }
     }
 
