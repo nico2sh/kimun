@@ -132,10 +132,27 @@ impl AutocompleteController {
     }
 
     /// Inspect the host's current buffer + cursor and reconcile the popup
-    /// state. Call this after every edit. Cheap when nothing changes:
-    /// recomputes the trigger and only re-fires the query when the query
-    /// string actually changed.
+    /// state. Call this after a **text edit** (insert / delete / paste /
+    /// any change that modifies the buffer). Will open a fresh popup
+    /// when the cursor lands inside a trigger context, refresh an open
+    /// popup's range/query/anchor, or close the popup when the trigger
+    /// is gone.
     pub fn sync<H: AutocompleteHost>(&mut self, host: &H) {
+        self.reconcile(host, true);
+    }
+
+    /// Refresh the popup state for a **cursor-only** event (arrow keys,
+    /// click, Home/End, etc). If the popup is closed, this is a no-op —
+    /// cursor movement never opens a new popup. If the popup is open,
+    /// it follows the cursor: query, range, and anchor update; the
+    /// popup closes when the cursor leaves the trigger range.
+    pub fn refresh_if_open<H: AutocompleteHost>(&mut self, host: &H) {
+        if self.state.is_some() {
+            self.reconcile(host, false);
+        }
+    }
+
+    fn reconcile<H: AutocompleteHost>(&mut self, host: &H, allow_open: bool) {
         let text = host.buffer_text();
         let cursor = host.cursor_byte_offset();
         let trigger = detect_trigger_with(&text, cursor, self.trigger_opts);
@@ -156,6 +173,11 @@ impl AutocompleteController {
             self.close();
             return;
         };
+
+        // No popup yet AND this is a non-edit reconcile → don't auto-open.
+        if self.state.is_none() && !allow_open {
+            return;
+        }
 
         let query_changed;
         let kind_changed;
@@ -488,6 +510,34 @@ mod tests {
         let names: Vec<&str> = st.items.iter().map(|s| s.display.as_str()).collect();
         assert!(names.contains(&"meeting"));
         assert!(!names.contains(&"novel"));
+    }
+
+    #[tokio::test]
+    async fn refresh_if_open_does_not_open_new_popup() {
+        // Cursor moves into a fresh trigger context without any text
+        // edit: refresh_if_open must NOT open a popup. This is the
+        // behaviour that prevents cursor-only navigation over an
+        // existing wikilink from re-popping the suggestions.
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        // Cursor inside an existing wikilink — but the popup is closed.
+        let host = FakeHost::new("[[meeting]]", 4);
+        c.refresh_if_open(&host);
+        assert!(c.state().is_none());
+    }
+
+    #[tokio::test]
+    async fn refresh_if_open_closes_popup_when_cursor_leaves_trigger() {
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new("see [[me", 8);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        assert!(c.is_open());
+        // Cursor moves before the `[[` — trigger context is gone.
+        host.cursor = 0;
+        c.refresh_if_open(&host);
+        assert!(c.state().is_none());
     }
 
     #[tokio::test]

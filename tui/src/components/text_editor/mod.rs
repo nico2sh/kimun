@@ -245,6 +245,14 @@ impl AutocompleteHost for EditorHostSnapshot {
     }
 }
 
+/// Snapshot of the textarea backend used to classify a key event as a
+/// text edit (text differs) vs. a pure cursor move (text same, cursor
+/// moved) vs. a no-op (both same).
+struct TextareaSnapshot {
+    text: String,
+    cursor: (usize, usize),
+}
+
 pub struct TextEditorComponent {
     backend: BackendState,
     /// Tracks the rendered rect to map mouse click coordinates.
@@ -330,14 +338,29 @@ impl TextEditorComponent {
         }
     }
 
-    /// Total byte length of the textarea buffer, or 0 for the Nvim
-    /// backend. Used to detect whether a key event actually mutated the
-    /// text (vs. a cursor-only or selection-only event).
-    fn textarea_buffer_len(&self) -> usize {
+    /// Snapshot of the textarea backend's buffer text and cursor — `None`
+    /// for the Nvim backend. Used to detect whether a key event was a
+    /// text edit, a cursor-only move, or a true no-op so the autocomplete
+    /// can react correctly (sync on edit, refresh-if-open on cursor
+    /// move, do nothing otherwise).
+    fn textarea_snapshot(&self) -> Option<TextareaSnapshot> {
         let BackendState::Textarea(ta) = &self.backend else {
-            return 0;
+            return None;
         };
-        ta.lines().iter().map(|l| l.len() + 1).sum::<usize>().saturating_sub(1)
+        Some(TextareaSnapshot {
+            text: ta.lines().join("\n"),
+            cursor: cursor_tuple(ta),
+        })
+    }
+
+    fn refresh_autocomplete_if_open(&mut self) {
+        let Some(snapshot) = self.autocomplete_host_snapshot() else {
+            self.close_autocomplete();
+            return;
+        };
+        if let Some(controller) = self.autocomplete.as_mut() {
+            controller.refresh_if_open(&snapshot);
+        }
     }
 
     /// Recompute the popup's trigger context from the current buffer and
@@ -1324,25 +1347,44 @@ impl Component for TextEditorComponent {
                 if let Some(state) = self.handle_nvim_key(key, tx) {
                     return state;
                 }
-                // Detect *actual* text edits by comparing total buffer
-                // length before/after. `edit_generation` is bumped on
-                // every input including cursor moves, so it cannot be
-                // used here. Length change isn't a perfect proxy
-                // (overwrite-mode would miss) but ratatui-textarea has
-                // no overwrite mode.
-                let len_before = self.textarea_buffer_len();
+                // Capture full text + cursor before the key. After the
+                // key, distinguish three outcomes so the popup reacts
+                // correctly without auto-opening on cursor movement:
+                //   - text changed → sync (may open a fresh popup)
+                //   - text unchanged, cursor moved → refresh (close
+                //     popup if cursor left the trigger range; never
+                //     open new popup just because the cursor passed
+                //     over an existing wikilink/hashtag)
+                //   - both unchanged → no autocomplete work needed
+                let snapshot_before = self.textarea_snapshot();
                 let result = self.handle_textarea_key(key, tx);
-                let len_after = self.textarea_buffer_len();
-                if len_after != len_before {
-                    self.sync_autocomplete();
-                } else {
-                    self.close_autocomplete();
+                let snapshot_after = self.textarea_snapshot();
+                match (snapshot_before, snapshot_after) {
+                    (Some(before), Some(after)) if before.text != after.text => {
+                        self.sync_autocomplete();
+                    }
+                    (Some(before), Some(after)) if before.cursor != after.cursor => {
+                        self.refresh_autocomplete_if_open();
+                    }
+                    _ => {}
                 }
                 result
             }
             InputEvent::Mouse(mouse) => {
+                let snapshot_before = self.textarea_snapshot();
                 let result = self.handle_mouse(mouse, tx);
-                self.close_autocomplete();
+                let snapshot_after = self.textarea_snapshot();
+                // Mouse clicks typically only move the cursor — refresh
+                // (which may close the popup) but do not auto-open.
+                match (snapshot_before, snapshot_after) {
+                    (Some(before), Some(after)) if before.text != after.text => {
+                        self.sync_autocomplete();
+                    }
+                    (Some(before), Some(after)) if before.cursor != after.cursor => {
+                        self.refresh_autocomplete_if_open();
+                    }
+                    _ => {}
+                }
                 result
             }
             // Bracketed paste is intercepted by EditorScreen so it can run the

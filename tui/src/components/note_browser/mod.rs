@@ -419,13 +419,21 @@ impl Component for NoteBrowserModal {
                 }
             }
             let outcome = self.search_query.handle_key(key);
-            // Only trigger the popup on actual text mutations. Pure
-            // cursor movement (arrows, Home/End) must not pop the
-            // autocomplete open; if it was already open, close it so it
-            // does not linger over the moved-away-from context.
+            // Edits feed the popup (may open / refresh / close it).
+            // Cursor-only navigation (`Consumed`) refreshes an OPEN
+            // popup so it tracks the cursor or closes when the cursor
+            // leaves the trigger range — but it never auto-opens the
+            // popup just because the cursor passed over a hashtag.
+            // Cancel / Submit are exit paths; the popup never survives
+            // them.
+            let snapshot = self.autocomplete_snapshot();
             match outcome {
-                InputOutcome::Changed => self.sync_autocomplete(),
-                _ => self.autocomplete.close(),
+                InputOutcome::Changed => self.autocomplete.sync(&snapshot),
+                InputOutcome::Consumed => self.autocomplete.refresh_if_open(&snapshot),
+                InputOutcome::Cancel | InputOutcome::Submit => {
+                    self.autocomplete.close();
+                }
+                InputOutcome::NotConsumed => {}
             }
             match outcome {
                 InputOutcome::Cancel => {
