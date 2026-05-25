@@ -119,15 +119,17 @@ impl NoteBrowserModal {
         initial_query: String,
     ) -> Self {
         let file_list = FileListComponent::new(key_bindings, icons);
-        // Search box has no Markdown headers, so the column-0 `#`
-        // header-disambiguation rule is disabled — typing `#` at the
-        // start of the input opens the popup immediately.
+        // Search box is plain text, not Markdown — disable the
+        // column-0 header disambiguation (no headers to confuse with)
+        // and disable the exclusion-zone check (literal `` ` `` /
+        // brackets in a query shouldn't suppress hashtag triggers).
         let autocomplete = AutocompleteController::new(
             vault.clone(),
             AutocompleteMode::HashtagOnly,
         )
         .with_trigger_opts(TriggerOptions {
             disambiguate_header: false,
+            apply_exclusion_zone: false,
         });
         let mut modal = Self {
             title: title.into(),

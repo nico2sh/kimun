@@ -31,12 +31,20 @@ pub struct TriggerOptions {
     /// search box uses `false` because its input has no Markdown
     /// headers.
     pub disambiguate_header: bool,
+    /// When `true`, suppress hashtag triggers inside code spans,
+    /// fenced blocks, frontmatter, link bodies, or closed wikilinks
+    /// (via `core::note::is_inside_exclusion_zone`). Editor uses
+    /// `true`; the search box uses `false` because its input is plain
+    /// text and the markdown parser would falsely classify literal
+    /// backticks / brackets as code or link spans.
+    pub apply_exclusion_zone: bool,
 }
 
 impl Default for TriggerOptions {
     fn default() -> Self {
         Self {
             disambiguate_header: true,
+            apply_exclusion_zone: true,
         }
     }
 }
@@ -164,8 +172,10 @@ pub fn detect_trigger_with(
 
         // Hashtag-only: suppress inside code spans, fenced blocks,
         // frontmatter, markdown links, or already-closed wikilinks /
-        // markdown link bodies.
-        if is_inside_exclusion_zone(text, cursor) {
+        // markdown link bodies — but only when the caller is editing
+        // Markdown. The search box turns this off because its input is
+        // plain text.
+        if opts.apply_exclusion_zone && is_inside_exclusion_zone(text, cursor) {
             return None;
         }
 
@@ -410,6 +420,7 @@ mod tests {
     fn search_box_opts_hash_alone_at_start_opens_immediately() {
         let opts = TriggerOptions {
             disambiguate_header: false,
+            apply_exclusion_zone: true,
         };
         let t = detect_trigger_with("#", 1, opts).unwrap();
         assert_eq!(t.kind, TriggerKind::Hashtag);
@@ -423,6 +434,7 @@ mod tests {
         // the popup will close on the next typed char if no match.
         let opts = TriggerOptions {
             disambiguate_header: false,
+            apply_exclusion_zone: true,
         };
         let t = detect_trigger_with("#", 1, opts);
         assert!(t.is_some());
@@ -433,9 +445,24 @@ mod tests {
         // The disambiguation flag has no effect on mid-line `#`.
         let opts = TriggerOptions {
             disambiguate_header: false,
+            apply_exclusion_zone: true,
         };
         let t = detect_trigger_with("foo #pro", 8, opts).unwrap();
         assert_eq!(t.kind, TriggerKind::Hashtag);
         assert_eq!(t.query, "pro");
+    }
+
+    #[test]
+    fn search_box_opts_backtick_does_not_suppress_hashtag() {
+        // With apply_exclusion_zone=false (search-box mode), a literal
+        // backtick in the query does not falsely classify the cursor
+        // as being inside a code span.
+        let opts = TriggerOptions {
+            disambiguate_header: false,
+            apply_exclusion_zone: false,
+        };
+        let t = detect_trigger_with("`#abc", 5, opts).unwrap();
+        assert_eq!(t.kind, TriggerKind::Hashtag);
+        assert_eq!(t.query, "abc");
     }
 }
