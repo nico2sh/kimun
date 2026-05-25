@@ -36,6 +36,10 @@ pub struct SingleLineInput {
     value: String,
     /// Byte offset into `value`.
     cursor: usize,
+    /// Caret screen position (col, row), cached after the most recent
+    /// `render` call. Used by overlays anchored on the caret (e.g. the
+    /// hashtag autocomplete popup). `None` until the first render.
+    last_caret_pos: Option<(u16, u16)>,
 }
 
 impl SingleLineInput {
@@ -46,7 +50,11 @@ impl SingleLineInput {
     pub fn with_value(value: impl Into<String>) -> Self {
         let value = value.into();
         let cursor = value.len();
-        Self { value, cursor }
+        Self {
+            value,
+            cursor,
+            last_caret_pos: None,
+        }
     }
 
     pub fn value(&self) -> &str {
@@ -55,6 +63,43 @@ impl SingleLineInput {
 
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
+    }
+
+    /// Current cursor position as a byte offset.
+    pub fn cursor_byte(&self) -> usize {
+        self.cursor
+    }
+
+    /// Caret screen position from the last `render` call, or `None` if
+    /// the widget has not been rendered yet (or was rendered unfocused).
+    pub fn last_caret_pos(&self) -> Option<(u16, u16)> {
+        self.last_caret_pos
+    }
+
+    /// Test-only: prime the caret cache without going through `render`.
+    /// Allows overlay logic anchored on the caret (e.g. the autocomplete
+    /// popup) to be exercised in headless unit tests that never render.
+    #[cfg(test)]
+    pub(crate) fn set_last_caret_pos_for_tests(&mut self, pos: Option<(u16, u16)>) {
+        self.last_caret_pos = pos;
+    }
+
+    /// Overwrite a byte `range` of the value with `new_text`, then place
+    /// the cursor at byte offset `new_cursor_byte` in the updated value.
+    /// Used by the hashtag autocomplete to apply an `AcceptAction`. Both
+    /// `range.start` and `range.end` must be on char boundaries (the
+    /// controller computes them off `value`, so this is always the case
+    /// in practice — debug-asserted).
+    pub fn replace_range_bytes(
+        &mut self,
+        range: std::ops::Range<usize>,
+        new_text: &str,
+        new_cursor_byte: usize,
+    ) {
+        debug_assert!(self.value.is_char_boundary(range.start));
+        debug_assert!(self.value.is_char_boundary(range.end));
+        self.value.replace_range(range, new_text);
+        self.cursor = new_cursor_byte.min(self.value.len());
     }
 
     /// Replace the value; cursor jumps to end.
@@ -148,7 +193,7 @@ impl SingleLineInput {
     /// when the caller renders a "Find: " prefix separately, pass its
     /// display width via `UnicodeWidthStr::width`).
     pub fn render(
-        &self,
+        &mut self,
         f: &mut Frame,
         rect: Rect,
         style: Style,
@@ -161,6 +206,7 @@ impl SingleLineInput {
             ..rect
         };
         f.render_widget(Paragraph::new(self.value.as_str()).style(style), inner);
+        self.last_caret_pos = None;
         if focused {
             let caret_x = inner
                 .x
@@ -170,6 +216,7 @@ impl SingleLineInput {
                 x: caret_x,
                 y: inner.y,
             });
+            self.last_caret_pos = Some((caret_x, inner.y));
         }
     }
 }

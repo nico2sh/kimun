@@ -171,7 +171,13 @@ impl SearchStatus {
 const FIND_PROMPT: &str = "Find: ";
 const FIND_HINTS: &str = "  [Enter] next  [Shift+Enter] prev  [Esc] close";
 
-fn render_search_bar(f: &mut Frame, rect: Rect, state: &SearchState, theme: &Theme, focused: bool) {
+fn render_search_bar(
+    f: &mut Frame,
+    rect: Rect,
+    state: &mut SearchState,
+    theme: &Theme,
+    focused: bool,
+) {
     let base = theme.base_style();
     let muted = Style::default()
         .fg(theme.fg_muted.to_ratatui())
@@ -1356,7 +1362,7 @@ impl Component for TextEditorComponent {
         let bar_focused = self.search.is_some() && focused;
         let editor_focused = focused && !bar_focused;
         self.view.render(f, editor_rect, theme, editor_focused);
-        if let (Some(state), Some(bar_rect)) = (self.search.as_ref(), search_rect) {
+        if let (Some(state), Some(bar_rect)) = (self.search.as_mut(), search_rect) {
             render_search_bar(f, bar_rect, state, theme, bar_focused);
         }
 

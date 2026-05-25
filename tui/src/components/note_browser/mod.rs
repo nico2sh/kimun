@@ -11,6 +11,9 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::components::Component;
+use crate::components::autocomplete::{
+    self, AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
+};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::file_list::{FileListComponent, FileListEntry};
@@ -58,6 +61,31 @@ pub struct NoteBrowserModal {
     // Preview async loading
     preview_task: Option<tokio::task::JoinHandle<()>>,
     preview_rx: Option<Receiver<String>>,
+    // Hashtag autocomplete for the search input.
+    autocomplete: AutocompleteController,
+}
+
+/// Snapshot of the search input that satisfies `AutocompleteHost`.
+/// Owned so the controller's borrow doesn't overlap with the search
+/// input's `&mut` borrow during key handling and replacement.
+struct SearchBoxHostSnapshot {
+    value: String,
+    cursor: usize,
+    caret_pos: Option<(u16, u16)>,
+}
+
+impl AutocompleteHost for SearchBoxHostSnapshot {
+    fn buffer_text(&self) -> String {
+        self.value.clone()
+    }
+    fn cursor_byte_offset(&self) -> usize {
+        self.cursor
+    }
+    fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
+        // Anchor at the caret — same liberty as the editor host. The
+        // popup sits adjacent to the typed text either way.
+        self.caret_pos
+    }
 }
 
 impl NoteBrowserModal {
@@ -90,6 +118,8 @@ impl NoteBrowserModal {
         initial_query: String,
     ) -> Self {
         let file_list = FileListComponent::new(key_bindings, icons);
+        let autocomplete =
+            AutocompleteController::new(vault.clone(), AutocompleteMode::HashtagOnly);
         let mut modal = Self {
             title: title.into(),
             search_query: SingleLineInput::new(),
@@ -103,6 +133,7 @@ impl NoteBrowserModal {
             load_rx: None,
             preview_task: None,
             preview_rx: None,
+            autocomplete,
         };
         if !initial_query.is_empty() {
             modal.search_query.set_value(initial_query);
@@ -268,6 +299,21 @@ impl NoteBrowserModal {
             }
         }
     }
+
+    // ── Autocomplete ──────────────────────────────────────────────────────
+
+    fn autocomplete_snapshot(&self) -> SearchBoxHostSnapshot {
+        SearchBoxHostSnapshot {
+            value: self.search_query.value().to_string(),
+            cursor: self.search_query.cursor_byte(),
+            caret_pos: self.search_query.last_caret_pos(),
+        }
+    }
+
+    fn sync_autocomplete(&mut self) {
+        let snapshot = self.autocomplete_snapshot();
+        self.autocomplete.sync(&snapshot);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +361,33 @@ impl Component for NoteBrowserModal {
             let InputEvent::Key(key) = event else {
                 return EventState::NotConsumed;
             };
+
+            // Autocomplete popup gets first crack: Up/Down/Tab/Enter/Esc
+            // navigate or accept the suggestion list instead of bubbling
+            // to the modal's own list-nav handling. Falls through when
+            // closed or when the popup doesn't recognise the key.
+            if self.autocomplete.is_open() {
+                let snapshot = self.autocomplete_snapshot();
+                match self.autocomplete.handle_key(*key, &snapshot) {
+                    HandleKeyOutcome::Accepted(action) => {
+                        self.search_query.replace_range_bytes(
+                            action.range.clone(),
+                            &action.new_text,
+                            action.new_cursor_byte,
+                        );
+                        // Reschedule the load so search results reflect
+                        // the accepted suggestion, mirroring what would
+                        // happen if the user had typed the text manually.
+                        self.schedule_load(tx.clone());
+                        return EventState::Consumed;
+                    }
+                    HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
+                        return EventState::Consumed;
+                    }
+                    HandleKeyOutcome::NotHandled => {}
+                }
+            }
+
             // List nav handled directly; everything else forwards to the input.
             match key.code {
                 KeyCode::Up => {
@@ -336,7 +409,11 @@ impl Component for NoteBrowserModal {
                     return EventState::Consumed;
                 }
             }
-            match self.search_query.handle_key(key) {
+            let outcome = self.search_query.handle_key(key);
+            // Reconcile popup state after any input change so the trigger
+            // context tracks the latest typed text.
+            self.sync_autocomplete();
+            match outcome {
                 InputOutcome::Cancel => {
                     tx.send(AppEvent::CloseNoteBrowser).ok();
                     EventState::Consumed
@@ -430,6 +507,16 @@ impl Component for NoteBrowserModal {
                 .style(Style::default().fg(theme.fg_secondary.to_ratatui())),
             rows[2],
         );
+
+        // ── Autocomplete popup ───────────────────────────────────────────
+        // Drain any pending async query results, then re-sync so the
+        // anchor reflects the just-rendered caret position. Render the
+        // popup as the top layer, anchored over the whole frame.
+        self.autocomplete.poll_results();
+        self.sync_autocomplete();
+        if let Some(state) = self.autocomplete.state() {
+            autocomplete::render(f, state, area, theme);
+        }
     }
 
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
@@ -588,6 +675,64 @@ mod tests {
         let modal = make_modal().await;
         assert_eq!(modal.query_text(), "");
         assert_eq!(modal.cursor_char_count(), 0);
+    }
+
+    /// End-to-end: the modal's hashtag autocomplete plumbing accepts a
+    /// suggestion via Tab and writes the chosen tag into the search input.
+    /// Uses a real vault containing a known tag so the controller's
+    /// query path is exercised too.
+    #[tokio::test]
+    async fn search_box_autocomplete_accept_inserts_tag() {
+        use kimun_core::nfs::VaultPath;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let vault = temp_vault("search_autocomplete").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(
+                &VaultPath::note_path_from("/a.md"),
+                "body #projects",
+            )
+            .await
+            .unwrap();
+        let settings = AppSettings::default();
+        let (tx, _rx) = unbounded_channel();
+        let mut modal = NoteBrowserModal::new(
+            "test",
+            EmptyProvider,
+            vault,
+            settings.key_bindings.clone(),
+            settings.icons(),
+            tx,
+        );
+
+        // Type `#pro` into the search box.
+        let (tx2, _rx2) = unbounded_channel();
+        for ch in ['#', 'p', 'r', 'o'] {
+            modal.handle_input(
+                &InputEvent::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                &tx2,
+            );
+        }
+        // Prime the caret cache for the controller's anchor lookup so the
+        // popup is allowed to open.
+        modal
+            .search_query
+            .set_last_caret_pos_for_tests(Some((0, 0)));
+        modal.sync_autocomplete();
+        // Allow the spawned query task to complete and drain results.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        modal.autocomplete.poll_results();
+
+        assert!(modal.autocomplete.is_open(), "popup should be open");
+
+        // Tab accepts; the chosen tag should replace `pro`.
+        modal.handle_input(
+            &InputEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            &tx2,
+        );
+        assert_eq!(modal.search_query.value(), "#projects");
     }
 
     /// `with_initial_query` must call `schedule_load` exactly once, with the
