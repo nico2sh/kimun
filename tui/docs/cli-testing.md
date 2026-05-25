@@ -181,20 +181,20 @@ Test exclusion operators with various combinations:
 kimun search "meeting -cancelled"
 
 # Title exclusion
-kimun search ">project >-draft"
+kimun search "<project -<draft"
 
 # Filename exclusion
-kimun search "@2024 @-temp"
+kimun search "@2024 -@temp"
 
 # Path exclusion
-kimun search "/docs /-private"
+kimun search "/docs -/private"
 
 # Exclusion-only queries
 kimun search "-cancelled"
-kimun search ">-draft"
+kimun search "-<draft"
 
 # Complex combinations
-kimun search "meeting @2024 -cancelled >-draft /docs"
+kimun search "meeting @2024 -cancelled -<draft /docs"
 ```
 
 **Expected Behavior:**

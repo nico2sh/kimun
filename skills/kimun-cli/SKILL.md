@@ -90,27 +90,27 @@ kimu*          # starts with "kimu"
 | Operator | Long form | Matches |
 |----------|-----------|---------|
 | `@term` | `at:term` | filename contains term |
-| `>term` | `in:term` | Markdown section heading contains term |
+| `<term` | `in:term` | Markdown section heading contains term |
 | `/term` | `pt:term` | note path (directory) contains term |
 | `-term` | | exclude notes containing term |
 
-**Exclusion composes with all operators:**
+**Exclusion composes with all operators — `-` leads, then the operator:**
 
 ```
 -cancelled           # exclude notes containing "cancelled"
-@-temp               # exclude notes with "temp" in filename
->-draft              # exclude notes with "draft" in any section title
-/-private            # exclude notes under a "private/" path
+-@temp               # exclude notes with "temp" in filename
+-<draft              # exclude notes with "draft" in any section title
+-/private            # exclude notes under a "private/" path
 ```
 
 **Combining filters** (all terms are ANDed):
 
 ```
 meeting -cancelled           # "meeting" but not "cancelled"
-@tasks >work report          # file "tasks", has "Work" section, contains "report"
-@2024 >-draft                # files from 2024, no "draft" section title
-/journal >tasks -done        # in journal/, "tasks" section, excluding "done"
->personal kimun              # "kimun" under a "Personal" section
+@tasks <work report          # file "tasks", has "Work" section, contains "report"
+@2024 -<draft                # files from 2024, no "draft" section title
+/journal <tasks -done        # in journal/, "tasks" section, excluding "done"
+<personal kimun              # "kimun" under a "Personal" section
 ```
 
 ## Reading Notes

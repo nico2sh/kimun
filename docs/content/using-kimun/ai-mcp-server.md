@@ -16,7 +16,7 @@ The MCP client spawns and manages the `kimun mcp` process automatically — you 
 | `create_note` | Create a new note (fails if it already exists) |
 | `append_note` | Append text to a note (creates it if absent) |
 | `show_note` | Return the full markdown content of a note |
-| `search_notes` | Search with `@filename`, `>heading`, `/path`, `-exclusion` operators |
+| `search_notes` | Search with `@filename`, `<heading`, `/path`, `-exclusion` operators |
 | `list_notes` | List all notes, optionally filtered by path prefix |
 | `journal` | Append to today's (or a specific date's) journal entry |
 | `get_backlinks` | List notes that link to the given note |
