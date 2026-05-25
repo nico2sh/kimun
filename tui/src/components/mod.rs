@@ -1,3 +1,4 @@
+pub mod autocomplete;
 pub mod autosave_timer;
 pub mod backlinks_panel;
 pub mod dialog_manager;
