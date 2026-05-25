@@ -213,11 +213,7 @@ fn build_row<'a>(
     let separator = if secondary_text.is_empty() { 0 } else { 1 };
 
     let total = primary_len + separator + secondary_len;
-    let pad = if total < inner_width {
-        inner_width - total
-    } else {
-        0
-    };
+    let pad = inner_width.saturating_sub(total);
 
     let mut spans = vec![Span::styled(item.display.clone(), row_style)];
     if separator > 0 {

@@ -1352,25 +1352,24 @@ impl Component for TextEditorComponent {
                 // falls through to the normal textarea flow (and then we
                 // resync the popup so the typed letter refines the query
                 // or breaks the trigger context).
-                if let Some(host) = self.autocomplete_host_snapshot() {
-                    if let Some(controller) = self.autocomplete.as_mut() {
-                        if controller.is_open() {
-                            match controller.handle_key(*key, &host) {
-                                HandleKeyOutcome::Accepted(action) => {
-                                    if let BackendState::Textarea(ta) = &mut self.backend {
-                                        apply_accept_to_textarea(ta, &action);
-                                        self.edit_generation =
-                                            self.edit_generation.wrapping_add(1);
-                                        self.selection = ta.selection_range();
-                                    }
-                                    return EventState::Consumed;
+                if let (Some(host), Some(controller)) =
+                    (self.autocomplete_host_snapshot(), self.autocomplete.as_mut())
+                {
+                    if controller.is_open() {
+                        match controller.handle_key(*key, &host) {
+                            HandleKeyOutcome::Accepted(action) => {
+                                if let BackendState::Textarea(ta) = &mut self.backend {
+                                    apply_accept_to_textarea(ta, &action);
+                                    self.edit_generation =
+                                        self.edit_generation.wrapping_add(1);
+                                    self.selection = ta.selection_range();
                                 }
-                                HandleKeyOutcome::Dismissed
-                                | HandleKeyOutcome::Consumed => {
-                                    return EventState::Consumed;
-                                }
-                                HandleKeyOutcome::NotHandled => {}
+                                return EventState::Consumed;
                             }
+                            HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
+                                return EventState::Consumed;
+                            }
+                            HandleKeyOutcome::NotHandled => {}
                         }
                     }
                 }
@@ -1492,10 +1491,8 @@ impl Component for TextEditorComponent {
                 state.anchor = anchor;
             }
         }
-        if let Some(controller) = self.autocomplete.as_ref() {
-            if let Some(state) = controller.state() {
-                autocomplete::render(f, state, editor_rect, theme);
-            }
+        if let Some(state) = self.autocomplete.as_ref().and_then(|c| c.state()) {
+            autocomplete::render(f, state, editor_rect, theme);
         }
     }
 

@@ -321,10 +321,6 @@ impl NoteBrowserModal {
         }
     }
 
-    fn sync_autocomplete(&mut self) {
-        let snapshot = self.autocomplete_snapshot();
-        self.autocomplete.sync(&snapshot);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -753,7 +749,8 @@ mod tests {
         modal
             .search_query
             .set_last_caret_pos_for_tests(Some((0, 0)));
-        modal.sync_autocomplete();
+        let snapshot = modal.autocomplete_snapshot();
+        modal.autocomplete.sync(&snapshot);
         // Allow the spawned query task to complete and drain results.
         tokio::task::yield_now().await;
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
