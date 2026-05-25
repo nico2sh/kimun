@@ -43,3 +43,5 @@ Current observability stack has gaps:
 
 - Discussed in 1:1 with manager — see [[manager-notes]]
 - Connects to [[search-caching]] performance monitoring
+
+Labels: #perf #systems #idea

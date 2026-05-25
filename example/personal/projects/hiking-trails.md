@@ -35,3 +35,5 @@ Trails to explore, mostly around Southern California.
 - New trail runners are breaking in well
 - Need to replace the water bladder — leaking at the bite valve
 - Trekking poles made a huge difference on the Mount Wilson descent
+
+Labels: #hiking

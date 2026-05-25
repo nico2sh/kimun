@@ -82,6 +82,62 @@ pt:docs          → same (long form)
 
 Paths are matched as prefixes, so `/docs` matches both `/docs/readme.md` and `/docs/guides/tutorial.md`.
 
+## Labels
+
+Labels are `#name` tokens written directly in your note body. When Kimün indexes a note, any word starting with `#` followed by one or more `[A-Za-z0-9_]` characters is recorded as a label for that note.
+
+```markdown
+Reviewed the quarterly numbers today. #finance #q2 #review
+```
+
+### Label rules
+
+- **Allowed characters:** letters, digits, and underscores (`[A-Za-z0-9_]+`). A hashtag ends at the first character outside that set, so `#tag-with-dash` yields the label `tag`.
+- **Case-insensitive:** labels are stored in lowercase. `#Finance` and `#finance` are the same label.
+- **Code is excluded:** hashtags inside inline code spans (`` `#tag` ``) and fenced code blocks are not indexed as labels.
+- **Frontmatter is excluded:** hashtags inside YAML (`---`) or TOML (`+++`) frontmatter blocks are not indexed as labels.
+- **HTML is excluded:** hashtags inside HTML blocks or inline HTML (e.g. `<span data-tag="#foo">`) are not indexed as labels.
+- **Link bodies are excluded:** hashtags inside markdown link spans `[text](url#fragment)` — including URL fragments — are not indexed as labels.
+- **Wikilinks are excluded:** hashtags inside wikilink spans `[[...]]` (e.g. `[[#section]]`) are not indexed as labels.
+
+### Searching by label
+
+Use `#<label>` (short form) or `lb:<label>` (long form) to filter to notes carrying that label:
+
+```
+#finance             → notes labelled "finance"
+lb:finance           → same (long form)
+#q2                  → notes labelled "q2"
+lb:review            → notes labelled "review"
+```
+
+### Excluding by label
+
+Prefix the label with `-` to exclude notes that carry it:
+
+```
+#-draft              → exclude notes labelled "draft"
+lb:-draft            → same (long form)
+```
+
+### Combining label filters
+
+Multiple label filters are ANDed together — every label must be present:
+
+```
+#finance #q2         → notes with both "finance" AND "q2" labels
+lb:finance lb:review → notes with both "finance" AND "review" labels
+```
+
+Label filters mix freely with free-text search and other operators:
+
+```
+#finance report @2024           → labelled "finance", contains "report", filename has "2024"
+#project #-archived >work       → labelled "project", not "archived", under a "Work" section
+```
+
+An unknown label (one that has never appeared in any note) returns zero results, not an error.
+
 ## Exclusion operators
 
 Use the `-` prefix to exclude terms from search results. Exclusion works with all operators and free text:
@@ -162,6 +218,10 @@ The simple but great note taking app!
 | `/journal >-temp` | notes in journal/ without "temp" in section titles | path + section exclusion |
 | `@tasks >work report` | tasks.md | file "tasks", "Work" section, contains "report" |
 | `@-archive >-draft` | all notes except those in archive/, excluding "draft" titles | combined exclusions |
+| `#finance` | notes labelled "finance" | label filter |
+| `lb:review` | notes labelled "review" | label filter (long form) |
+| `#finance #q2` | notes with both "finance" and "q2" labels | combined label filters |
+| `#project #-draft` | notes labelled "project" but not "draft" | label inclusion + exclusion |
 
 ## Edge cases
 
@@ -170,3 +230,5 @@ The simple but great note taking app!
 - **Operator prefixes are case-insensitive**: `>Personal` and `>personal` are equivalent, `@Tasks` and `@tasks` are equivalent
 - **Multiple operators of same type**: `>work >personal` is AND — both sections must exist
 - **Empty results**: If no notes match, the search returns an empty list
+- **Unknown labels**: `#nonexistent` returns zero results, not an error
+- **Hashtags in code**: `` `#tag` `` and hashtags inside fenced code blocks are not treated as labels

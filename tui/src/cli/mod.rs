@@ -46,6 +46,11 @@ pub enum CliCommand {
     Journal(JournalArgs),
     /// Start the MCP server (stdio transport)
     Mcp,
+    /// List all hashtag labels in the vault with note counts
+    Labels {
+        #[arg(long, value_enum, default_value = "text")]
+        format: OutputFormat,
+    },
 }
 
 pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf>) -> Result<()> {
@@ -86,5 +91,9 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             commands::journal::run(args, &vault, &workspace_name).await
         }
         CliCommand::Mcp => commands::mcp::run(config_path).await,
+        CliCommand::Labels { format } => {
+            let (vault, workspace_name) = create_and_init_vault(config_path).await?;
+            commands::labels::run(&vault, format, &workspace_name).await
+        }
     }
 }

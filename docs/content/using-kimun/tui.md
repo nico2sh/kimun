@@ -109,6 +109,7 @@ When the cursor is inside a link in the editor, **`Ctrl+G`** follows it:
 - **Markdown link (`[text](path)`)** — opens the linked note; fragment suffixes (e.g. `#section`) are ignored during lookup
 - **URL (`https://...`)** — opens the URL in your default browser
 - **Image link (`![alt](path)`)** — opens the image file with the OS default image viewer. Relative paths resolve against the current note's directory; absolute vault paths (e.g. `/assets/foo.png`) resolve from the workspace root
+- **Hashtag label (`#tag`)** — hashtag tokens are highlighted in the editor. Pressing `Ctrl+G` while the cursor is on a hashtag opens the search modal pre-filled with that label filter (equivalent to typing `#tag` in search).
 
 ### Text Formatting
 

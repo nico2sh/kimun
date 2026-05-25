@@ -24,3 +24,5 @@ Token bucket rate limiter for the public API. Limits requests per API key.
 - Reviewed by [[maria]] and [[carlos]]
 - Part of the Q2 API hardening initiative
 - See [[api-docs]] for the public documentation
+
+Labels: #api #systems

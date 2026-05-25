@@ -47,6 +47,10 @@ fn row_to_note_entry(
 
 use super::error::DBError;
 
+/// All columns after `path` for `SELECT … FROM notes` queries. Used to build
+/// qualified column lists without `.split_once` + `.unwrap()`.
+const NOTE_COLUMNS_REST: &str = "title, size, modified, hash, noteName";
+
 /// Column list shared by every `SELECT … FROM notes` query that maps rows
 /// through `row_to_note_entry`. Order must match the `try_get` calls there.
 const NOTE_COLUMNS: &str = "path, title, size, modified, hash, noteName";
@@ -65,9 +69,15 @@ use super::{
     VaultPath,
 };
 
+// 0.7: Dropped the redundant `labels_by_name` index (the PK autoindex
+//      sqlite_autoindex_labels_1 already covers WHERE name = ? lookups).
+//      Bump forces a clean reindex so existing 0.6 installs drop the dead
+//      index on next launch.
+// 0.6: Added `labels` table populated from hashtags in note bodies. Bump
+//      forces a clean reindex so the table is filled for existing vaults.
 // 0.5: BREADCRUMB_SEP changed from `>` to `\x1f`. Bump forces a clean
 //      reindex so stale rows with the old separator are rewritten.
-const VERSION: &str = "0.5";
+const VERSION: &str = "0.7";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone)]
@@ -267,6 +277,23 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     .execute(&mut *tx)
     .await?;
 
+    sqlx::query(
+        "CREATE TABLE labels (
+            name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            PRIMARY KEY (name, path)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX labels_by_path
+            ON labels(path)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
     tx.commit().await?;
 
     Ok(())
@@ -327,7 +354,7 @@ fn add_exclusion_conditions(
             "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
             var_num
         ));
-        params.push(excluded.clone());
+        params.push(fts4_quote(excluded));
         *var_num += 1;
     }
 }
@@ -337,10 +364,9 @@ fn add_exclusion_conditions(
 /// column is qualified to disambiguate the `notesContent`/`notes` join; the
 /// rest are unique to `notes` and need no prefix.
 static SEARCH_BASE_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    let rest = NOTE_COLUMNS.split_once(", ").unwrap().1;
     format!(
         "SELECT DISTINCT notes.path as path, {} FROM notesContent JOIN notes ON notesContent.path = notes.path",
-        rest
+        NOTE_COLUMNS_REST
     )
 });
 
@@ -357,6 +383,7 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
     add_breadcrumb_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_filename_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_path_query(search_terms, &mut var_num, &mut params, &mut queries);
+    add_labels_query(search_terms, &mut var_num, &mut params, &mut queries);
 
     if queries.is_empty() {
         debug!("No query provided");
@@ -390,7 +417,8 @@ fn add_content_terms_query(
             )
         };
         queries.push(format!("{} WHERE {}", search_base_sql(), where_clause));
-        params.push(s.terms.join(" "));
+        let quoted: Vec<String> = s.terms.iter().map(|t| fts4_quote(t)).collect();
+        params.push(quoted.join(" "));
         *var_num += 1;
     } else if !exclusions.is_empty() {
         // Pure exclusion: scan all notes, drop those matching the excluded terms.
@@ -421,14 +449,20 @@ fn add_breadcrumb_query(
                 search_base_sql(),
                 var_num
             ));
-            params.push(s.breadcrumb.join(" "));
+            params.push(
+                s.breadcrumb
+                    .iter()
+                    .map(|b| fts4_quote(b))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
         } else {
             let mut parts = Vec::with_capacity(s.breadcrumb.len() + s.excluded_breadcrumb.len());
             for b in &s.breadcrumb {
-                parts.push(format!("breadcrumb: {}", b));
+                parts.push(format!("breadcrumb: {}", fts4_quote(b)));
             }
             for b in &s.excluded_breadcrumb {
-                parts.push(format!("breadcrumb: -{}", b));
+                parts.push(format!("breadcrumb: -{}", fts4_quote(b)));
             }
             queries.push(format!(
                 "{} WHERE notesContent MATCH ?{}",
@@ -447,7 +481,7 @@ fn add_breadcrumb_query(
             "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
             var_num
         ));
-        params.push(format!("breadcrumb: {}", excluded));
+        params.push(format!("breadcrumb: {}", fts4_quote(excluded)));
         *var_num += 1;
     }
     queries.push(format!(
@@ -469,11 +503,11 @@ fn add_filename_query(
     if let Some(final_where) = build_like_conditions(
         &s.filename,
         &s.excluded_filename,
-        |n| format!("notes.noteName LIKE ('%' || ?{} || '%')", n),
-        |n| format!("notes.noteName NOT LIKE ('%' || ?{} || '%')", n),
+        |n| format!("notes.noteName LIKE ('%' || ?{} || '%') ESCAPE '\\'", n),
+        |n| format!("notes.noteName NOT LIKE ('%' || ?{} || '%') ESCAPE '\\'", n),
         var_num,
         params,
-        |t| t.clone(),
+        |t: &String| escape_like_pattern(t),
     ) {
         queries.push(format!("{} WHERE {}", search_base_sql(), final_where));
     }
@@ -492,6 +526,59 @@ fn add_path_query(
     let negative_conditions = path_term_conditions(&s.excluded_path, var_num, params, false);
     if let Some(final_where) = combine_conditions(positive_conditions, negative_conditions) {
         queries.push(format!("{} WHERE {}", search_base_sql(), final_where));
+    }
+}
+
+/// Notes-only base SELECT (no `notesContent` join) so label-only queries
+/// don't pay an FTS scan. Same columns as `SEARCH_BASE_SQL` so INTERSECT
+/// branches line up.
+static LABEL_BASE_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "SELECT DISTINCT notes.path as path, {} FROM notes",
+        NOTE_COLUMNS_REST
+    )
+});
+
+fn label_base_sql() -> &'static str {
+    &LABEL_BASE_SQL
+}
+
+fn add_labels_query(
+    s: &SearchTerms,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+) {
+    // Each positive label is its own INTERSECT branch backed by the
+    // labels_by_name index via an IN subquery against `labels`.
+    for label in &s.labels {
+        let q = format!(
+            "{} WHERE notes.path IN (SELECT path FROM labels WHERE name = ?{})",
+            label_base_sql(),
+            var_num
+        );
+        queries.push(q);
+        params.push(label.clone());
+        *var_num += 1;
+    }
+
+    // Excluded labels: bundled into a single notes-only SELECT with a
+    // chain of NOT IN clauses (so the INTERSECT machinery still composes).
+    if !s.excluded_labels.is_empty() {
+        let mut clauses = Vec::with_capacity(s.excluded_labels.len());
+        for label in &s.excluded_labels {
+            clauses.push(format!(
+                "notes.path NOT IN (SELECT path FROM labels WHERE name = ?{})",
+                var_num
+            ));
+            params.push(label.clone());
+            *var_num += 1;
+        }
+        queries.push(format!(
+            "{} WHERE {}",
+            label_base_sql(),
+            clauses.join(" AND ")
+        ));
     }
 }
 
@@ -521,8 +608,11 @@ fn path_term_conditions(
             None => {
                 let op = if positive { "LIKE" } else { "NOT LIKE" };
                 (
-                    format!("notes.basePath {} ('/' || ?{} || '%')", op, var_num),
-                    term.to_string(),
+                    format!(
+                        "notes.basePath {} ('/' || ?{} || '%') ESCAPE '\\'",
+                        op, var_num
+                    ),
+                    escape_like_pattern(term),
                 )
             }
         };
@@ -545,6 +635,30 @@ pub async fn get_all_notes(
     let query = format!("SELECT DISTINCT {} FROM notes", NOTE_COLUMNS);
     let rows = sqlx::query(&query).fetch_all(pool).await?;
     rows.iter().map(row_to_note_entry).collect()
+}
+
+pub async fn list_labels(pool: &SqlitePool) -> Result<Vec<String>, DBError> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT name FROM labels")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(n,)| n).collect())
+}
+
+pub async fn label_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, DBError> {
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT name, COUNT(*) as cnt FROM labels GROUP BY name ORDER BY name")
+            .fetch_all(pool)
+            .await?;
+    Ok(rows)
+}
+
+pub async fn notes_with_label(pool: &SqlitePool, name: &str) -> Result<Vec<VaultPath>, DBError> {
+    let normalized = name.to_lowercase();
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM labels WHERE name = ?")
+        .bind(&normalized)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(p,)| VaultPath::new(p)).collect())
 }
 
 pub async fn search_terms<S: AsRef<str>>(
@@ -638,16 +752,16 @@ pub async fn get_notes(
     path: &VaultPath,
     recursive: bool,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
-    let where_clause = if recursive {
-        "basePath LIKE (? || '%')"
+    let (where_clause, bind_value) = if recursive {
+        (
+            "basePath LIKE (? || '%') ESCAPE '\\'".to_string(),
+            escape_like_pattern(&path.to_string()),
+        )
     } else {
-        "basePath = ?"
+        ("basePath = ?".to_string(), path.to_string())
     };
     let sql = format!("SELECT {} FROM notes where {}", NOTE_COLUMNS, where_clause);
-    let rows = sqlx::query(&sql)
-        .bind(path.to_string())
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(&sql).bind(bind_value).fetch_all(pool).await?;
 
     rows.iter().map(row_to_note_entry).collect()
 }
@@ -682,21 +796,21 @@ pub async fn get_notes_sections(
     let (sql, bind_value) = if path.is_note() {
         // Exact note path
         (
-            "SELECT path, breadcrumb, text FROM notesContent WHERE path = ?",
+            "SELECT path, breadcrumb, text FROM notesContent WHERE path = ?".to_string(),
             path.to_string(),
         )
     } else if recursive {
         // All notes under this directory tree
         (
-            "SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%')",
-            path.to_string(),
+            "SELECT path, breadcrumb, text FROM notesContent WHERE path LIKE (? || '%') ESCAPE '\\'".to_string(),
+            escape_like_pattern(&path.to_string()),
         )
     } else {
         // Only notes directly in this directory (basePath join)
-        ("SELECT nc.path, nc.breadcrumb, nc.text FROM notesContent nc JOIN notes n ON nc.path = n.path WHERE n.basePath = ?", path.to_string())
+        ("SELECT nc.path, nc.breadcrumb, nc.text FROM notesContent nc JOIN notes n ON nc.path = n.path WHERE n.basePath = ?".to_string(), path.to_string())
     };
 
-    let rows = sqlx::query(sql).bind(bind_value).fetch_all(pool).await?;
+    let rows = sqlx::query(&sql).bind(bind_value).fetch_all(pool).await?;
 
     for row in rows {
         let path: String = row.try_get("path")?;
@@ -744,6 +858,7 @@ pub async fn delete_notes(
     bulk_delete_in(tx, "notes", &["path"], &path_strings).await?;
     bulk_delete_in(tx, "notesContent", &["path"], &path_strings).await?;
     bulk_delete_in(tx, "links", &["source", "destination"], &path_strings).await?;
+    bulk_delete_in(tx, "labels", &["path"], &path_strings).await?;
     Ok(())
 }
 
@@ -756,7 +871,11 @@ pub async fn save_note(
     // for another `NoteDetails::new` clone of the raw text.
     let data = note_details.get_content_data();
     let (chunks, links) = note_details.get_chunks_and_links();
-    let mut batch = NoteBatch::with_capacity(1, chunks.len(), links.len());
+    let label_count = links
+        .iter()
+        .filter(|l| matches!(l.ltype, LinkType::Hashtag))
+        .count();
+    let mut batch = NoteBatch::with_capacity(1, chunks.len(), links.len(), label_count);
     batch.push(entry_data, data, chunks, links);
 
     let mut tx = pool.begin().await?;
@@ -789,6 +908,11 @@ struct LinkRow {
     destination: String,
 }
 
+struct LabelRow {
+    path_idx: usize,
+    name: String,
+}
+
 /// Bulk-upserts a slice of notes plus their chunks and links inside the given
 /// transaction. Each note's raw text is parsed once; chunks/links are bound by
 /// `path_idx` into a shared `paths` table to avoid per-row clones. Inserts
@@ -801,7 +925,7 @@ async fn upsert_notes_batched(
     if notes.is_empty() {
         return Ok(());
     }
-    let mut batch = NoteBatch::with_capacity(notes.len(), 0, 0);
+    let mut batch = NoteBatch::with_capacity(notes.len(), 0, 0, notes.len() * 4);
     for (entry_data, text) in notes {
         // Avoid `NoteDetails::new` — it would clone the raw text purely to be
         // re-borrowed for each parse pass below. The free functions take the
@@ -822,15 +946,17 @@ struct NoteBatch {
     notes: Vec<NoteRow>,
     chunks: Vec<ChunkRow>,
     links: Vec<LinkRow>,
+    labels: Vec<LabelRow>,
 }
 
 impl NoteBatch {
-    fn with_capacity(notes: usize, chunks: usize, links: usize) -> Self {
+    fn with_capacity(notes: usize, chunks: usize, links: usize, labels: usize) -> Self {
         Self {
             paths: Vec::with_capacity(notes),
             notes: Vec::with_capacity(notes),
             chunks: Vec::with_capacity(chunks),
             links: Vec::with_capacity(links),
+            labels: Vec::with_capacity(labels),
         }
     }
 
@@ -860,12 +986,24 @@ impl NoteBatch {
                 text: c.text,
             });
         }
-        for l in links {
-            if let LinkType::Note(p) = &l.ltype {
-                self.links.push(LinkRow {
-                    path_idx: idx,
-                    destination: p.to_string(),
-                });
+        for l in &links {
+            match &l.ltype {
+                LinkType::Note(p) => {
+                    self.links.push(LinkRow {
+                        path_idx: idx,
+                        destination: p.to_string(),
+                    });
+                }
+                LinkType::Hashtag => {
+                    let normalized = l.text.to_lowercase();
+                    if !normalized.is_empty() {
+                        self.labels.push(LabelRow {
+                            path_idx: idx,
+                            name: normalized,
+                        });
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -874,8 +1012,10 @@ impl NoteBatch {
         bulk_upsert_note_rows(tx, &self.notes, &self.paths).await?;
         bulk_delete_in(tx, "notesContent", &["path"], &self.paths).await?;
         bulk_delete_in(tx, "links", &["source"], &self.paths).await?;
+        bulk_delete_in(tx, "labels", &["path"], &self.paths).await?;
         bulk_insert(tx, &self.chunks, &self.paths).await?;
         bulk_insert(tx, &self.links, &self.paths).await?;
+        bulk_insert(tx, &self.labels, &self.paths).await?;
         Ok(())
     }
 }
@@ -1009,6 +1149,20 @@ impl BulkInsertRow for LinkRow {
     }
 }
 
+impl BulkInsertRow for LabelRow {
+    const HEADER: &'static str = "INSERT INTO labels (name, path) VALUES ";
+    const FOOTER: &'static str = " ON CONFLICT(name, path) DO NOTHING";
+    const COLS: usize = 2;
+
+    fn bind_to<'q>(
+        &'q self,
+        q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+        paths: &'q [String],
+    ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+        q.bind(&self.name).bind(&paths[self.path_idx])
+    }
+}
+
 /// Generic chunked multi-row INSERT. Builds `<HEADER>(?, …), (?, …)<FOOTER>`,
 /// chunking so binds-per-statement stays under `SQLITE_PARAM_BUDGET`.
 async fn bulk_insert<R: BulkInsertRow>(
@@ -1034,6 +1188,32 @@ async fn bulk_insert<R: BulkInsertRow>(
         q.execute(&mut **tx).await?;
     }
     Ok(())
+}
+
+/// Wraps a user-supplied FTS4 term in double quotes so SQLite treats it
+/// as a literal phrase, neutralising any FTS4 metacharacters the user
+/// may have typed (`(`, `)`, `*`, `"`, `:`, etc.) that would otherwise
+/// cause SQLite to reject the query at runtime.
+fn fts4_quote(term: &str) -> String {
+    let escaped = term.replace('"', "\"\"");
+    format!("\"{}\"", escaped)
+}
+
+/// Escapes SQLite LIKE pattern metacharacters (`\`, `%`, `_`) in `s` so the
+/// result can be used as a safe literal prefix before appending `%`.
+/// Must be paired with `ESCAPE '\\'` in the SQL clause.
+fn escape_like_pattern(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        match c {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(c);
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 pub async fn rename_note(
@@ -1077,6 +1257,12 @@ pub async fn rename_note(
         .execute(&mut **tx)
         .await?;
 
+    sqlx::query("UPDATE labels SET path = ? WHERE path = ?")
+        .bind(to.to_string())
+        .bind(from.to_string())
+        .execute(&mut **tx)
+        .await?;
+
     Ok(())
 }
 
@@ -1102,36 +1288,45 @@ pub async fn rename_directory(
         }
     };
 
-    let notes_sql = "UPDATE notes SET path = ? || SUBSTR(path, LENGTH(?) + 1), basePath = ? || SUBSTR(basePath, LENGTH(?) + 1) WHERE basePath LIKE (? || '%')";
+    let from_escaped = escape_like_pattern(&from);
+
+    let notes_sql = "UPDATE notes SET path = ? || SUBSTR(path, LENGTH(?) + 1), basePath = ? || SUBSTR(basePath, LENGTH(?) + 1) WHERE basePath LIKE (? || '%') ESCAPE '\\'";
     sqlx::query(notes_sql)
         .bind(&to)
         .bind(&from)
         .bind(&to)
         .bind(&from)
-        .bind(&from)
+        .bind(&from_escaped)
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE notesContent SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%')")
+    sqlx::query("UPDATE notesContent SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%') ESCAPE '\\'")
         .bind(&to)
         .bind(&from)
-        .bind(&from)
+        .bind(&from_escaped)
         .execute(&mut **tx)
         .await?;
 
     sqlx::query(
-        "UPDATE links SET source = ? || SUBSTR(source, LENGTH(?) + 1) WHERE source LIKE (? || '%')",
+        "UPDATE links SET source = ? || SUBSTR(source, LENGTH(?) + 1) WHERE source LIKE (? || '%') ESCAPE '\\'",
     )
     .bind(&to)
     .bind(&from)
-    .bind(&from)
+    .bind(&from_escaped)
     .execute(&mut **tx)
     .await?;
 
-    sqlx::query("UPDATE links SET destination = ? || SUBSTR(destination, LENGTH(?) + 1) WHERE destination LIKE (? || '%')")
+    sqlx::query("UPDATE links SET destination = ? || SUBSTR(destination, LENGTH(?) + 1) WHERE destination LIKE (? || '%') ESCAPE '\\'")
         .bind(&to)
         .bind(&from)
+        .bind(&from_escaped)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("UPDATE labels SET path = ? || SUBSTR(path, LENGTH(?) + 1) WHERE path LIKE (? || '%') ESCAPE '\\'")
+        .bind(&to)
         .bind(&from)
+        .bind(&from_escaped)
         .execute(&mut **tx)
         .await?;
 
@@ -1154,23 +1349,34 @@ async fn delete_directory(
     tx: &mut Transaction<'_, Sqlite>,
     directory_path: &VaultPath,
 ) -> Result<(), DBError> {
-    let path_string = directory_path.to_string();
+    let path_str = directory_path.to_string();
+    let normalized = if path_str.ends_with(PATH_SEPARATOR) {
+        path_str
+    } else {
+        format!("{path_str}{PATH_SEPARATOR}")
+    };
+    let pattern = escape_like_pattern(&normalized);
 
-    sqlx::query("DELETE FROM notes WHERE path LIKE (? || '%')")
-        .bind(&path_string)
+    sqlx::query("DELETE FROM notes WHERE path LIKE (? || '%') ESCAPE '\\'")
+        .bind(&pattern)
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("DELETE FROM notesContent WHERE path LIKE (? || '%')")
-        .bind(&path_string)
+    sqlx::query("DELETE FROM notesContent WHERE path LIKE (? || '%') ESCAPE '\\'")
+        .bind(&pattern)
         .execute(&mut **tx)
         .await?;
 
     // Clear both sides of the links table — outbound (source) and inbound
     // (destination) — so backlinks pointing to deleted notes don't linger.
-    sqlx::query("DELETE FROM links WHERE source LIKE (? || '%') OR destination LIKE (? || '%')")
-        .bind(&path_string)
-        .bind(&path_string)
+    sqlx::query("DELETE FROM links WHERE source LIKE (? || '%') ESCAPE '\\' OR destination LIKE (? || '%') ESCAPE '\\'")
+        .bind(&pattern)
+        .bind(&pattern)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("DELETE FROM labels WHERE path LIKE (? || '%') ESCAPE '\\'")
+        .bind(&pattern)
         .execute(&mut **tx)
         .await?;
 
@@ -1210,7 +1416,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "foo bar");
+        assert_eq!(params[0], "\"foo\" \"bar\"");
     }
 
     #[test]
@@ -1221,7 +1427,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1232,7 +1438,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "heading");
+        assert_eq!(params[0], "\"heading\"");
     }
 
     #[test]
@@ -1243,7 +1449,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "section");
+        assert_eq!(params[0], "\"section\"");
     }
 
     #[test]
@@ -1254,7 +1460,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "heading1 heading2");
+        assert_eq!(params[0], "\"heading1\" \"heading2\"");
     }
 
     #[test]
@@ -1262,7 +1468,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("@filename");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], "filename");
@@ -1273,7 +1479,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("at:directory");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], "directory");
@@ -1284,7 +1490,7 @@ mod tests {
         let (sql, params) = build_search_sql_query("@file1 at:file2");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') OR notes.noteName LIKE ('%' || ?2 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\' OR notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "file1");
@@ -1299,8 +1505,8 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
         );
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "section");
+        assert_eq!(params[0], "\"keyword\"");
+        assert_eq!(params[1], "\"section\"");
     }
 
     #[test]
@@ -1308,10 +1514,10 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword @file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
         assert_eq!(params[1], "file");
     }
 
@@ -1320,10 +1526,10 @@ mod tests {
         let (sql, params) = build_search_sql_query(">heading @file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "heading");
+        assert_eq!(params[0], "\"heading\"");
         assert_eq!(params[1], "file");
     }
 
@@ -1332,11 +1538,11 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword >heading @file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 3);
-        assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "heading");
+        assert_eq!(params[0], "\"keyword\"");
+        assert_eq!(params[1], "\"heading\"");
         assert_eq!(params[2], "file");
     }
 
@@ -1348,7 +1554,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "exact phrase keyword");
+        assert_eq!(params[0], "\"exact phrase\" \"keyword\"");
     }
 
     #[test]
@@ -1359,7 +1565,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1370,7 +1576,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1381,7 +1587,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1392,7 +1598,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1403,7 +1609,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1414,7 +1620,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1422,11 +1628,11 @@ mod tests {
         let (sql, params) = build_search_sql_query("keyword >section @file ^title");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%')"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 3);
-        assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "section");
+        assert_eq!(params[0], "\"keyword\"");
+        assert_eq!(params[1], "\"section\"");
         assert_eq!(params[2], "file");
     }
 
@@ -1445,7 +1651,7 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "keyword");
+        assert_eq!(params[0], "\"keyword\"");
     }
 
     #[test]
@@ -1456,8 +1662,8 @@ mod tests {
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
         );
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "keyword");
-        assert_eq!(params[1], "section");
+        assert_eq!(params[0], "\"keyword\"");
+        assert_eq!(params[1], "\"section\"");
     }
 
     #[test]
@@ -1472,8 +1678,8 @@ mod tests {
         ));
         // params: first is the excluded term (NOT IN subquery), second is the positive term
         assert_eq!(params.len(), 2);
-        assert!(params.contains(&"cancelled".to_string()));
-        assert!(params.contains(&"meeting".to_string()));
+        assert!(params.contains(&"\"cancelled\"".to_string()));
+        assert!(params.contains(&"\"meeting\"".to_string()));
 
         assert!(sql.contains("SELECT DISTINCT"));
     }
@@ -1491,7 +1697,7 @@ mod tests {
             "SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH"
         ));
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "cancelled");
+        assert_eq!(params[0], "\"cancelled\"");
     }
 
     #[test]
@@ -1500,7 +1706,7 @@ mod tests {
 
         assert!(sql.contains("notesContent MATCH"));
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "breadcrumb: project breadcrumb: -draft");
+        assert_eq!(params[0], "breadcrumb: \"project\" breadcrumb: -\"draft\"");
     }
 
     #[test]
@@ -1541,5 +1747,694 @@ mod tests {
         assert!(sql.contains("notes.basePath NOT LIKE"));
         assert!(!sql.contains("notes.basePath LIKE ('/'"));
         assert_eq!(params.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn labels_table_exists_after_create_tables() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let row: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM sqlite_master \
+             WHERE type='table' AND name='labels'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(row.0, 1, "labels table should exist");
+
+        // labels_by_name was removed in 0.7; the PK autoindex covers it.
+        let idx_name: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM sqlite_master \
+             WHERE type='index' AND name='labels_by_name'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            idx_name.0, 0,
+            "labels_by_name index must not exist (dropped in 0.7)"
+        );
+
+        let idx_path: (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM sqlite_master \
+             WHERE type='index' AND name='labels_by_path'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(idx_path.0, 1, "labels_by_path index should exist");
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn labels_are_persisted_on_note_insert() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let path = VaultPath::note_path_from("/n.md");
+        let body = "Title\n\nbody with #foo and #Foo and #bar".to_string();
+        let entry = NoteEntryData {
+            path: path.clone(),
+            size: body.len() as u64,
+            modified_secs: 0,
+        };
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, body)])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT name, path FROM labels ORDER BY name")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("bar".to_string(), path.to_string()),
+                ("foo".to_string(), path.to_string()),
+            ],
+            "labels stored deduped + lowercased"
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reindexing_a_note_drops_removed_labels() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let path = VaultPath::note_path_from("/n.md");
+        let body_v1 = "before #draft #keep".to_string();
+        let entry_v1 = NoteEntryData {
+            path: path.clone(),
+            size: body_v1.len() as u64,
+            modified_secs: 0,
+        };
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry_v1, body_v1)])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let body_v2 = "after #keep only".to_string();
+        let entry_v2 = NoteEntryData {
+            path: path.clone(),
+            size: body_v2.len() as u64,
+            modified_secs: 1,
+        };
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::update_notes(&mut tx, &[(entry_v2, body_v2)])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM labels WHERE path = ? ORDER BY name")
+                .bind(path.to_string())
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            rows.into_iter().map(|(n,)| n).collect::<Vec<_>>(),
+            vec!["keep".to_string()],
+            "reindex must drop labels no longer present"
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn labels_are_removed_on_note_delete() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let path = VaultPath::note_path_from("/n.md");
+        let body = "x #drop".to_string();
+        let entry = NoteEntryData {
+            path: path.clone(),
+            size: body.len() as u64,
+            modified_secs: 0,
+        };
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, body)])
+            .await
+            .unwrap();
+        super::delete_notes(&mut tx, std::slice::from_ref(&path))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
+            .bind(path.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0);
+
+        db.close().await.unwrap();
+    }
+
+    #[test]
+    fn test_search_terms_query_label_only() {
+        let (sql, params) = build_search_sql_query("#important");
+        assert_eq!(params, vec!["important".to_string()]);
+        assert!(
+            sql.contains("FROM notes") && sql.contains("labels"),
+            "query should join notes with labels: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_search_terms_query_two_labels_intersect() {
+        let (sql, params) = build_search_sql_query("#a #b");
+        assert_eq!(params.len(), 2);
+        assert!(
+            sql.contains("INTERSECT"),
+            "two labels should INTERSECT: {}",
+            sql
+        );
+    }
+
+    #[tokio::test]
+    async fn search_by_label_returns_matching_notes() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entries: Vec<(NoteEntryData, String)> = vec![
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/a.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "a #important #todo".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/b.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "b #todo".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/c.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "c plain".to_string(),
+            ),
+        ];
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let results = super::search_terms(db.pool(), "#important").await.unwrap();
+        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(paths, vec!["/a.md".to_string()]);
+
+        let results = super::search_terms(db.pool(), "#important #todo")
+            .await
+            .unwrap();
+        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(paths, vec!["/a.md".to_string()]);
+
+        let results = super::search_terms(db.pool(), "#nope").await.unwrap();
+        assert!(results.is_empty());
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn label_search_uses_index() {
+        // Confirms the PK autoindex (sqlite_autoindex_labels_1) is used for
+        // label lookups after the explicit labels_by_name index was dropped in
+        // 0.7. A hashtag filter must not degrade to a full table scan.
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entry = NoteEntryData {
+            path: VaultPath::note_path_from("/a.md"),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "x #important".to_string())])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let (sql, _) = super::build_search_sql_query("#important");
+        let plan_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(&plan_sql)
+            .bind("important")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+        let plan_text = rows
+            .iter()
+            .map(|(_, _, _, detail)| detail.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        // The PK autoindex covers WHERE name = ? lookups on (name, path).
+        // No explicit labels_by_name index any more (removed in 0.7).
+        // Accept any sqlite_autoindex_labels_ suffix to tolerate DROP+CREATE migration changes.
+        assert!(
+            plan_text.contains("sqlite_autoindex_labels_"),
+            "expected PK autoindex on labels in plan: {}",
+            plan_text
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_note_updates_labels() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let from = VaultPath::note_path_from("/old.md");
+        let to = VaultPath::note_path_from("/new.md");
+        let entry = NoteEntryData {
+            path: from.clone(),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "x #foo".to_string())])
+            .await
+            .unwrap();
+        super::rename_note(&mut tx, &from, &to).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let old_rows: (i64,) = sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
+            .bind(from.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(old_rows.0, 0, "no label rows should remain at old path");
+
+        let new_rows: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM labels WHERE path = ? ORDER BY name")
+                .bind(to.to_string())
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            new_rows.into_iter().map(|(n,)| n).collect::<Vec<_>>(),
+            vec!["foo".to_string()],
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_directory_updates_labels() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let note_path = VaultPath::note_path_from("/old_dir/note.md");
+        let entry = NoteEntryData {
+            path: note_path.clone(),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "x #moved".to_string())])
+            .await
+            .unwrap();
+        super::rename_directory(
+            &mut tx,
+            &VaultPath::new("/old_dir"),
+            &VaultPath::new("/new_dir"),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT name, path FROM labels")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![("moved".to_string(), "/new_dir/note.md".to_string())],
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_directory_removes_labels() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let note_path = VaultPath::note_path_from("/sub/note.md");
+        let entry = NoteEntryData {
+            path: note_path.clone(),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "x #gone".to_string())])
+            .await
+            .unwrap();
+        super::delete_directories(&mut tx, &[VaultPath::new("/sub")])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM labels")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0);
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_directory_with_underscore_does_not_touch_siblings() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let target = VaultPath::note_path_from("/my_dir/a.md");
+        let sibling = VaultPath::note_path_from("/myXdir/b.md");
+        let entries = vec![
+            (
+                NoteEntryData {
+                    path: target.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x #t".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: sibling.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y #s".to_string(),
+            ),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        super::delete_directories(&mut tx, &[VaultPath::new("/my_dir")])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let remaining: Vec<(String,)> = sqlx::query_as("SELECT path FROM notes ORDER BY path")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining.into_iter().map(|(p,)| p).collect::<Vec<_>>(),
+            vec![sibling.to_string()],
+            "sibling /myXdir/b.md must be untouched"
+        );
+
+        let sibling_label: (i64,) = sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
+            .bind(sibling.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(sibling_label.0, 1, "sibling label preserved");
+
+        db.close().await.unwrap();
+    }
+
+    #[test]
+    fn escape_like_pattern_escapes_metacharacters() {
+        assert_eq!(super::escape_like_pattern("/my_dir/"), "/my\\_dir/");
+        assert_eq!(super::escape_like_pattern("/a%b/"), "/a\\%b/");
+        assert_eq!(super::escape_like_pattern("/a\\b/"), "/a\\\\b/");
+        assert_eq!(super::escape_like_pattern("/normal/"), "/normal/");
+    }
+
+    #[tokio::test]
+    async fn delete_directory_no_trailing_slash_does_not_match_sibling_prefix() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let target = VaultPath::note_path_from("/notes/a.md");
+        let sibling = VaultPath::note_path_from("/notes_archive/b.md");
+        let entries = vec![
+            (
+                NoteEntryData {
+                    path: target.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: sibling.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y".to_string(),
+            ),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        super::delete_directories(&mut tx, &[VaultPath::new("/notes")])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM notes ORDER BY path")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+        let paths: Vec<String> = rows.into_iter().map(|(p,)| p).collect();
+        assert_eq!(
+            paths,
+            vec![sibling.to_string()],
+            "sibling /notes_archive/ must not be deleted"
+        );
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn path_search_with_underscore_does_not_treat_as_wildcard() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let target = VaultPath::note_path_from("/my_notes/a.md");
+        let sibling = VaultPath::note_path_from("/myXnotes/b.md");
+        let entries = vec![
+            (
+                NoteEntryData {
+                    path: target.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: sibling.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y".to_string(),
+            ),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // pt:my_notes search must only match /my_notes/, not /myXnotes/.
+        let results = super::search_terms(db.pool(), "pt:my_notes").await.unwrap();
+        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(
+            paths,
+            vec![target.to_string()],
+            "underscore must be literal in path search"
+        );
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn filename_search_with_underscore_does_not_treat_as_wildcard() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let target = VaultPath::note_path_from("/my_note.md");
+        let sibling = VaultPath::note_path_from("/myXnote.md");
+        let entries = vec![
+            (
+                NoteEntryData {
+                    path: target.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: sibling.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y".to_string(),
+            ),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let results = super::search_terms(db.pool(), "@my_note").await.unwrap();
+        let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(
+            paths,
+            vec![target.to_string()],
+            "underscore must be literal in filename search"
+        );
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fts_term_with_metachar_does_not_error() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entry = NoteEntryData {
+            path: VaultPath::note_path_from("/a.md"),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "some meeting note".to_string())])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Each of these would have produced an FTS4 syntax error before the fix.
+        for q in &[
+            "(meeting",
+            "*",
+            "meet*ing",
+            "title:value",
+            "a^b",
+            ">",
+            "-",
+            ">-",
+            "in:",
+            "at:",
+        ] {
+            let res = super::search_terms(db.pool(), q).await;
+            assert!(
+                res.is_ok(),
+                "query {:?} must not error; got {:?}",
+                q,
+                res.err()
+            );
+        }
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn breadcrumb_term_with_metachar_does_not_error() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entry = NoteEntryData {
+            path: VaultPath::note_path_from("/a.md"),
+            size: 10,
+            modified_secs: 0,
+        };
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "# Heading\n\ntext".to_string())])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        for q in &[">(heading", ">*", "in:title:"] {
+            let res = super::search_terms(db.pool(), q).await;
+            assert!(
+                res.is_ok(),
+                "breadcrumb query {:?} must not error; got {:?}",
+                q,
+                res.err()
+            );
+        }
+
+        db.close().await.unwrap();
+    }
+
+    #[cfg(test)]
+    mod note_columns_consistency {
+        #[test]
+        fn note_columns_is_path_plus_rest() {
+            assert_eq!(
+                super::super::NOTE_COLUMNS,
+                format!("path, {}", super::super::NOTE_COLUMNS_REST),
+                "NOTE_COLUMNS must equal 'path, ' + NOTE_COLUMNS_REST"
+            );
+        }
     }
 }

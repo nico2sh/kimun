@@ -411,6 +411,27 @@ impl NoteVault {
         Ok(a)
     }
 
+    /// Returns every distinct label persisted in the vault, lowercased.
+    pub async fn list_labels(&self) -> Result<Vec<String>, VaultError> {
+        Ok(db::list_labels(self.vault_db.pool()).await?)
+    }
+
+    /// Returns every distinct label in the vault paired with the number of
+    /// notes carrying it. Labels are returned sorted alphabetically.
+    pub async fn label_counts(&self) -> Result<Vec<(String, usize)>, VaultError> {
+        let rows = db::label_counts(self.vault_db.pool()).await?;
+        Ok(rows.into_iter().map(|(n, c)| (n, c as usize)).collect())
+    }
+
+    /// Returns every note path that carries the given label. The label
+    /// argument is lowercased before lookup, matching how labels are stored.
+    pub async fn notes_with_label<S: AsRef<str>>(
+        &self,
+        name: S,
+    ) -> Result<Vec<VaultPath>, VaultError> {
+        Ok(db::notes_with_label(self.vault_db.pool(), name.as_ref()).await?)
+    }
+
     /// Get notes under the given path. When `recursive` is false, only direct
     /// children are returned.
     pub async fn get_notes(
@@ -1926,5 +1947,94 @@ mod vault_config_tests {
         assert!(custom_db.exists());
         assert!(!workspace.path().join("kimun.sqlite").exists());
         drop(vault);
+    }
+}
+
+#[cfg(test)]
+mod label_api_tests {
+    use super::*;
+    use crate::nfs::VaultPath;
+
+    async fn new_vault() -> (tempfile::TempDir, NoteVault) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg = VaultConfig::new(tmp.path().to_path_buf());
+        let vault = NoteVault::new(cfg).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+        (tmp, vault)
+    }
+
+    #[tokio::test]
+    async fn list_labels_returns_distinct_lowercase_names() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&VaultPath::note_path_from("/a.md"), "x #Foo and #bar")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/b.md"), "y #foo only")
+            .await
+            .unwrap();
+
+        let mut labels = vault.list_labels().await.unwrap();
+        labels.sort();
+        assert_eq!(labels, vec!["bar".to_string(), "foo".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn notes_with_label_is_case_insensitive() {
+        let (_tmp, vault) = new_vault().await;
+        let a = VaultPath::note_path_from("/a.md");
+        let b = VaultPath::note_path_from("/b.md");
+        vault.create_note(&a, "x #Important").await.unwrap();
+        vault.create_note(&b, "x #important #other").await.unwrap();
+
+        let mut paths = vault.notes_with_label("IMPORTANT").await.unwrap();
+        paths.sort_by_key(|p| p.to_string());
+        assert_eq!(paths, vec![a, b]);
+    }
+
+    #[tokio::test]
+    async fn notes_with_unknown_label_returns_empty() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&VaultPath::note_path_from("/a.md"), "x")
+            .await
+            .unwrap();
+        let paths = vault.notes_with_label("nosuch").await.unwrap();
+        assert!(paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn label_counts_returns_count_per_label() {
+        let (_tmp, vault) = new_vault().await;
+        vault
+            .create_note(&VaultPath::note_path_from("/a.md"), "x #foo #bar")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/b.md"), "y #foo")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/c.md"), "z #baz")
+            .await
+            .unwrap();
+
+        let counts = vault.label_counts().await.unwrap();
+        assert_eq!(
+            counts,
+            vec![
+                ("bar".to_string(), 1usize),
+                ("baz".to_string(), 1usize),
+                ("foo".to_string(), 2usize),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn label_counts_empty_vault_returns_empty() {
+        let (_tmp, vault) = new_vault().await;
+        let counts = vault.label_counts().await.unwrap();
+        assert!(counts.is_empty());
     }
 }

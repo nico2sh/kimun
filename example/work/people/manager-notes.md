@@ -22,3 +22,5 @@
 - Sprint velocity discussion — team is at sustainable pace
 - API hardening initiative ([[api-rate-limiter]]) on track
 - Budget approved for Jaeger deployment (for [[observability]])
+
+Labels: #1on1 #planning
