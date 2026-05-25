@@ -7,7 +7,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use super::host::AutocompleteHost;
 use super::popup::{handle_key as popup_handle_key, PopupAction, PopupOutcome};
 use super::state::{AutocompleteState, Suggestion, DEFAULT_MAX_VISIBLE_ROWS};
-use super::trigger::{detect_trigger, TriggerKind};
+use super::trigger::{detect_trigger_with, TriggerKind, TriggerOptions};
 
 /// Hard cap on suggestions fetched from core per query. The popup itself
 /// only shows `max_visible_rows` at a time and scrolls inside the fetched
@@ -30,6 +30,10 @@ pub struct AutocompleteController {
     state: Option<AutocompleteState>,
     vault: Arc<NoteVault>,
     mode: AutocompleteMode,
+    /// Trigger-detection options passed to `detect_trigger_with` on every
+    /// `sync`. The editor leaves header disambiguation on; the search box
+    /// switches it off because its input has no Markdown headers.
+    trigger_opts: TriggerOptions,
     /// Monotonic counter incremented on every fired query. Responses that
     /// arrive with a stale generation are discarded.
     generation: u64,
@@ -53,12 +57,21 @@ impl AutocompleteController {
             state: None,
             vault,
             mode,
+            trigger_opts: TriggerOptions::default(),
             generation: 0,
             result_tx,
             result_rx,
             fetch_limit: DEFAULT_FETCH_LIMIT,
             max_visible_rows: DEFAULT_MAX_VISIBLE_ROWS,
         }
+    }
+
+    /// Override the trigger-detection options. Used by the search-box
+    /// controller to disable the column-0 header disambiguation rule
+    /// (Markdown headers don't exist in a search input).
+    pub fn with_trigger_opts(mut self, opts: TriggerOptions) -> Self {
+        self.trigger_opts = opts;
+        self
     }
 
     pub fn is_open(&self) -> bool {
@@ -116,7 +129,7 @@ impl AutocompleteController {
     pub fn sync<H: AutocompleteHost>(&mut self, host: &H) {
         let text = host.buffer_text();
         let cursor = host.cursor_byte_offset();
-        let trigger = detect_trigger(&text, cursor);
+        let trigger = detect_trigger_with(&text, cursor, self.trigger_opts);
 
         // Filter by mode before deciding anything else.
         let trigger = trigger.filter(|t| match (self.mode, t.kind) {
