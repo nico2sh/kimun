@@ -106,8 +106,8 @@ Later, you can triage inbox notes and move relevant ones into the journal. If yo
 ### Search within sections
 
 ```sh
-kimun search "/journal >tasks"      # Journal entries with a "Tasks" section
-kimun search "/journal >tasks -done" # Tasks sections without "done"
+kimun search "/journal <tasks"      # Journal entries with a "Tasks" section
+kimun search "/journal <tasks -done" # Tasks sections without "done"
 ```
 
 ## Tips
