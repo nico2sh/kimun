@@ -22,6 +22,25 @@ pub struct TriggerContext {
     pub anchor_col: usize,
 }
 
+/// Per-call knobs for `detect_trigger_with`.
+#[derive(Debug, Clone, Copy)]
+pub struct TriggerOptions {
+    /// When `true`, a `#` at the start of a line defers (and is
+    /// suppressed when followed by a space) so Markdown headers don't
+    /// inadvertently open the hashtag popup. Editor uses `true`; the
+    /// search box uses `false` because its input has no Markdown
+    /// headers.
+    pub disambiguate_header: bool,
+}
+
+impl Default for TriggerOptions {
+    fn default() -> Self {
+        Self {
+            disambiguate_header: true,
+        }
+    }
+}
+
 /// Inspect `text` at `cursor` (a byte offset) and decide whether an
 /// autocomplete popup should be active.
 ///
@@ -39,6 +58,17 @@ pub struct TriggerContext {
 ///   `target` portion triggers; the cursor crossing the `|` deactivates
 ///   the popup.
 pub fn detect_trigger(text: &str, cursor: usize) -> Option<TriggerContext> {
+    detect_trigger_with(text, cursor, TriggerOptions::default())
+}
+
+/// Variant of [`detect_trigger`] that takes explicit options. Used by
+/// the search-box controller to suppress the column-0 `#` header
+/// disambiguation, which only matters in the Markdown editor.
+pub fn detect_trigger_with(
+    text: &str,
+    cursor: usize,
+    opts: TriggerOptions,
+) -> Option<TriggerContext> {
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
     }
@@ -142,15 +172,20 @@ pub fn detect_trigger(text: &str, cursor: usize) -> Option<TriggerContext> {
         // Column-0 disambiguation: defer the trigger when the user has
         // just typed `#` at the start of a line, since the next keystroke
         // tells us whether this is a hashtag (anything non-space) or a
-        // Markdown header (space).
-        let at_line_start = hash == 0 || text.as_bytes().get(hash - 1) == Some(&b'\n');
-        if at_line_start {
-            if cursor == inner_start {
-                return None;
-            }
-            let next_char = text[inner_start..].chars().next();
-            if next_char == Some(' ') {
-                return None;
+        // Markdown header (space). Only active in contexts that actually
+        // support Markdown headers (the editor); the search box turns
+        // this off via `TriggerOptions`.
+        if opts.disambiguate_header {
+            let at_line_start =
+                hash == 0 || text.as_bytes().get(hash - 1) == Some(&b'\n');
+            if at_line_start {
+                if cursor == inner_start {
+                    return None;
+                }
+                let next_char = text[inner_start..].chars().next();
+                if next_char == Some(' ') {
+                    return None;
+                }
             }
         }
 
@@ -367,5 +402,40 @@ mod tests {
     fn crlf_just_after_hash_at_start_of_line_defers() {
         let text = "para\r\n#";
         assert!(ctx(text, text.len()).is_none());
+    }
+
+    // ---- TriggerOptions: header disambiguation disabled (search-box) ----
+
+    #[test]
+    fn search_box_opts_hash_alone_at_start_opens_immediately() {
+        let opts = TriggerOptions {
+            disambiguate_header: false,
+        };
+        let t = detect_trigger_with("#", 1, opts).unwrap();
+        assert_eq!(t.kind, TriggerKind::Hashtag);
+        assert_eq!(t.query, "");
+    }
+
+    #[test]
+    fn search_box_opts_hash_then_space_at_start_still_opens() {
+        // No Markdown headers in the search input, so `# ` is a no-op
+        // hashtag-with-empty-query — but the rule lets it through, and
+        // the popup will close on the next typed char if no match.
+        let opts = TriggerOptions {
+            disambiguate_header: false,
+        };
+        let t = detect_trigger_with("#", 1, opts);
+        assert!(t.is_some());
+    }
+
+    #[test]
+    fn search_box_opts_mid_line_unchanged() {
+        // The disambiguation flag has no effect on mid-line `#`.
+        let opts = TriggerOptions {
+            disambiguate_header: false,
+        };
+        let t = detect_trigger_with("foo #pro", 8, opts).unwrap();
+        assert_eq!(t.kind, TriggerKind::Hashtag);
+        assert_eq!(t.query, "pro");
     }
 }

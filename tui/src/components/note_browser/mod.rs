@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::components::Component;
 use crate::components::autocomplete::{
     self, AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
+    TriggerOptions,
 };
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
@@ -118,8 +119,16 @@ impl NoteBrowserModal {
         initial_query: String,
     ) -> Self {
         let file_list = FileListComponent::new(key_bindings, icons);
-        let autocomplete =
-            AutocompleteController::new(vault.clone(), AutocompleteMode::HashtagOnly);
+        // Search box has no Markdown headers, so the column-0 `#`
+        // header-disambiguation rule is disabled — typing `#` at the
+        // start of the input opens the popup immediately.
+        let autocomplete = AutocompleteController::new(
+            vault.clone(),
+            AutocompleteMode::HashtagOnly,
+        )
+        .with_trigger_opts(TriggerOptions {
+            disambiguate_header: false,
+        });
         let mut modal = Self {
             title: title.into(),
             search_query: SingleLineInput::new(),
