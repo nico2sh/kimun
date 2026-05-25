@@ -239,29 +239,56 @@ impl AutocompleteController {
         let suggestion = state.selected()?.clone();
         let kind = state.kind;
         let range = state.replace_range.clone();
+        let buffer = host.buffer_text();
+
+        // Guard against a stale snapshot — if the live buffer shrank
+        // below the trigger range, drop the accept rather than producing
+        // a malformed insertion (or panicking on String::replace_range
+        // in the search-box host).
+        if range.start > range.end || range.end > buffer.len() {
+            return None;
+        }
+        if !buffer.is_char_boundary(range.start) || !buffer.is_char_boundary(range.end) {
+            return None;
+        }
 
         match kind {
             TriggerKind::Wikilink => {
-                let buffer = host.buffer_text();
-                let close_exists = buffer.as_bytes().get(range.end..range.end + 2)
-                    == Some(b"]]");
-                let new_text = if close_exists {
-                    suggestion.display.clone()
-                } else {
+                let extent = scan_wikilink_extent(&buffer, range.end);
+                // Replace from the trigger's start through the end of
+                // the stale wikilink-target region. This consumes any
+                // characters the user already typed past the cursor up
+                // to (but not including) `]]`, `|`, a newline, `[`, or
+                // EOF — preventing artefacts like `[[meeting]]e]]` when
+                // the popup is reopened mid-target.
+                let new_range = range.start..extent.end;
+                let needs_close = !extent.existing_close && !extent.has_alias;
+                let new_text = if needs_close {
                     format!("{}]]", suggestion.display)
+                } else {
+                    suggestion.display.clone()
                 };
-                // Cursor lands after the closing `]]` whether we inserted
-                // them or not. The contribution of the closing pair is
-                // always 2 bytes from the start of `display`.
-                let new_cursor_byte = range.start + suggestion.display.len() + 2;
+                let cursor_offset_in_target = suggestion.display.len();
+                let new_cursor_byte = if extent.has_alias {
+                    // Keep the cursor right before `|alias]]` so the
+                    // user can edit the alias next.
+                    range.start.saturating_add(cursor_offset_in_target)
+                } else {
+                    // Land just past `]]` — whether we appended it or
+                    // it already existed.
+                    range
+                        .start
+                        .saturating_add(cursor_offset_in_target)
+                        .saturating_add(2)
+                };
                 Some(AcceptAction {
-                    range,
+                    range: new_range,
                     new_text,
                     new_cursor_byte,
                 })
             }
             TriggerKind::Hashtag => {
-                let new_cursor_byte = range.start + suggestion.display.len();
+                let new_cursor_byte = range.start.saturating_add(suggestion.display.len());
                 Some(AcceptAction {
                     range,
                     new_text: suggestion.display,
@@ -269,6 +296,67 @@ impl AutocompleteController {
                 })
             }
         }
+    }
+}
+
+/// Where the stale wikilink-target region around the cursor ends, plus
+/// what kind of suffix is already present.
+struct WikilinkExtent {
+    /// Byte offset (≥ `start`) of the first character that is NOT part
+    /// of the target region: either the first `]` of an existing `]]`,
+    /// a `|` alias separator, a newline, a `[`, or EOF.
+    end: usize,
+    /// `true` when an existing `]]` follows immediately at `end`.
+    existing_close: bool,
+    /// `true` when `end` points at a `|` separator — the user has
+    /// already started typing an alias which we must preserve.
+    has_alias: bool,
+}
+
+/// Walk forward from `start` over the bytes that look like wikilink
+/// target characters (anything except `]`, `|`, `\n`, `\r`, `[`).
+/// Lone `]` bytes (without a following `]`) are treated as stale
+/// characters and consumed — invalid inside a wikilink target anyway.
+///
+/// All decision bytes are ASCII so byte-level scanning is UTF-8 safe.
+fn scan_wikilink_extent(buffer: &str, start: usize) -> WikilinkExtent {
+    let bytes = buffer.as_bytes();
+    let mut i = start.min(bytes.len());
+    while i < bytes.len() {
+        match bytes[i] {
+            b']' => {
+                if bytes.get(i + 1) == Some(&b']') {
+                    return WikilinkExtent {
+                        end: i,
+                        existing_close: true,
+                        has_alias: false,
+                    };
+                }
+                // Lone `]` — consume and keep scanning. Invalid inside
+                // a wikilink target so dropping it is the safe default.
+                i += 1;
+            }
+            b'|' => {
+                return WikilinkExtent {
+                    end: i,
+                    existing_close: false,
+                    has_alias: true,
+                };
+            }
+            b'\n' | b'\r' | b'[' => {
+                return WikilinkExtent {
+                    end: i,
+                    existing_close: false,
+                    has_alias: false,
+                };
+            }
+            _ => i += 1,
+        }
+    }
+    WikilinkExtent {
+        end: i,
+        existing_close: false,
+        has_alias: false,
     }
 }
 
@@ -447,6 +535,68 @@ mod tests {
         assert_eq!(host.buffer, "see [[meeting]]");
         assert_eq!(host.cursor, host.buffer.len());
         assert!(!c.is_open());
+    }
+
+    #[tokio::test]
+    async fn accepting_wikilink_consumes_stale_chars_before_existing_close() {
+        // Reopened mid-target: the user moved the cursor back inside an
+        // already-closed wikilink and is replacing the target. The stale
+        // characters between the cursor and `]]` must be consumed, not
+        // left as `[[meeting]]e]]`.
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new("see [[me]]", 7); // cursor between `m` and `e`
+        c.sync(&host);
+        drain_results(&mut c).await;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let outcome =
+            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
+        assert_eq!(host.buffer, "see [[meeting]]");
+        assert_eq!(host.cursor, host.buffer.len());
+    }
+
+    #[tokio::test]
+    async fn accepting_wikilink_with_lone_trailing_bracket_does_not_triple() {
+        // Buffer has a single stray `]` after the target — must not
+        // produce `]]]`.
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new("see [[me]", 8);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let outcome =
+            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
+        assert_eq!(host.buffer, "see [[meeting]]");
+    }
+
+    #[tokio::test]
+    async fn accepting_wikilink_preserves_existing_alias() {
+        // `[[me|alias]]` — cursor in the target portion; alias must
+        // survive and the cursor must land right before `|alias]]`.
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new("see [[me|alias]]", 8); // cursor before `|`
+        c.sync(&host);
+        drain_results(&mut c).await;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let outcome =
+            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
+        assert_eq!(host.buffer, "see [[meeting|alias]]");
+        // Cursor right after `meeting`, before `|alias]]`.
+        assert_eq!(host.cursor, "see [[meeting".len());
     }
 
     #[tokio::test]
