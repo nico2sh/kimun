@@ -77,7 +77,8 @@ impl EditorScreen {
         let icons = s.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &s);
         let backlinks_panel = BacklinksPanel::new(vault.clone(), kb.clone());
-        let editor = TextEditorComponent::new(kb, &s);
+        let mut editor = TextEditorComponent::new(kb, &s);
+        editor.set_vault(vault.clone());
         drop(s);
         Self {
             settings,
@@ -215,7 +216,7 @@ impl EditorScreen {
             Ok(results) if results.is_empty() => {
                 self.dialogs
                     .open_create_note(path, self.vault.clone(), self.focus_index());
-                self.focus = Focus::Dialog;
+                self.set_focus(Focus::Dialog);
             }
             Ok(mut results) if results.len() == 1 => {
                 let (entry, _) = results.remove(0);
@@ -235,7 +236,7 @@ impl EditorScreen {
                     tx.clone(),
                 ));
                 drop(s);
-                self.focus = Focus::NoteBrowser;
+                self.set_focus(Focus::NoteBrowser);
             }
             Err(e) => {
                 self.footer.flash(format!("Link error: {e}"), tx);
@@ -281,7 +282,7 @@ impl EditorScreen {
                         self.vault.clone(),
                         self.focus_index(),
                     );
-                    self.focus = Focus::Dialog;
+                    self.set_focus(Focus::Dialog);
                 } else {
                     tracing::error!("Failed to read note {}: {e}", self.path);
                     let parent = self.path.get_parent_path().0;
@@ -355,11 +356,16 @@ impl EditorScreen {
     }
 
     fn restore_focus(&mut self) {
-        self.focus = self
+        let restored = self
             .dialogs
             .close()
             .map(Self::focus_from_index)
             .unwrap_or(Focus::Editor);
+        // Route through set_focus so the autocomplete-close invariant
+        // (no popup while another component owns focus) holds even on
+        // post-dialog focus restoration. Harmless when target is
+        // Editor — set_focus only closes when transitioning AWAY.
+        self.set_focus(restored);
     }
 
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
@@ -381,13 +387,23 @@ impl EditorScreen {
 }
 
 impl EditorScreen {
+    /// Single entry point for changing focus. Any transition AWAY from
+    /// `Focus::Editor` closes the autocomplete popup so it doesn't
+    /// linger over the editor while another component owns key input.
+    fn set_focus(&mut self, focus: Focus) {
+        if !matches!(focus, Focus::Editor) {
+            self.editor.close_autocomplete();
+        }
+        self.focus = focus;
+    }
+
     pub fn focus_editor(&mut self) {
-        self.focus = Focus::Editor;
+        self.set_focus(Focus::Editor);
     }
 
     pub fn focus_sidebar(&mut self) {
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.set_focus(Focus::Sidebar);
     }
 
     /// Move focus one step to the left: Backlinks → Editor → Sidebar.
@@ -410,7 +426,7 @@ impl EditorScreen {
                     self.backlinks_visible = true;
                     self.backlinks_panel.load(self.path.clone(), tx.clone());
                 }
-                self.focus = Focus::Backlinks;
+                self.set_focus(Focus::Backlinks);
             }
             _ => {}
         }
@@ -427,7 +443,7 @@ impl EditorScreen {
         self.backlinks_visible = !self.backlinks_visible;
         if self.backlinks_visible {
             self.backlinks_panel.load(self.path.clone(), tx.clone());
-            self.focus = Focus::Backlinks;
+            self.set_focus(Focus::Backlinks);
         } else if matches!(self.focus, Focus::Backlinks) {
             self.focus_editor();
         }
@@ -517,7 +533,7 @@ impl AppScreen for EditorScreen {
                     if self.note_browser.is_some() {
                         self.note_browser = None;
                         if matches!(self.focus, Focus::NoteBrowser) {
-                            self.focus = Focus::Editor;
+                            self.set_focus(Focus::Editor);
                         }
                     } else {
                         let s = self.settings.read().unwrap();
@@ -532,7 +548,7 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         ));
                         drop(s);
-                        self.focus = Focus::NoteBrowser;
+                        self.set_focus(Focus::NoteBrowser);
                     }
                     return EventState::Consumed;
                 }
@@ -540,7 +556,7 @@ impl AppScreen for EditorScreen {
                     if self.note_browser.is_some() {
                         self.note_browser = None;
                         if matches!(self.focus, Focus::NoteBrowser) {
-                            self.focus = Focus::Editor;
+                            self.set_focus(Focus::Editor);
                         }
                     } else {
                         let current_dir = self.path.get_parent_path().0;
@@ -555,7 +571,7 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         ));
                         drop(s);
-                        self.focus = Focus::NoteBrowser;
+                        self.set_focus(Focus::NoteBrowser);
                     }
                     return EventState::Consumed;
                 }
@@ -584,13 +600,13 @@ impl AppScreen for EditorScreen {
                     let s = self.settings.read().unwrap();
                     self.dialogs.open_workspace_switcher(&s, self.focus_index());
                     drop(s);
-                    self.focus = Focus::Dialog;
+                    self.set_focus(Focus::Dialog);
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::QuickNote) => {
                     self.dialogs
                         .open_quick_note(self.vault.clone(), self.focus_index());
-                    self.focus = Focus::Dialog;
+                    self.set_focus(Focus::Dialog);
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FindInBuffer) if matches!(self.focus, Focus::Editor) => {
@@ -613,7 +629,7 @@ impl AppScreen for EditorScreen {
                             let s = self.settings.read().unwrap();
                             self.dialogs.open_help(&s.key_bindings, self.focus_index());
                             drop(s);
-                            self.focus = Focus::Dialog;
+                            self.set_focus(Focus::Dialog);
                         }
                         // All F-keys (including F1 when a dialog is already open) are consumed
                         // and never forwarded to the embedded editor.
@@ -819,7 +835,7 @@ impl AppScreen for EditorScreen {
                     | AppEvent::ShowRenameDialog(_)
                     | AppEvent::ShowMoveDialog(_)
             ) {
-                self.focus = Focus::Dialog;
+                self.set_focus(Focus::Dialog);
             }
             return None;
         }
@@ -864,7 +880,7 @@ impl AppScreen for EditorScreen {
             AppEvent::CloseNoteBrowser => {
                 self.note_browser = None;
                 if matches!(self.focus, Focus::NoteBrowser) {
-                    self.focus = Focus::Editor;
+                    self.set_focus(Focus::Editor);
                 }
                 None
             }
@@ -886,7 +902,7 @@ impl AppScreen for EditorScreen {
                     initial,
                 ));
                 drop(s);
-                self.focus = Focus::NoteBrowser;
+                self.set_focus(Focus::NoteBrowser);
                 None
             }
             AppEvent::EntryCreated(path) => {

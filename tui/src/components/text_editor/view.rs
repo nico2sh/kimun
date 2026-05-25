@@ -15,6 +15,12 @@ pub struct MarkdownEditorView {
     pub lines_snapshot: Vec<String>,
     pub cursor_snapshot: (usize, usize),
     pub cursor_code_block: Option<Range<usize>>,
+    /// Cursor's last on-screen position (col, row), or `None` when the
+    /// cursor was scrolled off-screen or the view was unfocused at the
+    /// time of the previous `render`. Used as the anchor for floating
+    /// overlays like the autocomplete popup, which is drawn after the
+    /// editor itself.
+    pub last_cursor_screen: Option<(u16, u16)>,
     /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
     /// invocations across `render()`, cursor placement, and click mapping.
     parsed_cache: Vec<ParsedLine>,
@@ -46,6 +52,7 @@ impl MarkdownEditorView {
             lines_snapshot: Vec::new(),
             cursor_snapshot: (0, 0),
             cursor_code_block: None,
+            last_cursor_screen: None,
             parsed_cache: Vec::new(),
             last_seen_generation: u64::MAX, // force rebuild on first update
             last_layout_generation: u64::MAX,
@@ -244,6 +251,7 @@ impl MarkdownEditorView {
         );
 
         // Draw terminal cursor when focused
+        self.last_cursor_screen = None;
         if focused {
             let cursor_vrow = self.cursor_vrow;
             if cursor_vrow >= scroll && cursor_vrow < scroll + height {
@@ -258,10 +266,10 @@ impl MarkdownEditorView {
                     vl.is_first_visual_line,
                     force_raw,
                 );
-                f.set_cursor_position(Position {
-                    x: rect.x + rendered_col as u16,
-                    y: rect.y + (cursor_vrow - scroll) as u16,
-                });
+                let cx = rect.x + rendered_col as u16;
+                let cy = rect.y + (cursor_vrow - scroll) as u16;
+                f.set_cursor_position(Position { x: cx, y: cy });
+                self.last_cursor_screen = Some((cx, cy));
             }
         }
     }

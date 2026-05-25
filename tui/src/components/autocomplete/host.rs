@@ -1,0 +1,22 @@
+/// Read-only view of the input surface (editor or search box) for the
+/// autocomplete controller. All offsets are **byte offsets** into
+/// `buffer_text()`.
+///
+/// The trait is intentionally read-only: the controller computes what to
+/// insert and returns an `AcceptAction` (see `controller`), and the host
+/// applies it. That split keeps borrow-checker contention out of the way
+/// when the controller is held as a field of the host itself.
+pub trait AutocompleteHost {
+    /// The full buffer text. Allocates on each call; the controller calls
+    /// this at most once per keystroke.
+    fn buffer_text(&self) -> String;
+
+    /// Cursor position as a byte offset into `buffer_text()`.
+    fn cursor_byte_offset(&self) -> usize;
+
+    /// Screen position adjacent to the trigger byte (the byte right after
+    /// `[[` or `#`). Returned as `(col, row)` cells. `None` when the byte
+    /// is currently off-screen; the controller hides the popup in that
+    /// case.
+    fn screen_anchor_for(&self, byte_offset: usize) -> Option<(u16, u16)>;
+}
