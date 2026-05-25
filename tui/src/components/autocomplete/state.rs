@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use super::TriggerKind;
 
 /// Default number of suggestion rows visible at once. The popup never grows
@@ -24,6 +26,11 @@ pub struct Suggestion {
 pub struct AutocompleteState {
     pub kind: TriggerKind,
     pub query: String,
+    /// Byte range in the host buffer that will be overwritten on accept
+    /// (the text between the trigger sigil and the cursor). The controller
+    /// refreshes this every keystroke so the latest accept replaces the
+    /// up-to-date prefix.
+    pub replace_range: Range<usize>,
     pub items: Vec<Suggestion>,
     pub highlighted: usize,
     pub scroll_offset: usize,
@@ -38,6 +45,7 @@ impl AutocompleteState {
         Self {
             kind,
             query: String::new(),
+            replace_range: 0..0,
             items: Vec::new(),
             highlighted: 0,
             scroll_offset: 0,

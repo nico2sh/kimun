@@ -42,9 +42,12 @@ pub fn detect_trigger(text: &str, cursor: usize) -> Option<TriggerContext> {
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
     }
-    if is_inside_exclusion_zone(text, cursor) {
-        return None;
-    }
+    // The exclusion-zone check is applied selectively below — only for
+    // hashtags. A wikilink trigger inside an already-closed `[[foo]]`
+    // means the user is editing the target portion, which the spec
+    // explicitly supports (see "Suggestion acceptance" — alias-suffix
+    // preservation). Applying exclusion up-front here would block that
+    // reopen-mid-edit flow.
 
     // Walk backwards from the cursor, tracking the two possible trigger
     // contexts in parallel:
@@ -126,6 +129,13 @@ pub fn detect_trigger(text: &str, cursor: usize) -> Option<TriggerContext> {
     if let Some(hash) = hash_pos {
         let inner_start = hash + 1;
         if inner_start > cursor {
+            return None;
+        }
+
+        // Hashtag-only: suppress inside code spans, fenced blocks,
+        // frontmatter, markdown links, or already-closed wikilinks /
+        // markdown link bodies.
+        if is_inside_exclusion_zone(text, cursor) {
             return None;
         }
 
