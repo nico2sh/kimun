@@ -69,7 +69,15 @@ impl NoteBrowserModal {
         icons: Icons,
         tx: AppTx,
     ) -> Self {
-        Self::new_with_query(title, provider, vault, key_bindings, icons, tx, String::new())
+        Self::new_with_query(
+            title,
+            provider,
+            vault,
+            key_bindings,
+            icons,
+            tx,
+            String::new(),
+        )
     }
 
     fn new_with_query(
@@ -219,7 +227,15 @@ impl NoteBrowserModal {
         tx: AppTx,
         query: S,
     ) -> Self {
-        Self::new_with_query(title, provider, vault, key_bindings, icons, tx, query.into())
+        Self::new_with_query(
+            title,
+            provider,
+            vault,
+            key_bindings,
+            icons,
+            tx,
+            query.into(),
+        )
     }
 
     // ── Test-only accessors ────────────────────────────────────────────────

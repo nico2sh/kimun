@@ -441,7 +441,8 @@ impl ParsedBuffer {
                 for lm in kimun_core::note::label_matches(line_str) {
                     // Convert byte offsets to char offsets for Element storage.
                     let start_char = line_str[..lm.byte_start].chars().count();
-                    let end_char = start_char + line_str[lm.byte_start..lm.byte_end].chars().count();
+                    let end_char =
+                        start_char + line_str[lm.byte_start..lm.byte_end].chars().count();
                     // F3: overlap guard (InlineCode + Link + WikiLink + Image)
                     let overlaps_existing = els.iter().any(|e| {
                         matches!(
@@ -1783,9 +1784,17 @@ mod tests {
             .elements
             .iter()
             .find(|e| matches!(e.kind, ElementKind::Label));
-        assert!(label.is_some(), "expected Label element: {:?}", parsed.elements);
+        assert!(
+            label.is_some(),
+            "expected Label element: {:?}",
+            parsed.elements
+        );
         let l = label.unwrap();
-        let span: String = line.chars().skip(l.start_char).take(l.end_char - l.start_char).collect();
+        let span: String = line
+            .chars()
+            .skip(l.start_char)
+            .take(l.end_char - l.start_char)
+            .collect();
         assert_eq!(span, "#rust");
     }
 
@@ -1809,7 +1818,11 @@ mod tests {
             .iter()
             .filter(|e| matches!(e.kind, ElementKind::Label))
             .collect();
-        assert_eq!(labels.len(), 1, "only #real should be a label, not #section in the link");
+        assert_eq!(
+            labels.len(),
+            1,
+            "only #real should be a label, not #section in the link"
+        );
         let l = labels[0];
         let span: String = "[see docs](#section) and #real"
             .chars()
@@ -1826,7 +1839,10 @@ mod tests {
             .elements
             .iter()
             .any(|e| matches!(e.kind, ElementKind::Label));
-        assert!(!has_label, "hashtag inside link display text should not become Label");
+        assert!(
+            !has_label,
+            "hashtag inside link display text should not become Label"
+        );
     }
 
     #[test]
@@ -1836,7 +1852,10 @@ mod tests {
             .elements
             .iter()
             .any(|e| matches!(e.kind, ElementKind::Label));
-        assert!(!has_label, "word#tag should not emit Label without word boundary");
+        assert!(
+            !has_label,
+            "word#tag should not emit Label without word boundary"
+        );
     }
 
     #[test]
@@ -1854,7 +1873,10 @@ mod tests {
             .iter()
             .filter(|e| matches!(e.kind, ElementKind::Label))
             .collect();
-        assert!(inside_labels.is_empty(), "no Label emitted for hashtags in fenced blocks");
+        assert!(
+            inside_labels.is_empty(),
+            "no Label emitted for hashtags in fenced blocks"
+        );
 
         let outside_labels: Vec<_> = lines[4]
             .elements

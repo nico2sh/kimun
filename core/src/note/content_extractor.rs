@@ -1914,16 +1914,18 @@ ls -la ./test
     #[test]
     fn hashtag_in_inline_code_is_not_extracted() {
         let path = crate::nfs::VaultPath::note_path_from("/n.md");
-        let (text, links) =
-            super::get_markdown_and_links(&path, "use `#notalabel` and tag #real");
+        let (text, links) = super::get_markdown_and_links(&path, "use `#notalabel` and tag #real");
         assert!(
-            links.iter().all(|l| !matches!(&l.ltype, super::super::LinkType::Hashtag)
-                || l.text != "notalabel"),
+            links
+                .iter()
+                .all(|l| !matches!(&l.ltype, super::super::LinkType::Hashtag)
+                    || l.text != "notalabel"),
             "hashtag inside inline code must not become a hashtag link"
         );
         assert!(
-            links.iter().any(|l| matches!(&l.ltype, super::super::LinkType::Hashtag)
-                && l.text == "real"),
+            links
+                .iter()
+                .any(|l| matches!(&l.ltype, super::super::LinkType::Hashtag) && l.text == "real"),
             "hashtag outside code is still extracted"
         );
         assert!(
@@ -1978,7 +1980,11 @@ ls -la ./test
                 _ => None,
             })
             .collect();
-        assert_eq!(hashtag_names, vec!["real"], "URL fragment must not become a label");
+        assert_eq!(
+            hashtag_names,
+            vec!["real"],
+            "URL fragment must not become a label"
+        );
 
         assert!(
             text.contains("https://example.com#section"),
@@ -2100,7 +2106,11 @@ ls -la ./test
                 _ => None,
             })
             .collect();
-        assert_eq!(names, vec!["real"], "Unicode letter before # must suppress label extraction");
+        assert_eq!(
+            names,
+            vec!["real"],
+            "Unicode letter before # must suppress label extraction"
+        );
     }
 
     #[test]
@@ -2114,7 +2124,11 @@ ls -la ./test
                 _ => None,
             })
             .collect();
-        assert_eq!(names, vec!["real"], "non-ASCII letter immediately after match must suppress label");
+        assert_eq!(
+            names,
+            vec!["real"],
+            "non-ASCII letter immediately after match must suppress label"
+        );
     }
 
     #[test]
@@ -2129,7 +2143,11 @@ ls -la ./test
                 _ => None,
             })
             .collect();
-        assert_eq!(names, vec!["tag"], "ASCII non-alphanumeric (dash) after match still allows extraction");
+        assert_eq!(
+            names,
+            vec!["tag"],
+            "ASCII non-alphanumeric (dash) after match still allows extraction"
+        );
     }
 
     #[test]
@@ -2145,7 +2163,11 @@ ls -la ./test
                 _ => None,
             })
             .collect();
-        assert_eq!(names, vec!["real"], "frontmatter hashtag must not be extracted regardless of line endings");
+        assert_eq!(
+            names,
+            vec!["real"],
+            "frontmatter hashtag must not be extracted regardless of line endings"
+        );
     }
 
     #[test]
@@ -2160,6 +2182,10 @@ ls -la ./test
                 _ => None,
             })
             .collect();
-        assert_eq!(names, vec!["real"], "hashtag inside wikilink (invalid form) must not become a label");
+        assert_eq!(
+            names,
+            vec!["real"],
+            "hashtag inside wikilink (invalid form) must not become a label"
+        );
     }
 }

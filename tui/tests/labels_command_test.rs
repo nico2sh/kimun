@@ -8,9 +8,7 @@ use kimun_core::{NoteVault, VaultConfig};
 
 async fn setup_vault() -> (tempfile::TempDir, NoteVault) {
     let tmp = tempfile::TempDir::new().unwrap();
-    let vault = NoteVault::new(VaultConfig::new(tmp.path()))
-        .await
-        .unwrap();
+    let vault = NoteVault::new(VaultConfig::new(tmp.path())).await.unwrap();
     vault.validate_and_init().await.unwrap();
     (tmp, vault)
 }

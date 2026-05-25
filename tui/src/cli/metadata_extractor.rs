@@ -196,7 +196,8 @@ title: "Test Note""#;
 
     #[test]
     fn extract_tags_matches_core_label_rules() {
-        let body = "---\ntags: [yaml_tag]\n---\nplain #body and #tag-with-dash\n```\n#code_tag\n```";
+        let body =
+            "---\ntags: [yaml_tag]\n---\nplain #body and #tag-with-dash\n```\n#code_tag\n```";
         let tags = extract_tags(body);
         // Expected: yaml_tag (frontmatter), body (extracted), tag (dash-terminated).
         // NOT expected: code_tag (in fence), tag-with-dash (dash not in label).

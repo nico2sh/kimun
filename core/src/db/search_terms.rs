@@ -517,18 +517,60 @@ mod tests {
     #[test]
     fn bare_prefix_terms_are_dropped() {
         // None of these bare prefixes should produce a term.
-        for q in &[">", "-", ">-", "in:", "at:", "pt:", "/", "@", "/-", "@-", "#", "#-", "lb:", "lb:-"] {
+        for q in &[
+            ">", "-", ">-", "in:", "at:", "pt:", "/", "@", "/-", "@-", "#", "#-", "lb:", "lb:-",
+        ] {
             let s = SearchTerms::from_query_string(*q);
             assert!(s.terms.is_empty(), "{:?} produced terms: {:?}", q, s.terms);
-            assert!(s.breadcrumb.is_empty(), "{:?} produced breadcrumb: {:?}", q, s.breadcrumb);
-            assert!(s.filename.is_empty(), "{:?} produced filename: {:?}", q, s.filename);
+            assert!(
+                s.breadcrumb.is_empty(),
+                "{:?} produced breadcrumb: {:?}",
+                q,
+                s.breadcrumb
+            );
+            assert!(
+                s.filename.is_empty(),
+                "{:?} produced filename: {:?}",
+                q,
+                s.filename
+            );
             assert!(s.path.is_empty(), "{:?} produced path: {:?}", q, s.path);
-            assert!(s.labels.is_empty(), "{:?} produced labels: {:?}", q, s.labels);
-            assert!(s.excluded_terms.is_empty(), "{:?} produced excluded_terms: {:?}", q, s.excluded_terms);
-            assert!(s.excluded_breadcrumb.is_empty(), "{:?} produced excluded_breadcrumb: {:?}", q, s.excluded_breadcrumb);
-            assert!(s.excluded_filename.is_empty(), "{:?} produced excluded_filename: {:?}", q, s.excluded_filename);
-            assert!(s.excluded_path.is_empty(), "{:?} produced excluded_path: {:?}", q, s.excluded_path);
-            assert!(s.excluded_labels.is_empty(), "{:?} produced excluded_labels: {:?}", q, s.excluded_labels);
+            assert!(
+                s.labels.is_empty(),
+                "{:?} produced labels: {:?}",
+                q,
+                s.labels
+            );
+            assert!(
+                s.excluded_terms.is_empty(),
+                "{:?} produced excluded_terms: {:?}",
+                q,
+                s.excluded_terms
+            );
+            assert!(
+                s.excluded_breadcrumb.is_empty(),
+                "{:?} produced excluded_breadcrumb: {:?}",
+                q,
+                s.excluded_breadcrumb
+            );
+            assert!(
+                s.excluded_filename.is_empty(),
+                "{:?} produced excluded_filename: {:?}",
+                q,
+                s.excluded_filename
+            );
+            assert!(
+                s.excluded_path.is_empty(),
+                "{:?} produced excluded_path: {:?}",
+                q,
+                s.excluded_path
+            );
+            assert!(
+                s.excluded_labels.is_empty(),
+                "{:?} produced excluded_labels: {:?}",
+                q,
+                s.excluded_labels
+            );
         }
     }
 }

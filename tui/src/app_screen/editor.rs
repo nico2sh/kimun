@@ -875,8 +875,7 @@ impl AppScreen for EditorScreen {
             AppEvent::FollowLabel(name) => {
                 let initial = format!("#{name}");
                 let s = self.settings.read().unwrap();
-                let provider =
-                    SearchNotesProvider::new(self.vault.clone(), s.current_last_paths());
+                let provider = SearchNotesProvider::new(self.vault.clone(), s.current_last_paths());
                 self.note_browser = Some(NoteBrowserModal::with_initial_query(
                     "Note Browser",
                     provider,
