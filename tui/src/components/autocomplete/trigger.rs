@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use kimun_core::note::is_inside_exclusion_zone;
+use kimun_core::note::{is_inside_code_link_or_frontmatter, is_inside_exclusion_zone};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerKind {
@@ -151,6 +151,16 @@ pub fn detect_trigger_with(
         }
         let inner_start = open + 2;
         if inner_start > cursor {
+            return None;
+        }
+        // Suppress inside code, markdown link bodies, frontmatter —
+        // but NOT inside an already-closed `[[…]]` (that is the
+        // reopen-mid-target case the spec wants to support). Only
+        // applied when the caller is editing Markdown (search box
+        // disables this).
+        if opts.apply_exclusion_zone
+            && is_inside_code_link_or_frontmatter(text, cursor)
+        {
             return None;
         }
         let query = text[inner_start..cursor].to_string();
@@ -448,6 +458,31 @@ mod tests {
         let t = detect_trigger_with("foo #pro", 8, opts).unwrap();
         assert_eq!(t.kind, TriggerKind::Hashtag);
         assert_eq!(t.query, "pro");
+    }
+
+    #[test]
+    fn wikilink_inside_fenced_code_does_not_trigger() {
+        let text = "para\n\n```\n[[note\n```\nafter";
+        let cursor = text.find("[[note").unwrap() + 6;
+        assert!(ctx(text, cursor).is_none());
+    }
+
+    #[test]
+    fn wikilink_inside_frontmatter_does_not_trigger() {
+        let text = "---\ntitle: see [[me\n---\nbody";
+        let cursor = text.find("[[me").unwrap() + 4;
+        assert!(ctx(text, cursor).is_none());
+    }
+
+    #[test]
+    fn wikilink_reopen_mid_existing_target_still_works() {
+        // The spec carve-out: cursor inside an already-closed `[[foo]]`
+        // STILL triggers (so the user can edit the target). The new
+        // exclusion-zone check excludes only code/link/frontmatter,
+        // NOT closed wikilinks.
+        let text = "see [[foo]]";
+        let t = ctx(text, 7).unwrap(); // cursor between `o` and `o`
+        assert_eq!(t.kind, TriggerKind::Wikilink);
     }
 
     #[test]
