@@ -111,6 +111,42 @@ When the cursor is inside a link in the editor, **`Ctrl+G`** follows it:
 - **Image link (`![alt](path)`)** — opens the image file with the OS default image viewer. Relative paths resolve against the current note's directory; absolute vault paths (e.g. `/assets/foo.png`) resolve from the workspace root
 - **Hashtag label (`#tag`)** — hashtag tokens are highlighted in the editor. Pressing `Ctrl+G` while the cursor is on a hashtag opens the search modal pre-filled with that label filter (equivalent to typing `#tag` in search).
 
+### Wikilink and Hashtag Autocomplete
+
+The editor and the search modal both pop up a floating suggestion list when you start a wikilink or a hashtag.
+
+**Triggers:**
+
+- Typing `[[` in the editor opens a popup listing every note in the vault, ordered alphabetically by name. As you keep typing, the list filters by prefix against the note name (the wikilink target — the filename without extension, not the full path). The note's path is shown right-aligned and dimmed so you can disambiguate notes that share a name.
+- Typing `#` mid-line in the editor or anywhere in the search box opens a popup listing existing tags, ordered by usage. Filtering works the same way.
+
+**Header disambiguation:**
+
+A `#` at the start of a line is *not* an autocomplete trigger by default — it might be the beginning of a Markdown heading (`# Heading`). The popup opens only after you type the next character, and only if that next character is **not** a space:
+
+- `# Heading` — no popup (heading syntax)
+- `#project` — popup opens with prefix `p`
+
+**Key bindings (while the popup is open):**
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Move the highlighted suggestion |
+| `PageUp` / `PageDown` | Jump by a page |
+| `Home` / `End` | Jump to first / last suggestion |
+| `Tab` or `Enter` | Accept the highlighted suggestion |
+| `Esc` | Dismiss the popup without changing your text |
+
+For wikilinks, accepting a suggestion inserts the note name and automatically closes the `]]` brackets (or preserves them if they already exist), placing the cursor right after the closing brackets.
+
+The popup is non-blocking: you can ignore it and keep typing — it disappears as soon as the trigger context is broken (whitespace, newline, or cursor movement out of range). It also stays out of code spans, fenced blocks, frontmatter, and Markdown link bodies, so `#section` inside `https://example.com#section` does not pop up suggestions.
+
+The popup caps its visible rows (default 8). If more suggestions match, a directional `▲ N more` / `▼ N more` indicator shows that scrolling will reveal them; the popup never grows past its cap regardless of available screen space.
+
+In the search box, the same hashtag autocomplete works after the exclusion prefix `-`: typing `-#proj` and accepting a suggestion preserves the leading `-` so the search still excludes that tag.
+
+> **Note**: Autocomplete is available in the **textarea** editor backend. Users on the embedded Neovim backend should rely on their existing Neovim completion plugins.
+
 ### Text Formatting
 
 While the cursor is in the editor, format shortcuts wrap the current selection (or insert empty markers at the cursor when no selection is active):
