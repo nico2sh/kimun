@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.9...kimun_core-v0.2.10) - 2026-05-25
+
+### Added
+
+- *(cli)* add `kimun labels` command to list vault labels with note counts
+- *(core/db)* label-join in search SQL with INTERSECT semantics
+- *(core/search)* parse #label and lb:label query syntax
+- *(core)* NoteVault::list_labels and NoteVault::notes_with_label
+- *(core/db)* persist hashtag labels via NoteBatch and delete on note removal
+- *(core/note)* exclude code spans from hashtag extraction
+- *(core/note)* add code_char_ranges helper for hashtag exclusion
+- *(core/db)* add labels table and bump schema to 0.6
+
+### Fixed
+
+- *(cli/metadata)* delegate hashtag extraction to core for parity with index
+- *(core/note)* skip hashtag extraction inside wikilinks + document all exclusion zones
+- *(core)* symmetric word-boundary check + sync spec/MCP docs with extraction rules
+- *(core)* Unicode-aware label word boundary + cover bare-label-prefix test gap
+- *(core/search)* drop empty terms in from_query_string to prevent FTS4 empty-phrase error
+- *(core/db)* sanitize FTS4 metacharacters in user-supplied search terms
+- *(core)* CRLF frontmatter detection + ESCAPE on filename LIKE search
+- *(core)* extend LIKE escape to all path queries, skip frontmatter hashtags, cap query input
+- *(core/search)* dedupe labels and excluded_labels in from_query_string
+- *(tui/editor)* delegate label detection to core, skip labels inside links/code/fences, widen elem_index to u16
+- *(core/db)* escape LIKE patterns, drop redundant index, narrow ON CONFLICT, refactor NOTE_COLUMNS
+- *(core/note)* skip hashtag extraction inside links, HTML, and after label chars
+- *(core/db)* keep labels in sync on rename/delete operations
+- *(core/db)* use slice::from_ref for clippy::cloned_ref_to_slice_refs
+
+### Other
+
+- cargo fmt --all
+
 ## [0.2.9](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.8...kimun_core-v0.2.9) - 2026-05-18
 
 ### Other
