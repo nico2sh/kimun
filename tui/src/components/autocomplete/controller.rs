@@ -41,7 +41,21 @@ pub struct AutocompleteController {
     result_rx: UnboundedReceiver<QueryResult>,
     fetch_limit: usize,
     max_visible_rows: usize,
+    /// Handle of the most recently spawned query task. Cancelled before
+    /// the next spawn so a burst of keystrokes does not pile up N
+    /// concurrent SQLite queries holding the vault `Arc` open.
+    in_flight: Option<tokio::task::JoinHandle<()>>,
+    /// Optional callback used to wake the host's render loop after an
+    /// async query posts its result. Decoupled from any specific event
+    /// bus so the controller stays usable wherever the host can
+    /// trigger a redraw.
+    redraw_cb: Option<RedrawCallback>,
 }
+
+/// Fire-and-forget redraw signal owned by the controller and invoked
+/// from the spawned query task. The host wires this to its event loop
+/// (e.g. `tx.send(AppEvent::Redraw)`).
+pub type RedrawCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
 #[derive(Debug)]
 struct QueryResult {
@@ -63,6 +77,8 @@ impl AutocompleteController {
             result_rx,
             fetch_limit: DEFAULT_FETCH_LIMIT,
             max_visible_rows: DEFAULT_MAX_VISIBLE_ROWS,
+            in_flight: None,
+            redraw_cb: None,
         }
     }
 
@@ -72,6 +88,15 @@ impl AutocompleteController {
     pub fn with_trigger_opts(mut self, opts: TriggerOptions) -> Self {
         self.trigger_opts = opts;
         self
+    }
+
+    /// Register a redraw callback. Without one, the popup state updates
+    /// on background threads but the render loop has no signal to
+    /// wake. Idempotent — safe to call from a host's first
+    /// `handle_input` to lazily bind once the host has a way to
+    /// trigger redraws.
+    pub fn set_redraw_callback(&mut self, cb: RedrawCallback) {
+        self.redraw_cb = Some(cb);
     }
 
     /// Whether the popup is currently *interactive* — held state AND at
@@ -114,11 +139,21 @@ impl AutocompleteController {
         match outcome {
             PopupOutcome::Consumed(PopupAction::None) => HandleKeyOutcome::Consumed,
             PopupOutcome::Consumed(PopupAction::Accept) => {
-                let action = self.compute_accept(host);
-                self.close();
-                match action {
-                    Some(a) => HandleKeyOutcome::Accepted(a),
-                    None => HandleKeyOutcome::Consumed,
+                // Compute the accept BEFORE closing so a stale-range
+                // failure (None) can fall through to the host's normal
+                // key handling instead of silently swallowing the key:
+                // user pressed Tab expecting an indent or Enter
+                // expecting a newline; if the accept can't run we
+                // should still give them the key back.
+                match self.compute_accept(host) {
+                    Some(action) => {
+                        self.close();
+                        HandleKeyOutcome::Accepted(action)
+                    }
+                    None => {
+                        self.close();
+                        HandleKeyOutcome::NotHandled
+                    }
                 }
             }
             PopupOutcome::Consumed(PopupAction::Dismiss) => {
@@ -172,11 +207,6 @@ impl AutocompleteController {
             return;
         };
 
-        // No popup yet AND this is a non-edit reconcile → don't auto-open.
-        if self.state.is_none() && !allow_open {
-            return;
-        }
-
         let query_changed;
         let kind_changed;
         match self.state.as_ref() {
@@ -188,6 +218,17 @@ impl AutocompleteController {
                 kind_changed = existing.kind != trigger.kind;
                 query_changed = kind_changed || existing.query != trigger.query;
             }
+        }
+
+        // On a cursor-only reconcile (allow_open=false), neither
+        // opening a brand-new popup NOR replacing an existing popup
+        // with a different trigger kind counts as a refresh — the
+        // user did not type into the new context. Close instead so
+        // the popup doesn't materialise from a mouse click or arrow
+        // move into a different trigger zone.
+        if !allow_open && (self.state.is_none() || kind_changed) {
+            self.close();
+            return;
         }
 
         if self.state.is_none() || kind_changed {
@@ -227,12 +268,21 @@ impl AutocompleteController {
     }
 
     fn fire_query(&mut self, kind: TriggerKind, query: String) {
+        // Cancel any previous in-flight task — its result would be
+        // discarded on receive (generation mismatch) but the SQLite
+        // hit would still happen and the vault `Arc` would stay alive
+        // until the task drained. Aborting frees both.
+        if let Some(handle) = self.in_flight.take() {
+            handle.abort();
+        }
+
         self.generation = self.generation.wrapping_add(1);
         let req_gen = self.generation;
         let tx = self.result_tx.clone();
+        let redraw = self.redraw_cb.clone();
         let vault = self.vault.clone();
         let limit = self.fetch_limit;
-        tokio::spawn(async move {
+        self.in_flight = Some(tokio::spawn(async move {
             let items: Vec<Suggestion> = match kind {
                 TriggerKind::Wikilink => match vault.suggest_notes_by_prefix(&query, limit).await {
                     Ok(notes) => notes
@@ -242,7 +292,14 @@ impl AutocompleteController {
                             secondary: Some(n.path.to_string()),
                         })
                         .collect(),
-                    Err(_) => Vec::new(),
+                    Err(e) => {
+                        log::warn!(
+                            "autocomplete: suggest_notes_by_prefix({:?}) failed: {}",
+                            query,
+                            e
+                        );
+                        Vec::new()
+                    }
                 },
                 TriggerKind::Hashtag => match vault.suggest_tags_by_prefix(&query, limit).await {
                     Ok(tags) => tags
@@ -252,7 +309,14 @@ impl AutocompleteController {
                             secondary: Some(format!("{}×", t.usage_count)),
                         })
                         .collect(),
-                    Err(_) => Vec::new(),
+                    Err(e) => {
+                        log::warn!(
+                            "autocomplete: suggest_tags_by_prefix({:?}) failed: {}",
+                            query,
+                            e
+                        );
+                        Vec::new()
+                    }
                 },
             };
             let _ = tx.send(QueryResult {
@@ -260,7 +324,13 @@ impl AutocompleteController {
                 kind,
                 items,
             });
-        });
+            // Wake the host's render loop so the popup actually paints
+            // with the new items. `redraw_cb` may be None in unit
+            // tests; production hosts bind it via `set_redraw_callback`.
+            if let Some(redraw) = redraw {
+                redraw();
+            }
+        }));
     }
 
     fn compute_accept<H: AutocompleteHost>(&self, host: &H) -> Option<AcceptAction> {
@@ -508,6 +578,48 @@ mod tests {
         let names: Vec<&str> = st.items.iter().map(|s| s.display.as_str()).collect();
         assert!(names.contains(&"meeting"));
         assert!(!names.contains(&"novel"));
+    }
+
+    #[tokio::test]
+    async fn refresh_if_open_closes_on_kind_change() {
+        // Popup is open for Hashtag; cursor-only move (refresh_if_open)
+        // into a Wikilink context must NOT replace the popup with a
+        // wikilink one — close it instead. Opening a wikilink popup
+        // on cursor movement violates the refresh-only contract.
+        let (_tmp, vault) =
+            new_vault_with(&["meeting"], &[("a", "x #proj")]).await;
+        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new("#pro [[me", 4); // cursor after `#pro`
+        c.sync(&host);
+        drain_results(&mut c).await;
+        assert!(c.is_open());
+        assert_eq!(c.state().unwrap().kind, TriggerKind::Hashtag);
+        // Cursor jumps into the wikilink target (mouse click simulation).
+        host.cursor = 9;
+        c.refresh_if_open(&host);
+        assert!(c.state().is_none(), "kind change on movement must close");
+    }
+
+    #[tokio::test]
+    async fn accept_with_stale_range_falls_through_not_consumed() {
+        // Previously: Tab/Enter on a stale-range accept returned
+        // Consumed and silently ate the keystroke. Now returns
+        // NotHandled so the host can give the user back their Tab
+        // indent / Enter newline.
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut host = FakeHost::new("see [[me", 8);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        // Live buffer shrinks below the trigger range between sync
+        // and accept (e.g. an async event truncated the buffer).
+        host.buffer = "see [".into();
+        host.cursor = 5;
+        let outcome =
+            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        assert_eq!(outcome, HandleKeyOutcome::NotHandled);
+        assert!(c.state().is_none(), "popup must close even on fallthrough");
     }
 
     #[tokio::test]

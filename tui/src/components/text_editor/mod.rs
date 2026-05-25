@@ -134,6 +134,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
+use crate::components::events::redraw_callback;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
@@ -281,6 +282,11 @@ pub struct TextEditorComponent {
     /// backend so `maybe_recover_from_dead_nvim` can spin up the
     /// autocomplete controller after the fallback to Textarea.
     autocomplete_vault: Option<Arc<NoteVault>>,
+    /// Whether the autocomplete controller's redraw callback has been
+    /// bound to the app event bus. Bound lazily on the first
+    /// `handle_input` because `AppTx` is not available at
+    /// construction.
+    autocomplete_redraw_bound: bool,
 }
 
 impl TextEditorComponent {
@@ -301,6 +307,7 @@ impl TextEditorComponent {
             search: None,
             autocomplete: None,
             autocomplete_vault: None,
+            autocomplete_redraw_bound: false,
         }
     }
 
@@ -336,6 +343,9 @@ impl TextEditorComponent {
             vault,
             AutocompleteMode::Both,
         ));
+        // Fresh controller — `bind_autocomplete_redraw` must rebind
+        // on the next handle_input.
+        self.autocomplete_redraw_bound = false;
     }
 
     /// Build a snapshot view of the editor state for the autocomplete
@@ -981,6 +991,19 @@ impl TextEditorComponent {
         }
     }
 
+    /// Bind the autocomplete controller's redraw callback to the app
+    /// event bus. Called from `handle_input` (the first place where
+    /// the editor has access to `AppTx`) and is a no-op after the
+    /// first successful bind.
+    fn bind_autocomplete_redraw(&mut self, tx: &AppTx) {
+        if !self.autocomplete_redraw_bound {
+            if let Some(c) = self.autocomplete.as_mut() {
+                c.set_redraw_callback(redraw_callback(tx.clone()));
+                self.autocomplete_redraw_bound = true;
+            }
+        }
+    }
+
     fn close_search(&mut self) {
         if let BackendState::Textarea(ta) = &mut self.backend {
             let _ = ta.set_search_pattern("");
@@ -1343,6 +1366,7 @@ impl TextEditorComponent {
 impl Component for TextEditorComponent {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         self.maybe_recover_from_dead_nvim();
+        self.bind_autocomplete_redraw(tx);
 
         match event {
             InputEvent::Key(key) => {
