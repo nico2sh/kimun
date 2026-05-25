@@ -74,8 +74,17 @@ impl AutocompleteController {
         self
     }
 
+    /// Whether the popup is currently *interactive* — held state AND at
+    /// least one visible suggestion. Returns `false` while a query is
+    /// in flight (state exists but items not yet arrived) or when a
+    /// query returned no matches: in both cases the popup is not drawn
+    /// and must not intercept key events, so Esc/Up/Down/Tab fall
+    /// through to the host (modal Esc closes the modal, list Up/Down
+    /// navigates files, etc).
     pub fn is_open(&self) -> bool {
-        self.state.is_some()
+        self.state
+            .as_ref()
+            .map_or(false, |s| !s.items.is_empty())
     }
 
     pub fn state(&self) -> Option<&AutocompleteState> {
@@ -466,14 +475,34 @@ mod tests {
         let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
         let host = FakeHost::new("see [[me", 8);
         c.sync(&host);
-        assert!(c.is_open());
+        // State exists immediately; is_open() flips to true only once
+        // items have arrived (the popup is not "interactive" while a
+        // query is in flight).
+        assert!(c.state().is_some());
+        assert!(!c.is_open());
         drain_results(&mut c).await;
+        assert!(c.is_open());
         let st = c.state().unwrap();
         assert_eq!(st.kind, TriggerKind::Wikilink);
         assert_eq!(st.query, "me");
         let names: Vec<&str> = st.items.iter().map(|s| s.display.as_str()).collect();
         assert!(names.contains(&"meeting"));
         assert!(!names.contains(&"novel"));
+    }
+
+    #[tokio::test]
+    async fn popup_with_zero_results_is_not_interactive() {
+        // Trigger fires but the query returns nothing → state exists but
+        // is_open() is false so Esc/Up/Down/Tab fall through to the
+        // modal/editor instead of being swallowed.
+        let (_tmp, vault) = new_vault_with(&[], &[]).await; // empty vault
+        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let host = FakeHost::new("see [[xyz", 9);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        assert!(c.state().is_some());
+        assert_eq!(c.state().unwrap().items.len(), 0);
+        assert!(!c.is_open());
     }
 
     #[tokio::test]
