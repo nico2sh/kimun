@@ -82,9 +82,7 @@ impl AutocompleteController {
     /// through to the host (modal Esc closes the modal, list Up/Down
     /// navigates files, etc).
     pub fn is_open(&self) -> bool {
-        self.state
-            .as_ref()
-            .map_or(false, |s| !s.items.is_empty())
+        self.state.as_ref().is_some_and(|s| !s.items.is_empty())
     }
 
     pub fn state(&self) -> Option<&AutocompleteState> {

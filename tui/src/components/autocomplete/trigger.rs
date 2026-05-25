@@ -122,11 +122,9 @@ pub fn detect_trigger_with(
             match c {
                 ']' => wikilink_possible = false,
                 '|' => pipe_seen = true,
-                '[' => {
-                    if prev_was_bracket {
-                        wikilink_pos = Some(prev);
-                        break;
-                    }
+                '[' if prev_was_bracket => {
+                    wikilink_pos = Some(prev);
+                    break;
                 }
                 _ => {}
             }
