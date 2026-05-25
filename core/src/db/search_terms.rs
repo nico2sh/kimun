@@ -32,11 +32,11 @@ type PrefixEntry = (&'static str, &'static str, fn() -> ElementType);
 
 fn prefix_table() -> [PrefixEntry; 8] {
     [
-        ("in:-", ">-", || ElementType::ExcludedIn),
-        ("at:-", "@-", || ElementType::ExcludedAt),
-        ("pt:-", "/-", || ElementType::ExcludedPath),
-        ("lb:-", "#-", || ElementType::ExcludedLabel),
-        ("in:", ">", || ElementType::In),
+        ("-in:", "-<", || ElementType::ExcludedIn),
+        ("-at:", "-@", || ElementType::ExcludedAt),
+        ("-pt:", "-/", || ElementType::ExcludedPath),
+        ("-lb:", "-#", || ElementType::ExcludedLabel),
+        ("in:", "<", || ElementType::In),
         ("at:", "@", || ElementType::At),
         ("pt:", "/", || ElementType::Path),
         ("lb:", "#", || ElementType::Label),
@@ -61,37 +61,22 @@ impl QueryTermExtractor {
 
         let (element_type, remaining) = if let Some((el_type, remaining)) = detect_prefix(query) {
             (el_type, remaining.to_string())
-        } else if query.starts_with("-") {
-            // Handle excluded terms (simple `-term` syntax)
-            (
-                ElementType::ExcludedTerm,
-                query.strip_prefix("-").unwrap().to_string(),
-            )
         } else {
-            // Handle OrderBy (special case with asc/desc sub-detection)
+            // OrderBy must be checked before bare `-` so `-or:foo` and `-^foo`
+            // are recognized as descending sorts, not excluded terms.
             let order_prefix = format!("{}:", ORDER_LETTER);
-            if query.starts_with(&order_prefix) {
-                let desc_prefix = format!("{order_prefix}-");
-                let (asc, prefix) = if query.starts_with(&desc_prefix) {
-                    (false, desc_prefix)
-                } else {
-                    (true, order_prefix)
-                };
-                (
-                    ElementType::OrderBy { asc },
-                    query.strip_prefix(&prefix).unwrap_or(query).to_string(),
-                )
-            } else if query.starts_with(ORDER_CHAR) {
-                let desc_prefix = format!("{ORDER_CHAR}-");
-                let (asc, prefix) = if query.starts_with(&desc_prefix) {
-                    (false, desc_prefix.as_str())
-                } else {
-                    (true, ORDER_CHAR)
-                };
-                (
-                    ElementType::OrderBy { asc },
-                    query.strip_prefix(prefix).unwrap_or(query).to_string(),
-                )
+            let desc_order_prefix = format!("-{}:", ORDER_LETTER);
+            let desc_order_char = format!("-{}", ORDER_CHAR);
+            if let Some(rest) = query.strip_prefix(&desc_order_prefix) {
+                (ElementType::OrderBy { asc: false }, rest.to_string())
+            } else if let Some(rest) = query.strip_prefix(&order_prefix) {
+                (ElementType::OrderBy { asc: true }, rest.to_string())
+            } else if let Some(rest) = query.strip_prefix(&desc_order_char) {
+                (ElementType::OrderBy { asc: false }, rest.to_string())
+            } else if let Some(rest) = query.strip_prefix(ORDER_CHAR) {
+                (ElementType::OrderBy { asc: true }, rest.to_string())
+            } else if let Some(rest) = query.strip_prefix('-') {
+                (ElementType::ExcludedTerm, rest.to_string())
             } else {
                 (ElementType::Term, query.to_string())
             }
@@ -321,7 +306,7 @@ mod tests {
 
     #[test]
     fn search_in() {
-        let query = ">title in:othertitle";
+        let query = "<title in:othertitle";
         let search_terms = SearchTerms::from_query_string(query);
         println!("{:?}", &search_terms);
 
@@ -394,7 +379,7 @@ mod tests {
 
     #[test]
     fn search_combined() {
-        let query = "searchterm    @file otherterm at:directory in:title >text      \"some text\" /basedirectory";
+        let query = "searchterm    @file otherterm at:directory in:title <text      \"some text\" /basedirectory";
         let search_terms = SearchTerms::from_query_string(query);
         println!("{:?}", &search_terms);
 
@@ -433,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_compound_exclusion_prefixes() {
-        let search_terms = SearchTerms::from_query_string(">-draft in:-private @-temp /-secret");
+        let search_terms = SearchTerms::from_query_string("-<draft -in:private -@temp -/secret");
         assert!(search_terms.terms.is_empty());
         assert!(search_terms.breadcrumb.is_empty());
         assert_eq!(search_terms.excluded_breadcrumb, vec!["draft", "private"]);
@@ -462,10 +447,10 @@ mod tests {
 
     #[test]
     fn search_label_excluded_short() {
-        // Canonical excluded forms are `#-draft` and `lb:-draft`.
-        let s2 = SearchTerms::from_query_string("#-draft");
+        // Canonical excluded forms are `-#draft` and `-lb:draft`.
+        let s2 = SearchTerms::from_query_string("-#draft");
         assert_eq!(s2.excluded_labels, vec!["draft".to_string()]);
-        let s3 = SearchTerms::from_query_string("lb:-draft");
+        let s3 = SearchTerms::from_query_string("-lb:draft");
         assert_eq!(s3.excluded_labels, vec!["draft".to_string()]);
     }
 
@@ -499,7 +484,7 @@ mod tests {
 
     #[test]
     fn excluded_labels_are_deduped() {
-        let s = SearchTerms::from_query_string("#-draft lb:-draft #-old");
+        let s = SearchTerms::from_query_string("-#draft -lb:draft -#old");
         assert_eq!(
             s.excluded_labels,
             vec!["draft".to_string(), "old".to_string()]
@@ -518,7 +503,7 @@ mod tests {
     fn bare_prefix_terms_are_dropped() {
         // None of these bare prefixes should produce a term.
         for q in &[
-            ">", "-", ">-", "in:", "at:", "pt:", "/", "@", "/-", "@-", "#", "#-", "lb:", "lb:-",
+            "<", "-", "-<", "in:", "at:", "pt:", "/", "@", "-/", "-@", "#", "-#", "lb:", "-lb:",
         ] {
             let s = SearchTerms::from_query_string(*q);
             assert!(s.terms.is_empty(), "{:?} produced terms: {:?}", q, s.terms);

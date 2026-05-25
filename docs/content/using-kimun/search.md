@@ -56,14 +56,14 @@ at:tasks         → same (long form)
 at:notes         → notes with "notes" in the filename
 ```
 
-### `>` or `in:` — section filter
+### `<` or `in:` — section filter
 
 Filter notes by Markdown sections (defined by `#`, `##`, `###`, etc.). The search term must appear within that section:
 
 ```
->personal        → content under a "Personal" heading
+<personal        → content under a "Personal" heading
 in:personal      → same (long form)
->work            → content under a "Work" heading
+<work            → content under a "Work" heading
 in:meeting       → content under a "Meeting" heading
 ```
 
@@ -116,8 +116,8 @@ lb:review            → notes labelled "review"
 Prefix the label with `-` to exclude notes that carry it:
 
 ```
-#-draft              → exclude notes labelled "draft"
-lb:-draft            → same (long form)
+-#draft              → exclude notes labelled "draft"
+-lb:draft            → same (long form)
 ```
 
 ### Combining label filters
@@ -133,21 +133,24 @@ Label filters mix freely with free-text search and other operators:
 
 ```
 #finance report @2024           → labelled "finance", contains "report", filename has "2024"
-#project #-archived >work       → labelled "project", not "archived", under a "Work" section
+#project -#archived <work       → labelled "project", not "archived", under a "Work" section
 ```
 
 An unknown label (one that has never appeared in any note) returns zero results, not an error.
 
 ## Exclusion operators
 
-Use the `-` prefix to exclude terms from search results. Exclusion works with all operators and free text:
+Use the `-` prefix to exclude terms from search results. The `-` always leads, then the operator prefix follows:
 
 ```
 -cancelled           → exclude notes containing "cancelled"
->-draft              → exclude notes with "draft" in any section title
-@-temp               → exclude notes with "temp" in the filename
-/-private            → exclude notes under a "private/" directory
+-<draft              → exclude notes with "draft" in any section title
+-@temp               → exclude notes with "temp" in the filename
+-/private            → exclude notes under a "private/" directory
+-#draft              → exclude notes labelled "draft"
 ```
+
+Long forms work the same way: `-in:draft`, `-at:temp`, `-pt:private`, `-lb:draft`.
 
 ### Exclusion-only searches
 
@@ -155,9 +158,9 @@ You can search using only exclusions to find all notes except those matching the
 
 ```
 -cancelled           → all notes EXCEPT those containing "cancelled"
->-draft              → all notes EXCEPT those with "draft" in section titles
-@-temp               → all notes EXCEPT those with "temp" in the filename
-/-archive            → all notes EXCEPT those under an "archive/" directory
+-<draft              → all notes EXCEPT those with "draft" in section titles
+-@temp               → all notes EXCEPT those with "temp" in the filename
+-/archive            → all notes EXCEPT those under an "archive/" directory
 ```
 
 ## Combining filters
@@ -167,14 +170,14 @@ All operators compose freely in a single query. Space between terms = AND.
 Each term (with or without an operator prefix) must match for a note to appear:
 
 ```
-@tasks >work report                → file "tasks", has "Work" section, contains "report"
->personal kimun                    → "kimun" under a "Personal" section
+@tasks <work report                → file "tasks", has "Work" section, contains "report"
+<personal kimun                    → "kimun" under a "Personal" section
 @thoughts kimun                    → file "thoughts" containing "kimun"
 meeting -cancelled                 → "meeting" but not "cancelled"
-@2024 >-draft                      → files from 2024 without "draft" in section titles
-/journal >-temp report             → in journal/, not titled "temp", containing "report"
+@2024 -<draft                      → files from 2024 without "draft" in section titles
+/journal -<temp report             → in journal/, not titled "temp", containing "report"
 screen* @notes                     → starts with "screen", in file "notes"
->personal report -completed        → "report" under "Personal", excluding "completed"
+<personal report -completed        → "report" under "Personal", excluding "completed"
 ```
 
 ## Operator precedence
@@ -208,27 +211,27 @@ The simple but great note taking app!
 | Search | Returns | Reason |
 |---|---|---|
 | `kimun` | projects.md, tasks.md | both contain "kimun" |
-| `>personal kimun` | projects.md, tasks.md | "kimun" under a Personal heading in both |
-| `>personal report` | tasks.md | "report" only under Personal in tasks.md |
-| `@tasks >work` | tasks.md | file "tasks", has Work section |
+| `<personal kimun` | projects.md, tasks.md | "kimun" under a Personal heading in both |
+| `<personal report` | tasks.md | "report" only under Personal in tasks.md |
+| `@tasks <work` | tasks.md | file "tasks", has Work section |
 | `screen*` | any note with "screenshot", "screens", etc. | wildcard matches "screen" prefix |
 | `meeting -cancelled` | notes with "meeting" but not "cancelled" | exclusion removes matching notes |
-| `@2024 >-draft` | files from 2024 without "draft" in section titles | combined exclusion |
+| `@2024 -<draft` | files from 2024 without "draft" in section titles | combined exclusion |
 | `-cancelled` | all notes except those with "cancelled" | exclusion-only search |
-| `/journal >-temp` | notes in journal/ without "temp" in section titles | path + section exclusion |
-| `@tasks >work report` | tasks.md | file "tasks", "Work" section, contains "report" |
-| `@-archive >-draft` | all notes except those in archive/, excluding "draft" titles | combined exclusions |
+| `/journal -<temp` | notes in journal/ without "temp" in section titles | path + section exclusion |
+| `@tasks <work report` | tasks.md | file "tasks", "Work" section, contains "report" |
+| `-@archive -<draft` | all notes except those in archive/, excluding "draft" titles | combined exclusions |
 | `#finance` | notes labelled "finance" | label filter |
 | `lb:review` | notes labelled "review" | label filter (long form) |
 | `#finance #q2` | notes with both "finance" and "q2" labels | combined label filters |
-| `#project #-draft` | notes labelled "project" but not "draft" | label inclusion + exclusion |
+| `#project -#draft` | notes labelled "project" but not "draft" | label inclusion + exclusion |
 
 ## Edge cases
 
 - **Exclusion-only searches** return all notes except those matching the exclusion criteria
-- **Wildcards with operators**: `@task* >work` matches files starting with "task" that have a "Work" section
-- **Operator prefixes are case-insensitive**: `>Personal` and `>personal` are equivalent, `@Tasks` and `@tasks` are equivalent
-- **Multiple operators of same type**: `>work >personal` is AND — both sections must exist
+- **Wildcards with operators**: `@task* <work` matches files starting with "task" that have a "Work" section
+- **Operator prefixes are case-insensitive**: `<Personal` and `<personal` are equivalent, `@Tasks` and `@tasks` are equivalent
+- **Multiple operators of same type**: `<work <personal` is AND — both sections must exist
 - **Empty results**: If no notes match, the search returns an empty list
 - **Unknown labels**: `#nonexistent` returns zero results, not an error
 - **Hashtags in code**: `` `#tag` `` and hashtags inside fenced code blocks are not treated as labels
