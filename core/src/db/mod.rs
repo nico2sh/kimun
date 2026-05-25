@@ -449,7 +449,13 @@ fn add_breadcrumb_query(
                 search_base_sql(),
                 var_num
             ));
-            params.push(s.breadcrumb.iter().map(|b| fts4_quote(b)).collect::<Vec<_>>().join(" "));
+            params.push(
+                s.breadcrumb
+                    .iter()
+                    .map(|b| fts4_quote(b))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
         } else {
             let mut parts = Vec::with_capacity(s.breadcrumb.len() + s.excluded_breadcrumb.len());
             for b in &s.breadcrumb {
@@ -602,7 +608,10 @@ fn path_term_conditions(
             None => {
                 let op = if positive { "LIKE" } else { "NOT LIKE" };
                 (
-                    format!("notes.basePath {} ('/' || ?{} || '%') ESCAPE '\\'", op, var_num),
+                    format!(
+                        "notes.basePath {} ('/' || ?{} || '%') ESCAPE '\\'",
+                        op, var_num
+                    ),
                     escape_like_pattern(term),
                 )
             }
@@ -636,24 +645,19 @@ pub async fn list_labels(pool: &SqlitePool) -> Result<Vec<String>, DBError> {
 }
 
 pub async fn label_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, DBError> {
-    let rows: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT name, COUNT(*) as cnt FROM labels GROUP BY name ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT name, COUNT(*) as cnt FROM labels GROUP BY name ORDER BY name")
+            .fetch_all(pool)
+            .await?;
     Ok(rows)
 }
 
-pub async fn notes_with_label(
-    pool: &SqlitePool,
-    name: &str,
-) -> Result<Vec<VaultPath>, DBError> {
+pub async fn notes_with_label(pool: &SqlitePool, name: &str) -> Result<Vec<VaultPath>, DBError> {
     let normalized = name.to_lowercase();
-    let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT path FROM labels WHERE name = ?")
-            .bind(&normalized)
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM labels WHERE name = ?")
+        .bind(&normalized)
+        .fetch_all(pool)
+        .await?;
     Ok(rows.into_iter().map(|(p,)| VaultPath::new(p)).collect())
 }
 
@@ -757,10 +761,7 @@ pub async fn get_notes(
         ("basePath = ?".to_string(), path.to_string())
     };
     let sql = format!("SELECT {} FROM notes where {}", NOTE_COLUMNS, where_clause);
-    let rows = sqlx::query(&sql)
-        .bind(bind_value)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(&sql).bind(bind_value).fetch_all(pool).await?;
 
     rows.iter().map(row_to_note_entry).collect()
 }
@@ -1772,7 +1773,10 @@ mod tests {
         .fetch_one(db.pool())
         .await
         .unwrap();
-        assert_eq!(idx_name.0, 0, "labels_by_name index must not exist (dropped in 0.7)");
+        assert_eq!(
+            idx_name.0, 0,
+            "labels_by_name index must not exist (dropped in 0.7)"
+        );
 
         let idx_path: (i64,) = sqlx::query_as(
             "SELECT count(*) FROM sqlite_master \
@@ -1804,7 +1808,9 @@ mod tests {
         };
 
         let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, body)]).await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, body)])
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
         let rows: Vec<(String, String)> =
@@ -1842,7 +1848,9 @@ mod tests {
         };
 
         let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry_v1, body_v1)]).await.unwrap();
+        super::insert_notes(&mut tx, &[(entry_v1, body_v1)])
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
         let body_v2 = "after #keep only".to_string();
@@ -1853,16 +1861,17 @@ mod tests {
         };
 
         let mut tx = db.pool().begin().await.unwrap();
-        super::update_notes(&mut tx, &[(entry_v2, body_v2)]).await.unwrap();
+        super::update_notes(&mut tx, &[(entry_v2, body_v2)])
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT name FROM labels WHERE path = ? ORDER BY name",
-        )
-        .bind(path.to_string())
-        .fetch_all(db.pool())
-        .await
-        .unwrap();
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM labels WHERE path = ? ORDER BY name")
+                .bind(path.to_string())
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
         assert_eq!(
             rows.into_iter().map(|(n,)| n).collect::<Vec<_>>(),
             vec!["keep".to_string()],
@@ -1890,16 +1899,19 @@ mod tests {
         };
 
         let mut tx = db.pool().begin().await.unwrap();
-        super::insert_notes(&mut tx, &[(entry, body)]).await.unwrap();
-        super::delete_notes(&mut tx, std::slice::from_ref(&path)).await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, body)])
+            .await
+            .unwrap();
+        super::delete_notes(&mut tx, std::slice::from_ref(&path))
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
-        let count: (i64,) =
-            sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
-                .bind(path.to_string())
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
+            .bind(path.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
         assert_eq!(count.0, 0);
 
         db.close().await.unwrap();
@@ -1920,7 +1932,11 @@ mod tests {
     fn test_search_terms_query_two_labels_intersect() {
         let (sql, params) = build_search_sql_query("#a #b");
         assert_eq!(params.len(), 2);
-        assert!(sql.contains("INTERSECT"), "two labels should INTERSECT: {}", sql);
+        assert!(
+            sql.contains("INTERSECT"),
+            "two labels should INTERSECT: {}",
+            sql
+        );
     }
 
     #[tokio::test]
@@ -1966,7 +1982,9 @@ mod tests {
         let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
         assert_eq!(paths, vec!["/a.md".to_string()]);
 
-        let results = super::search_terms(db.pool(), "#important #todo").await.unwrap();
+        let results = super::search_terms(db.pool(), "#important #todo")
+            .await
+            .unwrap();
         let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
         assert_eq!(paths, vec!["/a.md".to_string()]);
 
@@ -2000,8 +2018,11 @@ mod tests {
 
         let (sql, _) = super::build_search_sql_query("#important");
         let plan_sql = format!("EXPLAIN QUERY PLAN {}", sql);
-        let rows: Vec<(i64, i64, i64, String)> =
-            sqlx::query_as(&plan_sql).bind("important").fetch_all(db.pool()).await.unwrap();
+        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(&plan_sql)
+            .bind("important")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
         let plan_text = rows
             .iter()
             .map(|(_, _, _, detail)| detail.as_str())
@@ -2089,11 +2110,10 @@ mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        let rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT name, path FROM labels")
-                .fetch_all(db.pool())
-                .await
-                .unwrap();
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT name, path FROM labels")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
         assert_eq!(
             rows,
             vec![("moved".to_string(), "/new_dir/note.md".to_string())],
@@ -2169,23 +2189,21 @@ mod tests {
             .unwrap();
         tx.commit().await.unwrap();
 
-        let remaining: Vec<(String,)> =
-            sqlx::query_as("SELECT path FROM notes ORDER BY path")
-                .fetch_all(db.pool())
-                .await
-                .unwrap();
+        let remaining: Vec<(String,)> = sqlx::query_as("SELECT path FROM notes ORDER BY path")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
         assert_eq!(
             remaining.into_iter().map(|(p,)| p).collect::<Vec<_>>(),
             vec![sibling.to_string()],
             "sibling /myXdir/b.md must be untouched"
         );
 
-        let sibling_label: (i64,) =
-            sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
-                .bind(sibling.to_string())
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
+        let sibling_label: (i64,) = sqlx::query_as("SELECT count(*) FROM labels WHERE path = ?")
+            .bind(sibling.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
         assert_eq!(sibling_label.0, 1, "sibling label preserved");
 
         db.close().await.unwrap();
@@ -2210,12 +2228,28 @@ mod tests {
         let target = VaultPath::note_path_from("/notes/a.md");
         let sibling = VaultPath::note_path_from("/notes_archive/b.md");
         let entries = vec![
-            (NoteEntryData { path: target.clone(), size: 10, modified_secs: 0 }, "x".to_string()),
-            (NoteEntryData { path: sibling.clone(), size: 10, modified_secs: 0 }, "y".to_string()),
+            (
+                NoteEntryData {
+                    path: target.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: sibling.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y".to_string(),
+            ),
         ];
         let mut tx = db.pool().begin().await.unwrap();
         super::insert_notes(&mut tx, &entries).await.unwrap();
-        super::delete_directories(&mut tx, &[VaultPath::new("/notes")]).await.unwrap();
+        super::delete_directories(&mut tx, &[VaultPath::new("/notes")])
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
         let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM notes ORDER BY path")
@@ -2223,7 +2257,11 @@ mod tests {
             .await
             .unwrap();
         let paths: Vec<String> = rows.into_iter().map(|(p,)| p).collect();
-        assert_eq!(paths, vec![sibling.to_string()], "sibling /notes_archive/ must not be deleted");
+        assert_eq!(
+            paths,
+            vec![sibling.to_string()],
+            "sibling /notes_archive/ must not be deleted"
+        );
         db.close().await.unwrap();
     }
 
@@ -2238,8 +2276,22 @@ mod tests {
         let target = VaultPath::note_path_from("/my_notes/a.md");
         let sibling = VaultPath::note_path_from("/myXnotes/b.md");
         let entries = vec![
-            (NoteEntryData { path: target.clone(), size: 10, modified_secs: 0 }, "x".to_string()),
-            (NoteEntryData { path: sibling.clone(), size: 10, modified_secs: 0 }, "y".to_string()),
+            (
+                NoteEntryData {
+                    path: target.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: sibling.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y".to_string(),
+            ),
         ];
         let mut tx = db.pool().begin().await.unwrap();
         super::insert_notes(&mut tx, &entries).await.unwrap();
@@ -2248,7 +2300,11 @@ mod tests {
         // pt:my_notes search must only match /my_notes/, not /myXnotes/.
         let results = super::search_terms(db.pool(), "pt:my_notes").await.unwrap();
         let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-        assert_eq!(paths, vec![target.to_string()], "underscore must be literal in path search");
+        assert_eq!(
+            paths,
+            vec![target.to_string()],
+            "underscore must be literal in path search"
+        );
         db.close().await.unwrap();
     }
 
@@ -2263,8 +2319,22 @@ mod tests {
         let target = VaultPath::note_path_from("/my_note.md");
         let sibling = VaultPath::note_path_from("/myXnote.md");
         let entries = vec![
-            (NoteEntryData { path: target.clone(), size: 10, modified_secs: 0 }, "x".to_string()),
-            (NoteEntryData { path: sibling.clone(), size: 10, modified_secs: 0 }, "y".to_string()),
+            (
+                NoteEntryData {
+                    path: target.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: sibling.clone(),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y".to_string(),
+            ),
         ];
         let mut tx = db.pool().begin().await.unwrap();
         super::insert_notes(&mut tx, &entries).await.unwrap();
@@ -2272,7 +2342,11 @@ mod tests {
 
         let results = super::search_terms(db.pool(), "@my_note").await.unwrap();
         let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
-        assert_eq!(paths, vec![target.to_string()], "underscore must be literal in filename search");
+        assert_eq!(
+            paths,
+            vec![target.to_string()],
+            "underscore must be literal in filename search"
+        );
         db.close().await.unwrap();
     }
 
@@ -2296,7 +2370,18 @@ mod tests {
         tx.commit().await.unwrap();
 
         // Each of these would have produced an FTS4 syntax error before the fix.
-        for q in &["(meeting", "*", "meet*ing", "title:value", "a^b", ">", "-", ">-", "in:", "at:"] {
+        for q in &[
+            "(meeting",
+            "*",
+            "meet*ing",
+            "title:value",
+            "a^b",
+            ">",
+            "-",
+            ">-",
+            "in:",
+            "at:",
+        ] {
             let res = super::search_terms(db.pool(), q).await;
             assert!(
                 res.is_ok(),
