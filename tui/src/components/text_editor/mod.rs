@@ -382,9 +382,7 @@ impl TextEditorComponent {
         self.mark_saved(reconstructed);
         // Buffer replaced — close any open autocomplete popup so it does
         // not linger over the new note (e.g. after Ctrl+G follow-link).
-        if let Some(c) = self.autocomplete.as_mut() {
-            c.close();
-        }
+        self.close_autocomplete();
     }
 
     pub fn get_text(&self) -> String {
@@ -911,10 +909,23 @@ impl TextEditorComponent {
             self.search_advance(false);
             return;
         }
+        // Yield key focus to the find bar — close the autocomplete popup
+        // so it stops intercepting Esc / Up / Down / Tab / Enter, which
+        // belong to the find bar while it is active.
+        self.close_autocomplete();
         self.search = Some(SearchState {
             input: SingleLineInput::new(),
             status: SearchStatus::Empty,
         });
+    }
+
+    /// Close the autocomplete popup, if any. Cheap; safe on any backend
+    /// (no-op when `autocomplete` is None). Use whenever focus moves
+    /// away from the editor or another overlay takes over key input.
+    pub fn close_autocomplete(&mut self) {
+        if let Some(c) = self.autocomplete.as_mut() {
+            c.close();
+        }
     }
 
     fn close_search(&mut self) {
@@ -1324,16 +1335,14 @@ impl Component for TextEditorComponent {
                 let len_after = self.textarea_buffer_len();
                 if len_after != len_before {
                     self.sync_autocomplete();
-                } else if let Some(c) = self.autocomplete.as_mut() {
-                    c.close();
+                } else {
+                    self.close_autocomplete();
                 }
                 result
             }
             InputEvent::Mouse(mouse) => {
                 let result = self.handle_mouse(mouse, tx);
-                if let Some(c) = self.autocomplete.as_mut() {
-                    c.close();
-                }
+                self.close_autocomplete();
                 result
             }
             // Bracketed paste is intercepted by EditorScreen so it can run the
