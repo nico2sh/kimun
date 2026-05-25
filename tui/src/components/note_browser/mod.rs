@@ -333,6 +333,12 @@ impl Component for NoteBrowserModal {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
         if let InputEvent::Mouse(mouse) = event {
+            // Any mouse interaction inside the modal takes focus away
+            // from the search input — close the popup so it doesn't
+            // paint stale at the old caret coords. Done before the
+            // bounds check so clicks on the preview pane or border
+            // still dismiss the popup.
+            self.autocomplete.close();
             let r = self.list_rect;
             if !r.contains(Position {
                 x: mouse.column,
@@ -340,10 +346,6 @@ impl Component for NoteBrowserModal {
             }) {
                 return EventState::NotConsumed;
             }
-            // Any mouse interaction takes focus away from the search
-            // input — close the popup so it doesn't paint stale at the
-            // old caret coords over the list/preview.
-            self.autocomplete.close();
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
                     if mouse.row > r.y {

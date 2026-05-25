@@ -427,6 +427,12 @@ impl TextEditorComponent {
     }
 
     pub fn set_text(&mut self, text: String) {
+        // No-op when the buffer would be identical — preserves view
+        // scroll, selection, edit generation cache, and an open
+        // autocomplete popup. Saves the expensive lines clone too.
+        if text == self.get_text() {
+            return;
+        }
         match &mut self.backend {
             BackendState::Textarea(ta) => {
                 let lines = text.lines();
@@ -581,6 +587,11 @@ impl TextEditorComponent {
                 self.edit_generation = self.edit_generation.wrapping_add(1);
             }
         }
+        // The buffer just changed under the popup's feet; reconcile
+        // the trigger context so a stale replace_range cannot survive
+        // into the next Accept.
+        self.bind_autocomplete_redraw(tx);
+        self.sync_autocomplete();
     }
 
     /// Inserts `text` at the cursor, replacing any active selection. Routes
@@ -600,6 +611,10 @@ impl TextEditorComponent {
             self.selection = ta.selection_range();
             self.edit_generation = self.edit_generation.wrapping_add(1);
         }
+        // See `paste_text` — out-of-band buffer mutation must
+        // re-reconcile the popup state.
+        self.bind_autocomplete_redraw(tx);
+        self.sync_autocomplete();
     }
 
     /// Snapshot of the system clipboard image, if any. Returns owned RGBA bytes
