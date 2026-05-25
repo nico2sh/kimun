@@ -1,10 +1,11 @@
+use std::ops::Range;
 use std::sync::Arc;
 
 use kimun_core::NoteVault;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use super::host::AutocompleteHost;
-use super::popup::{handle_key, PopupAction, PopupOutcome};
+use super::popup::{handle_key as popup_handle_key, PopupAction, PopupOutcome};
 use super::state::{AutocompleteState, Suggestion, DEFAULT_MAX_VISIBLE_ROWS};
 use super::trigger::{detect_trigger, TriggerKind};
 
@@ -76,32 +77,36 @@ impl AutocompleteController {
         self.state = None;
     }
 
-    /// Route a key event through the popup when one is open. Returns the
-    /// popup's outcome so the host can decide whether to fall through to
-    /// its own key handling.
-    ///
-    /// On `Accept`, the controller writes the replacement to the host and
-    /// closes the popup before returning, so the host just needs to treat
-    /// the outcome as "consumed, no further action".
+    /// Route a key event through the popup when one is open. Returns a
+    /// `HandleKeyOutcome` so the host can decide whether to apply an
+    /// accept, fall through to its own key handling, etc. The controller
+    /// never mutates the host's buffer directly — on accept it returns an
+    /// `AcceptAction` describing the replacement.
     pub fn handle_key<H: AutocompleteHost>(
         &mut self,
         key: ratatui::crossterm::event::KeyEvent,
-        host: &mut H,
-    ) -> PopupOutcome {
+        host: &H,
+    ) -> HandleKeyOutcome {
         let Some(state) = self.state.as_mut() else {
-            return PopupOutcome::NotHandled;
+            return HandleKeyOutcome::NotHandled;
         };
-        let outcome = handle_key(state, key);
+        let outcome = popup_handle_key(state, key);
         match outcome {
+            PopupOutcome::Consumed(PopupAction::None) => HandleKeyOutcome::Consumed,
             PopupOutcome::Consumed(PopupAction::Accept) => {
-                self.accept(host);
+                let action = self.compute_accept(host);
+                self.close();
+                match action {
+                    Some(a) => HandleKeyOutcome::Accepted(a),
+                    None => HandleKeyOutcome::Consumed,
+                }
             }
             PopupOutcome::Consumed(PopupAction::Dismiss) => {
                 self.close();
+                HandleKeyOutcome::Dismissed
             }
-            _ => {}
+            PopupOutcome::NotHandled => HandleKeyOutcome::NotHandled,
         }
-        outcome
     }
 
     /// Inspect the host's current buffer + cursor and reconcile the popup
@@ -216,40 +221,64 @@ impl AutocompleteController {
         });
     }
 
-    fn accept<H: AutocompleteHost>(&mut self, host: &mut H) {
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(suggestion) = state.selected().cloned() else {
-            return;
-        };
+    fn compute_accept<H: AutocompleteHost>(&self, host: &H) -> Option<AcceptAction> {
+        let state = self.state.as_ref()?;
+        let suggestion = state.selected()?.clone();
         let kind = state.kind;
         let range = state.replace_range.clone();
-        self.close();
 
         match kind {
             TriggerKind::Wikilink => {
                 let buffer = host.buffer_text();
                 let close_exists = buffer.as_bytes().get(range.end..range.end + 2)
                     == Some(b"]]");
-                let to_insert = if close_exists {
+                let new_text = if close_exists {
                     suggestion.display.clone()
                 } else {
                     format!("{}]]", suggestion.display)
                 };
                 // Cursor lands after the closing `]]` whether we inserted
-                // them or not. Length contribution of the closing pair to
-                // the post-replacement buffer is always 2 from the start
-                // of `display`.
-                let new_cursor = range.start + suggestion.display.len() + 2;
-                host.apply_replacement(range, &to_insert, new_cursor);
+                // them or not. The contribution of the closing pair is
+                // always 2 bytes from the start of `display`.
+                let new_cursor_byte = range.start + suggestion.display.len() + 2;
+                Some(AcceptAction {
+                    range,
+                    new_text,
+                    new_cursor_byte,
+                })
             }
             TriggerKind::Hashtag => {
-                let new_cursor = range.start + suggestion.display.len();
-                host.apply_replacement(range, &suggestion.display, new_cursor);
+                let new_cursor_byte = range.start + suggestion.display.len();
+                Some(AcceptAction {
+                    range,
+                    new_text: suggestion.display,
+                    new_cursor_byte,
+                })
             }
         }
     }
+}
+
+/// What the controller decided when forwarded a key event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandleKeyOutcome {
+    /// Popup was open and consumed the key as navigation.
+    Consumed,
+    /// Popup was open; user dismissed with Esc.
+    Dismissed,
+    /// Popup was open; user accepted. The host should apply the action.
+    Accepted(AcceptAction),
+    /// Popup was either closed or did not handle this key — host should
+    /// process it as a normal key event, then call `sync()` afterward.
+    NotHandled,
+}
+
+/// A buffer replacement the host needs to perform after an accept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptAction {
+    pub range: Range<usize>,
+    pub new_text: String,
+    pub new_cursor_byte: usize,
 }
 
 #[cfg(test)]
@@ -257,7 +286,6 @@ mod tests {
     use super::*;
     use kimun_core::nfs::VaultPath;
     use kimun_core::{NoteVault, VaultConfig};
-    use std::ops::Range;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -273,6 +301,11 @@ mod tests {
                 cursor,
             }
         }
+
+        fn apply(&mut self, action: &AcceptAction) {
+            self.buffer.replace_range(action.range.clone(), &action.new_text);
+            self.cursor = action.new_cursor_byte;
+        }
     }
 
     impl AutocompleteHost for FakeHost {
@@ -281,15 +314,6 @@ mod tests {
         }
         fn cursor_byte_offset(&self) -> usize {
             self.cursor
-        }
-        fn apply_replacement(
-            &mut self,
-            range: Range<usize>,
-            new_text: &str,
-            new_cursor_byte: usize,
-        ) {
-            self.buffer.replace_range(range, new_text);
-            self.cursor = new_cursor_byte;
         }
         fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
             Some((0, 0))
@@ -400,15 +424,14 @@ mod tests {
         let mut host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
-        // Accept via the popup's key path so we also exercise the
-        // controller's PopupAction::Accept branch.
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let _ = c.handle_key(
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            &mut host,
-        );
+        let outcome =
+            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
         assert_eq!(host.buffer, "see [[meeting]]");
-        // Cursor lands right after the `]]`.
         assert_eq!(host.cursor, host.buffer.len());
         assert!(!c.is_open());
     }
@@ -417,15 +440,16 @@ mod tests {
     async fn accepting_wikilink_preserves_existing_closing_brackets() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
         let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
-        // Cursor is between `[[me` and `]]` — user opened the popup mid-edit.
         let mut host = FakeHost::new("see [[me]]", 8);
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let _ = c.handle_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut host,
-        );
+        let outcome =
+            c.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
         assert_eq!(host.buffer, "see [[meeting]]");
         assert_eq!(host.cursor, host.buffer.len());
     }
@@ -438,10 +462,12 @@ mod tests {
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let _ = c.handle_key(
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            &mut host,
-        );
+        let outcome =
+            c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {:?}", outcome);
+        };
+        host.apply(&action);
         assert_eq!(host.buffer, "about #projects");
         assert_eq!(host.cursor, host.buffer.len());
     }
@@ -450,16 +476,14 @@ mod tests {
     async fn esc_dismisses_without_changing_buffer() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
         let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
-        let mut host = FakeHost::new("see [[me", 8);
+        let host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let _ = c.handle_key(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            &mut host,
-        );
+        let outcome =
+            c.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &host);
+        assert_eq!(outcome, HandleKeyOutcome::Dismissed);
         assert_eq!(host.buffer, "see [[me");
-        assert_eq!(host.cursor, 8);
         assert!(!c.is_open());
     }
 
