@@ -277,6 +277,10 @@ pub struct TextEditorComponent {
     /// backend after `set_vault` is called; remains `None` for the Nvim
     /// backend (nvim users have their own completion ecosystem).
     autocomplete: Option<AutocompleteController>,
+    /// Vault handle stored at `set_vault` time. Kept even on the Nvim
+    /// backend so `maybe_recover_from_dead_nvim` can spin up the
+    /// autocomplete controller after the fallback to Textarea.
+    autocomplete_vault: Option<Arc<NoteVault>>,
 }
 
 impl TextEditorComponent {
@@ -296,16 +300,38 @@ impl TextEditorComponent {
             nvim_pending_z: false,
             search: None,
             autocomplete: None,
+            autocomplete_vault: None,
         }
     }
 
-    /// Attach a vault so autocomplete can query notes/tags. No-op for the
-    /// Nvim backend — the embedded neovim instance owns its own input
-    /// pipeline.
+    /// Attach a vault so autocomplete can query notes/tags. Activates
+    /// the controller immediately on the textarea backend; on Nvim, the
+    /// vault is stashed and the controller is spun up later if
+    /// `maybe_recover_from_dead_nvim` falls back to Textarea.
     pub fn set_vault(&mut self, vault: Arc<NoteVault>) {
-        if matches!(self.backend, BackendState::Nvim(_)) {
+        self.autocomplete_vault = Some(vault.clone());
+        if matches!(self.backend, BackendState::Textarea(_)) {
+            self.autocomplete = Some(AutocompleteController::new(
+                vault,
+                AutocompleteMode::Both,
+            ));
+        }
+    }
+
+    /// Spin up the autocomplete controller if a vault was previously
+    /// stashed and the controller isn't already running. Called after
+    /// the Nvim → Textarea fallback so the post-crash session has the
+    /// popup available.
+    fn ensure_autocomplete_for_textarea(&mut self) {
+        if self.autocomplete.is_some() {
             return;
         }
+        if !matches!(self.backend, BackendState::Textarea(_)) {
+            return;
+        }
+        let Some(vault) = self.autocomplete_vault.clone() else {
+            return;
+        };
         self.autocomplete = Some(AutocompleteController::new(
             vault,
             AutocompleteMode::Both,
@@ -821,6 +847,10 @@ impl TextEditorComponent {
         if let Some(text) = fallback_text {
             tracing::warn!("nvim process died; falling back to textarea backend");
             self.backend = BackendState::Textarea(TextArea::from(text.lines()));
+            // Spin up the autocomplete controller now that we're on the
+            // textarea backend — set_vault was a no-op at startup when
+            // we were still on Nvim.
+            self.ensure_autocomplete_for_textarea();
         }
     }
 
