@@ -77,7 +77,8 @@ impl EditorScreen {
         let icons = s.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &s);
         let backlinks_panel = BacklinksPanel::new(vault.clone(), kb.clone());
-        let editor = TextEditorComponent::new(kb, &s);
+        let mut editor = TextEditorComponent::new(kb, &s);
+        editor.set_vault(vault.clone());
         drop(s);
         Self {
             settings,

@@ -1,3 +1,4 @@
+pub mod autocomplete_glue;
 pub mod backend;
 pub mod markdown;
 pub mod nvim_rpc;
@@ -121,12 +122,20 @@ fn try_build_markdown_link(clip: &str, selection: Option<&str>) -> Option<String
     Some(format!("[{escaped}]({url})"))
 }
 
+use std::sync::Arc;
+
+use kimun_core::NoteVault;
+
 use crate::components::Component;
+use crate::components::autocomplete::{
+    self, AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
+};
 use crate::components::event_state::EventState;
 use crate::components::events::AppEvent;
 use crate::components::events::AppTx;
 use crate::components::events::InputEvent;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::components::text_editor::autocomplete_glue::apply_accept_to_textarea;
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::TextAction;
 use crate::settings::AppSettings;
@@ -204,6 +213,32 @@ fn render_search_bar(f: &mut Frame, rect: Rect, state: &SearchState, theme: &The
     }
 }
 
+/// Snapshot used to satisfy `AutocompleteHost`. The snapshot is owned so
+/// the controller's borrow does not overlap with the textarea's `&mut`
+/// borrow during key handling and replacement.
+struct EditorHostSnapshot {
+    lines: Vec<String>,
+    cursor_byte: usize,
+    cursor_screen: Option<(u16, u16)>,
+}
+
+impl AutocompleteHost for EditorHostSnapshot {
+    fn buffer_text(&self) -> String {
+        self.lines.join("\n")
+    }
+    fn cursor_byte_offset(&self) -> usize {
+        self.cursor_byte
+    }
+    fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
+        // We anchor at the cursor's last-rendered screen position. The
+        // controller passes `anchor_col` (byte offset of the start of the
+        // typed query) but visually anchoring at the cursor is fine — the
+        // popup sits adjacent to the typed text either way and avoids
+        // re-walking the wrap layout for an arbitrary byte offset.
+        self.cursor_screen
+    }
+}
+
 pub struct TextEditorComponent {
     backend: BackendState,
     /// Tracks the rendered rect to map mouse click coordinates.
@@ -224,6 +259,10 @@ pub struct TextEditorComponent {
     nvim_pending_z: bool,
     /// Active Ctrl+F find bar; `None` when not searching.
     search: Option<SearchState>,
+    /// Wikilink/hashtag autocomplete. Only populated for the textarea
+    /// backend after `set_vault` is called; remains `None` for the Nvim
+    /// backend (nvim users have their own completion ecosystem).
+    autocomplete: Option<AutocompleteController>,
 }
 
 impl TextEditorComponent {
@@ -242,6 +281,61 @@ impl TextEditorComponent {
             clipboard: Clipboard::new().ok(),
             nvim_pending_z: false,
             search: None,
+            autocomplete: None,
+        }
+    }
+
+    /// Attach a vault so autocomplete can query notes/tags. No-op for the
+    /// Nvim backend — the embedded neovim instance owns its own input
+    /// pipeline.
+    pub fn set_vault(&mut self, vault: Arc<NoteVault>) {
+        if matches!(self.backend, BackendState::Nvim(_)) {
+            return;
+        }
+        self.autocomplete = Some(AutocompleteController::new(
+            vault,
+            AutocompleteMode::Both,
+        ));
+    }
+
+    /// Build a snapshot view of the editor state for the autocomplete
+    /// controller. Lives separately so the controller can borrow it
+    /// without colliding with the textarea's `&mut self` borrow.
+    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot> {
+        let BackendState::Textarea(ta) = &self.backend else {
+            return None;
+        };
+        let lines: Vec<String> = ta.lines().iter().map(|l| l.to_string()).collect();
+        let (row, col) = cursor_tuple(ta);
+        let cursor_byte =
+            autocomplete_glue::row_char_col_to_byte(&lines, row, col);
+        Some(EditorHostSnapshot {
+            lines,
+            cursor_byte,
+            cursor_screen: self.view.last_cursor_screen,
+        })
+    }
+
+    /// Pull the latest async query results into the popup state. Called
+    /// once per render before drawing the overlay.
+    fn poll_autocomplete(&mut self) {
+        if let Some(controller) = self.autocomplete.as_mut() {
+            controller.poll_results();
+        }
+    }
+
+    /// Recompute the popup's trigger context from the current buffer and
+    /// cursor. Call after any mutating key handle (typed letter, paste,
+    /// backspace, cursor movement, etc.).
+    fn sync_autocomplete(&mut self) {
+        let Some(snapshot) = self.autocomplete_host_snapshot() else {
+            if let Some(c) = self.autocomplete.as_mut() {
+                c.close();
+            }
+            return;
+        };
+        if let Some(controller) = self.autocomplete.as_mut() {
+            controller.sync(&snapshot);
         }
     }
 
@@ -1167,12 +1261,46 @@ impl Component for TextEditorComponent {
 
         match event {
             InputEvent::Key(key) => {
+                // Autocomplete popup, when open, gets first crack at the
+                // key. Accept / Dismiss are fully handled here; navigation
+                // is consumed but does nothing to the buffer; NotHandled
+                // falls through to the normal textarea flow (and then we
+                // resync the popup so the typed letter refines the query
+                // or breaks the trigger context).
+                if let Some(host) = self.autocomplete_host_snapshot() {
+                    if let Some(controller) = self.autocomplete.as_mut() {
+                        if controller.is_open() {
+                            match controller.handle_key(*key, &host) {
+                                HandleKeyOutcome::Accepted(action) => {
+                                    if let BackendState::Textarea(ta) = &mut self.backend {
+                                        apply_accept_to_textarea(ta, &action);
+                                        self.edit_generation =
+                                            self.edit_generation.wrapping_add(1);
+                                        self.selection = ta.selection_range();
+                                    }
+                                    return EventState::Consumed;
+                                }
+                                HandleKeyOutcome::Dismissed
+                                | HandleKeyOutcome::Consumed => {
+                                    return EventState::Consumed;
+                                }
+                                HandleKeyOutcome::NotHandled => {}
+                            }
+                        }
+                    }
+                }
                 if let Some(state) = self.handle_nvim_key(key, tx) {
                     return state;
                 }
-                self.handle_textarea_key(key, tx)
+                let result = self.handle_textarea_key(key, tx);
+                self.sync_autocomplete();
+                result
             }
-            InputEvent::Mouse(mouse) => self.handle_mouse(mouse, tx),
+            InputEvent::Mouse(mouse) => {
+                let result = self.handle_mouse(mouse, tx);
+                self.sync_autocomplete();
+                result
+            }
             // Bracketed paste is intercepted by EditorScreen so it can run the
             // image-paste flow first. It never reaches us here.
             InputEvent::Paste(_) => EventState::NotConsumed,
@@ -1230,6 +1358,16 @@ impl Component for TextEditorComponent {
         self.view.render(f, editor_rect, theme, editor_focused);
         if let (Some(state), Some(bar_rect)) = (self.search.as_ref(), search_rect) {
             render_search_bar(f, bar_rect, state, theme, bar_focused);
+        }
+
+        // Autocomplete popup sits on top of the editor (and the find bar
+        // when present). Drain any pending async query results first so
+        // the popup reflects the latest typed prefix.
+        self.poll_autocomplete();
+        if let Some(controller) = self.autocomplete.as_ref() {
+            if let Some(state) = controller.state() {
+                autocomplete::render(f, state, rect, theme);
+            }
         }
     }
 
