@@ -337,6 +337,70 @@ pub(crate) fn md_wikilink_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// Returns `true` if `byte_offset` (a cursor position) falls inside a region
+/// where hashtag/wikilink autocomplete should be suppressed:
+///
+/// - the YAML/TOML frontmatter block,
+/// - an inline code span or fenced/indented code block,
+/// - the body of a standard markdown link `[text](href)`,
+/// - the body of an already-closed `[[wikilink]]`.
+///
+/// Used by the TUI autocomplete to decide whether a `#` or `[[` keystroke
+/// should open the suggestion popup, so the same hashtag-exclusion truth
+/// that the indexer applies (see `index_note_chunks_and_links`) governs the
+/// editing-time popup too.
+///
+/// Containment uses **strict** bounds (`> start && < end`): a cursor sitting
+/// exactly at the start or end of a zone is treated as outside, so the user
+/// can place the caret right before or right after `` `code` `` or `[[foo]]`
+/// and still trigger autocomplete from that position.
+///
+/// Note: open / unterminated wikilinks (e.g. mid-typing `[[foo`) are not
+/// matched by the wikilink regex and therefore do not suppress the popup —
+/// which is exactly what the editor needs.
+pub fn is_inside_exclusion_zone(text: &str, byte_offset: usize) -> bool {
+    if byte_offset > text.len() {
+        return false;
+    }
+
+    if byte_offset < frontmatter_end_byte(text) {
+        return true;
+    }
+
+    let in_range = |ranges: &[(usize, usize)]| -> bool {
+        ranges
+            .iter()
+            .any(|(s, e)| byte_offset > *s && byte_offset < *e)
+    };
+
+    in_range(&code_char_ranges(text))
+        || in_range(&md_link_char_ranges(text))
+        || in_range(&md_wikilink_char_ranges(text))
+}
+
+/// Like `is_inside_exclusion_zone` but does NOT include already-closed
+/// `[[wikilink]]` spans. Wikilink autocomplete uses this so the user
+/// can reopen the popup with the cursor inside a closed wikilink's
+/// target to edit it. Code spans, frontmatter, and standard markdown
+/// link bodies still suppress.
+pub fn is_inside_code_link_or_frontmatter(text: &str, byte_offset: usize) -> bool {
+    if byte_offset > text.len() {
+        return false;
+    }
+
+    if byte_offset < frontmatter_end_byte(text) {
+        return true;
+    }
+
+    let in_range = |ranges: &[(usize, usize)]| -> bool {
+        ranges
+            .iter()
+            .any(|(s, e)| byte_offset > *s && byte_offset < *e)
+    };
+
+    in_range(&code_char_ranges(text)) || in_range(&md_link_char_ranges(text))
+}
+
 fn cleanup_hashtags(md_text: &str) -> String {
     HASHTAG_RX
         .replace_all(md_text, |caps: &Captures| caps["ht_text"].to_string())
@@ -2187,5 +2251,86 @@ ls -la ./test
             vec!["real"],
             "hashtag inside wikilink (invalid form) must not become a label"
         );
+    }
+
+    use super::is_inside_exclusion_zone;
+
+    #[test]
+    fn exclusion_zone_plain_text_returns_false() {
+        let text = "some plain text without anything special";
+        for i in 0..=text.len() {
+            assert!(
+                !is_inside_exclusion_zone(text, i),
+                "offset {} should not be in zone",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn exclusion_zone_inside_inline_code() {
+        let text = "before `code` after";
+        //          0123456789012345678
+        // backticks at 7 and 12; cursor between them is inside
+        assert!(is_inside_exclusion_zone(text, 10));
+    }
+
+    #[test]
+    fn exclusion_zone_at_inline_code_boundary_is_outside() {
+        let text = "before `code` after";
+        // Cursor at the opening backtick (7) is at the boundary — treated
+        // as outside, so the user can type a new wikilink/hashtag adjacent
+        // to existing code.
+        assert!(!is_inside_exclusion_zone(text, 7));
+        // Same for the position right after the closing backtick.
+        assert!(!is_inside_exclusion_zone(text, 13));
+    }
+
+    #[test]
+    fn exclusion_zone_inside_closed_wikilink() {
+        let text = "see [[Notes]] here";
+        // `[[Notes]]` spans 4..=12 inclusive; cursor inside it.
+        assert!(is_inside_exclusion_zone(text, 7));
+    }
+
+    #[test]
+    fn exclusion_zone_open_wikilink_does_not_exclude() {
+        let text = "see [[Notes here";
+        // The wikilink is unterminated; the regex does not match it. The
+        // popup must be allowed to open while the user is typing inside it.
+        assert!(!is_inside_exclusion_zone(text, 10));
+    }
+
+    #[test]
+    fn exclusion_zone_inside_fenced_code_block() {
+        let text = "para\n\n```\n#tag-inside-fence\n```\n\nafter";
+        // Cursor somewhere inside the fenced region (within "#tag" itself).
+        let inside = text.find("#tag").unwrap() + 1;
+        assert!(is_inside_exclusion_zone(text, inside));
+    }
+
+    #[test]
+    fn exclusion_zone_inside_frontmatter() {
+        let text = "---\ntitle: Hi\n---\n\nbody #real";
+        // The byte just before `Hi` is inside the frontmatter.
+        let inside = text.find("Hi").unwrap();
+        assert!(is_inside_exclusion_zone(text, inside));
+        // The hashtag in the body is not.
+        let outside = text.find("#real").unwrap() + 1;
+        assert!(!is_inside_exclusion_zone(text, outside));
+    }
+
+    #[test]
+    fn exclusion_zone_inside_markdown_link() {
+        let text = "go to [click](https://example.com#section) now";
+        // Cursor inside the URL portion of the link (after the `#`).
+        let inside = text.find("#section").unwrap() + 1;
+        assert!(is_inside_exclusion_zone(text, inside));
+    }
+
+    #[test]
+    fn exclusion_zone_offset_past_end_returns_false() {
+        let text = "short";
+        assert!(!is_inside_exclusion_zone(text, text.len() + 5));
     }
 }

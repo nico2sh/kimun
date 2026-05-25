@@ -34,7 +34,7 @@ journal_sort_field = "name"
 journal_sort_order = "descending"
 
 [global]
-current_workspace = "personal"
+current_workspace = "work"
 
 [workspaces.personal]
 path = "personal"
