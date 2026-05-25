@@ -17,3 +17,5 @@ Full-stack engineer. Focused on search and indexing.
 
 - 2026-04-09: Reviewed his search index PR, left comments on tokenizer config
 - 2026-04-10: Related to [[search-caching]] — his index improvements will affect cache invalidation patterns
+
+Labels: #review #perf

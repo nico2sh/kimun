@@ -12,6 +12,39 @@ pub use content_extractor::{
 
 use crate::nfs::VaultPath;
 
+/// A label token detected in note text, with byte-offset range and the
+/// label name (without leading `#`).
+#[derive(Debug, Clone, Copy)]
+pub struct LabelMatch<'a> {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub name: &'a str,
+}
+
+/// Yields every label token in `text` that satisfies the label rules:
+/// matches the label character set AND is preceded by a non-label character
+/// (or the start of input). Code-span / HTML / link-span exclusion is the
+/// caller's responsibility because those concerns are context-specific.
+pub fn label_matches(text: &str) -> impl Iterator<Item = LabelMatch<'_>> + '_ {
+    content_extractor::label_matches_inner(text)
+}
+
+/// Returns the deduplicated lowercase label names extracted from `text`
+/// according to the same rules used by the indexer (skips frontmatter,
+/// code, HTML, markdown links, wikilinks; applies word-boundary on both
+/// sides of the match).
+pub fn extract_labels(text: &str) -> Vec<String> {
+    let path = crate::nfs::VaultPath::root();
+    let (_md, links) = content_extractor::get_markdown_and_links(&path, text);
+    let mut seen = std::collections::BTreeSet::new();
+    for l in links {
+        if let LinkType::Hashtag = l.ltype {
+            seen.insert(l.text.to_lowercase());
+        }
+    }
+    seen.into_iter().collect()
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoteDetails {
     pub path: VaultPath,

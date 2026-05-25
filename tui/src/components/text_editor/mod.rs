@@ -132,6 +132,15 @@ use crate::keys::action_shortcuts::TextAction;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
+/// The resolved target of a cursor follow-link action.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LinkTarget {
+    /// A note reference (wiki-link or markdown link) with the raw target string.
+    Note(String),
+    /// A hashtag label with the name **without** the leading `#`.
+    Label(String),
+}
+
 struct SearchState {
     input: SingleLineInput,
     status: SearchStatus,
@@ -297,9 +306,9 @@ impl TextEditorComponent {
         }
     }
 
-    /// Returns the raw link target under the cursor, or `None` if the cursor
-    /// is not inside a wikilink or markdown link span.
-    pub fn link_at_cursor(&self) -> Option<String> {
+    /// Returns the link or label target under the cursor, or `None` if the
+    /// cursor is not inside a wikilink, markdown link, or hashtag span.
+    pub fn link_at_cursor(&self) -> Option<LinkTarget> {
         let (_row, col, line) = match &self.backend {
             BackendState::Textarea(ta) => {
                 let (row, col) = cursor_tuple(ta);
@@ -313,10 +322,35 @@ impl TextEditorComponent {
                 (row, col, line)
             }
         };
-        kimun_core::note::link_char_spans(&line)
+
+        // F5: Check wiki-link / markdown-link spans first; Link wins over Label
+        // even if a future edit accidentally lets a Label slip through a Link range.
+        if let Some(span) = kimun_core::note::link_char_spans(&line)
             .into_iter()
             .find(|s| s.start <= col && col < s.end)
-            .map(|s| s.target)
+        {
+            return Some(LinkTarget::Note(span.target));
+        }
+
+        // Fallback: check for a hashtag label (via the markdown parser).
+        let parsed = self::markdown::ParsedLine::parse(&line);
+        parsed
+            .elements
+            .iter()
+            .find(|e| {
+                e.kind == self::markdown::ElementKind::Label
+                    && col >= e.start_char
+                    && col < e.end_char
+            })
+            .map(|e| {
+                let span: String = line
+                    .chars()
+                    .skip(e.start_char)
+                    .take(e.end_char - e.start_char)
+                    .collect();
+                let name = span.trim_start_matches('#').to_string();
+                LinkTarget::Label(name)
+            })
     }
 
     /// Copy selected text to the system clipboard.
@@ -1932,6 +1966,84 @@ mod tests {
             !hints
                 .iter()
                 .any(|(_, label)| label == "NORMAL" || label == "INSERT")
+        );
+    }
+
+    // ── link_at_cursor: label detection ──────────────────────────────────────
+
+    /// Helper: place cursor at a specific column on the first row.
+    fn place_cursor_at_col(editor: &mut TextEditorComponent, col: usize) {
+        let ta = get_ta(editor);
+        ta.move_cursor(ratatui_textarea::CursorMove::Head);
+        for _ in 0..col {
+            ta.move_cursor(ratatui_textarea::CursorMove::Forward);
+        }
+    }
+
+    #[test]
+    fn link_at_cursor_returns_label_when_cursor_on_hashtag() {
+        let mut editor = make_editor();
+        editor.set_text("see #rust now".to_string());
+        // "#rust" starts at col 4, ends at col 9 (5 chars). Place cursor at col 5 (inside).
+        place_cursor_at_col(&mut editor, 5);
+        assert_eq!(
+            editor.link_at_cursor(),
+            Some(LinkTarget::Label("rust".into())),
+        );
+    }
+
+    #[test]
+    fn link_at_cursor_returns_label_at_hash_char() {
+        let mut editor = make_editor();
+        editor.set_text("see #rust now".to_string());
+        // Cursor exactly on '#' (col 4).
+        place_cursor_at_col(&mut editor, 4);
+        assert_eq!(
+            editor.link_at_cursor(),
+            Some(LinkTarget::Label("rust".into())),
+        );
+    }
+
+    #[test]
+    fn link_at_cursor_returns_none_outside_hashtag() {
+        let mut editor = make_editor();
+        editor.set_text("see #rust now".to_string());
+        // Cursor at col 0 ("s") — not on a hashtag.
+        place_cursor_at_col(&mut editor, 0);
+        assert_eq!(editor.link_at_cursor(), None);
+    }
+
+    #[test]
+    fn link_at_cursor_returns_note_for_wikilink() {
+        let mut editor = make_editor();
+        editor.set_text("open [[my note]] please".to_string());
+        // "my note" is inside [[…]]; cursor at col 7 (inside link text).
+        place_cursor_at_col(&mut editor, 7);
+        let result = editor.link_at_cursor();
+        assert!(
+            matches!(result, Some(LinkTarget::Note(_))),
+            "expected Note variant, got {result:?}"
+        );
+    }
+
+    // ── F5: link_at_cursor prioritises Link over Label ────────────────────────
+
+    #[test]
+    fn link_at_cursor_returns_note_for_markdown_link_with_fragment() {
+        // "[see docs](#section)" — cursor on `#section` should return Note, not Label.
+        // After F3, the Label inside a link is never emitted, so the bug is
+        // structurally prevented. This test guards F5: even if a future edit
+        // accidentally adds a Label, Link wins because link_char_spans is checked first.
+        let line = "[see docs](#section)";
+        let mut editor = make_editor();
+        editor.set_text(line.to_string());
+        // "#section" starts at byte/char offset 11 (after "[see docs](").
+        let cursor = "[see docs](#sec".chars().count(); // col 15, inside #section
+        place_cursor_at_col(&mut editor, cursor);
+        let result = editor.link_at_cursor();
+        assert!(
+            matches!(result, Some(LinkTarget::Note(_))),
+            "expected Note variant for markdown link fragment, got {result:?}"
         );
     }
 }

@@ -51,3 +51,5 @@ Note mutation -> Pub/Sub -> All API instances flush cache
 
 - [[api-rate-limiter]] (same Redis cluster)
 - Reviewed by [[carlos]] (Redis infra) and [[david]] (search)
+
+Labels: #perf #systems #api

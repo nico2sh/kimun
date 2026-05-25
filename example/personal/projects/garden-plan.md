@@ -31,3 +31,5 @@ Three raised beds along the south fence (4x8 each):
 ## Notes
 
 See [[companion-planting]] for plant pairings.
+
+Labels: #idea

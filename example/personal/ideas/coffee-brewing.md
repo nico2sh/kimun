@@ -38,3 +38,5 @@ Both coffee and sourdough rely on fermentation. The parallels:
 - Temperature control matters
 - Consistency in process yields consistent results
 - Small changes compound over time
+
+Labels: #brewing #recipe

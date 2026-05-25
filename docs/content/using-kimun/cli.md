@@ -61,6 +61,8 @@ Search notes in the current workspace:
 kimun search "your search query"
 kimun search "meeting -cancelled"                # Exclude terms
 kimun search "@project >-draft"                  # Combine filters
+kimun search "#important"                        # Filter by hashtag label
+kimun search "meeting #important #-draft"        # Mix labels with other filters
 kimun search "rust" --format json                # JSON output
 ```
 
@@ -77,10 +79,12 @@ Searches support free text, filters, and operators:
 - **Free text:** Case-insensitive, diacritics ignored, `*` wildcard supported
 - **Filter by filename:** `@tasks` or `at:tasks`
 - **Filter by section:** `>personal` or `in:personal` (Markdown headers)
+- **Filter by label (hashtag):** `#important` or `lb:important` — matches notes carrying that `#tag` in their body
 - **Exclusion:** `-term` to exclude from results
   - Content: `meeting -cancelled`
   - Title: `>-draft` or `in:-draft`
   - Filename: `@-temp` or `at:-temp`
+  - Label: `#-draft` or `lb:-draft`
 
 For comprehensive search documentation, see the [Search](@/using-kimun/search.md) page.
 
@@ -96,8 +100,63 @@ kimun search "@2024 >-draft"
 # Find content under "Personal" section containing "kimun"
 kimun search ">personal kimun"
 
+# Find notes labelled #important but not #archived
+kimun search "#important #-archived"
+
 # Combine with jq for advanced filtering
 kimun search "rust" --format json | jq '.notes[] | select(.metadata.tags[] == "rust")'
+```
+
+## Labels
+
+List every hashtag label in your vault with note counts:
+
+```sh
+kimun labels                  # alphabetical list: `name (N notes)`
+kimun labels --format paths   # bare labels, one per line (pipeable)
+kimun labels --format json    # JSON with total + per-label note_count
+```
+
+Labels come from in-text `#hashtag` tokens (see [Search](@/using-kimun/search.md#labels) for full label rules — note that frontmatter / code / HTML / link bodies / wikilinks are excluded from indexing).
+
+### JSON schema
+
+```json
+{
+  "workspace": "personal",
+  "total": 12,
+  "labels": [
+    { "name": "idea",     "note_count": 5 },
+    { "name": "reading",  "note_count": 4 },
+    { "name": "systems",  "note_count": 5 }
+  ]
+}
+```
+
+### Patterns
+
+```sh
+# Top 10 most-used labels
+kimun labels --format json | jq -r '.labels | sort_by(-.note_count) | .[:10][] | "\(.note_count)\t\(.name)"'
+
+# Labels that appear in only one note (orphans worth reviewing)
+kimun labels --format json | jq -r '.labels[] | select(.note_count == 1) | .name'
+
+# Open every note carrying a given label in the TUI editor of your choice
+kimun search "#systems" --format paths | xargs -r $EDITOR
+
+# Build a per-label index file
+kimun labels --format paths | while read l; do
+  echo "## $l"
+  kimun search "#$l" --format paths | sed 's/^/- /'
+  echo
+done > vault-by-label.md
+
+# Cross-tabulate two labels (notes carrying BOTH)
+kimun search "#api #perf" --format paths
+
+# Notes labelled #idea but not yet #done
+kimun search "#idea #-done" --format paths
 ```
 
 ## Notes

@@ -24,3 +24,5 @@ Reading notes from "Designing Data-Intensive Applications" and related materials
 - How does CockroachDB handle cross-range transactions?
 - What are the trade-offs between Raft and Paxos in practice?
 - Connection to [[cap-theorem]] notes
+
+Labels: #systems #reading

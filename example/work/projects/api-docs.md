@@ -48,3 +48,5 @@ See [[api-rate-limiter]] for details.
 | Free | 60 | 10 |
 | Pro | 300 | 50 |
 | Enterprise | 1000 | 200 |
+
+Labels: #api #docs

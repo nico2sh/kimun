@@ -17,7 +17,7 @@ const _MAX_TITLE_LENGTH: usize = 40;
 static WIKILINK_RX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?:\[\[(?P<link_text>[^\]]+)\]\])"#).unwrap());
 
-static HASHTAG_RX: LazyLock<Regex> =
+pub(crate) static HASHTAG_RX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"#(?P<ht_text>[A-Za-z0-9_]+)"#).unwrap());
 
 static MD_LINK_RX: LazyLock<Regex> = LazyLock::new(|| {
@@ -277,10 +277,107 @@ where
         .into_owned()
 }
 
+/// Returns byte-offset ranges (start, end) within `md_text` covering every
+/// inline code span and fenced/indented code block. Used to exclude these
+/// regions from hashtag extraction so `#tag` inside code is not promoted to
+/// a label.
+pub(crate) fn code_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
+    let parser = Parser::new(md_text).into_offset_iter();
+    let mut ranges = Vec::new();
+    let mut depth = 0u32;
+    let mut current_start: Option<usize> = None;
+    for (event, range) in parser {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                if depth == 0 {
+                    current_start = Some(range.start);
+                }
+                depth += 1;
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some(start) = current_start.take() {
+                        ranges.push((start, range.end));
+                    }
+                }
+            }
+            Event::Code(_) => {
+                ranges.push((range.start, range.end));
+            }
+            Event::Html(_) | Event::InlineHtml(_) => {
+                ranges.push((range.start, range.end));
+            }
+            _ => {}
+        }
+    }
+    ranges
+}
+
+/// Returns byte-offset ranges (start, end) within `md_text` covering every
+/// markdown link `[text](href)` (full span including the `[]` brackets and
+/// the `()` around the href). Used to exclude hashtag extraction inside
+/// link bodies — particularly URL fragments like `https://example.com#section`.
+pub(crate) fn md_link_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
+    MD_LINK_RX
+        .find_iter(md_text)
+        .map(|m| (m.start(), m.end()))
+        .collect()
+}
+
+/// Returns byte-offset ranges (start, end) within `md_text` covering every
+/// `[[wikilink]]` form, including invalid wikilinks (those that were not
+/// rewritten to standard markdown links earlier in the pipeline, e.g.
+/// `[[#tag]]`). Used to exclude hashtag extraction inside wikilink spans so
+/// that `[[#wiki_tag]]` is not indexed as a label.
+pub(crate) fn md_wikilink_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
+    WIKILINK_RX
+        .find_iter(md_text)
+        .map(|m| (m.start(), m.end()))
+        .collect()
+}
+
 fn cleanup_hashtags(md_text: &str) -> String {
     HASHTAG_RX
         .replace_all(md_text, |caps: &Captures| caps["ht_text"].to_string())
         .into_owned()
+}
+
+/// Internal label iterator that powers [`crate::note::label_matches`].
+///
+/// Encapsulates the regex match + the word-boundary guard (a `#tag`
+/// immediately following an alphanumeric/underscore character is treated as
+/// mid-word and skipped). Code-span / HTML / link overlap suppression is left
+/// to the caller because those checks are context-specific.
+pub(crate) fn label_matches_inner(
+    text: &str,
+) -> impl Iterator<Item = crate::note::LabelMatch<'_>> + '_ {
+    HASHTAG_RX.captures_iter(text).filter_map(move |caps| {
+        let m = caps.get(0)?;
+        let preceding_is_label_char = m.start() != 0
+            && text[..m.start()]
+                .chars()
+                .next_back()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        if preceding_is_label_char {
+            return None;
+        }
+        let following_is_label_char = text[m.end()..]
+            .chars()
+            .next()
+            .map(|c| c.is_alphanumeric() || c == '_')
+            .unwrap_or(false);
+        if following_is_label_char {
+            return None;
+        }
+        let name = caps.name("ht_text")?.as_str();
+        Some(crate::note::LabelMatch {
+            byte_start: m.start(),
+            byte_end: m.end(),
+            name,
+        })
+    })
 }
 
 /// Returns the converted text into Markdown (replacing note wikilinks to markdown links)
@@ -362,12 +459,39 @@ pub(crate) fn get_markdown_and_links<S: AsRef<str>>(
         format!("[{}]({})", text, clean_link)
     });
 
-    // Process hashtags and convert them to links
-    let clean_md_text = HASHTAG_RX.replace_all(&md_text, |caps: &Captures| {
-        let tag = &caps["ht_text"];
-        links.push(NoteLink::hashtag(tag));
-        format!("[#{}](#{})", tag, tag)
-    });
+    // Process hashtags and convert them to links. The label_matches_inner
+    // iterator already enforces the word-boundary rule (a `#tag` preceded by
+    // an alphanumeric/underscore char is skipped). Here we additionally skip
+    // any label that overlaps a code span, an HTML region, a markdown-link
+    // span, or the YAML/TOML frontmatter — those are call-site concerns.
+    let fm_end = frontmatter_end_byte(&md_text);
+    let code_ranges = code_char_ranges(&md_text);
+    let link_ranges = md_link_char_ranges(&md_text);
+    let wikilink_ranges = md_wikilink_char_ranges(&md_text);
+    let mut out = String::with_capacity(md_text.len());
+    let mut last_end = 0usize;
+    for lm in label_matches_inner(&md_text) {
+        let in_frontmatter = lm.byte_start < fm_end;
+        let in_code = code_ranges
+            .iter()
+            .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e);
+        let in_link = link_ranges
+            .iter()
+            .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e)
+            || wikilink_ranges
+                .iter()
+                .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e);
+        out.push_str(&md_text[last_end..lm.byte_start]);
+        if in_frontmatter || in_code || in_link {
+            out.push_str(&md_text[lm.byte_start..lm.byte_end]);
+        } else {
+            links.push(NoteLink::hashtag(lm.name));
+            out.push_str(&format!("[#{}](#{})", lm.name, lm.name));
+        }
+        last_end = lm.byte_end;
+    }
+    out.push_str(&md_text[last_end..]);
+    let clean_md_text: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(out);
 
     (clean_md_text.to_string(), links)
 }
@@ -535,6 +659,48 @@ fn join_breadcrumb(stack: &[(u8, String)]) -> String {
         out.push_str(t);
     }
     out
+}
+
+/// Returns the byte offset immediately after the closing `\n` of the opening
+/// delimiter line, or `None` if the text does not start with a valid frontmatter
+/// delimiter (`---` or `+++`).  Strips a trailing `\r` so CRLF files work the
+/// same as LF files.
+fn frontmatter_delimiter(text: &str) -> Option<(&str, usize)> {
+    let newline_pos = text.find('\n')?;
+    let raw_first = &text[..newline_pos];
+    let first_line = raw_first.trim_end_matches('\r');
+    if first_line != "---" && first_line != "+++" {
+        return None;
+    }
+    // Return the canonical delimiter (without \r) and the byte offset just
+    // after the opening '\n'.
+    Some((first_line, newline_pos + 1))
+}
+
+/// Returns the byte offset of the first character after the closing delimiter
+/// of a YAML/TOML frontmatter block (`---` or `+++`), or `0` if no valid
+/// frontmatter is present. Tolerates both LF and CRLF line endings.
+fn frontmatter_end_byte(text: &str) -> usize {
+    let (delimiter, mut offset) = match frontmatter_delimiter(text) {
+        Some(d) => d,
+        None => return 0,
+    };
+
+    for line in text[offset..].split('\n') {
+        let trimmed = line.trim_end_matches('\r');
+        if trimmed == delimiter {
+            // Advance past this closing delimiter line (and its '\n' if present).
+            offset += line.len();
+            if text.as_bytes().get(offset) == Some(&b'\n') {
+                offset += 1;
+            }
+            return offset;
+        }
+        offset += line.len() + 1; // +1 for '\n'
+    }
+
+    // No closing delimiter found — treat as no frontmatter
+    0
 }
 
 fn remove_frontmatter<S: AsRef<str>>(text: S) -> (String, String) {
@@ -1708,5 +1874,318 @@ ls -la ./test
         assert!(links
             .iter()
             .any(|link| link.text.eq("another_tag") && link.ltype.eq(&LinkType::Hashtag)));
+    }
+
+    #[test]
+    fn code_char_ranges_inline_code() {
+        let md = "hello `#notalabel` and #real";
+        let ranges = super::code_char_ranges(md);
+        assert!(
+            ranges.iter().any(|(s, e)| md[*s..*e].contains("notalabel")),
+            "inline code span must be reported"
+        );
+        assert!(
+            ranges.iter().all(|(s, e)| !md[*s..*e].contains("#real")),
+            "non-code text must not be reported"
+        );
+    }
+
+    #[test]
+    fn code_char_ranges_fenced_block() {
+        let md = "before\n```\n#inside\n```\nafter #outside";
+        let ranges = super::code_char_ranges(md);
+        assert!(
+            ranges.iter().any(|(s, e)| md[*s..*e].contains("#inside")),
+            "fenced block content must be reported"
+        );
+        assert!(
+            ranges.iter().all(|(s, e)| !md[*s..*e].contains("#outside")),
+            "text after fence must not be reported"
+        );
+    }
+
+    #[test]
+    fn code_char_ranges_none_for_plain_text() {
+        let md = "no code here, just #tags";
+        let ranges = super::code_char_ranges(md);
+        assert!(ranges.is_empty(), "plain text yields no code ranges");
+    }
+
+    #[test]
+    fn hashtag_in_inline_code_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (text, links) = super::get_markdown_and_links(&path, "use `#notalabel` and tag #real");
+        assert!(
+            links
+                .iter()
+                .all(|l| !matches!(&l.ltype, super::super::LinkType::Hashtag)
+                    || l.text != "notalabel"),
+            "hashtag inside inline code must not become a hashtag link"
+        );
+        assert!(
+            links
+                .iter()
+                .any(|l| matches!(&l.ltype, super::super::LinkType::Hashtag) && l.text == "real"),
+            "hashtag outside code is still extracted"
+        );
+        assert!(
+            text.contains("`#notalabel`"),
+            "inline code literal is preserved in rendered output: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn hashtag_in_fenced_block_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "before\n```\n#inside\n```\nafter #outside";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["outside"]);
+    }
+
+    #[test]
+    fn hashtag_terminates_at_non_label_char() {
+        // Per spec: `#tag-with-dash` yields the label `tag` and the rest
+        // (`-with-dash`) is treated as following text. `HASHTAG_RX` already
+        // enforces this because `[A-Za-z0-9_]+` stops at `-`.
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (_text, links) = super::get_markdown_and_links(&path, "x #tag-with-dash y");
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["tag"]);
+    }
+
+    #[test]
+    fn hashtag_inside_markdown_link_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "see [docs](https://example.com#section) and #real";
+        let (text, links) = super::get_markdown_and_links(&path, body);
+
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            hashtag_names,
+            vec!["real"],
+            "URL fragment must not become a label"
+        );
+
+        assert!(
+            text.contains("https://example.com#section"),
+            "link href must be preserved verbatim: {}",
+            text
+        );
+        assert!(
+            !text.contains("[#section](#section)"),
+            "URL fragment must not be rewritten into a nested markdown link: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn hashtag_inside_html_comment_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "<!-- #internal -->\nplain #real";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["real"]);
+    }
+
+    #[test]
+    fn hashtag_inside_inline_html_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = r##"text <a data-foo="#bar">label</a> and #real"##;
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["real"]);
+    }
+
+    #[test]
+    fn hashtag_needs_word_boundary_before() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+
+        // Hex colour in prose: `#ffcc00` IS at a word boundary (preceded by space)
+        // so it counts. That's the existing behavior; we don't change it. But
+        // glued-to-text variants must NOT match.
+        let (_text, links) = super::get_markdown_and_links(&path, "foo#bar baz#qux");
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            hashtag_names.is_empty(),
+            "no label should be extracted when `#` is preceded by a label-character: {:?}",
+            hashtag_names
+        );
+    }
+
+    #[test]
+    fn hashtag_at_start_of_line_still_works() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (_text, links) = super::get_markdown_and_links(&path, "#first line\nsecond #second");
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hashtag_names, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn label_matches_skips_after_label_char() {
+        let v: Vec<&str> = crate::note::label_matches("foo#bar and #real")
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(v, vec!["real"]);
+    }
+
+    #[test]
+    fn label_matches_at_start() {
+        let v: Vec<&str> = crate::note::label_matches("#first and #second")
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(v, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn hashtag_in_frontmatter_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "---\ndescription: see #wip note\n---\nbody with #real";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn hashtag_after_unicode_letter_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (_text, links) = super::get_markdown_and_links(&path, "café#draft and plain #real");
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["real"],
+            "Unicode letter before # must suppress label extraction"
+        );
+    }
+
+    #[test]
+    fn hashtag_followed_by_unicode_letter_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (_text, links) = super::get_markdown_and_links(&path, "#naïve and plain #real");
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["real"],
+            "non-ASCII letter immediately after match must suppress label"
+        );
+    }
+
+    #[test]
+    fn hashtag_followed_by_dash_still_extracted() {
+        // Confirms #tag-with-dash still produces label `tag`.
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let (_text, links) = super::get_markdown_and_links(&path, "#tag-with-dash");
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["tag"],
+            "ASCII non-alphanumeric (dash) after match still allows extraction"
+        );
+    }
+
+    #[test]
+    fn hashtag_in_crlf_frontmatter_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        // Windows CRLF line endings.
+        let body = "---\r\ndescription: see #wip note\r\n---\r\nbody with #real";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["real"],
+            "frontmatter hashtag must not be extracted regardless of line endings"
+        );
+    }
+
+    #[test]
+    fn hashtag_inside_wikilink_is_not_extracted() {
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "[[#wiki_tag]] and plain #real";
+        let (_text, links) = super::get_markdown_and_links(&path, body);
+        let names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["real"],
+            "hashtag inside wikilink (invalid form) must not become a label"
+        );
     }
 }

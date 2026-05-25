@@ -13,19 +13,28 @@ Also #project-related stuff.
 "#;
 
     let tags = extract_tags(content);
-    let mut expected = vec![
-        "project",
-        "urgent",
-        "meeting",
-        "important",
-        "todo",
-        "project-related",
-    ];
+    // `#project-related` → only `project` is extracted; dash is not a valid
+    // label character per core rules, so the match stops before the `-`.
+    let mut expected = vec!["project", "urgent", "meeting", "important", "todo"];
     expected.sort();
     let mut actual = tags;
     actual.sort();
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn extract_tags_lowercases_frontmatter_for_parity_with_body() {
+    // Frontmatter `DevOps` and body `#devops` must dedupe to one entry,
+    // matching how core's labels index stores names (lowercase).
+    let content = r#"---
+tags: ["DevOps", "Important"]
+---
+body with #devops and #important
+"#;
+    let mut tags = extract_tags(content);
+    tags.sort();
+    assert_eq!(tags, vec!["devops".to_string(), "important".to_string()]);
 }
 
 #[test]

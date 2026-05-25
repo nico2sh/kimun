@@ -150,9 +150,9 @@ zola serve docs/
 
 - [ ] Command palette
 - [X] Backlinks panel
-- [ ] Inline tags and search by tag (`#important`)
-- [ ] Resolve relative paths on links and images
-- [ ] Paste images into notes
+- [X] Inline tags and search by tag (`#important`)
+- [X] Resolve relative paths on links and images
+- [X] Paste images into notes
 - [X] Auto-continue list formatting on Enter
 - [X] Quick add note
 - [X] Multiple workspaces
