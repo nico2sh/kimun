@@ -410,9 +410,14 @@ impl Component for NoteBrowserModal {
                 }
             }
             let outcome = self.search_query.handle_key(key);
-            // Reconcile popup state after any input change so the trigger
-            // context tracks the latest typed text.
-            self.sync_autocomplete();
+            // Only trigger the popup on actual text mutations. Pure
+            // cursor movement (arrows, Home/End) must not pop the
+            // autocomplete open; if it was already open, close it so it
+            // does not linger over the moved-away-from context.
+            match outcome {
+                InputOutcome::Changed => self.sync_autocomplete(),
+                _ => self.autocomplete.close(),
+            }
             match outcome {
                 InputOutcome::Cancel => {
                     tx.send(AppEvent::CloseNoteBrowser).ok();
@@ -509,11 +514,12 @@ impl Component for NoteBrowserModal {
         );
 
         // ── Autocomplete popup ───────────────────────────────────────────
-        // Drain any pending async query results, then re-sync so the
-        // anchor reflects the just-rendered caret position. Render the
-        // popup as the top layer, anchored over the whole frame.
+        // Drain any pending async query results so the popup reflects
+        // the latest typed prefix. Do NOT re-sync here — sync runs only
+        // on actual text mutations (see `handle_input`); calling it on
+        // every render would re-open the popup whenever the cursor is
+        // over an existing hashtag, even on pure movement.
         self.autocomplete.poll_results();
-        self.sync_autocomplete();
         if let Some(state) = self.autocomplete.state() {
             autocomplete::render(f, state, area, theme);
         }

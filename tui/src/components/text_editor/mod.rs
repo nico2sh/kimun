@@ -370,6 +370,11 @@ impl TextEditorComponent {
         self.edit_generation = self.edit_generation.wrapping_add(1);
         let reconstructed = self.get_text();
         self.mark_saved(reconstructed);
+        // Buffer replaced — close any open autocomplete popup so it does
+        // not linger over the new note (e.g. after Ctrl+G follow-link).
+        if let Some(c) = self.autocomplete.as_mut() {
+            c.close();
+        }
     }
 
     pub fn get_text(&self) -> String {
@@ -1298,13 +1303,25 @@ impl Component for TextEditorComponent {
                 if let Some(state) = self.handle_nvim_key(key, tx) {
                     return state;
                 }
+                let gen_before = self.edit_generation;
                 let result = self.handle_textarea_key(key, tx);
-                self.sync_autocomplete();
+                // Only trigger the popup on actual edits — pure cursor
+                // movement (arrows, Home/End, Ctrl+G-to-follow, mouse
+                // click) must not pop the autocomplete open. If the popup
+                // is already open and the cursor moves out of the trigger
+                // range, close it; otherwise leave it alone.
+                if self.edit_generation != gen_before {
+                    self.sync_autocomplete();
+                } else if let Some(c) = self.autocomplete.as_mut() {
+                    c.close();
+                }
                 result
             }
             InputEvent::Mouse(mouse) => {
                 let result = self.handle_mouse(mouse, tx);
-                self.sync_autocomplete();
+                if let Some(c) = self.autocomplete.as_mut() {
+                    c.close();
+                }
                 result
             }
             // Bracketed paste is intercepted by EditorScreen so it can run the
