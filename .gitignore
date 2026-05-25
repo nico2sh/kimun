@@ -31,3 +31,4 @@ docs/public/
 .worktrees/
 example/*/kimun.sqlite
 example/history/
+openspec/
