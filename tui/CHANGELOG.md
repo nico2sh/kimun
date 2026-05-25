@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.11.0...kimun-notes-v0.11.1) - 2026-05-25
+
+### Added
+
+- *(autocomplete)* wire hashtag popup into search box
+- *(autocomplete)* wire wikilink + hashtag popup into editor
+- *(autocomplete)* host trait + controller wiring
+- *(autocomplete)* popup state machine, key handling, ratatui widget
+- *(autocomplete)* trigger detection + core exclusion-zone helper
+
+### Fixed
+
+- *(autocomplete)* batch 4 — round-3 low-severity cleanup
+- *(autocomplete)* batch 3 — popup hardening + wikilink in code
+- *(autocomplete)* batch 2 — host integration + focus
+- *(autocomplete)* batch 1 — controller behavior + redraw + cancellation
+- *(autocomplete)* activate after nvim → textarea fallback
+- *(autocomplete)* disable exclusion-zone check in search box
+- *(autocomplete)* tight clamp + fresh anchor at render time
+- *(autocomplete)* split sync (on edit) from refresh-if-open (on move)
+- *(autocomplete)* close popup when find bar opens
+- *(autocomplete)* empty popup is not interactive
+- *(autocomplete)* consume stale wikilink target on accept
+- *(autocomplete)* disable column-0 header rule in search box
+- *(autocomplete)* detect text edits by buffer length, not edit_generation
+- *(autocomplete)* only open on text edit, dismiss on note open
+
+### Other
+
+- collapse nested ifs to fix clippy warnings
+- cargo fmt --all
+- *(autocomplete)* collapse nested ifs, drop dead code, use saturating_sub
+- exclusions now use the prefix - before the operators in search
+
 ## [0.11.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.10.0...kimun-notes-v0.11.0) - 2026-05-25
 
 ### Added

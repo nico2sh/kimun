@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.10...kimun_core-v0.2.11) - 2026-05-25
+
+### Added
+
+- *(autocomplete)* trigger detection + core exclusion-zone helper
+- *(core)* add prefix-search APIs for note/tag autocomplete
+
+### Fixed
+
+- *(autocomplete)* batch 3 — popup hardening + wikilink in code
+
+### Other
+
+- cargo fmt --all
+- exclusions now use the prefix - before the operators in search
+
 ## [0.2.10](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.9...kimun_core-v0.2.10) - 2026-05-25
 
 ### Added
