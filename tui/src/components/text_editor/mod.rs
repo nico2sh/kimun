@@ -1012,11 +1012,12 @@ impl TextEditorComponent {
     /// the editor has access to `AppTx`) and is a no-op after the
     /// first successful bind.
     fn bind_autocomplete_redraw(&mut self, tx: &AppTx) {
-        if !self.autocomplete_redraw_bound {
-            if let Some(c) = self.autocomplete.as_mut() {
-                c.set_redraw_callback(redraw_callback(tx.clone()));
-                self.autocomplete_redraw_bound = true;
-            }
+        if self.autocomplete_redraw_bound {
+            return;
+        }
+        if let Some(c) = self.autocomplete.as_mut() {
+            c.set_redraw_callback(redraw_callback(tx.clone()));
+            self.autocomplete_redraw_bound = true;
         }
     }
 
@@ -1395,22 +1396,21 @@ impl Component for TextEditorComponent {
                 if let (Some(host), Some(controller)) = (
                     self.autocomplete_host_snapshot(),
                     self.autocomplete.as_mut(),
-                ) {
-                    if controller.is_open() {
-                        match controller.handle_key(*key, &host) {
-                            HandleKeyOutcome::Accepted(action) => {
-                                if let BackendState::Textarea(ta) = &mut self.backend {
-                                    apply_accept_to_textarea(ta, &action);
-                                    self.edit_generation = self.edit_generation.wrapping_add(1);
-                                    self.selection = ta.selection_range();
-                                }
-                                return EventState::Consumed;
+                ) && controller.is_open()
+                {
+                    match controller.handle_key(*key, &host) {
+                        HandleKeyOutcome::Accepted(action) => {
+                            if let BackendState::Textarea(ta) = &mut self.backend {
+                                apply_accept_to_textarea(ta, &action);
+                                self.edit_generation = self.edit_generation.wrapping_add(1);
+                                self.selection = ta.selection_range();
                             }
-                            HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
-                                return EventState::Consumed;
-                            }
-                            HandleKeyOutcome::NotHandled => {}
+                            return EventState::Consumed;
                         }
+                        HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
+                            return EventState::Consumed;
+                        }
+                        HandleKeyOutcome::NotHandled => {}
                     }
                 }
                 if let Some(state) = self.handle_nvim_key(key, tx) {
