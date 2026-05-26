@@ -50,18 +50,21 @@ impl EventHandler {
     /// `Redraw` messages that pile up while a long-running async task was
     /// firing them) between blocking awaits.
     ///
-    /// `Disconnected` is treated as a programming error: the run loop owns
-    /// an `AppTx`, so every sender clone reaching zero means the loop's
-    /// own copy was dropped — impossible under the current architecture.
-    /// Loudly panicking here flags any future refactor that accidentally
-    /// hands the loop's `AppTx` to a screen instead of cloning, rather
-    /// than silently spinning on a dead channel.
+    /// `Disconnected` is structurally unreachable: `self.tx` is owned by
+    /// this `EventHandler` and live across the `&mut self` borrow, so at
+    /// least one sender always exists while `try_next` runs. Using
+    /// `unreachable!` flags the invariant for future readers (and panics
+    /// loudly if a refactor ever drops `tx` before the run-loop borrow
+    /// ends) without misnaming which sender was dropped.
     pub fn try_next(&mut self) -> Option<AppEvent> {
         match self.rx.try_recv() {
             Ok(msg) => Some(msg),
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
-                panic!("AppEvent channel disconnected — the run loop's AppTx was dropped")
+                unreachable!(
+                    "EventHandler::tx is owned by this struct and the `&mut self` borrow \
+                     guarantees it outlives this call; channel cannot be Disconnected here"
+                )
             }
         }
     }
