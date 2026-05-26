@@ -1072,16 +1072,22 @@ impl TextEditorComponent {
         }
 
         nvim.handle_key(key, tx.clone());
-        // The Nvim backend tracks its own buffer mutations through
-        // `nvim.snapshot.content_gen` (consumed by `view.update` and
-        // `is_dirty`). Bumping `text_revision` here would lie about every
-        // pure-navigation keystroke (h/j/k/l/Esc/gg/G…) — autocomplete is
-        // disabled on Nvim today so the lie is invisible, but any future
-        // consumer of `text_revision` would mistake every cursor move for
-        // an edit. Use `bump_cursor` so `edit_generation` still advances
-        // for view-cache-adjacent invariants without falsely flagging
-        // text changes.
-        self.bump_cursor();
+        // Nvim RPC is asynchronous — we cannot tell synchronously whether
+        // this keystroke mutated the buffer. The autosave path depends on
+        // `text_revision` to detect concurrent edits during a save (if
+        // the revision did not advance, `mark_saved_at_revision` clears
+        // the dirty flag); reporting cursor-only here would let an
+        // autosave capture rev N, the user type during the save (revision
+        // still N), completion would clear `nvim.snapshot.dirty` — silently
+        // dropping those edits. Bump conservatively as text-mutating:
+        // false positives on pure-navigation keys (h/j/k/l/Esc) only mean
+        // `text_revision` briefly looks advanced. `is_dirty` on Nvim
+        // reads `nvim.snapshot.dirty` (not `text_revision`) so the false
+        // positives are invisible at the dirty boundary, and the
+        // autocomplete host is never wired up on Nvim. Autosave
+        // correctness on Nvim costs one extra u64 increment per
+        // navigation keystroke.
+        self.bump_text();
         Some(EventState::Consumed)
     }
 
