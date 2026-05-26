@@ -40,6 +40,18 @@ impl EventHandler {
         self.tx.clone()
     }
 
+    /// Non-blocking peek of the app-message channel. Returns `None` when no
+    /// app message is immediately pending. Crossterm input is NOT polled here
+    /// — those events come through the stream and are only delivered via the
+    /// blocking `next()` await point.
+    ///
+    /// The main loop uses this to coalesce queued events (e.g. multiple
+    /// `Redraw` messages that pile up while a long-running async task was
+    /// firing them) between blocking awaits.
+    pub fn try_next(&mut self) -> Option<AppEvent> {
+        self.rx.try_recv().ok()
+    }
+
     /// Wait for the next event. App messages are drained first (`biased`), then
     /// crossterm input is read directly from the stream.
     pub async fn next(&mut self) -> AppEvent {
