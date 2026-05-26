@@ -239,27 +239,23 @@ pub fn get_chunks_and_links<S: AsRef<str>>(
     let raw = md_text.as_ref();
     let (frontmatter, body_with_wikilinks) = remove_frontmatter(raw);
 
-    // Pass 1: collapse wikilinks. Callback emits `NoteLink::Note` for
-    // valid vault-path wikilinks (the only NoteLink type the DB keeps).
-    // RefCell allows the `Fn` bound to stay intact for the shared
-    // `process_wikilinks` helper.
-    let wiki_links: std::cell::RefCell<Vec<NoteLink>> = std::cell::RefCell::new(Vec::new());
-    let body_stripped = process_wikilinks(&body_with_wikilinks, |link, text| {
-        if VaultPath::is_valid(link) {
-            let link_path = VaultPath::note_path_from(link);
-            wiki_links
-                .borrow_mut()
-                .push(NoteLink::note(&link_path, text));
-        }
-        None
-    });
-    let mut links = wiki_links.into_inner();
+    // Pass 1: collapse wikilinks AND record the byte ranges in the output
+    // string that came from wikilink display text. Hashtags that fall in
+    // those ranges must not be emitted as labels — they were inside a
+    // wikilink in the source and the prior `get_markdown_and_links`
+    // pipeline excluded them via `md_wikilink_char_ranges`.
+    let mut links: Vec<NoteLink> = Vec::new();
+    let (body_stripped, wikilink_display_ranges) =
+        collapse_wikilinks_with_display_ranges(&body_with_wikilinks, &mut links);
 
-    // Pass 2: precompute hashtag positions in `body_stripped` — cheap
-    // regex scan. The walker uses these to strip the leading `#` from
-    // valid label positions inline and emit `NoteLink::Hashtag` for
-    // matches outside code/link zones.
+    // Pass 2: precompute hashtag positions in `body_stripped`, dropping
+    // matches that fall inside wikilink display text.
     let labels: Vec<(usize, usize, String)> = label_matches_inner(&body_stripped)
+        .filter(|lm| {
+            !wikilink_display_ranges
+                .iter()
+                .any(|(s, e)| lm.byte_start >= *s && lm.byte_end <= *e)
+        })
         .map(|lm| (lm.byte_start, lm.byte_end, lm.name.to_string()))
         .collect();
 
@@ -279,6 +275,50 @@ pub fn get_chunks_and_links<S: AsRef<str>>(
     }
 
     (chunks, links)
+}
+
+/// Collapses wikilinks to their display text while recording the byte
+/// ranges in the output string that originated from a wikilink. Pushes
+/// `NoteLink::Note` for every wikilink whose target resolves to a valid
+/// vault path.
+///
+/// The returned ranges feed `get_chunks_and_links`'s label-filter step:
+/// hashtags inside wikilink display text were never indexed by the
+/// previous `get_markdown_and_links` pipeline (it converted wikilinks to
+/// markdown links and then suppressed hashtags inside the resulting link
+/// span via `md_wikilink_char_ranges` / `md_link_char_ranges`). The
+/// single-walk indexer reproduces that suppression by removing matching
+/// label positions before the walker sees them.
+fn collapse_wikilinks_with_display_ranges(
+    body: &str,
+    links: &mut Vec<NoteLink>,
+) -> (String, Vec<(usize, usize)>) {
+    let mut out = String::with_capacity(body.len());
+    let mut display_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut last = 0usize;
+    for caps in WIKILINK_RX.captures_iter(body) {
+        let m = caps.get(0).expect("captures_iter never yields without group 0");
+        out.push_str(&body[last..m.start()]);
+        let items = &caps["link_text"];
+        let parts: Vec<&str> = items.split('|').collect();
+        let (link, text) = match parts.len() {
+            1 => (parts[0], parts[0]),
+            // Extra pipes: keep the first part as link, second as display
+            // text, drop the rest — matches `process_wikilinks` semantics.
+            _ => (parts[0], parts[1]),
+        };
+        if VaultPath::is_valid(link) {
+            let link_path = VaultPath::note_path_from(link);
+            links.push(NoteLink::note(&link_path, text));
+        }
+        let display_start = out.len();
+        out.push_str(text);
+        let display_end = out.len();
+        display_ranges.push((display_start, display_end));
+        last = m.end();
+    }
+    out.push_str(&body[last..]);
+    (out, display_ranges)
 }
 
 pub fn get_content_data<S: AsRef<str>>(md_text: S) -> NoteContentData {
@@ -886,6 +926,18 @@ fn walk_indexing_events(
                 if let Some(dest) = pending_link_dest.take() {
                     emit_md_note_link(&dest, ref_path, &mut links);
                 }
+                in_link = false;
+            }
+            // Image alt text is inside an exclusion zone for the indexing
+            // path: the previous `cleanup_hashtags_with_ranges` saw images
+            // via `MD_LINK_RX` (which matches both `[text](url)` and
+            // `![alt](url)`), so a hashtag inside `![alt #foo](img.png)`
+            // was kept verbatim and no `NoteLink::Hashtag` was emitted.
+            // We mirror that by setting `in_link` for images too.
+            Event::Start(Tag::Image { .. }) => {
+                in_link = true;
+            }
+            Event::End(TagEnd::Image) => {
                 in_link = false;
             }
             _ => {}
@@ -2546,6 +2598,86 @@ ls -la ./test
             })
             .collect();
         assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn get_chunks_and_links_skips_hashtag_inside_image_alt() {
+        // `![alt #tag](img.png)` — hashtag inside image alt text must not
+        // emit a `NoteLink::Hashtag` and must stay verbatim in chunk text.
+        // Mirrors the prior `cleanup_hashtags_with_ranges` exclusion-zone
+        // rule (MD_LINK_RX matched both `[..](..)` and `![..](..)` forms).
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "preview ![alt #draft](img.png) here";
+        let (chunks, links) = super::get_chunks_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            hashtag_names.is_empty(),
+            "hashtag inside image alt must not emit, got {:?}",
+            hashtag_names
+        );
+        let body_chunk = chunks
+            .iter()
+            .find(|c| c.breadcrumb != "FrontMatter")
+            .expect("body chunk");
+        assert!(
+            body_chunk.text.contains("#draft"),
+            "expected `#draft` verbatim in chunk text, got {:?}",
+            body_chunk.text
+        );
+    }
+
+    #[test]
+    fn get_chunks_and_links_skips_hashtag_inside_invalid_wikilink() {
+        // `[[#wiki_tag]]` — `#` is not a valid vault-path character, so
+        // the wikilink doesn't produce a Note link. The display text
+        // `#wiki_tag` ends up in `body_stripped`, but the indexer must
+        // not treat it as a hashtag — it originated from a wikilink and
+        // the previous `get_markdown_and_links` pipeline excluded it via
+        // `md_wikilink_char_ranges`.
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "see [[#wiki_tag]] for context and a real #real_tag";
+        let (_chunks, links) = super::get_chunks_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            hashtag_names,
+            vec!["real_tag"],
+            "wikilink-derived hashtag must not leak into indexed labels"
+        );
+    }
+
+    #[test]
+    fn get_chunks_and_links_skips_hashtag_inside_wikilink_alias() {
+        // `[[foo|see #bar]]` — the alias text contains a hashtag. After
+        // wikilink collapse the body reads `see #bar`, but the hashtag
+        // originated from within a wikilink and must not be indexed.
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "context: [[foo|see #bar]] then a body tag #other";
+        let (_chunks, links) = super::get_chunks_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            hashtag_names,
+            vec!["other"],
+            "hashtag inside wikilink alias leaked into labels: {:?}",
+            hashtag_names
+        );
     }
 
     #[test]
