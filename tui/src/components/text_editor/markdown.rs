@@ -1859,6 +1859,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_line_skips_label_for_double_hash() {
+        // `##draft` is Markdown header territory, not a label — pin the
+        // highlighter to the same rule the indexer enforces so a future
+        // core relaxation cannot silently re-color this span.
+        let parsed = ParsedLine::parse("##draft");
+        let has_label = parsed
+            .elements
+            .iter()
+            .any(|e| matches!(e.kind, ElementKind::Label));
+        assert!(!has_label, "##draft should not emit Label");
+    }
+
+    #[test]
+    fn parse_line_skips_label_for_adjacent_hash_run() {
+        // `#tag#more` — adjacent `#` invalidates both halves at the index
+        // level; the highlighter must agree to avoid suggesting tags that
+        // will never appear in the labels table.
+        let parsed = ParsedLine::parse("#tag#more");
+        let labels: Vec<_> = parsed
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Label))
+            .collect();
+        assert!(
+            labels.is_empty(),
+            "#tag#more should not emit Label, got {:?}",
+            labels
+        );
+    }
+
+    #[test]
     fn parse_buffer_skips_label_inside_fenced_block() {
         let buffer = vec![
             "before".to_string(),
