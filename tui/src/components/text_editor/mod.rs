@@ -268,13 +268,17 @@ pub struct TextEditorComponent {
     /// by `is_dirty()` so the per-frame title bar avoids materialising the buffer.
     saved_generation: Option<u64>,
     view: MarkdownEditorView,
-    /// Incremented on every mutating input event. Passed to `view.update()` so the view
-    /// can skip the expensive lines clone and parse-cache rebuild on idle frames.
+    /// Incremented on every mutating input event (text edits AND cursor moves).
+    /// Used by `is_dirty()` together with `saved_generation` to detect changes
+    /// since the last save without materialising the buffer.
     edit_generation: u64,
     /// Incremented only when the buffer text actually changes (insert, delete,
-    /// paste, undo/redo, autocomplete accept). Lets `handle_input` diff
-    /// before/after without materialising the buffer as a String. Cursor-only
-    /// shortcuts (arrows, Home/End, select-all) do not bump this counter.
+    /// paste, undo/redo, autocomplete accept). Cursor-only shortcuts (arrows,
+    /// Home/End, select-all) do not bump this counter. Two consumers:
+    ///   - `handle_input` diffs it across a key event to classify the event as
+    ///     a text edit vs. a cursor move without materialising the buffer.
+    ///   - `view.update()` uses it as the cache-invalidation key, so arrow-key
+    ///     navigation reuses the per-line parse cache instead of rebuilding it.
     text_revision: u64,
     /// Current selection range in logical (row, byte-col) coordinates.
     /// Only tracked for the Textarea backend; always `None` for Nvim.
@@ -1551,7 +1555,7 @@ impl Component for TextEditorComponent {
                     lines,
                     cursor,
                     editor_rect,
-                    self.edit_generation,
+                    self.text_revision,
                     self.selection,
                 );
             }
