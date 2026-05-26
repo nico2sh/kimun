@@ -517,6 +517,34 @@ mod tests {
     }
 
     #[test]
+    fn render_does_not_panic_on_stale_cursor_past_line_count() {
+        // Regression: render() previously did self.parsed_cache[cursor.0]
+        // and self.layout.visual_lines()[cursor_vrow] directly. A stale
+        // Nvim snapshot whose cursor row landed past the new line count
+        // would panic the render thread. The guards now use `.get()`.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let theme = Theme::gruvbox_dark();
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut v = MarkdownEditorView::new();
+        // Populate with 2 lines and a valid cursor first so parsed_cache /
+        // layout are non-empty.
+        v.update(&["alpha".to_string(), "beta".to_string()], (0, 0), rect(8), 1, None);
+        // Now feed a cursor row that exceeds the line count for this update
+        // (simulates a stale snapshot arriving after a shrink). update() at
+        // line 277 already uses `lines.get(cursor.0)` so it won't panic; the
+        // real risk was the [] indexes inside render(). cursor_snapshot ends
+        // up at (5, 0) which exceeds the parsed_cache len of 2 below.
+        v.update(&["alpha".to_string(), "beta".to_string()], (5, 0), rect(8), 1, None);
+        // Render with focus so the cursor branch runs.
+        terminal
+            .draw(|f| v.render(f, f.area(), &theme, true))
+            .expect("render must not panic on stale cursor");
+    }
+
+    #[test]
     fn is_in_code_block_returns_true_for_any_fence_regardless_of_cursor() {
         // Regression: after commit cceef444, every fenced block renders
         // force-raw — not just the one the cursor sits in. Verify by

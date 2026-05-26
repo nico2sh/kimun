@@ -127,6 +127,25 @@ fn encode_rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> std::io::Result<V
     Ok(buf)
 }
 
+/// Await a tokio task with a hard timeout. If the timeout fires before the
+/// task completes, abort the task and return `false`. Returns `true` when
+/// the task finishes within the window (regardless of success / panic). The
+/// abort is best-effort — it cannot unwind an in-progress syscall — but it
+/// stops further await points in the spawned future so a subsequent caller
+/// can safely assume no new I/O originates from this task.
+///
+/// Extracted into a free function so the abort-on-timeout pattern can be
+/// unit-tested without spinning up an EditorScreen + vault.
+async fn await_or_abort<T>(handle: tokio::task::JoinHandle<T>, timeout: Duration) -> bool {
+    let abort = handle.abort_handle();
+    let mut handle = handle;
+    if tokio::time::timeout(timeout, &mut handle).await.is_err() {
+        abort.abort();
+        return false;
+    }
+    true
+}
+
 impl EditorScreen {
     /// Pulls an image off the system clipboard, encodes it to PNG, saves it as
     /// an attachment under the vault's `/assets` directory, and inserts a
@@ -353,15 +372,10 @@ impl EditorScreen {
         // stays dirty so the next session retries; the spawned task
         // either finishes against the disk on its own or is killed when
         // the process exits.
-        if let Some(mut handle) = self.autosave_task.take() {
-            let abort = handle.abort_handle();
-            if tokio::time::timeout(Duration::from_secs(5), &mut handle)
-                .await
-                .is_err()
-            {
-                abort.abort();
-                return;
-            }
+        if let Some(handle) = self.autosave_task.take()
+            && !await_or_abort(handle, Duration::from_secs(5)).await
+        {
+            return;
         }
         if self.editor.is_dirty() {
             let text = self.editor.get_text();
@@ -1068,5 +1082,48 @@ mod tests {
 
         // Verify DialogManager is accessible.
         fn _accepts_dialog_manager(_d: DialogManager) {}
+    }
+
+    /// Regression for the try_save timeout fix (commits 55eb49ed + 5e28b796).
+    /// A handle that does not complete within the timeout must:
+    ///   - return `false` from await_or_abort
+    ///   - have abort() invoked, so the task observes a `JoinError` /
+    ///     becomes finished within a short follow-up window
+    /// Without the abort, dropping the JoinHandle would only detach the
+    /// task — it would keep running and could race a subsequent
+    /// vault.save_note for the same path.
+    #[tokio::test]
+    async fn await_or_abort_aborts_long_task_on_timeout() {
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        let abort_view = handle.abort_handle();
+        let completed = await_or_abort(handle, Duration::from_millis(50)).await;
+        assert!(
+            !completed,
+            "long task must report incomplete on timeout"
+        );
+        // The task should be aborted; give the runtime a moment to observe.
+        for _ in 0..20 {
+            if abort_view.is_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            abort_view.is_finished(),
+            "task must be aborted (finished) after await_or_abort returned false"
+        );
+    }
+
+    /// Counterpart: a fast task completes within the timeout and returns
+    /// `true`, with no abort.
+    #[tokio::test]
+    async fn await_or_abort_returns_true_when_task_completes() {
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        });
+        let completed = await_or_abort(handle, Duration::from_secs(5)).await;
+        assert!(completed, "fast task must complete within timeout window");
     }
 }
