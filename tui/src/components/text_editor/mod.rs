@@ -227,6 +227,11 @@ struct EditorHostSnapshot {
     lines: Vec<String>,
     cursor_byte: usize,
     cursor_screen: Option<(u16, u16)>,
+    /// `text_revision` at the moment the snapshot was built. The
+    /// controller uses this as the cache key for the per-buffer
+    /// `ExclusionZones` so that cursor-only reconciles skip the
+    /// full-buffer parse + regex scans.
+    text_revision: u64,
 }
 
 impl AutocompleteHost for EditorHostSnapshot {
@@ -235,6 +240,9 @@ impl AutocompleteHost for EditorHostSnapshot {
     }
     fn cursor_byte_offset(&self) -> usize {
         self.cursor_byte
+    }
+    fn text_revision(&self) -> u64 {
+        self.text_revision
     }
     fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
         // Anchor at the cursor's last-rendered screen position. The
@@ -377,6 +385,7 @@ impl TextEditorComponent {
             lines,
             cursor_byte,
             cursor_screen: self.view.last_cursor_screen,
+            text_revision: self.text_revision,
         })
     }
 
