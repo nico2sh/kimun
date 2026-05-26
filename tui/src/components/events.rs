@@ -17,6 +17,15 @@ pub enum AppEvent {
     Quit,
     Redraw,
     Autosave,
+    /// Background autosave task finished. `saved` carries the text that was
+    /// written to disk on success, `None` if the write failed. The editor
+    /// screen uses `path` to ignore stale completions for notes the user has
+    /// already navigated away from, and `saved` to clear the dirty flag only
+    /// if the buffer still matches what was actually written.
+    AutosaveCompleted {
+        path: VaultPath,
+        saved: Option<String>,
+    },
     OpenPath(VaultPath),
     FocusEditor,
     FocusSidebar,

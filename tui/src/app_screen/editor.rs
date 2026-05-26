@@ -53,6 +53,10 @@ pub struct EditorScreen {
     dialogs: DialogManager,
     backlinks_panel: BacklinksPanel,
     backlinks_visible: bool,
+    /// `true` while a background autosave task is in flight. Suppresses the
+    /// next periodic autosave so we never have two concurrent writes for the
+    /// same note. Cleared when the `AutosaveCompleted` event lands.
+    autosave_in_flight: bool,
 }
 
 impl EditorScreen {
@@ -96,6 +100,7 @@ impl EditorScreen {
             dialogs: DialogManager::new(),
             backlinks_panel,
             backlinks_visible: false,
+            autosave_in_flight: false,
         }
     }
 }
@@ -333,6 +338,34 @@ impl EditorScreen {
                 self.editor.mark_saved(text);
             }
         }
+    }
+
+    /// Fire-and-forget autosave used by the periodic timer. The save runs in
+    /// a spawned tokio task so the main event loop is never blocked by the
+    /// filesystem + SQLite write. Completion is reported back as
+    /// `AppEvent::AutosaveCompleted`, which clears `autosave_in_flight` and
+    /// (on success) marks the editor clean iff the buffer still matches what
+    /// was written.
+    fn spawn_autosave(&mut self, tx: &AppTx) {
+        if self.autosave_in_flight {
+            return;
+        }
+        if !self.editor.is_dirty() {
+            return;
+        }
+        let text = self.editor.get_text();
+        let vault = self.vault.clone();
+        let path = self.path.clone();
+        let tx = tx.clone();
+        self.autosave_in_flight = true;
+        tokio::spawn(async move {
+            let saved = vault
+                .save_note(&path, &text)
+                .await
+                .ok()
+                .map(|_| text);
+            let _ = tx.send(AppEvent::AutosaveCompleted { path, saved });
+        });
     }
 
     fn focus_index(&self) -> u8 {
@@ -842,7 +875,16 @@ impl AppScreen for EditorScreen {
 
         match msg {
             AppEvent::Autosave => {
-                self.try_save().await;
+                self.spawn_autosave(tx);
+                None
+            }
+            AppEvent::AutosaveCompleted { path, saved } => {
+                if path == self.path
+                    && let Some(text) = saved
+                {
+                    self.editor.mark_saved(text);
+                }
+                self.autosave_in_flight = false;
                 None
             }
             AppEvent::OpenPath(path) => {
