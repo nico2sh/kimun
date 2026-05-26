@@ -699,14 +699,19 @@ impl MarkdownSpanner {
             spans.push(Span::styled(seg, style));
         };
 
-        let mut char_pos = 0usize;
-        for cluster in logical_line.graphemes(true) {
+        // Iterate the visual-line slice rather than walking the whole logical
+        // line and skipping clusters before `visual_start_col`. For a paragraph
+        // wrapped across N visual rows this used to scan the full logical line
+        // N times per frame; now each row's iteration is bounded to its own
+        // slice. `char_pos` is seeded with `visual_start_col` so positions
+        // continue to index into `content_vis`, `elements`, and the image
+        // placeholders, which are all addressed in logical-line coordinates.
+        let mut char_pos = visual_start_col;
+        let visual_end_col = visual_start_col + content_char_count;
+        for cluster in content.graphemes(true) {
             let pos = char_pos;
             char_pos += cluster.chars().count();
-            if pos < visual_start_col {
-                continue;
-            }
-            if pos >= visual_start_col + content_char_count {
+            if pos >= visual_end_col {
                 break;
             }
 
