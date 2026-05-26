@@ -17,10 +17,19 @@ use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with_zones};
 const DEFAULT_FETCH_LIMIT: usize = 50;
 
 /// Wait this long after a query-refinement keystroke before hitting the
-/// vault. A burst of typing aborts the previous in-flight task before its
-/// debounce window elapses, so only the final keystroke's query actually
-/// runs against SQLite. The first query of a popup (kind change / popup
-/// opening) skips the debounce so the popup feels instant on open.
+/// vault. Two cases:
+///
+/// - Fast typing (inter-keystroke gap < `DEFAULT_DEBOUNCE`): each new
+///   keystroke aborts the previous in-flight task while it is still
+///   inside `tokio::time::sleep`, so only the final keystroke's query
+///   reaches SQLite. This is the case the debounce is optimised for.
+/// - Normal typing (inter-keystroke gap ≥ `DEFAULT_DEBOUNCE`): every
+///   keystroke still runs its own query, with `DEFAULT_DEBOUNCE` of added
+///   latency between keystroke and popup update. The debounce does NOT
+///   reduce work in this regime — it bounds responsiveness.
+///
+/// The first query of a popup (kind change / popup opening) skips the
+/// debounce entirely so the popup feels instant on open.
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(80);
 
 /// Whether wikilink triggers are honoured. The editor uses
