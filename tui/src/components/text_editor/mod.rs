@@ -535,13 +535,14 @@ impl TextEditorComponent {
         self.saved_text_revision = Some(rev);
     }
 
+    /// Synchronous mark-saved used by `try_save` and `set_text`. Unlike
+    /// `mark_saved_at_revision` (which no-ops on a stale revision because
+    /// it can race a sync mark_saved), this one CLOBBERS `saved_text_revision`
+    /// to `None` when the supplied text diverges: the sync caller holds
+    /// `&mut self` for the whole save, so there is no concurrent newer
+    /// clean state to preserve, and the user typing between
+    /// `get_text()` and this call must show as dirty.
     pub fn mark_saved(&mut self, text: String) {
-        // Only claim the current state as "saved" when the supplied text
-        // actually matches the buffer right now. Callers normally pass
-        // `get_text()` from the moment the save was issued, but if the
-        // buffer moved on (or the save was for a divergent snapshot) we
-        // leave BOTH dirty flags (Nvim snapshot bool + Textarea
-        // saved_text_revision) untouched so the next autosave still runs.
         let matches = text == self.get_text();
         if matches {
             if let BackendState::Nvim(nvim) = &self.backend {
@@ -552,8 +553,10 @@ impl TextEditorComponent {
             }
             self.saved_text_revision = Some(self.text_revision);
         } else {
-            // Textarea backend: divergent save leaves us dirty.
-            // Nvim backend: keep the snapshot's dirty flag intact (don't clear).
+            // Textarea: divergent save → stay dirty.
+            // Nvim: snapshot's `dirty` was untouched anyway; the Textarea
+            // dirty signal (saved_text_revision) is what is_dirty consults
+            // on the Textarea backend, and we explicitly mark it None here.
             self.saved_text_revision = None;
         }
     }
