@@ -477,6 +477,11 @@ pub fn is_inside_code_link_or_frontmatter(text: &str, byte_offset: usize) -> boo
 /// cursor moves never repay the full-buffer parse.
 #[derive(Debug, Clone, Default)]
 pub struct ExclusionZones {
+    /// Byte length of the source `text` the zones were built from. Used
+    /// only as a sanity check in `contains*` so a stale cache that has
+    /// outlived its source text fails closed rather than returning a
+    /// random answer for an out-of-range query.
+    text_len: usize,
     frontmatter_end: usize,
     code: Vec<(usize, usize)>,
     md_links: Vec<(usize, usize)>,
@@ -488,8 +493,14 @@ impl ExclusionZones {
     /// `is_inside_exclusion_zone` / `is_inside_code_link_or_frontmatter`
     /// internally so the contains-checks stay in lock-step with the
     /// indexer's exclusion rules.
+    ///
+    /// Callers must query `contains*` only with byte offsets into the
+    /// same `text` (or a longer text whose prefix matches it byte-for-byte
+    /// up to that offset). Cached zones held past a text mutation are
+    /// invalid; consult the caller's revision before reuse.
     pub fn from_text(text: &str) -> Self {
         Self {
+            text_len: text.len(),
             frontmatter_end: frontmatter_end_byte(text),
             code: code_char_ranges(text),
             md_links: md_link_char_ranges(text),
@@ -500,7 +511,12 @@ impl ExclusionZones {
     /// True when `byte_offset` falls inside any zone (frontmatter, code,
     /// markdown link body, or closed wikilink). Matches the boolean of
     /// `is_inside_exclusion_zone(text, byte_offset)` for the same `text`.
+    /// Returns `false` for offsets past the source text length (defensive
+    /// guard against using a stale cache against a shortened buffer).
     pub fn contains(&self, byte_offset: usize) -> bool {
+        if byte_offset > self.text_len {
+            return false;
+        }
         if byte_offset < self.frontmatter_end {
             return true;
         }
@@ -511,8 +527,12 @@ impl ExclusionZones {
 
     /// True when `byte_offset` falls inside frontmatter, code, or a
     /// markdown link body — but NOT inside a closed wikilink span. Matches
-    /// `is_inside_code_link_or_frontmatter(text, byte_offset)`.
+    /// `is_inside_code_link_or_frontmatter(text, byte_offset)`. Returns
+    /// `false` for offsets past the source text length.
     pub fn contains_code_link_or_frontmatter(&self, byte_offset: usize) -> bool {
+        if byte_offset > self.text_len {
+            return false;
+        }
         if byte_offset < self.frontmatter_end {
             return true;
         }
