@@ -267,7 +267,11 @@ pub struct TextEditorComponent {
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
     key_bindings: KeyBindings,
-    last_saved_text: String,
+    /// Generation that matches the on-disk content. `Some(edit_generation)` after a
+    /// successful save (or after `set_text` loaded a note); `None` when the saved
+    /// snapshot diverges from the current buffer. Compared against `edit_generation`
+    /// by `is_dirty()` so the per-frame title bar avoids materialising the buffer.
+    saved_generation: Option<u64>,
     view: MarkdownEditorView,
     /// Incremented on every mutating input event. Passed to `view.update()` so the view
     /// can skip the expensive lines clone and parse-cache rebuild on idle frames.
@@ -306,7 +310,7 @@ impl TextEditorComponent {
             ),
             rect: Rect::default(),
             key_bindings,
-            last_saved_text: String::new(),
+            saved_generation: Some(0),
             view: MarkdownEditorView::new(),
             edit_generation: 0,
             selection: None,
@@ -470,12 +474,21 @@ impl TextEditorComponent {
                 .unwrap_or_else(|p| p.into_inner())
                 .dirty = false;
         }
-        self.last_saved_text = text;
+        // Only claim the current edit generation as "saved" if the supplied
+        // text actually matches the buffer right now. Callers normally pass
+        // `get_text()` from the moment the save was issued, but if the buffer
+        // moved on (or the save was for a divergent snapshot) we leave the
+        // editor marked dirty.
+        self.saved_generation = if text == self.get_text() {
+            Some(self.edit_generation)
+        } else {
+            None
+        };
     }
 
     pub fn is_dirty(&self) -> bool {
         match &self.backend {
-            BackendState::Textarea(_) => self.get_text() != self.last_saved_text,
+            BackendState::Textarea(_) => self.saved_generation != Some(self.edit_generation),
             BackendState::Nvim(nvim) => {
                 nvim.snapshot
                     .lock()
