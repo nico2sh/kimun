@@ -272,13 +272,20 @@ impl MarkdownEditorView {
         self.last_cursor_screen = None;
         if focused {
             let cursor_vrow = self.cursor_vrow;
-            if cursor_vrow >= scroll && cursor_vrow < scroll + height {
-                let vl = &self.layout.visual_lines()[cursor_vrow];
+            if cursor_vrow >= scroll
+                && cursor_vrow < scroll + height
+                && let Some(vl) = self.layout.visual_lines().get(cursor_vrow)
+                && let Some(parsed) = self.parsed_cache.get(cursor.0)
+            {
+                // Use `.get()` on both layout.visual_lines and parsed_cache so
+                // a transiently-stale cursor (e.g. Nvim snapshot arriving
+                // after a shrink) cannot panic the render path. `lines.get`
+                // was already guarded; this brings the other two into sync.
                 let logical_line = lines.get(cursor.0).map(|s| s.as_str()).unwrap_or("");
                 let force_raw = self.is_in_code_block(cursor.0);
                 let rendered_col = MarkdownSpanner::rendered_cursor_col_with(
                     logical_line,
-                    &self.parsed_cache[cursor.0],
+                    parsed,
                     vl.start_col,
                     cursor.1,
                     vl.is_first_visual_line,
