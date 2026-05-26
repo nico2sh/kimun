@@ -1,8 +1,6 @@
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::{
-    extract_labels, get_chunks_and_links, get_content_chunks, label_matches,
-};
+use kimun_core::note::{extract_labels, get_chunks_and_links, get_content_chunks, label_matches};
 
 const SMALL: &str = include_str!("fixtures/small_note.md");
 const MEDIUM: &str = include_str!("fixtures/medium_note.md");
