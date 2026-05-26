@@ -326,10 +326,10 @@ impl TextEditorComponent {
             ),
             rect: Rect::default(),
             key_bindings,
-            saved_text_revision: Some(0),
+            saved_text_revision: Some(1),
             view: MarkdownEditorView::new(),
             edit_generation: 0,
-            text_revision: 0,
+            text_revision: 1,
             selection: None,
             clipboard: Clipboard::new().ok(),
             nvim_pending_z: false,
@@ -953,7 +953,13 @@ impl TextEditorComponent {
     #[inline]
     fn bump_text(&mut self) {
         self.edit_generation = self.edit_generation.wrapping_add(1);
-        self.text_revision = self.text_revision.wrapping_add(1);
+        // Skip 0 on wraparound: `0` is the AutocompleteHost::text_revision
+        // "do not cache" sentinel, and a `mark_saved_at_revision(0)` from a
+        // stale completion that happens to match a wrapped-back-to-0 buffer
+        // would clear dirty spuriously. 2^64 edits is astronomical but the
+        // skip is one branch and the invariant becomes type-checkable.
+        let next = self.text_revision.wrapping_add(1);
+        self.text_revision = if next == 0 { 1 } else { next };
     }
 
     /// If the Nvim process has died, fall back to a Textarea with the last known content.
