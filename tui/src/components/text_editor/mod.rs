@@ -515,19 +515,24 @@ impl TextEditorComponent {
 
     /// Mark the buffer as clean iff its current revision still matches
     /// `rev` (i.e. no edits landed between the save being issued and
-    /// completing). Diverged revision → leave dirty.
+    /// completing). Diverged revision → no-op: leave `saved_text_revision`
+    /// alone, because some OTHER mechanism (a synchronous `try_save`
+    /// racing this completion) may have already marked a NEWER revision
+    /// clean, and a stale completion must not clobber that. `is_dirty`
+    /// already reads true when `saved_text_revision != Some(self.text_revision)`,
+    /// so doing nothing on a mismatch keeps the editor correctly dirty
+    /// without overwriting a legitimately-newer saved snapshot.
     pub fn mark_saved_at_revision(&mut self, rev: u64) {
-        if rev == self.text_revision {
-            if let BackendState::Nvim(nvim) = &self.backend {
-                nvim.snapshot
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .dirty = false;
-            }
-            self.saved_text_revision = Some(rev);
-        } else {
-            self.saved_text_revision = None;
+        if rev != self.text_revision {
+            return;
         }
+        if let BackendState::Nvim(nvim) = &self.backend {
+            nvim.snapshot
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .dirty = false;
+        }
+        self.saved_text_revision = Some(rev);
     }
 
     pub fn mark_saved(&mut self, text: String) {
