@@ -903,11 +903,19 @@ impl AppScreen for EditorScreen {
                 {
                     self.editor.mark_saved_at_revision(rev);
                 }
-                // `autosave_task.is_finished()` already reports completion;
-                // explicitly drop the handle so it doesn't sit in `Some` past
-                // its useful life (and so the next periodic tick doesn't pay
-                // an `is_finished()` syscall on a long-finished task).
-                self.autosave_task = None;
+                // Only clear the handle if the CURRENT one is actually
+                // finished. Without this guard, a stale completion that
+                // arrives after `try_save().take()` cleared the slot and
+                // a new periodic tick respawned could wipe out the
+                // freshly-spawned task's handle, letting the next tick
+                // spawn a concurrent writer for the same path.
+                if self
+                    .autosave_task
+                    .as_ref()
+                    .is_some_and(|h| h.is_finished())
+                {
+                    self.autosave_task = None;
+                }
                 None
             }
             AppEvent::OpenPath(path) => {
