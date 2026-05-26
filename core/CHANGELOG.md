@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.12](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.11...kimun_core-v0.2.12) - 2026-05-26
+
+### Fixed
+
+- *(indexing)* suppress hashtag extraction inside images + wikilink display text
+- added benches, ignore hashtags with double ##
+
+### Other
+
+- cargo fmt
+- *(indexing)* single-walk get_chunks_and_links — 39-57% faster
+
 ## [0.2.11](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.10...kimun_core-v0.2.11) - 2026-05-25
 
 ### Added
