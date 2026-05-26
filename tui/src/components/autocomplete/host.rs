@@ -19,4 +19,13 @@ pub trait AutocompleteHost {
     /// is currently off-screen; the controller hides the popup in that
     /// case.
     fn screen_anchor_for(&self, byte_offset: usize) -> Option<(u16, u16)>;
+
+    /// Monotonic counter the host bumps every time `buffer_text()` would
+    /// return different bytes. The controller uses this as the cache key
+    /// for `ExclusionZones`, so cursor-only reconciles never repay the
+    /// full-buffer pulldown-cmark parse + regex scans. Hosts with tiny or
+    /// trivial buffers (e.g. a single-line search box) can return `0` to
+    /// effectively disable the cache — the controller still works
+    /// correctly because exclusion-zone checks are skipped there.
+    fn text_revision(&self) -> u64;
 }

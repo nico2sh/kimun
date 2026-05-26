@@ -1,6 +1,8 @@
 use std::ops::Range;
 
-use kimun_core::note::{is_inside_code_link_or_frontmatter, is_inside_exclusion_zone};
+use kimun_core::note::{
+    is_inside_code_link_or_frontmatter, is_inside_exclusion_zone, ExclusionZones,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerKind {
@@ -76,6 +78,21 @@ pub fn detect_trigger_with(
     text: &str,
     cursor: usize,
     opts: TriggerOptions,
+) -> Option<TriggerContext> {
+    detect_trigger_with_zones(text, cursor, opts, None)
+}
+
+/// Variant of [`detect_trigger_with`] that accepts a precomputed
+/// `ExclusionZones` for the same `text`. The autocomplete controller
+/// caches one such instance per buffer revision so cursor moves don't
+/// repay the full-buffer pulldown-cmark parse + regex scans on every
+/// reconcile. When `zones` is `None`, falls back to the per-call
+/// computation (used by tests and the no-cache convenience function).
+pub fn detect_trigger_with_zones(
+    text: &str,
+    cursor: usize,
+    opts: TriggerOptions,
+    zones: Option<&ExclusionZones>,
 ) -> Option<TriggerContext> {
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
@@ -158,7 +175,11 @@ pub fn detect_trigger_with(
         // reopen-mid-target case the spec wants to support). Only
         // applied when the caller is editing Markdown (search box
         // disables this).
-        if opts.apply_exclusion_zone && is_inside_code_link_or_frontmatter(text, cursor) {
+        if opts.apply_exclusion_zone
+            && zones
+                .map(|z| z.contains_code_link_or_frontmatter(cursor))
+                .unwrap_or_else(|| is_inside_code_link_or_frontmatter(text, cursor))
+        {
             return None;
         }
         let query = text[inner_start..cursor].to_string();
@@ -183,7 +204,11 @@ pub fn detect_trigger_with(
         // plain text. Checked before the word-boundary guard so a future
         // relaxation of the boundary rule cannot accidentally let popups
         // leak into excluded regions.
-        if opts.apply_exclusion_zone && is_inside_exclusion_zone(text, cursor) {
+        if opts.apply_exclusion_zone
+            && zones
+                .map(|z| z.contains(cursor))
+                .unwrap_or_else(|| is_inside_exclusion_zone(text, cursor))
+        {
             return None;
         }
 

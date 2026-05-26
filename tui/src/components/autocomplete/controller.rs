@@ -2,13 +2,14 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
+use kimun_core::note::ExclusionZones;
 use kimun_core::NoteVault;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::host::AutocompleteHost;
 use super::popup::{PopupAction, PopupOutcome, handle_key as popup_handle_key};
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
-use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with};
+use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with_zones};
 
 /// Hard cap on suggestions fetched from core per query. The popup itself
 /// only shows `max_visible_rows` at a time and scrolls inside the fetched
@@ -59,6 +60,11 @@ pub struct AutocompleteController {
     /// a popup (kind change / open) bypasses the debounce. Tests override
     /// to `Duration::ZERO` via `with_debounce`.
     debounce: Duration,
+    /// Cached exclusion zones for the current buffer, keyed on the host's
+    /// `text_revision`. `is_inside_exclusion_zone` was previously rerun on
+    /// every reconcile (every text- or cursor-changing key); now cursor
+    /// moves answer from this cache and only text changes rebuild it.
+    cached_zones: Option<(u64, ExclusionZones)>,
     /// Optional callback used to wake the host's render loop after an
     /// async query posts its result. Decoupled from any specific event
     /// bus so the controller stays usable wherever the host can
@@ -93,6 +99,7 @@ impl AutocompleteController {
             max_visible_rows: DEFAULT_MAX_VISIBLE_ROWS,
             in_flight: None,
             debounce: DEFAULT_DEBOUNCE,
+            cached_zones: None,
             redraw_cb: None,
         }
     }
@@ -226,7 +233,19 @@ impl AutocompleteController {
     fn reconcile<H: AutocompleteHost>(&mut self, host: &H, allow_open: bool) {
         let text = host.buffer_text();
         let cursor = host.cursor_byte_offset();
-        let trigger = detect_trigger_with(&text, cursor, self.trigger_opts);
+        let revision = host.text_revision();
+        // Rebuild exclusion zones only when the host's text revision has
+        // moved on. Cursor moves keep the same revision, so the heavy
+        // pulldown-cmark parse + regex scans run at most once per text edit.
+        let zones_match = self
+            .cached_zones
+            .as_ref()
+            .is_some_and(|(rev, _)| *rev == revision);
+        if !zones_match {
+            self.cached_zones = Some((revision, ExclusionZones::from_text(&text)));
+        }
+        let zones = self.cached_zones.as_ref().map(|(_, z)| z);
+        let trigger = detect_trigger_with_zones(&text, cursor, self.trigger_opts, zones);
 
         // Filter by mode before deciding anything else.
         let trigger = trigger.filter(|t| match (self.mode, t.kind) {
@@ -540,6 +559,7 @@ mod tests {
     struct FakeHost {
         buffer: String,
         cursor: usize,
+        revision: u64,
     }
 
     impl FakeHost {
@@ -547,6 +567,7 @@ mod tests {
             Self {
                 buffer: buffer.to_string(),
                 cursor,
+                revision: 1,
             }
         }
 
@@ -554,6 +575,7 @@ mod tests {
             self.buffer
                 .replace_range(action.range.clone(), &action.new_text);
             self.cursor = action.new_cursor_byte;
+            self.revision = self.revision.wrapping_add(1);
         }
     }
 
@@ -563,6 +585,9 @@ mod tests {
         }
         fn cursor_byte_offset(&self) -> usize {
             self.cursor
+        }
+        fn text_revision(&self) -> u64 {
+            self.revision
         }
         fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
             Some((0, 0))

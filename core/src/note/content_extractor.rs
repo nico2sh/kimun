@@ -454,23 +454,7 @@ pub(crate) fn md_wikilink_char_ranges(md_text: &str) -> Vec<(usize, usize)> {
 /// matched by the wikilink regex and therefore do not suppress the popup —
 /// which is exactly what the editor needs.
 pub fn is_inside_exclusion_zone(text: &str, byte_offset: usize) -> bool {
-    if byte_offset > text.len() {
-        return false;
-    }
-
-    if byte_offset < frontmatter_end_byte(text) {
-        return true;
-    }
-
-    let in_range = |ranges: &[(usize, usize)]| -> bool {
-        ranges
-            .iter()
-            .any(|(s, e)| byte_offset > *s && byte_offset < *e)
-    };
-
-    in_range(&code_char_ranges(text))
-        || in_range(&md_link_char_ranges(text))
-        || in_range(&md_wikilink_char_ranges(text))
+    ExclusionZones::from_text(text).contains(byte_offset)
 }
 
 /// Like `is_inside_exclusion_zone` but does NOT include already-closed
@@ -479,21 +463,67 @@ pub fn is_inside_exclusion_zone(text: &str, byte_offset: usize) -> bool {
 /// target to edit it. Code spans, frontmatter, and standard markdown
 /// link bodies still suppress.
 pub fn is_inside_code_link_or_frontmatter(text: &str, byte_offset: usize) -> bool {
-    if byte_offset > text.len() {
-        return false;
+    ExclusionZones::from_text(text).contains_code_link_or_frontmatter(byte_offset)
+}
+
+/// Cached set of byte ranges that suppress autocomplete: frontmatter,
+/// fenced/inline code, markdown link bodies, closed wikilink spans.
+///
+/// Builds once via `from_text` (the expensive step — runs a pulldown-cmark
+/// parse plus two regex scans over the full buffer), then answers any
+/// number of `contains*` point queries in O(ranges) time.
+///
+/// The TUI autocomplete caches one instance per buffer revision so that
+/// cursor moves never repay the full-buffer parse.
+#[derive(Debug, Clone, Default)]
+pub struct ExclusionZones {
+    frontmatter_end: usize,
+    code: Vec<(usize, usize)>,
+    md_links: Vec<(usize, usize)>,
+    wikilinks: Vec<(usize, usize)>,
+}
+
+impl ExclusionZones {
+    /// Computes every zone for `text` in a single sweep. Mirrors
+    /// `is_inside_exclusion_zone` / `is_inside_code_link_or_frontmatter`
+    /// internally so the contains-checks stay in lock-step with the
+    /// indexer's exclusion rules.
+    pub fn from_text(text: &str) -> Self {
+        Self {
+            frontmatter_end: frontmatter_end_byte(text),
+            code: code_char_ranges(text),
+            md_links: md_link_char_ranges(text),
+            wikilinks: md_wikilink_char_ranges(text),
+        }
     }
 
-    if byte_offset < frontmatter_end_byte(text) {
-        return true;
+    /// True when `byte_offset` falls inside any zone (frontmatter, code,
+    /// markdown link body, or closed wikilink). Matches the boolean of
+    /// `is_inside_exclusion_zone(text, byte_offset)` for the same `text`.
+    pub fn contains(&self, byte_offset: usize) -> bool {
+        if byte_offset < self.frontmatter_end {
+            return true;
+        }
+        Self::in_any(byte_offset, &self.code)
+            || Self::in_any(byte_offset, &self.md_links)
+            || Self::in_any(byte_offset, &self.wikilinks)
     }
 
-    let in_range = |ranges: &[(usize, usize)]| -> bool {
+    /// True when `byte_offset` falls inside frontmatter, code, or a
+    /// markdown link body — but NOT inside a closed wikilink span. Matches
+    /// `is_inside_code_link_or_frontmatter(text, byte_offset)`.
+    pub fn contains_code_link_or_frontmatter(&self, byte_offset: usize) -> bool {
+        if byte_offset < self.frontmatter_end {
+            return true;
+        }
+        Self::in_any(byte_offset, &self.code) || Self::in_any(byte_offset, &self.md_links)
+    }
+
+    fn in_any(byte_offset: usize, ranges: &[(usize, usize)]) -> bool {
         ranges
             .iter()
             .any(|(s, e)| byte_offset > *s && byte_offset < *e)
-    };
-
-    in_range(&code_char_ranges(text)) || in_range(&md_link_char_ranges(text))
+    }
 }
 
 fn cleanup_hashtags(md_text: &str) -> String {

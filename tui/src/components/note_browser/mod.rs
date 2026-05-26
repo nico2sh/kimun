@@ -82,6 +82,13 @@ impl AutocompleteHost for SearchBoxHostSnapshot {
     fn cursor_byte_offset(&self) -> usize {
         self.cursor
     }
+    fn text_revision(&self) -> u64 {
+        // Search box trigger detection runs with `apply_exclusion_zone:
+        // false`, so the cache is never consulted. Returning a constant
+        // here keeps the trait contract simple without any per-keystroke
+        // bookkeeping on the modal side.
+        0
+    }
     fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
         // Anchor at the caret — same liberty as the editor host. The
         // popup sits adjacent to the typed text either way.
