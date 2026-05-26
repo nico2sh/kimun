@@ -293,70 +293,99 @@ where
     loop {
         terminal.draw(|f| ui::ui(f, app))?;
 
-        match events.next().await {
-            AppEvent::Quit => {
-                if let Some(screen) = app.current_screen.as_mut() {
-                    screen.on_exit(&tx).await;
+        // Block until at least one event arrives, then drain everything else
+        // that is already queued before drawing again. `Redraw` events are
+        // coalesced — the top-of-loop draw paints one frame for the whole
+        // batch instead of one frame per pending message. Crossterm input
+        // events never come through the mpsc channel, so a real key event
+        // always forces a fresh `events.next().await` (and therefore a
+        // dedicated draw) on the next iteration.
+        let mut event = events.next().await;
+        loop {
+            match event {
+                AppEvent::Quit => {
+                    if let Some(screen) = app.current_screen.as_mut() {
+                        screen.on_exit(&tx).await;
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-            AppEvent::Input(input) => {
-                match input {
-                    InputEvent::Key(key) => {
-                        tracing::debug!(
-                            "KEY: code={:?} mods={:?} kind={:?}",
-                            key.code,
-                            key.modifiers,
-                            key.kind
-                        );
-                        // Global shortcuts — fire before any screen gets the event.
-                        if let Some(combo) = key_event_to_combo(&key) {
-                            let action = {
-                                let s = app.settings.read().unwrap();
-                                tracing::debug!(
-                                    "COMBO: {} → {:?}",
-                                    combo,
+                AppEvent::Redraw => {
+                    // No-op: top-of-loop draw already happened (or is about to).
+                }
+                AppEvent::Input(input) => {
+                    match input {
+                        InputEvent::Key(key) => {
+                            tracing::debug!(
+                                "KEY: code={:?} mods={:?} kind={:?}",
+                                key.code,
+                                key.modifiers,
+                                key.kind
+                            );
+                            // Global shortcuts — fire before any screen gets the event.
+                            if let Some(combo) = key_event_to_combo(&key) {
+                                let action = {
+                                    let s = app.settings.read().unwrap();
+                                    tracing::debug!(
+                                        "COMBO: {} → {:?}",
+                                        combo,
+                                        s.key_bindings.get_action(&combo)
+                                    );
                                     s.key_bindings.get_action(&combo)
-                                );
-                                s.key_bindings.get_action(&combo)
-                            };
-                            match action {
-                                Some(ActionShortcuts::Quit) => {
-                                    tx.send(AppEvent::Quit).ok();
-                                    continue;
-                                }
-                                Some(ActionShortcuts::OpenSettings) => {
-                                    let already_on_settings = app
-                                        .current_screen
-                                        .as_ref()
-                                        .map(|s| s.get_kind() == ScreenKind::Settings)
-                                        .unwrap_or(false);
-                                    if !already_on_settings {
-                                        tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings))
-                                            .ok();
+                                };
+                                let handled_global = match action {
+                                    Some(ActionShortcuts::Quit) => {
+                                        tx.send(AppEvent::Quit).ok();
+                                        true
                                     }
-                                    continue;
+                                    Some(ActionShortcuts::OpenSettings) => {
+                                        let already_on_settings = app
+                                            .current_screen
+                                            .as_ref()
+                                            .map(|s| s.get_kind() == ScreenKind::Settings)
+                                            .unwrap_or(false);
+                                        if !already_on_settings {
+                                            tx.send(AppEvent::OpenScreen(
+                                                ScreenEvent::OpenSettings,
+                                            ))
+                                            .ok();
+                                        }
+                                        true
+                                    }
+                                    _ => false,
+                                };
+                                if handled_global {
+                                    // Skip screen-level handling for this key.
+                                    match events.try_next() {
+                                        Some(next) => {
+                                            event = next;
+                                            continue;
+                                        }
+                                        None => break,
+                                    }
                                 }
-                                _ => {}
+                            }
+                            if let Some(screen) = &mut app.current_screen {
+                                screen.handle_input(&InputEvent::Key(key), &tx);
                             }
                         }
-                        if let Some(screen) = &mut app.current_screen {
-                            screen.handle_input(&InputEvent::Key(key), &tx);
+                        InputEvent::Mouse(mouse_event) => {
+                            if let Some(screen) = &mut app.current_screen {
+                                screen.handle_input(&InputEvent::Mouse(mouse_event), &tx);
+                            }
                         }
-                    }
-                    InputEvent::Mouse(mouse_event) => {
-                        if let Some(screen) = &mut app.current_screen {
-                            screen.handle_input(&InputEvent::Mouse(mouse_event), &tx);
-                        }
-                    }
-                    InputEvent::Paste(text) => {
-                        if let Some(screen) = &mut app.current_screen {
-                            screen.handle_input(&InputEvent::Paste(text), &tx);
+                        InputEvent::Paste(text) => {
+                            if let Some(screen) = &mut app.current_screen {
+                                screen.handle_input(&InputEvent::Paste(text), &tx);
+                            }
                         }
                     }
                 }
+                msg => handle_app_message(msg, app, &tx).await?,
             }
-            msg => handle_app_message(msg, app, &tx).await?,
+            match events.try_next() {
+                Some(next) => event = next,
+                None => break,
+            }
         }
     }
 }
