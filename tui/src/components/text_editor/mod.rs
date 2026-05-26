@@ -496,22 +496,26 @@ impl TextEditorComponent {
     }
 
     pub fn mark_saved(&mut self, text: String) {
-        if let BackendState::Nvim(nvim) = &self.backend {
-            nvim.snapshot
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .dirty = false;
-        }
-        // Only claim the current text revision as "saved" if the supplied
-        // text actually matches the buffer right now. Callers normally pass
-        // `get_text()` from the moment the save was issued, but if the buffer
-        // moved on (or the save was for a divergent snapshot) we leave the
-        // editor marked dirty.
-        self.saved_text_revision = if text == self.get_text() {
-            Some(self.text_revision)
+        // Only claim the current state as "saved" when the supplied text
+        // actually matches the buffer right now. Callers normally pass
+        // `get_text()` from the moment the save was issued, but if the
+        // buffer moved on (or the save was for a divergent snapshot) we
+        // leave BOTH dirty flags (Nvim snapshot bool + Textarea
+        // saved_text_revision) untouched so the next autosave still runs.
+        let matches = text == self.get_text();
+        if matches {
+            if let BackendState::Nvim(nvim) = &self.backend {
+                nvim.snapshot
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .dirty = false;
+            }
+            self.saved_text_revision = Some(self.text_revision);
         } else {
-            None
-        };
+            // Textarea backend: divergent save leaves us dirty.
+            // Nvim backend: keep the snapshot's dirty flag intact (don't clear).
+            self.saved_text_revision = None;
+        }
     }
 
     pub fn is_dirty(&self) -> bool {
