@@ -180,8 +180,47 @@ pub fn detect_trigger_with(
         // frontmatter, markdown links, or already-closed wikilinks /
         // markdown link bodies — but only when the caller is editing
         // Markdown. The search box turns this off because its input is
-        // plain text.
+        // plain text. Checked before the word-boundary guard so a future
+        // relaxation of the boundary rule cannot accidentally let popups
+        // leak into excluded regions.
         if opts.apply_exclusion_zone && is_inside_exclusion_zone(text, cursor) {
+            return None;
+        }
+
+        // Word-boundary guard — mirrors `core::note::content_extractor::
+        // label_matches_inner`. The tag region runs from `#` through the
+        // contiguous `[A-Za-z0-9_]+` word that follows it; reject if the
+        // character on EITHER side of that region is alphanumeric, `_`, or
+        // another `#`. Both sides are required because the popup may open
+        // when the cursor is inside an existing tag (e.g. `#tag#more`
+        // cursor between `g` and the second `#`) — checking only the
+        // preceding char would suggest a label the indexer then rejects.
+        if hash > 0 {
+            let preceding_blocks_label = text[..hash]
+                .chars()
+                .next_back()
+                .map(|c| c.is_alphanumeric() || c == '_' || c == '#')
+                .unwrap_or(false);
+            if preceding_blocks_label {
+                return None;
+            }
+        }
+        let bytes = text.as_bytes();
+        let mut word_end = inner_start;
+        while word_end < bytes.len() {
+            let b = bytes[word_end];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                word_end += 1;
+            } else {
+                break;
+            }
+        }
+        let following_blocks_label = text[word_end..]
+            .chars()
+            .next()
+            .map(|c| c.is_alphanumeric() || c == '_' || c == '#')
+            .unwrap_or(false);
+        if following_blocks_label {
             return None;
         }
 
@@ -294,6 +333,100 @@ mod tests {
     fn hashtag_closes_when_word_char_boundary_passes() {
         // A space after `#proj` breaks the hashtag context.
         assert!(ctx("about #proj here", 16).is_none());
+    }
+
+    #[test]
+    fn hash_mid_word_does_not_trigger() {
+        // `hello#` — `#` immediately follows a letter, so it is not a label.
+        assert!(ctx("hello#", 6).is_none());
+    }
+
+    #[test]
+    fn hash_mid_word_with_query_does_not_trigger() {
+        // `hello#tag` — still mid-word, popup must not open.
+        assert!(ctx("hello#tag", 9).is_none());
+    }
+
+    #[test]
+    fn hash_after_digit_does_not_trigger() {
+        assert!(ctx("abc123#tag", 10).is_none());
+    }
+
+    #[test]
+    fn hash_after_underscore_does_not_trigger() {
+        assert!(ctx("foo_#tag", 8).is_none());
+    }
+
+    #[test]
+    fn double_hash_does_not_trigger() {
+        // `##tag` — second `#` immediately follows first `#`, not a label.
+        assert!(ctx("##tag", 5).is_none());
+    }
+
+    #[test]
+    fn triple_hash_does_not_trigger() {
+        assert!(ctx("###tag", 6).is_none());
+    }
+
+    #[test]
+    fn double_hash_mid_line_does_not_trigger() {
+        assert!(ctx("hello ##tag", 11).is_none());
+    }
+
+    #[test]
+    fn hash_between_double_hash_at_start_does_not_trigger() {
+        // `##tag` with cursor between the two `#`s — the column-0 case the
+        // earlier `if hash > 0` gate let through.
+        assert!(ctx("##tag", 1).is_none());
+    }
+
+    #[test]
+    fn adjacent_hash_at_cursor_does_not_trigger() {
+        // `#tag#more` with cursor right after `g` — popup must not open
+        // because the indexer will reject both `#tag` and `#more`.
+        assert!(ctx("#tag#more", 4).is_none());
+    }
+
+    #[test]
+    fn adjacent_hash_with_cursor_inside_tag_does_not_trigger() {
+        // Cursor mid-tag (`#ta|g#more`) — the following `#` still
+        // invalidates the tag region.
+        assert!(ctx("#tag#more", 3).is_none());
+    }
+
+    #[test]
+    fn trailing_hash_after_tag_does_not_trigger() {
+        // `#draft#` cursor between `t` and trailing `#`.
+        assert!(ctx("#draft#", 6).is_none());
+    }
+
+    #[test]
+    fn search_box_double_hash_at_start_does_not_trigger() {
+        // Same column-0 `##` case under search-box opts — the guard now
+        // catches it via the following-char check (the original gate
+        // skipped it when `disambiguate_header=false`).
+        let opts = TriggerOptions {
+            disambiguate_header: false,
+            apply_exclusion_zone: false,
+        };
+        assert!(detect_trigger_with("##tag", 1, opts).is_none());
+        assert!(detect_trigger_with("##", 1, opts).is_none());
+    }
+
+    #[test]
+    fn hash_after_space_then_hash_triggers() {
+        // `# #tag` — space breaks the `##` run, second `#` is a valid label start.
+        let t = ctx("# #tag", 6).unwrap();
+        assert_eq!(t.kind, TriggerKind::Hashtag);
+        assert_eq!(t.query, "tag");
+    }
+
+    #[test]
+    fn hash_after_punctuation_triggers() {
+        // Punctuation is not a label char, so `#tag` after `,` is a valid hashtag.
+        let t = ctx("hi,#tag", 7).unwrap();
+        assert_eq!(t.kind, TriggerKind::Hashtag);
+        assert_eq!(t.query, "tag");
     }
 
     // ---- Hashtag vs. header disambiguation at start of line ----

@@ -69,6 +69,10 @@ use super::{
     VaultPath,
 };
 
+// 0.8: Tightened hashtag word-boundary rule — `##tag`, `#tag#more`, and
+//      similar adjacent-`#` patterns are no longer treated as labels. Bump
+//      forces a clean reindex so the `labels` table drops the stale rows
+//      that the old extractor produced.
 // 0.7: Dropped the redundant `labels_by_name` index (the PK autoindex
 //      sqlite_autoindex_labels_1 already covers WHERE name = ? lookups).
 //      Bump forces a clean reindex so existing 0.6 installs drop the dead
@@ -77,7 +81,7 @@ use super::{
 //      forces a clean reindex so the table is filled for existing vaults.
 // 0.5: BREADCRUMB_SEP changed from `>` to `\x1f`. Bump forces a clean
 //      reindex so stale rows with the old separator are rewritten.
-const VERSION: &str = "0.7";
+const VERSION: &str = "0.8";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone)]
