@@ -15,6 +15,12 @@ pub struct MarkdownEditorView {
     pub lines_snapshot: Vec<String>,
     pub cursor_snapshot: (usize, usize),
     pub cursor_code_block: Option<Range<usize>>,
+    /// Line ranges of every fenced code block in the buffer. Text-keyed
+    /// (rebuilt only when `text_revision` changes); `cursor_code_block` is
+    /// then a cursor-keyed lookup against this list, so cursor moves
+    /// between/out of fences keep `force_raw` rendering in sync without
+    /// re-scanning the whole buffer on every keystroke.
+    fence_ranges: Vec<Range<usize>>,
     /// Cursor's last on-screen position (col, row), or `None` when the
     /// cursor was scrolled off-screen or the view was unfocused at the
     /// time of the previous `render`. Used as the anchor for floating
@@ -55,6 +61,7 @@ impl MarkdownEditorView {
             lines_snapshot: Vec::new(),
             cursor_snapshot: (0, 0),
             cursor_code_block: None,
+            fence_ranges: Vec::new(),
             last_cursor_screen: None,
             parsed_cache: Vec::new(),
             last_seen_generation: u64::MAX, // force rebuild on first update
@@ -85,10 +92,20 @@ impl MarkdownEditorView {
         // update arriving after a stale generation write) to prevent OOB indexing below.
         if generation != self.last_seen_generation || lines.len() != self.parsed_cache.len() {
             self.lines_snapshot = lines.to_vec();
-            self.cursor_code_block = Self::find_code_block(lines, cursor.0);
+            self.fence_ranges = Self::compute_fence_ranges(lines);
             self.parsed_cache = ParsedBuffer::parse(lines);
             self.last_seen_generation = generation;
         }
+
+        // Cursor-keyed: which fenced block (if any) the cursor sits in.
+        // Cheap point lookup against the text-keyed `fence_ranges`, so cursor
+        // moves between fences update `force_raw` rendering without paying
+        // for a full-buffer rescan.
+        self.cursor_code_block = self
+            .fence_ranges
+            .iter()
+            .find(|r| r.contains(&cursor.0))
+            .cloned();
 
         self.cursor_snapshot = cursor;
 
@@ -311,18 +328,20 @@ impl MarkdownEditorView {
         (row, col)
     }
 
-    fn find_code_block(lines: &[String], cursor_row: usize) -> Option<Range<usize>> {
+    /// Scans the buffer once and returns the line range of every fenced
+    /// code block. The result is text-keyed and cached in `fence_ranges`;
+    /// the cursor's active block is then a cheap point lookup that is
+    /// recomputed on every `update()` so cursor moves between fences keep
+    /// `force_raw` rendering correct.
+    fn compute_fence_ranges(lines: &[String]) -> Vec<Range<usize>> {
+        let mut ranges = Vec::new();
         let mut open: Option<usize> = None;
         for (i, line) in lines.iter().enumerate() {
-            let t = line.trim();
-            if t.starts_with("```") {
+            if line.trim().starts_with("```") {
                 match open {
                     None => open = Some(i),
                     Some(start) => {
-                        let range = start..i + 1;
-                        if range.contains(&cursor_row) {
-                            return Some(range);
-                        }
+                        ranges.push(start..i + 1);
                         open = None;
                     }
                 }
@@ -330,12 +349,9 @@ impl MarkdownEditorView {
         }
         // Unclosed fence: per CommonMark, extends to end of document.
         if let Some(start) = open {
-            let range = start..lines.len();
-            if range.contains(&cursor_row) {
-                return Some(range);
-            }
+            ranges.push(start..lines.len());
         }
-        None
+        ranges
     }
 }
 
@@ -485,7 +501,8 @@ mod tests {
             "```".to_string(),
             "more".to_string(),
         ];
-        let block = MarkdownEditorView::find_code_block(&lines, 2);
+        let ranges = MarkdownEditorView::compute_fence_ranges(&lines);
+        let block = ranges.iter().find(|r| r.contains(&2)).cloned();
         assert!(block.is_some());
         let r = block.unwrap();
         assert_eq!(r.start, 1);
@@ -500,7 +517,32 @@ mod tests {
             "code".to_string(),
             "```".to_string(),
         ];
-        assert!(MarkdownEditorView::find_code_block(&lines, 0).is_none());
+        let ranges = MarkdownEditorView::compute_fence_ranges(&lines);
+        assert!(ranges.iter().find(|r| r.contains(&0)).is_none());
+    }
+
+    #[test]
+    fn cursor_code_block_updates_when_cursor_leaves_fence() {
+        // Regression: prior to the fence-cache split, `cursor_code_block`
+        // was only recomputed on text change, so a cursor moving out of a
+        // fence (no edit) kept the old fence range cached and `force_raw`
+        // rendering stayed stuck on the wrong line set.
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "intro".to_string(),
+            "```".to_string(),
+            "code".to_string(),
+            "```".to_string(),
+            "outro".to_string(),
+        ];
+        v.update(&lines, (2, 0), rect(10), 1, None);
+        assert!(v.cursor_code_block.is_some(), "cursor inside fence");
+        // Cursor moves OUT of the fence without any text change — same revision.
+        v.update(&lines, (4, 0), rect(10), 1, None);
+        assert!(
+            v.cursor_code_block.is_none(),
+            "cursor moved out of fence; cache must update"
+        );
     }
 
     #[test]
