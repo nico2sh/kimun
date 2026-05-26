@@ -194,7 +194,7 @@ impl MarkdownEditorView {
 
         let selection = self.selection;
         let parsed_cache = &self.parsed_cache;
-        let cursor_code_block = &self.cursor_code_block;
+        let fence_ranges = &self.fence_ranges;
 
         let visible: Vec<Line> = vlines
             .iter()
@@ -206,9 +206,7 @@ impl MarkdownEditorView {
                 } else {
                     None
                 };
-                let force_raw = cursor_code_block
-                    .as_ref()
-                    .is_some_and(|r| r.contains(&vl.logical_row));
+                let force_raw = fence_ranges.iter().any(|r| r.contains(&vl.logical_row));
                 let logical_line = lines.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
                 let parsed = &parsed_cache[vl.logical_row];
                 let content = vl.content(logical_line);
@@ -295,9 +293,13 @@ impl MarkdownEditorView {
     }
 
     fn is_in_code_block(&self, row: usize) -> bool {
-        self.cursor_code_block
-            .as_ref()
-            .is_some_and(|r| r.contains(&row))
+        // Every line inside any fenced block renders force-raw (no markdown
+        // re-styling, distinct fg color). Previously this returned `true`
+        // only for the fence the cursor was sitting in, so fenced blocks
+        // elsewhere in the buffer looked like plain text until the cursor
+        // moved into them. `cursor_code_block` is retained for callers that
+        // need to know specifically *which* fence the cursor is in.
+        self.fence_ranges.iter().any(|r| r.contains(&row))
     }
 
     /// Markdown-aware mouse click: maps a rendered screen column to the correct logical
