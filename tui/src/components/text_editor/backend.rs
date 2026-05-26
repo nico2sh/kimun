@@ -244,6 +244,21 @@ impl NvimBackend {
     }
 
     /// Load content into the nvim buffer and pre-populate the snapshot.
+    ///
+    /// Contract: the synchronous snapshot pre-populate (lines + cursor +
+    /// dirty=false + content_gen bump) happens BEFORE `in_flight` is set
+    /// and the buf_set_lines RPC is spawned. A keystroke arriving between
+    /// the synchronous return of `set_text` and the spawned task actually
+    /// reaching nvim ends up routed via `handle_key`, and the refresh task
+    /// will skip snapshot updates while `in_flight=true` (see
+    /// `apply_lua_state`). Once the spawned RPC completes and `in_flight`
+    /// flips back to false, the refresh task will observe whatever buffer
+    /// state nvim has — including both the loaded content AND any keys the
+    /// user pressed in the interim. `snap.lines != new_lines` will then
+    /// re-set `dirty=true`. The window where `dirty=false` after a
+    /// concurrent keystroke is bounded by one refresh cycle (~30 ms).
+    /// Do NOT move the `in_flight.store(true)` earlier or clear it
+    /// before the RPC actually completes — both invariants are load-bearing.
     pub fn set_text(&self, text: &str) {
         let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
 
