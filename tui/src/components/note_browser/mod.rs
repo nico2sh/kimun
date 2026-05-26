@@ -83,10 +83,10 @@ impl AutocompleteHost for SearchBoxHostSnapshot {
         self.cursor
     }
     fn text_revision(&self) -> u64 {
-        // Search box trigger detection runs with `apply_exclusion_zone:
-        // false`, so the cache is never consulted. Returning a constant
-        // here keeps the trait contract simple without any per-keystroke
-        // bookkeeping on the modal side.
+        // `0` is the trait's documented "do not cache" sentinel. The
+        // search-box buffer is single-line and short, so the rebuild
+        // cost per keystroke is negligible — opting out keeps the modal
+        // free of per-keystroke revision bookkeeping.
         0
     }
     fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
