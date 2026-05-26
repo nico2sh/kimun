@@ -24,9 +24,12 @@ pub struct MarkdownEditorView {
     /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
     /// invocations across `render()`, cursor placement, and click mapping.
     parsed_cache: Vec<ParsedLine>,
-    /// Last `edit_generation` seen — gates the lines clone and parse-cache rebuild.
+    /// Last `text_revision` seen — gates the lines clone and parse-cache rebuild.
+    /// Cursor-only moves do not bump `text_revision`, so navigating with the
+    /// arrow keys reuses the parse cache instead of re-running pulldown-cmark
+    /// over the whole buffer.
     last_seen_generation: u64,
-    /// Generation/width/cursor at which the layout was last computed.
+    /// `text_revision`/width/cursor at which the layout was last computed.
     /// Used to skip `WordWrapLayout::compute()` when nothing affecting wrap has changed:
     /// horizontal cursor movement within the same element (or plain text) is free.
     last_layout_generation: u64,
