@@ -996,4 +996,54 @@ mod tests {
         let names: Vec<&str> = st.items.iter().map(|s| s.display.as_str()).collect();
         assert_eq!(names, vec!["memory"]);
     }
+
+    /// Regression for the `text_revision == 0` sentinel cache-write skip
+    /// (commit 5dc15309). Two invariants:
+    ///   1. A sync from a sentinel host (revision == 0) must NOT
+    ///      populate `cached_text` — the search-box modal would
+    ///      otherwise churn the heap allocating String + zones per
+    ///      keystroke for a slot nothing ever reads.
+    ///   2. A sentinel sync that follows a non-sentinel sync must NOT
+    ///      consult the previously-cached entry, even though the cache
+    ///      slot is Some(…). Otherwise stale zones from a prior editor
+    ///      session could serve a fresh search-box host as a false hit.
+    #[tokio::test]
+    async fn sentinel_revision_does_not_populate_or_consult_cache() {
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+
+        // (1) Sentinel from a fresh controller: cache stays empty.
+        let mut sentinel = FakeHost::new("see [[me", 8);
+        sentinel.revision = 0;
+        c.sync(&sentinel);
+        assert!(
+            c.cached_text.is_none(),
+            "sentinel sync must not write to cached_text"
+        );
+
+        // Populate the cache with a non-sentinel reconcile.
+        let host = FakeHost::new("see [[me", 8); // FakeHost::new auto-bumps revision
+        c.sync(&host);
+        let cached_rev = c
+            .cached_text
+            .as_ref()
+            .map(|(rev, _, _)| *rev)
+            .expect("non-sentinel sync should have populated the cache");
+        assert_ne!(cached_rev, 0);
+
+        // (2) Sentinel sync now: must not be served by the stale cache,
+        // and must not overwrite the cache slot either.
+        let mut sentinel2 = FakeHost::new("see [[nope", 10);
+        sentinel2.revision = 0;
+        c.sync(&sentinel2);
+        let preserved_rev = c
+            .cached_text
+            .as_ref()
+            .map(|(rev, _, _)| *rev)
+            .expect("sentinel sync should leave the previous cache entry alone");
+        assert_eq!(
+            preserved_rev, cached_rev,
+            "sentinel sync must not overwrite cached_text"
+        );
+    }
 }
