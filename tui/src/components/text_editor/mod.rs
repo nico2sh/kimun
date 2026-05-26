@@ -1072,10 +1072,16 @@ impl TextEditorComponent {
         }
 
         nvim.handle_key(key, tx.clone());
-        // Conservative: nvim keys may or may not mutate text, but autocomplete
-        // is never enabled on the Nvim backend, so the extra `text_revision`
-        // bump only triggers no-op refreshes in `handle_input`.
-        self.bump_text();
+        // The Nvim backend tracks its own buffer mutations through
+        // `nvim.snapshot.content_gen` (consumed by `view.update` and
+        // `is_dirty`). Bumping `text_revision` here would lie about every
+        // pure-navigation keystroke (h/j/k/l/Esc/gg/G…) — autocomplete is
+        // disabled on Nvim today so the lie is invisible, but any future
+        // consumer of `text_revision` would mistake every cursor move for
+        // an edit. Use `bump_cursor` so `edit_generation` still advances
+        // for view-cache-adjacent invariants without falsely flagging
+        // text changes.
+        self.bump_cursor();
         Some(EventState::Consumed)
     }
 
