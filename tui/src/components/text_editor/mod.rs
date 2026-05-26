@@ -1217,19 +1217,19 @@ impl TextEditorComponent {
                 KeyCode::Char('x') => {
                     self.copy_selection_to_clipboard();
                     let cut = if let BackendState::Textarea(ta) = &mut self.backend {
-                        let had_sel = ta.selection_range().is_some();
-                        if had_sel {
-                            ta.cut();
-                        }
+                        // `ta.cut()` returns `false` when the selection was
+                        // empty / nothing to remove. Use its return value
+                        // directly rather than pre-checking selection_range —
+                        // one source of truth, no spurious view rebuild on
+                        // no-op Ctrl+X.
+                        let cut = ta.cut();
                         self.selection = ta.selection_range();
-                        had_sel
+                        cut
                     } else {
                         false
                     };
                     if cut {
                         self.bump_text();
-                    } else {
-                        self.bump_cursor();
                     }
                     return EventState::Consumed;
                 }
@@ -1340,15 +1340,23 @@ impl TextEditorComponent {
                 cursor_move!(ta, CursorMove::Bottom, shift);
                 Some(ShortcutOutcome::CursorOnly)
             }
-            // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
+            // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). The textarea
+            // returns `false` when the stack is empty, so a no-op press
+            // does NOT mark the buffer as edited.
             (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
-                ta.undo();
-                Some(ShortcutOutcome::TextMutated)
+                if ta.undo() {
+                    Some(ShortcutOutcome::TextMutated)
+                } else {
+                    Some(ShortcutOutcome::CursorOnly)
+                }
             }
             (KeyModifiers::CONTROL, KeyCode::Char('y'))
             | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => {
-                ta.redo();
-                Some(ShortcutOutcome::TextMutated)
+                if ta.redo() {
+                    Some(ShortcutOutcome::TextMutated)
+                } else {
+                    Some(ShortcutOutcome::CursorOnly)
+                }
             }
             // Select all
             (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
@@ -1357,15 +1365,22 @@ impl TextEditorComponent {
                 ta.move_cursor(CursorMove::Bottom);
                 Some(ShortcutOutcome::CursorOnly)
             }
-            // Delete word before / after cursor
+            // Delete word before / after cursor. Returns `false` when at a
+            // word boundary with nothing to delete.
             (KeyModifiers::CONTROL, KeyCode::Backspace)
             | (KeyModifiers::ALT, KeyCode::Backspace) => {
-                ta.delete_word();
-                Some(ShortcutOutcome::TextMutated)
+                if ta.delete_word() {
+                    Some(ShortcutOutcome::TextMutated)
+                } else {
+                    Some(ShortcutOutcome::CursorOnly)
+                }
             }
             (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
-                ta.delete_next_word();
-                Some(ShortcutOutcome::TextMutated)
+                if ta.delete_next_word() {
+                    Some(ShortcutOutcome::TextMutated)
+                } else {
+                    Some(ShortcutOutcome::CursorOnly)
+                }
             }
             _ => None,
         };
@@ -1399,9 +1414,18 @@ impl TextEditorComponent {
         let BackendState::Textarea(ta) = &mut self.backend else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
-        ta.input_without_shortcuts(*key);
+        // `input_without_shortcuts` returns `false` for keys the textarea
+        // ignores (F1-F12, KeyCode::Null, modifier-only releases, IME
+        // composing events). Only bump `text_revision` when the buffer
+        // actually changed — otherwise harmless keys would silently flip
+        // the editor to dirty and trigger needless autosaves.
+        let mutated = ta.input_without_shortcuts(*key);
         self.selection = ta.selection_range();
-        self.bump_text();
+        if mutated {
+            self.bump_text();
+        } else {
+            self.bump_cursor();
+        }
         EventState::Consumed
     }
 
