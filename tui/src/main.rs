@@ -265,6 +265,11 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 
     screen.on_enter(tx).await;
     app.current_screen = Some(screen);
+    // Bumped here (not at every swap site) because every swap goes through
+    // this function. The main loop watches this counter to break its inner
+    // event drain whenever the screen identity changes, so queued events
+    // from the previous screen instance do not leak into the new one.
+    app.screen_generation = app.screen_generation.wrapping_add(1);
 }
 
 // async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: Box<dyn AppScreen>) {
@@ -383,14 +388,18 @@ where
                 msg => {
                     // Capture screen identity around handle_app_message so we
                     // can detect a synchronous screen swap (OpenScreen,
-                    // VaultConflict). Remaining queued events belong to the
-                    // OLD screen — break the drain so they get a fresh outer
-                    // iteration where they are routed correctly (and the new
-                    // screen gets its first draw before further input).
-                    let before_kind = app.current_screen.as_ref().map(|s| s.get_kind());
+                    // VaultConflict). Use `screen_generation` rather than
+                    // `ScreenKind`, because a swap between two screens of the
+                    // same kind (e.g. EditorScreen(A) → follow-link →
+                    // EditorScreen(B)) still leaks A's queued events into B
+                    // if we only compare kinds. Remaining queued events
+                    // belong to the OLD screen instance — break the drain so
+                    // they get a fresh outer iteration where they are routed
+                    // correctly (and the new screen gets its first draw
+                    // before further input).
+                    let before_gen = app.screen_generation;
                     handle_app_message(msg, app, &tx).await?;
-                    let after_kind = app.current_screen.as_ref().map(|s| s.get_kind());
-                    if before_kind != after_kind {
+                    if app.screen_generation != before_gen {
                         break;
                     }
                 }

@@ -18,6 +18,15 @@ pub struct App {
     /// The active vault. `None` until a workspace path is configured.
     /// Rebuilt only when the workspace path changes in settings.
     pub vault: Option<Arc<NoteVault>>,
+
+    /// Monotonic counter bumped by every screen swap (see `switch_screen`
+    /// in main.rs). The main event loop uses it to break its inner drain
+    /// when the screen identity changes mid-batch — without this, queued
+    /// events from the OLD screen instance can be routed to a fresh
+    /// screen of the same `ScreenKind` (e.g. EditorScreen(A) → follow-link
+    /// → EditorScreen(B)) and leak A's BacklinksLoaded / InsertAtCursor /
+    /// dialog-result payloads into B.
+    pub screen_generation: u64,
 }
 
 impl App {
@@ -64,6 +73,7 @@ impl App {
             current_screen: Some(Box::new(StartScreen::new(settings.clone(), vault.clone()))),
             settings,
             vault,
+            screen_generation: 0,
         })
     }
 }
