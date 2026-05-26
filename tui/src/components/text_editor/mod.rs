@@ -1340,9 +1340,12 @@ impl TextEditorComponent {
         // Standard text-editor shortcuts.
         // `input_without_shortcuts` only handles chars, backspace, delete, tab, newline —
         // all navigation and editing shortcuts must be mapped explicitly.
-        // Outcome tracks whether the handled shortcut mutated the buffer so we
-        // can bump `text_revision` precisely.
+        // Outcome tracks whether the handled shortcut mutated the buffer, only
+        // moved the cursor, or did literally nothing (e.g. Ctrl+Z on an empty
+        // undo stack) — so neither `text_revision` nor `edit_generation` is
+        // bumped on true no-ops.
         enum ShortcutOutcome {
+            NoOp,
             CursorOnly,
             TextMutated,
         }
@@ -1399,13 +1402,13 @@ impl TextEditorComponent {
                 Some(ShortcutOutcome::CursorOnly)
             }
             // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). The textarea
-            // returns `false` when the stack is empty, so a no-op press
-            // does NOT mark the buffer as edited.
+            // returns `false` when the stack is empty — no buffer change AND
+            // no cursor change, so emit NoOp and skip the view-cache bump.
             (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
                 if ta.undo() {
                     Some(ShortcutOutcome::TextMutated)
                 } else {
-                    Some(ShortcutOutcome::CursorOnly)
+                    Some(ShortcutOutcome::NoOp)
                 }
             }
             (KeyModifiers::CONTROL, KeyCode::Char('y'))
@@ -1413,7 +1416,7 @@ impl TextEditorComponent {
                 if ta.redo() {
                     Some(ShortcutOutcome::TextMutated)
                 } else {
-                    Some(ShortcutOutcome::CursorOnly)
+                    Some(ShortcutOutcome::NoOp)
                 }
             }
             // Select all
@@ -1424,20 +1427,20 @@ impl TextEditorComponent {
                 Some(ShortcutOutcome::CursorOnly)
             }
             // Delete word before / after cursor. Returns `false` when at a
-            // word boundary with nothing to delete.
+            // word boundary with nothing to delete — no buffer/cursor change.
             (KeyModifiers::CONTROL, KeyCode::Backspace)
             | (KeyModifiers::ALT, KeyCode::Backspace) => {
                 if ta.delete_word() {
                     Some(ShortcutOutcome::TextMutated)
                 } else {
-                    Some(ShortcutOutcome::CursorOnly)
+                    Some(ShortcutOutcome::NoOp)
                 }
             }
             (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
                 if ta.delete_next_word() {
                     Some(ShortcutOutcome::TextMutated)
                 } else {
-                    Some(ShortcutOutcome::CursorOnly)
+                    Some(ShortcutOutcome::NoOp)
                 }
             }
             _ => None,
@@ -1445,6 +1448,7 @@ impl TextEditorComponent {
         if let Some(kind) = outcome {
             self.selection = ta.selection_range();
             match kind {
+                ShortcutOutcome::NoOp => {}
                 ShortcutOutcome::CursorOnly => self.bump_cursor(),
                 ShortcutOutcome::TextMutated => self.bump_text(),
             }
