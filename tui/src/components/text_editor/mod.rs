@@ -1840,6 +1840,40 @@ mod tests {
     }
 
     #[test]
+    fn empty_stack_undo_redo_does_not_dirty_or_bump_revision() {
+        // Regression: ShortcutOutcome::NoOp must apply for Ctrl+Z / Ctrl+Y
+        // when the undo/redo stack is empty. Both is_dirty and the
+        // raw text_revision counter stay put.
+        let mut editor = make_editor();
+        editor.set_text("foo".to_string());
+        let rev_before = editor.text_revision();
+        assert!(!editor.is_dirty());
+        let tx = dummy_tx();
+        for key_code in [KeyCode::Char('z'), KeyCode::Char('y')] {
+            let key = ratatui::crossterm::event::KeyEvent::new(key_code, KeyModifiers::CONTROL);
+            let _ = editor.handle_input(&InputEvent::Key(key), &tx);
+        }
+        assert!(
+            !editor.is_dirty(),
+            "empty-stack undo/redo must not flip is_dirty"
+        );
+        assert_eq!(
+            editor.text_revision(),
+            rev_before,
+            "empty-stack undo/redo must not bump text_revision"
+        );
+    }
+
+    #[test]
+    fn fresh_editor_text_revision_is_nonzero() {
+        // Regression: text_revision starts at 1 (not 0) so the
+        // AutocompleteHost::text_revision "do not cache" sentinel does not
+        // collide with the freshly-constructed editor's value.
+        let editor = make_editor();
+        assert_ne!(editor.text_revision(), 0);
+    }
+
+    #[test]
     fn mouse_down_clears_selection() {
         let mut editor = make_editor();
         editor.set_text("hello world".to_string());
