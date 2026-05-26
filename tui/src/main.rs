@@ -380,7 +380,20 @@ where
                         }
                     }
                 }
-                msg => handle_app_message(msg, app, &tx).await?,
+                msg => {
+                    // Capture screen identity around handle_app_message so we
+                    // can detect a synchronous screen swap (OpenScreen,
+                    // VaultConflict). Remaining queued events belong to the
+                    // OLD screen — break the drain so they get a fresh outer
+                    // iteration where they are routed correctly (and the new
+                    // screen gets its first draw before further input).
+                    let before_kind = app.current_screen.as_ref().map(|s| s.get_kind());
+                    handle_app_message(msg, app, &tx).await?;
+                    let after_kind = app.current_screen.as_ref().map(|s| s.get_kind());
+                    if before_kind != after_kind {
+                        break;
+                    }
+                }
             }
             match events.try_next() {
                 Some(next) => event = next,
