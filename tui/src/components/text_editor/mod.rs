@@ -262,15 +262,19 @@ pub struct TextEditorComponent {
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
     key_bindings: KeyBindings,
-    /// Generation that matches the on-disk content. `Some(edit_generation)` after a
-    /// successful save (or after `set_text` loaded a note); `None` when the saved
-    /// snapshot diverges from the current buffer. Compared against `edit_generation`
-    /// by `is_dirty()` so the per-frame title bar avoids materialising the buffer.
-    saved_generation: Option<u64>,
+    /// `text_revision` snapshot that matches the on-disk content.
+    /// `Some(text_revision)` after a successful save (or after `set_text`
+    /// loaded a note); `None` when the saved snapshot diverges from the
+    /// current buffer. Compared against `text_revision` by `is_dirty()` so
+    /// the per-frame title bar avoids materialising the buffer and so cursor
+    /// moves (which bump `edit_generation` but not `text_revision`) don't
+    /// flag the buffer as dirty.
+    saved_text_revision: Option<u64>,
     view: MarkdownEditorView,
-    /// Incremented on every mutating input event (text edits AND cursor moves).
-    /// Used by `is_dirty()` together with `saved_generation` to detect changes
-    /// since the last save without materialising the buffer.
+    /// Incremented on every input event that may affect rendering — text
+    /// edits AND cursor/selection moves. Drives view-cache invalidation in
+    /// non-perf-critical paths; do NOT use for dirty tracking (cursor moves
+    /// bump this too).
     edit_generation: u64,
     /// Incremented only when the buffer text actually changes (insert, delete,
     /// paste, undo/redo, autocomplete accept). Cursor-only shortcuts (arrows,
@@ -314,7 +318,7 @@ impl TextEditorComponent {
             ),
             rect: Rect::default(),
             key_bindings,
-            saved_generation: Some(0),
+            saved_text_revision: Some(0),
             view: MarkdownEditorView::new(),
             edit_generation: 0,
             text_revision: 0,
@@ -489,13 +493,13 @@ impl TextEditorComponent {
                 .unwrap_or_else(|p| p.into_inner())
                 .dirty = false;
         }
-        // Only claim the current edit generation as "saved" if the supplied
+        // Only claim the current text revision as "saved" if the supplied
         // text actually matches the buffer right now. Callers normally pass
         // `get_text()` from the moment the save was issued, but if the buffer
         // moved on (or the save was for a divergent snapshot) we leave the
         // editor marked dirty.
-        self.saved_generation = if text == self.get_text() {
-            Some(self.edit_generation)
+        self.saved_text_revision = if text == self.get_text() {
+            Some(self.text_revision)
         } else {
             None
         };
@@ -503,7 +507,7 @@ impl TextEditorComponent {
 
     pub fn is_dirty(&self) -> bool {
         match &self.backend {
-            BackendState::Textarea(_) => self.saved_generation != Some(self.edit_generation),
+            BackendState::Textarea(_) => self.saved_text_revision != Some(self.text_revision),
             BackendState::Nvim(nvim) => {
                 nvim.snapshot
                     .lock()
@@ -1710,6 +1714,26 @@ mod tests {
         assert!(
             !editor.is_dirty(),
             "trailing newline should not make editor dirty after load"
+        );
+    }
+
+    #[test]
+    fn cursor_move_does_not_dirty_buffer() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        assert!(!editor.is_dirty());
+        let tx = dummy_tx();
+        // Send a cursor-only key (Right arrow). It must bump `edit_generation`
+        // for view-cache invalidation but must NOT bump `text_revision`, so
+        // `is_dirty` stays false.
+        let key = ratatui::crossterm::event::KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        );
+        let _ = editor.handle_input(&InputEvent::Key(key), &tx);
+        assert!(
+            !editor.is_dirty(),
+            "cursor move must not mark the editor as dirty"
         );
     }
 
