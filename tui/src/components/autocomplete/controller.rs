@@ -1,5 +1,6 @@
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
 
 use kimun_core::NoteVault;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -13,6 +14,13 @@ use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with};
 /// only shows `max_visible_rows` at a time and scrolls inside the fetched
 /// set, so a few dozen rows is plenty.
 const DEFAULT_FETCH_LIMIT: usize = 50;
+
+/// Wait this long after a query-refinement keystroke before hitting the
+/// vault. A burst of typing aborts the previous in-flight task before its
+/// debounce window elapses, so only the final keystroke's query actually
+/// runs against SQLite. The first query of a popup (kind change / popup
+/// opening) skips the debounce so the popup feels instant on open.
+const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(80);
 
 /// Whether wikilink triggers are honoured. The editor uses
 /// `Both`; the search box uses `HashtagOnly` because the search syntax has
@@ -45,6 +53,12 @@ pub struct AutocompleteController {
     /// the next spawn so a burst of keystrokes does not pile up N
     /// concurrent SQLite queries holding the vault `Arc` open.
     in_flight: Option<tokio::task::JoinHandle<()>>,
+    /// Delay inserted before each refinement query hits the vault. A burst
+    /// of typing aborts the prior in-flight task during this window, so
+    /// only the final keystroke's query reaches SQLite. The first query of
+    /// a popup (kind change / open) bypasses the debounce. Tests override
+    /// to `Duration::ZERO` via `with_debounce`.
+    debounce: Duration,
     /// Optional callback used to wake the host's render loop after an
     /// async query posts its result. Decoupled from any specific event
     /// bus so the controller stays usable wherever the host can
@@ -78,6 +92,7 @@ impl AutocompleteController {
             fetch_limit: DEFAULT_FETCH_LIMIT,
             max_visible_rows: DEFAULT_MAX_VISIBLE_ROWS,
             in_flight: None,
+            debounce: DEFAULT_DEBOUNCE,
             redraw_cb: None,
         }
     }
@@ -87,6 +102,14 @@ impl AutocompleteController {
     /// (Markdown headers don't exist in a search input).
     pub fn with_trigger_opts(mut self, opts: TriggerOptions) -> Self {
         self.trigger_opts = opts;
+        self
+    }
+
+    /// Override the per-refinement debounce window. Tests pass
+    /// `Duration::ZERO` so query results land promptly inside `drain_results`.
+    #[cfg(test)]
+    pub fn with_debounce(mut self, debounce: Duration) -> Self {
+        self.debounce = debounce;
         self
     }
 
@@ -260,7 +283,11 @@ impl AutocompleteController {
         }
 
         if query_changed {
-            self.fire_query(trigger.kind, trigger.query);
+            // First query of a popup (kind change / open) fires instantly
+            // for snappy UX. Refinement queries on the same popup are
+            // debounced so a burst of typing only hits the vault once.
+            let instant = kind_changed;
+            self.fire_query(trigger.kind, trigger.query, instant);
         }
     }
 
@@ -282,7 +309,7 @@ impl AutocompleteController {
         }
     }
 
-    fn fire_query(&mut self, kind: TriggerKind, query: String) {
+    fn fire_query(&mut self, kind: TriggerKind, query: String, instant: bool) {
         // Cancel any previous in-flight task — its result would be
         // discarded on receive (generation mismatch) but the SQLite
         // hit would still happen and the vault `Arc` would stay alive
@@ -297,7 +324,13 @@ impl AutocompleteController {
         let redraw = self.redraw_cb.clone();
         let vault = self.vault.clone();
         let limit = self.fetch_limit;
+        let debounce = if instant { Duration::ZERO } else { self.debounce };
         self.in_flight = Some(tokio::spawn(async move {
+            // Aborted by the next `fire_query` before this sleep completes
+            // for a burst of typing — the SQLite hit below never runs.
+            if !debounce.is_zero() {
+                tokio::time::sleep(debounce).await;
+            }
             let items: Vec<Suggestion> = match kind {
                 TriggerKind::Wikilink => match vault.suggest_notes_by_prefix(&query, limit).await {
                     Ok(notes) => notes
@@ -567,12 +600,18 @@ mod tests {
         controller.poll_results();
     }
 
+    /// Builds a controller with debounce disabled so tests don't pay the
+    /// 80ms refinement window before each query reaches the in-memory DB.
+    fn make_controller(vault: Arc<NoteVault>, mode: AutocompleteMode) -> AutocompleteController {
+        AutocompleteController::new(vault, mode).with_debounce(Duration::ZERO)
+    }
+
     // ---- Lifecycle ----
 
     #[tokio::test]
     async fn no_trigger_keeps_popup_closed() {
         let (_tmp, vault) = new_vault_with(&[], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("plain text", 5);
         c.sync(&host);
         assert!(!c.is_open());
@@ -581,7 +620,7 @@ mod tests {
     #[tokio::test]
     async fn wikilink_trigger_opens_popup_and_loads_results() {
         let (_tmp, vault) = new_vault_with(&["meeting", "music", "novel"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         // State exists immediately; is_open() flips to true only once
@@ -606,7 +645,7 @@ mod tests {
         // wikilink one — close it instead. Opening a wikilink popup
         // on cursor movement violates the refresh-only contract.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[("a", "x #proj")]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("#pro [[me", 4); // cursor after `#pro`
         c.sync(&host);
         drain_results(&mut c).await;
@@ -626,7 +665,7 @@ mod tests {
         // indent / Enter newline.
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -646,7 +685,7 @@ mod tests {
         // behaviour that prevents cursor-only navigation over an
         // existing wikilink from re-popping the suggestions.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         // Cursor inside an existing wikilink — but the popup is closed.
         let host = FakeHost::new("[[meeting]]", 4);
         c.refresh_if_open(&host);
@@ -656,7 +695,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_if_open_closes_popup_when_cursor_leaves_trigger() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -673,7 +712,7 @@ mod tests {
         // is_open() is false so Esc/Up/Down/Tab fall through to the
         // modal/editor instead of being swallowed.
         let (_tmp, vault) = new_vault_with(&[], &[]).await; // empty vault
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("see [[xyz", 9);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -685,7 +724,7 @@ mod tests {
     #[tokio::test]
     async fn hashtag_trigger_opens_popup_and_loads_results() {
         let (_tmp, vault) = new_vault_with(&[], &[("a", "x #projects"), ("b", "y #pro")]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("about #pro", 10);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -699,7 +738,7 @@ mod tests {
     #[tokio::test]
     async fn hashtag_only_mode_ignores_wikilinks() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::HashtagOnly);
+        let mut c = make_controller(vault, AutocompleteMode::HashtagOnly);
         let host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         assert!(!c.is_open());
@@ -708,7 +747,7 @@ mod tests {
     #[tokio::test]
     async fn losing_trigger_context_closes_popup() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -727,7 +766,7 @@ mod tests {
     #[tokio::test]
     async fn accepting_wikilink_inserts_name_and_closes_brackets() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -749,7 +788,7 @@ mod tests {
         // characters between the cursor and `]]` must be consumed, not
         // left as `[[meeting]]e]]`.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me]]", 7); // cursor between `m` and `e`
         c.sync(&host);
         drain_results(&mut c).await;
@@ -768,7 +807,7 @@ mod tests {
         // Buffer has a single stray `]` after the target — must not
         // produce `]]]`.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me]", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -786,7 +825,7 @@ mod tests {
         // `[[me|alias]]` — cursor in the target portion; alias must
         // survive and the cursor must land right before `|alias]]`.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me|alias]]", 8); // cursor before `|`
         c.sync(&host);
         drain_results(&mut c).await;
@@ -804,7 +843,7 @@ mod tests {
     #[tokio::test]
     async fn accepting_wikilink_preserves_existing_closing_brackets() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me]]", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -821,7 +860,7 @@ mod tests {
     #[tokio::test]
     async fn accepting_hashtag_inserts_label_no_trailing_space() {
         let (_tmp, vault) = new_vault_with(&[], &[("a", "x #projects")]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("about #pro", 10);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -838,7 +877,7 @@ mod tests {
     #[tokio::test]
     async fn esc_dismisses_without_changing_buffer() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -854,7 +893,7 @@ mod tests {
     #[tokio::test]
     async fn stale_results_are_dropped_on_query_change() {
         let (_tmp, vault) = new_vault_with(&["meeting", "memory"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         // First query for `me` — fires generation 1.
         let host1 = FakeHost::new("see [[me", 8);
         c.sync(&host1);
