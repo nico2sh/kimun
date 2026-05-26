@@ -250,23 +250,36 @@ impl AutocompleteController {
         // `revision == 0` is the trait's documented sentinel for "do not
         // cache" — hosts whose buffer is tiny enough that the rebuild cost
         // is irrelevant (e.g. the search-box modal) return it. Treat it as
-        // an unconditional miss so a stale entry from an earlier reconcile
-        // can never satisfy a fresh query.
+        // an unconditional miss AND skip persisting the rebuilt value so
+        // sentinel hosts don't churn the `cached_text` slot per keystroke.
         let cached_match = revision != 0
             && self
                 .cached_text
                 .as_ref()
                 .is_some_and(|(rev, _, _)| *rev == revision);
-        if !cached_match {
+        let trigger = if cached_match {
+            let (_, text, zones) = self
+                .cached_text
+                .as_ref()
+                .expect("cached_match implies Some");
+            detect_trigger_with_zones(text, cursor, self.trigger_opts, Some(zones))
+        } else {
             let text = host.buffer_text();
             let zones = ExclusionZones::from_text(&text);
-            self.cached_text = Some((revision, text, zones));
-        }
-        let (_, text, zones) = self
-            .cached_text
-            .as_ref()
-            .expect("cached_text just populated above");
-        let trigger = detect_trigger_with_zones(text, cursor, self.trigger_opts, Some(zones));
+            let trigger = detect_trigger_with_zones(
+                &text,
+                cursor,
+                self.trigger_opts,
+                Some(&zones),
+            );
+            // Only persist when the revision is non-sentinel — otherwise the
+            // cache slot is just churning unread String/ExclusionZones per
+            // keystroke on every revision==0 host.
+            if revision != 0 {
+                self.cached_text = Some((revision, text, zones));
+            }
+            trigger
+        };
 
         // Filter by mode before deciding anything else.
         let trigger = trigger.filter(|t| match (self.mode, t.kind) {
