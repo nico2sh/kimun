@@ -340,12 +340,28 @@ impl EditorScreen {
         // Wait out any background autosave so two concurrent `vault.save_note`
         // calls cannot race on the same path. Capped at 5s so a wedged
         // filesystem (NFS hang, fsync stall, SQLite lock contention) does
-        // not freeze app-quit indefinitely; the next session's startup load
-        // sees whatever made it to disk before the timeout. Ignore the
-        // join result — a panicked task is logged elsewhere; we just need
-        // exclusivity (or to give up on it) here.
-        if let Some(handle) = self.autosave_task.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        // not freeze app-quit indefinitely.
+        //
+        // If the timeout fires we MUST abort the prior task and bail
+        // without issuing our own save: dropping a JoinHandle detaches
+        // the tokio task rather than cancelling it, so the spawned
+        // vault.save_note keeps running. Calling our own vault.save_note
+        // on the same path on top of that is the exact two-writer race
+        // the in-flight serialisation is meant to prevent. abort() is
+        // best-effort (will not unwind an in-progress syscall) but it
+        // stops any further await points in the spawned task. The editor
+        // stays dirty so the next session retries; the spawned task
+        // either finishes against the disk on its own or is killed when
+        // the process exits.
+        if let Some(mut handle) = self.autosave_task.take() {
+            let abort = handle.abort_handle();
+            if tokio::time::timeout(Duration::from_secs(5), &mut handle)
+                .await
+                .is_err()
+            {
+                abort.abort();
+                return;
+            }
         }
         if self.editor.is_dirty() {
             let text = self.editor.get_text();
