@@ -53,10 +53,14 @@ pub struct EditorScreen {
     dialogs: DialogManager,
     backlinks_panel: BacklinksPanel,
     backlinks_visible: bool,
-    /// `true` while a background autosave task is in flight. Suppresses the
-    /// next periodic autosave so we never have two concurrent writes for the
-    /// same note. Cleared when the `AutosaveCompleted` event lands.
-    autosave_in_flight: bool,
+    /// Handle to the most recently spawned background autosave task, when
+    /// any. `is_finished()` is the source of truth for "is a save still in
+    /// flight"; this self-clears on task completion AND on panic so the
+    /// next periodic tick can spawn fresh. The synchronous save paths
+    /// (`open_path` / `on_entry_op` / `on_exit`) await this handle before
+    /// issuing their own `vault.save_note`, so two concurrent writes for
+    /// the same path can never collide.
+    autosave_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl EditorScreen {
@@ -100,7 +104,7 @@ impl EditorScreen {
             dialogs: DialogManager::new(),
             backlinks_panel,
             backlinks_visible: false,
-            autosave_in_flight: false,
+            autosave_task: None,
         }
     }
 }
@@ -332,6 +336,12 @@ impl EditorScreen {
     }
 
     async fn try_save(&mut self) {
+        // Wait out any background autosave so two concurrent `vault.save_note`
+        // calls cannot race on the same path. Ignore the join result — a
+        // panicked task is logged elsewhere; we just need exclusivity here.
+        if let Some(handle) = self.autosave_task.take() {
+            let _ = handle.await;
+        }
         if self.editor.is_dirty() {
             let text = self.editor.get_text();
             if self.vault.save_note(&self.path, &text).await.is_ok() {
@@ -343,29 +353,35 @@ impl EditorScreen {
     /// Fire-and-forget autosave used by the periodic timer. The save runs in
     /// a spawned tokio task so the main event loop is never blocked by the
     /// filesystem + SQLite write. Completion is reported back as
-    /// `AppEvent::AutosaveCompleted`, which clears `autosave_in_flight` and
-    /// (on success) marks the editor clean iff the buffer still matches what
-    /// was written.
+    /// `AppEvent::AutosaveCompleted`, which marks the editor clean iff the
+    /// buffer still matches what was written. The `JoinHandle` itself is the
+    /// "is a save in flight" signal: `is_finished()` flips to true on both
+    /// successful completion AND panic, so a single panicked task can never
+    /// permanently disable autosave.
     fn spawn_autosave(&mut self, tx: &AppTx) {
-        if self.autosave_in_flight {
+        // A previous task that hasn't reported completion yet still holds the
+        // lock on the file system + SQLite path; let it finish first.
+        if let Some(handle) = &self.autosave_task
+            && !handle.is_finished()
+        {
             return;
         }
         if !self.editor.is_dirty() {
+            self.autosave_task = None;
             return;
         }
         let text = self.editor.get_text();
         let vault = self.vault.clone();
         let path = self.path.clone();
         let tx = tx.clone();
-        self.autosave_in_flight = true;
-        tokio::spawn(async move {
+        self.autosave_task = Some(tokio::spawn(async move {
             let saved = vault
                 .save_note(&path, &text)
                 .await
                 .ok()
                 .map(|_| text);
             let _ = tx.send(AppEvent::AutosaveCompleted { path, saved });
-        });
+        }));
     }
 
     fn focus_index(&self) -> u8 {
@@ -884,7 +900,11 @@ impl AppScreen for EditorScreen {
                 {
                     self.editor.mark_saved(text);
                 }
-                self.autosave_in_flight = false;
+                // `autosave_task.is_finished()` already reports completion;
+                // explicitly drop the handle so it doesn't sit in `Some` past
+                // its useful life (and so the next periodic tick doesn't pay
+                // an `is_finished()` syscall on a long-finished task).
+                self.autosave_task = None;
                 None
             }
             AppEvent::OpenPath(path) => {
