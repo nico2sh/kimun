@@ -460,10 +460,20 @@ impl TextEditorComponent {
     }
 
     pub fn set_text(&mut self, text: String) {
-        // No-op when the buffer would be identical — preserves view
-        // scroll, selection, edit generation cache, and an open
-        // autocomplete popup. Saves the expensive lines clone too.
+        // No-op when the buffer would be identical — preserves view scroll,
+        // selection, edit generation cache, and an open autocomplete popup.
+        // Saves the expensive lines clone too. Still normalises the saved
+        // marker: if the buffer was flagged dirty by a previous divergent
+        // save, reloading the same content from disk should clear that
+        // flag rather than persist a phantom `[+]` in the title bar.
         if text == self.get_text() {
+            self.saved_text_revision = Some(self.text_revision);
+            if let BackendState::Nvim(nvim) = &self.backend {
+                nvim.snapshot
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .dirty = false;
+            }
             return;
         }
         match &mut self.backend {
