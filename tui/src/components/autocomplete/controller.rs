@@ -163,8 +163,16 @@ impl AutocompleteController {
     /// Use whenever focus moves away from the host or the host
     /// triggers a buffer-replacement that invalidates the trigger
     /// context (e.g. `set_text`).
+    ///
+    /// Also aborts any in-flight query task — without this, pressing Esc
+    /// during the 80ms debounce window leaks a spawned tokio task that
+    /// continues to the SQLite hit and posts a result discarded later
+    /// via generation mismatch.
     pub fn close(&mut self) {
         self.state = None;
+        if let Some(handle) = self.in_flight.take() {
+            handle.abort();
+        }
     }
 
     /// Route a key event through the popup when one is open. Returns a
@@ -461,6 +469,18 @@ impl AutocompleteController {
                     new_cursor_byte,
                 })
             }
+        }
+    }
+}
+
+impl Drop for AutocompleteController {
+    fn drop(&mut self) {
+        // Editor (or modal) shutdown — abort the in-flight query so the
+        // tokio task can't outlive the controller, run its SQLite hit,
+        // and then dump a generation-mismatched result into a closed
+        // channel.
+        if let Some(handle) = self.in_flight.take() {
+            handle.abort();
         }
     }
 }
