@@ -297,7 +297,9 @@ fn collapse_wikilinks_with_display_ranges(
     let mut display_ranges: Vec<(usize, usize)> = Vec::new();
     let mut last = 0usize;
     for caps in WIKILINK_RX.captures_iter(body) {
-        let m = caps.get(0).expect("captures_iter never yields without group 0");
+        let m = caps
+            .get(0)
+            .expect("captures_iter never yields without group 0");
         out.push_str(&body[last..m.start()]);
         let items = &caps["link_text"];
         let parts: Vec<&str> = items.split('|').collect();
@@ -519,12 +521,8 @@ fn cleanup_hashtags_with_ranges(
     link_ranges: &[(usize, usize)],
 ) -> String {
     let in_excluded_zone = |start: usize, end: usize| -> bool {
-        code_ranges
-            .iter()
-            .any(|(s, e)| start >= *s && end <= *e)
-            || link_ranges
-                .iter()
-                .any(|(s, e)| start >= *s && end <= *e)
+        code_ranges.iter().any(|(s, e)| start >= *s && end <= *e)
+            || link_ranges.iter().any(|(s, e)| start >= *s && end <= *e)
     };
     let mut out = String::with_capacity(md_text.len());
     let mut last_end = 0usize;
@@ -2720,8 +2718,7 @@ ls -la ./test
         // behavior so a future refactor cannot silently re-include
         // frontmatter targets.
         let path = crate::nfs::VaultPath::note_path_from("/n.md");
-        let body =
-            "---\nrelated: see [docs](other.md) and [[refnote]]\n---\nbody with [[real]]";
+        let body = "---\nrelated: see [docs](other.md) and [[refnote]]\n---\nbody with [[real]]";
         let (_chunks, links) = super::get_chunks_and_links(&path, body);
         let note_targets: Vec<&str> = links
             .iter()
