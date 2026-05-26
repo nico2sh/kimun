@@ -505,6 +505,31 @@ impl TextEditorComponent {
         }
     }
 
+    /// Current text revision. Bumped on every text-mutating handler;
+    /// stable across cursor moves and idle frames. Used by the autosave
+    /// path to record "this snapshot was saved" without rebuilding the
+    /// buffer text on completion.
+    pub fn text_revision(&self) -> u64 {
+        self.text_revision
+    }
+
+    /// Mark the buffer as clean iff its current revision still matches
+    /// `rev` (i.e. no edits landed between the save being issued and
+    /// completing). Diverged revision → leave dirty.
+    pub fn mark_saved_at_revision(&mut self, rev: u64) {
+        if rev == self.text_revision {
+            if let BackendState::Nvim(nvim) = &self.backend {
+                nvim.snapshot
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .dirty = false;
+            }
+            self.saved_text_revision = Some(rev);
+        } else {
+            self.saved_text_revision = None;
+        }
+    }
+
     pub fn mark_saved(&mut self, text: String) {
         // Only claim the current state as "saved" when the supplied text
         // actually matches the buffer right now. Callers normally pass

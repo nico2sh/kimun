@@ -17,14 +17,17 @@ pub enum AppEvent {
     Quit,
     Redraw,
     Autosave,
-    /// Background autosave task finished. `saved` carries the text that was
-    /// written to disk on success, `None` if the write failed. The editor
-    /// screen uses `path` to ignore stale completions for notes the user has
-    /// already navigated away from, and `saved` to clear the dirty flag only
-    /// if the buffer still matches what was actually written.
+    /// Background autosave task finished. `saved_revision` carries the
+    /// editor's `text_revision` at the moment the save was *issued* on
+    /// success, `None` if the write failed. The editor screen uses `path`
+    /// to ignore stale completions for notes the user has already navigated
+    /// away from, and `saved_revision` to clear the dirty flag iff the
+    /// buffer is still at that revision (i.e. no edits during the save).
+    /// Comparing revisions is O(1) and immune to trailing-newline
+    /// normalisation surprises.
     AutosaveCompleted {
         path: VaultPath,
-        saved: Option<String>,
+        saved_revision: Option<u64>,
     },
     OpenPath(VaultPath),
     FocusEditor,

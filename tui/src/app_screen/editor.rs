@@ -354,10 +354,10 @@ impl EditorScreen {
     /// a spawned tokio task so the main event loop is never blocked by the
     /// filesystem + SQLite write. Completion is reported back as
     /// `AppEvent::AutosaveCompleted`, which marks the editor clean iff the
-    /// buffer still matches what was written. The `JoinHandle` itself is the
-    /// "is a save in flight" signal: `is_finished()` flips to true on both
-    /// successful completion AND panic, so a single panicked task can never
-    /// permanently disable autosave.
+    /// editor is still at the revision that was written. The `JoinHandle`
+    /// itself is the "is a save in flight" signal: `is_finished()` flips to
+    /// true on both successful completion AND panic, so a single panicked
+    /// task can never permanently disable autosave.
     fn spawn_autosave(&mut self, tx: &AppTx) {
         // A previous task that hasn't reported completion yet still holds the
         // lock on the file system + SQLite path; let it finish first.
@@ -371,16 +371,16 @@ impl EditorScreen {
             return;
         }
         let text = self.editor.get_text();
+        let revision = self.editor.text_revision();
         let vault = self.vault.clone();
         let path = self.path.clone();
         let tx = tx.clone();
         self.autosave_task = Some(tokio::spawn(async move {
-            let saved = vault
-                .save_note(&path, &text)
-                .await
-                .ok()
-                .map(|_| text);
-            let _ = tx.send(AppEvent::AutosaveCompleted { path, saved });
+            let saved_revision = vault.save_note(&path, &text).await.ok().map(|_| revision);
+            let _ = tx.send(AppEvent::AutosaveCompleted {
+                path,
+                saved_revision,
+            });
         }));
     }
 
@@ -894,11 +894,14 @@ impl AppScreen for EditorScreen {
                 self.spawn_autosave(tx);
                 None
             }
-            AppEvent::AutosaveCompleted { path, saved } => {
+            AppEvent::AutosaveCompleted {
+                path,
+                saved_revision,
+            } => {
                 if path == self.path
-                    && let Some(text) = saved
+                    && let Some(rev) = saved_revision
                 {
-                    self.editor.mark_saved(text);
+                    self.editor.mark_saved_at_revision(rev);
                 }
                 // `autosave_task.is_finished()` already reports completion;
                 // explicitly drop the handle so it doesn't sit in `Some` past
