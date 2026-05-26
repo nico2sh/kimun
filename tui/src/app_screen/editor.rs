@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use kimun_core::error::{FSError, VaultError};
@@ -337,14 +338,25 @@ impl EditorScreen {
 
     async fn try_save(&mut self) {
         // Wait out any background autosave so two concurrent `vault.save_note`
-        // calls cannot race on the same path. Ignore the join result — a
-        // panicked task is logged elsewhere; we just need exclusivity here.
+        // calls cannot race on the same path. Capped at 5s so a wedged
+        // filesystem (NFS hang, fsync stall, SQLite lock contention) does
+        // not freeze app-quit indefinitely; the next session's startup load
+        // sees whatever made it to disk before the timeout. Ignore the
+        // join result — a panicked task is logged elsewhere; we just need
+        // exclusivity (or to give up on it) here.
         if let Some(handle) = self.autosave_task.take() {
-            let _ = handle.await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
         }
         if self.editor.is_dirty() {
             let text = self.editor.get_text();
-            if self.vault.save_note(&self.path, &text).await.is_ok() {
+            // Same 5s cap on our own save so quit cannot hang on a stuck
+            // disk. A timeout returns Err(_); we skip mark_saved so the
+            // editor stays dirty for any subsequent retry.
+            let save = self.vault.save_note(&self.path, &text);
+            if matches!(
+                tokio::time::timeout(Duration::from_secs(5), save).await,
+                Ok(Ok(_))
+            ) {
                 self.editor.mark_saved(text);
             }
         }
