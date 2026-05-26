@@ -20,12 +20,15 @@ pub trait AutocompleteHost {
     /// case.
     fn screen_anchor_for(&self, byte_offset: usize) -> Option<(u16, u16)>;
 
-    /// Monotonic counter the host bumps every time `buffer_text()` would
-    /// return different bytes. The controller uses this as the cache key
-    /// for `ExclusionZones`, so cursor-only reconciles never repay the
-    /// full-buffer pulldown-cmark parse + regex scans. Hosts with tiny or
-    /// trivial buffers (e.g. a single-line search box) can return `0` to
-    /// effectively disable the cache — the controller still works
-    /// correctly because exclusion-zone checks are skipped there.
+    /// Monotonic-on-text-change counter the host bumps every time
+    /// `buffer_text()` would return different bytes. The controller uses
+    /// this as the cache key for the joined buffer text + `ExclusionZones`,
+    /// so cursor-only reconciles never repay the full-buffer pulldown-cmark
+    /// parse + regex scans (nor the join itself).
+    ///
+    /// Return the literal `0` to opt out of the cache entirely — the
+    /// controller treats `0` as an unconditional miss, so every reconcile
+    /// rebuilds. Use this only for hosts whose buffer is tiny enough that
+    /// the rebuild cost is negligible (e.g. a single-line search box).
     fn text_revision(&self) -> u64;
 }

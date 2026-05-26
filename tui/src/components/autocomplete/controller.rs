@@ -60,11 +60,12 @@ pub struct AutocompleteController {
     /// a popup (kind change / open) bypasses the debounce. Tests override
     /// to `Duration::ZERO` via `with_debounce`.
     debounce: Duration,
-    /// Cached exclusion zones for the current buffer, keyed on the host's
-    /// `text_revision`. `is_inside_exclusion_zone` was previously rerun on
-    /// every reconcile (every text- or cursor-changing key); now cursor
-    /// moves answer from this cache and only text changes rebuild it.
-    cached_zones: Option<(u64, ExclusionZones)>,
+    /// Cached exclusion zones AND the joined buffer text they were built
+    /// from, keyed on the host's `text_revision`. `is_inside_exclusion_zone`
+    /// was previously rerun on every reconcile and `host.buffer_text()` was
+    /// allocated unconditionally per call; now cursor moves answer both
+    /// queries from the cache and only text changes rebuild them.
+    cached_text: Option<(u64, String, ExclusionZones)>,
     /// Optional callback used to wake the host's render loop after an
     /// async query posts its result. Decoupled from any specific event
     /// bus so the controller stays usable wherever the host can
@@ -99,7 +100,7 @@ impl AutocompleteController {
             max_visible_rows: DEFAULT_MAX_VISIBLE_ROWS,
             in_flight: None,
             debounce: DEFAULT_DEBOUNCE,
-            cached_zones: None,
+            cached_text: None,
             redraw_cb: None,
         }
     }
@@ -239,21 +240,33 @@ impl AutocompleteController {
     }
 
     fn reconcile<H: AutocompleteHost>(&mut self, host: &H, allow_open: bool) {
-        let text = host.buffer_text();
         let cursor = host.cursor_byte_offset();
         let revision = host.text_revision();
-        // Rebuild exclusion zones only when the host's text revision has
-        // moved on. Cursor moves keep the same revision, so the heavy
-        // pulldown-cmark parse + regex scans run at most once per text edit.
-        let zones_match = self
-            .cached_zones
-            .as_ref()
-            .is_some_and(|(rev, _)| *rev == revision);
-        if !zones_match {
-            self.cached_zones = Some((revision, ExclusionZones::from_text(&text)));
+        // Rebuild buffer text AND exclusion zones only when the host's text
+        // revision has moved on. Cursor moves keep the same revision, so
+        // both the full-buffer `host.buffer_text()` allocation and the
+        // pulldown-cmark + regex scans run at most once per text edit.
+        //
+        // `revision == 0` is the trait's documented sentinel for "do not
+        // cache" — hosts whose buffer is tiny enough that the rebuild cost
+        // is irrelevant (e.g. the search-box modal) return it. Treat it as
+        // an unconditional miss so a stale entry from an earlier reconcile
+        // can never satisfy a fresh query.
+        let cached_match = revision != 0
+            && self
+                .cached_text
+                .as_ref()
+                .is_some_and(|(rev, _, _)| *rev == revision);
+        if !cached_match {
+            let text = host.buffer_text();
+            let zones = ExclusionZones::from_text(&text);
+            self.cached_text = Some((revision, text, zones));
         }
-        let zones = self.cached_zones.as_ref().map(|(_, z)| z);
-        let trigger = detect_trigger_with_zones(&text, cursor, self.trigger_opts, zones);
+        let (_, text, zones) = self
+            .cached_text
+            .as_ref()
+            .expect("cached_text just populated above");
+        let trigger = detect_trigger_with_zones(text, cursor, self.trigger_opts, Some(zones));
 
         // Filter by mode before deciding anything else.
         let trigger = trigger.filter(|t| match (self.mode, t.kind) {
@@ -574,7 +587,14 @@ mod tests {
     use kimun_core::nfs::VaultPath;
     use kimun_core::{NoteVault, VaultConfig};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
+
+    /// Global per-test counter so each `FakeHost::new` returns a distinct
+    /// `text_revision` and the controller's cache is invalidated between
+    /// successive sync calls in the same test (mirrors production where
+    /// rebuilding the buffer always advances the editor's revision).
+    static FAKE_REV: AtomicU64 = AtomicU64::new(1);
 
     struct FakeHost {
         buffer: String,
@@ -587,7 +607,7 @@ mod tests {
             Self {
                 buffer: buffer.to_string(),
                 cursor,
-                revision: 1,
+                revision: FAKE_REV.fetch_add(1, Ordering::SeqCst),
             }
         }
 
