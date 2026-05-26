@@ -14,12 +14,10 @@ pub struct MarkdownEditorView {
     pub visual_scroll_offset: usize,
     pub lines_snapshot: Vec<String>,
     pub cursor_snapshot: (usize, usize),
-    pub cursor_code_block: Option<Range<usize>>,
     /// Line ranges of every fenced code block in the buffer. Text-keyed
-    /// (rebuilt only when `text_revision` changes); `cursor_code_block` is
-    /// then a cursor-keyed lookup against this list, so cursor moves
-    /// between/out of fences keep `force_raw` rendering in sync without
-    /// re-scanning the whole buffer on every keystroke.
+    /// (rebuilt only when `text_revision` changes); `is_in_code_block`
+    /// does a cheap point lookup against this list per row so all fenced
+    /// blocks render `force_raw` regardless of where the cursor is.
     fence_ranges: Vec<Range<usize>>,
     /// Cursor's last on-screen position (col, row), or `None` when the
     /// cursor was scrolled off-screen or the view was unfocused at the
@@ -60,7 +58,6 @@ impl MarkdownEditorView {
             visual_scroll_offset: 0,
             lines_snapshot: Vec::new(),
             cursor_snapshot: (0, 0),
-            cursor_code_block: None,
             fence_ranges: Vec::new(),
             last_cursor_screen: None,
             parsed_cache: Vec::new(),
@@ -96,16 +93,6 @@ impl MarkdownEditorView {
             self.parsed_cache = ParsedBuffer::parse(lines);
             self.last_seen_generation = generation;
         }
-
-        // Cursor-keyed: which fenced block (if any) the cursor sits in.
-        // Cheap point lookup against the text-keyed `fence_ranges`, so cursor
-        // moves between fences update `force_raw` rendering without paying
-        // for a full-buffer rescan.
-        self.cursor_code_block = self
-            .fence_ranges
-            .iter()
-            .find(|r| r.contains(&cursor.0))
-            .cloned();
 
         self.cursor_snapshot = cursor;
 
@@ -301,11 +288,10 @@ impl MarkdownEditorView {
 
     fn is_in_code_block(&self, row: usize) -> bool {
         // Every line inside any fenced block renders force-raw (no markdown
-        // re-styling, distinct fg color). Previously this returned `true`
-        // only for the fence the cursor was sitting in, so fenced blocks
-        // elsewhere in the buffer looked like plain text until the cursor
-        // moved into them. `cursor_code_block` is retained for callers that
-        // need to know specifically *which* fence the cursor is in.
+        // re-styling, distinct fg color). Previously this checked only the
+        // fence the cursor was sitting in, so fenced blocks elsewhere in
+        // the buffer looked like plain text until the cursor moved into
+        // them.
         self.fence_ranges.iter().any(|r| r.contains(&row))
     }
 
@@ -531,11 +517,11 @@ mod tests {
     }
 
     #[test]
-    fn cursor_code_block_updates_when_cursor_leaves_fence() {
-        // Regression: prior to the fence-cache split, `cursor_code_block`
-        // was only recomputed on text change, so a cursor moving out of a
-        // fence (no edit) kept the old fence range cached and `force_raw`
-        // rendering stayed stuck on the wrong line set.
+    fn is_in_code_block_returns_true_for_any_fence_regardless_of_cursor() {
+        // Regression: after commit cceef444, every fenced block renders
+        // force-raw — not just the one the cursor sits in. Verify by
+        // probing `is_in_code_block` for a row in a fence while the
+        // cursor is positioned elsewhere.
         let mut v = MarkdownEditorView::new();
         let lines = vec![
             "intro".to_string(),
@@ -544,14 +530,11 @@ mod tests {
             "```".to_string(),
             "outro".to_string(),
         ];
-        v.update(&lines, (2, 0), rect(10), 1, None);
-        assert!(v.cursor_code_block.is_some(), "cursor inside fence");
-        // Cursor moves OUT of the fence without any text change — same revision.
+        // Cursor on the prose line; fence interior must still report in-block.
         v.update(&lines, (4, 0), rect(10), 1, None);
-        assert!(
-            v.cursor_code_block.is_none(),
-            "cursor moved out of fence; cache must update"
-        );
+        assert!(v.is_in_code_block(2), "fence interior is in-block");
+        assert!(!v.is_in_code_block(0), "prose line is not in-block");
+        assert!(!v.is_in_code_block(4), "trailing prose is not in-block");
     }
 
     #[test]
