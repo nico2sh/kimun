@@ -218,13 +218,66 @@ impl<'a> ByteToCharCursor<'a> {
     }
 }
 
-/// Returns chunks and links in a single pass, avoiding double markdown parsing.
+/// Returns chunks and links for indexing.
+///
+/// Optimized over the naive `get_content_chunks + get_markdown_and_links`
+/// pairing in three ways:
+///
+/// 1. Skips the rewritten-markdown String that `get_markdown_and_links`
+///    builds (its `text` return value is discarded by indexing — only
+///    `links` flow into the DB).
+/// 2. Skips constructing `NoteLink::Url`, `NoteLink::Image`, and
+///    `NoteLink::Attachment` entries — the DB's `NoteBatch::push` drops
+///    those variants on the floor (see `core/src/db/mod.rs` link match).
+/// 3. Shares a single `process_wikilinks` pass between chunk-building and
+///    link-extraction, eliminating one regex scan + one `String`
+///    allocation per indexed note.
 pub fn get_chunks_and_links<S: AsRef<str>>(
     reference_path: &VaultPath,
     md_text: S,
 ) -> (Vec<ContentChunk>, Vec<super::NoteLink>) {
-    let chunks = get_content_chunks(md_text.as_ref());
-    let (_text, links) = get_markdown_and_links(reference_path, md_text.as_ref());
+    let raw = md_text.as_ref();
+    let (frontmatter, body_with_wikilinks) = remove_frontmatter(raw);
+
+    // Pass 1: collapse wikilinks. Callback emits `NoteLink::Note` for
+    // valid vault-path wikilinks (the only NoteLink type the DB keeps).
+    // RefCell allows the `Fn` bound to stay intact for the shared
+    // `process_wikilinks` helper.
+    let wiki_links: std::cell::RefCell<Vec<NoteLink>> = std::cell::RefCell::new(Vec::new());
+    let body_stripped = process_wikilinks(&body_with_wikilinks, |link, text| {
+        if VaultPath::is_valid(link) {
+            let link_path = VaultPath::note_path_from(link);
+            wiki_links
+                .borrow_mut()
+                .push(NoteLink::note(&link_path, text));
+        }
+        None
+    });
+    let mut links = wiki_links.into_inner();
+
+    // Pass 2: precompute hashtag positions in `body_stripped` — cheap
+    // regex scan. The walker uses these to strip the leading `#` from
+    // valid label positions inline and emit `NoteLink::Hashtag` for
+    // matches outside code/link zones.
+    let labels: Vec<(usize, usize, String)> = label_matches_inner(&body_stripped)
+        .map(|lm| (lm.byte_start, lm.byte_end, lm.name.to_string()))
+        .collect();
+
+    // Pass 3: single pulldown_cmark walk on `body_stripped` produces
+    // chunks + Note/Hashtag links in one pass — replacing the previous
+    // separate `parse_text` + `code_char_ranges` + `md_link_char_ranges`
+    // + `MD_LINK_RX.captures_iter` + `label_matches_inner` filter passes.
+    let (text_lines, walk_links) = walk_indexing_events(&body_stripped, reference_path, &labels);
+    links.extend(walk_links);
+
+    let mut chunks = chunks_from_text_lines(text_lines);
+    if !frontmatter.is_empty() {
+        chunks.push(ContentChunk {
+            breadcrumb: "FrontMatter".to_string(),
+            text: frontmatter,
+        });
+    }
+
     (chunks, links)
 }
 
@@ -402,19 +455,29 @@ pub fn is_inside_code_link_or_frontmatter(text: &str, byte_offset: usize) -> boo
 }
 
 fn cleanup_hashtags(md_text: &str) -> String {
-    // Only strip the leading `#` from matches that pass the same
-    // word-boundary guard as `label_matches_inner`. Otherwise `hello#tag`
-    // would become `hellotag` and `##tag` would become `#tag`, neither of
-    // which represents the source text faithfully for indexing.
-    //
-    // Mirror the exclusion-zone filtering that `get_markdown_and_links`
-    // applies (code spans + markdown link bodies) so the indexed chunk text
-    // matches what is rendered: a `#tag` inside `` `#tag` `` stays verbatim
-    // and is not split into a bare `tag` token. Frontmatter and wikilinks
-    // are already stripped/collapsed by the caller before reaching this
-    // function (see `get_content_chunks`).
     let code_ranges = code_char_ranges(md_text);
     let link_ranges = md_link_char_ranges(md_text);
+    cleanup_hashtags_with_ranges(md_text, &code_ranges, &link_ranges)
+}
+
+/// Inner implementation of [`cleanup_hashtags`] taking precomputed
+/// exclusion-zone ranges. Used by [`get_chunks_and_links`] to share a
+/// single range computation between the chunk-build pass and the
+/// hashtag-link extraction pass.
+///
+/// Only strips the leading `#` from matches that pass the
+/// word-boundary guard in [`label_matches_inner`]. A `#tag` inside
+/// `` `#tag` `` or inside a markdown link body stays verbatim — the
+/// indexed chunk text must match the source faithfully (FTS preview
+/// snippets surface this text via MCP `get_chunks`).
+///
+/// Frontmatter and wikilinks are already stripped/collapsed by callers
+/// before reaching this helper.
+fn cleanup_hashtags_with_ranges(
+    md_text: &str,
+    code_ranges: &[(usize, usize)],
+    link_ranges: &[(usize, usize)],
+) -> String {
     let in_excluded_zone = |start: usize, end: usize| -> bool {
         code_ranges
             .iter()
@@ -703,14 +766,20 @@ pub fn extract_title<S: AsRef<str>>(md_text: S) -> String {
 }
 
 fn parse_text(md_text: &str) -> Vec<ContentChunk> {
+    let mut parser = Parser::new(md_text);
+    let lines = loop_events(&mut parser);
+    chunks_from_text_lines(lines)
+}
+
+/// Converts a sequence of [`TextLine`] events into [`ContentChunk`]s.
+/// Shared between [`parse_text`] (standalone) and [`get_chunks_and_links`]'s
+/// single-walk indexing path.
+fn chunks_from_text_lines(lines: Vec<TextLine>) -> Vec<ContentChunk> {
     let mut content_chunks = vec![];
     let mut current_breadcrumb: Vec<(u8, String)> = vec![];
     let mut current_content = vec![];
 
-    let mut parser = Parser::new(md_text);
-    let result = loop_events(&mut parser);
-
-    for text_line in result {
+    for text_line in lines {
         match text_line {
             TextLine::Header(level, text) => {
                 if !current_breadcrumb.is_empty() || !current_content.is_empty() {
@@ -755,6 +824,238 @@ fn join_breadcrumb(stack: &[(u8, String)]) -> String {
         }
         out.push_str(t);
     }
+    out
+}
+
+/// Single-walk markdown event processor for the indexing path.
+///
+/// Mirrors [`loop_events`] but operates on `Parser::into_offset_iter` so it
+/// can use the same pulldown_cmark pass to:
+/// - Build [`TextLine`]s for chunk construction (same shape as `loop_events`).
+/// - Track inline code-span and link state so hashtag exclusion-zone rules
+///   can be applied without a second `code_char_ranges` / `md_link_char_ranges`
+///   pass.
+/// - Emit `NoteLink::Note` from markdown links via `Event::Start(Link)` /
+///   `Event::End(Link)`, eliminating the separate `MD_LINK_RX.captures_iter`
+///   scan.
+/// - Strip the leading `#` from valid hashtag positions inline (using
+///   precomputed `labels` from `label_matches_inner` on `body`), eliminating
+///   the separate `cleanup_hashtags` text-mutation pass.
+///
+/// Inputs:
+/// - `body`: the text to walk (frontmatter removed and wikilinks already
+///   collapsed to display text by the caller).
+/// - `ref_path`: reference path for resolving relative markdown links.
+/// - `labels`: precomputed hashtag positions on `body` (byte_start, byte_end,
+///   name without `#`).
+///
+/// Returns `(text_lines, links)` — feed `text_lines` into
+/// [`chunks_from_text_lines`]; `links` carry both Note (vault-path markdown
+/// links) and Hashtag entries.
+fn walk_indexing_events(
+    body: &str,
+    ref_path: &VaultPath,
+    labels: &[(usize, usize, String)],
+) -> (Vec<TextLine>, Vec<NoteLink>) {
+    let mut text_lines: Vec<TextLine> = vec![];
+    let mut tag_stack: Vec<Tag> = vec![];
+    let mut links: Vec<NoteLink> = vec![];
+
+    let mut code_depth: u32 = 0;
+    let mut in_link: bool = false;
+    let mut pending_link_dest: Option<String> = None;
+
+    let parser = Parser::new(body).into_offset_iter();
+
+    for (event, range) in parser {
+        // Update inline state BEFORE dispatching the main TextLine-building
+        // logic, so Event::Text knows whether we are inside code or a link
+        // body when it decides whether to strip hashtags.
+        match &event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                code_depth += 1;
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                code_depth = code_depth.saturating_sub(1);
+            }
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                pending_link_dest = Some(dest_url.to_string());
+                in_link = true;
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some(dest) = pending_link_dest.take() {
+                    emit_md_note_link(&dest, ref_path, &mut links);
+                }
+                in_link = false;
+            }
+            _ => {}
+        }
+
+        match event {
+            Event::Start(tag) => {
+                let current_line = text_lines.pop().unwrap_or_default();
+                let new_lines = parse_tag(&tag, current_line);
+                text_lines.extend(new_lines);
+                tag_stack.push(tag);
+            }
+            Event::End(tag_end) => {
+                let Some(start_tag) = tag_stack.pop() else {
+                    debug!("Non matching tag end (empty stack): {:?}", tag_end);
+                    continue;
+                };
+                if tag_end != start_tag.to_end() {
+                    debug!(
+                        "Non matching tags: expected {:?}, got {:?}",
+                        start_tag.to_end(),
+                        tag_end
+                    );
+                    tag_stack.push(start_tag);
+                    continue;
+                }
+                let current_line = text_lines.pop().unwrap_or_default();
+                let new_lines = parse_tag_end(&tag_end, current_line);
+                text_lines.extend(new_lines);
+            }
+            Event::Text(cow_str) => {
+                let last_text = text_lines.pop().unwrap_or_default();
+                let appended = if code_depth > 0 {
+                    cow_str.to_string()
+                } else {
+                    strip_hashtags_in_text_event(
+                        &cow_str, &range, body, labels, in_link, &mut links,
+                    )
+                };
+                text_lines.push(last_text.append_text(appended));
+            }
+            Event::Code(cow_str) => {
+                let current_line = text_lines.pop().unwrap_or_default();
+                text_lines.push(current_line.append_text(format!("`{}`", cow_str)));
+            }
+            Event::InlineMath(cow_str)
+            | Event::DisplayMath(cow_str)
+            | Event::Html(cow_str)
+            | Event::InlineHtml(cow_str)
+            | Event::FootnoteReference(cow_str) => {
+                text_lines.push(TextLine::Text(cow_str.to_string()));
+            }
+            Event::SoftBreak => {
+                text_lines.push(TextLine::Empty);
+            }
+            Event::HardBreak => {
+                text_lines.push(TextLine::Empty);
+                text_lines.push(TextLine::Empty);
+            }
+            Event::Rule => {
+                text_lines.push(TextLine::Empty);
+            }
+            Event::TaskListMarker(result) => {
+                text_lines.push(TextLine::Text(result.to_string()));
+            }
+        }
+    }
+
+    (text_lines, links)
+}
+
+/// Resolves a markdown link destination to a `NoteLink::Note` for indexing,
+/// matching the policy of the original `MD_LINK_RX.captures_iter` pass:
+/// remote URLs and non-note vault paths (attachments) are skipped because
+/// the DB drops them. The link text is not stored on the DB row, so we
+/// pass an empty string to avoid an extra allocation.
+fn emit_md_note_link(dest: &str, ref_path: &VaultPath, links: &mut Vec<NoteLink>) {
+    if is_remote_url(dest) {
+        return;
+    }
+    if !VaultPath::is_valid(dest) {
+        return;
+    }
+    let path = VaultPath::new(dest);
+    if path.is_note_file() {
+        links.push(NoteLink::note(&path, ""));
+    } else {
+        let ref_p = if ref_path.is_note() {
+            ref_path.get_parent_path().0
+        } else {
+            ref_path.to_owned()
+        };
+        let abs = ref_p.append(&path).flatten();
+        if abs.is_note() {
+            links.push(NoteLink::note(&abs, ""));
+        }
+    }
+}
+
+/// Returns the text to append for an `Event::Text` payload, with the
+/// leading `#` of each valid hashtag stripped and a `NoteLink::Hashtag`
+/// pushed to `links`. Skips hashtag emission when inside a link body (its
+/// hashtag would be treated as part of the link text, not a tag).
+///
+/// Uses source slices (not the decoded `cow_str`) to keep hashtag positions
+/// aligned with the precomputed `labels`. Falls back to the decoded text
+/// when source length differs (HTML-entity decoding is active) and still
+/// emits hashtag links — chunk text may then contain `#` literals for that
+/// segment, which FTS tokenization handles transparently.
+fn strip_hashtags_in_text_event(
+    decoded: &str,
+    range: &std::ops::Range<usize>,
+    body: &str,
+    labels: &[(usize, usize, String)],
+    in_link: bool,
+    links: &mut Vec<NoteLink>,
+) -> String {
+    // Fast path: no labels overlap this Text event.
+    let mut overlap_start = None;
+    for (i, (s, _, _)) in labels.iter().enumerate() {
+        if *s >= range.start {
+            overlap_start = Some(i);
+            break;
+        }
+    }
+    let start_idx = match overlap_start {
+        Some(i) => i,
+        None => return decoded.to_string(),
+    };
+    let mut overlapping: Vec<&(usize, usize, String)> = Vec::new();
+    for entry in labels[start_idx..].iter() {
+        if entry.1 > range.end {
+            break;
+        }
+        overlapping.push(entry);
+    }
+    if overlapping.is_empty() {
+        return decoded.to_string();
+    }
+
+    let source = &body[range.clone()];
+    if source.len() != decoded.len() {
+        // HTML-entity decoding active — positions don't align. Emit links
+        // but leave chunk text as decoded (with `#` intact).
+        for (_, _, name) in &overlapping {
+            if !in_link {
+                links.push(NoteLink::hashtag(name));
+            }
+        }
+        return decoded.to_string();
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let mut last = range.start;
+    for (lstart, lend, name) in &overlapping {
+        out.push_str(&body[last..*lstart]);
+        if in_link {
+            // Inside a link body, keep `#tag` verbatim and do NOT emit a
+            // hashtag NoteLink — matches the previous
+            // `cleanup_hashtags_with_ranges` exclusion-zone behaviour.
+            out.push_str(&body[*lstart..*lend]);
+        } else {
+            // Skip the `#` byte at *lstart, copy the label name
+            // (`body[*lstart+1..*lend]`) and emit the hashtag link.
+            out.push_str(&body[*lstart + 1..*lend]);
+            links.push(NoteLink::hashtag(name));
+        }
+        last = *lend;
+    }
+    out.push_str(&body[last..range.end]);
     out
 }
 
@@ -2245,6 +2546,78 @@ ls -la ./test
             })
             .collect();
         assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn get_chunks_and_links_preserves_hashtag_inside_link_body() {
+        // `#tag` inside a markdown link's display text must stay verbatim
+        // (not stripped) and NOT emit a `NoteLink::Hashtag`. Mirrors the
+        // previous `cleanup_hashtags_with_ranges` exclusion-zone rule.
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body = "see [issue #42 board](board.md) for backlog";
+        let (chunks, links) = super::get_chunks_and_links(&path, body);
+        let hashtag_names: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Hashtag => Some(l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            hashtag_names.is_empty(),
+            "hashtag inside link body must not emit Hashtag link, got {:?}",
+            hashtag_names
+        );
+        // Chunk text retains the link display text with `#` intact.
+        let body_chunk = chunks
+            .iter()
+            .find(|c| c.breadcrumb != "FrontMatter")
+            .expect("body chunk");
+        assert!(
+            body_chunk.text.contains("#42"),
+            "expected `#42` to survive in chunk text, got {:?}",
+            body_chunk.text
+        );
+    }
+
+    #[test]
+    fn get_chunks_and_links_skips_links_inside_frontmatter() {
+        // `get_chunks_and_links` removes frontmatter before extracting
+        // links — so a wikilink or markdown link inside the YAML/TOML
+        // header is NOT pushed as a `NoteLink`. Pins the indexing-side
+        // behavior so a future refactor cannot silently re-include
+        // frontmatter targets.
+        let path = crate::nfs::VaultPath::note_path_from("/n.md");
+        let body =
+            "---\nrelated: see [docs](other.md) and [[refnote]]\n---\nbody with [[real]]";
+        let (_chunks, links) = super::get_chunks_and_links(&path, body);
+        let note_targets: Vec<&str> = links
+            .iter()
+            .filter_map(|l| match &l.ltype {
+                super::super::LinkType::Note(p) => Some(p.to_bare_string()),
+                _ => None,
+            })
+            .map(|s| -> &str {
+                // leak intentional for test ergonomics — short-lived process
+                Box::leak(s.into_boxed_str())
+            })
+            .collect();
+        // Only the body wikilink should appear; frontmatter targets dropped.
+        assert!(
+            note_targets.iter().any(|t| t.contains("real")),
+            "expected body wikilink target, got {:?}",
+            note_targets
+        );
+        assert!(
+            !note_targets.iter().any(|t| t.contains("refnote")),
+            "frontmatter wikilink leaked into links: {:?}",
+            note_targets
+        );
+        assert!(
+            !note_targets.iter().any(|t| t.contains("other")),
+            "frontmatter markdown-link leaked into links: {:?}",
+            note_targets
+        );
     }
 
     #[test]
