@@ -402,37 +402,70 @@ pub fn is_inside_code_link_or_frontmatter(text: &str, byte_offset: usize) -> boo
 }
 
 fn cleanup_hashtags(md_text: &str) -> String {
-    HASHTAG_RX
-        .replace_all(md_text, |caps: &Captures| caps["ht_text"].to_string())
-        .into_owned()
+    // Only strip the leading `#` from matches that pass the same
+    // word-boundary guard as `label_matches_inner`. Otherwise `hello#tag`
+    // would become `hellotag` and `##tag` would become `#tag`, neither of
+    // which represents the source text faithfully for indexing.
+    //
+    // Mirror the exclusion-zone filtering that `get_markdown_and_links`
+    // applies (code spans + markdown link bodies) so the indexed chunk text
+    // matches what is rendered: a `#tag` inside `` `#tag` `` stays verbatim
+    // and is not split into a bare `tag` token. Frontmatter and wikilinks
+    // are already stripped/collapsed by the caller before reaching this
+    // function (see `get_content_chunks`).
+    let code_ranges = code_char_ranges(md_text);
+    let link_ranges = md_link_char_ranges(md_text);
+    let in_excluded_zone = |start: usize, end: usize| -> bool {
+        code_ranges
+            .iter()
+            .any(|(s, e)| start >= *s && end <= *e)
+            || link_ranges
+                .iter()
+                .any(|(s, e)| start >= *s && end <= *e)
+    };
+    let mut out = String::with_capacity(md_text.len());
+    let mut last_end = 0usize;
+    for lm in label_matches_inner(md_text) {
+        out.push_str(&md_text[last_end..lm.byte_start]);
+        if in_excluded_zone(lm.byte_start, lm.byte_end) {
+            out.push_str(&md_text[lm.byte_start..lm.byte_end]);
+        } else {
+            out.push_str(lm.name);
+        }
+        last_end = lm.byte_end;
+    }
+    out.push_str(&md_text[last_end..]);
+    out
 }
 
 /// Internal label iterator that powers [`crate::note::label_matches`].
 ///
-/// Encapsulates the regex match + the word-boundary guard (a `#tag`
-/// immediately following an alphanumeric/underscore character is treated as
-/// mid-word and skipped). Code-span / HTML / link overlap suppression is left
-/// to the caller because those checks are context-specific.
+/// Encapsulates the regex match + the word-boundary guard. A `#tag` is
+/// rejected when the preceding or following character is alphanumeric, `_`,
+/// or another `#` — so mid-word (`hello#tag`), stacked-hash (`##tag`,
+/// Markdown header territory), and adjacent-hash (`#tag#more`) cases are
+/// all skipped. Code-span / HTML / link overlap suppression is left to the
+/// caller because those checks are context-specific.
 pub(crate) fn label_matches_inner(
     text: &str,
 ) -> impl Iterator<Item = crate::note::LabelMatch<'_>> + '_ {
     HASHTAG_RX.captures_iter(text).filter_map(move |caps| {
         let m = caps.get(0)?;
-        let preceding_is_label_char = m.start() != 0
+        let preceding_blocks_label = m.start() != 0
             && text[..m.start()]
                 .chars()
                 .next_back()
-                .map(|c| c.is_alphanumeric() || c == '_')
+                .map(|c| c.is_alphanumeric() || c == '_' || c == '#')
                 .unwrap_or(false);
-        if preceding_is_label_char {
+        if preceding_blocks_label {
             return None;
         }
-        let following_is_label_char = text[m.end()..]
+        let following_blocks_label = text[m.end()..]
             .chars()
             .next()
-            .map(|c| c.is_alphanumeric() || c == '_')
+            .map(|c| c.is_alphanumeric() || c == '_' || c == '#')
             .unwrap_or(false);
-        if following_is_label_char {
+        if following_blocks_label {
             return None;
         }
         let name = caps.name("ht_text")?.as_str();
@@ -2142,6 +2175,61 @@ ls -la ./test
             .map(|m| m.name)
             .collect();
         assert_eq!(v, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn label_matches_skips_double_hash() {
+        let v: Vec<&str> = crate::note::label_matches("##tag and ##other")
+            .map(|m| m.name)
+            .collect();
+        assert!(v.is_empty(), "expected no labels, got {:?}", v);
+    }
+
+    #[test]
+    fn label_matches_skips_triple_hash() {
+        let v: Vec<&str> = crate::note::label_matches("###tag")
+            .map(|m| m.name)
+            .collect();
+        assert!(v.is_empty(), "expected no labels, got {:?}", v);
+    }
+
+    #[test]
+    fn label_matches_skips_adjacent_hash() {
+        // `#tag#more` — `#` immediately follows the label, so neither side
+        // is a real tag boundary; reject both.
+        let v: Vec<&str> = crate::note::label_matches("#tag#more")
+            .map(|m| m.name)
+            .collect();
+        assert!(v.is_empty(), "expected no labels, got {:?}", v);
+    }
+
+    #[test]
+    fn label_matches_after_space_then_hash() {
+        let v: Vec<&str> = crate::note::label_matches("# #tag")
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(v, vec!["tag"]);
+    }
+
+    #[test]
+    fn cleanup_hashtags_preserves_inline_code_span() {
+        // `#tag` inside backticks must stay verbatim: the indexed chunk
+        // should match the source text, not strip the leading `#`.
+        let cleaned = super::cleanup_hashtags("Use `#define X` to set X.");
+        assert_eq!(cleaned, "Use `#define X` to set X.");
+    }
+
+    #[test]
+    fn cleanup_hashtags_preserves_inside_markdown_link() {
+        // `#section` inside the URL of a markdown link must stay verbatim.
+        let cleaned = super::cleanup_hashtags("see [docs](page.md#section) for details");
+        assert_eq!(cleaned, "see [docs](page.md#section) for details");
+    }
+
+    #[test]
+    fn cleanup_hashtags_strips_outside_excluded_zones() {
+        let cleaned = super::cleanup_hashtags("plain #tag and `#code` mixed");
+        assert_eq!(cleaned, "plain tag and `#code` mixed");
     }
 
     #[test]
