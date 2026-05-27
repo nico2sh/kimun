@@ -194,6 +194,37 @@ pub fn widen_to_safe(kinds: &[LineConstructKind], damaged: Range<usize>) -> Wide
     WidenResult::Widened(start..end)
 }
 
+/// Derive fence-range half-open intervals from the per-line construct
+/// kinds. The view layer uses these to decide which logical rows
+/// render `force_raw` (no markdown re-styling, code-block fg color).
+///
+/// Half-open: a fence spanning rows `start..=end_inclusive` (both markers
+/// included) is returned as `start..end_inclusive + 1`. An unclosed
+/// fence runs to the end of the buffer.
+pub fn fence_ranges_from_kinds(kinds: &[LineConstructKind]) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i < kinds.len() {
+        if kinds[i] == LineConstructKind::FenceMarker {
+            let start = i;
+            i += 1;
+            while i < kinds.len() && kinds[i] == LineConstructKind::FenceContent {
+                i += 1;
+            }
+            if i < kinds.len() && kinds[i] == LineConstructKind::FenceMarker {
+                ranges.push(start..i + 1);
+                i += 1;
+            } else {
+                // Unclosed fence — extends to end of buffer.
+                ranges.push(start..kinds.len());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    ranges
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,5 +487,34 @@ mod tests {
             }
             x => panic!("expected Widened, got {x:?}"),
         }
+    }
+
+    #[test]
+    fn fence_ranges_single_fence() {
+        // P F C C F P — fence covers rows 1..5 (half-open: both markers + content).
+        let k = kinds_str("PFCCFP");
+        let r = fence_ranges_from_kinds(&k);
+        assert_eq!(r, vec![1..5]);
+    }
+
+    #[test]
+    fn fence_ranges_two_fences() {
+        // F C F P F C F — two fences at 0..3 and 4..7.
+        let k = kinds_str("FCFPFCF");
+        let r = fence_ranges_from_kinds(&k);
+        assert_eq!(r, vec![0..3, 4..7]);
+    }
+
+    #[test]
+    fn fence_ranges_unclosed_extends_to_end() {
+        // P F C C C — unclosed fence runs to end of buffer.
+        let k = kinds_str("PFCCC");
+        let r = fence_ranges_from_kinds(&k);
+        assert_eq!(r, vec![1..5]);
+    }
+
+    #[test]
+    fn fence_ranges_empty() {
+        assert!(fence_ranges_from_kinds(&[]).is_empty());
     }
 }
