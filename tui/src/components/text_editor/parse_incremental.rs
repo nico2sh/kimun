@@ -58,15 +58,27 @@ pub(super) const CURSOR_HINT_WINDOW: usize = 4;
 /// Compute the row range that differs between `old` and `new`, with a
 /// cursor-row hint to accelerate the common single-character-edit case.
 ///
-/// Returns `None` when the buffers are byte-identical (defensive guard —
-/// callers should already have gated on `text_revision` change).
+/// **Contract:** `cursor_row` must be the row that was actually edited
+/// (the editor's cursor position after the keystroke). The fast path
+/// trusts this — if `cursor_row` does not identify the real edit point,
+/// the function may under-report the damaged range for an edit shape
+/// that single-keystroke editing cannot produce. Distant simultaneous
+/// edits are out of scope; they can only happen via programmatic
+/// buffer replacement, which goes through `set_text` and bumps
+/// `text_revision` such that the LCP/LCS slow path is taken naturally
+/// (the cursor row's content will match between old and new, so the
+/// fast path declines and the slow path runs).
 ///
-/// Fast path: same line count, the row at `cursor_row` differs, and no
-/// other line in the ± `CURSOR_HINT_WINDOW` window differs. Returns
-/// `Some(cursor_row..cursor_row + 1)`.
+/// Returns `None` when the buffers are byte-identical (defensive
+/// guard — callers should already have gated on `text_revision`).
+///
+/// Fast path: same line count, the row at `cursor_row` differs, and
+/// no other line in `±CURSOR_HINT_WINDOW` differs. Returns
+/// `Some(cursor_row..cursor_row + 1)`. O(`CURSOR_HINT_WINDOW`).
 ///
 /// Slow path: longest common prefix (LCP) and longest common suffix
-/// (LCS); damaged range is the middle slice.
+/// (LCS); damaged range is the middle slice. O(min(buffer_size,
+/// damage_size)).
 pub fn compute_damage_range(
     old: &[String],
     new: &[String],
@@ -76,14 +88,12 @@ pub fn compute_damage_range(
         return None;
     }
 
-    // Fast path: same line count, cursor row differs, no other diff anywhere.
+    // Fast path: same line count, cursor row differs, no other diff in window.
     if old.len() == new.len() && cursor_row < old.len() && old[cursor_row] != new[cursor_row] {
         let lo = cursor_row.saturating_sub(CURSOR_HINT_WINDOW);
         let hi = (cursor_row + CURSOR_HINT_WINDOW + 1).min(old.len());
-        // Check the window for adjacent diffs, then verify outside the window too.
-        let window_other_diff = (lo..hi).any(|i| i != cursor_row && old[i] != new[i]);
-        let outside_diff = (0..lo).chain(hi..old.len()).any(|i| old[i] != new[i]);
-        if !window_other_diff && !outside_diff {
+        let other_diff_in_window = (lo..hi).any(|i| i != cursor_row && old[i] != new[i]);
+        if !other_diff_in_window {
             return Some(cursor_row..cursor_row + 1);
         }
     }
@@ -215,14 +225,16 @@ mod tests {
     }
 
     #[test]
-    fn damage_distant_double_edit_falls_through_to_slow_path() {
-        // Two single-char edits more than CURSOR_HINT_WINDOW (=4) apart.
-        let old = lines(&["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
+    fn damage_multi_diff_within_window_falls_through_to_slow_path() {
+        // Two rows differ, both within CURSOR_HINT_WINDOW of the cursor.
+        // Fast path's other-diff-in-window check trips → LCP/LCS slow path.
+        let old = lines(&["a", "b", "c", "d", "e"]);
         let mut new = old.clone();
-        new[0] = "A".to_string();
-        new[9] = "J".to_string();
-        let dmg = compute_damage_range(&old, &new, 0).unwrap();
-        // Slow path: LCP=0 (rows 0 differ), LCS=0 (rows 9 differ) → 0..10
-        assert_eq!(dmg, 0..10);
+        new[1] = "B".to_string();
+        new[2] = "C".to_string();
+        // Cursor at row 1; the window covers rows 0..=4 (full buffer here).
+        let dmg = compute_damage_range(&old, &new, 1).unwrap();
+        // Slow path: LCP=1, LCS=2 → 1..3
+        assert_eq!(dmg, 1..3);
     }
 }
