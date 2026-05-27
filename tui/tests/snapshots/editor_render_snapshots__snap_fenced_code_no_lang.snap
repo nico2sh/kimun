@@ -1,0 +1,12 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"```\\nlet x = 1;\\n```\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(168, 153, 132)) | "```"
+
+[row 1]
+Style::new().fg(Color::Rgb(168, 153, 132)) | "let x = 1;"
+
+[row 2]
+Style::new().fg(Color::Rgb(168, 153, 132)) | "```"

@@ -1,0 +1,15 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"- outer\\n  - inner-a\\n  - inner-b\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(124, 111, 100)) | "- "
+Style::new().fg(Color::Rgb(235, 219, 178)) | "outer"
+
+[row 1]
+Style::new().fg(Color::Rgb(124, 111, 100)) | "  - "
+Style::new().fg(Color::Rgb(235, 219, 178)) | "inner-a"
+
+[row 2]
+Style::new().fg(Color::Rgb(124, 111, 100)) | "  - "
+Style::new().fg(Color::Rgb(235, 219, 178)) | "inner-b"

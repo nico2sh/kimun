@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"See [docs](https://example.com/#fragment).\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "See "
+Style::new().fg(Color::Rgb(250, 189, 47)).underlined() | "docs"
+Style::new().fg(Color::Rgb(235, 219, 178)) | "."

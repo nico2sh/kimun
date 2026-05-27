@@ -1,0 +1,7 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"# Heading One\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(124, 111, 100)) | "# "
+Style::new().fg(Color::Rgb(250, 189, 47)).bold() | "Heading One"

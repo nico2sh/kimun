@@ -3,11 +3,10 @@ pub mod backend;
 pub mod markdown;
 pub mod nvim_rpc;
 pub mod snapshot;
+pub mod parse_incremental;
+pub mod treesitter_parser;
 pub mod view;
 pub mod word_wrap;
-
-#[cfg(test)]
-mod snapshot_tests;
 
 use arboard::Clipboard;
 use ratatui::Frame;

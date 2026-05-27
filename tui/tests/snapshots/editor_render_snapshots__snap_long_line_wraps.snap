@@ -1,0 +1,18 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(&line, 40)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "word word word word word word word word"
+
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "word word word word word word word word"
+
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "word word word word word word word word"
+
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "word word word word word word word word"
+
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "word word word word word word word word "

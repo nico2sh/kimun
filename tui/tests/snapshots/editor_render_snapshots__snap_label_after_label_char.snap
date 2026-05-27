@@ -1,0 +1,6 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"foo#bar baz\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "foo#bar baz"

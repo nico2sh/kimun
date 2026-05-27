@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"see #rust later\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "see "
+Style::new().fg(Color::Rgb(254, 128, 25)).bold() | "#rust"
+Style::new().fg(Color::Rgb(235, 219, 178)) | " later"

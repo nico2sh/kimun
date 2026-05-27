@@ -1,0 +1,6 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"[#todo](notes/project.md)\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(250, 189, 47)).underlined() | "#todo"

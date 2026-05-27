@@ -1,0 +1,7 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"##### Heading Five\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(124, 111, 100)) | "##### "
+Style::new().fg(Color::Rgb(168, 153, 132)) | "Heading Five"

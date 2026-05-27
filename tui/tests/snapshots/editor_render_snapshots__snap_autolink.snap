@@ -1,0 +1,8 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"Visit <https://example.com> now.\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "Visit "
+Style::new().fg(Color::Rgb(250, 189, 47)).underlined() | "https://example.com"
+Style::new().fg(Color::Rgb(235, 219, 178)) | " now."

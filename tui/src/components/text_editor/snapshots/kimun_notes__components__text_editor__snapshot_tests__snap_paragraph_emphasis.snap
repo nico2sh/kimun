@@ -1,8 +1,0 @@
----
-source: tui/src/components/text_editor/snapshot_tests.rs
-expression: "serialize_render(\"This is *emphasised* text.\", 80)"
----
-[row 0]
-Style::new().fg(Color::Rgb(235, 219, 178)) | "This is "
-Style::new().fg(Color::Rgb(168, 153, 132)).italic() | "emphasised"
-Style::new().fg(Color::Rgb(235, 219, 178)) | " text."

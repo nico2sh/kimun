@@ -1,0 +1,15 @@
+---
+source: tui/tests/editor_render_snapshots.rs
+expression: "serialize_render(\"1. first\\n2. second\\n3. third\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(124, 111, 100)) | "1. "
+Style::new().fg(Color::Rgb(235, 219, 178)) | "first"
+
+[row 1]
+Style::new().fg(Color::Rgb(124, 111, 100)) | "2. "
+Style::new().fg(Color::Rgb(235, 219, 178)) | "second"
+
+[row 2]
+Style::new().fg(Color::Rgb(124, 111, 100)) | "3. "
+Style::new().fg(Color::Rgb(235, 219, 178)) | "third"
