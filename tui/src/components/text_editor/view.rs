@@ -1,4 +1,4 @@
-use super::markdown::{MarkdownSpanner, ParsedBuffer, ParsedLine};
+use super::markdown::{MarkdownSpanner, ParsedBuffer};
 use super::word_wrap::WordWrapLayout;
 use crate::settings::themes::Theme;
 use ratatui::Frame;
@@ -27,7 +27,7 @@ pub struct MarkdownEditorView {
     pub last_cursor_screen: Option<(u16, u16)>,
     /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
     /// invocations across `render()`, cursor placement, and click mapping.
-    parsed_cache: Vec<ParsedLine>,
+    parsed_buffer: ParsedBuffer,
     /// Last `text_revision` seen — gates the lines clone and parse-cache rebuild.
     /// Cursor-only moves do not bump `text_revision`, so navigating with the
     /// arrow keys reuses the parse cache instead of re-running pulldown-cmark
@@ -60,7 +60,7 @@ impl MarkdownEditorView {
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
             last_cursor_screen: None,
-            parsed_cache: Vec::new(),
+            parsed_buffer: ParsedBuffer { lines: Vec::new(), kinds: Vec::new() },
             last_seen_generation: u64::MAX, // force rebuild on first update
             last_layout_generation: u64::MAX,
             last_layout_width: 0,
@@ -85,12 +85,10 @@ impl MarkdownEditorView {
         }
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
-        // Also guard against parsed_cache being shorter than lines (e.g. async snapshot
-        // update arriving after a stale generation write) to prevent OOB indexing below.
-        if generation != self.last_seen_generation || lines.len() != self.parsed_cache.len() {
+        if generation != self.last_seen_generation {
             self.lines_snapshot = lines.to_vec();
-            self.fence_ranges = Self::compute_fence_ranges(lines);
-            self.parsed_cache = ParsedBuffer::parse(lines).lines;
+            self.parsed_buffer = ParsedBuffer::parse(lines);
+            self.fence_ranges = super::parse_incremental::fence_ranges_from_kinds(&self.parsed_buffer.kinds);
             self.last_seen_generation = generation;
         }
 
@@ -101,11 +99,11 @@ impl MarkdownEditorView {
         // Horizontal cursor movement within the same element (or plain text with no elements)
         // does not change any wrap boundary — no recompute needed.
         let new_expanded = self
-            .parsed_cache
+            .parsed_buffer.lines
             .get(cursor.0)
             .and_then(|p| p.elem_at(cursor.1));
         let old_expanded = self
-            .parsed_cache
+            .parsed_buffer.lines
             .get(self.last_layout_cursor.0)
             .and_then(|p| p.elem_at(self.last_layout_cursor.1));
         let need_layout = generation != self.last_layout_generation
@@ -128,7 +126,7 @@ impl MarkdownEditorView {
                         let cursor_col = if i == cursor.0 { Some(cursor.1) } else { None };
                         MarkdownSpanner::visible_positions_with(
                             l,
-                            &self.parsed_cache[i],
+                            &self.parsed_buffer.lines[i],
                             cursor_col,
                             force_raw,
                         )
@@ -140,7 +138,7 @@ impl MarkdownEditorView {
                 let new_row = cursor.0;
                 for row in [old_row, new_row] {
                     if let Some(l) = lines.get(row)
-                        && let Some(p) = self.parsed_cache.get(row)
+                        && let Some(p) = self.parsed_buffer.lines.get(row)
                     {
                         let force_raw = self.is_in_code_block(row);
                         let cursor_col = if row == new_row { Some(cursor.1) } else { None };
@@ -180,7 +178,7 @@ impl MarkdownEditorView {
         let vlines = self.layout.visual_lines();
 
         let selection = self.selection;
-        let parsed_cache = &self.parsed_cache;
+        let parsed_lines = &self.parsed_buffer.lines;
         let fence_ranges = &self.fence_ranges;
 
         let visible: Vec<Line> = vlines
@@ -195,7 +193,7 @@ impl MarkdownEditorView {
                 };
                 let force_raw = fence_ranges.iter().any(|r| r.contains(&vl.logical_row));
                 let logical_line = lines.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
-                let parsed = &parsed_cache[vl.logical_row];
+                let parsed = &parsed_lines[vl.logical_row];
                 let content = vl.content(logical_line);
                 let spans = MarkdownSpanner::render_with(
                     content,
@@ -262,7 +260,7 @@ impl MarkdownEditorView {
             if cursor_vrow >= scroll
                 && cursor_vrow < scroll + height
                 && let Some(vl) = self.layout.visual_lines().get(cursor_vrow)
-                && let Some(parsed) = self.parsed_cache.get(cursor.0)
+                && let Some(parsed) = self.parsed_buffer.lines.get(cursor.0)
             {
                 // Use `.get()` on both layout.visual_lines and parsed_cache so
                 // a transiently-stale cursor (e.g. Nvim snapshot arriving
@@ -312,7 +310,7 @@ impl MarkdownEditorView {
         let force_raw = self.is_in_code_block(vl.logical_row);
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
-            &self.parsed_cache[vl.logical_row],
+            &self.parsed_buffer.lines[vl.logical_row],
             vl.start_col,
             vcol,
             vl.is_first_visual_line,
@@ -323,31 +321,6 @@ impl MarkdownEditorView {
         (row, col)
     }
 
-    /// Scans the buffer once and returns the line range of every fenced
-    /// code block. The result is text-keyed and cached in `fence_ranges`;
-    /// the cursor's active block is then a cheap point lookup that is
-    /// recomputed on every `update()` so cursor moves between fences keep
-    /// `force_raw` rendering correct.
-    fn compute_fence_ranges(lines: &[String]) -> Vec<Range<usize>> {
-        let mut ranges = Vec::new();
-        let mut open: Option<usize> = None;
-        for (i, line) in lines.iter().enumerate() {
-            if line.trim().starts_with("```") {
-                match open {
-                    None => open = Some(i),
-                    Some(start) => {
-                        ranges.push(start..i + 1);
-                        open = None;
-                    }
-                }
-            }
-        }
-        // Unclosed fence: per CommonMark, extends to end of document.
-        if let Some(start) = open {
-            ranges.push(start..lines.len());
-        }
-        ranges
-    }
 }
 
 impl Default for MarkdownEditorView {
@@ -496,7 +469,8 @@ mod tests {
             "```".to_string(),
             "more".to_string(),
         ];
-        let ranges = MarkdownEditorView::compute_fence_ranges(&lines);
+        let pb = ParsedBuffer::parse(&lines);
+        let ranges = super::super::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
         let block = ranges.iter().find(|r| r.contains(&2)).cloned();
         assert!(block.is_some());
         let r = block.unwrap();
@@ -512,7 +486,8 @@ mod tests {
             "code".to_string(),
             "```".to_string(),
         ];
-        let ranges = MarkdownEditorView::compute_fence_ranges(&lines);
+        let pb = ParsedBuffer::parse(&lines);
+        let ranges = super::super::parse_incremental::fence_ranges_from_kinds(&pb.kinds);
         assert!(ranges.iter().find(|r| r.contains(&0)).is_none());
     }
 
@@ -570,7 +545,7 @@ mod tests {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello".to_string(), "**bold**".to_string()];
         v.update(&lines, (0, 0), rect(10), 1, None);
-        assert_eq!(v.parsed_cache.len(), 2);
+        assert_eq!(v.parsed_buffer.lines.len(), 2);
     }
 
     #[test]
