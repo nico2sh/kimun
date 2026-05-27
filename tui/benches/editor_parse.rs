@@ -7,7 +7,7 @@
 //! - wrap_5000_lines: if > 1 ms, open a wrap-incremental follow-up
 //!   change (G4 trigger).
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use kimun_notes::components::text_editor::markdown::ParsedBuffer;
 use kimun_notes::components::text_editor::parse_incremental::{
     compute_damage_range, widen_to_safe, WidenResult,
@@ -37,17 +37,21 @@ fn bench_incremental_paragraph_insert_5000_lines(c: &mut Criterion) {
     edited[2500].push('x');
 
     c.bench_function("incremental_paragraph_insert_5000_lines", |b| {
-        b.iter(|| {
-            let damaged = compute_damage_range(&lines, &edited, 2500).expect("damaged should be Some");
-            let widened = match widen_to_safe(&initial_pb.kinds, damaged) {
-                WidenResult::Widened(r) => r,
-                WidenResult::FullRebuild => panic!("paragraph insert should take incremental path"),
-            };
-            let slice = ParsedBuffer::parse_range(black_box(&edited), widened.clone());
-            let mut pb = initial_pb.clone();
-            pb.splice(widened, slice);
-            black_box(pb);
-        });
+        b.iter_batched(
+            || initial_pb.clone(),
+            |mut pb| {
+                let damaged = compute_damage_range(&lines, &edited, 2500)
+                    .expect("damaged should be Some");
+                let widened = match widen_to_safe(&pb.kinds, damaged) {
+                    WidenResult::Widened(r) => r,
+                    WidenResult::FullRebuild => panic!("paragraph insert should take incremental path"),
+                };
+                let slice = ParsedBuffer::parse_range(black_box(&edited), widened.clone());
+                pb.splice(widened, slice);
+                black_box(pb);
+            },
+            BatchSize::SmallInput,
+        );
     });
 }
 
