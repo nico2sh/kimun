@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kimun TUI · Text Editor Architecture</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #1d2021;
+    --panel: #282828;
+    --border: #3c3836;
+    --fg: #ebdbb2;
+    --muted: #a89984;
+    --dim: #7c6f64;
+    --accent: #fabd2f;
+    --link: #83a598;
+    --green: #b8bb26;
+    --orange: #fe8019;
+    --red: #fb4934;
+    --purple: #d3869b;
+    --code-bg: #32302f;
+  }
+  html { background: var(--bg); }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.55 -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 32px 28px 80px;
+  }
+  h1, h2, h3 { color: var(--accent); font-weight: 600; margin-top: 2.4em; }
+  h1 { margin-top: 0; font-size: 28px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  h2 { font-size: 21px; }
+  h3 { font-size: 17px; color: var(--link); }
+  p { color: var(--fg); }
+  code, pre {
+    font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+    font-size: 13px;
+    background: var(--code-bg);
+    color: var(--fg);
+  }
+  code { padding: 2px 5px; border-radius: 3px; }
+  pre { padding: 12px 14px; border-radius: 6px; overflow-x: auto; border: 1px solid var(--border); }
+  a { color: var(--link); }
+  .lede {
+    color: var(--muted);
+    font-size: 15px;
+    border-left: 3px solid var(--accent);
+    padding: 4px 14px;
+    margin: 16px 0 28px;
+    background: var(--panel);
+  }
+  .mermaid {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 18px;
+    margin: 18px 0;
+    text-align: center;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+    font-size: 13.5px;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--panel); color: var(--accent); font-weight: 600; }
+  td code { background: transparent; color: var(--orange); padding: 0; }
+  .grid-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin: 18px 0;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+  }
+  .card h3 { margin-top: 0; }
+  .badge {
+    display: inline-block;
+    background: var(--code-bg);
+    color: var(--green);
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-family: "JetBrains Mono", monospace;
+    margin-left: 6px;
+    vertical-align: 2px;
+  }
+  .badge.warn { color: var(--orange); }
+  .badge.alert { color: var(--red); }
+  .badge.purple { color: var(--purple); }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-top: 10px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-swatch {
+    width: 14px; height: 14px; border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+  ul { color: var(--fg); }
+  li { margin-bottom: 4px; }
+  hr { border: 0; border-top: 1px solid var(--border); margin: 32px 0; }
+</style>
+</head>
+<body>
+
+<h1>Kimun TUI — Text Editor Architecture</h1>
+<div class="lede">
+Render and input pipeline of <code>TextEditorComponent</code>. Covers the two
+backends (in-process <code>ratatui-textarea</code> and external
+<code>neovim</code> over RPC), the layered view caches keyed on
+<code>text_revision</code>, the autocomplete + autosave async pipelines, and
+the rules that protect against concurrent writes / stale completions.
+</div>
+
+<h2>1. Component tree</h2>
+
+<div class="mermaid">
+flowchart TB
+  App["App (run loop)"]:::root
+  ES["EditorScreen"]:::screen
+  TEC["TextEditorComponent"]:::editor
+  BE{"BackendState"}:::switch
+  TA["BackendState::Textarea<br/>ratatui_textarea::TextArea"]:::backend
+  NV["BackendState::Nvim<br/>NvimBackend (RPC + snapshot)"]:::backend
+  V["MarkdownEditorView"]:::view
+  AC["AutocompleteController"]:::async
+  AT["AutosaveTimer + autosave_task"]:::async
+  CORE["NoteVault<br/>(core crate)"]:::core
+
+  App --> ES
+  ES --> TEC
+  ES --> AT
+  TEC --> BE
+  BE --> TA
+  BE --> NV
+  TEC --> V
+  TEC --> AC
+  AT -. tokio::spawn .-> CORE
+  AC -. tokio::spawn .-> CORE
+
+  classDef root fill:#282828,stroke:#fabd2f,color:#fabd2f;
+  classDef screen fill:#32302f,stroke:#83a598,color:#83a598;
+  classDef editor fill:#32302f,stroke:#b8bb26,color:#b8bb26;
+  classDef backend fill:#3c3836,stroke:#fe8019,color:#fe8019;
+  classDef view fill:#3c3836,stroke:#d3869b,color:#d3869b;
+  classDef switch fill:#1d2021,stroke:#a89984,color:#a89984;
+  classDef async fill:#32302f,stroke:#fb4934,color:#fb4934;
+  classDef core fill:#1d2021,stroke:#7c6f64,color:#7c6f64;
+</div>
+
+<div class="legend">
+  <div class="legend-item"><span class="legend-swatch" style="background:#fabd2f"></span>app loop</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#83a598"></span>screen</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#b8bb26"></span>component</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#fe8019"></span>backend</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#d3869b"></span>view / cache</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#fb4934"></span>async (spawned task)</div>
+</div>
+
+<h2>2. Frame render pipeline</h2>
+<p>
+Every frame, <code>EditorScreen::render</code> calls
+<code>TextEditorComponent::render</code>. The component picks lines + cursor
+from the active backend, drives <code>MarkdownEditorView::update</code> (which
+gates its caches on the buffer revision counter), then calls
+<code>view.render</code> and finally overlays the autocomplete popup.
+</p>
+
+<div class="mermaid">
+sequenceDiagram
+  autonumber
+  participant L as run_app loop
+  participant ES as EditorScreen
+  participant TEC as TextEditorComponent
+  participant BE as backend
+  participant V as MarkdownEditorView
+  participant MS as MarkdownSpanner
+  participant AC as AutocompleteController
+
+  L->>ES: render rect
+  ES->>TEC: render editor_rect
+  TEC->>BE: read lines and cursor
+  alt Textarea backend
+    BE-->>TEC: ta.lines live ref plus cursor_tuple
+    TEC->>V: update lines cursor rect text_revision selection
+  else Nvim backend
+    BE-->>TEC: snap.lines clone plus snap.cursor plus content_gen
+    TEC->>V: update lines cursor rect content_gen visual_selection
+  end
+  V->>V: Gate 1 - text changed - rebuild fence_ranges and ParsedBuffer
+  V->>V: Gate 2 - layout stale - rebuild rendered_cache and WordWrapLayout
+  TEC->>V: render f editor_rect theme focused
+  V->>MS: per visible row - render_with content
+  MS-->>V: vector of Span
+  V-->>TEC: drawn - cursor placed via .get guards
+  TEC->>AC: poll_results
+  AC-->>TEC: items when generation matches
+  TEC->>AC: render popup at view.last_cursor_screen
+</div>
+
+<p><strong>Gate 1 incremental path.</strong>
+When <code>text_revision</code> advances, Gate 1 first attempts
+<code>try_incremental_parse</code>: it runs
+<code>compute_damage_range(lines_snapshot, lines, cursor.0)</code> to find the row range that
+differs (cursor-row fast path for single-char edits; LCP/LCS scan for everything else),
+then <code>widen_to_safe(parsed_buffer.kinds, damaged)</code> to extend the range to safe
+construct boundaries (<code>Blank</code> or <code>Plain</code> rows, with explicit rules to include the
+whole fence pair, list, blockquote, or HTML block).
+It then calls <code>ParsedBuffer::parse_range(lines, widened)</code> on the widened slice as a
+standalone document and splices the result into <code>parsed_buffer</code>.
+Falls back to a full <code>ParsedBuffer::parse(lines)</code> when: the line count changed, the
+widened range exceeds the absolute cap (256 lines) or fractional cap (50%), the damaged
+row was previously a structural marker (fence/setext) whose extent can shift beyond the
+window, the new content introduces or removes a structural marker prefix, or the
+post-slice verification detects a kinds/elements mismatch in the widened boundary rows.
+A debug-only assertion (<code>KIMUN_VIEW_VERIFY_INCREMENTAL=1</code>) compares every incremental
+result against a fresh full parse field-by-field for development-time fuzzing.</p>
+
+<h2>3. Backend abstraction</h2>
+
+<div class="grid-cols">
+  <div class="card">
+    <h3>Textarea backend <span class="badge">sync</span></h3>
+    <ul>
+      <li><code>ratatui_textarea::TextArea</code> owns the buffer in-process.</li>
+      <li>Key events go through <code>handle_textarea_key</code> which routes through a shortcut match (cursor moves, Ctrl+Z/Y, Ctrl+X cut, etc.) and the catch-all <code>input_without_shortcuts</code>.</li>
+      <li><code>text_revision</code> is bumped only on confirmed text mutations (return value of <code>undo()</code>, <code>cut()</code>, <code>input_without_shortcuts()</code>, etc.).</li>
+      <li>Autocomplete is enabled. The host snapshot reads <code>ta.lines()</code> and <code>cursor_tuple</code> at the moment of <code>handle_input</code>.</li>
+      <li><code>is_dirty()</code> = <code>saved_text_revision != Some(self.text_revision)</code>.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Nvim backend <span class="badge warn">RPC</span></h3>
+    <ul>
+      <li><code>NvimBackend</code> owns a child process and a long-running tokio refresh task that polls Lua state on flush events.</li>
+      <li>The refresh task writes into a <code>Mutex&lt;NvimSnapshot&gt;</code>: lines, cursor, dirty flag, <code>content_gen</code>, mode, selection.</li>
+      <li>Keys are forwarded via <code>nvim.handle_key</code> (RPC); replies update the snapshot asynchronously.</li>
+      <li><code>text_revision</code> is bumped conservatively on every Nvim key — there's no synchronous way to know whether a key mutated the buffer, and the autosave correctness check depends on a monotonic counter.</li>
+      <li>Autocomplete is <em>not</em> wired up on Nvim.</li>
+      <li><code>is_dirty()</code> reads <code>snap.dirty</code> directly.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="mermaid">
+flowchart LR
+  KEY([crossterm key]):::evt
+  HI["TextEditorComponent::handle_input"]:::editor
+  SW{backend}:::switch
+
+  KEY --> HI
+  HI --> SW
+
+  subgraph TA[" Textarea path "]
+    direction TB
+    HTA["handle_textarea_key"]:::editor
+    OUT{ShortcutOutcome}:::switch
+    NoOp["NoOp · neither counter"]:::dim
+    CO["CursorOnly · bump_cursor"]:::cursor
+    TM["TextMutated · bump_text"]:::text
+    TIWS["input_without_shortcuts(key) -> bool"]:::cursor
+  end
+
+  subgraph NV[" Nvim path "]
+    direction TB
+    HNK["handle_nvim_key"]:::editor
+    RPC["nvim.handle_key(key) (RPC)"]:::rpc
+    BTN["bump_text (conservative)"]:::text
+    REF["refresh task<br/>polls Lua state on flush"]:::rpc
+    SNAP["NvimSnapshot<br/>lines + cursor + dirty + content_gen"]:::cache
+  end
+
+  SW -- "BackendState::Textarea" --> HTA
+  SW -- "BackendState::Nvim" --> HNK
+
+  HTA --> OUT
+  OUT --> NoOp
+  OUT --> CO
+  OUT --> TM
+  HTA -.fallback.-> TIWS
+
+  HNK --> RPC
+  HNK --> BTN
+  RPC -. flush event .-> REF
+  REF --> SNAP
+
+  classDef evt fill:#1d2021,stroke:#83a598,color:#83a598;
+  classDef editor fill:#32302f,stroke:#b8bb26,color:#b8bb26;
+  classDef switch fill:#1d2021,stroke:#a89984,color:#a89984;
+  classDef cursor fill:#3c3836,stroke:#83a598,color:#83a598;
+  classDef text fill:#3c3836,stroke:#fe8019,color:#fe8019;
+  classDef dim fill:#3c3836,stroke:#7c6f64,color:#7c6f64;
+  classDef rpc fill:#3c3836,stroke:#d3869b,color:#d3869b;
+  classDef cache fill:#282828,stroke:#fabd2f,color:#fabd2f;
+</div>
+
+<h2>4. Revision counters</h2>
+
+<p>
+Two counters drive every cache + correctness decision. Both are
+<code>u64</code> with <em>monotonic-non-zero</em> semantics (start at 1,
+skip 0 on wraparound):
+</p>
+
+<table>
+  <thead><tr><th>Counter</th><th>Bumped by</th><th>Consumed by</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>text_revision</code></td>
+      <td>
+        <code>bump_text</code> — only when buffer truly changes (Textarea
+        path returns <code>bool</code> from <code>cut</code> /
+        <code>undo</code> / <code>input_without_shortcuts</code> / …).
+        On Nvim: conservatively bumped per key.
+      </td>
+      <td>
+        <ul style="margin:0;padding-left:18px">
+          <li><code>is_dirty</code> (Textarea path)</li>
+          <li><code>view.update</code> as the cache-invalidation key</li>
+          <li><code>AutocompleteHost::text_revision</code> → exclusion-zone cache key</li>
+          <li><code>spawn_autosave</code> → <code>AutosaveCompleted.saved_revision</code></li>
+          <li><code>handle_input</code> uses delta to choose <code>sync</code> vs <code>refresh_if_open</code></li>
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <td><code>edit_generation</code></td>
+      <td>Both <code>bump_cursor</code> and <code>bump_text</code> — cursor moves bump it; pure no-ops don't.</td>
+      <td>
+        View-cache-adjacent invariants where cursor moves matter
+        (<code>last_layout_cursor</code> tracking).
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>Sentinel: <code>text_revision == 0</code></strong> — reserved as
+the <code>AutocompleteHost::text_revision</code> "do not cache" signal.
+<code>SearchBoxHostSnapshot</code> returns <code>0</code> permanently. The
+controller treats <code>0</code> as an unconditional cache miss <em>and</em>
+skips persisting the rebuilt zones so sentinel hosts don't churn the
+slot.</p>
+
+<h2>5. View cache layers</h2>
+
+<p>All caches live on <code>MarkdownEditorView</code>. Two gates decide what
+to rebuild on each <code>update()</code>:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Cache</th>
+      <th>Type</th>
+      <th>Rebuilt when</th>
+      <th>Cost when rebuilt</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>lines_snapshot</code></td>
+      <td><code>Vec&lt;String&gt;</code></td>
+      <td>Gate 1 (text revision changed OR line count drift)</td>
+      <td>O(N) clone</td>
+    </tr>
+    <tr>
+      <td><code>fence_ranges</code></td>
+      <td><code>Vec&lt;Range&lt;usize&gt;&gt;</code></td>
+      <td>Gate 1</td>
+      <td>O(N) derived from <code>parsed_buffer.kinds</code> via <code>fence_ranges_from_kinds</code> — single pass, no duplicate string scan</td>
+    </tr>
+    <tr>
+      <td><code>parsed_buffer</code></td>
+      <td><code>ParsedBuffer { lines: Vec&lt;ParsedLine&gt;, kinds: Vec&lt;LineConstructKind&gt; }</code></td>
+      <td>Gate 1 (full or incremental splice)</td>
+      <td>O(N) full parse or O(widened_range) incremental; row-count invariant enforced by <code>ParsedBuffer::splice</code></td>
+    </tr>
+    <tr>
+      <td><code>rendered_cache</code></td>
+      <td><code>Vec&lt;Vec&lt;bool&gt;&gt;</code></td>
+      <td>Gate 2 content branch (full) or partial (two cursor rows)</td>
+      <td>O(N) chars (full) / O(2 × line_chars) (partial)</td>
+    </tr>
+    <tr>
+      <td><code>layout</code></td>
+      <td><code>WordWrapLayout</code></td>
+      <td>Gate 2 (content / width / cursor row / element expansion)</td>
+      <td>O(N) lines × O(chars/line)</td>
+    </tr>
+    <tr>
+      <td><code>last_cursor_screen</code></td>
+      <td><code>Option&lt;(u16, u16)&gt;</code></td>
+      <td>Every render (cheap)</td>
+      <td>O(1) — anchor for autocomplete popup</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>View cache layers.</strong>
+<code>MarkdownEditorView</code> holds a <code>parsed_buffer: ParsedBuffer</code> — a single struct with
+two equal-length vectors: <code>lines: Vec&lt;ParsedLine&gt;</code> (one per logical row, carrying
+per-character visibility masks, element ranges, and image placeholders) and
+<code>kinds: Vec&lt;LineConstructKind&gt;</code> (the coarse classification —
+<code>Blank</code>, <code>Plain</code>, <code>FenceMarker</code>, <code>FenceContent</code>, <code>ListMarker</code>, etc. —
+that drives safe-boundary widening).
+<code>ParsedBuffer::splice(range, other)</code> enforces the row-count invariant: after every
+splice, <code>lines.len() == kinds.len() == row_count_of_buffer</code>.
+The view also caches <code>fence_ranges</code> (derived from <code>parsed_buffer.kinds</code> via
+<code>fence_ranges_from_kinds</code> — single fence detector, no duplicate string scan) and
+<code>lines_snapshot</code> (the previous-frame buffer used by the damage-diff in Gate 1).</p>
+
+<p>Behaviour table:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Event</th>
+      <th>Gate 1</th>
+      <th>Gate 2</th>
+      <th>render</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Idle frame (no input)</td><td>skip</td><td>skip</td><td>repaint from snapshots</td></tr>
+    <tr><td>Cursor arrow same row</td><td>skip</td><td>skip</td><td>cursor cell only</td></tr>
+    <tr><td>Cursor moves to different row</td><td>skip</td><td>partial (2 rows)</td><td>full repaint</td></tr>
+    <tr><td>Resize (width change)</td><td>skip</td><td>full layout rebuild</td><td>full repaint</td></tr>
+    <tr><td>Text edit (insert / delete)</td><td>full rebuild</td><td>full rebuild</td><td>full repaint</td></tr>
+    <tr><td>Empty-stack Ctrl+Z</td><td>skip</td><td>skip</td><td>repaint from snapshots</td></tr>
+  </tbody>
+</table>
+
+<h2>6. Autocomplete pipeline (Textarea backend only)</h2>
+
+<div class="mermaid">
+flowchart TB
+  K([key event]):::evt
+  HI["handle_input"]:::editor
+  P{popup open?}:::switch
+  HK["controller.handle_key(key)"]:::cache
+  OUT{HandleKeyOutcome}:::switch
+  Accept["Accepted → mutate buffer<br/>bump_text + return Consumed"]:::text
+  Dismiss["Dismissed/Consumed → return"]:::cursor
+  NH["NotHandled → fall through"]:::dim
+  TK["handle_textarea_key"]:::editor
+  REV[(text_revision delta)]:::switch
+  SY["sync_autocomplete<br/>(may open new popup)"]:::cache
+  RF["refresh_autocomplete_if_open<br/>(close on out-of-trigger)"]:::cache
+  REC["controller.reconcile(host)"]:::cache
+  CACHE{"cached_text<br/>(revision-keyed)"}:::cache
+  ZN["ExclusionZones::from_text<br/>(pulldown-cmark + 2 regex)"]:::dim
+  TR["detect_trigger_with_zones"]:::cache
+  FQ["fire_query<br/>(debounce 80ms unless instant)"]:::async
+  AB["abort previous in_flight"]:::async
+  SP["tokio::spawn → vault.suggest_*"]:::async
+  RES["result_tx.send(QueryResult)"]:::async
+  POLL["poll_results (next render)"]:::cache
+
+  K --> HI
+  HI --> P
+  P -- yes --> HK
+  HK --> OUT
+  OUT --> Accept
+  OUT --> Dismiss
+  OUT --> NH
+  P -- no --> TK
+  NH --> TK
+  TK --> REV
+  REV -- changed --> SY
+  REV -- unchanged + cursor moved --> RF
+  SY --> REC
+  RF --> REC
+  REC --> CACHE
+  CACHE -- "rev hit (≠ 0)" --> TR
+  CACHE -- "miss" --> ZN
+  ZN --> TR
+  TR --> FQ
+  FQ --> AB
+  AB --> SP
+  SP --> RES
+  RES --> POLL
+
+  classDef evt fill:#1d2021,stroke:#83a598,color:#83a598;
+  classDef editor fill:#32302f,stroke:#b8bb26,color:#b8bb26;
+  classDef switch fill:#1d2021,stroke:#a89984,color:#a89984;
+  classDef cache fill:#3c3836,stroke:#d3869b,color:#d3869b;
+  classDef text fill:#3c3836,stroke:#fe8019,color:#fe8019;
+  classDef cursor fill:#3c3836,stroke:#83a598,color:#83a598;
+  classDef dim fill:#3c3836,stroke:#7c6f64,color:#7c6f64;
+  classDef async fill:#32302f,stroke:#fb4934,color:#fb4934;
+</div>
+
+<p>
+<strong>Cancellation:</strong> every <code>fire_query</code> aborts the prior
+<code>JoinHandle</code> (including during its 80&nbsp;ms debounce sleep), and
+<code>close()</code> / <code>Drop</code> on the controller abort any
+in-flight task. A burst of typing collapses to one SQLite hit at the end of
+the burst.
+</p>
+
+<h2>7. Autosave lifecycle</h2>
+
+<div class="mermaid">
+sequenceDiagram
+  autonumber
+  participant T as AutosaveTimer
+  participant L as run_app loop
+  participant ES as EditorScreen
+  participant V as NoteVault
+  participant ED as TextEditorComponent
+
+  Note over ES: spawn_autosave guard
+  T->>L: AppEvent Autosave
+  L->>ES: handle_app_message Autosave
+  ES->>ES: check autosave_task.is_finished
+  alt prior task still running
+    ES-->>L: skip
+  else slot free and is_dirty
+    ES->>ED: get_text plus text_revision
+    ES->>V: tokio spawn vault.save_note path text
+    Note over ES: store JoinHandle in autosave_task
+    V-->>ES: result
+    ES->>L: AppEvent AutosaveCompleted path saved_revision
+    L->>ES: handle_app_message AutosaveCompleted
+    alt path matches and saved_revision is Some rev
+      ES->>ED: mark_saved_at_revision rev
+      Note over ED: if rev equals self.text_revision clear dirty
+      Note over ED: else no-op stale completion
+    end
+    alt autosave_task.is_finished
+      ES-->>ES: autosave_task set to None
+    end
+  end
+
+  Note over ES,V: Synchronous save path - on_exit open_path on_entry_op
+  ES->>ES: try_save
+  ES->>ES: await_or_abort handle 5s
+  alt timeout
+    ES->>ES: abort_handle abort then return
+    Note right of ES: prevents two concurrent writers to the same path
+  else completes
+    ES->>V: tokio time timeout 5s vault.save_note
+    alt save ok
+      ES->>ED: mark_saved text
+    else timeout or error
+      Note right of ES: editor stays dirty for the next retry
+    end
+  end
+</div>
+
+<h2>8. Cross-cutting invariants</h2>
+
+<ul>
+  <li><strong>Cursor moves never dirty the buffer.</strong>
+  Pinned by <code>cursor_move_does_not_dirty_buffer</code>.</li>
+
+  <li><strong>No-op shortcuts (empty-stack undo/redo, word-boundary delete) bump
+  neither counter.</strong> Pinned by
+  <code>empty_stack_undo_redo_does_not_dirty_or_bump_revision</code>.</li>
+
+  <li><strong>Initial <code>text_revision</code> is non-zero.</strong> Avoids
+  colliding with the autocomplete cache sentinel. Pinned by
+  <code>fresh_editor_text_revision_is_nonzero</code>.</li>
+
+  <li><strong>Stale Nvim cursors cannot panic the render thread.</strong>
+  <code>render()</code> uses <code>.get()</code> on <code>parsed_cache</code>
+  and <code>visual_lines</code>. Pinned by
+  <code>render_does_not_panic_on_stale_cursor_past_line_count</code>.</li>
+
+  <li><strong>Sentinel hosts (revision 0) neither read nor write
+  <code>cached_text</code>.</strong> Pinned by
+  <code>sentinel_revision_does_not_populate_or_consult_cache</code>.</li>
+
+  <li><strong><code>await_or_abort</code> aborts a hung task on timeout.</strong>
+  Dropping a tokio <code>JoinHandle</code> only detaches — it does NOT
+  cancel. Without the abort, a second vault.save_note could race the
+  stuck one on the same path. Pinned by
+  <code>await_or_abort_aborts_long_task_on_timeout</code> +
+  <code>await_or_abort_returns_true_when_task_completes</code>.</li>
+
+  <li><strong><code>mark_saved</code> vs <code>mark_saved_at_revision</code>
+  asymmetry is intentional.</strong> Sync mark_saved clobbers on
+  divergence (caller is authoritative). Async mark_saved_at_revision
+  no-ops on divergence (stale completion must not undo a newer clean
+  state set by a racing sync path).</li>
+
+  <li><strong>Main loop drain breaks on <code>screen_generation</code>
+  change.</strong> Queued events from the old screen instance can't leak
+  into a new screen — even if both have the same <code>ScreenKind</code>
+  (Editor→Editor on follow-link).</li>
+</ul>
+
+<h2>9. File map</h2>
+
+<table>
+  <thead><tr><th>File</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td><code>tui/src/components/text_editor/mod.rs</code></td><td>TextEditorComponent: input dispatch, autocomplete glue, bump helpers, render orchestration.</td></tr>
+    <tr><td><code>tui/src/components/text_editor/view.rs</code></td><td>MarkdownEditorView: parse/wrap/render caches with Gate 1 (text) + Gate 2 (layout).</td></tr>
+    <tr><td><code>tui/src/components/text_editor/markdown.rs</code></td><td>ParsedBuffer, ParsedLine, MarkdownSpanner — pulldown-cmark wrapper + span emitter.</td></tr>
+    <tr><td><code>tui/src/components/text_editor/word_wrap.rs</code></td><td>WordWrapLayout — visual-line table with byte-range slices.</td></tr>
+    <tr><td><code>tui/src/components/text_editor/backend.rs</code></td><td>NvimBackend, NvimSnapshot, refresh task, set_text TOCTOU contract.</td></tr>
+    <tr><td><code>tui/src/components/text_editor/autocomplete_glue.rs</code></td><td>row/char/byte conversions for AcceptAction.</td></tr>
+    <tr><td><code>tui/src/components/autocomplete/controller.rs</code></td><td>AutocompleteController: revision-keyed ExclusionZones cache, debounce, abort.</td></tr>
+    <tr><td><code>tui/src/components/autocomplete/host.rs</code></td><td>AutocompleteHost trait (buffer_text, cursor_byte_offset, text_revision, screen_anchor_for).</td></tr>
+    <tr><td><code>tui/src/components/autocomplete/trigger.rs</code></td><td>detect_trigger_with_zones — hashtag/wikilink scanning with exclusion-zone gating.</td></tr>
+    <tr><td><code>tui/src/app_screen/editor.rs</code></td><td>EditorScreen: spawn_autosave, try_save, await_or_abort, autosave_task lifecycle.</td></tr>
+    <tr><td><code>tui/src/event_handler.rs</code></td><td>EventHandler: next() / try_next() with biased select on mpsc + crossterm.</td></tr>
+    <tr><td><code>tui/src/main.rs</code></td><td>run_app: outer await + inner drain loop, screen_generation break.</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<p style="color:var(--dim); font-size:12.5px; text-align:center;">
+Generated against <code>tui_perf</code> branch · 40 commits since main · 1232 tests passing.
+</p>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "base",
+    themeVariables: {
+      darkMode: true,
+      background: "#282828",
+      primaryColor: "#3c3836",
+      primaryTextColor: "#ebdbb2",
+      primaryBorderColor: "#a89984",
+      lineColor: "#a89984",
+      secondaryColor: "#504945",
+      tertiaryColor: "#1d2021",
+      noteBkgColor: "#32302f",
+      noteTextColor: "#ebdbb2",
+      noteBorderColor: "#a89984",
+      actorBkg: "#3c3836",
+      actorBorder: "#fabd2f",
+      actorTextColor: "#ebdbb2",
+      actorLineColor: "#a89984",
+      signalColor: "#ebdbb2",
+      signalTextColor: "#ebdbb2"
+    }
+  });
+</script>
+</body>
+</html>
