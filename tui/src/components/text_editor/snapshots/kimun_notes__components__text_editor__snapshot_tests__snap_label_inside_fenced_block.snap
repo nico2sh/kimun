@@ -1,0 +1,19 @@
+---
+source: tui/src/components/text_editor/snapshot_tests.rs
+expression: "serialize_render(buffer, 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "before"
+
+[row 1]
+Style::new().fg(Color::Rgb(168, 153, 132)) | "```"
+
+[row 2]
+Style::new().fg(Color::Rgb(168, 153, 132)) | "#inside"
+
+[row 3]
+Style::new().fg(Color::Rgb(168, 153, 132)) | "```"
+
+[row 4]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "after "
+Style::new().fg(Color::Rgb(254, 128, 25)).bold() | "#outside"

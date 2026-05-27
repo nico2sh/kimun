@@ -6,6 +6,9 @@ pub mod snapshot;
 pub mod view;
 pub mod word_wrap;
 
+#[cfg(test)]
+mod snapshot_tests;
+
 use arboard::Clipboard;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};

@@ -1,0 +1,8 @@
+---
+source: tui/src/components/text_editor/snapshot_tests.rs
+expression: "serialize_render(\"Use `cargo build` to compile.\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(235, 219, 178)) | "Use "
+Style::new().fg(Color::Rgb(235, 219, 178)).bg(Color::Rgb(80, 73, 69)) | "cargo build"
+Style::new().fg(Color::Rgb(235, 219, 178)) | " to compile."

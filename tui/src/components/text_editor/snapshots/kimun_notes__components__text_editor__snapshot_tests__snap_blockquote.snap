@@ -1,0 +1,6 @@
+---
+source: tui/src/components/text_editor/snapshot_tests.rs
+expression: "serialize_render(\"> A quoted line.\", 80)"
+---
+[row 0]
+Style::new().fg(Color::Rgb(168, 153, 132)) | "A quoted line."
