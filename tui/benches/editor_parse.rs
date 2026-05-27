@@ -87,11 +87,56 @@ fn bench_wrap_5000_lines(c: &mut Criterion) {
     });
 }
 
+fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+    use ratatui::layout::Rect;
+
+    let lines = make_5000_line_buffer();
+    let rect = Rect { x: 0, y: 0, width: 80, height: 40 };
+
+    // Warm the view: do a full parse on the original buffer once.
+    let mut warmed = MarkdownEditorView::new();
+    warmed.update(&lines, (2500, 0), rect, 1, None);
+
+    // Edited buffer: single-char insert at row 2500 (same line count).
+    let mut edited = lines.clone();
+    edited[2500].push('x');
+
+    c.bench_function("full_view_update_5000_lines_incremental", |b| {
+        b.iter_batched(
+            || warmed.clone(),
+            |mut v| {
+                v.update(black_box(&edited), (2500, edited[2500].len()), rect, 2, None);
+                black_box(v);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_full_view_update_5000_lines_first_parse(c: &mut Criterion) {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+    use ratatui::layout::Rect;
+
+    let lines = make_5000_line_buffer();
+    let rect = Rect { x: 0, y: 0, width: 80, height: 40 };
+
+    c.bench_function("full_view_update_5000_lines_first_parse", |b| {
+        b.iter(|| {
+            let mut v = MarkdownEditorView::new();
+            v.update(black_box(&lines), (0, 0), rect, 1, None);
+            black_box(v);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_full_parse_5000_lines,
     bench_incremental_paragraph_insert_5000_lines,
     bench_incremental_fallback_5000_lines,
     bench_wrap_5000_lines,
+    bench_full_view_update_5000_lines_incremental,
+    bench_full_view_update_5000_lines_first_parse,
 );
 criterion_main!(benches);

@@ -34,6 +34,7 @@ enum RenderedCacheRebuild {
     None,
 }
 
+#[derive(Clone)]
 pub struct MarkdownEditorView {
     pub layout: WordWrapLayout,
     pub visual_scroll_offset: usize,
