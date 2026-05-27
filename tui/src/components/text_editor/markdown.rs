@@ -1,6 +1,7 @@
 use crate::settings::themes::Theme;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use super::parse_incremental::LineConstructKind;
+use std::ops::Range;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use unicode_segmentation::UnicodeSegmentation;
@@ -615,6 +616,38 @@ impl ParsedBuffer {
         }
 
         ParsedBuffer { lines: out, kinds }
+    }
+
+    /// Parse a contiguous slice of `lines` as if it were a standalone document.
+    ///
+    /// **Boundary contract:** the caller must pass a `range` whose `start` and
+    /// `end` land on safe construct boundaries (verified by
+    /// `parse_incremental::widen_to_safe`). This function does not validate
+    /// the contract — passing a mid-fence range will produce a `ParsedBuffer`
+    /// that mis-classifies the boundary lines.
+    ///
+    /// Returns a `ParsedBuffer` whose `lines.len() == kinds.len() == range.len()`.
+    pub fn parse_range(lines: &[String], range: Range<usize>) -> ParsedBuffer {
+        Self::parse(&lines[range])
+    }
+
+    /// Replace `self.lines[range]` and `self.kinds[range]` with the contents
+    /// of `other`. Both `other` vectors must have `range.len()` entries.
+    pub fn splice(&mut self, range: Range<usize>, other: ParsedBuffer) {
+        debug_assert!(
+            other.lines.len() == range.len(),
+            "splice: other.lines.len() ({}) != range.len() ({})",
+            other.lines.len(),
+            range.len(),
+        );
+        debug_assert!(
+            other.kinds.len() == range.len(),
+            "splice: other.kinds.len() ({}) != range.len() ({})",
+            other.kinds.len(),
+            range.len(),
+        );
+        self.lines.splice(range.clone(), other.lines);
+        self.kinds.splice(range, other.kinds);
     }
 }
 
@@ -2040,5 +2073,53 @@ mod tests {
             .filter(|e| matches!(e.kind, ElementKind::Label))
             .collect();
         assert_eq!(outside_labels.len(), 1, "#outside still extracted");
+    }
+
+    #[test]
+    fn parse_range_full_equals_parse() {
+        let lines: Vec<String> = vec!["hello".into(), "world".into(), "".into(), "**bold**".into()];
+        let full = ParsedBuffer::parse(&lines);
+        let range_full = ParsedBuffer::parse_range(&lines, 0..lines.len());
+        assert_eq!(full.lines.len(), range_full.lines.len());
+        assert_eq!(full.kinds, range_full.kinds);
+        for (a, b) in full.lines.iter().zip(range_full.lines.iter()) {
+            assert_eq!(a.content_vis, b.content_vis);
+            assert_eq!(a.elements.len(), b.elements.len());
+        }
+    }
+
+    #[test]
+    fn parse_range_paragraph_only_slice() {
+        let lines: Vec<String> = vec![
+            "intro paragraph".into(),
+            "".into(),
+            "middle line".into(),
+            "".into(),
+            "outro".into(),
+        ];
+        let slice = ParsedBuffer::parse_range(&lines, 2..3);
+        assert_eq!(slice.lines.len(), 1);
+        assert_eq!(slice.kinds, vec![LineConstructKind::Plain]);
+    }
+
+    #[test]
+    fn splice_replaces_range() {
+        let mut pb = ParsedBuffer::parse(&[
+            "alpha".into(),
+            "beta".into(),
+            "gamma".into(),
+        ]);
+        let replacement = ParsedBuffer::parse(&["BETA-NEW".into()]);
+        pb.splice(1..2, replacement);
+        assert_eq!(pb.lines.len(), 3);
+        assert_eq!(pb.kinds.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "splice")]
+    fn splice_panics_on_length_mismatch_in_debug() {
+        let mut pb = ParsedBuffer::parse(&["a".into(), "b".into()]);
+        let too_short = ParsedBuffer::parse(&["X".into()]);
+        pb.splice(0..2, too_short);
     }
 }
