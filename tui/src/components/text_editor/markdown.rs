@@ -1,5 +1,6 @@
 use crate::settings::themes::Theme;
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use super::parse_incremental::LineConstructKind;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use unicode_segmentation::UnicodeSegmentation;
@@ -176,9 +177,12 @@ pub struct ParsedBuffer {
 }
 
 impl ParsedBuffer {
-    /// Parse the entire editor buffer in a single pulldown-cmark pass and return
-    /// one `ParsedLine` per input row. Multi-row elements are split so each row
-    /// gets its own `Element` entry covering only that row's portion.
+    /// Parse the entire editor buffer in a single pulldown-cmark pass.
+    /// Returns a `ParsedBuffer` whose `lines` contains one `ParsedLine` per
+    /// input row (multi-row elements split per row) and whose `kinds`
+    /// contains the per-row construct classification used by
+    /// `parse_incremental::widen_to_safe`. Single event-walk; no second
+    /// pass over the buffer.
     pub fn parse(lines: &[String]) -> ParsedBuffer {
         // Build joined buffer and per-line byte-offset table.
         let total_bytes: usize =
@@ -267,6 +271,19 @@ impl ParsedBuffer {
             }
         };
 
+        // Per-line construct classification: initially Blank vs Plain based on
+        // whitespace, then updated during the event loop and post-passes below.
+        let mut kinds: Vec<LineConstructKind> = lines
+            .iter()
+            .map(|l| {
+                if l.trim().is_empty() {
+                    LineConstructKind::Blank
+                } else {
+                    LineConstructKind::Plain
+                }
+            })
+            .collect();
+
         // Track fenced/indented code block byte ranges for F4 (label suppression).
         // Populated during the main parser pass below and converted to per-line
         // flags before the per-line label scan.
@@ -279,11 +296,32 @@ impl ParsedBuffer {
             let (sr, sc) = byte_to_row_col(range.start, lines, &line_starts);
             let (er, ec) = byte_to_row_col(range.end, lines, &line_starts);
             match event {
-                Event::Start(Tag::CodeBlock(_)) => {
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_))) => {
                     if code_block_depth == 0 {
                         code_block_start = Some(range.start);
                     }
                     code_block_depth += 1;
+                    // Opening fence marker row.
+                    if sr < kinds.len() {
+                        kinds[sr] = LineConstructKind::FenceMarker;
+                    }
+                    // Rows between opening and closing fences are content.
+                    for r in (sr + 1)..er.min(kinds.len()) {
+                        kinds[r] = LineConstructKind::FenceContent;
+                    }
+                    // Closing fence marker row (er is the row of the closing ```).
+                    if er < kinds.len() {
+                        kinds[er] = LineConstructKind::FenceMarker;
+                    }
+                }
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => {
+                    if code_block_depth == 0 {
+                        code_block_start = Some(range.start);
+                    }
+                    code_block_depth += 1;
+                    for r in sr..=er.min(kinds.len().saturating_sub(1)) {
+                        kinds[r] = LineConstructKind::IndentedCode;
+                    }
                 }
                 Event::End(TagEnd::CodeBlock) => {
                     code_block_depth = code_block_depth.saturating_sub(1);
@@ -294,6 +332,13 @@ impl ParsedBuffer {
                     }
                 }
                 Event::Start(ref tag) if let Some(kind) = tag_to_kind(tag) => {
+                    if matches!(
+                        kind,
+                        ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
+                    ) && sr < kinds.len()
+                    {
+                        kinds[sr] = LineConstructKind::Heading;
+                    }
                     stack.push((sr, sc, kind));
                 }
                 Event::End(
@@ -317,12 +362,36 @@ impl ParsedBuffer {
                     // on `sc`.
                     if sr < lines.len() && list_sigil_end[sr].is_none() =>
                 {
+                    if sr < kinds.len() {
+                        kinds[sr] = LineConstructKind::ListMarker;
+                    }
                     let line = lines[sr].as_str();
                     let ws_end = leading_ws_byte_len(line);
                     if let Some(len) = list_marker_len(&line[ws_end..]) {
                         // ws_end is byte length but ASCII whitespace makes it
                         // equal to the char count.
                         list_sigil_end[sr] = Some(ws_end + len);
+                    }
+                }
+                Event::Start(Tag::HtmlBlock) => {
+                    for r in sr..=er.min(kinds.len().saturating_sub(1)) {
+                        if r < kinds.len() {
+                            kinds[r] = LineConstructKind::HtmlBlock;
+                        }
+                    }
+                }
+                Event::Html(_) | Event::InlineHtml(_) => {
+                    for r in sr..=er.min(kinds.len().saturating_sub(1)) {
+                        if r < kinds.len()
+                            && !matches!(
+                                kinds[r],
+                                LineConstructKind::FenceContent
+                                    | LineConstructKind::IndentedCode
+                                    | LineConstructKind::FenceMarker
+                            )
+                        {
+                            kinds[r] = LineConstructKind::HtmlBlock;
+                        }
                     }
                 }
                 Event::End(TagEnd::Item) => {}
@@ -498,10 +567,60 @@ impl ParsedBuffer {
             });
         }
 
-        ParsedBuffer {
-            lines: out,
-            kinds: vec![super::parse_incremental::LineConstructKind::Plain; lines.len()],
+        // Post-pass: blockquote depth (N = number of leading `>` characters).
+        // Done before the setext post-pass so that a blockquoted heading line
+        // is not mis-treated as setext text.
+        for row in 0..kinds.len() {
+            if !matches!(kinds[row], LineConstructKind::Plain | LineConstructKind::Blank) {
+                continue;
+            }
+            let line = &lines[row];
+            let mut depth: u8 = 0;
+            for ch in line.chars() {
+                match ch {
+                    '>' => depth = depth.saturating_add(1),
+                    ' ' | '\t' => continue,
+                    _ => break,
+                }
+            }
+            if depth > 0 {
+                kinds[row] = LineConstructKind::Blockquote(depth);
+            }
         }
+
+        // Post-pass: setext underline classification.
+        // Pulldown reports setext headings as Heading events spanning the text
+        // line AND the underline line. We want to: (a) classify the underline
+        // row as SetextUnderline, (b) reset the heading text row to Plain so
+        // widening treats it as a safe boundary above.
+        for row in 0..lines.len().saturating_sub(1) {
+            if kinds[row] == LineConstructKind::Heading {
+                let next = &lines[row + 1];
+                let trimmed = next.trim();
+                if !trimmed.is_empty()
+                    && (trimmed.chars().all(|c| c == '=') || trimmed.chars().all(|c| c == '-'))
+                {
+                    kinds[row + 1] = LineConstructKind::SetextUnderline;
+                    kinds[row] = LineConstructKind::Plain;
+                }
+            }
+        }
+
+        // Post-pass: list-item continuation rows.
+        // Any Plain row immediately following a ListMarker or ListContinuation
+        // row is itself a continuation (lazy continuation, indented body, etc.).
+        for row in 1..kinds.len() {
+            if matches!(kinds[row], LineConstructKind::Plain | LineConstructKind::IndentedCode)
+                && matches!(
+                    kinds[row - 1],
+                    LineConstructKind::ListMarker | LineConstructKind::ListContinuation
+                )
+            {
+                kinds[row] = LineConstructKind::ListContinuation;
+            }
+        }
+
+        ParsedBuffer { lines: out, kinds }
     }
 }
 
