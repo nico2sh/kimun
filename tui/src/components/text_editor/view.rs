@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use std::ops::Range;
+use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
 
 pub struct MarkdownEditorView {
@@ -55,6 +56,16 @@ pub struct MarkdownEditorView {
     pub last_parse_was_incremental: bool,
 }
 
+#[cfg(debug_assertions)]
+fn verify_incremental_enabled() -> bool {
+    static VERIFY: OnceLock<bool> = OnceLock::new();
+    *VERIFY.get_or_init(|| {
+        std::env::var("KIMUN_VIEW_VERIFY_INCREMENTAL")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+    })
+}
+
 impl MarkdownEditorView {
     pub fn new() -> Self {
         Self {
@@ -101,6 +112,22 @@ impl MarkdownEditorView {
                     false
                 }
             };
+            #[cfg(debug_assertions)]
+            if self.last_parse_was_incremental && verify_incremental_enabled() {
+                let fresh = ParsedBuffer::parse(lines);
+                assert_eq!(
+                    self.parsed_buffer.kinds, fresh.kinds,
+                    "incremental kinds diverge from full parse at generation={generation}"
+                );
+                assert_eq!(
+                    self.parsed_buffer.lines.len(),
+                    fresh.lines.len(),
+                    "incremental lines.len() diverges from full parse at generation={generation}"
+                );
+                for (i, (got, exp)) in self.parsed_buffer.lines.iter().zip(fresh.lines.iter()).enumerate() {
+                    got.debug_assert_eq_to(exp, i);
+                }
+            }
             self.fence_ranges = super::parse_incremental::fence_ranges_from_kinds(&self.parsed_buffer.kinds);
             self.lines_snapshot = lines.to_vec();
             self.last_seen_generation = generation;
