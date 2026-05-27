@@ -1,5 +1,3 @@
-use crate::components::text_editor::treesitter_parser::EditorTree;
-
 /// Read-only view of the input surface (editor or search box) for the
 /// autocomplete controller. All offsets are **byte offsets** into
 /// `buffer_text()`.
@@ -33,13 +31,4 @@ pub trait AutocompleteHost {
     /// rebuilds. Use this only for hosts whose buffer is tiny enough that
     /// the rebuild cost is negligible (e.g. a single-line search box).
     fn text_revision(&self) -> u64;
-
-    /// Optional handle to the editor's incremental tree-sitter parse.
-    /// Editor hosts return `Some(&tree)`; the search-box returns `None`
-    /// because no tree exists for that input. The controller passes the
-    /// tree to the trigger detector in editor mode, bypassing the
-    /// pulldown-based `ExclusionZones::from_text` on the typing path.
-    fn editor_tree(&self) -> Option<&EditorTree> {
-        None
-    }
 }
