@@ -119,6 +119,95 @@ pub fn compute_damage_range(
     Some(start..end)
 }
 
+/// Return true when `kind` is a self-contained, safe boundary line.
+/// Blank lines and ordinary paragraph lines are safe; everything else
+/// belongs to a multi-line construct that widening must include in
+/// full.
+fn is_safe_boundary(kind: LineConstructKind) -> bool {
+    matches!(kind, LineConstructKind::Blank | LineConstructKind::Plain)
+}
+
+/// Walk upward from `damaged.start` (the first damaged row) until the
+/// row just above is a safe boundary AND we are not still inside a
+/// list. Returns the new start row (inclusive).
+///
+/// The list rule (G1): if any row we passed (or `damaged.start - 1`
+/// itself) is `ListMarker` or `ListContinuation`, we are inside a list
+/// — keep walking up until we find a `Plain`/`Blank` row that is NOT a
+/// ListContinuation. This guarantees the parse_range slice includes
+/// the outermost col-0 list marker, so the synthetic-list-parent trick
+/// in `ParsedLine::parse` is not needed.
+fn widen_up(kinds: &[LineConstructKind], damaged_start: usize) -> usize {
+    if damaged_start == 0 {
+        return 0;
+    }
+    let mut row = damaged_start;
+    let mut in_list = false;
+    while row > 0 {
+        let candidate = row - 1;
+        let k = kinds[candidate];
+        // Track list state — once entered, we stay in_list until we
+        // see a row that is NEITHER ListMarker NOR ListContinuation
+        // (and is a safe boundary).
+        if matches!(k, LineConstructKind::ListMarker | LineConstructKind::ListContinuation) {
+            in_list = true;
+        }
+        if is_safe_boundary(k) && !in_list {
+            return candidate;
+        }
+        if is_safe_boundary(k) && in_list {
+            // Found a safe boundary but we were in a list — keep going
+            // up past the list marker / continuation rows. Reset
+            // in_list and continue.
+            in_list = false;
+            // Don't return yet — continue walking up.
+        }
+        row = candidate;
+    }
+    0
+}
+
+/// Walk downward from `damaged.end` (the first row past the damage)
+/// until we land on a safe boundary or end of buffer. Returns the
+/// exclusive end index.
+fn widen_down(kinds: &[LineConstructKind], damaged_end: usize) -> usize {
+    let mut row = damaged_end;
+    while row < kinds.len() {
+        if is_safe_boundary(kinds[row]) {
+            return row + 1;
+        }
+        row += 1;
+    }
+    kinds.len()
+}
+
+/// Widen `damaged` outward to safe construct boundaries, applying
+/// D5's +1 extra row and the D4 cap.
+///
+/// Returns `Widened(range)` when the widened range fits under the cap,
+/// or `FullRebuild` when the cap is exceeded or the buffer is empty.
+pub fn widen_to_safe(kinds: &[LineConstructKind], damaged: Range<usize>) -> WidenResult {
+    if kinds.is_empty() {
+        return WidenResult::FullRebuild;
+    }
+
+    let mut start = widen_up(kinds, damaged.start);
+    let mut end = widen_down(kinds, damaged.end);
+
+    // D5: widen one extra row on each side.
+    start = start.saturating_sub(1);
+    end = (end + 1).min(kinds.len());
+
+    let widened_len = end - start;
+    let cap_abs = MAX_INCREMENTAL_LINES;
+    let cap_frac = ((kinds.len() as f32) * MAX_INCREMENTAL_FRACTION) as usize;
+    if widened_len > cap_abs && widened_len > cap_frac {
+        return WidenResult::FullRebuild;
+    }
+
+    WidenResult::Widened(start..end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +325,134 @@ mod tests {
         let dmg = compute_damage_range(&old, &new, 1).unwrap();
         // Slow path: LCP=1, LCS=2 → 1..3
         assert_eq!(dmg, 1..3);
+    }
+
+    fn kinds_str(s: &str) -> Vec<LineConstructKind> {
+        // Compact spec: one char per line.
+        // P=Plain, B=Blank, F=FenceMarker, C=FenceContent,
+        // L=ListMarker, l=ListContinuation, Q=Blockquote(1),
+        // S=SetextUnderline, H=Heading, I=IndentedCode, X=HtmlBlock.
+        s.chars().map(|c| match c {
+            'P' => LineConstructKind::Plain,
+            'B' => LineConstructKind::Blank,
+            'F' => LineConstructKind::FenceMarker,
+            'C' => LineConstructKind::FenceContent,
+            'L' => LineConstructKind::ListMarker,
+            'l' => LineConstructKind::ListContinuation,
+            'Q' => LineConstructKind::Blockquote(1),
+            'S' => LineConstructKind::SetextUnderline,
+            'H' => LineConstructKind::Heading,
+            'I' => LineConstructKind::IndentedCode,
+            'X' => LineConstructKind::HtmlBlock,
+            _ => panic!("bad kind char {c}"),
+        }).collect()
+    }
+
+    #[test]
+    fn widen_plain_paragraph_to_blank_boundaries() {
+        // P B P P P B P — damage row 3 → widen to blank rows 1 and 5
+        // (plus the D5 +1 each side: 0 and 6 — but the buffer ends are
+        // also boundaries; clamp).
+        let k = kinds_str("PBPPPBP");
+        match widen_to_safe(&k, 3..4) {
+            WidenResult::Widened(r) => {
+                // Must include the blank rows at 1 and 5 (or wider).
+                assert!(r.start <= 1, "widen.start <= 1, got {}", r.start);
+                assert!(r.end >= 6, "widen.end >= 6, got {}", r.end);
+            }
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn widen_fence_interior_includes_both_markers() {
+        // P B F C C C F B P — damage row 4 (inside fence) → widen
+        // to include both fence markers + one extra line on each side.
+        let k = kinds_str("PBFCCCFBP");
+        match widen_to_safe(&k, 4..5) {
+            WidenResult::Widened(r) => {
+                assert!(r.start <= 2, "must include opening fence marker at row 2, got start {}", r.start);
+                assert!(r.end >= 7, "must include closing fence marker at row 6 (end >= 7), got end {}", r.end);
+            }
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn widen_list_continuation_reaches_outermost_marker() {
+        // L l L l l l B P — damage at row 4 (nested continuation) → widen
+        // up to outermost ListMarker at row 0.
+        let k = kinds_str("LlLlllBP");
+        match widen_to_safe(&k, 4..5) {
+            WidenResult::Widened(r) => assert_eq!(r.start, 0, "must reach col-0 list marker"),
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn widen_setext_underline_includes_text_line_above() {
+        // P S P — damage at row 1 (underline) → widen to include row 0
+        // (heading text line).
+        let k = kinds_str("PSP");
+        match widen_to_safe(&k, 1..2) {
+            WidenResult::Widened(r) => assert_eq!(r.start, 0, "must include row above setext underline"),
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn widen_html_block_includes_whole_block() {
+        // P X X X B P — damage at row 2 (middle of HTML) → widen to
+        // include all HtmlBlock rows.
+        let k = kinds_str("PXXXBP");
+        match widen_to_safe(&k, 2..3) {
+            WidenResult::Widened(r) => {
+                assert!(r.start <= 1, "must include first HtmlBlock row, got start {}", r.start);
+                assert!(r.end >= 4, "must include last HtmlBlock row, got end {}", r.end);
+            }
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn widen_exceeds_cap_returns_full_rebuild() {
+        // 300-line all-FenceContent buffer; the damage is one line;
+        // widening tries to reach the fence ends but the buffer is
+        // uniformly fence content, so widening goes to 0..300, which
+        // exceeds MAX_INCREMENTAL_LINES (256).
+        let k = vec![LineConstructKind::FenceContent; 300];
+        assert_eq!(widen_to_safe(&k, 150..151), WidenResult::FullRebuild);
+    }
+
+    #[test]
+    fn widen_at_buffer_start_clamps_to_zero() {
+        let k = kinds_str("PPPPP");
+        match widen_to_safe(&k, 0..1) {
+            WidenResult::Widened(r) => assert_eq!(r.start, 0),
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn widen_at_buffer_end_clamps_to_len() {
+        let k = kinds_str("PPPPP");
+        match widen_to_safe(&k, 4..5) {
+            WidenResult::Widened(r) => assert_eq!(r.end, 5),
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn widen_blockquote_includes_whole_block() {
+        // P Q Q Q B P — damage in the middle of a blockquote → widen
+        // to include the whole blockquote.
+        let k = kinds_str("PQQQBP");
+        match widen_to_safe(&k, 2..3) {
+            WidenResult::Widened(r) => {
+                assert!(r.start <= 1, "must include first Blockquote row, got start {}", r.start);
+                assert!(r.end >= 4, "must include last Blockquote row, got end {}", r.end);
+            }
+            x => panic!("expected Widened, got {x:?}"),
+        }
     }
 }
