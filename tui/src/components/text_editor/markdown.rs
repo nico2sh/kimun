@@ -178,11 +178,16 @@ pub struct ParsedBuffer {
 
 impl ParsedBuffer {
     /// Parse the entire editor buffer in a single pulldown-cmark pass.
-    /// Returns a `ParsedBuffer` whose `lines` contains one `ParsedLine` per
-    /// input row (multi-row elements split per row) and whose `kinds`
-    /// contains the per-row construct classification used by
-    /// `parse_incremental::widen_to_safe`. Single event-walk; no second
-    /// pass over the buffer.
+    ///
+    /// Returns a [`ParsedBuffer`] whose `lines` contains one `ParsedLine`
+    /// per input row (multi-row markdown elements split per row) and whose
+    /// `kinds` contains the per-row [`LineConstructKind`] classification
+    /// that drives safe-boundary widening in `parse_incremental`.
+    ///
+    /// The pulldown-cmark event walk classifies the major constructs
+    /// inline; three short O(n) post-passes (list-continuation,
+    /// blockquote-depth, setext-underline) refine the result. No second
+    /// invocation of the pulldown parser.
     pub fn parse(lines: &[String]) -> ParsedBuffer {
         // Build joined buffer and per-line byte-offset table.
         let total_bytes: usize =
@@ -302,24 +307,20 @@ impl ParsedBuffer {
                     }
                     code_block_depth += 1;
                     // Opening fence marker row.
-                    if sr < kinds.len() {
-                        kinds[sr] = LineConstructKind::FenceMarker;
-                    }
+                    kinds[sr] = LineConstructKind::FenceMarker;
                     // Rows between opening and closing fences are content.
-                    for r in (sr + 1)..er.min(kinds.len()) {
+                    for r in (sr + 1)..er {
                         kinds[r] = LineConstructKind::FenceContent;
                     }
                     // Closing fence marker row (er is the row of the closing ```).
-                    if er < kinds.len() {
-                        kinds[er] = LineConstructKind::FenceMarker;
-                    }
+                    kinds[er] = LineConstructKind::FenceMarker;
                 }
                 Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => {
                     if code_block_depth == 0 {
                         code_block_start = Some(range.start);
                     }
                     code_block_depth += 1;
-                    for r in sr..=er.min(kinds.len().saturating_sub(1)) {
+                    for r in sr..=er {
                         kinds[r] = LineConstructKind::IndentedCode;
                     }
                 }
@@ -335,8 +336,7 @@ impl ParsedBuffer {
                     if matches!(
                         kind,
                         ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
-                    ) && sr < kinds.len()
-                    {
+                    ) {
                         kinds[sr] = LineConstructKind::Heading;
                     }
                     stack.push((sr, sc, kind));
@@ -362,9 +362,7 @@ impl ParsedBuffer {
                     // on `sc`.
                     if sr < lines.len() && list_sigil_end[sr].is_none() =>
                 {
-                    if sr < kinds.len() {
-                        kinds[sr] = LineConstructKind::ListMarker;
-                    }
+                    kinds[sr] = LineConstructKind::ListMarker;
                     let line = lines[sr].as_str();
                     let ws_end = leading_ws_byte_len(line);
                     if let Some(len) = list_marker_len(&line[ws_end..]) {
@@ -374,22 +372,18 @@ impl ParsedBuffer {
                     }
                 }
                 Event::Start(Tag::HtmlBlock) => {
-                    for r in sr..=er.min(kinds.len().saturating_sub(1)) {
-                        if r < kinds.len() {
-                            kinds[r] = LineConstructKind::HtmlBlock;
-                        }
+                    for r in sr..=er {
+                        kinds[r] = LineConstructKind::HtmlBlock;
                     }
                 }
                 Event::Html(_) | Event::InlineHtml(_) => {
-                    for r in sr..=er.min(kinds.len().saturating_sub(1)) {
-                        if r < kinds.len()
-                            && !matches!(
-                                kinds[r],
-                                LineConstructKind::FenceContent
-                                    | LineConstructKind::IndentedCode
-                                    | LineConstructKind::FenceMarker
-                            )
-                        {
+                    for r in sr..=er {
+                        if !matches!(
+                            kinds[r],
+                            LineConstructKind::FenceContent
+                                | LineConstructKind::IndentedCode
+                                | LineConstructKind::FenceMarker
+                        ) {
                             kinds[r] = LineConstructKind::HtmlBlock;
                         }
                     }
