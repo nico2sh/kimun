@@ -283,7 +283,35 @@ impl MarkdownEditorView {
                 }
             }
 
-            self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
+            // Width-aware wrap path:
+            // - Width change or line-count change: full recompute (wrap
+            //   depends on width; visual_lines indexing depends on row count).
+            // - TextChangeKind::Full: full recompute.
+            // - TextChangeKind::Incremental(range): splice only the affected rows.
+            // - TextChangeKind::None: skip wrap entirely (cursor-only update;
+            //   wrap is content-independent of cursor position).
+            let line_count_changed = self.layout.row_starts_len() != lines.len();
+            if width_changed || line_count_changed {
+                self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
+            } else {
+                match &self.last_text_change {
+                    TextChangeKind::Full => {
+                        self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
+                    }
+                    TextChangeKind::Incremental(range) => {
+                        self.layout.splice_range(
+                            lines,
+                            rect.width,
+                            &self.rendered_cache,
+                            range.clone(),
+                        );
+                    }
+                    TextChangeKind::None => {
+                        // Cursor-only update. Wrap is content-independent of
+                        // cursor position; existing layout is still correct.
+                    }
+                }
+            }
             self.last_layout_generation = generation;
             self.last_layout_width = rect.width;
             self.last_layout_cursor = cursor;
@@ -517,6 +545,14 @@ impl MarkdownEditorView {
     /// Test accessor: the parsed lines of the current parsed buffer.
     pub fn parsed_buffer_lines(&self) -> &[super::markdown::ParsedLine] {
         &self.parsed_buffer.lines
+    }
+
+    /// Test accessor: the rendered-position bitmask cache.
+    /// Used by tests to construct a fresh `WordWrapLayout` from the same
+    /// masks the view is using, for equivalence checks.
+    #[cfg(test)]
+    pub(crate) fn rendered_cache_for_testing(&self) -> &[Vec<bool>] {
+        &self.rendered_cache
     }
 
     fn is_in_code_block(&self, row: usize) -> bool {
@@ -1191,6 +1227,53 @@ mod tests {
         let empty = vec!["".to_string()];
         v.update(&empty, (0, 0), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &empty);
+    }
+
+    #[test]
+    fn incremental_text_change_produces_same_layout_as_full_recompute() {
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..200)
+            .map(|i| format!("paragraph {i} with some text that may wrap depending on width"))
+            .collect();
+        v.update(&lines, (100, 0), rect(40), 1, None);
+        let baseline_visual_lines = v.layout.visual_lines().to_vec();
+
+        // Edit a paragraph mid-buffer (no line count change).
+        let mut edited = lines.clone();
+        edited[100].push_str(" extra text");
+        v.update(&edited, (100, edited[100].len()), rect(40), 2, None);
+
+        // After incremental wrap, layout must equal a fresh compute of the edited buffer.
+        let fresh_layout = WordWrapLayout::compute(
+            &edited,
+            40,
+            v.rendered_cache_for_testing(),
+        );
+
+        let actual = v.layout.visual_lines();
+        let fresh = fresh_layout.visual_lines();
+        assert_eq!(actual.len(), fresh.len(), "visual_lines count diverges");
+        for (i, (a, f)) in actual.iter().zip(fresh.iter()).enumerate() {
+            assert_eq!(a, f, "visual line {i} diverges");
+        }
+
+        // Sanity: a row outside the edit should have unchanged visual lines.
+        let row_50_before = baseline_visual_lines
+            .iter()
+            .filter(|vl| vl.logical_row == 50)
+            .count();
+        let row_50_after = v
+            .layout
+            .visual_lines()
+            .iter()
+            .filter(|vl| vl.logical_row == 50)
+            .count();
+        assert_eq!(
+            row_50_before, row_50_after,
+            "row 50 visual_lines count should be unchanged"
+        );
+
+        assert!(v.last_parse_was_incremental, "expected incremental path");
     }
 
     #[test]

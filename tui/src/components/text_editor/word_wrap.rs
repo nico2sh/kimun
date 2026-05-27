@@ -224,6 +224,13 @@ impl WordWrapLayout {
         self.visual_lines.len()
     }
 
+    /// Returns the number of logical rows tracked by this layout.
+    /// Used by `view.update` to detect line-count changes without exposing
+    /// `row_starts` directly.
+    pub fn row_starts_len(&self) -> usize {
+        self.row_starts.len()
+    }
+
     pub fn visual_lines(&self) -> &[VisualLine] {
         &self.visual_lines
     }
