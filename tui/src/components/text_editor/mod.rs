@@ -432,11 +432,41 @@ impl TextEditorComponent {
     /// cursor. Call after any mutating key handle (typed letter, paste,
     /// backspace, cursor movement, etc.).
     fn sync_autocomplete(&mut self) {
-        // No controller (Nvim backend) → no autocomplete to drive, skip the
-        // buffer snapshot entirely.
-        if self.autocomplete.is_none() {
-            return;
+        let Some(controller) = self.autocomplete.as_ref() else {
+            return; // Nvim backend or no controller
+        };
+
+        // Fast-path bail: when the popup is closed AND there is no trigger
+        // character near the cursor on the current row, no reconcile can
+        // possibly open a popup. Skip the expensive buffer snapshot +
+        // pulldown-cmark scan.
+        //
+        // Trigger chars: `[` (for `[[wikilink`) and `#` (for `#hashtag`).
+        // Look back 64 chars on the cursor row — wikilinks don't span more
+        // than that before the cursor in any realistic case, and hashtags
+        // need `#` immediately before the typed query.
+        if !controller.is_open() {
+            let BackendState::Textarea(ta) = &self.backend else {
+                return;
+            };
+            let (row, col) = cursor_tuple(ta);
+            let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
+            // Byte offset of cursor column on this line. The cursor_tuple
+            // returns char column; convert to byte for slicing.
+            let cursor_byte_on_line = line
+                .char_indices()
+                .nth(col)
+                .map(|(b, _)| b)
+                .unwrap_or(line.len());
+            let look_back_start = cursor_byte_on_line.saturating_sub(64);
+            let slice = &line[look_back_start..cursor_byte_on_line];
+            if !slice.contains('[') && !slice.contains('#') {
+                // Nothing here could open a popup. Skip the snapshot.
+                return;
+            }
         }
+
+        // Slow path: build the full snapshot for the controller to reconcile.
         let Some(snapshot) = self.autocomplete_host_snapshot() else {
             if let Some(c) = self.autocomplete.as_mut() {
                 c.close();
