@@ -49,6 +49,10 @@ pub struct MarkdownEditorView {
     /// Current selection range in logical (row, byte-col) coordinates.
     /// `None` when no selection is active.
     selection: Option<((usize, usize), (usize, usize))>,
+    /// Diagnostic: true when the most recent Gate 1 invocation used the
+    /// incremental splice path, false when it took the full-parse fallback.
+    /// Read by tests; not part of the production observable surface.
+    pub last_parse_was_incremental: bool,
 }
 
 impl MarkdownEditorView {
@@ -68,6 +72,7 @@ impl MarkdownEditorView {
             cursor_vrow: 0,
             rendered_cache: Vec::new(),
             selection: None,
+            last_parse_was_incremental: false,
         }
     }
 
@@ -86,9 +91,18 @@ impl MarkdownEditorView {
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
         if generation != self.last_seen_generation {
-            self.lines_snapshot = lines.to_vec();
-            self.parsed_buffer = ParsedBuffer::parse(lines);
+            self.last_parse_was_incremental = match self.try_incremental_parse(lines, cursor) {
+                Some((range, slice)) => {
+                    self.parsed_buffer.splice(range, slice);
+                    true
+                }
+                None => {
+                    self.parsed_buffer = ParsedBuffer::parse(lines);
+                    false
+                }
+            };
             self.fence_ranges = super::parse_incremental::fence_ranges_from_kinds(&self.parsed_buffer.kinds);
+            self.lines_snapshot = lines.to_vec();
             self.last_seen_generation = generation;
         }
 
@@ -165,6 +179,37 @@ impl MarkdownEditorView {
         } else if self.cursor_vrow >= self.visual_scroll_offset + height {
             self.visual_scroll_offset = self.cursor_vrow - height + 1;
         }
+    }
+
+    /// Attempt an incremental Gate-1 parse.
+    ///
+    /// Returns `Some((range, slice))` when the damage can be cheaply
+    /// isolated and widened to safe boundaries; `None` when the caller
+    /// should fall back to a fresh full-buffer `ParsedBuffer::parse`.
+    fn try_incremental_parse(
+        &self,
+        lines: &[String],
+        cursor: (usize, usize),
+    ) -> Option<(std::ops::Range<usize>, ParsedBuffer)> {
+        use super::parse_incremental::{compute_damage_range, widen_to_safe, WidenResult};
+
+        if self.parsed_buffer.lines.is_empty() {
+            return None; // First parse — no snapshot to diff against.
+        }
+        // Line count changes (insertions/deletions) require a full rebuild:
+        // the widened range covers the same number of lines in the new buffer
+        // as in the old kinds array, so a splice cannot reconcile the length
+        // mismatch.
+        if lines.len() != self.parsed_buffer.lines.len() {
+            return None;
+        }
+        let damaged = compute_damage_range(&self.lines_snapshot, lines, cursor.0)?;
+        let widened = match widen_to_safe(&self.parsed_buffer.kinds, damaged) {
+            WidenResult::Widened(r) => r,
+            WidenResult::FullRebuild => return None,
+        };
+        let slice = ParsedBuffer::parse_range(lines, widened.clone());
+        Some((widened, slice))
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
@@ -629,5 +674,51 @@ mod tests {
         v.update(&lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
         v.update(&lines, (0, 0), rect(40), 1, None);
         assert_eq!(v.selection, None);
+    }
+
+    #[test]
+    fn typing_single_char_in_long_buffer_uses_incremental_path() {
+        let mut v = MarkdownEditorView::new();
+        let mut lines: Vec<String> = (0..1000).map(|i| format!("paragraph {i}")).collect();
+        v.update(&lines, (500, 0), rect(40), 1, None);
+
+        // Single-char insert at row 500.
+        lines[500].push('x');
+        let edited_len = lines[500].len();
+        v.update(&lines, (500, edited_len), rect(40), 2, None);
+
+        // The spliced result must equal a fresh full parse.
+        let fresh = ParsedBuffer::parse(&lines);
+        assert_eq!(v.parsed_buffer.lines.len(), fresh.lines.len());
+        assert_eq!(v.parsed_buffer.kinds, fresh.kinds);
+        // And the incremental path was actually taken.
+        assert!(
+            v.last_parse_was_incremental,
+            "single-char paragraph edit should take incremental path"
+        );
+    }
+
+    #[test]
+    fn fence_toggle_triggers_full_rebuild_fallback() {
+        let mut v = MarkdownEditorView::new();
+        // Use 1000 lines so that an unclosed fence at row 500 widens to
+        // end-of-buffer (~501 rows), exceeding both the absolute cap (256)
+        // and the fractional cap (50% of 1001 = 500 rows). The `&&`
+        // cap check fires and forces full rebuild.
+        let mut lines: Vec<String> = (0..1000).map(|i| format!("paragraph {i}")).collect();
+        v.update(&lines, (500, 0), rect(40), 1, None);
+
+        // Open a fence mid-buffer — structurally invasive, line count changes.
+        lines.insert(500, "```".to_string());
+        v.update(&lines, (500, 3), rect(40), 2, None);
+
+        let fresh = ParsedBuffer::parse(&lines);
+        assert_eq!(v.parsed_buffer.kinds, fresh.kinds, "spliced kinds must equal fresh full parse");
+        // The unclosed fence at row 500 widens to end-of-buffer (>256 lines
+        // and >50% of 1001), so the cap trips and the fallback fires.
+        assert!(
+            !v.last_parse_was_incremental,
+            "fence toggle (unclosed fence, 1000-line buffer) should fall back to full rebuild"
+        );
     }
 }
