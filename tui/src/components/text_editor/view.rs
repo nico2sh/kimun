@@ -748,4 +748,154 @@ mod tests {
             "fence toggle (unclosed fence, 1000-line buffer) should fall back to full rebuild"
         );
     }
+
+    fn full_rebuild_equals_view_state(v: &MarkdownEditorView, lines: &[String]) {
+        let fresh = ParsedBuffer::parse(lines);
+        assert_eq!(v.parsed_buffer.kinds, fresh.kinds, "kinds diverge");
+        assert_eq!(v.parsed_buffer.lines.len(), fresh.lines.len(), "row count diverge");
+        for (i, (got, exp)) in v.parsed_buffer.lines.iter().zip(fresh.lines.iter()).enumerate() {
+            got.debug_assert_eq_to(exp, i);
+        }
+    }
+
+    #[test]
+    fn incremental_paste_large_block_falls_back() {
+        let mut v = MarkdownEditorView::new();
+        let mut lines: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
+        v.update(&lines, (25, 0), rect(40), 1, None);
+
+        // Insert 300 lines at row 25.
+        let payload: Vec<String> = (0..300).map(|i| format!("pasted {i}")).collect();
+        for (offset, p) in payload.into_iter().enumerate() {
+            lines.insert(25 + offset, p);
+        }
+        v.update(&lines, (25, 0), rect(40), 2, None);
+        assert!(!v.last_parse_was_incremental, "300-line paste must fall back");
+        full_rebuild_equals_view_state(&v, &lines);
+    }
+
+    #[test]
+    fn incremental_enter_at_line_end() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec!["alpha".to_string(), "beta".to_string()];
+        v.update(&lines, (0, 5), rect(40), 1, None);
+
+        // Press Enter at end of "alpha".
+        let new_lines = vec!["alpha".to_string(), "".to_string(), "beta".to_string()];
+        v.update(&new_lines, (1, 0), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &new_lines);
+    }
+
+    #[test]
+    fn incremental_backspace_merging_lines() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec!["alpha".to_string(), "beta".to_string()];
+        v.update(&lines, (1, 0), rect(40), 1, None);
+
+        // Backspace at start of "beta" merges into "alphabeta".
+        let new_lines = vec!["alphabeta".to_string()];
+        v.update(&new_lines, (0, 5), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &new_lines);
+    }
+
+    #[test]
+    fn incremental_inside_fence_widens_both_markers() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "intro".to_string(),
+            "".to_string(),
+            "```rust".to_string(),
+            "let x = 1;".to_string(),
+            "let y = 2;".to_string(),
+            "```".to_string(),
+            "".to_string(),
+            "outro".to_string(),
+        ];
+        v.update(&lines, (3, 0), rect(40), 1, None);
+
+        // Edit inside the fence (same-length, no line-count change).
+        let mut new_lines = lines.clone();
+        new_lines[3] = "let x = 999;".to_string();
+        v.update(&new_lines, (3, 8), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &new_lines);
+    }
+
+    #[test]
+    fn incremental_list_continuation_widens_to_outer_marker() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "- top".to_string(),
+            "  body of top".to_string(),
+            "  - nested".to_string(),
+            "    body of nested".to_string(),
+            "    body two".to_string(),
+            "".to_string(),
+            "outro".to_string(),
+        ];
+        v.update(&lines, (4, 0), rect(40), 1, None);
+
+        // Edit the nested continuation line.
+        let mut new_lines = lines.clone();
+        new_lines[4] = "    body two changed".to_string();
+        v.update(&new_lines, (4, 10), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &new_lines);
+    }
+
+    #[test]
+    fn incremental_setext_underline_edit() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "heading text".to_string(),
+            "====".to_string(),
+            "".to_string(),
+            "body".to_string(),
+        ];
+        v.update(&lines, (1, 0), rect(40), 1, None);
+
+        // Edit the underline (same line count).
+        let mut new_lines = lines.clone();
+        new_lines[1] = "======".to_string();
+        v.update(&new_lines, (1, 6), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &new_lines);
+    }
+
+    #[test]
+    fn incremental_blockquote_paragraph_edit() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "intro".to_string(),
+            "".to_string(),
+            "> quoted line one".to_string(),
+            "> quoted line two".to_string(),
+            "> quoted line three".to_string(),
+            "".to_string(),
+            "outro".to_string(),
+        ];
+        v.update(&lines, (3, 0), rect(40), 1, None);
+
+        let mut new_lines = lines.clone();
+        new_lines[3] = "> quoted line TWO".to_string();
+        v.update(&new_lines, (3, 17), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &new_lines);
+    }
+
+    #[test]
+    fn incremental_html_block_edit() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "before".to_string(),
+            "".to_string(),
+            "<div>".to_string(),
+            "body".to_string(),
+            "</div>".to_string(),
+            "".to_string(),
+            "after".to_string(),
+        ];
+        v.update(&lines, (3, 0), rect(40), 1, None);
+
+        let mut new_lines = lines.clone();
+        new_lines[3] = "body changed".to_string();
+        v.update(&new_lines, (3, 12), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &new_lines);
+    }
 }
