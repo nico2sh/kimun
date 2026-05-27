@@ -517,4 +517,49 @@ mod tests {
     fn fence_ranges_empty() {
         assert!(fence_ranges_from_kinds(&[]).is_empty());
     }
+
+    #[test]
+    fn investigate_list_fence_indented_code_interaction() {
+        // Initial: row 7 "    a" is after "- a" (row 1) with 5 blank lines in between.
+        // After editing row 9 (blank → space inside fence), fresh parse changes row 7.
+        let initial: Vec<String> = vec![
+            "".to_string(),      // 0: Blank
+            "- a".to_string(),   // 1: ListMarker
+            "".to_string(),      // 2: Blank
+            "".to_string(),      // 3: Blank
+            "".to_string(),      // 4: Blank
+            "".to_string(),      // 5: Blank
+            "".to_string(),      // 6: Blank
+            "    a".to_string(), // 7: ? - before fence
+            "```".to_string(),   // 8: FenceMarker
+            "".to_string(),      // 9: FenceContent -> edit to " "
+            "".to_string(),      // 10: FenceContent
+            "".to_string(),      // 11: FenceContent
+            "".to_string(),      // 12: FenceContent
+            "".to_string(),      // 13: FenceContent
+            "".to_string(),      // 14: FenceContent
+            "".to_string(),      // 15: FenceContent
+            "".to_string(),      // 16: FenceContent
+            "> a".to_string(),   // 17: FenceContent
+            "".to_string(),      // 18: FenceContent
+            ">  ".to_string(),   // 19: FenceContent
+            "".to_string(),      // 20: FenceContent
+            "".to_string(),      // 21: FenceContent
+            "".to_string(),      // 22: FenceContent (last row → FenceMarker?)
+        ];
+        let initial_pb = ParsedBuffer::parse(&initial);
+        eprintln!("initial kinds: {:?}", &initial_pb.kinds);
+
+        let mut edited = initial.clone();
+        edited[9].push(' ');
+        let edited_pb = ParsedBuffer::parse(&edited);
+        eprintln!("edited  kinds: {:?}", &edited_pb.kinds);
+
+        // Compare just the first 10 rows to see where divergence starts
+        for i in 0..23 {
+            if initial_pb.kinds[i] != edited_pb.kinds[i] {
+                eprintln!("Row {} differs: initial={:?}, edited={:?}", i, initial_pb.kinds[i], edited_pb.kinds[i]);
+            }
+        }
+    }
 }

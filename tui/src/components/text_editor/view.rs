@@ -66,6 +66,30 @@ fn verify_incremental_enabled() -> bool {
     })
 }
 
+/// True when `line` looks syntactically like a fenced-code-block marker
+/// per CommonMark: optional leading indent (≤3 spaces), then 3+ backticks
+/// or 3+ tildes (no mixing).
+fn looks_like_fence_marker(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    // Allow up to 3 spaces of indent (CommonMark spec §4.5).
+    let indent = line.len() - trimmed.len();
+    if indent > 3 {
+        return false;
+    }
+    (trimmed.starts_with("```")
+        && trimmed.chars().take_while(|c| *c == '`').count() >= 3)
+        || (trimmed.starts_with("~~~")
+            && trimmed.chars().take_while(|c| *c == '~').count() >= 3)
+}
+
+/// True when `line` looks like a setext underline (line of only `=` or
+/// only `-`, possibly with leading/trailing whitespace).
+fn looks_like_setext_underline(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty()
+        && (trimmed.chars().all(|c| c == '=') || trimmed.chars().all(|c| c == '-'))
+}
+
 impl MarkdownEditorView {
     pub fn new() -> Self {
         Self {
@@ -218,7 +242,7 @@ impl MarkdownEditorView {
         lines: &[String],
         cursor: (usize, usize),
     ) -> Option<(std::ops::Range<usize>, ParsedBuffer)> {
-        use super::parse_incremental::{compute_damage_range, widen_to_safe, WidenResult};
+        use super::parse_incremental::{LineConstructKind, compute_damage_range, widen_to_safe, WidenResult};
 
         if self.parsed_buffer.lines.is_empty() {
             return None; // First parse — no snapshot to diff against.
@@ -231,11 +255,72 @@ impl MarkdownEditorView {
             return None;
         }
         let damaged = compute_damage_range(&self.lines_snapshot, lines, cursor.0)?;
-        let widened = match widen_to_safe(&self.parsed_buffer.kinds, damaged) {
+
+        // Structural-marker change guard: any edit that converts a fence
+        // marker line into a non-marker (or vice versa) can shift the
+        // fence's extent beyond the widening window. Same for setext
+        // underlines. Conservative fallback to full parse for correctness.
+        for row in damaged.clone() {
+            let old_kind = self.parsed_buffer.kinds[row];
+            let old_line = self.lines_snapshot[row].as_str();
+            let new_line = lines[row].as_str();
+
+            // Old was a fence marker — any edit here may change its role
+            // (opener ↔ closer ↔ content), shifting the fence extent.
+            if matches!(old_kind, LineConstructKind::FenceMarker) {
+                return None;
+            }
+            // New content introduces or removes a fence-marker prefix.
+            let old_fence = looks_like_fence_marker(old_line);
+            let new_fence = looks_like_fence_marker(new_line);
+            if old_fence != new_fence {
+                return None;
+            }
+            // Old was a setext underline — same logic: removing or altering
+            // the underline changes which line above it becomes a heading.
+            if matches!(old_kind, LineConstructKind::SetextUnderline) {
+                return None;
+            }
+            // New content looks like a setext underline but old did not
+            // (or vice versa) — the heading classification propagates up.
+            if looks_like_setext_underline(new_line) != looks_like_setext_underline(old_line) {
+                return None;
+            }
+        }
+
+        let widened = match widen_to_safe(&self.parsed_buffer.kinds, damaged.clone()) {
             WidenResult::Widened(r) => r,
             WidenResult::FullRebuild => return None,
         };
+
         let slice = ParsedBuffer::parse_range(lines, widened.clone());
+
+        // Undamaged-row verification: if the slice-in-isolation classifies any
+        // undamaged row differently from the initial buffer (in kind or element
+        // count), the widened window lacked context from outside its bounds.
+        // Fall back to a full parse for correctness.
+        //
+        // This check subsumes the earlier context-boundary guards and handles
+        // all known cases where widen_to_safe's D5 extension produces a slice
+        // start that is not a true parse-state reset point (e.g. IndentedCode
+        // spanning rows into the window, Blockquote lazy continuation, and
+        // loose-list continuations across blank lines).
+        for row in widened.clone() {
+            if damaged.contains(&row) {
+                continue; // Damaged row: kind change is expected/irrelevant.
+            }
+            let idx = row - widened.start;
+            if slice.kinds[idx] != self.parsed_buffer.kinds[row] {
+                return None;
+            }
+            if slice.lines[idx].elements.len() != self.parsed_buffer.lines[row].elements.len() {
+                return None;
+            }
+            if slice.lines[idx].content_vis != self.parsed_buffer.lines[row].content_vis {
+                return None;
+            }
+        }
+
         Some((widened, slice))
     }
 
@@ -354,6 +439,17 @@ impl MarkdownEditorView {
                 self.last_cursor_screen = Some((cx, cy));
             }
         }
+    }
+
+    /// Test accessor: the kinds vector of the current parsed buffer.
+    /// Used by the proptest harness to assert incremental = full parse.
+    pub fn parsed_buffer_kinds(&self) -> &[super::parse_incremental::LineConstructKind] {
+        &self.parsed_buffer.kinds
+    }
+
+    /// Test accessor: the parsed lines of the current parsed buffer.
+    pub fn parsed_buffer_lines(&self) -> &[super::markdown::ParsedLine] {
+        &self.parsed_buffer.lines
     }
 
     fn is_in_code_block(&self, row: usize) -> bool {
@@ -756,6 +852,38 @@ mod tests {
         for (i, (got, exp)) in v.parsed_buffer.lines.iter().zip(fresh.lines.iter()).enumerate() {
             got.debug_assert_eq_to(exp, i);
         }
+    }
+
+    #[test]
+    fn incremental_falls_back_when_fence_marker_modified() {
+        // Regression: editing a row that is currently a FenceMarker can
+        // change the fence's extent across the rest of the buffer.
+        // Incremental parsing's window-bounded widening cannot capture
+        // this, so we must fall back to a full parse.
+        let mut v = MarkdownEditorView::new();
+        let mut lines = vec![
+            "```".to_string(),
+            "".to_string(),
+            "```".to_string(),
+        ];
+        // Fill out the buffer with blank lines so the cap doesn't trip first.
+        for _ in 0..31 {
+            lines.push(String::new());
+        }
+        v.update(&lines, (2, 0), rect(40), 1, None);
+
+        // Edit the closing fence marker — append a char so it's no longer a closer.
+        let mut new_lines = lines.clone();
+        new_lines[2].push('0');
+        v.update(&new_lines, (2, 4), rect(40), 2, None);
+
+        assert!(
+            !v.last_parse_was_incremental,
+            "fence-marker edit must trigger full-rebuild fallback"
+        );
+        // And the resulting state must equal a fresh parse (which the
+        // fallback path does anyway, but assert defensively).
+        full_rebuild_equals_view_state(&v, &new_lines);
     }
 
     #[test]

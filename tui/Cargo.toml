@@ -52,3 +52,4 @@ png = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
+proptest = "1"
