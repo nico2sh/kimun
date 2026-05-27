@@ -127,40 +127,20 @@ fn is_safe_boundary(kind: LineConstructKind) -> bool {
     matches!(kind, LineConstructKind::Blank | LineConstructKind::Plain)
 }
 
-/// Walk upward from `damaged.start` (the first damaged row) until the
-/// row just above is a safe boundary AND we are not still inside a
-/// list. Returns the new start row (inclusive).
+/// Walk upward from `damaged_start` (the first damaged row) until the
+/// row just above is a safe boundary. Returns the new start row
+/// (inclusive).
 ///
-/// The list rule (G1): if any row we passed (or `damaged.start - 1`
-/// itself) is `ListMarker` or `ListContinuation`, we are inside a list
-/// — keep walking up until we find a `Plain`/`Blank` row that is NOT a
-/// ListContinuation. This guarantees the parse_range slice includes
-/// the outermost col-0 list marker, so the synthetic-list-parent trick
-/// in `ParsedLine::parse` is not needed.
+/// `ListMarker` and `ListContinuation` are non-safe, so the walk
+/// passes through them automatically — landing on the safe row above
+/// the outermost list (Blank, or Plain that is not a continuation),
+/// which is the G1-required outermost-list-ancestor stopping point.
 fn widen_up(kinds: &[LineConstructKind], damaged_start: usize) -> usize {
-    if damaged_start == 0 {
-        return 0;
-    }
     let mut row = damaged_start;
-    let mut in_list = false;
     while row > 0 {
         let candidate = row - 1;
-        let k = kinds[candidate];
-        // Track list state — once entered, we stay in_list until we
-        // see a row that is NEITHER ListMarker NOR ListContinuation
-        // (and is a safe boundary).
-        if matches!(k, LineConstructKind::ListMarker | LineConstructKind::ListContinuation) {
-            in_list = true;
-        }
-        if is_safe_boundary(k) && !in_list {
+        if is_safe_boundary(kinds[candidate]) {
             return candidate;
-        }
-        if is_safe_boundary(k) && in_list {
-            // Found a safe boundary but we were in a list — keep going
-            // up past the list marker / continuation rows. Reset
-            // in_list and continue.
-            in_list = false;
-            // Don't return yet — continue walking up.
         }
         row = candidate;
     }
@@ -190,6 +170,12 @@ pub fn widen_to_safe(kinds: &[LineConstructKind], damaged: Range<usize>) -> Wide
     if kinds.is_empty() {
         return WidenResult::FullRebuild;
     }
+    debug_assert!(
+        damaged.start <= kinds.len() && damaged.end <= kinds.len(),
+        "widen_to_safe: damaged range {:?} out of bounds for kinds.len() = {}",
+        damaged,
+        kinds.len(),
+    );
 
     let mut start = widen_up(kinds, damaged.start);
     let mut end = widen_down(kinds, damaged.end);
@@ -451,6 +437,22 @@ mod tests {
             WidenResult::Widened(r) => {
                 assert!(r.start <= 1, "must include first Blockquote row, got start {}", r.start);
                 assert!(r.end >= 4, "must include last Blockquote row, got end {}", r.end);
+            }
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn widen_multi_list_does_not_over_pull_across_blank() {
+        // Two independent lists separated by a blank line. Damage in
+        // the second list must not pull the first list into the slice.
+        let k = kinds_str("LlBLll");
+        match widen_to_safe(&k, 4..5) {
+            WidenResult::Widened(r) => {
+                // The blank at row 2 is the separator. Widening must
+                // stop there (or at the row above, after D5 +1).
+                assert!(r.start >= 1, "widen.start must be >= 1 (D5 may pull past Blank by one row), got {}", r.start);
+                assert!(r.start <= 2, "widen.start must not pull in list A, got {}", r.start);
             }
             x => panic!("expected Widened, got {x:?}"),
         }
