@@ -1641,6 +1641,7 @@ dependencies = [
  "chrono",
  "clap",
  "color-eyre",
+ "criterion",
  "crossterm 0.29.0",
  "futures 0.3.32",
  "itertools 0.14.0",
