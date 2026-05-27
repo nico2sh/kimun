@@ -10,6 +10,30 @@ use std::ops::Range;
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
 
+/// Describes how `view.update`'s Gate 1 modified the parse caches this
+/// frame. Read by Gate 2 to decide what subset of `rendered_cache` and
+/// `WordWrapLayout` needs to be rebuilt.
+#[derive(Debug, Clone)]
+enum TextChangeKind {
+    /// No text change this frame (cursor-only update). Gate 2 may keep
+    /// its caches and only refresh the cursor-row entry.
+    None,
+    /// Gate 1 took the incremental splice path; only rows in this
+    /// range had their ParsedLine entries replaced. Gate 2 should
+    /// rebuild rendered_cache only for these rows + the cursor rows.
+    Incremental(std::ops::Range<usize>),
+    /// Full rebuild (initial parse, line-count change, cap trip,
+    /// structural-marker change, post-slice verification miss). Gate 2
+    /// must rebuild rendered_cache for every row.
+    Full,
+}
+
+enum RenderedCacheRebuild {
+    Full,
+    Rows(Vec<usize>),
+    None,
+}
+
 pub struct MarkdownEditorView {
     pub layout: WordWrapLayout,
     pub visual_scroll_offset: usize,
@@ -54,6 +78,9 @@ pub struct MarkdownEditorView {
     /// incremental splice path, false when it took the full-parse fallback.
     /// Read by tests; not part of the production observable surface.
     pub last_parse_was_incremental: bool,
+    /// Tracks how Gate 1 changed (or did not change) the parse caches.
+    /// Gate 2 reads this to decide the scope of rendered_cache rebuild.
+    last_text_change: TextChangeKind,
 }
 
 #[cfg(debug_assertions)]
@@ -108,6 +135,7 @@ impl MarkdownEditorView {
             rendered_cache: Vec::new(),
             selection: None,
             last_parse_was_incremental: false,
+            last_text_change: TextChangeKind::Full, // first update is a full rebuild
         }
     }
 
@@ -126,14 +154,16 @@ impl MarkdownEditorView {
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
         if generation != self.last_seen_generation {
-            self.last_parse_was_incremental = match self.try_incremental_parse(lines, cursor) {
+            self.last_text_change = match self.try_incremental_parse(lines, cursor) {
                 Some((range, slice)) => {
-                    self.parsed_buffer.splice(range, slice);
-                    true
+                    self.parsed_buffer.splice(range.clone(), slice);
+                    self.last_parse_was_incremental = true;
+                    TextChangeKind::Incremental(range)
                 }
                 None => {
                     self.parsed_buffer = ParsedBuffer::parse(lines);
-                    false
+                    self.last_parse_was_incremental = false;
+                    TextChangeKind::Full
                 }
             };
             #[cfg(debug_assertions)]
@@ -155,6 +185,8 @@ impl MarkdownEditorView {
             self.fence_ranges = super::parse_incremental::fence_ranges_from_kinds(&self.parsed_buffer.kinds);
             self.lines_snapshot = lines.to_vec();
             self.last_seen_generation = generation;
+        } else {
+            self.last_text_change = TextChangeKind::None;
         }
 
         self.cursor_snapshot = cursor;
@@ -177,45 +209,80 @@ impl MarkdownEditorView {
             || new_expanded != old_expanded;
 
         if need_layout {
-            // Rebuild rendered-position masks. Full rebuild when content changed;
-            // partial rebuild (only the two cursor rows) when only the cursor row moved.
-            let content_changed = generation != self.last_layout_generation;
             let width_changed = rect.width != self.last_layout_width;
-            if content_changed || self.rendered_cache.len() != lines.len() {
-                // Full rebuild — content or line count changed.
-                self.rendered_cache = lines
-                    .iter()
-                    .enumerate()
-                    .map(|(i, l)| {
-                        let force_raw = self.is_in_code_block(i);
-                        let cursor_col = if i == cursor.0 { Some(cursor.1) } else { None };
-                        MarkdownSpanner::visible_positions_with(
-                            l,
-                            &self.parsed_buffer.lines[i],
-                            cursor_col,
-                            force_raw,
-                        )
-                    })
-                    .collect();
-            } else if !width_changed {
-                // Partial rebuild — only the two rows whose cursor_col argument changed.
-                let old_row = self.last_layout_cursor.0;
-                let new_row = cursor.0;
-                for row in [old_row, new_row] {
-                    if let Some(l) = lines.get(row)
-                        && let Some(p) = self.parsed_buffer.lines.get(row)
-                    {
-                        let force_raw = self.is_in_code_block(row);
-                        let cursor_col = if row == new_row { Some(cursor.1) } else { None };
-                        if let Some(entry) = self.rendered_cache.get_mut(row) {
-                            *entry = MarkdownSpanner::visible_positions_with(
-                                l, p, cursor_col, force_raw,
-                            );
+            let cursor_changed = cursor.0 != self.last_layout_cursor.0;
+            // Determine the set of rows to rebuild in rendered_cache.
+            let rebuild_strategy = if self.rendered_cache.len() != lines.len() {
+                // Line count differs → full rebuild required.
+                RenderedCacheRebuild::Full
+            } else {
+                match &self.last_text_change {
+                    TextChangeKind::Full => RenderedCacheRebuild::Full,
+                    TextChangeKind::Incremental(range) => {
+                        let mut rows: Vec<usize> = range.clone().collect();
+                        if cursor_changed {
+                            rows.push(self.last_layout_cursor.0);
+                            rows.push(cursor.0);
+                        }
+                        rows.sort();
+                        rows.dedup();
+                        RenderedCacheRebuild::Rows(rows)
+                    }
+                    TextChangeKind::None => {
+                        if cursor_changed {
+                            let mut rows = vec![self.last_layout_cursor.0, cursor.0];
+                            rows.sort();
+                            rows.dedup();
+                            RenderedCacheRebuild::Rows(rows)
+                        } else {
+                            RenderedCacheRebuild::None
                         }
                     }
                 }
+            };
+
+            // Width-only change: masks are width-independent; skip rendered_cache rebuild.
+            let _ = width_changed; // acknowledged: width doesn't affect rendered_cache
+            match rebuild_strategy {
+                RenderedCacheRebuild::Full => {
+                    self.rendered_cache = lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, l)| {
+                            let force_raw = self.is_in_code_block(i);
+                            let cursor_col = if i == cursor.0 { Some(cursor.1) } else { None };
+                            MarkdownSpanner::visible_positions_with(
+                                l,
+                                &self.parsed_buffer.lines[i],
+                                cursor_col,
+                                force_raw,
+                            )
+                        })
+                        .collect();
+                }
+                RenderedCacheRebuild::Rows(rows) => {
+                    for row in rows {
+                        if row >= lines.len() {
+                            continue; // defensive
+                        }
+                        let force_raw = self.is_in_code_block(row);
+                        let cursor_col = if row == cursor.0 { Some(cursor.1) } else { None };
+                        let new_entry = MarkdownSpanner::visible_positions_with(
+                            &lines[row],
+                            &self.parsed_buffer.lines[row],
+                            cursor_col,
+                            force_raw,
+                        );
+                        if let Some(entry) = self.rendered_cache.get_mut(row) {
+                            *entry = new_entry;
+                        }
+                    }
+                }
+                RenderedCacheRebuild::None => {
+                    // Width-only change or no change: masks are width-independent; nothing to rebuild.
+                }
             }
-            // Width-only change: masks are width-independent; reuse rendered_cache as-is.
+
             self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
             self.last_layout_generation = generation;
             self.last_layout_width = rect.width;
@@ -1124,5 +1191,39 @@ mod tests {
         let empty = vec!["".to_string()];
         v.update(&empty, (0, 0), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &empty);
+    }
+
+    #[test]
+    fn incremental_text_change_does_not_rebuild_all_of_rendered_cache() {
+        // Verify that after an incremental text edit, rendered_cache rows
+        // outside the widened range are NOT re-derived from scratch. We
+        // can't directly observe the rebuild, but we CAN verify the cache
+        // contents stay correct (matching a full rebuild's output).
+        let mut v = MarkdownEditorView::new();
+        let lines: Vec<String> = (0..200).map(|i| format!("paragraph {i} with some text")).collect();
+        v.update(&lines, (100, 0), rect(40), 1, None);
+
+        // Snapshot rendered_cache before the edit.
+        let before: Vec<Vec<bool>> = v.rendered_cache.iter()
+            .enumerate()
+            .filter(|(i, _)| *i < 50 || *i > 150)
+            .map(|(_, v)| v.clone())
+            .collect();
+
+        // Edit a paragraph in the middle.
+        let mut edited = lines.clone();
+        edited[100].push('x');
+        v.update(&edited, (100, edited[100].len()), rect(40), 2, None);
+
+        // Rows far outside the damaged range must be byte-identical.
+        let after: Vec<Vec<bool>> = v.rendered_cache.iter()
+            .enumerate()
+            .filter(|(i, _)| *i < 50 || *i > 150)
+            .map(|(_, v)| v.clone())
+            .collect();
+        assert_eq!(before, after, "rendered_cache rows outside damaged range must be unchanged");
+
+        // The incremental path must have been taken.
+        assert!(v.last_parse_was_incremental);
     }
 }
