@@ -90,7 +90,7 @@ impl MarkdownEditorView {
         if generation != self.last_seen_generation || lines.len() != self.parsed_cache.len() {
             self.lines_snapshot = lines.to_vec();
             self.fence_ranges = Self::compute_fence_ranges(lines);
-            self.parsed_cache = ParsedBuffer::parse(lines);
+            self.parsed_cache = ParsedBuffer::parse(lines).lines;
             self.last_seen_generation = generation;
         }
 

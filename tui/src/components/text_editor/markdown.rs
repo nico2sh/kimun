@@ -109,11 +109,12 @@ impl ParsedLine {
             // "- " opens a list at column 0; the indented `line` that follows
             // becomes a nested list item with full context.
             ParsedBuffer::parse(&["- ".to_string(), owned])
-                .into_iter()
-                .last()
+                .lines
+                .pop()
                 .expect("ParsedBuffer::parse returns one row per input line")
         } else {
             ParsedBuffer::parse(std::slice::from_ref(&owned))
+                .lines
                 .pop()
                 .expect("ParsedBuffer::parse always returns at least one ParsedLine")
         }
@@ -169,13 +170,16 @@ impl ParsedLine {
     }
 }
 
-pub struct ParsedBuffer;
+pub struct ParsedBuffer {
+    pub lines: Vec<ParsedLine>,
+    pub kinds: Vec<super::parse_incremental::LineConstructKind>,
+}
 
 impl ParsedBuffer {
     /// Parse the entire editor buffer in a single pulldown-cmark pass and return
     /// one `ParsedLine` per input row. Multi-row elements are split so each row
     /// gets its own `Element` entry covering only that row's portion.
-    pub fn parse(lines: &[String]) -> Vec<ParsedLine> {
+    pub fn parse(lines: &[String]) -> ParsedBuffer {
         // Build joined buffer and per-line byte-offset table.
         let total_bytes: usize =
             lines.iter().map(|l| l.len()).sum::<usize>() + lines.len().saturating_sub(1);
@@ -494,7 +498,10 @@ impl ParsedBuffer {
             });
         }
 
-        out
+        ParsedBuffer {
+            lines: out,
+            kinds: vec![super::parse_incremental::LineConstructKind::Plain; lines.len()],
+        }
     }
 }
 
@@ -1657,7 +1664,7 @@ mod tests {
             "- parent".to_string(),
             "    - [child link](url)".to_string(),
         ];
-        let parsed = ParsedBuffer::parse(&lines);
+        let parsed = ParsedBuffer::parse(&lines).lines;
         assert_eq!(parsed.len(), 2);
 
         // Parent line: list sigil at col 2.
@@ -1684,7 +1691,7 @@ mod tests {
     fn buffer_parse_standalone_2space_list_still_works() {
         // Regression: 2-space indent works on its own too.
         let lines = vec!["  - [link](url)".to_string()];
-        let parsed = ParsedBuffer::parse(&lines);
+        let parsed = ParsedBuffer::parse(&lines).lines;
         assert!(
             parsed[0]
                 .elements
@@ -1698,7 +1705,7 @@ mod tests {
     fn buffer_parse_top_level_unchanged() {
         // Ensure nothing about top-level rendering changed.
         let lines = vec!["- [link](url)".to_string()];
-        let parsed = ParsedBuffer::parse(&lines);
+        let parsed = ParsedBuffer::parse(&lines).lines;
         assert!(
             parsed[0]
                 .elements
@@ -1715,7 +1722,7 @@ mod tests {
             String::new(),
             "paragraph".to_string(),
         ];
-        let parsed = ParsedBuffer::parse(&lines);
+        let parsed = ParsedBuffer::parse(&lines).lines;
         assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[1].elements.len(), 0);
         assert_eq!(parsed[1].content_vis.len(), 0);
@@ -1724,7 +1731,7 @@ mod tests {
     #[test]
     fn buffer_parse_ordered_nested_list() {
         let lines = vec!["1. first".to_string(), "    1. nested".to_string()];
-        let parsed = ParsedBuffer::parse(&lines);
+        let parsed = ParsedBuffer::parse(&lines).lines;
         assert_eq!(parsed[0].list_sigil_end(), Some(3));
         assert_eq!(parsed[1].list_sigil_end(), Some(7));
     }
@@ -1737,7 +1744,7 @@ mod tests {
         // row 1 has no Text events, so the underline renders in the sigil color.
         // Pin this behavior — a regression would silently un-style setext headings.
         let lines = vec!["My Heading".to_string(), "==========".to_string()];
-        let parsed = ParsedBuffer::parse(&lines);
+        let parsed = ParsedBuffer::parse(&lines).lines;
         assert!(
             parsed[0]
                 .elements
@@ -1764,7 +1771,7 @@ mod tests {
         // Two blockquote lines in a row — pulldown folds them into one blockquote.
         // Both rows must carry a Blockquote element so rendering is consistent.
         let lines = vec!["> first line".to_string(), "> second line".to_string()];
-        let parsed = ParsedBuffer::parse(&lines);
+        let parsed = ParsedBuffer::parse(&lines).lines;
         assert!(
             parsed[0]
                 .elements
@@ -1903,7 +1910,7 @@ mod tests {
             "```".to_string(),
             "after #outside".to_string(),
         ];
-        let lines = ParsedBuffer::parse(&buffer);
+        let lines = ParsedBuffer::parse(&buffer).lines;
         let inside_labels: Vec<_> = lines[2]
             .elements
             .iter()
