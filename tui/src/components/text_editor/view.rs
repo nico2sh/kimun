@@ -898,4 +898,103 @@ mod tests {
         v.update(&new_lines, (3, 12), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &new_lines);
     }
+
+    #[test]
+    fn g1_nested_list_three_indent_continuation() {
+        // Deeply nested continuation: damaged range touches a 3-indent
+        // continuation line. Widening must reach the outermost col-0
+        // ListMarker — otherwise parse_range sees `      text` as
+        // IndentedCode.
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "intro".to_string(),
+            "".to_string(),
+            "- level 0".to_string(),
+            "  - level 1".to_string(),
+            "    - level 2".to_string(),
+            "      continuation at 6 indent".to_string(),
+            "".to_string(),
+            "after".to_string(),
+        ];
+        v.update(&lines, (5, 0), rect(40), 1, None);
+
+        let mut new_lines = lines.clone();
+        new_lines[5] = "      continuation at 6 indent EDITED".to_string();
+        v.update(&new_lines, (5, 30), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &new_lines);
+    }
+
+    #[test]
+    fn g3_hashtag_inside_fence_not_labeled_after_incremental_edit() {
+        // `#tag` inside a fenced code block must NOT produce a Label element.
+        // After an incremental edit fully inside the fence, the widened
+        // slice includes both fence markers — the label-suppression scan
+        // sees the fence and skips. This test verifies the round-trip.
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "intro".to_string(),
+            "".to_string(),
+            "```".to_string(),
+            "let s = \"#tag\";".to_string(),
+            "// another #tag".to_string(),
+            "```".to_string(),
+            "".to_string(),
+            "outro".to_string(),
+        ];
+        v.update(&lines, (4, 0), rect(40), 1, None);
+
+        use crate::components::text_editor::markdown::ElementKind;
+
+        // Pre-condition: no Label elements in the fence interior.
+        for row in 3..5 {
+            let has_label = v.parsed_buffer.lines[row].elements.iter().any(|e| {
+                matches!(e.kind, ElementKind::Label)
+            });
+            assert!(!has_label, "row {row} should have no Label inside the fence");
+        }
+
+        // Edit one of the in-fence lines.
+        let mut new_lines = lines.clone();
+        new_lines[4] = "// edited #tag here".to_string();
+        v.update(&new_lines, (4, 19), rect(40), 2, None);
+
+        // Post-condition: still no Label elements in the fence interior.
+        for row in 3..5 {
+            let has_label = v.parsed_buffer.lines[row].elements.iter().any(|e| {
+                matches!(e.kind, ElementKind::Label)
+            });
+            assert!(!has_label, "row {row} should still have no Label after incremental edit");
+        }
+        full_rebuild_equals_view_state(&v, &new_lines);
+    }
+
+    #[test]
+    fn g8a_typing_into_empty_buffer() {
+        let mut v = MarkdownEditorView::new();
+        let empty = vec!["".to_string()];
+        v.update(&empty, (0, 0), rect(40), 1, None);
+
+        let one = vec!["h".to_string()];
+        v.update(&one, (0, 1), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &one);
+
+        let two = vec!["he".to_string()];
+        v.update(&two, (0, 2), rect(40), 3, None);
+        full_rebuild_equals_view_state(&v, &two);
+
+        let many = vec!["hello world".to_string()];
+        v.update(&many, (0, 11), rect(40), 4, None);
+        full_rebuild_equals_view_state(&v, &many);
+    }
+
+    #[test]
+    fn g8b_delete_last_char_one_line_buffer() {
+        let mut v = MarkdownEditorView::new();
+        let one = vec!["h".to_string()];
+        v.update(&one, (0, 1), rect(40), 1, None);
+
+        let empty = vec!["".to_string()];
+        v.update(&empty, (0, 0), rect(40), 2, None);
+        full_rebuild_equals_view_state(&v, &empty);
+    }
 }
