@@ -170,6 +170,19 @@ impl ParsedLine {
     pub fn list_sigil_end(&self) -> Option<usize> {
         self.list_sigil_end
     }
+
+    /// Diagnostic helper: compare every field for byte-identity. Used by
+    /// the view's debug-only correctness assertion. Returns Ok(()) when
+    /// all fields match, Err with a human-readable message describing the
+    /// first divergence.
+    #[cfg(debug_assertions)]
+    pub(super) fn debug_assert_eq_to(&self, other: &Self, row: usize) {
+        assert_eq!(self.content_vis, other.content_vis, "row {row} content_vis diverge");
+        assert_eq!(self.elem_vis, other.elem_vis, "row {row} elem_vis diverge");
+        assert_eq!(self.elem_index, other.elem_index, "row {row} elem_index diverge");
+        assert_eq!(self.list_sigil_end, other.list_sigil_end, "row {row} list_sigil_end diverge");
+        assert_eq!(self.elements.len(), other.elements.len(), "row {row} elements.len() diverge");
+    }
 }
 
 pub struct ParsedBuffer {
