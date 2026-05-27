@@ -54,3 +54,75 @@ pub(super) const MAX_INCREMENTAL_LINES: usize = 256;
 /// and one Enter at line end. Multi-line pastes intentionally fall
 /// through to the LCP/LCS slow path.
 pub(super) const CURSOR_HINT_WINDOW: usize = 4;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::text_editor::markdown::ParsedBuffer;
+
+    fn kinds_of(lines: &[&str]) -> Vec<LineConstructKind> {
+        let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        ParsedBuffer::parse(&owned).kinds
+    }
+
+    #[test]
+    fn plain_paragraph() {
+        assert_eq!(kinds_of(&["hello world"]), vec![LineConstructKind::Plain]);
+    }
+
+    #[test]
+    fn blank_line() {
+        assert_eq!(kinds_of(&[""]), vec![LineConstructKind::Blank]);
+    }
+
+    #[test]
+    fn atx_heading() {
+        assert_eq!(kinds_of(&["# title"]), vec![LineConstructKind::Heading]);
+    }
+
+    #[test]
+    fn setext_underline_above_is_plain() {
+        let k = kinds_of(&["title", "====="]);
+        assert_eq!(k, vec![LineConstructKind::Plain, LineConstructKind::SetextUnderline]);
+    }
+
+    #[test]
+    fn fence_pair() {
+        let k = kinds_of(&["```rust", "let x = 1;", "```"]);
+        assert_eq!(
+            k,
+            vec![
+                LineConstructKind::FenceMarker,
+                LineConstructKind::FenceContent,
+                LineConstructKind::FenceMarker,
+            ]
+        );
+    }
+
+    #[test]
+    fn list_marker_and_continuation() {
+        let k = kinds_of(&["- item", "  continuation"]);
+        assert_eq!(
+            k,
+            vec![LineConstructKind::ListMarker, LineConstructKind::ListContinuation]
+        );
+    }
+
+    #[test]
+    fn blockquote_levels() {
+        let k = kinds_of(&[">> two"]);
+        assert_eq!(k, vec![LineConstructKind::Blockquote(2)]);
+    }
+
+    #[test]
+    fn indented_code() {
+        let k = kinds_of(&["", "    let x = 1;"]);
+        assert_eq!(k[1], LineConstructKind::IndentedCode);
+    }
+
+    #[test]
+    fn html_block() {
+        let k = kinds_of(&["<div>", "body", "</div>"]);
+        assert!(matches!(k[0], LineConstructKind::HtmlBlock));
+    }
+}
