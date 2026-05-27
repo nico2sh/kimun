@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f6ee8a8a9d669dfc345fc07c2bd6f44427f9c1ca1ba0272ab7233f3234bc2f7a # shrinks to initial = ["```", "", "```", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], row = 36, ch = '0'
+cc 96eb414d5107c00bcfb77def72fe3807df40232deeafe8978e62b3aba523cb80 # shrinks to initial = [">     a", ">  ", "", "> a", "- a", "-  ", "```", "", "", "", "", ""], row = 19, ch = ' '
+cc 44f2cb1ecce6449a01e2f9a23b110f99662865a53a3c4e275409545eb5b7efbf # shrinks to initial = ["> a", "```", "", "```", ">  ", "", "", "", "", "", "> a", "", "> a", ">  ", "", "", "", ">  ", "", "> a", "a", "", "- a", ""], row = 22, ch = 'A'
+cc 447059ed6e60807dfa9a319ab04fe9fdc58998451eefc9d3e0e79273af9cb362 # shrinks to initial = ["", "- a", "", "", "", "", "", "    a", "```", "", "", "", "", "", "", "", "", "> a", "", ">  ", "", "", ""], row = 9, ch = ' '
+cc bfdfd6f37c8c1a94a8e661101272a9ec2abecc09ed683c8c01e93e66eebbfb97 # shrinks to initial = ["", "", "", "", "", "> a", "", "> a", "", "", "- a  ", "a", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], row = 37, ch = ' '

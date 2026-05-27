@@ -1,7 +1,7 @@
 pub mod autocomplete_glue;
 pub mod backend;
 pub mod markdown;
-mod parse_incremental;
+pub mod parse_incremental;
 pub mod nvim_rpc;
 pub mod snapshot;
 pub mod view;

@@ -185,6 +185,7 @@ impl ParsedLine {
     }
 }
 
+#[derive(Clone)]
 pub struct ParsedBuffer {
     pub lines: Vec<ParsedLine>,
     pub kinds: Vec<super::parse_incremental::LineConstructKind>,
