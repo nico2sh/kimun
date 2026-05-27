@@ -635,6 +635,12 @@ impl ParsedBuffer {
     /// of `other`. Both `other` vectors must have `range.len()` entries.
     pub fn splice(&mut self, range: Range<usize>, other: ParsedBuffer) {
         debug_assert!(
+            other.lines.len() == other.kinds.len(),
+            "splice: other has mismatched internal lengths (lines={} kinds={})",
+            other.lines.len(),
+            other.kinds.len(),
+        );
+        debug_assert!(
             other.lines.len() == range.len(),
             "splice: other.lines.len() ({}) != range.len() ({})",
             other.lines.len(),
@@ -2110,11 +2116,14 @@ mod tests {
             "gamma".into(),
         ]);
         let replacement = ParsedBuffer::parse(&["BETA-NEW".into()]);
+        let replacement_kind = replacement.kinds[0];
         pb.splice(1..2, replacement);
         assert_eq!(pb.lines.len(), 3);
         assert_eq!(pb.kinds.len(), 3);
+        assert_eq!(pb.kinds[1], replacement_kind, "replacement landed at the wrong index");
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "splice")]
     fn splice_panics_on_length_mismatch_in_debug() {
