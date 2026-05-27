@@ -148,6 +148,16 @@ impl EditorTree {
         self.tree.as_ref()
     }
 
+    /// Whether `byte` falls inside any node whose kind is in `kinds`. Walks
+    /// the node-at-byte's ancestor chain. Used by autocomplete trigger
+    /// detection to gate triggers inside code / link / frontmatter / etc.
+    pub fn is_in_kinds(&self, byte: usize, kinds: &[&str]) -> bool {
+        let Some(node) = self.node_at_byte(byte) else {
+            return false;
+        };
+        self.ancestors(node).any(|n| kinds.contains(&n.kind()))
+    }
+
     /// Compute the byte offset of `(row, col_chars)` in the current source,
     /// where `col_chars` is a Unicode-scalar index into the row's text.
     /// Returns `None` if the row is out of range.

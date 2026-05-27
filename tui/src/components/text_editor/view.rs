@@ -1,4 +1,6 @@
 use super::markdown::{MarkdownSpanner, ParsedBuffer, ParsedLine};
+use super::parse_incremental::lines_diff_to_input_edit;
+use super::treesitter_parser::EditorTree;
 use super::word_wrap::WordWrapLayout;
 use crate::settings::themes::Theme;
 use ratatui::Frame;
@@ -25,9 +27,14 @@ pub struct MarkdownEditorView {
     /// overlays like the autocomplete popup, which is drawn after the
     /// editor itself.
     pub last_cursor_screen: Option<(u16, u16)>,
-    /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
+    /// Per-line parse cache built in `update()`. Eliminates redundant parser
     /// invocations across `render()`, cursor placement, and click mapping.
     parsed_cache: Vec<ParsedLine>,
+    /// Persisted tree-sitter parse, kept in sync with `lines_snapshot` via
+    /// incremental `apply_edit` (or a `parse_full` fallback). Drives
+    /// autocomplete trigger detection now; will replace `parsed_cache` once
+    /// `MarkdownSpanner` is rewritten against tree-sitter nodes.
+    editor_tree: EditorTree,
     /// Last `text_revision` seen — gates the lines clone and parse-cache rebuild.
     /// Cursor-only moves do not bump `text_revision`, so navigating with the
     /// arrow keys reuses the parse cache instead of re-running pulldown-cmark
@@ -61,6 +68,7 @@ impl MarkdownEditorView {
             fence_ranges: Vec::new(),
             last_cursor_screen: None,
             parsed_cache: Vec::new(),
+            editor_tree: EditorTree::new(),
             last_seen_generation: u64::MAX, // force rebuild on first update
             last_layout_generation: u64::MAX,
             last_layout_width: 0,
@@ -88,6 +96,13 @@ impl MarkdownEditorView {
         // Also guard against parsed_cache being shorter than lines (e.g. async snapshot
         // update arriving after a stale generation write) to prevent OOB indexing below.
         if generation != self.last_seen_generation || lines.len() != self.parsed_cache.len() {
+            // Keep the tree-sitter parse in sync with `lines` via a single
+            // InputEdit when possible; fall back to a full reparse when the
+            // diff isn't a contiguous edit, or on the first parse.
+            match lines_diff_to_input_edit(&self.lines_snapshot, lines, cursor.0) {
+                Some(edit) => self.editor_tree.apply_edit(edit, lines),
+                None => self.editor_tree.parse_full(lines),
+            }
             self.lines_snapshot = lines.to_vec();
             self.fence_ranges = Self::compute_fence_ranges(lines);
             self.parsed_cache = ParsedBuffer::parse(lines);
@@ -167,6 +182,12 @@ impl MarkdownEditorView {
         } else if self.cursor_vrow >= self.visual_scroll_offset + height {
             self.visual_scroll_offset = self.cursor_vrow - height + 1;
         }
+    }
+
+    /// Borrow the persisted tree-sitter parse driven by `update()`. Used by
+    /// the autocomplete host to feed `detect_trigger_with_tree`.
+    pub fn editor_tree(&self) -> &EditorTree {
+        &self.editor_tree
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {

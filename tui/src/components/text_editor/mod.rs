@@ -222,10 +222,36 @@ fn render_search_bar(
     }
 }
 
+/// Free-function snapshot builder so the borrow checker sees disjoint
+/// borrows of `backend` and `view` — calling this from a method where the
+/// caller subsequently mutates a different field (e.g. `self.autocomplete`)
+/// would otherwise fail because `&self` borrows whole-self.
+fn build_editor_host_snapshot<'a>(
+    backend: &'a BackendState,
+    view: &'a MarkdownEditorView,
+    text_revision: u64,
+) -> Option<EditorHostSnapshot<'a>> {
+    let BackendState::Textarea(ta) = backend else {
+        return None;
+    };
+    let lines: Vec<String> = ta.lines().iter().map(|l| l.to_string()).collect();
+    let (row, col) = cursor_tuple(ta);
+    let cursor_byte = autocomplete_glue::row_char_col_to_byte(&lines, row, col);
+    Some(EditorHostSnapshot {
+        lines,
+        cursor_byte,
+        cursor_screen: view.last_cursor_screen,
+        text_revision,
+        editor_tree: view.editor_tree(),
+    })
+}
+
 /// Snapshot used to satisfy `AutocompleteHost`. The snapshot is owned so
 /// the controller's borrow does not overlap with the textarea's `&mut`
-/// borrow during key handling and replacement.
-struct EditorHostSnapshot {
+/// borrow during key handling and replacement. The `editor_tree` field
+/// borrows the live `EditorTree` for tree-sitter-driven exclusion-zone
+/// classification.
+struct EditorHostSnapshot<'a> {
     lines: Vec<String>,
     cursor_byte: usize,
     cursor_screen: Option<(u16, u16)>,
@@ -234,9 +260,10 @@ struct EditorHostSnapshot {
     /// `ExclusionZones` so that cursor-only reconciles skip the
     /// full-buffer parse + regex scans.
     text_revision: u64,
+    editor_tree: &'a self::treesitter_parser::EditorTree,
 }
 
-impl AutocompleteHost for EditorHostSnapshot {
+impl<'a> AutocompleteHost for EditorHostSnapshot<'a> {
     fn buffer_text(&self) -> String {
         self.lines.join("\n")
     }
@@ -261,6 +288,9 @@ impl AutocompleteHost for EditorHostSnapshot {
         // `view.last_cursor_screen` is available, then re-anchors and
         // draws with the correct position.
         Some(self.cursor_screen.unwrap_or((0, 0)))
+    }
+    fn editor_tree(&self) -> Option<&self::treesitter_parser::EditorTree> {
+        Some(self.editor_tree)
     }
 }
 
@@ -376,21 +406,6 @@ impl TextEditorComponent {
     /// Build a snapshot view of the editor state for the autocomplete
     /// controller. Lives separately so the controller can borrow it
     /// without colliding with the textarea's `&mut self` borrow.
-    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot> {
-        let BackendState::Textarea(ta) = &self.backend else {
-            return None;
-        };
-        let lines: Vec<String> = ta.lines().iter().map(|l| l.to_string()).collect();
-        let (row, col) = cursor_tuple(ta);
-        let cursor_byte = autocomplete_glue::row_char_col_to_byte(&lines, row, col);
-        Some(EditorHostSnapshot {
-            lines,
-            cursor_byte,
-            cursor_screen: self.view.last_cursor_screen,
-            text_revision: self.text_revision,
-        })
-    }
-
     /// Pull the latest async query results into the popup state. Called
     /// once per render before drawing the overlay.
     fn poll_autocomplete(&mut self) {
@@ -420,7 +435,9 @@ impl TextEditorComponent {
         {
             return;
         }
-        let Some(snapshot) = self.autocomplete_host_snapshot() else {
+        let Some(snapshot) =
+            build_editor_host_snapshot(&self.backend, &self.view, self.text_revision)
+        else {
             self.close_autocomplete();
             return;
         };
@@ -438,7 +455,9 @@ impl TextEditorComponent {
         if self.autocomplete.is_none() {
             return;
         }
-        let Some(snapshot) = self.autocomplete_host_snapshot() else {
+        let Some(snapshot) =
+            build_editor_host_snapshot(&self.backend, &self.view, self.text_revision)
+        else {
             if let Some(c) = self.autocomplete.as_mut() {
                 c.close();
             }
@@ -1573,7 +1592,11 @@ impl Component for TextEditorComponent {
                     .as_ref()
                     .is_some_and(|c| c.is_open());
                 if popup_open
-                    && let Some(host) = self.autocomplete_host_snapshot()
+                    && let Some(host) = build_editor_host_snapshot(
+                        &self.backend,
+                        &self.view,
+                        self.text_revision,
+                    )
                     && let Some(controller) = self.autocomplete.as_mut()
                 {
                     match controller.handle_key(*key, &host) {

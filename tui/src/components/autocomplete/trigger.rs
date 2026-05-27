@@ -4,6 +4,43 @@ use kimun_core::note::{
     is_inside_code_link_or_frontmatter, is_inside_exclusion_zone, ExclusionZones,
 };
 
+use crate::components::text_editor::treesitter_parser::EditorTree;
+
+/// Tree-sitter-md node kinds that map onto `ExclusionZones::contains_code_link_or_frontmatter`
+/// (used for wikilink trigger suppression).
+const TS_CODE_LINK_FRONTMATTER_KINDS: &[&str] = &[
+    "code_span",
+    "fenced_code_block",
+    "indented_code_block",
+    "inline_link",
+    "image",
+    "full_reference_link",
+    "collapsed_reference_link",
+    "shortcut_link",
+    "link_destination",
+    "link_label",
+    "link_title",
+    "link_reference_definition",
+    "html_block",
+    "html_tag",
+    "minus_metadata",
+    "plus_metadata",
+];
+
+/// Hashtag suppression — same set as the wikilink kinds. Closed-wikilink
+/// suppression (a pulldown-only feature, since tree-sitter-md has no wikilink
+/// node) is dropped on the editor path; the search-box path keeps it via
+/// `ExclusionZones::from_text`.
+const TS_HASHTAG_EXCLUSION_KINDS: &[&str] = TS_CODE_LINK_FRONTMATTER_KINDS;
+
+fn ts_is_in_code_link_frontmatter(tree: &EditorTree, byte: usize) -> bool {
+    tree.is_in_kinds(byte, TS_CODE_LINK_FRONTMATTER_KINDS)
+}
+
+fn ts_is_in_exclusion_zone(tree: &EditorTree, byte: usize) -> bool {
+    tree.is_in_kinds(byte, TS_HASHTAG_EXCLUSION_KINDS)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerKind {
     Wikilink,
@@ -82,17 +119,37 @@ pub fn detect_trigger_with(
     detect_trigger_with_zones(text, cursor, opts, None)
 }
 
+/// Variant of [`detect_trigger_with_zones`] that consults a tree-sitter
+/// editor tree for exclusion-zone classification instead of an
+/// `ExclusionZones`. Editor-mode autocomplete uses this to keep the typing
+/// path off of `pulldown-cmark`.
+pub fn detect_trigger_with_tree(
+    text: &str,
+    cursor: usize,
+    opts: TriggerOptions,
+    tree: &EditorTree,
+) -> Option<TriggerContext> {
+    detect_trigger_inner(text, cursor, opts, None, Some(tree))
+}
+
 /// Variant of [`detect_trigger_with`] that accepts a precomputed
-/// `ExclusionZones` for the same `text`. The autocomplete controller
-/// caches one such instance per buffer revision so cursor moves don't
-/// repay the full-buffer pulldown-cmark parse + regex scans on every
-/// reconcile. When `zones` is `None`, falls back to the per-call
-/// computation (used by tests and the no-cache convenience function).
+/// `ExclusionZones` for the same `text`. The search-box flow uses this
+/// because no `EditorTree` is available there.
 pub fn detect_trigger_with_zones(
     text: &str,
     cursor: usize,
     opts: TriggerOptions,
     zones: Option<&ExclusionZones>,
+) -> Option<TriggerContext> {
+    detect_trigger_inner(text, cursor, opts, zones, None)
+}
+
+fn detect_trigger_inner(
+    text: &str,
+    cursor: usize,
+    opts: TriggerOptions,
+    zones: Option<&ExclusionZones>,
+    tree: Option<&EditorTree>,
 ) -> Option<TriggerContext> {
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
@@ -175,12 +232,17 @@ pub fn detect_trigger_with_zones(
         // reopen-mid-target case the spec wants to support). Only
         // applied when the caller is editing Markdown (search box
         // disables this).
-        if opts.apply_exclusion_zone
-            && zones
-                .map(|z| z.contains_code_link_or_frontmatter(cursor))
-                .unwrap_or_else(|| is_inside_code_link_or_frontmatter(text, cursor))
-        {
-            return None;
+        if opts.apply_exclusion_zone {
+            let excluded = if let Some(t) = tree {
+                ts_is_in_code_link_frontmatter(t, cursor)
+            } else if let Some(z) = zones {
+                z.contains_code_link_or_frontmatter(cursor)
+            } else {
+                is_inside_code_link_or_frontmatter(text, cursor)
+            };
+            if excluded {
+                return None;
+            }
         }
         let query = text[inner_start..cursor].to_string();
         return Some(TriggerContext {
@@ -204,12 +266,17 @@ pub fn detect_trigger_with_zones(
         // plain text. Checked before the word-boundary guard so a future
         // relaxation of the boundary rule cannot accidentally let popups
         // leak into excluded regions.
-        if opts.apply_exclusion_zone
-            && zones
-                .map(|z| z.contains(cursor))
-                .unwrap_or_else(|| is_inside_exclusion_zone(text, cursor))
-        {
-            return None;
+        if opts.apply_exclusion_zone {
+            let excluded = if let Some(t) = tree {
+                ts_is_in_exclusion_zone(t, cursor)
+            } else if let Some(z) = zones {
+                z.contains(cursor)
+            } else {
+                is_inside_exclusion_zone(text, cursor)
+            };
+            if excluded {
+                return None;
+            }
         }
 
         // Word-boundary guard — mirrors `core::note::content_extractor::

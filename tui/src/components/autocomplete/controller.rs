@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use super::host::AutocompleteHost;
 use super::popup::{PopupAction, PopupOutcome, handle_key as popup_handle_key};
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
-use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with_zones};
+use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with_tree, detect_trigger_with_zones};
 
 /// Hard cap on suggestions fetched from core per query. The popup itself
 /// only shows `max_visible_rows` at a time and scrolls inside the fetched
@@ -261,33 +261,42 @@ impl AutocompleteController {
         // is irrelevant (e.g. the search-box modal) return it. Treat it as
         // an unconditional miss AND skip persisting the rebuilt value so
         // sentinel hosts don't churn the `cached_text` slot per keystroke.
-        let cached_match = revision != 0
-            && self
-                .cached_text
-                .as_ref()
-                .is_some_and(|(rev, _, _)| *rev == revision);
-        let trigger = if cached_match {
-            let (_, text, zones) = self
-                .cached_text
-                .as_ref()
-                .expect("cached_match implies Some");
-            detect_trigger_with_zones(text, cursor, self.trigger_opts, Some(zones))
-        } else {
+        // Editor-mode fast path: when the host provides a tree-sitter
+        // `EditorTree`, classify exclusion zones from the tree instead of
+        // running pulldown over the full buffer. No per-revision cache
+        // needed — the tree is already incrementally maintained by
+        // `MarkdownEditorView::update`.
+        let trigger = if let Some(tree) = host.editor_tree() {
             let text = host.buffer_text();
-            let zones = ExclusionZones::from_text(&text);
-            let trigger = detect_trigger_with_zones(
-                &text,
-                cursor,
-                self.trigger_opts,
-                Some(&zones),
-            );
-            // Only persist when the revision is non-sentinel — otherwise the
-            // cache slot is just churning unread String/ExclusionZones per
-            // keystroke on every revision==0 host.
-            if revision != 0 {
-                self.cached_text = Some((revision, text, zones));
+            detect_trigger_with_tree(&text, cursor, self.trigger_opts, tree)
+        } else {
+            // Search-box / non-editor host: no tree available. Fall back to
+            // the `ExclusionZones`-cached path keyed by `text_revision`.
+            let cached_match = revision != 0
+                && self
+                    .cached_text
+                    .as_ref()
+                    .is_some_and(|(rev, _, _)| *rev == revision);
+            if cached_match {
+                let (_, text, zones) = self
+                    .cached_text
+                    .as_ref()
+                    .expect("cached_match implies Some");
+                detect_trigger_with_zones(text, cursor, self.trigger_opts, Some(zones))
+            } else {
+                let text = host.buffer_text();
+                let zones = ExclusionZones::from_text(&text);
+                let trigger = detect_trigger_with_zones(
+                    &text,
+                    cursor,
+                    self.trigger_opts,
+                    Some(&zones),
+                );
+                if revision != 0 {
+                    self.cached_text = Some((revision, text, zones));
+                }
+                trigger
             }
-            trigger
         };
 
         // Filter by mode before deciding anything else.
