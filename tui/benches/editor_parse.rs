@@ -114,6 +114,32 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
     });
 }
 
+fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+    use ratatui::layout::Rect;
+
+    let lines = make_5000_line_buffer();
+    let rect = Rect { x: 0, y: 0, width: 80, height: 40 };
+
+    let mut warmed = MarkdownEditorView::new();
+    warmed.update(&lines, (2500, 0), rect, 1, None);
+
+    // Edited buffer: single-char delete at row 2500 (Backspace mid-line).
+    let mut edited = lines.clone();
+    edited[2500].pop();
+
+    c.bench_function("full_view_update_5000_lines_backspace", |b| {
+        b.iter_batched(
+            || warmed.clone(),
+            |mut v| {
+                v.update(black_box(&edited), (2500, edited[2500].len()), rect, 2, None);
+                black_box(v);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn bench_full_view_update_5000_lines_first_parse(c: &mut Criterion) {
     use kimun_notes::components::text_editor::view::MarkdownEditorView;
     use ratatui::layout::Rect;
@@ -138,5 +164,6 @@ criterion_group!(
     bench_wrap_5000_lines,
     bench_full_view_update_5000_lines_incremental,
     bench_full_view_update_5000_lines_first_parse,
+    bench_full_view_update_5000_lines_backspace,
 );
 criterion_main!(benches);
