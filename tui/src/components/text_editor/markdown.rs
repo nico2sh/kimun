@@ -189,6 +189,23 @@ impl ParsedLine {
 pub struct ParsedBuffer {
     pub lines: Vec<ParsedLine>,
     pub kinds: Vec<super::parse_incremental::LineConstructKind>,
+    /// Sorted, deduped row indices `b` where pulldown-cmark's parser
+    /// state is provably reset — i.e. parsing `&lines[b..j]` in
+    /// isolation produces the same `ParsedLine` and
+    /// `LineConstructKind` for row `b` as parsing the full buffer
+    /// would, for every later boundary `j`. Used by
+    /// `parse_incremental::expand_to_reset_boundary` so the
+    /// incremental-parse widening is provably-equivalent to a fresh
+    /// parse over the spliced range — no post-slice verification
+    /// needed in release.
+    ///
+    /// Always contains `0` and `lines.len()` as sentinel boundaries.
+    /// Conservative starting set: only Blank-prefixed rows after an
+    /// `Event::End` of a top-level block. Long buffers without blank
+    /// separators degrade to full-rebuild on every edit (acceptable
+    /// — same behaviour as today's `widen_to_safe` + cap-trip path
+    /// in that regime).
+    pub reset_boundaries: Vec<usize>,
 }
 
 impl ParsedBuffer {
@@ -304,6 +321,27 @@ impl ParsedBuffer {
             })
             .collect();
 
+        // Reset-boundary detection via depth prefix-sum. During the
+        // event walk we record per-row depth deltas (+1 at the start
+        // row of every top-level block, -1 at the row AFTER its end).
+        // After the walk, a prefix sum gives the depth at the start
+        // of each row — depth==0 means pulldown's parser is in the
+        // "between blocks" state at that row, with no open
+        // construct that could lazy-continue. A row at depth 0 whose
+        // own `kinds` is Blank (or EOF) is a true reset point.
+        //
+        // Depth deltas (not an inline counter) handle pulldown's
+        // overlapping nesting: a Paragraph inside an Item inside a
+        // List emits Start events at overlapping rows; an inline
+        // depth counter that decrements on the innermost End would
+        // see depth==0 prematurely while the outer List is still
+        // open. The delta+prefix-sum approach correctly sums all
+        // open constructs.
+        let mut reset_boundaries: Vec<usize> = Vec::new();
+        // +1 at the open row, -1 at the row past the close. Length
+        // is lines.len() + 1 so end-of-buffer deltas have a slot.
+        let mut depth_delta: Vec<i32> = vec![0; lines.len() + 1];
+
         // Track fenced/indented code block byte ranges for F4 (label suppression).
         // Populated during the main parser pass below and converted to per-line
         // flags before the per-line label scan.
@@ -315,6 +353,32 @@ impl ParsedBuffer {
         for (event, range) in parser.into_offset_iter() {
             let (sr, sc) = byte_to_row_col(range.start, lines, &line_starts);
             let (er, ec) = byte_to_row_col(range.end, lines, &line_starts);
+            // Per-row depth deltas: +1 when a top-level block opens
+            // at `sr`, -1 at the row past where it closes (`er + 1`,
+            // clamped to `lines.len()`). Resolved into per-row depth
+            // by a prefix sum after the walk.
+            match &event {
+                Event::Start(tag) if is_top_level_block_tag(tag) => {
+                    if sr < depth_delta.len() {
+                        depth_delta[sr] += 1;
+                    }
+                }
+                Event::End(tag_end) if is_top_level_block_tag_end(tag_end) => {
+                    // pulldown's `range.end` for a block falls in the
+                    // row IMMEDIATELY AFTER the block's last content
+                    // row (typically the start of the trailing blank
+                    // or the next block). `byte_to_row_col` thus
+                    // returns `er` already pointing at the
+                    // "between-blocks" row — that's where depth
+                    // drops, no `+1` needed.
+                    let drop_at = er.min(lines.len());
+                    if drop_at < depth_delta.len() {
+                        depth_delta[drop_at] -= 1;
+                    }
+                }
+                _ => {}
+            }
+
             match event {
                 Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_))) => {
                     if code_block_depth == 0 {
@@ -391,7 +455,13 @@ impl ParsedBuffer {
                         kinds[r] = LineConstructKind::HtmlBlock;
                     }
                 }
-                Event::Html(_) | Event::InlineHtml(_) => {
+                Event::Html(_) => {
+                    // Block-level HTML body. Already classified by the
+                    // enclosing `Tag::HtmlBlock` arm; this branch is a
+                    // safety-net for any row pulldown emits between the
+                    // tag boundaries but defers to fence/code kinds when
+                    // the rows happen to overlap (rare, but possible
+                    // with malformed input).
                     for r in sr..=er {
                         if !matches!(
                             kinds[r],
@@ -403,6 +473,13 @@ impl ParsedBuffer {
                         }
                     }
                 }
+                // Inline HTML (`<span>`, `<br/>`, etc.) lives inside a
+                // paragraph; it must NOT promote the row to HtmlBlock,
+                // because `HtmlBlock` is a non-safe widening boundary
+                // (see `parse_incremental::is_safe_boundary`). Painting
+                // the paragraph row as HtmlBlock would force widening
+                // to walk past it on every nearby edit. Leave kind as-is.
+                Event::InlineHtml(_) => {}
                 Event::End(TagEnd::Item) => {}
                 Event::Code(ref code_text) if sr == er && sr < lines.len() => {
                     // Inline code — always single-line in practice.
@@ -629,18 +706,83 @@ impl ParsedBuffer {
             }
         }
 
-        ParsedBuffer { lines: out, kinds }
+        // Resolve depth deltas → per-row depth via prefix sum, then
+        // record boundaries at rows where depth==0 AND the row is
+        // Blank (or end-of-buffer). Blank-at-depth-0 means pulldown
+        // has no open construct that could lazy-continue into the
+        // row, so a fresh parser starting at that row produces the
+        // same output as the full parse from that point.
+        let mut depth: i32 = 0;
+        for r in 0..lines.len() {
+            depth += depth_delta[r];
+            if depth == 0 && kinds[r] == LineConstructKind::Blank {
+                reset_boundaries.push(r);
+            }
+        }
+        // Sentinels: 0 (start of buffer), lines.len() (past-end).
+        // Both make `expand_to_reset_boundary`'s unwrap_or fallbacks
+        // unreachable in a well-formed set.
+        reset_boundaries.push(0);
+        reset_boundaries.push(lines.len());
+        reset_boundaries.sort_unstable();
+        reset_boundaries.dedup();
+
+        ParsedBuffer {
+            lines: out,
+            kinds,
+            reset_boundaries,
+        }
+    }
+
+    /// O(N) placeholder buffer matching `lines`'s row count, every row
+    /// classified `Plain`, every char marked content-visible, no
+    /// elements. Used by `view.update`'s async-fallback path (perf #9
+    /// in the holistic review) to install a structurally-correct
+    /// `ParsedBuffer` cheaply while the real `ParsedBuffer::parse`
+    /// runs on a background tokio task. Render produces unstyled
+    /// markdown for one frame until the async result is installed
+    /// via `install_full_parse`.
+    pub fn placeholder(lines: &[String]) -> ParsedBuffer {
+        let mut out = Vec::with_capacity(lines.len());
+        for line in lines {
+            let total = line.chars().count();
+            out.push(ParsedLine {
+                elements: Vec::new(),
+                content_vis: vec![true; total],
+                elem_vis: vec![false; total],
+                elem_index: vec![0; total],
+                list_sigil_end: None,
+                image_placeholders: Vec::new(),
+            });
+        }
+        let kinds = vec![LineConstructKind::Plain; lines.len()];
+        let reset_boundaries = if lines.is_empty() {
+            vec![0]
+        } else {
+            vec![0, lines.len()]
+        };
+        let lazy_depth_unused = (); // v2 field not yet shipped
+        let _ = lazy_depth_unused;
+        ParsedBuffer {
+            lines: out,
+            kinds,
+            reset_boundaries,
+        }
     }
 
     /// Parse a contiguous slice of `lines` as if it were a standalone document.
     ///
     /// **Boundary contract:** the caller must pass a `range` whose `start` and
     /// `end` land on safe construct boundaries (verified by
-    /// `parse_incremental::widen_to_safe`). This function does not validate
-    /// the contract — passing a mid-fence range will produce a `ParsedBuffer`
-    /// that mis-classifies the boundary lines.
+    /// `parse_incremental::widen_to_safe` or `expand_to_reset_boundary`).
+    /// This function does not validate the contract — passing a mid-fence
+    /// range will produce a `ParsedBuffer` that mis-classifies the
+    /// boundary lines.
     ///
     /// Returns a `ParsedBuffer` whose `lines.len() == kinds.len() == range.len()`.
+    /// The returned `reset_boundaries` are in slice-local index space
+    /// (`0..range.len()`); `splice` shifts them by `range.start` when
+    /// merging into the parent buffer's boundary set.
     pub fn parse_range(lines: &[String], range: Range<usize>) -> ParsedBuffer {
         Self::parse(&lines[range])
     }
@@ -667,7 +809,36 @@ impl ParsedBuffer {
             range.len(),
         );
         self.lines.splice(range.clone(), other.lines);
-        self.kinds.splice(range, other.kinds);
+        self.kinds.splice(range.clone(), other.kinds);
+
+        // Merge `reset_boundaries`. The incremental splice path never
+        // changes line count (gated upstream in try_incremental_parse),
+        // so boundaries outside `range` keep their indices. Boundaries
+        // strictly inside `range` are dropped (the splice replaces
+        // them). The slice's own boundaries are shifted by
+        // `range.start` and added.
+        let lines_len = self.lines.len();
+        let mut merged: Vec<usize> = self
+            .reset_boundaries
+            .iter()
+            .copied()
+            .filter(|&b| b <= range.start || b >= range.end)
+            .collect();
+        for b in other.reset_boundaries {
+            merged.push(range.start + b);
+        }
+        // The merge can drop `lines_len` if the prior buffer's tail
+        // boundary fell inside `range`. Re-add 0 and `lines_len` to
+        // preserve the sentinel invariant.
+        merged.push(0);
+        merged.push(lines_len);
+        merged.sort_unstable();
+        merged.dedup();
+        debug_assert!(
+            merged.first() == Some(&0) && merged.last() == Some(&lines_len),
+            "splice: merged boundaries must start with 0 and end with lines.len() ({lines_len})"
+        );
+        self.reset_boundaries = merged;
     }
 }
 
@@ -1278,6 +1449,38 @@ pub(super) fn leading_ws_byte_len(line: &str) -> usize {
 /// the tags whose end events emit a stacked element via the standard
 /// push-on-start / pop-on-end pattern. Tags handled specially (e.g. `Item`,
 /// `Code`) return `None`.
+/// Whether `tag` opens a top-level block in pulldown's sense — one
+/// whose `Event::End` closes a syntactic unit that could otherwise
+/// lazy-continue past blank lines. Used to track parser nesting
+/// depth for reset-boundary detection in `ParsedBuffer::parse`.
+///
+/// Includes Heading because its end implies the parser is between
+/// blocks. Excludes `Tag::Item` because items live inside a `List`
+/// — tracking the inner item nesting would double-count.
+fn is_top_level_block_tag(tag: &Tag) -> bool {
+    matches!(
+        tag,
+        Tag::Paragraph
+            | Tag::List(_)
+            | Tag::BlockQuote(_)
+            | Tag::CodeBlock(_)
+            | Tag::HtmlBlock
+            | Tag::Heading { .. }
+    )
+}
+
+fn is_top_level_block_tag_end(tag_end: &TagEnd) -> bool {
+    matches!(
+        tag_end,
+        TagEnd::Paragraph
+            | TagEnd::List(_)
+            | TagEnd::BlockQuote(_)
+            | TagEnd::CodeBlock
+            | TagEnd::HtmlBlock
+            | TagEnd::Heading(_)
+    )
+}
+
 fn tag_to_kind(tag: &Tag) -> Option<ElementKind> {
     Some(match tag {
         Tag::Strong => ElementKind::Bold,

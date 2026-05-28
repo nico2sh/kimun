@@ -1,3 +1,4 @@
+use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +11,9 @@ use super::host::AutocompleteHost;
 use super::popup::{PopupAction, PopupOutcome, handle_key as popup_handle_key};
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
 use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with_zones};
+#[cfg(test)]
+use crate::components::text_editor::snapshot::EditorSnapshot;
+use crate::util::single_slot_task::SingleSlotTask;
 
 /// Hard cap on suggestions fetched from core per query. The popup itself
 /// only shows `max_visible_rows` at a time and scrolls inside the fetched
@@ -59,10 +63,12 @@ pub struct AutocompleteController {
     result_rx: UnboundedReceiver<QueryResult>,
     fetch_limit: usize,
     max_visible_rows: usize,
-    /// Handle of the most recently spawned query task. Cancelled before
-    /// the next spawn so a burst of keystrokes does not pile up N
-    /// concurrent SQLite queries holding the vault `Arc` open.
-    in_flight: Option<tokio::task::JoinHandle<()>>,
+    /// Handle of the most recently spawned query task. Spawning a new
+    /// query into this slot aborts the previous one, so a burst of
+    /// keystrokes does not pile up N concurrent SQLite queries holding
+    /// the vault `Arc` open. The slot's `Drop` also aborts, so the
+    /// task cannot outlive the controller.
+    in_flight: SingleSlotTask<()>,
     /// Delay inserted before each refinement query hits the vault. A burst
     /// of typing aborts the prior in-flight task during this window, so
     /// only the final keystroke's query reaches SQLite. The first query of
@@ -70,11 +76,14 @@ pub struct AutocompleteController {
     /// to `Duration::ZERO` via `with_debounce`.
     debounce: Duration,
     /// Cached exclusion zones AND the joined buffer text they were built
-    /// from, keyed on the host's `text_revision`. `is_inside_exclusion_zone`
+    /// from, keyed on the host's `content_revision`. `is_inside_exclusion_zone`
     /// was previously rerun on every reconcile and `host.buffer_text()` was
     /// allocated unconditionally per call; now cursor moves answer both
-    /// queries from the cache and only text changes rebuild them.
-    cached_text: Option<(u64, String, ExclusionZones)>,
+    /// queries from the cache and only text changes rebuild them. Hosts
+    /// whose buffer has no stable revision identity (search-box modal)
+    /// return `None` from `content_revision` and never populate this
+    /// slot.
+    cached_text: Option<(NonZeroU64, String, ExclusionZones)>,
     /// Optional callback used to wake the host's render loop after an
     /// async query posts its result. Decoupled from any specific event
     /// bus so the controller stays usable wherever the host can
@@ -107,7 +116,7 @@ impl AutocompleteController {
             result_rx,
             fetch_limit: DEFAULT_FETCH_LIMIT,
             max_visible_rows: DEFAULT_MAX_VISIBLE_ROWS,
-            in_flight: None,
+            in_flight: SingleSlotTask::empty(),
             debounce: DEFAULT_DEBOUNCE,
             cached_text: None,
             redraw_cb: None,
@@ -180,9 +189,12 @@ impl AutocompleteController {
     /// via generation mismatch.
     pub fn close(&mut self) {
         self.state = None;
-        if let Some(handle) = self.in_flight.take() {
-            handle.abort();
-        }
+        self.in_flight.abort();
+        // Drop the cached buffer text + zones. On a multi-MB note these
+        // hold a full clone of the buffer + parsed exclusion-zone
+        // ranges; without this clear they survive popup dismissal
+        // until the next text edit overwrites the slot.
+        self.cached_text = None;
     }
 
     /// Route a key event through the popup when one is open. Returns a
@@ -249,23 +261,27 @@ impl AutocompleteController {
     }
 
     fn reconcile<H: AutocompleteHost>(&mut self, host: &H, allow_open: bool) {
-        let cursor = host.cursor_byte_offset();
-        let revision = host.text_revision();
-        // Rebuild buffer text AND exclusion zones only when the host's text
-        // revision has moved on. Cursor moves keep the same revision, so
-        // both the full-buffer `host.buffer_text()` allocation and the
-        // pulldown-cmark + regex scans run at most once per text edit.
+        // Single borrow of the host's buffer + cursor. The snapshot
+        // is borrowed (Textarea backend) so no per-keystroke lines
+        // clone happens here.
+        let snap = host.buffer_snapshot();
+        let cursor = snap.cursor_byte_offset();
+        let cache_key = host.cache_key();
+        // Rebuild buffer text AND exclusion zones only when the
+        // host's cache key has moved on. Cursor moves keep the key
+        // unchanged, so both the full-buffer join AND the
+        // pulldown-cmark + regex scans run at most once per text
+        // edit.
         //
-        // `revision == 0` is the trait's documented sentinel for "do not
-        // cache" — hosts whose buffer is tiny enough that the rebuild cost
-        // is irrelevant (e.g. the search-box modal) return it. Treat it as
-        // an unconditional miss AND skip persisting the rebuilt value so
-        // sentinel hosts don't churn the `cached_text` slot per keystroke.
-        let cached_match = revision != 0
-            && self
-                .cached_text
+        // `cache_key == None` opts the host out entirely (search-box
+        // modal). Treat as an unconditional miss AND skip persisting
+        // the rebuilt value so opt-out hosts don't churn the
+        // `cached_text` slot per keystroke.
+        let cached_match = cache_key.is_some_and(|rev| {
+            self.cached_text
                 .as_ref()
-                .is_some_and(|(rev, _, _)| *rev == revision);
+                .is_some_and(|(cached_rev, _, _)| *cached_rev == rev)
+        });
         let trigger = if cached_match {
             let (_, text, zones) = self
                 .cached_text
@@ -273,7 +289,9 @@ impl AutocompleteController {
                 .expect("cached_match implies Some");
             detect_trigger_with_zones(text, cursor, self.trigger_opts, Some(zones))
         } else {
-            let text = host.buffer_text();
+            // Cache miss: join the borrowed lines once into the
+            // owned `String` the cache slot will hold.
+            let text = snap.lines.join("\n");
             let zones = ExclusionZones::from_text(&text);
             let trigger = detect_trigger_with_zones(
                 &text,
@@ -281,11 +299,8 @@ impl AutocompleteController {
                 self.trigger_opts,
                 Some(&zones),
             );
-            // Only persist when the revision is non-sentinel — otherwise the
-            // cache slot is just churning unread String/ExclusionZones per
-            // keystroke on every revision==0 host.
-            if revision != 0 {
-                self.cached_text = Some((revision, text, zones));
+            if let Some(rev) = cache_key {
+                self.cached_text = Some((rev, text, zones));
             }
             trigger
         };
@@ -372,14 +387,10 @@ impl AutocompleteController {
     }
 
     fn fire_query(&mut self, kind: TriggerKind, query: String, instant: bool) {
-        // Cancel any previous in-flight task — its result would be
-        // discarded on receive (generation mismatch) but the SQLite
-        // hit would still happen and the vault `Arc` would stay alive
-        // until the task drained. Aborting frees both.
-        if let Some(handle) = self.in_flight.take() {
-            handle.abort();
-        }
-
+        // `SingleSlotTask::spawn` aborts the previous in-flight task —
+        // its result would be discarded on receive (generation
+        // mismatch) but the SQLite hit would still happen and the
+        // vault `Arc` would stay alive until the task drained.
         self.generation = self.generation.wrapping_add(1);
         let req_gen = self.generation;
         let tx = self.result_tx.clone();
@@ -387,7 +398,7 @@ impl AutocompleteController {
         let vault = self.vault.clone();
         let limit = self.fetch_limit;
         let debounce = if instant { Duration::ZERO } else { self.debounce };
-        self.in_flight = Some(tokio::spawn(async move {
+        self.in_flight.spawn(async move {
             // Aborted by the next `fire_query` before this sleep completes
             // for a burst of typing — the SQLite hit below never runs.
             if !debounce.is_zero() {
@@ -440,7 +451,7 @@ impl AutocompleteController {
             if let Some(redraw) = redraw {
                 redraw();
             }
-        }));
+        });
     }
 
     fn compute_accept<H: AutocompleteHost>(&self, host: &H) -> Option<AcceptAction> {
@@ -448,7 +459,10 @@ impl AutocompleteController {
         let suggestion = state.selected()?.clone();
         let kind = state.kind;
         let range = state.replace_range.clone();
-        let buffer = host.buffer_text();
+        // Accept is a once-per-popup-acceptance path; allocating the
+        // joined buffer text here is fine. The hot path is reconcile,
+        // which uses the cached `text` slot built once per text edit.
+        let buffer = host.buffer_snapshot().lines.join("\n");
 
         // Guard against a stale snapshot — if the live buffer shrank
         // below the trigger range, drop the accept rather than producing
@@ -504,18 +518,6 @@ impl AutocompleteController {
                     new_cursor_byte,
                 })
             }
-        }
-    }
-}
-
-impl Drop for AutocompleteController {
-    fn drop(&mut self) {
-        // Editor (or modal) shutdown — abort the in-flight query so the
-        // tokio task can't outlive the controller, run its SQLite hit,
-        // and then dump a generation-mismatched result into a closed
-        // channel.
-        if let Some(handle) = self.in_flight.take() {
-            handle.abort();
         }
     }
 }
@@ -613,7 +615,7 @@ mod tests {
     use tempfile::TempDir;
 
     /// Global per-test counter so each `FakeHost::new` returns a distinct
-    /// `text_revision` and the controller's cache is invalidated between
+    /// `content_revision` and the controller's cache is invalidated between
     /// successive sync calls in the same test (mirrors production where
     /// rebuilding the buffer always advances the editor's revision).
     static FAKE_REV: AtomicU64 = AtomicU64::new(1);
@@ -621,7 +623,9 @@ mod tests {
     struct FakeHost {
         buffer: String,
         cursor: usize,
-        revision: u64,
+        /// `Some(rev)` to participate in the controller's cache.
+        /// `None` mirrors the search-box modal opting out.
+        revision: Option<NonZeroU64>,
     }
 
     impl FakeHost {
@@ -629,7 +633,7 @@ mod tests {
             Self {
                 buffer: buffer.to_string(),
                 cursor,
-                revision: FAKE_REV.fetch_add(1, Ordering::SeqCst),
+                revision: NonZeroU64::new(FAKE_REV.fetch_add(1, Ordering::SeqCst)),
             }
         }
 
@@ -637,18 +641,47 @@ mod tests {
             self.buffer
                 .replace_range(action.range.clone(), &action.new_text);
             self.cursor = action.new_cursor_byte;
-            self.revision = self.revision.wrapping_add(1);
+            self.revision = self
+                .revision
+                .and_then(|r| NonZeroU64::new(r.get().wrapping_add(1)));
+        }
+
+        /// Split `self.buffer` into lines and convert the byte cursor
+        /// into `(row, char_col)`. Re-derived on every
+        /// `buffer_snapshot()` call so tests that mutate
+        /// `host.buffer` / `host.cursor` directly stay in sync.
+        fn lines_and_cursor(&self) -> (Vec<String>, (usize, usize)) {
+            let lines: Vec<String> =
+                self.buffer.split('\n').map(|s| s.to_string()).collect();
+            let mut byte_running = 0;
+            for (row, line) in lines.iter().enumerate() {
+                let line_end = byte_running + line.len();
+                if self.cursor <= line_end {
+                    let col_byte = self.cursor - byte_running;
+                    let col = line[..col_byte].chars().count();
+                    return (lines, (row, col));
+                }
+                byte_running = line_end + 1; // +1 for '\n'
+            }
+            // Past EOF — clamp to last row's end.
+            let row = lines.len().saturating_sub(1);
+            let col = lines.get(row).map(|l| l.chars().count()).unwrap_or(0);
+            (lines, (row, col))
         }
     }
 
     impl AutocompleteHost for FakeHost {
-        fn buffer_text(&self) -> String {
-            self.buffer.clone()
+        fn buffer_snapshot(&self) -> EditorSnapshot<'_> {
+            let rev = self
+                .revision
+                .unwrap_or_else(|| NonZeroU64::new(1).unwrap());
+            let (lines, cursor) = self.lines_and_cursor();
+            // Owned because we constructed `lines` locally — tests
+            // don't hold the snapshot long enough to care about the
+            // allocation.
+            EditorSnapshot::owned(lines, cursor, rev)
         }
-        fn cursor_byte_offset(&self) -> usize {
-            self.cursor
-        }
-        fn text_revision(&self) -> u64 {
+        fn cache_key(&self) -> Option<NonZeroU64> {
             self.revision
         }
         fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
@@ -997,53 +1030,120 @@ mod tests {
         assert_eq!(names, vec!["memory"]);
     }
 
-    /// Regression for the `text_revision == 0` sentinel cache-write skip
-    /// (commit 5dc15309). Two invariants:
-    ///   1. A sync from a sentinel host (revision == 0) must NOT
+    /// Regression for the opt-out cache-write skip (originally commit
+    /// 5dc15309 against the `revision == 0` sentinel; now expressed
+    /// via `content_revision() -> None`). Two invariants:
+    ///   1. A sync from an opt-out host (revision == None) must NOT
     ///      populate `cached_text` — the search-box modal would
     ///      otherwise churn the heap allocating String + zones per
     ///      keystroke for a slot nothing ever reads.
-    ///   2. A sentinel sync that follows a non-sentinel sync must NOT
-    ///      consult the previously-cached entry, even though the cache
-    ///      slot is Some(…). Otherwise stale zones from a prior editor
+    ///   2. An opt-out sync following a cached sync must NOT consult
+    ///      the previously-cached entry, even though the cache slot
+    ///      is Some(…). Otherwise stale zones from a prior editor
     ///      session could serve a fresh search-box host as a false hit.
     #[tokio::test]
-    async fn sentinel_revision_does_not_populate_or_consult_cache() {
+    async fn opt_out_revision_does_not_populate_or_consult_cache() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
         let mut c = make_controller(vault, AutocompleteMode::Both);
 
-        // (1) Sentinel from a fresh controller: cache stays empty.
+        // (1) Opt-out from a fresh controller: cache stays empty.
         let mut sentinel = FakeHost::new("see [[me", 8);
-        sentinel.revision = 0;
+        sentinel.revision = None;
         c.sync(&sentinel);
         assert!(
             c.cached_text.is_none(),
-            "sentinel sync must not write to cached_text"
+            "opt-out sync must not write to cached_text"
         );
 
-        // Populate the cache with a non-sentinel reconcile.
+        // Populate the cache with a normal (cached) reconcile.
         let host = FakeHost::new("see [[me", 8); // FakeHost::new auto-bumps revision
         c.sync(&host);
         let cached_rev = c
             .cached_text
             .as_ref()
             .map(|(rev, _, _)| *rev)
-            .expect("non-sentinel sync should have populated the cache");
-        assert_ne!(cached_rev, 0);
+            .expect("cached sync should have populated the cache");
 
-        // (2) Sentinel sync now: must not be served by the stale cache,
+        // (2) Opt-out sync now: must not be served by the stale cache,
         // and must not overwrite the cache slot either.
         let mut sentinel2 = FakeHost::new("see [[nope", 10);
-        sentinel2.revision = 0;
+        sentinel2.revision = None;
         c.sync(&sentinel2);
         let preserved_rev = c
             .cached_text
             .as_ref()
             .map(|(rev, _, _)| *rev)
-            .expect("sentinel sync should leave the previous cache entry alone");
+            .expect("opt-out sync should leave the previous cache entry alone");
         assert_eq!(
             preserved_rev, cached_rev,
-            "sentinel sync must not overwrite cached_text"
+            "opt-out sync must not overwrite cached_text"
+        );
+    }
+
+    /// Regression: cursor moves on a host whose `content_revision`
+    /// stays constant must HIT the cache slot — same key, same text
+    /// pointer, same zones — not rebuild `ExclusionZones` or
+    /// re-allocate the buffer text. This is the invariant the
+    /// `text_revision` → `content_revision` rename was designed to
+    /// preserve cleanly: cursor-only events never invalidate cached
+    /// zones.
+    #[tokio::test]
+    async fn cursor_only_move_within_trigger_hits_cache() {
+        let (_tmp, vault) = new_vault_with(&["memory"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+
+        // Open the popup at the end of `[[me`.
+        let mut host = FakeHost::new("see [[me", 8);
+        c.sync(&host);
+        let (cached_rev, cached_text_ptr) = {
+            let (rev, text, _) = c
+                .cached_text
+                .as_ref()
+                .expect("initial sync populates cache");
+            (*rev, text.as_ptr())
+        };
+
+        // Cursor moves one char back inside the same trigger token.
+        // Revision UNCHANGED — controller must serve from cache.
+        host.cursor = 7;
+        c.sync(&host);
+        let (preserved_rev, preserved_text_ptr) = {
+            let (rev, text, _) = c
+                .cached_text
+                .as_ref()
+                .expect("cursor-only sync must leave the cache populated");
+            (*rev, text.as_ptr())
+        };
+        assert_eq!(
+            preserved_rev, cached_rev,
+            "cursor-only sync must not change the cache key"
+        );
+        assert_eq!(
+            preserved_text_ptr, cached_text_ptr,
+            "cursor-only sync must reuse the cached String, not rebuild it"
+        );
+    }
+
+    /// Regression: `close()` must drop the `cached_text` slot. On a
+    /// multi-MB note the slot holds a full clone of the buffer plus
+    /// the parsed `ExclusionZones`; without the clear it survives
+    /// popup dismissal until the next text edit overwrites it.
+    #[tokio::test]
+    async fn close_clears_cached_text() {
+        let (_tmp, vault) = new_vault_with(&["memory"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+
+        let host = FakeHost::new("see [[me", 8);
+        c.sync(&host);
+        assert!(
+            c.cached_text.is_some(),
+            "sync should have populated cached_text"
+        );
+
+        c.close();
+        assert!(
+            c.cached_text.is_none(),
+            "close() must drop cached_text so the buffer clone doesn't outlive the popup"
         );
     }
 }

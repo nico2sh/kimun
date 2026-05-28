@@ -20,27 +20,38 @@ impl VisualLine {
     }
 }
 
-/// Wrap a single logical row at the given width. Returns the visual
-/// lines produced for this row (one or more entries; at least one).
+/// Wrap a single logical row at the given width, appending the
+/// produced `VisualLine`s to `out` (always at least one entry).
 ///
 /// `rendered_row` is the per-char rendered-mask for this row (empty
 /// slice if absent — falls back to raw char widths).
+///
+/// `scratch` is reused for the row's `char_indices()` buffer. Caller
+/// owns it; the function clears+refills on entry. Threading this
+/// buffer through `compute` / `splice_range` lets a 5000-row
+/// recompute reuse a single allocation instead of N transient
+/// `Vec<(usize, char)>`s — perf #11 in the holistic review.
 fn wrap_one_row(
     logical_row: usize,
     line: &str,
     width: usize,
     rendered_row: &[bool],
-) -> Vec<VisualLine> {
-    let ci: Vec<(usize, char)> = line.char_indices().collect();
+    scratch: &mut Vec<(usize, char)>,
+    out: &mut Vec<VisualLine>,
+) {
+    scratch.clear();
+    scratch.extend(line.char_indices());
+    let ci: &[(usize, char)] = scratch.as_slice();
     if ci.is_empty() || width == 0 {
-        return vec![VisualLine {
+        out.push(VisualLine {
             logical_row,
             start_col: 0,
             end_col: 0,
             start_byte: 0,
             end_byte: 0,
             is_first_visual_line: true,
-        }];
+        });
+        return;
     }
 
     let is_rendered = |pos: usize| -> bool {
@@ -51,7 +62,6 @@ fn wrap_one_row(
     };
 
     let total = ci.len();
-    let mut out = Vec::new();
     let mut start = 0;
     let mut is_first = true;
 
@@ -109,8 +119,6 @@ fn wrap_one_row(
         start = next_start;
         is_first = false;
     }
-
-    out
 }
 
 #[derive(Clone)]
@@ -134,10 +142,13 @@ impl WordWrapLayout {
             return Self::default();
         }
 
+        // One scratch buffer reused across every `wrap_one_row` call —
+        // a 5000-row recompute pays a single allocation instead of N.
+        let mut scratch: Vec<(usize, char)> = Vec::new();
         for (row, line) in lines.iter().enumerate() {
             row_starts.push(visual_lines.len());
             let rendered_row = rendered.get(row).map(|v| v.as_slice()).unwrap_or(&[]);
-            visual_lines.extend(wrap_one_row(row, line, width, rendered_row));
+            wrap_one_row(row, line, width, rendered_row, &mut scratch, &mut visual_lines);
         }
 
         Self {
@@ -190,13 +201,15 @@ impl WordWrapLayout {
 
         // Wrap the new contents of the affected rows. Also record per-row
         // starting indices inside the new slice so we can rebuild
-        // row_starts[row_range] without searching.
+        // row_starts[row_range] without searching. One scratch buffer
+        // shared across every row in the range (perf #11).
         let mut new_slice: Vec<VisualLine> = Vec::new();
         let mut new_row_starts_for_range: Vec<usize> = Vec::with_capacity(row_range.len());
+        let mut scratch: Vec<(usize, char)> = Vec::new();
         for row in row_range.clone() {
             new_row_starts_for_range.push(new_slice.len());
             let rendered_row = rendered.get(row).map(|v| v.as_slice()).unwrap_or(&[]);
-            new_slice.extend(wrap_one_row(row, &lines[row], width, rendered_row));
+            wrap_one_row(row, &lines[row], width, rendered_row, &mut scratch, &mut new_slice);
         }
 
         // Splice visual_lines.

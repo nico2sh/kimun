@@ -6,6 +6,7 @@ pub mod event_handler;
 pub mod keys;
 pub mod settings;
 pub mod ui;
+pub mod util;
 
 #[cfg(test)]
 mod test_support;
