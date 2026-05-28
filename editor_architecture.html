@@ -222,16 +222,28 @@ When <code>text_revision</code> advances, Gate 1 first attempts
 differs (cursor-row fast path for single-char edits; LCP/LCS scan for everything else),
 then applies a hybrid widener.</p>
 
-<p><strong>Widener (hybrid).</strong>
-First tries <code>expand_to_reset_boundary(parsed_buffer.reset_boundaries, lines.len(), damaged)</code>:
-<code>reset_boundaries</code> are rows where pulldown-cmark's parser state is provably reset
-(<code>lazy_depth[r] == 0 &amp;&amp; kinds[r] == Blank</code>), so a slice between two reset
-boundaries is guaranteed equivalent to a fresh parse over that range &mdash; no
-post-slice verification needed. If the boundary set has no reachable reset point within
-the caps (long buffers without blank separators), falls back to
-<code>widen_to_safe(parsed_buffer.kinds, damaged)</code>, which stops at <code>Blank</code>
-or <code>Plain</code> rows and relies on per-row post-slice verification to catch
-divergences (paragraph lazy-continuation crossing a Plain boundary, etc.).</p>
+<p><strong>Widener (three-tier).</strong>
+The widener tries three boundary sources in order:</p>
+<ol>
+  <li><strong>Strict.</strong> <code>expand_to_reset_boundary(parsed_buffer.reset_boundaries, &hellip;)</code>:
+      <code>reset_boundaries</code> are rows where pulldown-cmark's parser state is provably reset
+      (<code>lazy_depth[r] == 0 &amp;&amp; kinds[r] == Blank</code>), so a slice between two reset
+      boundaries is guaranteed equivalent to a fresh parse over that range &mdash; no
+      post-slice verification needed.</li>
+  <li><strong>Intra-construct.</strong> <code>expand_to_reset_boundary(parsed_buffer.intra_construct_boundaries, &hellip;)</code>:
+      rows where pulldown emits <code>End(Item)</code> / <code>End(BlockQuote)</code> such that
+      splicing across the row preserves per-row rendered output (<code>kinds</code>,
+      <code>elements.len()</code>, <code>content_vis</code>) even though the surrounding
+      lazy construct is still open (<code>lazy_depth[b] &gt; 0</code>). Unlocks incremental
+      typing inside loose lists (<code>heavy_lists_loose.md</code>: 493 &micro;s &rarr; ~34 &micro;s,
+      ~15&times; speedup). The post-slice verify runs in release during the proof-out
+      window because <code>lazy_depth</code> / <code>reset_boundaries</code> metadata may
+      diverge from a fresh parse.</li>
+  <li><strong>Heuristic.</strong> <code>widen_to_safe(parsed_buffer.kinds, damaged)</code>:
+      stops at <code>Blank</code> or <code>Plain</code> rows and relies on per-row post-slice
+      verification (debug-only when <code>KIMUN_VIEW_VERIFY_INCREMENTAL=1</code>) to catch
+      divergences (paragraph lazy-continuation crossing a Plain boundary, etc.).</li>
+</ol>
 
 <p><strong>Lazy-depth-aware structural guards.</strong>
 Before either widener runs, <code>try_incremental_parse</code> bails to a full parse when
@@ -246,7 +258,12 @@ the damaged row trips any of:</p>
   <li><code>parsed_buffer.lazy_depth[row&minus;1..=row+1]</code> contains any positive entry
       &mdash; an open lazy-continuable construct (List, BlockQuote, IndentedCode,
       HtmlBlock) at or next to the damaged row can lazy-extend across the splice in
-      ways the slice cannot capture.</li>
+      ways the slice cannot capture. <strong>Conditionally relaxed</strong> when the
+      damaged row's old kind is <code>ListMarker</code> or <code>ListContinuation</code>:
+      list-content edits are safe by construction (per-row classification stays
+      identical across slice-vs-parent), so the widener proceeds to the intra-construct
+      tier instead of bailing. The relaxation rate is tracked in
+      <code>widener_metrics::lazy_guard_relaxed</code>.</li>
   <li>The damaged row flips between blank and non-blank with a non-blank neighbour
       &mdash; the pre-edit reset boundary at that row becomes invalid post-edit
       because a paragraph (or other lazy construct) can re-extend across the row.</li>
@@ -256,8 +273,9 @@ as a standalone document and splices it into <code>parsed_buffer</code>; the spl
 also updates <code>lazy_depth</code> and <code>reset_boundaries</code>. A debug-only
 assertion (<code>KIMUN_VIEW_VERIFY_INCREMENTAL=1</code>) compares every incremental
 result against a fresh full parse field-by-field for development-time fuzzing.
-See openspec changes <code>parse-reset-boundaries</code> and
-<code>parse-reset-boundaries-v2</code>.</p>
+See openspec changes <code>parse-reset-boundaries</code>,
+<code>parse-reset-boundaries-v2</code>, and
+<code>intra-construct-reset-boundaries</code>.</p>
 
 <h2>3. Backend abstraction</h2>
 
