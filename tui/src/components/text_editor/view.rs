@@ -878,24 +878,25 @@ impl MarkdownEditorView {
         //
         // - Strict path: skipped. Provably equivalent to a fresh
         //   parse (see `reset_boundaries` docstring).
-        // - IntraConstruct path: RUNS in release during the proof-out
-        //   window. The boundary set is rendered-output-equivalent
-        //   by construction but `lazy_depth` / `reset_boundaries`
-        //   metadata can disagree; the verify catches any leak of
-        //   the metadata divergence into per-row classification.
-        // - Heuristic path: RUNS in debug builds when
-        //   `KIMUN_VIEW_VERIFY_INCREMENTAL=1`. Demoted from release
-        //   after the v2 phase-7 proof-out (zero verify_failed
-        //   across 1581 attempts on 8 buffer shapes).
+        // - IntraConstruct path: gated on
+        //   `cfg(debug_assertions) + KIMUN_VIEW_VERIFY_INCREMENTAL=1`.
+        //   Demoted from release after the PR 3 proof-out: 0 verify_failed
+        //   across 1011 dogfooding attempts on 8 buffer shapes + 600k
+        //   proptest iterations (100k × 6 strategies). Combined with
+        //   the §3.0 narrowing to {ListMarker, lazy_depth==1}, the
+        //   IntraConstruct path is sound under every shape exercised
+        //   to date. The 600k proptest cases stay in the regression
+        //   harness to catch any pulldown-version-bump-induced drift.
+        // - Heuristic path: same gating. Demoted from release after
+        //   the v2 phase-7 proof-out (zero verify_failed across 1581
+        //   attempts on 8 buffer shapes).
         //
-        // After one release cycle of IntraConstruct's verify running
-        // in release with zero hits, demote it the same way (mirror
-        // of the v2 phase-7 process).
-        let verify_in_release = matches!(splice_path, SplicePath::IntraConstruct);
-        let verify_in_debug = matches!(splice_path, SplicePath::Heuristic)
-            && cfg!(debug_assertions)
-            && verify_incremental_enabled();
-        if verify_in_release || verify_in_debug {
+        // If a release-build divergence ever DOES surface (e.g. a
+        // pulldown version bump changes tokenisation), re-enable
+        // the relevant arm in release while a guard is added.
+        let verify_eligible_path =
+            matches!(splice_path, SplicePath::IntraConstruct | SplicePath::Heuristic);
+        if verify_eligible_path && cfg!(debug_assertions) && verify_incremental_enabled() {
             for row in widened.clone() {
                 if damaged.contains(&row) {
                     continue; // Damaged row: kind change is expected/irrelevant.
