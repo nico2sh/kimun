@@ -808,15 +808,9 @@ impl MarkdownEditorView {
             let new_blank = new_line.trim().is_empty();
             if old_blank != new_blank {
                 let above_non_blank = row > 0
-                    && !matches!(
-                        self.parsed_buffer.kinds[row - 1],
-                        LineConstructKind::Blank
-                    );
+                    && !matches!(self.parsed_buffer.kinds[row - 1], LineConstructKind::Blank);
                 let below_non_blank = row + 1 < self.parsed_buffer.kinds.len()
-                    && !matches!(
-                        self.parsed_buffer.kinds[row + 1],
-                        LineConstructKind::Blank
-                    );
+                    && !matches!(self.parsed_buffer.kinds[row + 1], LineConstructKind::Blank);
                 if above_non_blank || below_non_blank {
                     return METRICS.bail(BailReason::BlankTransition);
                 }
@@ -899,8 +893,10 @@ impl MarkdownEditorView {
         // If a release-build divergence ever DOES surface (e.g. a
         // pulldown version bump changes tokenisation), re-enable
         // the relevant arm in release while a guard is added.
-        let verify_eligible_path =
-            matches!(splice_path, SplicePath::IntraConstruct | SplicePath::Heuristic);
+        let verify_eligible_path = matches!(
+            splice_path,
+            SplicePath::IntraConstruct | SplicePath::Heuristic
+        );
         if verify_eligible_path && cfg!(debug_assertions) && verify_incremental_enabled() {
             for row in widened.clone() {
                 if damaged.contains(&row) {
@@ -910,8 +906,7 @@ impl MarkdownEditorView {
                 if slice.kinds[idx] != self.parsed_buffer.kinds[row] {
                     return METRICS.bail(BailReason::VerifyFailed);
                 }
-                if slice.lines[idx].elements.len() != self.parsed_buffer.lines[row].elements.len()
-                {
+                if slice.lines[idx].elements.len() != self.parsed_buffer.lines[row].elements.len() {
                     return METRICS.bail(BailReason::VerifyFailed);
                 }
                 if slice.lines[idx].content_vis != self.parsed_buffer.lines[row].content_vis {
@@ -2234,11 +2229,7 @@ mod tests {
     #[test]
     fn try_incremental_parse_lazy_guard_still_bails_on_marker_removal() {
         let mut v = MarkdownEditorView::new();
-        let lines: Vec<String> = vec![
-            "- a".into(),
-            "".into(),
-            "- b".into(),
-        ];
+        let lines: Vec<String> = vec!["- a".into(), "".into(), "- b".into()];
         update_view(&mut v, &lines, (0, 3), rect(20), 1, None);
 
         let mut edited = lines.clone();

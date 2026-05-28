@@ -12,11 +12,7 @@ use super::{Element, ElementKind, ImagePlaceholder, string_display_width};
 /// sigils as non-content, and pushes a `WikiLink` element for each
 /// span. Skips spans that fall entirely inside an existing element
 /// (e.g. `[[icon]]` inside a markdown link's display text).
-pub(super) fn detect_wikilinks(
-    line: &str,
-    content_vis: &mut [bool],
-    elements: &mut Vec<Element>,
-) {
+pub(super) fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Element>) {
     for span in kimun_core::note::wikilink_char_spans(line) {
         let overlaps = elements
             .iter()

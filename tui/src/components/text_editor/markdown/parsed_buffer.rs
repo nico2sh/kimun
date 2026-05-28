@@ -327,8 +327,7 @@ impl ParsedBuffer {
                         .iter()
                         .any(|c| matches!(c, LazyConstruct::BlockQuote));
                     if !nested {
-                        let (er_unc, _) =
-                            byte_to_row_col_unclamped(range.end, lines, &line_starts);
+                        let (er_unc, _) = byte_to_row_col_unclamped(range.end, lines, &line_starts);
                         let row = er_unc.min(lines.len());
                         push_intra_boundary(&mut intra_construct_boundaries, row, lines.len());
                     }
@@ -1215,8 +1214,8 @@ mod intra_construct_tests {
             env!("CARGO_MANIFEST_DIR"),
             name
         );
-        let content = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read fixture {path}: {e}"));
+        let content =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read fixture {path}: {e}"));
         content.lines().map(String::from).collect()
     }
 
@@ -1292,17 +1291,16 @@ mod intra_construct_tests {
             let buf = read_fixture(name);
             let pb = ParsedBuffer::parse(&buf);
             let n = pb.intra_construct_boundaries.len();
-            eprintln!(
-                "{:32} lines={:5}  intra={}",
-                name,
-                buf.len(),
-                n,
-            );
+            eprintln!("{:32} lines={:5}  intra={}", name, buf.len(), n,);
             if !check(n) {
                 failures.push(format!("{name}: got {n} — {msg}"));
             }
         }
-        assert!(failures.is_empty(), "fixture assertions failed:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "fixture assertions failed:\n{}",
+            failures.join("\n")
+        );
     }
 
     #[test]

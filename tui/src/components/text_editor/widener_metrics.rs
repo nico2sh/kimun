@@ -243,7 +243,11 @@ impl Snapshot {
 
     pub fn successful_incremental_rate(&self) -> f64 {
         let denom = self.attempted();
-        if denom == 0 { 0.0 } else { self.successful_incremental() as f64 / denom as f64 }
+        if denom == 0 {
+            0.0
+        } else {
+            self.successful_incremental() as f64 / denom as f64
+        }
     }
 
     /// Share of successful incremental splices taken by the strict
@@ -252,17 +256,29 @@ impl Snapshot {
     /// they sum to ≤ 1 (rounding aside).
     pub fn fast_path_share(&self) -> f64 {
         let denom = self.successful_incremental();
-        if denom == 0 { 0.0 } else { self.incremental_reset as f64 / denom as f64 }
+        if denom == 0 {
+            0.0
+        } else {
+            self.incremental_reset as f64 / denom as f64
+        }
     }
 
     pub fn intra_path_share(&self) -> f64 {
         let denom = self.successful_incremental();
-        if denom == 0 { 0.0 } else { self.incremental_intra_construct as f64 / denom as f64 }
+        if denom == 0 {
+            0.0
+        } else {
+            self.incremental_intra_construct as f64 / denom as f64
+        }
     }
 
     pub fn heuristic_path_share(&self) -> f64 {
         let denom = self.successful_incremental();
-        if denom == 0 { 0.0 } else { self.incremental_fallback as f64 / denom as f64 }
+        if denom == 0 {
+            0.0
+        } else {
+            self.incremental_fallback as f64 / denom as f64
+        }
     }
 
     pub fn guard_sprawl_rate(&self) -> f64 {
@@ -280,7 +296,11 @@ impl Snapshot {
         // Hit rate = verify_failed / (verify_failed + verify-eligible-success).
         let denom =
             self.full_verify_failed + self.incremental_intra_construct + self.incremental_fallback;
-        if denom == 0 { 0.0 } else { self.full_verify_failed as f64 / denom as f64 }
+        if denom == 0 {
+            0.0
+        } else {
+            self.full_verify_failed as f64 / denom as f64
+        }
     }
 }
 
@@ -320,16 +340,26 @@ pub fn dump_if_enabled() {
         s.entries,
         s.first_parse,
         s.lazy_guard_relaxed,
-        s.incremental_reset, pct(s.incremental_reset, s.attempted()),
-        s.incremental_intra_construct, pct(s.incremental_intra_construct, s.attempted()),
-        s.incremental_fallback, pct(s.incremental_fallback, s.attempted()),
-        s.full_line_count_change, pct(s.full_line_count_change, s.attempted()),
-        s.full_no_damage, pct(s.full_no_damage, s.attempted()),
-        s.full_kind_guard, pct(s.full_kind_guard, s.attempted()),
-        s.full_lazy_depth, pct(s.full_lazy_depth, s.attempted()),
-        s.full_blank_transition, pct(s.full_blank_transition, s.attempted()),
-        s.full_cap_trip, pct(s.full_cap_trip, s.attempted()),
-        s.full_verify_failed, pct(s.full_verify_failed, s.attempted()),
+        s.incremental_reset,
+        pct(s.incremental_reset, s.attempted()),
+        s.incremental_intra_construct,
+        pct(s.incremental_intra_construct, s.attempted()),
+        s.incremental_fallback,
+        pct(s.incremental_fallback, s.attempted()),
+        s.full_line_count_change,
+        pct(s.full_line_count_change, s.attempted()),
+        s.full_no_damage,
+        pct(s.full_no_damage, s.attempted()),
+        s.full_kind_guard,
+        pct(s.full_kind_guard, s.attempted()),
+        s.full_lazy_depth,
+        pct(s.full_lazy_depth, s.attempted()),
+        s.full_blank_transition,
+        pct(s.full_blank_transition, s.attempted()),
+        s.full_cap_trip,
+        pct(s.full_cap_trip, s.attempted()),
+        s.full_verify_failed,
+        pct(s.full_verify_failed, s.attempted()),
         s.attempted(),
         s.successful_incremental_rate() * 100.0,
         s.fast_path_share() * 100.0,
@@ -341,5 +371,9 @@ pub fn dump_if_enabled() {
 }
 
 fn pct(numer: u64, denom: u64) -> f64 {
-    if denom == 0 { 0.0 } else { (numer as f64 / denom as f64) * 100.0 }
+    if denom == 0 {
+        0.0
+    } else {
+        (numer as f64 / denom as f64) * 100.0
+    }
 }
