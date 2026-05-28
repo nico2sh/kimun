@@ -385,6 +385,7 @@ pub struct TextEditorComponent {
     ///   - `mark_saved_at_revision` / `is_dirty` use it as the
     ///     save-correlation token; navigation keys never invalidate a
     ///     save in flight.
+    ///
     /// `NonZeroU64` because `Option<NonZeroU64>` is the cleanest way
     /// to express "no cacheable revision" without a magic-value
     /// sentinel and without a separate field.

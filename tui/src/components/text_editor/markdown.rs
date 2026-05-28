@@ -371,10 +371,8 @@ impl ParsedBuffer {
             // clamped to `lines.len()`). Resolved into per-row depth
             // by a prefix sum after the walk.
             match &event {
-                Event::Start(tag) if is_top_level_block_tag(tag) => {
-                    if sr < depth_delta.len() {
-                        depth_delta[sr] += 1;
-                    }
+                Event::Start(tag) if is_top_level_block_tag(tag) && sr < depth_delta.len() => {
+                    depth_delta[sr] += 1;
                 }
                 Event::End(tag_end) if is_top_level_block_tag_end(tag_end) => {
                     // pulldown's `range.end` for a block falls in the
@@ -401,9 +399,7 @@ impl ParsedBuffer {
                     // Opening fence marker row.
                     kinds[sr] = LineConstructKind::FenceMarker;
                     // Rows between opening and closing fences are content.
-                    for r in (sr + 1)..er {
-                        kinds[r] = LineConstructKind::FenceContent;
-                    }
+                    kinds[(sr + 1)..er].fill(LineConstructKind::FenceContent);
                     // Closing fence marker row (er is the row of the closing ```).
                     kinds[er] = LineConstructKind::FenceMarker;
                 }
@@ -412,9 +408,7 @@ impl ParsedBuffer {
                         code_block_start = Some(range.start);
                     }
                     code_block_depth += 1;
-                    for r in sr..=er {
-                        kinds[r] = LineConstructKind::IndentedCode;
-                    }
+                    kinds[sr..=er].fill(LineConstructKind::IndentedCode);
                 }
                 Event::End(TagEnd::CodeBlock) => {
                     code_block_depth = code_block_depth.saturating_sub(1);
@@ -464,9 +458,7 @@ impl ParsedBuffer {
                     }
                 }
                 Event::Start(Tag::HtmlBlock) => {
-                    for r in sr..=er {
-                        kinds[r] = LineConstructKind::HtmlBlock;
-                    }
+                    kinds[sr..=er].fill(LineConstructKind::HtmlBlock);
                 }
                 Event::Html(_) => {
                     // Block-level HTML body. Already classified by the
@@ -475,14 +467,14 @@ impl ParsedBuffer {
                     // tag boundaries but defers to fence/code kinds when
                     // the rows happen to overlap (rare, but possible
                     // with malformed input).
-                    for r in sr..=er {
+                    for kind in &mut kinds[sr..=er] {
                         if !matches!(
-                            kinds[r],
+                            *kind,
                             LineConstructKind::FenceContent
                                 | LineConstructKind::IndentedCode
                                 | LineConstructKind::FenceMarker
                         ) {
-                            kinds[r] = LineConstructKind::HtmlBlock;
+                            *kind = LineConstructKind::HtmlBlock;
                         }
                     }
                 }
@@ -778,8 +770,6 @@ impl ParsedBuffer {
         } else {
             vec![0, lines.len()]
         };
-        let lazy_depth_unused = (); // v2 field not yet shipped
-        let _ = lazy_depth_unused;
         ParsedBuffer {
             lines: out,
             kinds,

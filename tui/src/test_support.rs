@@ -25,6 +25,7 @@ pub async fn temp_vault(prefix: &str) -> Arc<NoteVault> {
     Arc::new(NoteVault::new(VaultConfig::new(&dir)).await.unwrap())
 }
 
+#[allow(dead_code)]
 pub fn key_event(code: KeyCode) -> InputEvent {
     InputEvent::Key(KeyEvent {
         code,
