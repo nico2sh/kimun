@@ -80,10 +80,7 @@ impl<T: Send + 'static> SingleSlotTask<T> {
     /// the caller can decide whether to `abort()` explicitly. The
     /// returned `Result` is `JoinHandle`'s own result type, so a
     /// panic in the task surfaces as `Err(JoinError)`.
-    pub async fn await_with_timeout(
-        &mut self,
-        dur: Duration,
-    ) -> Option<Result<T, JoinError>> {
+    pub async fn await_with_timeout(&mut self, dur: Duration) -> Option<Result<T, JoinError>> {
         let handle = self.handle.as_mut()?;
         match tokio::time::timeout(dur, handle).await {
             Ok(res) => {

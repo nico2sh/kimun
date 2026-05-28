@@ -99,12 +99,11 @@ impl<'a> EditorSnapshot<'a> {
         let Some(line) = self.lines.get(row) else {
             return byte;
         };
-        byte
-            + line
-                .char_indices()
-                .nth(self.cursor.1)
-                .map(|(b, _)| b)
-                .unwrap_or(line.len())
+        byte + line
+            .char_indices()
+            .nth(self.cursor.1)
+            .map(|(b, _)| b)
+            .unwrap_or(line.len())
     }
 }
 

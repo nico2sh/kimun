@@ -3,8 +3,8 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kimun_core::note::ExclusionZones;
 use kimun_core::NoteVault;
+use kimun_core::note::ExclusionZones;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::host::AutocompleteHost;
@@ -293,12 +293,7 @@ impl AutocompleteController {
             // owned `String` the cache slot will hold.
             let text = snap.lines.join("\n");
             let zones = ExclusionZones::from_text(&text);
-            let trigger = detect_trigger_with_zones(
-                &text,
-                cursor,
-                self.trigger_opts,
-                Some(&zones),
-            );
+            let trigger = detect_trigger_with_zones(&text, cursor, self.trigger_opts, Some(&zones));
             if let Some(rev) = cache_key {
                 self.cached_text = Some((rev, text, zones));
             }
@@ -397,7 +392,11 @@ impl AutocompleteController {
         let redraw = self.redraw_cb.clone();
         let vault = self.vault.clone();
         let limit = self.fetch_limit;
-        let debounce = if instant { Duration::ZERO } else { self.debounce };
+        let debounce = if instant {
+            Duration::ZERO
+        } else {
+            self.debounce
+        };
         self.in_flight.spawn(async move {
             // Aborted by the next `fire_query` before this sleep completes
             // for a burst of typing — the SQLite hit below never runs.
@@ -651,8 +650,7 @@ mod tests {
         /// `buffer_snapshot()` call so tests that mutate
         /// `host.buffer` / `host.cursor` directly stay in sync.
         fn lines_and_cursor(&self) -> (Vec<String>, (usize, usize)) {
-            let lines: Vec<String> =
-                self.buffer.split('\n').map(|s| s.to_string()).collect();
+            let lines: Vec<String> = self.buffer.split('\n').map(|s| s.to_string()).collect();
             let mut byte_running = 0;
             for (row, line) in lines.iter().enumerate() {
                 let line_end = byte_running + line.len();
@@ -672,9 +670,7 @@ mod tests {
 
     impl AutocompleteHost for FakeHost {
         fn buffer_snapshot(&self) -> EditorSnapshot<'_> {
-            let rev = self
-                .revision
-                .unwrap_or_else(|| NonZeroU64::new(1).unwrap());
+            let rev = self.revision.unwrap_or_else(|| NonZeroU64::new(1).unwrap());
             let (lines, cursor) = self.lines_and_cursor();
             // Owned because we constructed `lines` locally — tests
             // don't hold the snapshot long enough to care about the

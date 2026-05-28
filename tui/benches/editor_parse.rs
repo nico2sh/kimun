@@ -7,10 +7,10 @@
 //! - wrap_5000_lines: if > 1 ms, open a wrap-incremental follow-up
 //!   change (G4 trigger).
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use kimun_notes::components::text_editor::markdown::ParsedBuffer;
 use kimun_notes::components::text_editor::parse_incremental::{
-    compute_damage_range, widen_to_safe, WidenResult,
+    WidenResult, compute_damage_range, widen_to_safe,
 };
 use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
 use kimun_notes::components::text_editor::word_wrap::WordWrapLayout;
@@ -32,7 +32,9 @@ fn snap_for<'a>(
 
 fn make_5000_line_buffer() -> Vec<String> {
     (0..5000)
-        .map(|i| format!("paragraph number {i} with some sample text to give the parser work to do"))
+        .map(|i| {
+            format!("paragraph number {i} with some sample text to give the parser work to do")
+        })
         .collect()
 }
 
@@ -71,11 +73,13 @@ fn bench_incremental_paragraph_insert_5000_lines(c: &mut Criterion) {
         b.iter_batched(
             || initial_pb.clone(),
             |mut pb| {
-                let damaged = compute_damage_range(&lines, &edited, 2500)
-                    .expect("damaged should be Some");
+                let damaged =
+                    compute_damage_range(&lines, &edited, 2500).expect("damaged should be Some");
                 let widened = match widen_to_safe(&pb.kinds, damaged) {
                     WidenResult::Widened(r) => r,
-                    WidenResult::FullRebuild => panic!("paragraph insert should take incremental path"),
+                    WidenResult::FullRebuild => {
+                        panic!("paragraph insert should take incremental path")
+                    }
                 };
                 let slice = ParsedBuffer::parse_range(black_box(&edited), widened.clone());
                 pb.splice(widened, slice);
@@ -105,11 +109,7 @@ fn bench_incremental_fallback_5000_lines(c: &mut Criterion) {
 fn bench_wrap_5000_lines(c: &mut Criterion) {
     let lines = make_5000_line_buffer();
     let pb = ParsedBuffer::parse(&lines);
-    let rendered: Vec<Vec<bool>> = pb
-        .lines
-        .iter()
-        .map(|p| p.content_vis.clone())
-        .collect();
+    let rendered: Vec<Vec<bool>> = pb.lines.iter().map(|p| p.content_vis.clone()).collect();
     c.bench_function("wrap_5000_lines", |b| {
         b.iter(|| {
             let layout = WordWrapLayout::compute(black_box(&lines), 80, &rendered);
@@ -123,7 +123,12 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
     use ratatui::layout::Rect;
 
     let lines = make_5000_line_buffer();
-    let rect = Rect { x: 0, y: 0, width: 80, height: 40 };
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 40,
+    };
 
     // Warm the view: do a full parse on the original buffer once.
     let mut warmed = MarkdownEditorView::new();
@@ -137,7 +142,11 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
-                v.update(&snap_for(black_box(&edited), (2500, edited[2500].len()), 2), rect, None);
+                v.update(
+                    &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
+                    rect,
+                    None,
+                );
                 black_box(v);
             },
             BatchSize::SmallInput,
@@ -150,7 +159,12 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
     use ratatui::layout::Rect;
 
     let lines = make_5000_line_buffer();
-    let rect = Rect { x: 0, y: 0, width: 80, height: 40 };
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 40,
+    };
 
     let mut warmed = MarkdownEditorView::new();
     warmed.update(&snap_for(&lines, (2500, 0), 1), rect, None);
@@ -163,7 +177,11 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
-                v.update(&snap_for(black_box(&edited), (2500, edited[2500].len()), 2), rect, None);
+                v.update(
+                    &snap_for(black_box(&edited), (2500, edited[2500].len()), 2),
+                    rect,
+                    None,
+                );
                 black_box(v);
             },
             BatchSize::SmallInput,
@@ -176,7 +194,12 @@ fn bench_full_view_update_5000_lines_first_parse(c: &mut Criterion) {
     use ratatui::layout::Rect;
 
     let lines = make_5000_line_buffer();
-    let rect = Rect { x: 0, y: 0, width: 80, height: 40 };
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 40,
+    };
 
     c.bench_function("full_view_update_5000_lines_first_parse", |b| {
         b.iter(|| {
