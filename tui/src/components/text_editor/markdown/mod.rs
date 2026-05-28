@@ -203,7 +203,6 @@ impl ParsedLine {
     }
 }
 
-
 /// Detects whether a line is an indented list item (leading spaces or tab,
 /// followed by `-`/`*`/`+`/digit-dot + space). Used by `ParsedLine::parse`
 /// to decide whether to feed pulldown-cmark a synthetic parent-list context
@@ -264,7 +263,6 @@ pub(super) fn list_marker_len(s: &str) -> Option<usize> {
         None
     }
 }
-
 
 pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -> Style {
     match kind {
@@ -330,8 +328,8 @@ pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::parse_incremental::LineConstructKind;
+    use super::*;
     use ratatui::style::Modifier;
     fn t() -> Theme {
         Theme::default()

@@ -222,7 +222,9 @@ fn bench_full_view_update_5000_lines_first_parse(c: &mut Criterion) {
 fn make_heavy_lists_buffer() -> Vec<String> {
     let mut out = Vec::with_capacity(571);
     for i in 1..=500 {
-        out.push(format!("- list item {i} with text content for editing tests"));
+        out.push(format!(
+            "- list item {i} with text content for editing tests"
+        ));
         if i % 7 == 0 {
             out.push(String::new());
         }
@@ -260,7 +262,11 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
             || warmed.clone(),
             |mut v| {
                 v.update(
-                    &snap_for(black_box(&edited), (target_row, edited[target_row].len()), 2),
+                    &snap_for(
+                        black_box(&edited),
+                        (target_row, edited[target_row].len()),
+                        2,
+                    ),
                     rect,
                     None,
                 );
@@ -340,7 +346,11 @@ fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
             || warmed.clone(),
             |mut v| {
                 v.update(
-                    &snap_for(black_box(&edited), (target_row, edited[target_row].len()), 2),
+                    &snap_for(
+                        black_box(&edited),
+                        (target_row, edited[target_row].len()),
+                        2,
+                    ),
                     rect,
                     None,
                 );
