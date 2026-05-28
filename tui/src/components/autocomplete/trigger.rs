@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use kimun_core::note::{
-    is_inside_code_link_or_frontmatter, is_inside_exclusion_zone, ExclusionZones,
+    ExclusionZones, is_inside_code_link_or_frontmatter, is_inside_exclusion_zone,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

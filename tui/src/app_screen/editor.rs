@@ -379,10 +379,7 @@ impl EditorScreen {
             // disk. A timeout returns Err(_); we skip mark_saved so the
             // editor stays dirty for any subsequent retry.
             let save = self.vault.save_note(&self.path, &text);
-            if matches!(
-                tokio::time::timeout(SAVE_TIMEOUT, save).await,
-                Ok(Ok(_))
-            ) {
+            if matches!(tokio::time::timeout(SAVE_TIMEOUT, save).await, Ok(Ok(_))) {
                 self.editor.mark_saved(text);
             }
         }

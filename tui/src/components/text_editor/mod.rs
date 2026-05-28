@@ -1,8 +1,8 @@
 pub mod autocomplete_glue;
 pub mod backend;
 pub mod markdown;
-pub mod parse_incremental;
 pub mod nvim_rpc;
+pub mod parse_incremental;
 pub mod snapshot;
 pub mod view;
 pub mod word_wrap;
@@ -41,10 +41,7 @@ fn snapshot_from_backend(
             EditorSnapshot::borrowed(ta.lines(), cursor, content_revision)
         }
         BackendState::Nvim(nvim) => {
-            let snap = nvim
-                .snapshot
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
             let lines_len = snap.lines.len();
             let cursor_row = if lines_len == 0 {
                 0
@@ -524,11 +521,7 @@ impl TextEditorComponent {
 
     fn refresh_autocomplete_if_open(&mut self) {
         // No controller (e.g. Nvim backend) or popup closed → nothing to refresh.
-        if !self
-            .autocomplete
-            .as_ref()
-            .is_some_and(|c| c.is_open())
-        {
+        if !self.autocomplete.as_ref().is_some_and(|c| c.is_open()) {
             return;
         }
         // Inline the snapshot via the free function so `&self.backend`
@@ -1139,8 +1132,7 @@ impl TextEditorComponent {
         // and we substitute 1. 2^64 edits is astronomical but the
         // invariant is type-checkable.
         let next = self.content_revision.get().wrapping_add(1);
-        self.content_revision =
-            NonZeroU64::new(next).unwrap_or(NonZeroU64::new(1).unwrap());
+        self.content_revision = NonZeroU64::new(next).unwrap_or(NonZeroU64::new(1).unwrap());
     }
 
     /// If the Nvim process has died, fall back to a Textarea with the last known content.
@@ -1531,102 +1523,103 @@ impl TextEditorComponent {
             CursorOnly,
             TextMutated,
         }
-        let outcome: Option<ShortcutOutcome> = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
-            // --- Cursor movement (Shift extends the selection) ---
-            (KeyModifiers::NONE, KeyCode::Left) => {
-                cursor_move!(ta, CursorMove::Back, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            (KeyModifiers::NONE, KeyCode::Right) => {
-                cursor_move!(ta, CursorMove::Forward, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            (KeyModifiers::NONE, KeyCode::Up) => {
-                cursor_move!(ta, CursorMove::Up, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            (KeyModifiers::NONE, KeyCode::Down) => {
-                cursor_move!(ta, CursorMove::Down, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            (KeyModifiers::NONE, KeyCode::Home) => {
-                cursor_move!(ta, CursorMove::Head, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            (KeyModifiers::NONE, KeyCode::End) => {
-                cursor_move!(ta, CursorMove::End, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            (KeyModifiers::NONE, KeyCode::PageUp) => {
-                cursor_move!(ta, CursorMove::ParagraphBack, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            (KeyModifiers::NONE, KeyCode::PageDown) => {
-                cursor_move!(ta, CursorMove::ParagraphForward, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            // Word navigation (Ctrl+arrow, Windows/Linux style)
-            (KeyModifiers::CONTROL, KeyCode::Left) => {
-                cursor_move!(ta, CursorMove::WordBack, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            (KeyModifiers::CONTROL, KeyCode::Right) => {
-                cursor_move!(ta, CursorMove::WordForward, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            // Document start / end
-            (KeyModifiers::CONTROL, KeyCode::Home) => {
-                cursor_move!(ta, CursorMove::Top, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            (KeyModifiers::CONTROL, KeyCode::End) => {
-                cursor_move!(ta, CursorMove::Bottom, shift);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). The textarea
-            // returns `false` when the stack is empty — no buffer change AND
-            // no cursor change, so emit NoOp and skip the view-cache bump.
-            (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
-                if ta.undo() {
-                    Some(ShortcutOutcome::TextMutated)
-                } else {
-                    Some(ShortcutOutcome::NoOp)
+        let outcome: Option<ShortcutOutcome> =
+            match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
+                // --- Cursor movement (Shift extends the selection) ---
+                (KeyModifiers::NONE, KeyCode::Left) => {
+                    cursor_move!(ta, CursorMove::Back, shift);
+                    Some(ShortcutOutcome::CursorOnly)
                 }
-            }
-            (KeyModifiers::CONTROL, KeyCode::Char('y'))
-            | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => {
-                if ta.redo() {
-                    Some(ShortcutOutcome::TextMutated)
-                } else {
-                    Some(ShortcutOutcome::NoOp)
+                (KeyModifiers::NONE, KeyCode::Right) => {
+                    cursor_move!(ta, CursorMove::Forward, shift);
+                    Some(ShortcutOutcome::CursorOnly)
                 }
-            }
-            // Select all
-            (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                ta.move_cursor(CursorMove::Top);
-                ta.start_selection();
-                ta.move_cursor(CursorMove::Bottom);
-                Some(ShortcutOutcome::CursorOnly)
-            }
-            // Delete word before / after cursor. Returns `false` when at a
-            // word boundary with nothing to delete — no buffer/cursor change.
-            (KeyModifiers::CONTROL, KeyCode::Backspace)
-            | (KeyModifiers::ALT, KeyCode::Backspace) => {
-                if ta.delete_word() {
-                    Some(ShortcutOutcome::TextMutated)
-                } else {
-                    Some(ShortcutOutcome::NoOp)
+                (KeyModifiers::NONE, KeyCode::Up) => {
+                    cursor_move!(ta, CursorMove::Up, shift);
+                    Some(ShortcutOutcome::CursorOnly)
                 }
-            }
-            (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
-                if ta.delete_next_word() {
-                    Some(ShortcutOutcome::TextMutated)
-                } else {
-                    Some(ShortcutOutcome::NoOp)
+                (KeyModifiers::NONE, KeyCode::Down) => {
+                    cursor_move!(ta, CursorMove::Down, shift);
+                    Some(ShortcutOutcome::CursorOnly)
                 }
-            }
-            _ => None,
-        };
+                (KeyModifiers::NONE, KeyCode::Home) => {
+                    cursor_move!(ta, CursorMove::Head, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::End) => {
+                    cursor_move!(ta, CursorMove::End, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::PageUp) => {
+                    cursor_move!(ta, CursorMove::ParagraphBack, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::PageDown) => {
+                    cursor_move!(ta, CursorMove::ParagraphForward, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                // Word navigation (Ctrl+arrow, Windows/Linux style)
+                (KeyModifiers::CONTROL, KeyCode::Left) => {
+                    cursor_move!(ta, CursorMove::WordBack, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::CONTROL, KeyCode::Right) => {
+                    cursor_move!(ta, CursorMove::WordForward, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                // Document start / end
+                (KeyModifiers::CONTROL, KeyCode::Home) => {
+                    cursor_move!(ta, CursorMove::Top, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::CONTROL, KeyCode::End) => {
+                    cursor_move!(ta, CursorMove::Bottom, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). The textarea
+                // returns `false` when the stack is empty — no buffer change AND
+                // no cursor change, so emit NoOp and skip the view-cache bump.
+                (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
+                    if ta.undo() {
+                        Some(ShortcutOutcome::TextMutated)
+                    } else {
+                        Some(ShortcutOutcome::NoOp)
+                    }
+                }
+                (KeyModifiers::CONTROL, KeyCode::Char('y'))
+                | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => {
+                    if ta.redo() {
+                        Some(ShortcutOutcome::TextMutated)
+                    } else {
+                        Some(ShortcutOutcome::NoOp)
+                    }
+                }
+                // Select all
+                (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+                    ta.move_cursor(CursorMove::Top);
+                    ta.start_selection();
+                    ta.move_cursor(CursorMove::Bottom);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                // Delete word before / after cursor. Returns `false` when at a
+                // word boundary with nothing to delete — no buffer/cursor change.
+                (KeyModifiers::CONTROL, KeyCode::Backspace)
+                | (KeyModifiers::ALT, KeyCode::Backspace) => {
+                    if ta.delete_word() {
+                        Some(ShortcutOutcome::TextMutated)
+                    } else {
+                        Some(ShortcutOutcome::NoOp)
+                    }
+                }
+                (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
+                    if ta.delete_next_word() {
+                        Some(ShortcutOutcome::TextMutated)
+                    } else {
+                        Some(ShortcutOutcome::NoOp)
+                    }
+                }
+                _ => None,
+            };
         if let Some(kind) = outcome {
             self.selection = ta.selection_range();
             match kind {
@@ -1748,10 +1741,7 @@ impl Component for TextEditorComponent {
                 // checks fire. The free-function form lets `&self.backend`
                 // and `&mut self.autocomplete` coexist via field-disjoint
                 // borrows.
-                let popup_open = self
-                    .autocomplete
-                    .as_ref()
-                    .is_some_and(|c| c.is_open());
+                let popup_open = self.autocomplete.as_ref().is_some_and(|c| c.is_open());
                 if popup_open
                     && let Some(host) = build_editor_host_snapshot(
                         &self.backend,
@@ -1847,10 +1837,7 @@ impl Component for TextEditorComponent {
             BackendState::Textarea(_) => (self.selection, None),
             BackendState::Nvim(nvim) => {
                 nvim.maybe_resize(editor_rect.width, editor_rect.height);
-                let snap = nvim
-                    .snapshot
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
+                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                 let visual_selection = snap.visual_selection;
                 let content_gen = snap.content_gen;
                 drop(snap);
@@ -2104,10 +2091,7 @@ mod tests {
         // Send a cursor-only key (Right arrow). It must bump `edit_generation`
         // for view-cache invalidation but must NOT bump `text_revision`, so
         // `is_dirty` stays false.
-        let key = ratatui::crossterm::event::KeyEvent::new(
-            KeyCode::Right,
-            KeyModifiers::NONE,
-        );
+        let key = ratatui::crossterm::event::KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
         let _ = editor.handle_input(&InputEvent::Key(key), &tx);
         assert!(
             !editor.is_dirty(),

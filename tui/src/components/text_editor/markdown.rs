@@ -1,9 +1,9 @@
+use super::parse_incremental::LineConstructKind;
 use crate::settings::themes::Theme;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use super::parse_incremental::LineConstructKind;
-use std::ops::Range;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
+use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Shared parser options used by all pulldown-cmark call sites in this module.
@@ -177,11 +177,24 @@ impl ParsedLine {
     /// first divergence.
     #[cfg(debug_assertions)]
     pub(super) fn debug_assert_eq_to(&self, other: &Self, row: usize) {
-        assert_eq!(self.content_vis, other.content_vis, "row {row} content_vis diverge");
+        assert_eq!(
+            self.content_vis, other.content_vis,
+            "row {row} content_vis diverge"
+        );
         assert_eq!(self.elem_vis, other.elem_vis, "row {row} elem_vis diverge");
-        assert_eq!(self.elem_index, other.elem_index, "row {row} elem_index diverge");
-        assert_eq!(self.list_sigil_end, other.list_sigil_end, "row {row} list_sigil_end diverge");
-        assert_eq!(self.elements.len(), other.elements.len(), "row {row} elements.len() diverge");
+        assert_eq!(
+            self.elem_index, other.elem_index,
+            "row {row} elem_index diverge"
+        );
+        assert_eq!(
+            self.list_sigil_end, other.list_sigil_end,
+            "row {row} list_sigil_end diverge"
+        );
+        assert_eq!(
+            self.elements.len(),
+            other.elements.len(),
+            "row {row} elements.len() diverge"
+        );
     }
 }
 
@@ -657,7 +670,10 @@ impl ParsedBuffer {
         // Done before the setext post-pass so that a blockquoted heading line
         // is not mis-treated as setext text.
         for row in 0..kinds.len() {
-            if !matches!(kinds[row], LineConstructKind::Plain | LineConstructKind::Blank) {
+            if !matches!(
+                kinds[row],
+                LineConstructKind::Plain | LineConstructKind::Blank
+            ) {
                 continue;
             }
             let line = &lines[row];
@@ -696,12 +712,13 @@ impl ParsedBuffer {
         // Any Plain row immediately following a ListMarker or ListContinuation
         // row is itself a continuation (lazy continuation, indented body, etc.).
         for row in 1..kinds.len() {
-            if matches!(kinds[row], LineConstructKind::Plain | LineConstructKind::IndentedCode)
-                && matches!(
-                    kinds[row - 1],
-                    LineConstructKind::ListMarker | LineConstructKind::ListContinuation
-                )
-            {
+            if matches!(
+                kinds[row],
+                LineConstructKind::Plain | LineConstructKind::IndentedCode
+            ) && matches!(
+                kinds[row - 1],
+                LineConstructKind::ListMarker | LineConstructKind::ListContinuation
+            ) {
                 kinds[row] = LineConstructKind::ListContinuation;
             }
         }
@@ -2327,17 +2344,16 @@ mod tests {
 
     #[test]
     fn splice_replaces_range() {
-        let mut pb = ParsedBuffer::parse(&[
-            "alpha".into(),
-            "beta".into(),
-            "gamma".into(),
-        ]);
+        let mut pb = ParsedBuffer::parse(&["alpha".into(), "beta".into(), "gamma".into()]);
         let replacement = ParsedBuffer::parse(&["BETA-NEW".into()]);
         let replacement_kind = replacement.kinds[0];
         pb.splice(1..2, replacement);
         assert_eq!(pb.lines.len(), 3);
         assert_eq!(pb.kinds.len(), 3);
-        assert_eq!(pb.kinds[1], replacement_kind, "replacement landed at the wrong index");
+        assert_eq!(
+            pb.kinds[1], replacement_kind,
+            "replacement landed at the wrong index"
+        );
     }
 
     #[cfg(debug_assertions)]

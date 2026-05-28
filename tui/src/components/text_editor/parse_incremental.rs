@@ -235,8 +235,7 @@ pub fn expand_to_reset_boundary(
     let cap_abs = MAX_INCREMENTAL_LINES;
     // Same cap policy as widen_to_safe; see its docstring for the
     // rationale on flooring `cap_frac` at `cap_abs`.
-    let cap_frac =
-        (((lines_len as f32) * MAX_INCREMENTAL_FRACTION) as usize).max(cap_abs);
+    let cap_frac = (((lines_len as f32) * MAX_INCREMENTAL_FRACTION) as usize).max(cap_abs);
     if widened_len > cap_abs || widened_len > cap_frac {
         return WidenResult::FullRebuild;
     }
@@ -281,8 +280,7 @@ pub fn widen_to_safe(kinds: &[LineConstructKind], damaged: Range<usize>) -> Wide
     // cap dominates and catches large widenings the absolute cap
     // would otherwise miss — this is the regime the previous `&&`
     // operator left unguarded.
-    let cap_frac =
-        (((kinds.len() as f32) * MAX_INCREMENTAL_FRACTION) as usize).max(cap_abs);
+    let cap_frac = (((kinds.len() as f32) * MAX_INCREMENTAL_FRACTION) as usize).max(cap_abs);
     if widened_len > cap_abs || widened_len > cap_frac {
         return WidenResult::FullRebuild;
     }
@@ -349,7 +347,10 @@ mod tests {
     #[test]
     fn setext_underline_above_is_plain() {
         let k = kinds_of(&["title", "====="]);
-        assert_eq!(k, vec![LineConstructKind::Plain, LineConstructKind::SetextUnderline]);
+        assert_eq!(
+            k,
+            vec![LineConstructKind::Plain, LineConstructKind::SetextUnderline]
+        );
     }
 
     #[test]
@@ -370,7 +371,10 @@ mod tests {
         let k = kinds_of(&["- item", "  continuation"]);
         assert_eq!(
             k,
-            vec![LineConstructKind::ListMarker, LineConstructKind::ListContinuation]
+            vec![
+                LineConstructKind::ListMarker,
+                LineConstructKind::ListContinuation
+            ]
         );
     }
 
@@ -461,20 +465,22 @@ mod tests {
         // P=Plain, B=Blank, F=FenceMarker, C=FenceContent,
         // L=ListMarker, l=ListContinuation, Q=Blockquote(1),
         // S=SetextUnderline, H=Heading, I=IndentedCode, X=HtmlBlock.
-        s.chars().map(|c| match c {
-            'P' => LineConstructKind::Plain,
-            'B' => LineConstructKind::Blank,
-            'F' => LineConstructKind::FenceMarker,
-            'C' => LineConstructKind::FenceContent,
-            'L' => LineConstructKind::ListMarker,
-            'l' => LineConstructKind::ListContinuation,
-            'Q' => LineConstructKind::Blockquote(1),
-            'S' => LineConstructKind::SetextUnderline,
-            'H' => LineConstructKind::Heading,
-            'I' => LineConstructKind::IndentedCode,
-            'X' => LineConstructKind::HtmlBlock,
-            _ => panic!("bad kind char {c}"),
-        }).collect()
+        s.chars()
+            .map(|c| match c {
+                'P' => LineConstructKind::Plain,
+                'B' => LineConstructKind::Blank,
+                'F' => LineConstructKind::FenceMarker,
+                'C' => LineConstructKind::FenceContent,
+                'L' => LineConstructKind::ListMarker,
+                'l' => LineConstructKind::ListContinuation,
+                'Q' => LineConstructKind::Blockquote(1),
+                'S' => LineConstructKind::SetextUnderline,
+                'H' => LineConstructKind::Heading,
+                'I' => LineConstructKind::IndentedCode,
+                'X' => LineConstructKind::HtmlBlock,
+                _ => panic!("bad kind char {c}"),
+            })
+            .collect()
     }
 
     #[test]
@@ -500,8 +506,16 @@ mod tests {
         let k = kinds_str("PBFCCCFBP");
         match widen_to_safe(&k, 4..5) {
             WidenResult::Widened(r) => {
-                assert!(r.start <= 2, "must include opening fence marker at row 2, got start {}", r.start);
-                assert!(r.end >= 7, "must include closing fence marker at row 6 (end >= 7), got end {}", r.end);
+                assert!(
+                    r.start <= 2,
+                    "must include opening fence marker at row 2, got start {}",
+                    r.start
+                );
+                assert!(
+                    r.end >= 7,
+                    "must include closing fence marker at row 6 (end >= 7), got end {}",
+                    r.end
+                );
             }
             x => panic!("expected Widened, got {x:?}"),
         }
@@ -524,7 +538,9 @@ mod tests {
         // (heading text line).
         let k = kinds_str("PSP");
         match widen_to_safe(&k, 1..2) {
-            WidenResult::Widened(r) => assert_eq!(r.start, 0, "must include row above setext underline"),
+            WidenResult::Widened(r) => {
+                assert_eq!(r.start, 0, "must include row above setext underline")
+            }
             x => panic!("expected Widened, got {x:?}"),
         }
     }
@@ -536,8 +552,16 @@ mod tests {
         let k = kinds_str("PXXXBP");
         match widen_to_safe(&k, 2..3) {
             WidenResult::Widened(r) => {
-                assert!(r.start <= 1, "must include first HtmlBlock row, got start {}", r.start);
-                assert!(r.end >= 4, "must include last HtmlBlock row, got end {}", r.end);
+                assert!(
+                    r.start <= 1,
+                    "must include first HtmlBlock row, got start {}",
+                    r.start
+                );
+                assert!(
+                    r.end >= 4,
+                    "must include last HtmlBlock row, got end {}",
+                    r.end
+                );
             }
             x => panic!("expected Widened, got {x:?}"),
         }
@@ -601,7 +625,10 @@ mod tests {
         // present depending on whether depth==0 was reached at that
         // row; check the interior at least.
         assert!(pb.reset_boundaries.contains(&0), "sentinel 0 missing");
-        assert!(pb.reset_boundaries.contains(&lines.len()), "sentinel lines.len() missing");
+        assert!(
+            pb.reset_boundaries.contains(&lines.len()),
+            "sentinel lines.len() missing"
+        );
         assert!(
             pb.reset_boundaries.contains(&1),
             "blank after paragraph 0 should be a boundary, got {:?}",
@@ -676,8 +703,16 @@ mod tests {
         let k = kinds_str("PQQQBP");
         match widen_to_safe(&k, 2..3) {
             WidenResult::Widened(r) => {
-                assert!(r.start <= 1, "must include first Blockquote row, got start {}", r.start);
-                assert!(r.end >= 4, "must include last Blockquote row, got end {}", r.end);
+                assert!(
+                    r.start <= 1,
+                    "must include first Blockquote row, got start {}",
+                    r.start
+                );
+                assert!(
+                    r.end >= 4,
+                    "must include last Blockquote row, got end {}",
+                    r.end
+                );
             }
             x => panic!("expected Widened, got {x:?}"),
         }
@@ -692,8 +727,16 @@ mod tests {
             WidenResult::Widened(r) => {
                 // The blank at row 2 is the separator. Widening must
                 // stop there (or at the row above, after D5 +1).
-                assert!(r.start >= 1, "widen.start must be >= 1 (D5 may pull past Blank by one row), got {}", r.start);
-                assert!(r.start <= 2, "widen.start must not pull in list A, got {}", r.start);
+                assert!(
+                    r.start >= 1,
+                    "widen.start must be >= 1 (D5 may pull past Blank by one row), got {}",
+                    r.start
+                );
+                assert!(
+                    r.start <= 2,
+                    "widen.start must not pull in list A, got {}",
+                    r.start
+                );
             }
             x => panic!("expected Widened, got {x:?}"),
         }
@@ -768,7 +811,10 @@ mod tests {
         // Compare just the first 10 rows to see where divergence starts
         for i in 0..23 {
             if initial_pb.kinds[i] != edited_pb.kinds[i] {
-                eprintln!("Row {} differs: initial={:?}, edited={:?}", i, initial_pb.kinds[i], edited_pb.kinds[i]);
+                eprintln!(
+                    "Row {} differs: initial={:?}, edited={:?}",
+                    i, initial_pb.kinds[i], edited_pb.kinds[i]
+                );
             }
         }
     }

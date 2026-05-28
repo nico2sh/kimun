@@ -4,7 +4,7 @@
 
 use kimun_notes::components::text_editor::markdown::ParsedBuffer;
 use kimun_notes::components::text_editor::parse_incremental::{
-    expand_to_reset_boundary, WidenResult,
+    WidenResult, expand_to_reset_boundary,
 };
 use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
 use kimun_notes::components::text_editor::view::MarkdownEditorView;
@@ -42,7 +42,12 @@ fn buffer_strategy() -> impl Strategy<Value = Vec<String>> {
 }
 
 fn test_rect() -> Rect {
-    Rect { x: 0, y: 0, width: 80, height: 40 }
+    Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 40,
+    }
 }
 
 proptest! {

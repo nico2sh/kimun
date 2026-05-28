@@ -55,10 +55,18 @@ fn wrap_one_row(
     }
 
     let is_rendered = |pos: usize| -> bool {
-        if pos < rendered_row.len() { rendered_row[pos] } else { true }
+        if pos < rendered_row.len() {
+            rendered_row[pos]
+        } else {
+            true
+        }
     };
     let byte_at = |pos: usize| -> usize {
-        if pos < ci.len() { ci[pos].0 } else { line.len() }
+        if pos < ci.len() {
+            ci[pos].0
+        } else {
+            line.len()
+        }
     };
 
     let total = ci.len();
@@ -148,7 +156,14 @@ impl WordWrapLayout {
         for (row, line) in lines.iter().enumerate() {
             row_starts.push(visual_lines.len());
             let rendered_row = rendered.get(row).map(|v| v.as_slice()).unwrap_or(&[]);
-            wrap_one_row(row, line, width, rendered_row, &mut scratch, &mut visual_lines);
+            wrap_one_row(
+                row,
+                line,
+                width,
+                rendered_row,
+                &mut scratch,
+                &mut visual_lines,
+            );
         }
 
         Self {
@@ -209,7 +224,14 @@ impl WordWrapLayout {
         for row in row_range.clone() {
             new_row_starts_for_range.push(new_slice.len());
             let rendered_row = rendered.get(row).map(|v| v.as_slice()).unwrap_or(&[]);
-            wrap_one_row(row, &lines[row], width, rendered_row, &mut scratch, &mut new_slice);
+            wrap_one_row(
+                row,
+                &lines[row],
+                width,
+                rendered_row,
+                &mut scratch,
+                &mut new_slice,
+            );
         }
 
         // Splice visual_lines.
