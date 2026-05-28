@@ -289,6 +289,65 @@ fn bench_full_view_update_heavy_lists_first_parse(c: &mut Criterion) {
     });
 }
 
+/// 400-row blockquote buffer modelled on `example/work/widener-stress/
+/// blockquotes_lazy.md`: 100 blockquotes, each followed by a
+/// lazy-continuation paragraph row and a blank separator. Edits to
+/// the `>` row exercise the intra-construct widener on the
+/// blockquote-end boundary; edits to the lazy-continuation row land
+/// inside the blockquote (lazy_depth > 0, Plain kind) and bail at
+/// the §3.0 guard (Plain is NOT in the qualifying set).
+///
+/// This bench measures the intra-construct win on the `> a` row
+/// pattern. Once the §3.0 relaxation widens to include `Plain` (via
+/// a post-widening sanity check), the lazy-continuation row will
+/// also become incremental.
+fn make_blockquotes_lazy_buffer() -> Vec<String> {
+    let mut out = Vec::with_capacity(400);
+    for i in 1..=100 {
+        out.push(format!("> Blockquote paragraph {i}"));
+        out.push(format!("lazy continuation line for paragraph {i}"));
+        out.push("another continuation line".to_string());
+        out.push(String::new());
+    }
+    out
+}
+
+fn bench_full_view_update_blockquotes_typing(c: &mut Criterion) {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+    use ratatui::layout::Rect;
+
+    let lines = make_blockquotes_lazy_buffer();
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 40,
+    };
+
+    // Edit the `>` row of the 50th blockquote (row 50*4 = 200).
+    let target_row = 200;
+    let mut warmed = MarkdownEditorView::new();
+    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect, None);
+
+    let mut edited = lines.clone();
+    edited[target_row].push('x');
+
+    c.bench_function("full_view_update_blockquotes_400_typing", |b| {
+        b.iter_batched(
+            || warmed.clone(),
+            |mut v| {
+                v.update(
+                    &snap_for(black_box(&edited), (target_row, edited[target_row].len()), 2),
+                    rect,
+                    None,
+                );
+                black_box(v);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 criterion_group!(
     benches,
     bench_full_parse_5000_lines,
@@ -301,5 +360,6 @@ criterion_group!(
     bench_full_view_update_5000_lines_backspace,
     bench_full_view_update_heavy_lists_typing,
     bench_full_view_update_heavy_lists_first_parse,
+    bench_full_view_update_blockquotes_typing,
 );
 criterion_main!(benches);

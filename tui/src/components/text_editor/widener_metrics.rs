@@ -59,11 +59,20 @@ pub enum BailReason {
 /// Which widener produced the splice that succeeded.
 #[derive(Debug, Clone, Copy)]
 pub enum SuccessPath {
-    /// `expand_to_reset_boundary` succeeded — the boundary set is
-    /// known reset, so no post-slice verify ran.
+    /// `expand_to_reset_boundary(reset_boundaries, ...)` succeeded —
+    /// the boundary set is known reset, so no post-slice verify
+    /// ran. Provably equivalent to a fresh parse.
     ResetBoundary,
-    /// `widen_to_safe` succeeded after `expand_to_reset_boundary`
-    /// returned `FullRebuild`. The post-slice verify ran and passed.
+    /// `expand_to_reset_boundary(intra_construct_boundaries, ...)`
+    /// succeeded after the strict path returned `FullRebuild`.
+    /// Rendered-output equivalent (per-row kinds / elements / content_vis
+    /// match a fresh parse) but `lazy_depth` and `reset_boundaries`
+    /// metadata may diverge from a fresh parse. The post-slice
+    /// verify ran in release for the proof-out window.
+    IntraConstruct,
+    /// `widen_to_safe` succeeded after both reset-boundary widener
+    /// attempts returned `FullRebuild`. The post-slice verify ran
+    /// and passed.
     WidenToSafe,
 }
 
@@ -79,6 +88,10 @@ pub struct WidenerMetrics {
     /// view-update path entirely.
     pub view_updates: AtomicU64,
     pub incremental_reset: AtomicU64,
+    /// Splice succeeded via the second-tier
+    /// `intra_construct_boundaries` widener. See
+    /// [`SuccessPath::IntraConstruct`].
+    pub incremental_intra_construct: AtomicU64,
     pub incremental_fallback: AtomicU64,
     pub full_line_count_change: AtomicU64,
     pub full_no_damage: AtomicU64,
@@ -90,6 +103,13 @@ pub struct WidenerMetrics {
     /// First-parse / placeholder-installed: `parsed_buffer.lines`
     /// was empty when the call started.
     pub first_parse: AtomicU64,
+    /// Count of attempts where the row±1 `lazy_depth > 0` guard
+    /// WOULD have bailed under the old rule but the §3.0 conditional
+    /// relaxation let the attempt proceed (kind ∈ {ListMarker /
+    /// ListContinuation / Blockquote / Plain}). Surfaces the rate at
+    /// which the relaxation buys us time — if it stays near 0 the
+    /// relaxation is paying no rent.
+    pub lazy_guard_relaxed: AtomicU64,
 }
 
 impl WidenerMetrics {
@@ -98,6 +118,7 @@ impl WidenerMetrics {
             entries: AtomicU64::new(0),
             view_updates: AtomicU64::new(0),
             incremental_reset: AtomicU64::new(0),
+            incremental_intra_construct: AtomicU64::new(0),
             incremental_fallback: AtomicU64::new(0),
             full_line_count_change: AtomicU64::new(0),
             full_no_damage: AtomicU64::new(0),
@@ -107,6 +128,7 @@ impl WidenerMetrics {
             full_cap_trip: AtomicU64::new(0),
             full_verify_failed: AtomicU64::new(0),
             first_parse: AtomicU64::new(0),
+            lazy_guard_relaxed: AtomicU64::new(0),
         }
     }
 
@@ -147,9 +169,17 @@ impl WidenerMetrics {
     pub fn ok(&self, path: SuccessPath) {
         let counter = match path {
             SuccessPath::ResetBoundary => &self.incremental_reset,
+            SuccessPath::IntraConstruct => &self.incremental_intra_construct,
             SuccessPath::WidenToSafe => &self.incremental_fallback,
         };
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record that the row±1 `lazy_depth > 0` guard was conditionally
+    /// skipped (§3.0 relaxation). Independent of bail/ok outcome —
+    /// the attempt continues normally, this only counts the skip rate.
+    pub fn lazy_guard_relaxed(&self) {
+        self.lazy_guard_relaxed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Read every counter into a snapshot for printing/derivations.
@@ -158,6 +188,7 @@ impl WidenerMetrics {
             entries: self.entries.load(Ordering::Relaxed),
             view_updates: self.view_updates.load(Ordering::Relaxed),
             incremental_reset: self.incremental_reset.load(Ordering::Relaxed),
+            incremental_intra_construct: self.incremental_intra_construct.load(Ordering::Relaxed),
             incremental_fallback: self.incremental_fallback.load(Ordering::Relaxed),
             full_line_count_change: self.full_line_count_change.load(Ordering::Relaxed),
             full_no_damage: self.full_no_damage.load(Ordering::Relaxed),
@@ -167,6 +198,7 @@ impl WidenerMetrics {
             full_cap_trip: self.full_cap_trip.load(Ordering::Relaxed),
             full_verify_failed: self.full_verify_failed.load(Ordering::Relaxed),
             first_parse: self.first_parse.load(Ordering::Relaxed),
+            lazy_guard_relaxed: self.lazy_guard_relaxed.load(Ordering::Relaxed),
         }
     }
 }
@@ -178,6 +210,7 @@ pub struct Snapshot {
     pub entries: u64,
     pub view_updates: u64,
     pub incremental_reset: u64,
+    pub incremental_intra_construct: u64,
     pub incremental_fallback: u64,
     pub full_line_count_change: u64,
     pub full_no_damage: u64,
@@ -187,11 +220,13 @@ pub struct Snapshot {
     pub full_cap_trip: u64,
     pub full_verify_failed: u64,
     pub first_parse: u64,
+    pub lazy_guard_relaxed: u64,
 }
 
 impl Snapshot {
     pub fn attempted(&self) -> u64 {
         self.incremental_reset
+            + self.incremental_intra_construct
             + self.incremental_fallback
             + self.full_line_count_change
             + self.full_no_damage
@@ -203,7 +238,7 @@ impl Snapshot {
     }
 
     pub fn successful_incremental(&self) -> u64 {
-        self.incremental_reset + self.incremental_fallback
+        self.incremental_reset + self.incremental_intra_construct + self.incremental_fallback
     }
 
     pub fn successful_incremental_rate(&self) -> f64 {
@@ -211,9 +246,23 @@ impl Snapshot {
         if denom == 0 { 0.0 } else { self.successful_incremental() as f64 / denom as f64 }
     }
 
+    /// Share of successful incremental splices taken by the strict
+    /// reset-boundary path. Mirror `intra_path_share` /
+    /// `heuristic_path_share` for the other two tiers — together
+    /// they sum to ≤ 1 (rounding aside).
     pub fn fast_path_share(&self) -> f64 {
         let denom = self.successful_incremental();
         if denom == 0 { 0.0 } else { self.incremental_reset as f64 / denom as f64 }
+    }
+
+    pub fn intra_path_share(&self) -> f64 {
+        let denom = self.successful_incremental();
+        if denom == 0 { 0.0 } else { self.incremental_intra_construct as f64 / denom as f64 }
+    }
+
+    pub fn heuristic_path_share(&self) -> f64 {
+        let denom = self.successful_incremental();
+        if denom == 0 { 0.0 } else { self.incremental_fallback as f64 / denom as f64 }
     }
 
     pub fn guard_sprawl_rate(&self) -> f64 {
@@ -227,9 +276,10 @@ impl Snapshot {
     }
 
     pub fn verify_hit_rate(&self) -> f64 {
-        // Verify only runs on the widen_to_safe fallback path. Hit rate =
-        // verify_failed / (verify_failed + fallback_success).
-        let denom = self.full_verify_failed + self.incremental_fallback;
+        // Verify runs on both intra-construct and widen_to_safe paths.
+        // Hit rate = verify_failed / (verify_failed + verify-eligible-success).
+        let denom =
+            self.full_verify_failed + self.incremental_intra_construct + self.incremental_fallback;
         if denom == 0 { 0.0 } else { self.full_verify_failed as f64 / denom as f64 }
     }
 }
@@ -246,26 +296,32 @@ pub fn dump_if_enabled() {
          view_updates            = {:>10}\n  \
          try_incremental_entries = {:>10}\n  \
          first_parse (uncounted) = {:>10}\n  \
+         lazy_guard_relaxed      = {:>10}\n  \
          ---\n  \
-         incremental_reset       = {:>10}  ({:5.1}%)\n  \
-         incremental_fallback    = {:>10}  ({:5.1}%)\n  \
-         full_line_count_change  = {:>10}  ({:5.1}%)\n  \
-         full_no_damage          = {:>10}  ({:5.1}%)\n  \
-         full_kind_guard         = {:>10}  ({:5.1}%)\n  \
-         full_lazy_depth         = {:>10}  ({:5.1}%)\n  \
-         full_blank_transition   = {:>10}  ({:5.1}%)\n  \
-         full_cap_trip           = {:>10}  ({:5.1}%)\n  \
-         full_verify_failed      = {:>10}  ({:5.1}%)\n  \
-         attempted (categorised) = {:>10}\n  \
+         incremental_reset           = {:>10}  ({:5.1}%)\n  \
+         incremental_intra_construct = {:>10}  ({:5.1}%)\n  \
+         incremental_fallback        = {:>10}  ({:5.1}%)\n  \
+         full_line_count_change      = {:>10}  ({:5.1}%)\n  \
+         full_no_damage              = {:>10}  ({:5.1}%)\n  \
+         full_kind_guard             = {:>10}  ({:5.1}%)\n  \
+         full_lazy_depth             = {:>10}  ({:5.1}%)\n  \
+         full_blank_transition       = {:>10}  ({:5.1}%)\n  \
+         full_cap_trip               = {:>10}  ({:5.1}%)\n  \
+         full_verify_failed          = {:>10}  ({:5.1}%)\n  \
+         attempted (categorised)     = {:>10}\n  \
          ---\n  \
          successful_incremental_rate = {:5.1}%\n  \
          fast_path_share             = {:5.1}%\n  \
+         intra_path_share            = {:5.1}%\n  \
+         heuristic_path_share        = {:5.1}%\n  \
          guard_sprawl_rate           = {:5.1}%\n  \
          verify_hit_rate             = {:5.1}%",
         s.view_updates,
         s.entries,
         s.first_parse,
+        s.lazy_guard_relaxed,
         s.incremental_reset, pct(s.incremental_reset, s.attempted()),
+        s.incremental_intra_construct, pct(s.incremental_intra_construct, s.attempted()),
         s.incremental_fallback, pct(s.incremental_fallback, s.attempted()),
         s.full_line_count_change, pct(s.full_line_count_change, s.attempted()),
         s.full_no_damage, pct(s.full_no_damage, s.attempted()),
@@ -277,6 +333,8 @@ pub fn dump_if_enabled() {
         s.attempted(),
         s.successful_incremental_rate() * 100.0,
         s.fast_path_share() * 100.0,
+        s.intra_path_share() * 100.0,
+        s.heuristic_path_share() * 100.0,
         s.guard_sprawl_rate() * 100.0,
         s.verify_hit_rate() * 100.0,
     );

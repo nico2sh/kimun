@@ -62,6 +62,22 @@ fn lazy_continuation_buffer_strategy() -> impl Strategy<Value = Vec<String>> {
     prop::collection::vec(lazy_continuation_line_strategy(), 2..=25)
 }
 
+/// Loose-list item strategy: returns `(line, has_trailing_blank)`.
+/// Mixes unordered (`-`, `*`, `+`) and ordered (`1.`, `1)`) marker
+/// styles. The `has_trailing_blank` flag controls whether the
+/// generator inserts a blank after this item, producing both loose
+/// (with blanks) and tight (without) regions.
+fn loose_list_item_strategy() -> impl Strategy<Value = (String, bool)> {
+    let line = prop_oneof![
+        "- [a-z]{1,10}".prop_map(String::from),
+        "\\* [a-z]{1,10}".prop_map(String::from),
+        "\\+ [a-z]{1,10}".prop_map(String::from),
+        "[1-9]\\. [a-z]{1,10}".prop_map(String::from),
+        "[1-9]\\) [a-z]{1,10}".prop_map(String::from),
+    ];
+    (line, prop::bool::ANY)
+}
+
 fn test_rect() -> Rect {
     Rect {
         x: 0,
@@ -195,6 +211,154 @@ proptest! {
                 "elements.len diverges at slice row {} (full row {})",
                 offset, widened.start + offset
             );
+        }
+    }
+
+    /// §4.1 — V3 proptest. Random loose lists with MIXED marker
+    /// styles (-, *, +, 1., 1)) and intra-blank gaps, edited with a
+    /// single-char insert INSIDE an item's text content. After the
+    /// §3.0 lazy-guard relaxation + intra-construct widener, the
+    /// spliced parsed_buffer must equal a fresh full parse.
+    /// Divergence here proves the rendered-output-equivalence claim
+    /// is broken for the shape covered.
+    #[test]
+    fn incremental_matches_full_for_in_list_content_edits(
+        items in prop::collection::vec(loose_list_item_strategy(), 2..=30),
+        target_idx in 0usize..30,
+        ch in (b'a'..=b'z').prop_map(|c| c as char),
+    ) {
+        // Build a loose list from `items`. Each item is a single
+        // content line; blank rows between items are inserted at
+        // random by `loose_list_item_strategy`.
+        let initial: Vec<String> = items.iter().flat_map(|(line, has_blank)| {
+            let mut rows = vec![line.clone()];
+            if *has_blank {
+                rows.push(String::new());
+            }
+            rows
+        }).collect();
+        if initial.is_empty() {
+            return Ok(());
+        }
+        // Pick a target row that is an item row (skip blanks).
+        let item_rows: Vec<usize> = initial.iter().enumerate()
+            .filter(|(_, l)| !l.trim().is_empty())
+            .map(|(i, _)| i)
+            .collect();
+        if item_rows.is_empty() {
+            return Ok(());
+        }
+        let target_row = item_rows[target_idx % item_rows.len()];
+
+        let mut edited = initial.clone();
+        edited[target_row].push(ch);
+
+        let mut view = MarkdownEditorView::new();
+        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect(), None);
+        let col_after = edited[target_row].chars().count();
+        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
+
+        if !view.last_parse_was_incremental {
+            return Ok(());
+        }
+
+        let fresh = ParsedBuffer::parse(&edited);
+        prop_assert_eq!(view.parsed_buffer_kinds(), &fresh.kinds[..]);
+        prop_assert_eq!(view.parsed_buffer_lines().len(), fresh.lines.len(),
+            "spliced lines.len diverges from fresh");
+        for (i, (g, e)) in view.parsed_buffer_lines().iter().zip(fresh.lines.iter()).enumerate() {
+            prop_assert_eq!(&g.content_vis, &e.content_vis,
+                "row {} content_vis diverges", i);
+            prop_assert_eq!(g.elements.len(), e.elements.len(),
+                "row {} elements.len diverges", i);
+        }
+    }
+
+    /// §4.2 — V3 proptest for blockquotes. Random blockquote
+    /// buffers (one `> content` per blockquote, blank-separated)
+    /// with single-char content edits.
+    #[test]
+    fn incremental_matches_full_for_blockquote_content_edits(
+        items in prop::collection::vec("> [a-z ]{1,15}".prop_map(String::from), 2..=20),
+        target_idx in 0usize..20,
+        ch in (b'a'..=b'z').prop_map(|c| c as char),
+    ) {
+        let mut initial: Vec<String> = Vec::new();
+        for (i, line) in items.iter().enumerate() {
+            initial.push(line.clone());
+            if i + 1 < items.len() {
+                initial.push(String::new());
+            }
+        }
+        if initial.is_empty() {
+            return Ok(());
+        }
+        let item_rows: Vec<usize> = initial.iter().enumerate()
+            .filter(|(_, l)| l.starts_with("> "))
+            .map(|(i, _)| i)
+            .collect();
+        if item_rows.is_empty() {
+            return Ok(());
+        }
+        let target_row = item_rows[target_idx % item_rows.len()];
+
+        let mut edited = initial.clone();
+        edited[target_row].push(ch);
+
+        let mut view = MarkdownEditorView::new();
+        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect(), None);
+        let col_after = edited[target_row].chars().count();
+        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
+
+        if !view.last_parse_was_incremental {
+            return Ok(());
+        }
+
+        let fresh = ParsedBuffer::parse(&edited);
+        prop_assert_eq!(view.parsed_buffer_kinds(), &fresh.kinds[..]);
+        prop_assert_eq!(view.parsed_buffer_lines().len(), fresh.lines.len());
+        for (i, (g, e)) in view.parsed_buffer_lines().iter().zip(fresh.lines.iter()).enumerate() {
+            prop_assert_eq!(&g.content_vis, &e.content_vis,
+                "row {} content_vis diverges", i);
+            prop_assert_eq!(g.elements.len(), e.elements.len(),
+                "row {} elements.len diverges", i);
+        }
+    }
+
+    /// §4.3 — V3 proptest for tight lists. NO blanks between items.
+    /// Validates that the sparse heuristic doesn't break correctness
+    /// when boundaries are dropped (only ~n/2 entries instead of n).
+    #[test]
+    fn incremental_matches_full_for_tight_list_content_edits(
+        items in prop::collection::vec("- [a-z ]{1,15}".prop_map(String::from), 3..=30),
+        target_idx in 0usize..30,
+        ch in (b'a'..=b'z').prop_map(|c| c as char),
+    ) {
+        let initial = items;
+        if initial.is_empty() {
+            return Ok(());
+        }
+        let target_row = target_idx % initial.len();
+        let mut edited = initial.clone();
+        edited[target_row].push(ch);
+
+        let mut view = MarkdownEditorView::new();
+        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect(), None);
+        let col_after = edited[target_row].chars().count();
+        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
+
+        if !view.last_parse_was_incremental {
+            return Ok(());
+        }
+
+        let fresh = ParsedBuffer::parse(&edited);
+        prop_assert_eq!(view.parsed_buffer_kinds(), &fresh.kinds[..]);
+        prop_assert_eq!(view.parsed_buffer_lines().len(), fresh.lines.len());
+        for (i, (g, e)) in view.parsed_buffer_lines().iter().zip(fresh.lines.iter()).enumerate() {
+            prop_assert_eq!(&g.content_vis, &e.content_vis,
+                "row {} content_vis diverges", i);
+            prop_assert_eq!(g.elements.len(), e.elements.len(),
+                "row {} elements.len diverges", i);
         }
     }
 
