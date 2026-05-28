@@ -210,6 +210,85 @@ fn bench_full_view_update_5000_lines_first_parse(c: &mut Criterion) {
     });
 }
 
+/// 571-row loose-list buffer matching `dev-fixtures/widener-stress/
+/// heavy_lists_loose.md`: 500 unordered list items + a blank row
+/// every 7th item. The whole buffer is ONE CommonMark loose list
+/// per §5.2 — every row has `lazy_depth == 1`, the v2 structural
+/// guard rejects every edit, and both wideners cap-trip. The
+/// `widener_metrics` session data showed 0% incremental success on
+/// this shape. This bench measures the actual full-rebuild cost of
+/// a single-char edit so we can decide whether the limitation is a
+/// product issue or stays within typing-latency budget.
+fn make_heavy_lists_buffer() -> Vec<String> {
+    let mut out = Vec::with_capacity(571);
+    for i in 1..=500 {
+        out.push(format!("- list item {i} with text content for editing tests"));
+        if i % 7 == 0 {
+            out.push(String::new());
+        }
+    }
+    out
+}
+
+fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+    use ratatui::layout::Rect;
+
+    let lines = make_heavy_lists_buffer();
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 40,
+    };
+
+    let target_row = 250.min(lines.len() - 1);
+    let mut warmed = MarkdownEditorView::new();
+    warmed.update(&snap_for(&lines, (target_row, 0), 1), rect, None);
+
+    // Single-char append inside an item's content. Pre-edit row is a
+    // ListMarker inside the loose list; the v2 lazy_depth guard will
+    // bail and the view falls back to a full ParsedBuffer::parse.
+    let mut edited = lines.clone();
+    edited[target_row].push('x');
+
+    c.bench_function("full_view_update_heavy_lists_571_typing", |b| {
+        b.iter_batched(
+            || warmed.clone(),
+            |mut v| {
+                v.update(
+                    &snap_for(black_box(&edited), (target_row, edited[target_row].len()), 2),
+                    rect,
+                    None,
+                );
+                black_box(v);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_full_view_update_heavy_lists_first_parse(c: &mut Criterion) {
+    use kimun_notes::components::text_editor::view::MarkdownEditorView;
+    use ratatui::layout::Rect;
+
+    let lines = make_heavy_lists_buffer();
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 40,
+    };
+
+    c.bench_function("full_view_update_heavy_lists_571_first_parse", |b| {
+        b.iter(|| {
+            let mut v = MarkdownEditorView::new();
+            v.update(&snap_for(black_box(&lines), (0, 0), 1), rect, None);
+            black_box(v);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_full_parse_5000_lines,
@@ -220,5 +299,7 @@ criterion_group!(
     bench_full_view_update_5000_lines_incremental,
     bench_full_view_update_5000_lines_first_parse,
     bench_full_view_update_5000_lines_backspace,
+    bench_full_view_update_heavy_lists_typing,
+    bench_full_view_update_heavy_lists_first_parse,
 );
 criterion_main!(benches);

@@ -204,6 +204,14 @@ async fn main() -> Result<()> {
     )?;
     terminal.show_cursor()?;
 
+    // IMPORTANT: dump via the BIN crate's own module path, not via
+    // `kimun_notes::...`. The lib + bin both declare `pub mod
+    // components;` in this Cargo package, so `widener_metrics::METRICS`
+    // is compiled into TWO separate crates with TWO separate atomic
+    // counters. The bin's runtime code (view.rs) bumps the bin's copy;
+    // `kimun_notes::...` would dump the lib's copy (always zero).
+    crate::components::text_editor::widener_metrics::dump_if_enabled();
+
     // Pin _guard liveness through end of scope, preventing NLL early-drop.
     let _ = &_guard;
     Ok(())

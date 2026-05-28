@@ -41,6 +41,27 @@ fn buffer_strategy() -> impl Strategy<Value = Vec<String>> {
     prop::collection::vec(line_strategy(), 1..=50)
 }
 
+/// V2-focused line strategy: emphasises blockquote-containing-indented-code
+/// shapes and trailing blanks. The proposal.md regression case (push `A`
+/// into `"> "` so the blockquote acquires an IndentedCode block that
+/// extends through subsequent blanks) lives in this generator's tail.
+fn lazy_continuation_line_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("".to_string()),
+        Just("> ".to_string()),
+        Just(">    ".to_string()),
+        Just("    ".to_string()),
+        "> [a-z]{1,8}".prop_map(|s| s),
+        ">    [a-z]{1,8}".prop_map(|s| s),
+        "    [a-z]{1,8}".prop_map(|s| s),
+        "[a-z]{0,12}".prop_map(|s| s),
+    ]
+}
+
+fn lazy_continuation_buffer_strategy() -> impl Strategy<Value = Vec<String>> {
+    prop::collection::vec(lazy_continuation_line_strategy(), 2..=25)
+}
+
 fn test_rect() -> Rect {
     Rect {
         x: 0,
@@ -63,7 +84,7 @@ proptest! {
     fn incremental_matches_full_for_random_single_char_edit(
         initial in buffer_strategy(),
         row in 0usize..50,
-        ch in any::<char>().prop_filter("ascii printable", |c| c.is_ascii() && !c.is_control()),
+        ch in (0x20u32..0x7Fu32).prop_map(|n| char::from_u32(n).expect("printable ASCII codepoint")),
     ) {
         if initial.is_empty() {
             return Ok(());
@@ -112,7 +133,7 @@ proptest! {
     fn expand_to_reset_range_is_provably_equivalent_to_fresh_parse(
         initial in buffer_strategy(),
         row in 0usize..50,
-        ch in any::<char>().prop_filter("ascii printable", |c| c.is_ascii() && !c.is_control()),
+        ch in (0x20u32..0x7Fu32).prop_map(|n| char::from_u32(n).expect("printable ASCII codepoint")),
     ) {
         if initial.is_empty() {
             return Ok(());
@@ -174,6 +195,48 @@ proptest! {
                 "elements.len diverges at slice row {} (full row {})",
                 offset, widened.start + offset
             );
+        }
+    }
+
+    /// V2 regression: random buffers concentrated on the
+    /// blockquote-containing-indented-code shape from
+    /// `parse-reset-boundaries-v2/proposal.md`. When the incremental
+    /// splice path is taken (after the lazy_depth-aware structural
+    /// guard has cleared the edit), the spliced parsed_buffer must
+    /// equal a fresh full parse. A divergence here would prove the
+    /// `is_lazy_continuable_tag` set is incomplete or the
+    /// lazy_depth tracking misses a case.
+    #[test]
+    fn incremental_matches_full_for_lazy_continuation_buffers(
+        initial in lazy_continuation_buffer_strategy(),
+        row in 0usize..25,
+        ch in (0x20u32..0x7Fu32).prop_map(|n| char::from_u32(n).expect("printable ASCII codepoint")),
+    ) {
+        if initial.is_empty() {
+            return Ok(());
+        }
+        let target_row = row % initial.len();
+        let mut edited = initial.clone();
+        edited[target_row].push(ch);
+
+        let mut view = MarkdownEditorView::new();
+        view.update(&snap_for(&initial, (target_row, 0), 1), test_rect(), None);
+        let col_after = edited[target_row].chars().count();
+        view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
+
+        if !view.last_parse_was_incremental {
+            return Ok(());
+        }
+
+        let fresh = ParsedBuffer::parse(&edited);
+        prop_assert_eq!(view.parsed_buffer_kinds(), &fresh.kinds[..]);
+        prop_assert_eq!(view.parsed_buffer_lines().len(), fresh.lines.len(),
+            "spliced lines.len diverges from fresh");
+        for (i, (g, e)) in view.parsed_buffer_lines().iter().zip(fresh.lines.iter()).enumerate() {
+            prop_assert_eq!(&g.content_vis, &e.content_vis,
+                "row {} content_vis diverges", i);
+            prop_assert_eq!(g.elements.len(), e.elements.len(),
+                "row {} elements.len diverges", i);
         }
     }
 }
