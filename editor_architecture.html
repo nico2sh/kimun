@@ -229,20 +229,20 @@ The widener tries three boundary sources in order:</p>
       <code>reset_boundaries</code> are rows where pulldown-cmark's parser state is provably reset
       (<code>lazy_depth[r] == 0 &amp;&amp; kinds[r] == Blank</code>), so a slice between two reset
       boundaries is guaranteed equivalent to a fresh parse over that range &mdash; no
-      post-slice verification needed.</li>
+      post-slice verification needed. Carries ~98% of incremental successes in dogfooding
+      (<code>fast_path_share = 98.5%</code>).</li>
   <li><strong>Intra-construct.</strong> <code>expand_to_reset_boundary(parsed_buffer.intra_construct_boundaries, &hellip;)</code>:
       rows where pulldown emits <code>End(Item)</code> / <code>End(BlockQuote)</code> such that
       splicing across the row preserves per-row rendered output (<code>kinds</code>,
       <code>elements.len()</code>, <code>content_vis</code>) even though the surrounding
       lazy construct is still open (<code>lazy_depth[b] &gt; 0</code>). Unlocks incremental
-      typing inside loose lists (<code>heavy_lists_loose.md</code>: 493 &micro;s &rarr; ~34 &micro;s,
-      ~15&times; speedup). The post-slice verify runs in release during the proof-out
-      window because <code>lazy_depth</code> / <code>reset_boundaries</code> metadata may
-      diverge from a fresh parse.</li>
+      typing inside loose lists (<code>heavy_lists_loose.md</code>: 493 &micro;s &rarr; ~36 &micro;s,
+      ~13&times; speedup). Sparse heuristic (<code>MIN_INTRA_BOUNDARY_GAP = 2</code>) keeps
+      the set <code>O(items / 2)</code>.</li>
   <li><strong>Heuristic.</strong> <code>widen_to_safe(parsed_buffer.kinds, damaged)</code>:
-      stops at <code>Blank</code> or <code>Plain</code> rows and relies on per-row post-slice
-      verification (debug-only when <code>KIMUN_VIEW_VERIFY_INCREMENTAL=1</code>) to catch
-      divergences (paragraph lazy-continuation crossing a Plain boundary, etc.).</li>
+      stops at <code>Blank</code> or <code>Plain</code> rows. Last-resort fallback when both
+      reset-boundary widener attempts return <code>FullRebuild</code>. Carries 0.6% of
+      successes — kept as a safety net for shapes the boundary sets haven't characterised.</li>
 </ol>
 
 <p><strong>Lazy-depth-aware structural guards.</strong>
@@ -258,22 +258,35 @@ the damaged row trips any of:</p>
   <li><code>parsed_buffer.lazy_depth[row&minus;1..=row+1]</code> contains any positive entry
       &mdash; an open lazy-continuable construct (List, BlockQuote, IndentedCode,
       HtmlBlock) at or next to the damaged row can lazy-extend across the splice in
-      ways the slice cannot capture. <strong>Conditionally relaxed</strong> when the
-      damaged row's old kind is <code>ListMarker</code> or <code>ListContinuation</code>:
-      list-content edits are safe by construction (per-row classification stays
-      identical across slice-vs-parent), so the widener proceeds to the intra-construct
-      tier instead of bailing. The relaxation rate is tracked in
-      <code>widener_metrics::lazy_guard_relaxed</code>.</li>
+      ways the slice cannot capture. <strong>Conditionally relaxed</strong> when ALL of:
+      <em>(a)</em> damaged row's old kind is <code>ListMarker</code>,
+      <em>(b)</em> <code>lazy_depth[row] == 1</code> (top-level list, not nested inside a
+      blockquote / outer list), <em>(c)</em> no marker/blank flip on the damaged row.
+      Marker-row content edits cannot change row+1's classification (the post-pass
+      ListMarker&rarr;ListContinuation propagation is deterministic from the prev row's
+      kind, which the splice updates in lockstep). Initial relaxation also accepted
+      <code>ListContinuation</code> + nested depths; both unlocks reverted after the 100k
+      proptest soak exposed downstream-row-classification flips. Relaxation rate tracked
+      in <code>widener_metrics::lazy_guard_relaxed</code>.</li>
   <li>The damaged row flips between blank and non-blank with a non-blank neighbour
       &mdash; the pre-edit reset boundary at that row becomes invalid post-edit
       because a paragraph (or other lazy construct) can re-extend across the row.</li>
 </ul>
 <p>On success, <code>ParsedBuffer::parse_range(lines, widened)</code> parses the slice
 as a standalone document and splices it into <code>parsed_buffer</code>; the splice
-also updates <code>lazy_depth</code> and <code>reset_boundaries</code>. A debug-only
-assertion (<code>KIMUN_VIEW_VERIFY_INCREMENTAL=1</code>) compares every incremental
-result against a fresh full parse field-by-field for development-time fuzzing.
-See openspec changes <code>parse-reset-boundaries</code>,
+also updates <code>lazy_depth</code>, <code>reset_boundaries</code>, and
+<code>intra_construct_boundaries</code>.</p>
+<p><strong>Post-slice verify policy.</strong> A field-by-field equality check (slice's
+<code>kinds</code>/<code>elements.len</code>/<code>content_vis</code> vs parent's pre-edit
+values, skipping damaged rows) runs only on non-Strict paths and only under
+<code>cfg(debug_assertions) + KIMUN_VIEW_VERIFY_INCREMENTAL=1</code>. The Strict path is
+provably equivalent to a fresh parse so it skips verify entirely. Both fallback paths
+were demoted from release after their respective proof-out windows (v2 phase-7 for
+Heuristic: 1581 attempts, 0 hits; intra-construct PR 3: 1011 attempts + 600k proptest
+cases, 0 hits). The env-gated debug-only verify stays as the proptest harness's
+correctness backstop. If a release-build divergence ever surfaces, re-enable in release
+while a guard is added.</p>
+<p>See openspec changes <code>parse-reset-boundaries</code>,
 <code>parse-reset-boundaries-v2</code>, and
 <code>intra-construct-reset-boundaries</code>.</p>
 
@@ -485,7 +498,11 @@ The view also caches <code>fence_ranges</code> (derived from <code>parsed_buffer
     <tr><td>Cursor arrow same row</td><td>skip</td><td>skip</td><td>cursor cell only</td></tr>
     <tr><td>Cursor moves to different row</td><td>skip</td><td>partial (2 rows)</td><td>full repaint</td></tr>
     <tr><td>Resize (width change)</td><td>skip</td><td>full layout rebuild</td><td>full repaint</td></tr>
-    <tr><td>Text edit (insert / delete)</td><td>full rebuild</td><td>full rebuild</td><td>full repaint</td></tr>
+    <tr><td>Single-char edit (typing)</td><td>incremental splice (<code>~10&ndash;200&micro;s</code>)</td><td>partial wrap from damaged range</td><td>full repaint</td></tr>
+    <tr><td>Multi-line paste</td><td>full rebuild (line-count change bails widener)</td><td>full rebuild</td><td>full repaint</td></tr>
+    <tr><td>Backspace at line boundary</td><td>full rebuild (line-count change)</td><td>full rebuild</td><td>full repaint</td></tr>
+    <tr><td>Edit in fence / list-marker flip</td><td>full rebuild (KindGuard bail)</td><td>full rebuild</td><td>full repaint</td></tr>
+    <tr><td>Large-buffer first parse (&ge;1000 lines)</td><td>placeholder ParsedBuffer + async full parse</td><td>built from placeholder</td><td>unstyled markdown for 1 frame</td></tr>
     <tr><td>Empty-stack Ctrl+Z</td><td>skip</td><td>skip</td><td>repaint from snapshots</td></tr>
   </tbody>
 </table>
@@ -650,14 +667,605 @@ sequenceDiagram
   (Editor→Editor on follow-link).</li>
 </ul>
 
-<h2>9. File map</h2>
+<h2>9. Interactive: operation &rarr; path</h2>
+
+<p>Pick an operation. The pipeline below lights up the stages that actually run, dims the
+stages that short-circuit, and shows the cost / counter that fires. Same data structure
+the runtime uses &mdash; just visualised.</p>
+
+<div class="op-picker" role="tablist" id="op-picker">
+  <button class="op-btn active" data-op="idle">Idle frame</button>
+  <button class="op-btn" data-op="cursor_same">Cursor &larr;&rarr; same row</button>
+  <button class="op-btn" data-op="cursor_diff">Cursor to different row</button>
+  <button class="op-btn" data-op="single_char_strict">Single-char edit (strict)</button>
+  <button class="op-btn" data-op="single_char_intra">Single-char edit (in loose list)</button>
+  <button class="op-btn" data-op="single_char_kindguard">Edit in fence / marker flip</button>
+  <button class="op-btn" data-op="paste">Multi-line paste</button>
+  <button class="op-btn" data-op="backspace">Backspace at line boundary</button>
+  <button class="op-btn" data-op="resize">Terminal resize</button>
+  <button class="op-btn" data-op="large_first">Large-buffer first parse</button>
+  <button class="op-btn" data-op="undo_empty">Empty-stack Ctrl+Z</button>
+</div>
+
+<div class="op-stage">
+  <div class="op-pipeline" id="op-pipeline">
+    <div class="op-node" data-id="key">crossterm key event</div>
+    <div class="op-arrow">&darr;</div>
+    <div class="op-node" data-id="handle_input">handle_input dispatch</div>
+    <div class="op-arrow">&darr;</div>
+    <div class="op-node" data-id="bump">bump_text / bump_cursor</div>
+    <div class="op-arrow">&darr;</div>
+    <div class="op-section" data-id="gate1">
+      <div class="op-section-label">Gate 1 &mdash; text revision changed</div>
+      <div class="op-node sub" data-id="g1_check">text_revision &ne; last_seen_generation ?</div>
+      <div class="op-node sub" data-id="g1_damage">compute_damage_range (cursor-hint / LCP/LCS)</div>
+      <div class="op-node sub" data-id="g1_guards">structural / blank-transition / lazy-depth guards</div>
+      <div class="op-node sub" data-id="g1_widener">three-tier widener (Strict &rarr; Intra &rarr; Heur)</div>
+      <div class="op-node sub" data-id="g1_splice">parse_range + ParsedBuffer.splice</div>
+      <div class="op-node sub" data-id="g1_full">ParsedBuffer::parse (full rebuild)</div>
+      <div class="op-node sub" data-id="g1_placeholder">placeholder + async parse spawn</div>
+      <div class="op-node sub" data-id="g1_fence">fence_ranges_from_kinds</div>
+    </div>
+    <div class="op-arrow">&darr;</div>
+    <div class="op-section" data-id="gate2">
+      <div class="op-section-label">Gate 2 &mdash; layout / rendered_cache</div>
+      <div class="op-node sub" data-id="g2_check">layout_generation / width / cursor row changed ?</div>
+      <div class="op-node sub" data-id="g2_cache_partial">rendered_cache (2 cursor rows only)</div>
+      <div class="op-node sub" data-id="g2_cache_full">rendered_cache (all rows)</div>
+      <div class="op-node sub" data-id="g2_wrap_inc">WordWrapLayout.splice_range</div>
+      <div class="op-node sub" data-id="g2_wrap_full">WordWrapLayout.compute</div>
+    </div>
+    <div class="op-arrow">&darr;</div>
+    <div class="op-node" data-id="render">view.render (MarkdownSpanner per visible row)</div>
+    <div class="op-arrow">&darr;</div>
+    <div class="op-node" data-id="autocomplete">autocomplete sync / refresh + popup overlay</div>
+  </div>
+
+  <aside class="op-detail" id="op-detail">
+    <h3 id="op-title">Idle frame</h3>
+    <p id="op-summary" class="op-summary"></p>
+    <div class="op-metrics">
+      <div class="op-metric"><span class="op-mlabel">Path</span><span class="op-mval" id="op-path">&mdash;</span></div>
+      <div class="op-metric"><span class="op-mlabel">Cost (typical)</span><span class="op-mval" id="op-cost">&mdash;</span></div>
+      <div class="op-metric"><span class="op-mlabel">Counter</span><span class="op-mval" id="op-counter">&mdash;</span></div>
+    </div>
+    <h4>Step-by-step</h4>
+    <ol id="op-steps"></ol>
+  </aside>
+</div>
+
+<style>
+  .op-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 14px 0 18px;
+    padding: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .op-btn {
+    font: 12.5px/1.2 "JetBrains Mono", monospace;
+    background: var(--code-bg);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+  .op-btn:hover { color: var(--fg); border-color: var(--dim); }
+  .op-btn.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .op-stage {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 18px;
+    align-items: flex-start;
+  }
+  .op-pipeline {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 18px 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .op-node {
+    width: 100%;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font: 12.5px/1.3 "JetBrains Mono", monospace;
+    color: var(--muted);
+    text-align: center;
+    transition: all 0.18s ease;
+    opacity: 0.4;
+  }
+  .op-node.sub {
+    font-size: 11.5px;
+    padding: 6px 8px;
+    background: var(--bg);
+  }
+  .op-node.active {
+    color: var(--green);
+    border-color: var(--green);
+    opacity: 1;
+    box-shadow: 0 0 0 1px var(--green) inset, 0 0 8px rgba(184, 187, 38, 0.18);
+  }
+  .op-node.rebuild {
+    color: var(--orange);
+    border-color: var(--orange);
+    opacity: 1;
+    box-shadow: 0 0 0 1px var(--orange) inset, 0 0 10px rgba(254, 128, 25, 0.22);
+  }
+  .op-node.bail {
+    color: var(--red);
+    border-color: var(--red);
+    opacity: 1;
+    box-shadow: 0 0 0 1px var(--red) inset;
+  }
+  .op-node.skip {
+    color: var(--dim);
+    opacity: 0.35;
+    text-decoration: line-through;
+  }
+  .op-section {
+    width: 100%;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: all 0.18s ease;
+  }
+  .op-section.skip { opacity: 0.45; }
+  .op-section-label {
+    font: 600 11px "JetBrains Mono", monospace;
+    color: var(--accent);
+    text-align: center;
+    margin-bottom: 4px;
+    letter-spacing: 0.4px;
+  }
+  .op-arrow {
+    color: var(--dim);
+    font-size: 14px;
+    line-height: 1;
+  }
+  .op-detail {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+    position: sticky;
+    top: 12px;
+  }
+  .op-detail h3 {
+    margin-top: 0;
+    color: var(--accent);
+    font-size: 16px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+  .op-detail h4 {
+    color: var(--link);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin: 18px 0 8px;
+  }
+  .op-summary {
+    color: var(--fg);
+    font-size: 13.5px;
+    margin: 8px 0 14px;
+  }
+  .op-metrics {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 12px;
+  }
+  .op-metric {
+    display: flex;
+    justify-content: space-between;
+    font: 12.5px/1.4 "JetBrains Mono", monospace;
+  }
+  .op-mlabel { color: var(--muted); }
+  .op-mval { color: var(--green); font-weight: 600; }
+  .op-mval.bail { color: var(--red); }
+  .op-mval.orange { color: var(--orange); }
+  .op-detail ol {
+    padding-left: 22px;
+    margin: 0;
+  }
+  .op-detail li {
+    color: var(--fg);
+    font-size: 13px;
+    margin-bottom: 6px;
+  }
+  .op-detail li code {
+    background: var(--code-bg);
+    color: var(--orange);
+    font-size: 11.5px;
+  }
+  @media (max-width: 880px) {
+    .op-stage { grid-template-columns: 1fr; }
+    .op-detail { position: static; }
+  }
+</style>
+
+<script>
+  const OPS = {
+    idle: {
+      title: "Idle frame (no input)",
+      summary: "Outer event loop ticks. No key event, text_revision unchanged, cursor unchanged. Both gates short-circuit; render repaints from cached snapshots.",
+      path: "skip / skip / render",
+      cost: "~50 µs (repaint only)",
+      counter: "view_updates++",
+      counterClass: "",
+      states: {
+        key: "skip", handle_input: "skip", bump: "skip",
+        gate1: "skip",
+        g1_check: "active",
+        g1_damage: "skip", g1_guards: "skip", g1_widener: "skip",
+        g1_splice: "skip", g1_full: "skip", g1_placeholder: "skip", g1_fence: "skip",
+        gate2: "skip",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "skip",
+        g2_wrap_inc: "skip", g2_wrap_full: "skip",
+        render: "active", autocomplete: "skip"
+      },
+      steps: [
+        "EventHandler.try_next() returns None — no key, no app event.",
+        "render loop calls EditorScreen.render → TextEditorComponent.render.",
+        "view.update sees text_revision == last_seen_generation → Gate 1 skipped.",
+        "view.update sees layout_generation match → Gate 2 skipped.",
+        "view.render walks visible visual_lines and re-paints from cached spans."
+      ]
+    },
+    cursor_same: {
+      title: "Cursor arrow within the same logical row",
+      summary: "Cursor moved (column changed) but same row. text_revision unchanged. Gate 1 skipped. Gate 2's cursor-row check sees same row → skip layout. Only cursor cell repaints.",
+      path: "skip / skip / cursor-only repaint",
+      cost: "~10 µs",
+      counter: "edit_generation++",
+      counterClass: "",
+      states: {
+        key: "active", handle_input: "active", bump: "active",
+        gate1: "skip",
+        g1_check: "active",
+        g1_damage: "skip", g1_guards: "skip", g1_widener: "skip",
+        g1_splice: "skip", g1_full: "skip", g1_placeholder: "skip", g1_fence: "skip",
+        gate2: "skip",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "skip",
+        g2_wrap_inc: "skip", g2_wrap_full: "skip",
+        render: "active", autocomplete: "skip"
+      },
+      steps: [
+        "Crossterm emits Left/Right key.",
+        "handle_input → backend.move_cursor → bump_cursor (edit_generation++, text_revision unchanged).",
+        "Gate 1: text_revision unchanged → skip ParsedBuffer rebuild.",
+        "Gate 2: width unchanged, content_revision unchanged, cursor row same → skip layout + rendered_cache.",
+        "render only redraws the cursor cell."
+      ]
+    },
+    cursor_diff: {
+      title: "Cursor moves to a different logical row",
+      summary: "Cursor row changed. Gate 1 still skipped (text unchanged). Gate 2 rebuilds rendered_cache for just the OLD and NEW cursor rows (2-row partial), then re-derives only the visual range.",
+      path: "skip / partial (2 rows) / full repaint",
+      cost: "~30–80 µs",
+      counter: "edit_generation++",
+      counterClass: "",
+      states: {
+        key: "active", handle_input: "active", bump: "active",
+        gate1: "skip",
+        g1_check: "active",
+        g1_damage: "skip", g1_guards: "skip", g1_widener: "skip",
+        g1_splice: "skip", g1_full: "skip", g1_placeholder: "skip", g1_fence: "skip",
+        gate2: "active",
+        g2_check: "active",
+        g2_cache_partial: "rebuild", g2_cache_full: "skip",
+        g2_wrap_inc: "skip", g2_wrap_full: "skip",
+        render: "active", autocomplete: "skip"
+      },
+      steps: [
+        "Up/Down arrow → bump_cursor; text_revision unchanged.",
+        "Gate 1 skipped (same text_revision).",
+        "Gate 2: last_layout_cursor.row ≠ new cursor row → partial rendered_cache rebuild of the two affected rows.",
+        "layout.visual_lines unchanged (wrap depends on content+width, not cursor).",
+        "render walks the visible window from the (unchanged) visual_lines, painting from the freshly-rebuilt rendered_cache for the cursor rows."
+      ]
+    },
+    single_char_strict: {
+      title: "Single-char edit (paragraph mid-buffer)",
+      summary: "compute_damage_range finds a one-row delta. Guards pass. Strict reset-boundary widener snaps to the nearest Blank-with-lazy_depth-0 rows on each side. parse_range over the narrow slice; splice into parent. No verify (Strict path is provably equivalent).",
+      path: "Strict reset boundary",
+      cost: "~30–150 µs depending on widened range",
+      counter: "incremental_reset++",
+      counterClass: "",
+      states: {
+        key: "active", handle_input: "active", bump: "active",
+        gate1: "active",
+        g1_check: "active",
+        g1_damage: "active", g1_guards: "active", g1_widener: "active",
+        g1_splice: "rebuild", g1_full: "skip", g1_placeholder: "skip", g1_fence: "rebuild",
+        gate2: "active",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "rebuild",
+        g2_wrap_inc: "rebuild", g2_wrap_full: "skip",
+        render: "active", autocomplete: "active"
+      },
+      steps: [
+        "Crossterm Char event → input_without_shortcuts → bump_text (text_revision++).",
+        "Gate 1: text_revision changed → try_incremental_parse.",
+        "compute_damage_range hits the cursor-hint fast path: same line count + only cursor row differs in ±4-row window → damaged = (row, row+1).",
+        "Guards pass (no FenceMarker / no lazy_depth>0 / no blank flip).",
+        "expand_to_reset_boundary(reset_boundaries) snaps to nearest Blank-depth-0 rows.",
+        "ParsedBuffer::parse_range parses the slice; ParsedBuffer::splice merges. No verify (Strict path).",
+        "fence_ranges_from_kinds rebuilt from updated kinds.",
+        "Gate 2: WordWrapLayout.splice_range only touches damaged range. rendered_cache rebuilt for damaged rows.",
+        "render paints visible window."
+      ]
+    },
+    single_char_intra: {
+      title: "Single-char edit inside a loose list item",
+      summary: "Same flow as Strict but lazy_depth[row±1] > 0 trips the v2 guard. §3.0 conditional relaxation: old_kind == ListMarker AND lazy_depth[row] == 1 → skip the bail. Strict widener returns FullRebuild (no Blank-depth-0 nearby). Intra-construct widener snaps to End(Item) boundaries. Splice + verify (debug-only).",
+      path: "Intra-construct boundary",
+      cost: "~36 µs on heavy_lists_loose (was 493 µs)",
+      counter: "incremental_intra_construct++ (also lazy_guard_relaxed++)",
+      counterClass: "orange",
+      states: {
+        key: "active", handle_input: "active", bump: "active",
+        gate1: "active",
+        g1_check: "active",
+        g1_damage: "active", g1_guards: "active", g1_widener: "rebuild",
+        g1_splice: "rebuild", g1_full: "skip", g1_placeholder: "skip", g1_fence: "rebuild",
+        gate2: "active",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "rebuild",
+        g2_wrap_inc: "rebuild", g2_wrap_full: "skip",
+        render: "active", autocomplete: "active"
+      },
+      steps: [
+        "Edit on a `- item` row inside a loose list. damaged = (row, row+1).",
+        "Guard pass: looks_like_* checks all match.",
+        "Lazy guard: lazy_depth[row±1] > 0 (list is open). Old kind ListMarker + lazy_depth[row]==1 → §3.0 relax fires. lazy_guard_relaxed++.",
+        "Strict widener: no Blank-depth-0 within MAX_INCREMENTAL_LINES → FullRebuild.",
+        "Intra-construct widener: nearest End(Item) boundaries on each side → Widened.",
+        "parse_range over the item-bounded slice. ParsedBuffer.splice merges.",
+        "Verify loop skipped in release (cfg(debug_assertions) + env-gated only after PR 3 demote).",
+        "Gate 2 + render as Strict path."
+      ]
+    },
+    single_char_kindguard: {
+      title: "Edit on a structural marker (fence / setext / list marker flip)",
+      summary: "The damaged row was — or becomes — a structural marker whose extent can shift beyond the widening window. The KindGuard bails to a full ParsedBuffer::parse. Worst-case path: ~5–20ms on a 5000-line buffer.",
+      path: "Bail → full rebuild",
+      cost: "~2–20 ms (full parse)",
+      counter: "full_kind_guard++",
+      counterClass: "bail",
+      states: {
+        key: "active", handle_input: "active", bump: "active",
+        gate1: "active",
+        g1_check: "active",
+        g1_damage: "active", g1_guards: "bail", g1_widener: "skip",
+        g1_splice: "skip", g1_full: "rebuild", g1_placeholder: "skip", g1_fence: "rebuild",
+        gate2: "active",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "rebuild",
+        g2_wrap_inc: "skip", g2_wrap_full: "rebuild",
+        render: "active", autocomplete: "active"
+      },
+      steps: [
+        "Edit on a `\\`\\`\\`` row (or making one) → looks_like_fence_marker differs old vs new.",
+        "Guard bails with BailReason::KindGuard.",
+        "try_incremental_parse returns None.",
+        "Gate 1 falls back to ParsedBuffer::parse over the whole buffer.",
+        "fence_ranges_from_kinds, rendered_cache, WordWrapLayout all rebuild fully.",
+        "render paints visible window."
+      ]
+    },
+    paste: {
+      title: "Multi-line paste",
+      summary: "Line count changes. The widener requires same line count to splice (its mode is row-replacement). Line-count gate at the top of try_incremental_parse bails immediately to full rebuild.",
+      path: "Bail → full rebuild",
+      cost: "~2–20 ms (full parse)",
+      counter: "full_line_count_change++",
+      counterClass: "bail",
+      states: {
+        key: "active", handle_input: "active", bump: "active",
+        gate1: "active",
+        g1_check: "active",
+        g1_damage: "skip", g1_guards: "bail", g1_widener: "skip",
+        g1_splice: "skip", g1_full: "rebuild", g1_placeholder: "skip", g1_fence: "rebuild",
+        gate2: "active",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "rebuild",
+        g2_wrap_inc: "skip", g2_wrap_full: "rebuild",
+        render: "active", autocomplete: "active"
+      },
+      steps: [
+        "Backend processes paste (potentially many newlines).",
+        "lines.len() ≠ self.parsed_buffer.lines.len() → BailReason::LineCountChange.",
+        "ParsedBuffer::parse over the new buffer.",
+        "fence_ranges, WordWrapLayout, rendered_cache rebuild fully.",
+        "Frame paints normally; cost is the full-parse latency."
+      ]
+    },
+    backspace: {
+      title: "Backspace at line boundary (merges two rows)",
+      summary: "Same as paste: line count drops by one. Widener bails on line-count gate.",
+      path: "Bail → full rebuild",
+      cost: "~2–20 ms (full parse)",
+      counter: "full_line_count_change++",
+      counterClass: "bail",
+      states: {
+        key: "active", handle_input: "active", bump: "active",
+        gate1: "active",
+        g1_check: "active",
+        g1_damage: "skip", g1_guards: "bail", g1_widener: "skip",
+        g1_splice: "skip", g1_full: "rebuild", g1_placeholder: "skip", g1_fence: "rebuild",
+        gate2: "active",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "rebuild",
+        g2_wrap_inc: "skip", g2_wrap_full: "rebuild",
+        render: "active", autocomplete: "active"
+      },
+      steps: [
+        "Backspace at column 0 — backend merges the row with the row above.",
+        "lines.len() differs → BailReason::LineCountChange.",
+        "Full ParsedBuffer::parse.",
+        "Gate 2 rebuilds layout + rendered_cache fully."
+      ]
+    },
+    resize: {
+      title: "Terminal resize (width change)",
+      summary: "text_revision unchanged so Gate 1 skips. Gate 2 sees width ≠ last_layout_width → full WordWrapLayout rebuild. rendered_cache also rebuilds (per-row visible bitmasks depend on wrap).",
+      path: "Gate 2 full wrap rebuild",
+      cost: "~500 µs / 1000 lines",
+      counter: "—",
+      counterClass: "",
+      states: {
+        key: "active", handle_input: "active", bump: "skip",
+        gate1: "skip",
+        g1_check: "active",
+        g1_damage: "skip", g1_guards: "skip", g1_widener: "skip",
+        g1_splice: "skip", g1_full: "skip", g1_placeholder: "skip", g1_fence: "skip",
+        gate2: "active",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "rebuild",
+        g2_wrap_inc: "skip", g2_wrap_full: "rebuild",
+        render: "active", autocomplete: "skip"
+      },
+      steps: [
+        "Crossterm Resize event → run_app loop forwards rect to render.",
+        "Gate 1: text_revision unchanged → skip.",
+        "Gate 2: width ≠ last_layout_width → WordWrapLayout.compute over all lines.",
+        "rendered_cache rebuilt fully (per-row bitmasks depend on wrap columns).",
+        "render paints visible window with new visual_lines."
+      ]
+    },
+    large_first: {
+      title: "Large-buffer first parse (≥1000 lines)",
+      summary: "Empty parsed_buffer at startup. Above LARGE_BUFFER_THRESHOLD, view installs a placeholder ParsedBuffer (same row count, every row Plain, no elements) and spawns the real pulldown parse on a background tokio task. One frame of unstyled markdown; subsequent frames pick up the async result via install_full_parse.",
+      path: "Placeholder + async parse",
+      cost: "&lt;1 ms placeholder + N ms async pulldown",
+      counter: "first_parse++ (uncounted)",
+      counterClass: "orange",
+      states: {
+        key: "skip", handle_input: "skip", bump: "skip",
+        gate1: "active",
+        g1_check: "active",
+        g1_damage: "skip", g1_guards: "skip", g1_widener: "skip",
+        g1_splice: "skip", g1_full: "skip", g1_placeholder: "rebuild", g1_fence: "rebuild",
+        gate2: "active",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "rebuild",
+        g2_wrap_inc: "skip", g2_wrap_full: "rebuild",
+        render: "active", autocomplete: "skip"
+      },
+      steps: [
+        "Open a 5000-line note. text_revision bumps from prior buffer.",
+        "Gate 1: try_incremental_parse returns None (empty parent buffer).",
+        "lines.len() ≥ LARGE_BUFFER_THRESHOLD (1000) → install ParsedBuffer::placeholder.",
+        "pending_full_parse = Some(generation). Owning component takes it, spawns ParsedBuffer::parse on tokio.",
+        "Gate 2 + render proceed on the placeholder — visible text appears immediately, but unstyled.",
+        "Next frame: install_full_parse swaps in the real ParsedBuffer; full Gate 2 rebuild applies markdown styling."
+      ]
+    },
+    undo_empty: {
+      title: "Empty-stack Ctrl+Z / Ctrl+Y",
+      summary: "Undo stack is empty so ratatui_textarea.undo() returns false. Neither text_revision nor edit_generation bumps. Both gates skip; frame repaints from snapshots.",
+      path: "skip / skip / repaint",
+      cost: "~50 µs",
+      counter: "—",
+      counterClass: "",
+      states: {
+        key: "active", handle_input: "active", bump: "skip",
+        gate1: "skip",
+        g1_check: "active",
+        g1_damage: "skip", g1_guards: "skip", g1_widener: "skip",
+        g1_splice: "skip", g1_full: "skip", g1_placeholder: "skip", g1_fence: "skip",
+        gate2: "skip",
+        g2_check: "active",
+        g2_cache_partial: "skip", g2_cache_full: "skip",
+        g2_wrap_inc: "skip", g2_wrap_full: "skip",
+        render: "active", autocomplete: "skip"
+      },
+      steps: [
+        "Ctrl+Z key → handle_textarea_key matches the shortcut → ta.undo().",
+        "Return value false (empty stack) → ShortcutOutcome::NoOp.",
+        "Neither bump_text nor bump_cursor called.",
+        "Gate 1 + Gate 2 both skip on unchanged revisions.",
+        "render repaints from cached spans (visible cursor stays put)."
+      ]
+    }
+  };
+
+  function applyOp(opKey) {
+    const op = OPS[opKey];
+    if (!op) return;
+
+    document.querySelectorAll("#op-picker .op-btn").forEach(b => {
+      b.classList.toggle("active", b.dataset.op === opKey);
+    });
+
+    document.querySelectorAll("#op-pipeline .op-node, #op-pipeline .op-section").forEach(n => {
+      n.classList.remove("active", "rebuild", "bail", "skip");
+      const id = n.dataset.id;
+      const state = op.states[id];
+      if (state) n.classList.add(state);
+    });
+
+    document.getElementById("op-title").textContent = op.title;
+    document.getElementById("op-summary").innerHTML = op.summary;
+    document.getElementById("op-path").textContent = op.path;
+    document.getElementById("op-cost").innerHTML = op.cost;
+
+    const counterEl = document.getElementById("op-counter");
+    counterEl.textContent = op.counter;
+    counterEl.className = "op-mval " + (op.counterClass || "");
+
+    const ol = document.getElementById("op-steps");
+    ol.innerHTML = "";
+    op.steps.forEach(s => {
+      const li = document.createElement("li");
+      li.innerHTML = s;
+      ol.appendChild(li);
+    });
+  }
+
+  document.querySelectorAll("#op-picker .op-btn").forEach(btn => {
+    btn.addEventListener("click", () => applyOp(btn.dataset.op));
+  });
+  applyOp("idle");
+</script>
+
+<h2>10. File map</h2>
 
 <table>
   <thead><tr><th>File</th><th>Role</th></tr></thead>
   <tbody>
     <tr><td><code>tui/src/components/text_editor/mod.rs</code></td><td>TextEditorComponent: input dispatch, autocomplete glue, bump helpers, render orchestration.</td></tr>
     <tr><td><code>tui/src/components/text_editor/view.rs</code></td><td>MarkdownEditorView: parse/wrap/render caches with Gate 1 (text) + Gate 2 (layout).</td></tr>
-    <tr><td><code>tui/src/components/text_editor/markdown.rs</code></td><td>ParsedBuffer, ParsedLine, MarkdownSpanner — pulldown-cmark wrapper + span emitter.</td></tr>
+    <tr><td><code>tui/src/components/text_editor/markdown/parsed_buffer.rs</code></td><td>ParsedBuffer — pulldown-cmark event walk, kinds + lazy_depth + reset_boundaries + intra_construct_boundaries population, splice / parse_range.</td></tr>
+    <tr><td><code>tui/src/components/text_editor/markdown/spanner.rs</code></td><td>MarkdownSpanner — per-row span emission (colour, bold, link rendering).</td></tr>
+    <tr><td><code>tui/src/components/text_editor/markdown/detect.rs</code></td><td>Wikilink / image-placeholder / hashtag detectors fed by the spanner.</td></tr>
+    <tr><td><code>tui/src/components/text_editor/parse_incremental.rs</code></td><td>compute_damage_range, expand_to_reset_boundary, widen_to_safe, LineConstructKind, fence_ranges_from_kinds — pure functions, no pulldown.</td></tr>
+    <tr><td><code>tui/src/components/text_editor/widener_metrics.rs</code></td><td>SuccessPath / BailReason counters, KIMUN_DUMP_WIDENER_METRICS=1 dump.</td></tr>
     <tr><td><code>tui/src/components/text_editor/word_wrap.rs</code></td><td>WordWrapLayout — visual-line table with byte-range slices.</td></tr>
     <tr><td><code>tui/src/components/text_editor/backend.rs</code></td><td>NvimBackend, NvimSnapshot, refresh task, set_text TOCTOU contract.</td></tr>
     <tr><td><code>tui/src/components/text_editor/autocomplete_glue.rs</code></td><td>row/char/byte conversions for AcceptAction.</td></tr>
@@ -673,7 +1281,7 @@ sequenceDiagram
 <hr>
 
 <p style="color:var(--dim); font-size:12.5px; text-align:center;">
-Generated against <code>tui_perf</code> branch · 40 commits since main · 1232 tests passing.
+Generated against <code>tui_perf</code> branch &middot; intra-construct-reset-boundaries shipped (PR 1+2+3) &middot; 1557 tests passing &middot; 600k proptest soak + 1011 dogfooding attempts, 0 verify failures.
 </p>
 
 <script>
