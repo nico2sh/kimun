@@ -258,16 +258,18 @@ the damaged row trips any of:</p>
   <li><code>parsed_buffer.lazy_depth[row&minus;1..=row+1]</code> contains any positive entry
       &mdash; an open lazy-continuable construct (List, BlockQuote, IndentedCode,
       HtmlBlock) at or next to the damaged row can lazy-extend across the splice in
-      ways the slice cannot capture. <strong>Conditionally relaxed</strong> when ALL of:
-      <em>(a)</em> damaged row's old kind is <code>ListMarker</code>,
+      ways the slice cannot capture. <strong>Conditionally relaxed</strong> when BOTH:
+      <em>(a)</em> damaged row's old kind is <code>ListMarker</code>, AND
       <em>(b)</em> <code>lazy_depth[row] == 1</code> (top-level list, not nested inside a
-      blockquote / outer list), <em>(c)</em> no marker/blank flip on the damaged row.
-      Marker-row content edits cannot change row+1's classification (the post-pass
-      ListMarker&rarr;ListContinuation propagation is deterministic from the prev row's
-      kind, which the splice updates in lockstep). Initial relaxation also accepted
-      <code>ListContinuation</code> + nested depths; both unlocks reverted after the 100k
-      proptest soak exposed downstream-row-classification flips. Relaxation rate tracked
-      in <code>widener_metrics::lazy_guard_relaxed</code>.</li>
+      blockquote / outer list). Marker-row content edits cannot change row+1's
+      classification (the post-pass ListMarker&rarr;ListContinuation propagation is
+      deterministic from the prev row's kind, which the splice updates in lockstep).
+      Marker/blank flips are caught by the surrounding guards (<code>looks_like_*</code>
+      runs before this check; blank-transition runs after), so the relax only ever fires
+      on pure content edits. Initial relaxation also accepted <code>ListContinuation</code>
+      + nested depths; both unlocks reverted after the 100k proptest soak exposed
+      downstream-row-classification flips. Relaxation rate tracked in
+      <code>widener_metrics::lazy_guard_relaxed</code>.</li>
   <li>The damaged row flips between blank and non-blank with a non-blank neighbour
       &mdash; the pre-edit reset boundary at that row becomes invalid post-edit
       because a paragraph (or other lazy construct) can re-extend across the row.</li>
@@ -673,19 +675,7 @@ sequenceDiagram
 stages that short-circuit, and shows the cost / counter that fires. Same data structure
 the runtime uses &mdash; just visualised.</p>
 
-<div class="op-picker" role="tablist" id="op-picker">
-  <button class="op-btn active" data-op="idle">Idle frame</button>
-  <button class="op-btn" data-op="cursor_same">Cursor &larr;&rarr; same row</button>
-  <button class="op-btn" data-op="cursor_diff">Cursor to different row</button>
-  <button class="op-btn" data-op="single_char_strict">Single-char edit (strict)</button>
-  <button class="op-btn" data-op="single_char_intra">Single-char edit (in loose list)</button>
-  <button class="op-btn" data-op="single_char_kindguard">Edit in fence / marker flip</button>
-  <button class="op-btn" data-op="paste">Multi-line paste</button>
-  <button class="op-btn" data-op="backspace">Backspace at line boundary</button>
-  <button class="op-btn" data-op="resize">Terminal resize</button>
-  <button class="op-btn" data-op="large_first">Large-buffer first parse</button>
-  <button class="op-btn" data-op="undo_empty">Empty-stack Ctrl+Z</button>
-</div>
+<div class="op-picker" role="tablist" id="op-picker"></div>
 
 <div class="op-stage">
   <div class="op-pipeline" id="op-pipeline">
@@ -829,6 +819,9 @@ the runtime uses &mdash; just visualised.</p>
     transition: all 0.18s ease;
   }
   .op-section.skip { opacity: 0.45; }
+  .op-section.active { border-color: var(--green); border-style: solid; box-shadow: 0 0 0 1px var(--green) inset; }
+  .op-section.rebuild { border-color: var(--orange); border-style: solid; box-shadow: 0 0 0 1px var(--orange) inset; }
+  .op-section.bail { border-color: var(--red); border-style: solid; box-shadow: 0 0 0 1px var(--red) inset; }
   .op-section-label {
     font: 600 11px "JetBrains Mono", monospace;
     color: var(--accent);
@@ -886,6 +879,7 @@ the runtime uses &mdash; just visualised.</p>
   .op-mval { color: var(--green); font-weight: 600; }
   .op-mval.bail { color: var(--red); }
   .op-mval.orange { color: var(--orange); }
+  .op-mval.muted { color: var(--muted); font-weight: 400; }
   .op-detail ol {
     padding-left: 22px;
     margin: 0;
@@ -909,12 +903,12 @@ the runtime uses &mdash; just visualised.</p>
 <script>
   const OPS = {
     idle: {
+      label: "Idle frame",
       title: "Idle frame (no input)",
       summary: "Outer event loop ticks. No key event, text_revision unchanged, cursor unchanged. Both gates short-circuit; render repaints from cached snapshots.",
       path: "skip / skip / render",
       cost: "~50 µs (repaint only)",
       counter: "view_updates++",
-      counterClass: "",
       states: {
         key: "skip", handle_input: "skip", bump: "skip",
         gate1: "skip",
@@ -936,12 +930,12 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     cursor_same: {
+      label: "Cursor &larr;&rarr; same row",
       title: "Cursor arrow within the same logical row",
       summary: "Cursor moved (column changed) but same row. text_revision unchanged. Gate 1 skipped. Gate 2's cursor-row check sees same row → skip layout. Only cursor cell repaints.",
       path: "skip / skip / cursor-only repaint",
       cost: "~10 µs",
       counter: "edit_generation++",
-      counterClass: "",
       states: {
         key: "active", handle_input: "active", bump: "active",
         gate1: "skip",
@@ -963,12 +957,12 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     cursor_diff: {
+      label: "Cursor to different row",
       title: "Cursor moves to a different logical row",
       summary: "Cursor row changed. Gate 1 still skipped (text unchanged). Gate 2 rebuilds rendered_cache for just the OLD and NEW cursor rows (2-row partial), then re-derives only the visual range.",
       path: "skip / partial (2 rows) / full repaint",
       cost: "~30–80 µs",
       counter: "edit_generation++",
-      counterClass: "",
       states: {
         key: "active", handle_input: "active", bump: "active",
         gate1: "skip",
@@ -990,12 +984,12 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     single_char_strict: {
+      label: "Single-char edit (strict)",
       title: "Single-char edit (paragraph mid-buffer)",
       summary: "compute_damage_range finds a one-row delta. Guards pass. Strict reset-boundary widener snaps to the nearest Blank-with-lazy_depth-0 rows on each side. parse_range over the narrow slice; splice into parent. No verify (Strict path is provably equivalent).",
       path: "Strict reset boundary",
       cost: "~30–150 µs depending on widened range",
       counter: "incremental_reset++",
-      counterClass: "",
       states: {
         key: "active", handle_input: "active", bump: "active",
         gate1: "active",
@@ -1021,6 +1015,7 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     single_char_intra: {
+      label: "Single-char edit (in loose list)",
       title: "Single-char edit inside a loose list item",
       summary: "Same flow as Strict but lazy_depth[row±1] > 0 trips the v2 guard. §3.0 conditional relaxation: old_kind == ListMarker AND lazy_depth[row] == 1 → skip the bail. Strict widener returns FullRebuild (no Blank-depth-0 nearby). Intra-construct widener snaps to End(Item) boundaries. Splice + verify (debug-only).",
       path: "Intra-construct boundary",
@@ -1051,6 +1046,7 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     single_char_kindguard: {
+      label: "Edit in fence / marker flip",
       title: "Edit on a structural marker (fence / setext / list marker flip)",
       summary: "The damaged row was — or becomes — a structural marker whose extent can shift beyond the widening window. The KindGuard bails to a full ParsedBuffer::parse. Worst-case path: ~5–20ms on a 5000-line buffer.",
       path: "Bail → full rebuild",
@@ -1079,6 +1075,7 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     paste: {
+      label: "Multi-line paste",
       title: "Multi-line paste",
       summary: "Line count changes. The widener requires same line count to splice (its mode is row-replacement). Line-count gate at the top of try_incremental_parse bails immediately to full rebuild.",
       path: "Bail → full rebuild",
@@ -1106,6 +1103,7 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     backspace: {
+      label: "Backspace at line boundary",
       title: "Backspace at line boundary (merges two rows)",
       summary: "Same as paste: line count drops by one. Widener bails on line-count gate.",
       path: "Bail → full rebuild",
@@ -1132,12 +1130,12 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     resize: {
+      label: "Terminal resize",
       title: "Terminal resize (width change)",
       summary: "text_revision unchanged so Gate 1 skips. Gate 2 sees width ≠ last_layout_width → full WordWrapLayout rebuild. rendered_cache also rebuilds (per-row visible bitmasks depend on wrap).",
       path: "Gate 2 full wrap rebuild",
       cost: "~500 µs / 1000 lines",
       counter: "—",
-      counterClass: "",
       states: {
         key: "active", handle_input: "active", bump: "skip",
         gate1: "skip",
@@ -1159,6 +1157,7 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     large_first: {
+      label: "Large-buffer first parse",
       title: "Large-buffer first parse (≥1000 lines)",
       summary: "Empty parsed_buffer at startup. Above LARGE_BUFFER_THRESHOLD, view installs a placeholder ParsedBuffer (same row count, every row Plain, no elements) and spawns the real pulldown parse on a background tokio task. One frame of unstyled markdown; subsequent frames pick up the async result via install_full_parse.",
       path: "Placeholder + async parse",
@@ -1187,12 +1186,12 @@ the runtime uses &mdash; just visualised.</p>
       ]
     },
     undo_empty: {
+      label: "Empty-stack Ctrl+Z",
       title: "Empty-stack Ctrl+Z / Ctrl+Y",
       summary: "Undo stack is empty so ratatui_textarea.undo() returns false. Neither text_revision nor edit_generation bumps. Both gates skip; frame repaints from snapshots.",
       path: "skip / skip / repaint",
       cost: "~50 µs",
       counter: "—",
-      counterClass: "",
       states: {
         key: "active", handle_input: "active", bump: "skip",
         gate1: "skip",
@@ -1248,8 +1247,14 @@ the runtime uses &mdash; just visualised.</p>
     });
   }
 
-  document.querySelectorAll("#op-picker .op-btn").forEach(btn => {
-    btn.addEventListener("click", () => applyOp(btn.dataset.op));
+  const picker = document.getElementById("op-picker");
+  Object.entries(OPS).forEach(([key, op]) => {
+    const btn = document.createElement("button");
+    btn.className = "op-btn";
+    btn.dataset.op = key;
+    btn.innerHTML = op.label || key;
+    btn.addEventListener("click", () => applyOp(key));
+    picker.appendChild(btn);
   });
   applyOp("idle");
 </script>
