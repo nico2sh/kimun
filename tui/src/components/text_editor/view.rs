@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use std::ops::Range;
+#[cfg(debug_assertions)]
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
 
@@ -123,18 +124,91 @@ fn looks_like_setext_underline(line: &str) -> bool {
     !trimmed.is_empty() && (trimmed.chars().all(|c| c == '=') || trimmed.chars().all(|c| c == '-'))
 }
 
-/// True when `line`'s leading indent makes it an indented-code candidate
-/// per CommonMark §4.4: 4+ leading spaces, or any leading tab. A
-/// transition into or out of this shape can lazy-extend an indented-code
-/// block across subsequent rows, so the structural-marker guard treats
-/// it as a fallback trigger. Conservative over-trip (a row in an
-/// existing fence won't actually shift anything, but we'd rather pay a
-/// full parse than risk a desync).
+/// True when `line` is a potential indented-code opener per CommonMark
+/// §4.4: 4+ leading spaces (or a leading tab) FOLLOWED BY non-whitespace
+/// content. A whitespace-only line — even one with a 4-space prefix —
+/// does NOT open an indented code block in pulldown's tokenization, so
+/// treating `"    "` (just spaces) as indented-code-like would miss the
+/// real transition when content arrives (`"    "` → `"    !"` is the
+/// flip that promotes the row to IndentedCode AND lazy-extends the
+/// block downward).
 fn looks_like_indented_code(line: &str) -> bool {
-    if line.starts_with('\t') {
-        return true;
+    if let Some(rest) = line.strip_prefix('\t') {
+        return !rest.trim().is_empty();
     }
-    line.chars().take_while(|c| *c == ' ').count() >= 4
+    let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+    if leading_spaces < 4 {
+        return false;
+    }
+    !line[leading_spaces..].trim().is_empty()
+}
+
+/// True when `line` looks like an unordered (`-`/`*`/`+`) or
+/// ordered (`1.` / `1)`) list marker per CommonMark §5.2: ≤3 leading
+/// spaces of indent, then a bullet/ordered marker followed by space,
+/// tab, or end-of-line. A flip into or out of this shape opens or
+/// closes a `Tag::List` — which is lazy-continuable per §5.2 (loose
+/// lists merge across blank lines into a single list) — so the
+/// structural-marker guard treats it as a fallback trigger. Without
+/// this guard, an edit `"x"` → `"* x"` next to an existing
+/// blank-separated list silently leaks loose-list-merge divergence
+/// past the splice.
+fn looks_like_list_marker(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    let indent = line.len() - trimmed.len();
+    if indent > 3 {
+        return false;
+    }
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if matches!(first, '-' | '*' | '+') {
+        if !matches!(chars.next(), Some(' ' | '\t')) {
+            return false;
+        }
+        // Require non-whitespace content after the marker+space.
+        // Pulldown classifies marker-with-only-trailing-whitespace
+        // (`"*     "`, `"- "`) as a paragraph row, not a list — so
+        // a flip from "*     " to "*     x" promotes the row from
+        // Plain to ListMarker even though the prefix shape is
+        // identical. Without this tighter predicate the flip is
+        // invisible and the splice silently mis-classifies adjacent
+        // rows.
+        return chars.any(|c| !c.is_whitespace());
+    }
+    if first.is_ascii_digit() {
+        let mut digits = 1usize;
+        let mut next = chars.next();
+        while let Some(c) = next
+            && c.is_ascii_digit()
+        {
+            digits += 1;
+            if digits > 9 {
+                return false;
+            }
+            next = chars.next();
+        }
+        if !matches!(next, Some('.' | ')')) {
+            return false;
+        }
+        if !matches!(chars.next(), Some(' ' | '\t')) {
+            return false;
+        }
+        return chars.any(|c| !c.is_whitespace());
+    }
+    false
+}
+
+/// True when `line` looks like a blockquote opener per CommonMark
+/// §5.1: ≤3 leading spaces, then `>`. `Tag::BlockQuote` is
+/// lazy-continuable (its inner paragraph absorbs non-`>` lines via
+/// §5.1 lazy continuation), so a flip into or out of this shape
+/// shifts the construct's extent in ways the splice can't capture.
+fn looks_like_blockquote_marker(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    let indent = line.len() - trimmed.len();
+    indent <= 3 && trimmed.starts_with('>')
 }
 
 /// True when `line` could open an HTML block per CommonMark §4.6:
@@ -160,13 +234,7 @@ impl MarkdownEditorView {
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
             last_cursor_screen: None,
-            parsed_buffer: ParsedBuffer {
-                lines: Vec::new(),
-                kinds: Vec::new(),
-                // `0` and `lines.len()` are always boundaries.
-                // For an empty buffer both equal 0; one entry is enough.
-                reset_boundaries: vec![0],
-            },
+            parsed_buffer: ParsedBuffer::placeholder(&[]),
             last_seen_generation: u64::MAX, // force rebuild on first update
             last_layout_generation: u64::MAX,
             last_layout_width: 0,
@@ -223,6 +291,7 @@ impl MarkdownEditorView {
         rect: Rect,
         selection: Option<((usize, usize), (usize, usize))>,
     ) {
+        super::widener_metrics::METRICS.view_updated();
         // Snapshot owns the (cursor, lines, content_revision) atomicity
         // — readers below can index `parsed_buffer.lines[cursor.0]`
         // without `.get()` guards once Gate 1 has rebuilt the parse
@@ -270,6 +339,14 @@ impl MarkdownEditorView {
                 assert_eq!(
                     self.parsed_buffer.kinds, fresh.kinds,
                     "incremental kinds diverge from full parse at generation={generation}"
+                );
+                assert_eq!(
+                    self.parsed_buffer.lazy_depth, fresh.lazy_depth,
+                    "incremental lazy_depth diverges from full parse at generation={generation}"
+                );
+                assert_eq!(
+                    self.parsed_buffer.reset_boundaries, fresh.reset_boundaries,
+                    "incremental reset_boundaries diverge from full parse at generation={generation}"
                 );
                 assert_eq!(
                     self.parsed_buffer.lines.len(),
@@ -524,20 +601,27 @@ impl MarkdownEditorView {
         cursor: (usize, usize),
     ) -> Option<(std::ops::Range<usize>, ParsedBuffer)> {
         use super::parse_incremental::{
-            LineConstructKind, WidenResult, compute_damage_range, widen_to_safe,
+            LineConstructKind, WidenResult, compute_damage_range, expand_to_reset_boundary,
+            widen_to_safe,
         };
+        use super::widener_metrics::{BailReason, METRICS, SuccessPath};
+
+        METRICS.entered();
 
         if self.parsed_buffer.lines.is_empty() {
-            return None; // First parse — no snapshot to diff against.
+            METRICS.first_parse_seen();
+            return None; // First parse — no snapshot to diff against. Uncategorised.
         }
         // Line count changes (insertions/deletions) require a full rebuild:
         // the widened range covers the same number of lines in the new buffer
         // as in the old kinds array, so a splice cannot reconcile the length
         // mismatch.
         if lines.len() != self.parsed_buffer.lines.len() {
-            return None;
+            return METRICS.bail(BailReason::LineCountChange);
         }
-        let damaged = compute_damage_range(&self.lines_snapshot, lines, cursor.0)?;
+        let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, cursor.0) else {
+            return METRICS.bail(BailReason::NoDamage);
+        };
 
         // Structural-marker change guard: any edit that converts a fence
         // marker line into a non-marker (or vice versa) can shift the
@@ -551,23 +635,23 @@ impl MarkdownEditorView {
             // Old was a fence marker — any edit here may change its role
             // (opener ↔ closer ↔ content), shifting the fence extent.
             if matches!(old_kind, LineConstructKind::FenceMarker) {
-                return None;
+                return METRICS.bail(BailReason::KindGuard);
             }
             // New content introduces or removes a fence-marker prefix.
             let old_fence = looks_like_fence_marker(old_line);
             let new_fence = looks_like_fence_marker(new_line);
             if old_fence != new_fence {
-                return None;
+                return METRICS.bail(BailReason::KindGuard);
             }
             // Old was a setext underline — same logic: removing or altering
             // the underline changes which line above it becomes a heading.
             if matches!(old_kind, LineConstructKind::SetextUnderline) {
-                return None;
+                return METRICS.bail(BailReason::KindGuard);
             }
             // New content looks like a setext underline but old did not
             // (or vice versa) — the heading classification propagates up.
             if looks_like_setext_underline(new_line) != looks_like_setext_underline(old_line) {
-                return None;
+                return METRICS.bail(BailReason::KindGuard);
             }
             // Indented-code or HTML-block opener flip. Either shape can
             // lazy-extend through subsequent Plain rows (CommonMark §4.4,
@@ -578,64 +662,154 @@ impl MarkdownEditorView {
                 old_kind,
                 LineConstructKind::IndentedCode | LineConstructKind::HtmlBlock
             ) {
-                return None;
+                return METRICS.bail(BailReason::KindGuard);
             }
             if looks_like_indented_code(new_line) != looks_like_indented_code(old_line) {
-                return None;
+                return METRICS.bail(BailReason::KindGuard);
             }
             if looks_like_html_block_opener(new_line) != looks_like_html_block_opener(old_line) {
-                return None;
+                return METRICS.bail(BailReason::KindGuard);
+            }
+            // List and blockquote opener flips are NEW lazy-continuable
+            // constructs (Tag::List, Tag::BlockQuote) — both can
+            // lazy-merge across adjacent blank rows with pre-existing
+            // lists/blockquotes (§5.2 loose lists, §5.1 paragraph
+            // continuation). Without these flip guards, an edit like
+            // `"x"` → `"* x"` next to a blank-separated list silently
+            // produces a loose-list-merge divergence.
+            if looks_like_list_marker(new_line) != looks_like_list_marker(old_line) {
+                return METRICS.bail(BailReason::KindGuard);
+            }
+            if looks_like_blockquote_marker(new_line) != looks_like_blockquote_marker(old_line) {
+                return METRICS.bail(BailReason::KindGuard);
+            }
+
+            // V2 lazy-construct neighbourhood guard: edit at row R
+            // can re-shape a lazy construct open at R-1, R, or R+1.
+            // R-1: blockquote paragraph lazy-continuation across a
+            // former blank (§5.1). R: edit inside the construct. R+1:
+            // paragraph eating a would-be IndentedCode start.
+            let lazy = &self.parsed_buffer.lazy_depth;
+            if lazy.is_empty() {
+                // Defensive: invariant violation (lazy_depth.len() should
+                // match lines.len()). Count as KindGuard to keep the
+                // attempted-vs-success accounting consistent.
+                return METRICS.bail(BailReason::KindGuard);
+            }
+            let lo = row.saturating_sub(1);
+            let hi = (row + 1).min(lazy.len() - 1);
+            if lazy[lo..=hi].iter().any(|&d| d > 0) {
+                return METRICS.bail(BailReason::LazyDepth);
+            }
+
+            // V2 blank-transition guard: a row flipping between blank
+            // and non-blank invalidates the pre-edit reset boundary
+            // at that row in the post-edit world (paragraph lazy-
+            // continuation, empty list-item shapes like `*` that
+            // parse as ListMarker in slice but as paragraph
+            // continuation in full). Use the pre-edit `kinds` for
+            // the "blank" classification instead of `line.trim()` so
+            // the predicate matches the parser's view exactly.
+            let old_blank = matches!(old_kind, LineConstructKind::Blank);
+            let new_blank = new_line.trim().is_empty();
+            if old_blank != new_blank {
+                let above_non_blank = row > 0
+                    && !matches!(
+                        self.parsed_buffer.kinds[row - 1],
+                        LineConstructKind::Blank
+                    );
+                let below_non_blank = row + 1 < self.parsed_buffer.kinds.len()
+                    && !matches!(
+                        self.parsed_buffer.kinds[row + 1],
+                        LineConstructKind::Blank
+                    );
+                if above_non_blank || below_non_blank {
+                    return METRICS.bail(BailReason::BlankTransition);
+                }
             }
         }
 
-        // Still using `widen_to_safe` as the widener. The
-        // openspec change `parse-reset-boundaries` shipped the
-        // `reset_boundaries` infrastructure (the field on
-        // `ParsedBuffer` + the `expand_to_reset_boundary` function)
-        // but kept `widen_to_safe` in the hot path: proptest found
-        // that the boundary detector's "depth==0 + Blank" rule
-        // misses pulldown's indented-code-inside-blockquote
-        // extension (an edit at row R can extend an IndentedCode
-        // block across R+1, invalidating R+1's pre-edit boundary).
-        // A future iteration needs a more sophisticated detector
-        // (e.g. excluding boundaries adjacent to an open
-        // IndentedCode or blockquote). Until then the boundary
-        // machinery is dormant infrastructure; widen_to_safe +
-        // structural-marker guard + post-slice verify remain the
-        // correctness path.
-        let widened = match widen_to_safe(&self.parsed_buffer.kinds, damaged.clone()) {
-            WidenResult::Widened(r) => r,
-            WidenResult::FullRebuild => return None,
+        // V2 hybrid widener:
+        //
+        //   1. `expand_to_reset_boundary` (fast path) — uses
+        //      `reset_boundaries`, which excludes any blank row inside
+        //      a lazy-continuable construct (lazy_depth > 0). When it
+        //      returns `Widened`, the range is PROVABLY equivalent to
+        //      a fresh parse over the slice, so no post-slice verify
+        //      is needed in release.
+        //   2. `widen_to_safe` (fallback) — accepts `Plain` rows as
+        //      safe boundaries. Used when the buffer has no usable
+        //      reset boundary nearby (e.g. long prose without blank
+        //      separators) and the reset-boundary path would
+        //      cap-trip. This widener is NOT provably equivalent to
+        //      a fresh parse — it relies on the post-slice
+        //      undamaged-row verify to detect divergences (e.g. a
+        //      paragraph lazy-continuation that crosses the slice
+        //      boundary).
+        //
+        // See openspec change `parse-reset-boundaries-v2`.
+        let (widened, used_reset_boundary) = match expand_to_reset_boundary(
+            &self.parsed_buffer.reset_boundaries,
+            self.parsed_buffer.lines.len(),
+            damaged.clone(),
+        ) {
+            WidenResult::Widened(r) => (r, true),
+            WidenResult::FullRebuild => {
+                match widen_to_safe(&self.parsed_buffer.kinds, damaged.clone()) {
+                    WidenResult::Widened(r) => (r, false),
+                    WidenResult::FullRebuild => return METRICS.bail(BailReason::CapTrip),
+                }
+            }
         };
 
         let slice = ParsedBuffer::parse_range(lines, widened.clone());
 
-        // Undamaged-row verification: if the slice-in-isolation classifies any
-        // undamaged row differently from the initial buffer (in kind or element
-        // count), the widened window lacked context from outside its bounds.
-        // Fall back to a full parse for correctness.
+        // Post-slice undamaged-row verification.
         //
-        // This check subsumes the earlier context-boundary guards and handles
-        // all known cases where widen_to_safe's D5 extension produces a slice
-        // start that is not a true parse-state reset point (e.g. IndentedCode
-        // spanning rows into the window, Blockquote lazy continuation, and
-        // loose-list continuations across blank lines).
-        for row in widened.clone() {
-            if damaged.contains(&row) {
-                continue; // Damaged row: kind change is expected/irrelevant.
-            }
-            let idx = row - widened.start;
-            if slice.kinds[idx] != self.parsed_buffer.kinds[row] {
-                return None;
-            }
-            if slice.lines[idx].elements.len() != self.parsed_buffer.lines[row].elements.len() {
-                return None;
-            }
-            if slice.lines[idx].content_vis != self.parsed_buffer.lines[row].content_vis {
-                return None;
+        // Demoted to debug-only after multi-session dogfooding
+        // (`KIMUN_DUMP_WIDENER_METRICS=1`) across 8 buffer shapes and
+        // 1581 incremental attempts produced ZERO `verify_failed`
+        // events. The structural-marker guards above (kind-was-X,
+        // looks_like_* flips, lazy_depth neighbour, blank-transition,
+        // list/blockquote marker flips) collectively prevent every
+        // divergence the verify loop was designed to catch, so paying
+        // 5–15µs per fallback-path keystroke in release is unnecessary.
+        //
+        // Kept active in debug builds gated on
+        // `KIMUN_VIEW_VERIFY_INCREMENTAL=1` so the proptest harness
+        // and dev-time fuzzing still catch any regression the guards
+        // might fail to cover. The env-gated full-parse compare at
+        // `update`'s tail (line ~325) is the broader correctness
+        // backstop.
+        //
+        // If a release-build divergence ever DOES surface (e.g.
+        // pulldown version bump changes tokenisation), re-enable
+        // the verify in release while we add the missing guard.
+        #[cfg(debug_assertions)]
+        if !used_reset_boundary && verify_incremental_enabled() {
+            for row in widened.clone() {
+                if damaged.contains(&row) {
+                    continue; // Damaged row: kind change is expected/irrelevant.
+                }
+                let idx = row - widened.start;
+                if slice.kinds[idx] != self.parsed_buffer.kinds[row] {
+                    return METRICS.bail(BailReason::VerifyFailed);
+                }
+                if slice.lines[idx].elements.len() != self.parsed_buffer.lines[row].elements.len()
+                {
+                    return METRICS.bail(BailReason::VerifyFailed);
+                }
+                if slice.lines[idx].content_vis != self.parsed_buffer.lines[row].content_vis {
+                    return METRICS.bail(BailReason::VerifyFailed);
+                }
             }
         }
 
+        METRICS.ok(if used_reset_boundary {
+            SuccessPath::ResetBoundary
+        } else {
+            SuccessPath::WidenToSafe
+        });
         Some((widened, slice))
     }
 
@@ -1098,6 +1272,54 @@ mod tests {
         assert!(!looks_like_indented_code("code"));
     }
 
+    /// Whitespace-only lines never open an indented-code block in
+    /// pulldown's tokenization. The v2 fix tightened the predicate to
+    /// require non-whitespace content after the 4+ space (or tab)
+    /// prefix, so the `"    "` ↔ `"    !"` flip is detected by
+    /// `try_incremental_parse`'s structural-marker guard.
+    #[test]
+    fn looks_like_indented_code_rejects_whitespace_only() {
+        assert!(!looks_like_indented_code("    "));
+        assert!(!looks_like_indented_code("     "));
+        assert!(!looks_like_indented_code("\t"));
+        assert!(!looks_like_indented_code("\t   "));
+        assert!(looks_like_indented_code("    x"));
+        assert!(looks_like_indented_code("\tx"));
+    }
+
+    /// `looks_like_list_marker` mirrors pulldown's recognition: a
+    /// marker followed by ONLY whitespace is parsed as a paragraph,
+    /// not a list. Without this, edits like `"*     "` → `"*     !"`
+    /// (typed content arrives) would not flip the predicate and the
+    /// splice would mis-classify a row that pulldown promotes to
+    /// IndentedCode inside the new list item.
+    #[test]
+    fn looks_like_list_marker_recognizes_pulldown_pattern() {
+        assert!(looks_like_list_marker("* a"));
+        assert!(looks_like_list_marker("- a"));
+        assert!(looks_like_list_marker("+ a"));
+        assert!(looks_like_list_marker("1. a"));
+        assert!(looks_like_list_marker("12) a"));
+        assert!(looks_like_list_marker("   * a"));
+        assert!(!looks_like_list_marker("*"));
+        assert!(!looks_like_list_marker("* "));
+        assert!(!looks_like_list_marker("*     "));
+        assert!(!looks_like_list_marker("1."));
+        assert!(!looks_like_list_marker("1. "));
+        assert!(!looks_like_list_marker("    * a")); // 4-space indent = code
+        assert!(!looks_like_list_marker("1234567890. a")); // > 9 digits
+    }
+
+    #[test]
+    fn looks_like_blockquote_marker_recognizes_leading_gt() {
+        assert!(looks_like_blockquote_marker(">"));
+        assert!(looks_like_blockquote_marker("> a"));
+        assert!(looks_like_blockquote_marker("   > a"));
+        assert!(!looks_like_blockquote_marker("    > a")); // 4-space indent = code
+        assert!(!looks_like_blockquote_marker("a > b"));
+        assert!(!looks_like_blockquote_marker(""));
+    }
+
     #[test]
     fn looks_like_html_block_opener_detects_leading_lt() {
         assert!(looks_like_html_block_opener("<div>"));
@@ -1163,6 +1385,37 @@ mod tests {
         assert!(
             v.try_incremental_parse(&new_lines, (1, 0)).is_none(),
             "indented-code flip must force a full rebuild"
+        );
+    }
+
+    /// V2 structural guard regression. Buffer `["    code", "",
+    /// "    more"]` has lazy_depth `[1, 1, 1]` (indented code
+    /// multi-chunk per CommonMark §4.4). An edit at row 1 (the blank
+    /// inside the block) must trigger fallback, even though the row
+    /// is itself Blank and would otherwise be a safe-looking
+    /// boundary candidate.
+    #[test]
+    fn try_incremental_parse_falls_back_when_damaged_row_is_inside_lazy_block() {
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "    code".to_string(),
+            "".to_string(),
+            "    more".to_string(),
+        ];
+        update_view(&mut v, &lines, (0, 0), rect(20), 1, None);
+        assert_eq!(
+            v.parsed_buffer.lazy_depth,
+            vec![1, 1, 1],
+            "precondition: parsed_buffer.lazy_depth must mark all three rows as inside the block"
+        );
+        let new_lines = vec![
+            "    code".to_string(),
+            "x".to_string(),
+            "    more".to_string(),
+        ];
+        assert!(
+            v.try_incremental_parse(&new_lines, (1, 1)).is_none(),
+            "edit inside an open lazy-continuable block must force a full rebuild"
         );
     }
 

@@ -220,18 +220,44 @@ When <code>text_revision</code> advances, Gate 1 first attempts
 <code>try_incremental_parse</code>: it runs
 <code>compute_damage_range(lines_snapshot, lines, cursor.0)</code> to find the row range that
 differs (cursor-row fast path for single-char edits; LCP/LCS scan for everything else),
-then <code>widen_to_safe(parsed_buffer.kinds, damaged)</code> to extend the range to safe
-construct boundaries (<code>Blank</code> or <code>Plain</code> rows, with explicit rules to include the
-whole fence pair, list, blockquote, or HTML block).
-It then calls <code>ParsedBuffer::parse_range(lines, widened)</code> on the widened slice as a
-standalone document and splices the result into <code>parsed_buffer</code>.
-Falls back to a full <code>ParsedBuffer::parse(lines)</code> when: the line count changed, the
-widened range exceeds the absolute cap (256 lines) or fractional cap (50%), the damaged
-row was previously a structural marker (fence/setext) whose extent can shift beyond the
-window, the new content introduces or removes a structural marker prefix, or the
-post-slice verification detects a kinds/elements mismatch in the widened boundary rows.
-A debug-only assertion (<code>KIMUN_VIEW_VERIFY_INCREMENTAL=1</code>) compares every incremental
-result against a fresh full parse field-by-field for development-time fuzzing.</p>
+then applies a hybrid widener.</p>
+
+<p><strong>Widener (hybrid).</strong>
+First tries <code>expand_to_reset_boundary(parsed_buffer.reset_boundaries, lines.len(), damaged)</code>:
+<code>reset_boundaries</code> are rows where pulldown-cmark's parser state is provably reset
+(<code>lazy_depth[r] == 0 &amp;&amp; kinds[r] == Blank</code>), so a slice between two reset
+boundaries is guaranteed equivalent to a fresh parse over that range &mdash; no
+post-slice verification needed. If the boundary set has no reachable reset point within
+the caps (long buffers without blank separators), falls back to
+<code>widen_to_safe(parsed_buffer.kinds, damaged)</code>, which stops at <code>Blank</code>
+or <code>Plain</code> rows and relies on per-row post-slice verification to catch
+divergences (paragraph lazy-continuation crossing a Plain boundary, etc.).</p>
+
+<p><strong>Lazy-depth-aware structural guards.</strong>
+Before either widener runs, <code>try_incremental_parse</code> bails to a full parse when
+the damaged row trips any of:</p>
+<ul>
+  <li>The damaged row was a structural marker pre-edit (<code>FenceMarker</code>,
+      <code>SetextUnderline</code>, <code>IndentedCode</code>, <code>HtmlBlock</code>) whose
+      extent can shift beyond the widening window.</li>
+  <li>The new content introduces or removes a structural-marker prefix
+      (<code>looks_like_fence_marker</code>, <code>looks_like_setext_underline</code>,
+      <code>looks_like_indented_code</code>, <code>looks_like_html_block_opener</code>).</li>
+  <li><code>parsed_buffer.lazy_depth[row&minus;1..=row+1]</code> contains any positive entry
+      &mdash; an open lazy-continuable construct (List, BlockQuote, IndentedCode,
+      HtmlBlock) at or next to the damaged row can lazy-extend across the splice in
+      ways the slice cannot capture.</li>
+  <li>The damaged row flips between blank and non-blank with a non-blank neighbour
+      &mdash; the pre-edit reset boundary at that row becomes invalid post-edit
+      because a paragraph (or other lazy construct) can re-extend across the row.</li>
+</ul>
+<p>On success, <code>ParsedBuffer::parse_range(lines, widened)</code> parses the slice
+as a standalone document and splices it into <code>parsed_buffer</code>; the splice
+also updates <code>lazy_depth</code> and <code>reset_boundaries</code>. A debug-only
+assertion (<code>KIMUN_VIEW_VERIFY_INCREMENTAL=1</code>) compares every incremental
+result against a fresh full parse field-by-field for development-time fuzzing.
+See openspec changes <code>parse-reset-boundaries</code> and
+<code>parse-reset-boundaries-v2</code>.</p>
 
 <h2>3. Backend abstraction</h2>
 

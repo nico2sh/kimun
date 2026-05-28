@@ -5,6 +5,7 @@ pub mod nvim_rpc;
 pub mod parse_incremental;
 pub mod snapshot;
 pub mod view;
+pub mod widener_metrics;
 pub mod word_wrap;
 
 use arboard::Clipboard;
