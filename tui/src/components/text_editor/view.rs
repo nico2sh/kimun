@@ -744,39 +744,41 @@ impl MarkdownEditorView {
             let hi = (row + 1).min(lazy.len() - 1);
             if lazy[lo..=hi].iter().any(|&d| d > 0) {
                 // §3.0 conditional relaxation — TIGHT VERSION.
-                // Only `ListMarker` / `ListContinuation` qualify.
+                // Qualifying conditions (narrowed across two soak
+                // rounds — see openspec change for the rationale):
+                //   - old_kind == ListMarker (NOT ListContinuation)
+                //   - lazy_depth[row] == 1 (top-level list only)
                 //
-                // Initial design included `Blockquote(_)` and `Plain`
-                // in the qualifying set on the theory that any
-                // content edit inside a lazy construct is safe. The
-                // §4.x proptests proved this wrong: editing a
-                // Blockquote row or a Plain row whose lazy depth is
-                // inherited from a blockquote can introduce/remove
-                // an IndentedCode multi-chunk on rows OUTSIDE the
-                // widened range (e.g. the R+1 "paragraph eating a
-                // would-be IndentedCode start" case from the v2
-                // guard rationale). The post-slice verify only
-                // checks rows INSIDE `widened` — rows past
-                // `widened.end` keep the parent's pre-edit value
-                // and silently diverge from a fresh parse.
+                // ListContinuation rows are excluded after the 100k
+                // soak surfaced a case where an edit on a
+                // ListContinuation row (specifically a `>     ` row
+                // inside a list, lazy_depth=1) caused the row AT
+                // `damaged.end` (a blank, lazy_depth=0 in pre-edit)
+                // to flip to ListContinuation in post-edit fresh
+                // parse. The strict reset boundary at that row was
+                // valid pre-edit but became invalid post-edit, and
+                // the splice chose a widened range based on
+                // pre-edit boundaries that didn't capture the new
+                // row past `widened.end`.
                 //
-                // List rows are immune because slicing inside a
-                // list produces a new list with identical per-row
-                // `ListMarker`/`ListContinuation` classification,
-                // and rows past the slice's end are unaffected by
-                // the slice's list-vs-non-list determination (the
-                // list-continuation post-pass on the parent is
-                // deterministic from the immediate-prev row's kind,
-                // which the splice updates in lockstep).
+                // ListMarker rows are immune: a content edit on
+                // "- a" → "- aX" cannot change row+1's classification
+                // because the row+1 was either (a) Plain → became
+                // ListContinuation via the post-pass regardless of
+                // the edit, or (b) Blank/something-else that's outside
+                // the list and unaffected by item-content changes.
                 //
-                // Blockquote and Plain unlocks are deferred to a
-                // follow-up that adds a post-widening sanity check
-                // on the row immediately past `widened.end`.
-                let kind_qualifies = matches!(
-                    old_kind,
-                    LineConstructKind::ListMarker | LineConstructKind::ListContinuation
-                );
-                if kind_qualifies {
+                // The depth==1 clause blocks edits on lists nested
+                // inside another lazy construct (a list inside a
+                // blockquote) where the OUTER construct can shift.
+                //
+                // Blockquote / Plain / ListContinuation unlocks are
+                // deferred to a follow-up that adds a post-widening
+                // sanity check on `widened.end + 1` (cheap re-parse
+                // of one extra row to detect downstream flips).
+                let kind_qualifies = matches!(old_kind, LineConstructKind::ListMarker);
+                let depth_qualifies = row < lazy.len() && lazy[row] == 1;
+                if kind_qualifies && depth_qualifies {
                     METRICS.lazy_guard_relaxed();
                     lazy_guard_tripped = true;
                     // Don't bail — let blank-transition guard run
