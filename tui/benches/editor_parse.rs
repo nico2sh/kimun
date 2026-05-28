@@ -247,8 +247,11 @@ fn bench_full_view_update_heavy_lists_typing(c: &mut Criterion) {
     warmed.update(&snap_for(&lines, (target_row, 0), 1), rect, None);
 
     // Single-char append inside an item's content. Pre-edit row is a
-    // ListMarker inside the loose list; the v2 lazy_depth guard will
-    // bail and the view falls back to a full ParsedBuffer::parse.
+    // ListMarker (lazy_depth == 1) inside the loose list. The v3 §3.0
+    // relaxation skips the lazy_depth guard for this shape; the
+    // intra-construct widener tier finds an End(Item) boundary and
+    // splices a narrow slice. Pre-v3 this fixture cap-tripped to a
+    // full ParsedBuffer::parse (~493 µs); post-v3 it lands at ~36 µs.
     let mut edited = lines.clone();
     edited[target_row].push('x');
 

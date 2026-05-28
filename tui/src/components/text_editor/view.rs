@@ -357,6 +357,7 @@ impl MarkdownEditorView {
                         self.parsed_buffer = ParsedBuffer::parse(lines);
                     }
                     self.last_parse_was_incremental = false;
+                    self.last_splice_path = None;
                     TextChangeKind::Full
                 }
             };
@@ -656,7 +657,6 @@ impl MarkdownEditorView {
         // marker line into a non-marker (or vice versa) can shift the
         // fence's extent beyond the widening window. Same for setext
         // underlines. Conservative fallback to full parse for correctness.
-        let mut lazy_guard_tripped = false;
         for row in damaged.clone() {
             let old_kind = self.parsed_buffer.kinds[row];
             let old_line = self.lines_snapshot[row].as_str();
@@ -721,18 +721,27 @@ impl MarkdownEditorView {
             // paragraph eating a would-be IndentedCode start.
             //
             // §3.0 conditional relaxation (intra-construct-reset-boundaries):
-            // when the damaged row's old kind is content of a lazy
-            // construct (ListMarker / ListContinuation / Blockquote /
-            // Plain) AND the looks_like_* / blank-transition flips
-            // above/below this point all passed, the edit is "pure
-            // content" — splicing across an intra-construct boundary
-            // produces identical per-row rendered output. We defer
-            // the decision to the widener stage: track that the
-            // guard would have bailed, and require the widener's
-            // intra-construct tier to find a usable boundary. The
-            // post-slice verify (re-enabled in release for the
-            // IntraConstruct / WidenToSafe paths) is the correctness
-            // backstop.
+            // when the damaged row's old kind is ListMarker AND
+            // lazy_depth[row] == 1 (a top-level list, not nested inside
+            // an outer lazy construct), the bail is skipped. List-marker
+            // content edits are safe by construction: per-row
+            // ListMarker/ListContinuation classification stays identical
+            // across slice-vs-parent, and rows past widened.end are
+            // unaffected by the slice's list-vs-non-list determination.
+            // The widener's intra-construct tier (or, on small buffers,
+            // the strict tier widening to the whole buffer) takes the
+            // splice. The looks_like_* / blank-transition flips run as
+            // separate guards above and below this check, so the relax
+            // only ever fires on pure content edits.
+            //
+            // Initial relaxation also accepted ListContinuation +
+            // Blockquote + Plain and arbitrary lazy_depth; both unlocks
+            // reverted after the 100k proptest soak exposed downstream-
+            // row-classification flips past widened.end that the
+            // post-slice verify (which only covers rows INSIDE widened)
+            // doesn't catch. The deeper fix is a post-widening sanity
+            // check on `widened.end + 1` — see the design doc's
+            // "Blockquote/Plain/ListContinuation unlocks" follow-up.
             let lazy = &self.parsed_buffer.lazy_depth;
             if lazy.is_empty() {
                 // Defensive: invariant violation (lazy_depth.len() should
@@ -780,7 +789,6 @@ impl MarkdownEditorView {
                 let depth_qualifies = row < lazy.len() && lazy[row] == 1;
                 if kind_qualifies && depth_qualifies {
                     METRICS.lazy_guard_relaxed();
-                    lazy_guard_tripped = true;
                     // Don't bail — let blank-transition guard run
                     // and reach the widener stage.
                 } else {
@@ -828,19 +836,20 @@ impl MarkdownEditorView {
         //      `elements.len()` / `content_vis` match a fresh parse
         //      slice, but `lazy_depth` / `reset_boundaries` metadata
         //      may diverge — splice rebuilds both from the slice's
-        //      view. The post-slice verify runs in release for this
-        //      path during the proof-out window.
+        //      view. Post-slice verify runs only under
+        //      `cfg(debug_assertions) + KIMUN_VIEW_VERIFY_INCREMENTAL=1`
+        //      (demoted from release after the PR 3 proof-out).
         //   3. `widen_to_safe` — heuristic fallback. NOT provably
         //      equivalent; the post-slice verify is the correctness
-        //      mechanism.
+        //      mechanism, same env-gated debug-only path as (2).
         //
-        // §3.0 guard relaxation: if `lazy_guard_tripped` is set, the
-        // strict-path widener cannot succeed (lazy_depth > 0 around
-        // the edit means no nearby blank-with-depth-0 reset boundary).
-        // We still try strict first — it costs a binary search, and
-        // it succeeds in degenerate cases (e.g. edit's neighbourhood
-        // happens to span a reset boundary far away). On failure we
-        // try intra-construct, then widen_to_safe.
+        // After a §3.0 relax fires the strict widener usually
+        // cap-trips (lazy_depth > 0 around the edit means no nearby
+        // blank-with-depth-0 reset boundary), but we still try strict
+        // first — it costs only a binary search and succeeds in
+        // degenerate cases (e.g. small buffers where strict widens
+        // safely to the whole buffer). On failure we try
+        // intra-construct, then widen_to_safe.
         let mut splice_path = SplicePath::Strict;
         let widened = match expand_to_reset_boundary(
             &self.parsed_buffer.reset_boundaries,
@@ -868,10 +877,6 @@ impl MarkdownEditorView {
                 }
             },
         };
-        // Suppress unused warning when debug_assertions is off — the
-        // value is only read in the verify block below.
-        let _ = lazy_guard_tripped;
-
         let slice = ParsedBuffer::parse_range(lines, widened.clone());
 
         // Post-slice undamaged-row verification.
