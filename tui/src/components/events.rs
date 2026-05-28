@@ -1,3 +1,4 @@
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,16 +19,16 @@ pub enum AppEvent {
     Redraw,
     Autosave,
     /// Background autosave task finished. `saved_revision` carries the
-    /// editor's `text_revision` at the moment the save was *issued* on
-    /// success, `None` if the write failed. The editor screen uses `path`
-    /// to ignore stale completions for notes the user has already navigated
-    /// away from, and `saved_revision` to clear the dirty flag iff the
-    /// buffer is still at that revision (i.e. no edits during the save).
-    /// Comparing revisions is O(1) and immune to trailing-newline
-    /// normalisation surprises.
+    /// editor's `content_revision` at the moment the save was *issued*
+    /// on success, `None` if the write failed. The editor screen uses
+    /// `path` to ignore stale completions for notes the user has
+    /// already navigated away from, and `saved_revision` to clear the
+    /// dirty flag iff the buffer is still at that revision (i.e. no
+    /// edits during the save). `NonZeroU64` because the editor's
+    /// `content_revision` is never zero.
     AutosaveCompleted {
         path: VaultPath,
-        saved_revision: Option<u64>,
+        saved_revision: Option<NonZeroU64>,
     },
     OpenPath(VaultPath),
     FocusEditor,

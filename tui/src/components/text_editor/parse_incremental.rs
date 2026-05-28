@@ -98,7 +98,30 @@ pub fn compute_damage_range(
         }
     }
 
-    // Slow path: longest common prefix + suffix.
+    // Slow path: longest common prefix + suffix. O(buffer_len)
+    // String equalities; each compare is a length check + at most one
+    // SIMD memcmp on the first-differing byte. ~14µs on a 5000-line
+    // buffer for a single-row backspace.
+    //
+    // A cursor-anchored bound was explored as perf #12 and rejected:
+    //  - Capping the scan at `cursor_row + slack` saves nothing,
+    //    because the scan naturally stops at the first-differing
+    //    row, which IS `cursor_row` for keystroke-driven edits.
+    //  - Starting the LCP scan at `cursor_row - slack` (trusting
+    //    rows above to be unchanged) would skip the prefix scan but
+    //    introduces silent miscompilation risk on edits whose actual
+    //    diff is far from the cursor (paste, undo, programmatic
+    //    edit) — the post-slice verify only checks rows WITHIN the
+    //    widened range, so a misidentified damage range outside
+    //    that range is not caught.
+    //  - Maintaining per-row hashes alongside `lines_snapshot` would
+    //    let us replace string compares with u64 compares, but
+    //    requires plumbing damage hints from the editor's edit
+    //    surface to view.update for incremental hash maintenance —
+    //    bigger change than the 10µs win justifies.
+    //
+    // Until per-row hashes ship as part of a broader edit-surface
+    // refactor, the full O(buffer) scan stays.
     let lcp = old
         .iter()
         .zip(new.iter())
@@ -161,11 +184,75 @@ fn widen_down(kinds: &[LineConstructKind], damaged_end: usize) -> usize {
     kinds.len()
 }
 
+/// Expand `damaged` to the nearest reset boundaries on each side.
+/// A reset boundary is a row where pulldown-cmark's parser state is
+/// provably reset (see `ParsedBuffer::reset_boundaries`), so the
+/// returned range is provably equivalent to a fresh parse over the
+/// same slice — no post-slice verification needed in release.
+///
+/// `boundaries` must be sorted and contain `0` and `lines_len` as
+/// sentinels (every `ParsedBuffer::parse` ensures this). Returns
+/// `FullRebuild` if the expanded range trips either cap (same
+/// semantics as `widen_to_safe`).
+///
+/// This replaces the heuristic `widen_to_safe`-plus-structural-marker
+/// guard tower. The latter is kept available as a behavioural
+/// comparison source for one release cycle (per the openspec
+/// migration plan) before being deleted.
+pub fn expand_to_reset_boundary(
+    boundaries: &[usize],
+    lines_len: usize,
+    damaged: Range<usize>,
+) -> WidenResult {
+    if lines_len == 0 {
+        return WidenResult::FullRebuild;
+    }
+    debug_assert!(
+        damaged.start <= lines_len && damaged.end <= lines_len,
+        "expand_to_reset_boundary: damaged range {:?} out of bounds for lines_len = {}",
+        damaged,
+        lines_len,
+    );
+
+    // Greatest boundary <= damaged.start.
+    let start = boundaries
+        .iter()
+        .rev()
+        .find(|&&b| b <= damaged.start)
+        .copied()
+        .unwrap_or(0);
+    // Least boundary >= damaged.end. Sentinel `lines_len` is always
+    // present in a well-formed boundary set so the `unwrap_or` is
+    // unreachable; kept as a defensive fallback to avoid an inverted
+    // range if the invariant is ever violated.
+    let end = boundaries
+        .iter()
+        .find(|&&b| b >= damaged.end)
+        .copied()
+        .unwrap_or(lines_len);
+
+    let widened_len = end - start;
+    let cap_abs = MAX_INCREMENTAL_LINES;
+    // Same cap policy as widen_to_safe; see its docstring for the
+    // rationale on flooring `cap_frac` at `cap_abs`.
+    let cap_frac =
+        (((lines_len as f32) * MAX_INCREMENTAL_FRACTION) as usize).max(cap_abs);
+    if widened_len > cap_abs || widened_len > cap_frac {
+        return WidenResult::FullRebuild;
+    }
+    WidenResult::Widened(start..end)
+}
+
 /// Widen `damaged` outward to safe construct boundaries, applying
 /// D5's +1 extra row and the D4 cap.
 ///
 /// Returns `Widened(range)` when the widened range fits under the cap,
 /// or `FullRebuild` when the cap is exceeded or the buffer is empty.
+///
+/// Kept available for one release cycle as a behavioural comparison
+/// source against `expand_to_reset_boundary` (see openspec change
+/// `parse-reset-boundaries`). New call sites should use
+/// `expand_to_reset_boundary` instead.
 pub fn widen_to_safe(kinds: &[LineConstructKind], damaged: Range<usize>) -> WidenResult {
     if kinds.is_empty() {
         return WidenResult::FullRebuild;
@@ -186,8 +273,17 @@ pub fn widen_to_safe(kinds: &[LineConstructKind], damaged: Range<usize>) -> Wide
 
     let widened_len = end - start;
     let cap_abs = MAX_INCREMENTAL_LINES;
-    let cap_frac = ((kinds.len() as f32) * MAX_INCREMENTAL_FRACTION) as usize;
-    if widened_len > cap_abs && widened_len > cap_frac {
+    // Fractional cap encodes the empirical "fresh full parse beats
+    // parse+splice" cross-over. It is only meaningful once full-parse
+    // cost is non-trivial; floor it at `cap_abs` so a 50%-widening on
+    // a tiny buffer (where both options are sub-millisecond) stays on
+    // the incremental path. Above `2 * cap_abs` lines the fractional
+    // cap dominates and catches large widenings the absolute cap
+    // would otherwise miss — this is the regime the previous `&&`
+    // operator left unguarded.
+    let cap_frac =
+        (((kinds.len() as f32) * MAX_INCREMENTAL_FRACTION) as usize).max(cap_abs);
+    if widened_len > cap_abs || widened_len > cap_frac {
         return WidenResult::FullRebuild;
     }
 
@@ -294,6 +390,22 @@ mod tests {
     fn html_block() {
         let k = kinds_of(&["<div>", "body", "</div>"]);
         assert!(matches!(k[0], LineConstructKind::HtmlBlock));
+    }
+
+    #[test]
+    fn inline_html_inside_paragraph_does_not_become_html_block() {
+        // Regression: `Event::InlineHtml` previously painted the
+        // paragraph row as HtmlBlock, defeating safe-boundary widening
+        // for any paragraph containing inline HTML like `<br>` or
+        // `<span>`.
+        let k = kinds_of(&["hello <br> world"]);
+        assert_eq!(
+            k[0],
+            LineConstructKind::Plain,
+            "paragraph with inline HTML must stay Plain"
+        );
+        let k = kinds_of(&["see <span>x</span> end"]);
+        assert_eq!(k[0], LineConstructKind::Plain);
     }
 
     fn lines(strs: &[&str]) -> Vec<String> {
@@ -442,6 +554,18 @@ mod tests {
     }
 
     #[test]
+    fn widen_trips_when_fractional_cap_exceeds_absolute() {
+        // Regression: cap-trip used `&&` instead of `||`, so on a buffer
+        // big enough that `cap_frac > cap_abs` (kinds.len() > 512), a
+        // widened range between the two thresholds slipped through.
+        // 600-line buffer of FenceContent → cap_abs=256, cap_frac=300.
+        // Widening covers the whole buffer (no safe boundaries), so
+        // widened_len=600 must trip the fallback.
+        let k = vec![LineConstructKind::FenceContent; 600];
+        assert_eq!(widen_to_safe(&k, 300..301), WidenResult::FullRebuild);
+    }
+
+    #[test]
     fn widen_at_buffer_start_clamps_to_zero() {
         let k = kinds_str("PPPPP");
         match widen_to_safe(&k, 0..1) {
@@ -457,6 +581,92 @@ mod tests {
             WidenResult::Widened(r) => assert_eq!(r.end, 5),
             x => panic!("expected Widened, got {x:?}"),
         }
+    }
+
+    #[test]
+    fn parse_records_boundaries_for_blank_separated_paragraphs() {
+        // Realistic markdown layout: each paragraph followed by a
+        // blank line. Pulldown ends each Paragraph; depth drops to
+        // 0 at the following blank row. The boundary set should
+        // contain every blank row.
+        use super::super::markdown::ParsedBuffer;
+        let mut lines: Vec<String> = Vec::with_capacity(8);
+        for i in 0..4 {
+            lines.push(format!("paragraph {i}"));
+            lines.push(String::new());
+        }
+        let pb = ParsedBuffer::parse(&lines);
+        // Expected: 0, then every Blank row (1, 3, 5, 7), then lines.len() (8).
+        // The blank at row 7 == lines.len()-1 may or may not be
+        // present depending on whether depth==0 was reached at that
+        // row; check the interior at least.
+        assert!(pb.reset_boundaries.contains(&0), "sentinel 0 missing");
+        assert!(pb.reset_boundaries.contains(&lines.len()), "sentinel lines.len() missing");
+        assert!(
+            pb.reset_boundaries.contains(&1),
+            "blank after paragraph 0 should be a boundary, got {:?}",
+            pb.reset_boundaries
+        );
+        assert!(
+            pb.reset_boundaries.contains(&3),
+            "blank after paragraph 1 should be a boundary, got {:?}",
+            pb.reset_boundaries
+        );
+    }
+
+    #[test]
+    fn expand_to_reset_uses_nearest_sentinels() {
+        // Only sentinels [0, 5] in the boundary set — every edit
+        // expands to the full buffer.
+        let boundaries = vec![0, 5];
+        match expand_to_reset_boundary(&boundaries, 5, 2..3) {
+            WidenResult::Widened(r) => assert_eq!(r, 0..5),
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn expand_to_reset_snaps_to_interior_boundaries() {
+        // Boundaries at rows 0, 3, 6, 10 (e.g. blank-separated
+        // blocks). Damage at row 4 expands to 3..6.
+        let boundaries = vec![0, 3, 6, 10];
+        match expand_to_reset_boundary(&boundaries, 10, 4..5) {
+            WidenResult::Widened(r) => assert_eq!(r, 3..6),
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn expand_to_reset_damage_at_exact_boundary_is_zero_span() {
+        // Damage range coincides with a boundary point. The function
+        // returns the smallest enclosing boundary pair.
+        let boundaries = vec![0, 3, 6, 10];
+        // damaged.start == damaged.end == 6. Expands to 6..6 (empty).
+        match expand_to_reset_boundary(&boundaries, 10, 6..6) {
+            WidenResult::Widened(r) => assert_eq!(r, 6..6),
+            x => panic!("expected Widened, got {x:?}"),
+        }
+    }
+
+    #[test]
+    fn expand_to_reset_empty_buffer_falls_back() {
+        let boundaries = vec![0];
+        assert_eq!(
+            expand_to_reset_boundary(&boundaries, 0, 0..0),
+            WidenResult::FullRebuild
+        );
+    }
+
+    #[test]
+    fn expand_to_reset_caps_trip_fallback() {
+        // 600-row buffer, no interior boundaries. Damage at 300
+        // expands to 0..600 which exceeds cap_abs (256) and cap_frac
+        // (300, floored at cap_abs).
+        let boundaries = vec![0, 600];
+        assert_eq!(
+            expand_to_reset_boundary(&boundaries, 600, 300..301),
+            WidenResult::FullRebuild
+        );
     }
 
     #[test]

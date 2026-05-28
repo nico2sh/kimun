@@ -68,26 +68,36 @@ pub struct NoteBrowserModal {
 
 /// Snapshot of the search input that satisfies `AutocompleteHost`.
 /// Owned so the controller's borrow doesn't overlap with the search
-/// input's `&mut` borrow during key handling and replacement.
+/// input's `&mut` borrow during key handling and replacement. Holds
+/// a single-row `Vec<String>` because `EditorSnapshot` borrows a
+/// slice of lines — the search-box buffer is the one row.
 struct SearchBoxHostSnapshot {
-    value: String,
-    cursor: usize,
+    lines: Vec<String>,
+    /// Cursor as `(row, char_col)` — row is always 0 for the
+    /// single-line search box; char_col derived from the byte
+    /// cursor returned by the input widget.
+    cursor: (usize, usize),
     caret_pos: Option<(u16, u16)>,
 }
 
 impl AutocompleteHost for SearchBoxHostSnapshot {
-    fn buffer_text(&self) -> String {
-        self.value.clone()
+    fn buffer_snapshot(&self) -> crate::components::text_editor::snapshot::EditorSnapshot<'_> {
+        use std::num::NonZeroU64;
+        // content_revision unused (cache_key returns None); supply a
+        // placeholder so the field stays NonZeroU64.
+        let dummy = NonZeroU64::new(1).unwrap();
+        crate::components::text_editor::snapshot::EditorSnapshot::borrowed(
+            &self.lines,
+            self.cursor,
+            dummy,
+        )
     }
-    fn cursor_byte_offset(&self) -> usize {
-        self.cursor
-    }
-    fn text_revision(&self) -> u64 {
-        // `0` is the trait's documented "do not cache" sentinel. The
+    fn cache_key(&self) -> Option<std::num::NonZeroU64> {
+        // `None` opts out of the controller's per-buffer cache. The
         // search-box buffer is single-line and short, so the rebuild
-        // cost per keystroke is negligible — opting out keeps the modal
-        // free of per-keystroke revision bookkeeping.
-        0
+        // cost per keystroke is negligible — opting out keeps the
+        // modal free of per-keystroke revision bookkeeping.
+        None
     }
     fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
         // Anchor at the caret — same liberty as the editor host. The
@@ -320,9 +330,14 @@ impl NoteBrowserModal {
     // ── Autocomplete ──────────────────────────────────────────────────────
 
     fn autocomplete_snapshot(&self) -> SearchBoxHostSnapshot {
+        // The search box is a single line — wrap it as a 1-row buffer.
+        // Convert the byte cursor to char column for `EditorSnapshot`.
+        let value = self.search_query.value().to_string();
+        let cursor_byte = self.search_query.cursor_byte();
+        let col = value[..cursor_byte.min(value.len())].chars().count();
         SearchBoxHostSnapshot {
-            value: self.search_query.value().to_string(),
-            cursor: self.search_query.cursor_byte(),
+            lines: vec![value],
+            cursor: (0, col),
             caret_pos: self.search_query.last_caret_pos(),
         }
     }

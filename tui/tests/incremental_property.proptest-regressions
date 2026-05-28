@@ -9,3 +9,6 @@ cc 96eb414d5107c00bcfb77def72fe3807df40232deeafe8978e62b3aba523cb80 # shrinks to
 cc 44f2cb1ecce6449a01e2f9a23b110f99662865a53a3c4e275409545eb5b7efbf # shrinks to initial = ["> a", "```", "", "```", ">  ", "", "", "", "", "", "> a", "", "> a", ">  ", "", "", "", ">  ", "", "> a", "a", "", "- a", ""], row = 22, ch = 'A'
 cc 447059ed6e60807dfa9a319ab04fe9fdc58998451eefc9d3e0e79273af9cb362 # shrinks to initial = ["", "- a", "", "", "", "", "", "    a", "```", "", "", "", "", "", "", "", "", "> a", "", ">  ", "", "", ""], row = 9, ch = ' '
 cc bfdfd6f37c8c1a94a8e661101272a9ec2abecc09ed683c8c01e93e66eebbfb97 # shrinks to initial = ["", "", "", "", "", "> a", "", "> a", "", "", "- a  ", "a", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], row = 37, ch = ' '
+cc 6804edc110c36721d21668537dcd5d597638d7b4cfb70c840e68d3f7a1c3e5e1 # shrinks to initial = ["-  ", "```", "", "", "", "", "", "", "", "", "", "", "", ""], row = 3, ch = ' '
+cc 5a8fb261da8de9961ce5f0214355be23e6d8f6aeac075e17575313bbd9243f0d # shrinks to initial = ["* a", "- a", "", "    a", "", "", "", "", "", ""], row = 3, ch = '0'
+cc bcfda56b9440b80f8545836e5f59b23646061470ec3b56caa4a209f331eaabf3 # shrinks to initial = ["", "", "", "", "", "", ">     ", "", "", "", "", "", ""], row = 45, ch = 'A'

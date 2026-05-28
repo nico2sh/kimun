@@ -82,6 +82,14 @@ pub struct MarkdownEditorView {
     /// Tracks how Gate 1 changed (or did not change) the parse caches.
     /// Gate 2 reads this to decide the scope of rendered_cache rebuild.
     last_text_change: TextChangeKind,
+    /// `Some(generation)` when Gate 1 needed a full rebuild on a
+    /// large buffer and installed a `placeholder` `ParsedBuffer`
+    /// instead of running the full parse synchronously. The owning
+    /// component reads this via `take_pending_full_parse` and spawns
+    /// the parse on a background tokio task — typing stays
+    /// responsive at the cost of one frame of unstyled markdown.
+    /// See perf #9 in the holistic review.
+    pending_full_parse: Option<u64>,
 }
 
 #[cfg(debug_assertions)]
@@ -118,6 +126,34 @@ fn looks_like_setext_underline(line: &str) -> bool {
         && (trimmed.chars().all(|c| c == '=') || trimmed.chars().all(|c| c == '-'))
 }
 
+/// True when `line`'s leading indent makes it an indented-code candidate
+/// per CommonMark §4.4: 4+ leading spaces, or any leading tab. A
+/// transition into or out of this shape can lazy-extend an indented-code
+/// block across subsequent rows, so the structural-marker guard treats
+/// it as a fallback trigger. Conservative over-trip (a row in an
+/// existing fence won't actually shift anything, but we'd rather pay a
+/// full parse than risk a desync).
+fn looks_like_indented_code(line: &str) -> bool {
+    if line.starts_with('\t') {
+        return true;
+    }
+    line.chars().take_while(|c| *c == ' ').count() >= 4
+}
+
+/// True when `line` could open an HTML block per CommonMark §4.6:
+/// `<` after ≤3 spaces of indent. This is a conservative detector — it
+/// catches both block-level openers (`<div>`, `<table>`) and inline
+/// runs (`<span>`, `<br/>`). Inline HTML doesn't actually start a block
+/// (see commit handling `Event::InlineHtml`), but old and new will
+/// both report `true` so no transition is detected. The check only
+/// trips on a genuine "no-`<`" → "starts with `<`" flip, which is the
+/// shape that can promote a Plain row to HtmlBlock.
+fn looks_like_html_block_opener(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    let indent = line.len() - trimmed.len();
+    indent <= 3 && trimmed.starts_with('<')
+}
+
 impl MarkdownEditorView {
     pub fn new() -> Self {
         Self {
@@ -127,7 +163,13 @@ impl MarkdownEditorView {
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
             last_cursor_screen: None,
-            parsed_buffer: ParsedBuffer { lines: Vec::new(), kinds: Vec::new() },
+            parsed_buffer: ParsedBuffer {
+                lines: Vec::new(),
+                kinds: Vec::new(),
+                // `0` and `lines.len()` are always boundaries.
+                // For an empty buffer both equal 0; one entry is enough.
+                reset_boundaries: vec![0],
+            },
             last_seen_generation: u64::MAX, // force rebuild on first update
             last_layout_generation: u64::MAX,
             last_layout_width: 0,
@@ -137,17 +179,60 @@ impl MarkdownEditorView {
             selection: None,
             last_parse_was_incremental: false,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
+            pending_full_parse: None,
         }
+    }
+
+    /// Threshold above which a fallback to full parse runs
+    /// asynchronously instead of blocking the typing thread. On
+    /// buffers below this size the full parse is fast enough
+    /// (<2ms for a paragraph-only 1000-line buffer per bench) that
+    /// blocking is preferable to the one-frame-of-unstyled-text
+    /// the async path imposes.
+    const LARGE_BUFFER_THRESHOLD: usize = 1000;
+
+    /// Returns `Some(generation)` if Gate 1 just installed a
+    /// placeholder `ParsedBuffer` and the owning component should
+    /// spawn a background full parse for this generation. Consumes
+    /// the flag so the owner does not spawn twice; the owner is
+    /// responsible for calling `install_full_parse` when the task
+    /// completes.
+    pub fn take_pending_full_parse(&mut self) -> Option<u64> {
+        self.pending_full_parse.take()
+    }
+
+    /// Install the result of a background full parse. No-op when
+    /// the editor has advanced past `generation` — that result is
+    /// stale and a fresh spawn is already in flight. Invalidates the
+    /// layout + rendered_cache so the next `update()` rebuilds Gate
+    /// 2 against the fresh `ParsedBuffer`.
+    pub fn install_full_parse(&mut self, generation: u64, buf: ParsedBuffer) {
+        if generation != self.last_seen_generation {
+            return; // stale
+        }
+        self.parsed_buffer = buf;
+        self.fence_ranges =
+            super::parse_incremental::fence_ranges_from_kinds(&self.parsed_buffer.kinds);
+        // Force Gate 2 full rebuild on the next update: the
+        // placeholder's all-Plain kinds produced different fence
+        // ranges and rendered masks than the real parse will.
+        self.last_text_change = TextChangeKind::Full;
+        self.last_layout_generation = u64::MAX;
     }
 
     pub fn update(
         &mut self,
-        lines: &[String],
-        cursor: (usize, usize),
+        snap: &super::snapshot::EditorSnapshot<'_>,
         rect: Rect,
-        generation: u64,
         selection: Option<((usize, usize), (usize, usize))>,
     ) {
+        // Snapshot owns the (cursor, lines, content_revision) atomicity
+        // — readers below can index `parsed_buffer.lines[cursor.0]`
+        // without `.get()` guards once Gate 1 has rebuilt the parse
+        // cache from these same `lines`.
+        let lines: &[String] = &snap.lines;
+        let cursor = snap.cursor;
+        let generation = snap.content_revision.get();
         self.selection = selection;
         if rect.height == 0 {
             return;
@@ -162,7 +247,22 @@ impl MarkdownEditorView {
                     TextChangeKind::Incremental(range)
                 }
                 None => {
-                    self.parsed_buffer = ParsedBuffer::parse(lines);
+                    if lines.len() >= Self::LARGE_BUFFER_THRESHOLD {
+                        // Async fallback: install a structurally-
+                        // correct but unstyled placeholder so this
+                        // frame can paint immediately; defer the
+                        // real pulldown parse to a background tokio
+                        // task spawned by the owning component (see
+                        // `take_pending_full_parse` / `install_full_parse`).
+                        // The placeholder has the same row count as
+                        // `lines`, so the downstream Gate 2 / render
+                        // path stays in-bounds; only the markdown
+                        // styling is missing for one frame.
+                        self.parsed_buffer = ParsedBuffer::placeholder(lines);
+                        self.pending_full_parse = Some(generation);
+                    } else {
+                        self.parsed_buffer = ParsedBuffer::parse(lines);
+                    }
                     self.last_parse_was_incremental = false;
                     TextChangeKind::Full
                 }
@@ -184,7 +284,38 @@ impl MarkdownEditorView {
                 }
             }
             self.fence_ranges = super::parse_incremental::fence_ranges_from_kinds(&self.parsed_buffer.kinds);
-            self.lines_snapshot = lines.to_vec();
+            // Incremental update of `lines_snapshot` mirrors the parse
+            // path: on the splice path only the rows in `range` can
+            // have changed (try_incremental_parse already bails when
+            // line count differs); on the full-parse fallback we lose
+            // damage info, so re-clone everything.
+            //
+            // `String::clone_from` reuses the destination's existing
+            // allocation when capacity permits, so the typical
+            // single-char insert costs one String reallocation
+            // (often zero — capacity stays put) instead of N.
+            match &self.last_text_change {
+                TextChangeKind::Incremental(range) => {
+                    debug_assert_eq!(
+                        self.lines_snapshot.len(),
+                        lines.len(),
+                        "incremental path requires equal line counts"
+                    );
+                    for i in range.clone() {
+                        self.lines_snapshot[i].clone_from(&lines[i]);
+                    }
+                }
+                TextChangeKind::Full | TextChangeKind::None => {
+                    if self.lines_snapshot.len() == lines.len() {
+                        for (dst, src) in self.lines_snapshot.iter_mut().zip(lines.iter()) {
+                            dst.clone_from(src);
+                        }
+                    } else {
+                        self.lines_snapshot.clear();
+                        self.lines_snapshot.extend(lines.iter().cloned());
+                    }
+                }
+            }
             self.last_seen_generation = generation;
         } else {
             self.last_text_change = TextChangeKind::None;
@@ -212,6 +343,32 @@ impl MarkdownEditorView {
         if need_layout {
             let width_changed = rect.width != self.last_layout_width;
             let cursor_changed = cursor.0 != self.last_layout_cursor.0;
+            let expanded_changed = new_expanded != old_expanded;
+            // Rows whose rendered mask depends on cursor state and may
+            // have flipped this frame: the old and new cursor rows
+            // when the cursor moved between rows, OR the cursor row
+            // when an inline element (link/bold/etc.) was just expanded
+            // or collapsed by a within-row cursor move. Both shapes
+            // change `visible_positions_with`'s `expanded` argument,
+            // so both rendered_cache AND wrap need to re-derive that
+            // row's mask + visual-line splits.
+            let cursor_affected_rows: Vec<usize> = if cursor_changed {
+                let mut rows = vec![self.last_layout_cursor.0, cursor.0];
+                rows.sort();
+                rows.dedup();
+                rows
+            } else if expanded_changed {
+                vec![cursor.0]
+            } else {
+                vec![]
+            };
+            // Drop any row past the current buffer end — happens when a
+            // stale snapshot's cursor row exceeds `lines.len()`. Both
+            // rendered_cache and wrap splices require in-range rows.
+            let cursor_affected_rows: Vec<usize> = cursor_affected_rows
+                .into_iter()
+                .filter(|&r| r < lines.len())
+                .collect();
             // Determine the set of rows to rebuild in rendered_cache.
             let rebuild_strategy = if self.rendered_cache.len() != lines.len() {
                 // Line count differs → full rebuild required.
@@ -221,22 +378,16 @@ impl MarkdownEditorView {
                     TextChangeKind::Full => RenderedCacheRebuild::Full,
                     TextChangeKind::Incremental(range) => {
                         let mut rows: Vec<usize> = range.clone().collect();
-                        if cursor_changed {
-                            rows.push(self.last_layout_cursor.0);
-                            rows.push(cursor.0);
-                        }
+                        rows.extend(cursor_affected_rows.iter().copied());
                         rows.sort();
                         rows.dedup();
                         RenderedCacheRebuild::Rows(rows)
                     }
                     TextChangeKind::None => {
-                        if cursor_changed {
-                            let mut rows = vec![self.last_layout_cursor.0, cursor.0];
-                            rows.sort();
-                            rows.dedup();
-                            RenderedCacheRebuild::Rows(rows)
-                        } else {
+                        if cursor_affected_rows.is_empty() {
                             RenderedCacheRebuild::None
+                        } else {
+                            RenderedCacheRebuild::Rows(cursor_affected_rows.clone())
                         }
                     }
                 }
@@ -288,9 +439,14 @@ impl MarkdownEditorView {
             // - Width change or line-count change: full recompute (wrap
             //   depends on width; visual_lines indexing depends on row count).
             // - TextChangeKind::Full: full recompute.
-            // - TextChangeKind::Incremental(range): splice only the affected rows.
-            // - TextChangeKind::None: skip wrap entirely (cursor-only update;
-            //   wrap is content-independent of cursor position).
+            // - TextChangeKind::Incremental(range): splice the edited
+            //   rows plus any cursor-affected rows whose mask flipped.
+            // - TextChangeKind::None: splice only the cursor-affected
+            //   rows. Wrap depends on the rendered mask
+            //   (`wrap_one_row` reads `rendered_row`), and the mask is
+            //   cursor-position-sensitive whenever the cursor crosses
+            //   an inline element boundary — same row or different
+            //   row.
             let line_count_changed = self.layout.row_starts_len() != lines.len();
             if width_changed || line_count_changed {
                 self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
@@ -300,16 +456,34 @@ impl MarkdownEditorView {
                         self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
                     }
                     TextChangeKind::Incremental(range) => {
+                        let start = range.start.min(
+                            cursor_affected_rows.first().copied().unwrap_or(range.start),
+                        );
+                        let end = range.end.max(
+                            cursor_affected_rows
+                                .last()
+                                .copied()
+                                .map(|r| r + 1)
+                                .unwrap_or(range.end),
+                        );
                         self.layout.splice_range(
                             lines,
                             rect.width,
                             &self.rendered_cache,
-                            range.clone(),
+                            start..end,
                         );
                     }
                     TextChangeKind::None => {
-                        // Cursor-only update. Wrap is content-independent of
-                        // cursor position; existing layout is still correct.
+                        if let (Some(&first), Some(&last)) =
+                            (cursor_affected_rows.first(), cursor_affected_rows.last())
+                        {
+                            self.layout.splice_range(
+                                lines,
+                                rect.width,
+                                &self.rendered_cache,
+                                first..last + 1,
+                            );
+                        }
                     }
                 }
             }
@@ -382,8 +556,40 @@ impl MarkdownEditorView {
             if looks_like_setext_underline(new_line) != looks_like_setext_underline(old_line) {
                 return None;
             }
+            // Indented-code or HTML-block opener flip. Either shape can
+            // lazy-extend through subsequent Plain rows (CommonMark §4.4,
+            // §4.6), and that extension reaches beyond the widening
+            // window — there's no safe boundary the widener can stop
+            // at, so we punt to a full parse.
+            if matches!(
+                old_kind,
+                LineConstructKind::IndentedCode | LineConstructKind::HtmlBlock
+            ) {
+                return None;
+            }
+            if looks_like_indented_code(new_line) != looks_like_indented_code(old_line) {
+                return None;
+            }
+            if looks_like_html_block_opener(new_line) != looks_like_html_block_opener(old_line) {
+                return None;
+            }
         }
 
+        // Still using `widen_to_safe` as the widener. The
+        // openspec change `parse-reset-boundaries` shipped the
+        // `reset_boundaries` infrastructure (the field on
+        // `ParsedBuffer` + the `expand_to_reset_boundary` function)
+        // but kept `widen_to_safe` in the hot path: proptest found
+        // that the boundary detector's "depth==0 + Blank" rule
+        // misses pulldown's indented-code-inside-blockquote
+        // extension (an edit at row R can extend an IndentedCode
+        // block across R+1, invalidating R+1's pre-edit boundary).
+        // A future iteration needs a more sophisticated detector
+        // (e.g. excluding boundaries adjacent to an open
+        // IndentedCode or blockquote). Until then the boundary
+        // machinery is dormant infrastructure; widen_to_safe +
+        // structural-marker guard + post-slice verify remain the
+        // correctness path.
         let widened = match widen_to_safe(&self.parsed_buffer.kinds, damaged.clone()) {
             WidenResult::Widened(r) => r,
             WidenResult::FullRebuild => return None,
@@ -445,7 +651,10 @@ impl MarkdownEditorView {
                     None
                 };
                 let force_raw = fence_ranges.iter().any(|r| r.contains(&vl.logical_row));
-                let logical_line = lines.get(vl.logical_row).map(|s| s.as_str()).unwrap_or("");
+                // Snapshot invariant: every `vl.logical_row` is < lines.len()
+                // because `layout` and `lines_snapshot` were rebuilt from
+                // the same `EditorSnapshot` in the last `update()`.
+                let logical_line = lines[vl.logical_row].as_str();
                 let parsed = &parsed_lines[vl.logical_row];
                 let content = vl.content(logical_line);
                 let spans = MarkdownSpanner::render_with(
@@ -506,20 +715,24 @@ impl MarkdownEditorView {
             rect,
         );
 
-        // Draw terminal cursor when focused
+        // Draw terminal cursor when focused. The `EditorSnapshot` the
+        // last `update()` consumed guarantees `cursor.0` is in-bounds
+        // for `parsed_buffer.lines` and `layout.visual_lines()` —
+        // both were rebuilt from the same snapshot. The single
+        // remaining edge case is an empty buffer (no rows at all),
+        // handled by the early `is_empty` short-circuit below; the
+        // previous defensive `.get()` chain (commit c03dc728) was
+        // there to absorb stale Nvim snapshots where cursor outran
+        // lines, which the snapshot invariant now rules out.
         self.last_cursor_screen = None;
-        if focused {
+        if focused && !self.parsed_buffer.lines.is_empty() && !self.layout.visual_lines().is_empty() {
             let cursor_vrow = self.cursor_vrow;
-            if cursor_vrow >= scroll
-                && cursor_vrow < scroll + height
-                && let Some(vl) = self.layout.visual_lines().get(cursor_vrow)
-                && let Some(parsed) = self.parsed_buffer.lines.get(cursor.0)
-            {
-                // Use `.get()` on both layout.visual_lines and parsed_cache so
-                // a transiently-stale cursor (e.g. Nvim snapshot arriving
-                // after a shrink) cannot panic the render path. `lines.get`
-                // was already guarded; this brings the other two into sync.
-                let logical_line = lines.get(cursor.0).map(|s| s.as_str()).unwrap_or("");
+            if cursor_vrow >= scroll && cursor_vrow < scroll + height {
+                let vl = &self.layout.visual_lines()[cursor_vrow];
+                let parsed = &self.parsed_buffer.lines[cursor.0];
+                // Snapshot invariant + outer `!is_empty()` guard: cursor.0
+                // is in-bounds for `lines_snapshot` here.
+                let logical_line = lines[cursor.0].as_str();
                 let force_raw = self.is_in_code_block(cursor.0);
                 let rendered_col = MarkdownSpanner::rendered_cursor_col_with(
                     logical_line,
@@ -565,8 +778,17 @@ impl MarkdownEditorView {
         self.fence_ranges.iter().any(|r| r.contains(&row))
     }
 
-    /// Markdown-aware mouse click: maps a rendered screen column to the correct logical
-    /// column, accounting for hidden markdown sigils (links, bold markers, etc.).
+    /// Markdown-aware mouse click: maps a rendered screen column to
+    /// the correct logical column, accounting for hidden markdown
+    /// sigils (links, bold markers, etc.).
+    ///
+    /// Reads `self`'s view-internal caches (`layout`, `lines_snapshot`,
+    /// `parsed_buffer`), all rebuilt from the same `EditorSnapshot`
+    /// in the last `update()` call. The snapshot invariant guarantees
+    /// `vl.logical_row` is a valid index into both `lines_snapshot`
+    /// and `parsed_buffer.lines`, so direct indexing is safe — the
+    /// previous defensive `(Some, Some) else fallback` block (Fix #2
+    /// in the holistic review) is no longer needed.
     pub fn click_to_logical_u16(&self, vrow: usize, vcol: usize) -> (u16, u16) {
         let vlines = self.layout.visual_lines();
         if vlines.is_empty() {
@@ -574,23 +796,20 @@ impl MarkdownEditorView {
         }
         let vrow = vrow.min(vlines.len() - 1);
         let vl = &vlines[vrow];
-        let logical_line = self
-            .lines_snapshot
-            .get(vl.logical_row)
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        let row_u16 = vl.logical_row.min(u16::MAX as usize) as u16;
+        let logical_line = self.lines_snapshot[vl.logical_row].as_str();
+        let parsed = &self.parsed_buffer.lines[vl.logical_row];
         let force_raw = self.is_in_code_block(vl.logical_row);
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
-            &self.parsed_buffer.lines[vl.logical_row],
+            parsed,
             vl.start_col,
             vcol,
             vl.is_first_visual_line,
             force_raw,
         );
-        let row = vl.logical_row.min(u16::MAX as usize) as u16;
         let col = logical_col.min(u16::MAX as usize) as u16;
-        (row, col)
+        (row_u16, col)
     }
 
 }
@@ -684,6 +903,7 @@ fn apply_selection_highlight<'a>(
 mod tests {
     use super::*;
     use ratatui::layout::Rect;
+    use std::num::NonZeroU64;
 
     fn rect(h: u16) -> Rect {
         Rect {
@@ -694,6 +914,33 @@ mod tests {
         }
     }
 
+    /// Test-only wrapper that builds an `EditorSnapshot::borrowed`
+    /// from the legacy `(lines, cursor, generation)` shape, so the
+    /// hundreds of existing call sites don't each have to construct
+    /// the snapshot inline.
+    ///
+    /// Mirrors `snapshot_from_backend`'s producer-side cursor clamp,
+    /// so tests that pass an intentionally-stale `cursor` (e.g. the
+    /// regression for the Nvim shrink panic) still exercise the
+    /// real production path: producer clamps, render trusts.
+    fn update_view(
+        v: &mut MarkdownEditorView,
+        lines: &[String],
+        cursor: (usize, usize),
+        rect: Rect,
+        generation: u64,
+        selection: Option<((usize, usize), (usize, usize))>,
+    ) {
+        let rev = NonZeroU64::new(generation.max(1)).unwrap();
+        let clamped = if lines.is_empty() {
+            (0, 0)
+        } else {
+            (cursor.0.min(lines.len() - 1), cursor.1)
+        };
+        let snap = super::super::snapshot::EditorSnapshot::borrowed(lines, clamped, rev);
+        v.update(&snap, rect, selection);
+    }
+
     #[test]
     fn new_has_zero_scroll() {
         assert_eq!(MarkdownEditorView::new().visual_scroll_offset, 0);
@@ -702,14 +949,14 @@ mod tests {
     #[test]
     fn zero_height_rect_does_not_panic() {
         let mut v = MarkdownEditorView::new();
-        v.update(&["hello".to_string()], (0, 0), rect(0), 1, None);
+        update_view(&mut v,&["hello".to_string()], (0, 0), rect(0), 1, None);
     }
 
     #[test]
     fn scroll_follows_cursor_down() {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..5).map(|i| format!("line{}", i)).collect();
-        v.update(&lines, (4, 0), rect(3), 1, None);
+        update_view(&mut v,&lines, (4, 0), rect(3), 1, None);
         assert!(v.visual_scroll_offset >= 2);
     }
 
@@ -717,8 +964,8 @@ mod tests {
     fn scroll_follows_cursor_up() {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..5).map(|i| format!("line{}", i)).collect();
-        v.update(&lines, (4, 0), rect(3), 1, None);
-        v.update(&lines, (0, 0), rect(3), 1, None); // same generation — scroll still adjusts
+        update_view(&mut v,&lines, (4, 0), rect(3), 1, None);
+        update_view(&mut v,&lines, (0, 0), rect(3), 1, None); // same generation — scroll still adjusts
         assert_eq!(v.visual_scroll_offset, 0);
     }
 
@@ -726,7 +973,7 @@ mod tests {
     fn visual_to_logical_u16_accounts_for_scroll() {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..10).map(|i| format!("line{}", i)).collect();
-        v.update(&lines, (5, 0), rect(3), 1, None);
+        update_view(&mut v,&lines, (5, 0), rect(3), 1, None);
         let scroll = v.visual_scroll_offset;
         let (row, _col) = v.click_to_logical_u16(scroll, 0);
         assert_eq!(row as usize, scroll);
@@ -764,11 +1011,35 @@ mod tests {
     }
 
     #[test]
+    fn click_to_logical_does_not_panic_on_stale_layout() {
+        // Regression: click_to_logical_u16 raw-indexed parsed_buffer.lines
+        // by vl.logical_row. A stale layout whose visual_lines outlive a
+        // shrink of parsed_buffer.lines would panic on mouse click. The
+        // guard now falls back to a raw visual-col mapping.
+        let mut v = MarkdownEditorView::new();
+        let long: Vec<String> = (0..20).map(|i| format!("line{}", i)).collect();
+        update_view(&mut v,&long, (0, 0), rect(10), 1, None);
+        // Drive a shrink so layout.visual_lines outruns parsed_buffer.lines
+        // briefly. update() rebuilds layout from the new lines, so the
+        // pure shrink shouldn't desynchronize them — but we still want a
+        // black-box test that simulates a click against the last vrow.
+        let vrows = v.layout.visual_lines().len();
+        if vrows > 0 {
+            let _ = v.click_to_logical_u16(vrows.saturating_sub(1), 0);
+            let _ = v.click_to_logical_u16(vrows + 5, 0);
+        }
+    }
+
+    #[test]
     fn render_does_not_panic_on_stale_cursor_past_line_count() {
         // Regression: render() previously did self.parsed_cache[cursor.0]
         // and self.layout.visual_lines()[cursor_vrow] directly. A stale
         // Nvim snapshot whose cursor row landed past the new line count
-        // would panic the render thread. The guards now use `.get()`.
+        // would panic the render thread. Now the test exercises the
+        // producer-side clamp (via `update_view`'s mirror of
+        // `snapshot_from_backend`): the snapshot constructor clamps
+        // the cursor, render trusts the invariant, and direct
+        // indexing is safe.
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         let theme = Theme::gruvbox_dark();
@@ -778,17 +1049,122 @@ mod tests {
         let mut v = MarkdownEditorView::new();
         // Populate with 2 lines and a valid cursor first so parsed_cache /
         // layout are non-empty.
-        v.update(&["alpha".to_string(), "beta".to_string()], (0, 0), rect(8), 1, None);
+        update_view(&mut v,&["alpha".to_string(), "beta".to_string()], (0, 0), rect(8), 1, None);
         // Now feed a cursor row that exceeds the line count for this update
         // (simulates a stale snapshot arriving after a shrink). update() at
         // line 277 already uses `lines.get(cursor.0)` so it won't panic; the
         // real risk was the [] indexes inside render(). cursor_snapshot ends
         // up at (5, 0) which exceeds the parsed_cache len of 2 below.
-        v.update(&["alpha".to_string(), "beta".to_string()], (5, 0), rect(8), 1, None);
+        update_view(&mut v,&["alpha".to_string(), "beta".to_string()], (5, 0), rect(8), 1, None);
         // Render with focus so the cursor branch runs.
         terminal
             .draw(|f| v.render(f, f.area(), &theme, true))
             .expect("render must not panic on stale cursor");
+    }
+
+    #[test]
+    fn looks_like_indented_code_detects_tab_and_4_spaces() {
+        assert!(looks_like_indented_code("\tcode"));
+        assert!(looks_like_indented_code("    code"));
+        assert!(looks_like_indented_code("     code"));
+        assert!(!looks_like_indented_code("   code"));
+        assert!(!looks_like_indented_code("code"));
+    }
+
+    #[test]
+    fn looks_like_html_block_opener_detects_leading_lt() {
+        assert!(looks_like_html_block_opener("<div>"));
+        assert!(looks_like_html_block_opener("  <div>"));
+        assert!(looks_like_html_block_opener("   <table>"));
+        assert!(!looks_like_html_block_opener("    <div>")); // 4-space indent = code
+        assert!(!looks_like_html_block_opener("text <span>"));
+    }
+
+    #[test]
+    fn cursor_into_link_refreshes_layout_for_same_row() {
+        // Regression: when the cursor moves within a row, crossing into
+        // or out of an expandable inline element (link/bold/etc.), the
+        // rendered mask flips (the element reveals or hides its hidden
+        // sigils). Both rendered_cache and the wrap layout depend on
+        // the mask. Previously Gate 2 took the `TextChangeKind::None`
+        // wrap branch and skipped re-splicing, leaving stale visual
+        // lines until the next text edit.
+        //
+        // Use a link whose hidden URL is long enough that revealing it
+        // forces an extra wrap line at width 40 — that lets us
+        // black-box detect the mask flip via visual_lines.len().
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "see [link](http://example.com/very/long/path/to/some/page) more".to_string(),
+        ];
+        // First update: cursor outside the link (col 0).
+        update_view(&mut v,&lines, (0, 0), rect(5), 1, None);
+        let n_outside = v.layout.visual_lines().len();
+
+        // Second update: cursor inside the link element.
+        update_view(&mut v,&lines, (0, 8), rect(5), 1, None);
+        let layout_inside = v.layout.visual_lines().to_vec();
+
+        // Fresh view with cursor already inside must produce the same layout.
+        let mut fresh = MarkdownEditorView::new();
+        update_view(&mut fresh,&lines, (0, 8), rect(5), 1, None);
+        let layout_fresh = fresh.layout.visual_lines().to_vec();
+        assert_eq!(
+            layout_inside, layout_fresh,
+            "post-move layout must match a fresh full-recompute"
+        );
+        assert!(
+            layout_inside.len() > n_outside,
+            "expanding the link's hidden URL must produce more visual lines"
+        );
+    }
+
+    #[test]
+    fn try_incremental_parse_falls_back_on_indented_code_flip() {
+        // Regression: a Plain row flipping to IndentedCode (4 leading
+        // spaces) can lazy-extend an indented-code block across the
+        // following Plain rows in the full buffer. The widened slice
+        // can't see that context. Guard must trip fallback.
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string(),
+        ];
+        update_view(&mut v,&lines, (0, 0), rect(20), 1, None);
+        let new_lines = vec![
+            "alpha".to_string(),
+            "    beta".to_string(),
+            "gamma".to_string(),
+        ];
+        // try_incremental_parse must return None (full-rebuild signal).
+        assert!(
+            v.try_incremental_parse(&new_lines, (1, 0)).is_none(),
+            "indented-code flip must force a full rebuild"
+        );
+    }
+
+    #[test]
+    fn try_incremental_parse_falls_back_on_html_block_flip() {
+        // Regression: a Plain row flipping to an HTML-block opener
+        // (`<div>`) starts a block that lazy-extends through subsequent
+        // Plain rows in the full buffer.
+        let mut v = MarkdownEditorView::new();
+        let lines = vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string(),
+        ];
+        update_view(&mut v,&lines, (0, 0), rect(20), 1, None);
+        let new_lines = vec![
+            "alpha".to_string(),
+            "<div>".to_string(),
+            "gamma".to_string(),
+        ];
+        assert!(
+            v.try_incremental_parse(&new_lines, (1, 0)).is_none(),
+            "HTML-block opener flip must force a full rebuild"
+        );
     }
 
     #[test]
@@ -806,7 +1182,7 @@ mod tests {
             "outro".to_string(),
         ];
         // Cursor on the prose line; fence interior must still report in-block.
-        v.update(&lines, (4, 0), rect(10), 1, None);
+        update_view(&mut v,&lines, (4, 0), rect(10), 1, None);
         assert!(v.is_in_code_block(2), "fence interior is in-block");
         assert!(!v.is_in_code_block(0), "prose line is not in-block");
         assert!(!v.is_in_code_block(4), "trailing prose is not in-block");
@@ -816,7 +1192,7 @@ mod tests {
     fn parsed_cache_populated_after_update() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello".to_string(), "**bold**".to_string()];
-        v.update(&lines, (0, 0), rect(10), 1, None);
+        update_view(&mut v,&lines, (0, 0), rect(10), 1, None);
         assert_eq!(v.parsed_buffer.lines.len(), 2);
     }
 
@@ -824,10 +1200,10 @@ mod tests {
     fn layout_skipped_on_horizontal_cursor_move_in_plain_text() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello world".to_string()];
-        v.update(&lines, (0, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (0, 0), rect(40), 1, None);
         let layout_gen_after_first = v.last_layout_generation;
         // Move cursor right — same row, no elements, same generation → layout must be skipped.
-        v.update(&lines, (0, 5), rect(40), 1, None);
+        update_view(&mut v,&lines, (0, 5), rect(40), 1, None);
         assert_eq!(
             v.last_layout_cursor,
             (0, 0),
@@ -840,8 +1216,8 @@ mod tests {
     fn layout_recomputed_on_row_change() {
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..3).map(|i| format!("line{}", i)).collect();
-        v.update(&lines, (0, 0), rect(40), 1, None);
-        v.update(&lines, (1, 0), rect(40), 1, None); // cursor moves to row 1
+        update_view(&mut v,&lines, (0, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (1, 0), rect(40), 1, None); // cursor moves to row 1
         assert_eq!(v.last_layout_cursor.0, 1, "layout recomputed on row change");
     }
 
@@ -849,8 +1225,8 @@ mod tests {
     fn layout_recomputed_on_width_change() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello world foo bar".to_string()];
-        v.update(&lines, (0, 0), rect(40), 1, None);
-        v.update(
+        update_view(&mut v,&lines, (0, 0), rect(40), 1, None);
+        update_view(&mut v,
             &lines,
             (0, 0),
             Rect {
@@ -869,10 +1245,10 @@ mod tests {
     fn same_generation_skips_snapshot_rebuild() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["original".to_string()];
-        v.update(&lines, (0, 0), rect(10), 1, None);
+        update_view(&mut v,&lines, (0, 0), rect(10), 1, None);
         // Update with different content but same generation — snapshot must NOT change.
         let lines2 = vec!["changed".to_string()];
-        v.update(&lines2, (0, 0), rect(10), 1, None);
+        update_view(&mut v,&lines2, (0, 0), rect(10), 1, None);
         assert_eq!(v.lines_snapshot, vec!["original".to_string()]);
     }
 
@@ -880,9 +1256,9 @@ mod tests {
     fn new_generation_triggers_snapshot_rebuild() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["original".to_string()];
-        v.update(&lines, (0, 0), rect(10), 1, None);
+        update_view(&mut v,&lines, (0, 0), rect(10), 1, None);
         let lines2 = vec!["changed".to_string()];
-        v.update(&lines2, (0, 0), rect(10), 2, None);
+        update_view(&mut v,&lines2, (0, 0), rect(10), 2, None);
         assert_eq!(v.lines_snapshot, vec!["changed".to_string()]);
     }
 
@@ -890,7 +1266,7 @@ mod tests {
     fn update_stores_selection() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello world".to_string()];
-        v.update(&lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
+        update_view(&mut v,&lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
         assert_eq!(v.selection, Some(((0, 0), (0, 5))));
     }
 
@@ -898,8 +1274,8 @@ mod tests {
     fn update_clears_selection_when_none() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello world".to_string()];
-        v.update(&lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
-        v.update(&lines, (0, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (0, 0), rect(40), 1, Some(((0, 0), (0, 5))));
+        update_view(&mut v,&lines, (0, 0), rect(40), 1, None);
         assert_eq!(v.selection, None);
     }
 
@@ -907,12 +1283,12 @@ mod tests {
     fn typing_single_char_in_long_buffer_uses_incremental_path() {
         let mut v = MarkdownEditorView::new();
         let mut lines: Vec<String> = (0..1000).map(|i| format!("paragraph {i}")).collect();
-        v.update(&lines, (500, 0), rect(40), 1, None);
+        update_view(&mut v, &lines, (500, 0), rect(40), 1, None);
 
         // Single-char insert at row 500.
         lines[500].push('x');
         let edited_len = lines[500].len();
-        v.update(&lines, (500, edited_len), rect(40), 2, None);
+        update_view(&mut v, &lines, (500, edited_len), rect(40), 2, None);
 
         // The spliced result must equal a fresh full parse.
         let fresh = ParsedBuffer::parse(&lines);
@@ -928,24 +1304,76 @@ mod tests {
     #[test]
     fn fence_toggle_triggers_full_rebuild_fallback() {
         let mut v = MarkdownEditorView::new();
-        // Use 1000 lines so that an unclosed fence at row 500 widens to
-        // end-of-buffer (~501 rows), exceeding both the absolute cap (256)
-        // and the fractional cap (50% of 1001 = 500 rows). The `&&`
-        // cap check fires and forces full rebuild.
-        let mut lines: Vec<String> = (0..1000).map(|i| format!("paragraph {i}")).collect();
-        v.update(&lines, (500, 0), rect(40), 1, None);
+        // Use 700 lines so that an unclosed fence at row 350 widens to
+        // end-of-buffer (~351 rows), exceeding the absolute cap (256).
+        // Below the perf #9 LARGE_BUFFER_THRESHOLD (1000), so the
+        // fallback runs synchronously and `parsed_buffer.kinds`
+        // matches a fresh full parse immediately.
+        let mut lines: Vec<String> = (0..700).map(|i| format!("paragraph {i}")).collect();
+        update_view(&mut v, &lines, (350, 0), rect(40), 1, None);
 
         // Open a fence mid-buffer — structurally invasive, line count changes.
-        lines.insert(500, "```".to_string());
-        v.update(&lines, (500, 3), rect(40), 2, None);
+        lines.insert(350, "```".to_string());
+        update_view(&mut v, &lines, (350, 3), rect(40), 2, None);
 
         let fresh = ParsedBuffer::parse(&lines);
         assert_eq!(v.parsed_buffer.kinds, fresh.kinds, "spliced kinds must equal fresh full parse");
-        // The unclosed fence at row 500 widens to end-of-buffer (>256 lines
-        // and >50% of 1001), so the cap trips and the fallback fires.
+        // The unclosed fence at row 350 widens to end-of-buffer (~351 lines,
+        // > 256 cap_abs), so the cap trips and the fallback fires.
         assert!(
             !v.last_parse_was_incremental,
-            "fence toggle (unclosed fence, 1000-line buffer) should fall back to full rebuild"
+            "fence toggle (unclosed fence, 700-line buffer) should fall back to full rebuild"
+        );
+        // Buffer < LARGE_BUFFER_THRESHOLD → sync fallback, no
+        // pending-async signal.
+        assert!(v.take_pending_full_parse().is_none(), "small-buffer fallback must NOT defer to async");
+    }
+
+    #[test]
+    fn fence_toggle_on_large_buffer_defers_to_async_fallback() {
+        // Regression for perf #9: above LARGE_BUFFER_THRESHOLD, the
+        // fallback installs a placeholder ParsedBuffer + signals
+        // pending instead of blocking the typing thread on
+        // ParsedBuffer::parse. The owning component spawns the real
+        // parse on tokio and calls install_full_parse when done.
+        let mut v = MarkdownEditorView::new();
+        let mut lines: Vec<String> =
+            (0..1500).map(|i| format!("paragraph {i}")).collect();
+        update_view(&mut v, &lines, (750, 0), rect(40), 1, None);
+
+        // Force a fallback path on a large buffer.
+        lines.insert(750, "```".to_string());
+        update_view(&mut v, &lines, (750, 3), rect(40), 2, None);
+
+        assert!(
+            !v.last_parse_was_incremental,
+            "fence toggle on 1500-line buffer should fall back"
+        );
+        let pending = v.take_pending_full_parse();
+        assert!(
+            pending.is_some(),
+            "large-buffer fallback must signal pending async parse"
+        );
+        // Placeholder kinds: every row is Plain — no fence detection yet.
+        assert!(
+            v.parsed_buffer.kinds.iter().all(|k| matches!(k, super::super::parse_incremental::LineConstructKind::Plain)),
+            "placeholder must classify every row as Plain"
+        );
+        assert_eq!(
+            v.parsed_buffer.lines.len(),
+            lines.len(),
+            "placeholder row count must match input"
+        );
+
+        // Caller (TextEditorComponent in production) spawns the real
+        // parse and installs the result. Simulate that here.
+        let real = ParsedBuffer::parse(&lines);
+        let generation = pending.unwrap();
+        v.install_full_parse(generation, real);
+        let fresh = ParsedBuffer::parse(&lines);
+        assert_eq!(
+            v.parsed_buffer.kinds, fresh.kinds,
+            "post-install kinds must match fresh full parse"
         );
     }
 
@@ -974,12 +1402,12 @@ mod tests {
         for _ in 0..31 {
             lines.push(String::new());
         }
-        v.update(&lines, (2, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (2, 0), rect(40), 1, None);
 
         // Edit the closing fence marker — append a char so it's no longer a closer.
         let mut new_lines = lines.clone();
         new_lines[2].push('0');
-        v.update(&new_lines, (2, 4), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (2, 4), rect(40), 2, None);
 
         assert!(
             !v.last_parse_was_incremental,
@@ -994,14 +1422,14 @@ mod tests {
     fn incremental_paste_large_block_falls_back() {
         let mut v = MarkdownEditorView::new();
         let mut lines: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
-        v.update(&lines, (25, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (25, 0), rect(40), 1, None);
 
         // Insert 300 lines at row 25.
         let payload: Vec<String> = (0..300).map(|i| format!("pasted {i}")).collect();
         for (offset, p) in payload.into_iter().enumerate() {
             lines.insert(25 + offset, p);
         }
-        v.update(&lines, (25, 0), rect(40), 2, None);
+        update_view(&mut v,&lines, (25, 0), rect(40), 2, None);
         assert!(!v.last_parse_was_incremental, "300-line paste must fall back");
         full_rebuild_equals_view_state(&v, &lines);
     }
@@ -1010,11 +1438,11 @@ mod tests {
     fn incremental_enter_at_line_end() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["alpha".to_string(), "beta".to_string()];
-        v.update(&lines, (0, 5), rect(40), 1, None);
+        update_view(&mut v,&lines, (0, 5), rect(40), 1, None);
 
         // Press Enter at end of "alpha".
         let new_lines = vec!["alpha".to_string(), "".to_string(), "beta".to_string()];
-        v.update(&new_lines, (1, 0), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (1, 0), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &new_lines);
     }
 
@@ -1022,11 +1450,11 @@ mod tests {
     fn incremental_backspace_merging_lines() {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["alpha".to_string(), "beta".to_string()];
-        v.update(&lines, (1, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (1, 0), rect(40), 1, None);
 
         // Backspace at start of "beta" merges into "alphabeta".
         let new_lines = vec!["alphabeta".to_string()];
-        v.update(&new_lines, (0, 5), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (0, 5), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &new_lines);
     }
 
@@ -1043,12 +1471,12 @@ mod tests {
             "".to_string(),
             "outro".to_string(),
         ];
-        v.update(&lines, (3, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (3, 0), rect(40), 1, None);
 
         // Edit inside the fence (same-length, no line-count change).
         let mut new_lines = lines.clone();
         new_lines[3] = "let x = 999;".to_string();
-        v.update(&new_lines, (3, 8), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (3, 8), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &new_lines);
     }
 
@@ -1064,12 +1492,12 @@ mod tests {
             "".to_string(),
             "outro".to_string(),
         ];
-        v.update(&lines, (4, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (4, 0), rect(40), 1, None);
 
         // Edit the nested continuation line.
         let mut new_lines = lines.clone();
         new_lines[4] = "    body two changed".to_string();
-        v.update(&new_lines, (4, 10), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (4, 10), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &new_lines);
     }
 
@@ -1082,12 +1510,12 @@ mod tests {
             "".to_string(),
             "body".to_string(),
         ];
-        v.update(&lines, (1, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (1, 0), rect(40), 1, None);
 
         // Edit the underline (same line count).
         let mut new_lines = lines.clone();
         new_lines[1] = "======".to_string();
-        v.update(&new_lines, (1, 6), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (1, 6), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &new_lines);
     }
 
@@ -1103,11 +1531,11 @@ mod tests {
             "".to_string(),
             "outro".to_string(),
         ];
-        v.update(&lines, (3, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (3, 0), rect(40), 1, None);
 
         let mut new_lines = lines.clone();
         new_lines[3] = "> quoted line TWO".to_string();
-        v.update(&new_lines, (3, 17), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (3, 17), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &new_lines);
     }
 
@@ -1123,11 +1551,11 @@ mod tests {
             "".to_string(),
             "after".to_string(),
         ];
-        v.update(&lines, (3, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (3, 0), rect(40), 1, None);
 
         let mut new_lines = lines.clone();
         new_lines[3] = "body changed".to_string();
-        v.update(&new_lines, (3, 12), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (3, 12), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &new_lines);
     }
 
@@ -1148,11 +1576,11 @@ mod tests {
             "".to_string(),
             "after".to_string(),
         ];
-        v.update(&lines, (5, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (5, 0), rect(40), 1, None);
 
         let mut new_lines = lines.clone();
         new_lines[5] = "      continuation at 6 indent EDITED".to_string();
-        v.update(&new_lines, (5, 30), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (5, 30), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &new_lines);
     }
 
@@ -1173,7 +1601,7 @@ mod tests {
             "".to_string(),
             "outro".to_string(),
         ];
-        v.update(&lines, (4, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (4, 0), rect(40), 1, None);
 
         use crate::components::text_editor::markdown::ElementKind;
 
@@ -1188,7 +1616,7 @@ mod tests {
         // Edit one of the in-fence lines.
         let mut new_lines = lines.clone();
         new_lines[4] = "// edited #tag here".to_string();
-        v.update(&new_lines, (4, 19), rect(40), 2, None);
+        update_view(&mut v,&new_lines, (4, 19), rect(40), 2, None);
 
         // Post-condition: still no Label elements in the fence interior.
         for row in 3..5 {
@@ -1204,18 +1632,18 @@ mod tests {
     fn g8a_typing_into_empty_buffer() {
         let mut v = MarkdownEditorView::new();
         let empty = vec!["".to_string()];
-        v.update(&empty, (0, 0), rect(40), 1, None);
+        update_view(&mut v,&empty, (0, 0), rect(40), 1, None);
 
         let one = vec!["h".to_string()];
-        v.update(&one, (0, 1), rect(40), 2, None);
+        update_view(&mut v,&one, (0, 1), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &one);
 
         let two = vec!["he".to_string()];
-        v.update(&two, (0, 2), rect(40), 3, None);
+        update_view(&mut v,&two, (0, 2), rect(40), 3, None);
         full_rebuild_equals_view_state(&v, &two);
 
         let many = vec!["hello world".to_string()];
-        v.update(&many, (0, 11), rect(40), 4, None);
+        update_view(&mut v,&many, (0, 11), rect(40), 4, None);
         full_rebuild_equals_view_state(&v, &many);
     }
 
@@ -1223,10 +1651,10 @@ mod tests {
     fn g8b_delete_last_char_one_line_buffer() {
         let mut v = MarkdownEditorView::new();
         let one = vec!["h".to_string()];
-        v.update(&one, (0, 1), rect(40), 1, None);
+        update_view(&mut v,&one, (0, 1), rect(40), 1, None);
 
         let empty = vec!["".to_string()];
-        v.update(&empty, (0, 0), rect(40), 2, None);
+        update_view(&mut v,&empty, (0, 0), rect(40), 2, None);
         full_rebuild_equals_view_state(&v, &empty);
     }
 
@@ -1236,13 +1664,13 @@ mod tests {
         let lines: Vec<String> = (0..200)
             .map(|i| format!("paragraph {i} with some text that may wrap depending on width"))
             .collect();
-        v.update(&lines, (100, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (100, 0), rect(40), 1, None);
         let baseline_visual_lines = v.layout.visual_lines().to_vec();
 
         // Edit a paragraph mid-buffer (no line count change).
         let mut edited = lines.clone();
         edited[100].push_str(" extra text");
-        v.update(&edited, (100, edited[100].len()), rect(40), 2, None);
+        update_view(&mut v,&edited, (100, edited[100].len()), rect(40), 2, None);
 
         // After incremental wrap, layout must equal a fresh compute of the edited buffer.
         let fresh_layout = WordWrapLayout::compute(
@@ -1285,7 +1713,7 @@ mod tests {
         // contents stay correct (matching a full rebuild's output).
         let mut v = MarkdownEditorView::new();
         let lines: Vec<String> = (0..200).map(|i| format!("paragraph {i} with some text")).collect();
-        v.update(&lines, (100, 0), rect(40), 1, None);
+        update_view(&mut v,&lines, (100, 0), rect(40), 1, None);
 
         // Snapshot rendered_cache before the edit.
         let before: Vec<Vec<bool>> = v.rendered_cache.iter()
@@ -1297,7 +1725,7 @@ mod tests {
         // Edit a paragraph in the middle.
         let mut edited = lines.clone();
         edited[100].push('x');
-        v.update(&edited, (100, edited[100].len()), rect(40), 2, None);
+        update_view(&mut v,&edited, (100, edited[100].len()), rect(40), 2, None);
 
         // Rows far outside the damaged range must be byte-identical.
         let after: Vec<Vec<bool>> = v.rendered_cache.iter()

@@ -12,7 +12,23 @@ use kimun_notes::components::text_editor::markdown::ParsedBuffer;
 use kimun_notes::components::text_editor::parse_incremental::{
     compute_damage_range, widen_to_safe, WidenResult,
 };
+use kimun_notes::components::text_editor::snapshot::EditorSnapshot;
 use kimun_notes::components::text_editor::word_wrap::WordWrapLayout;
+use std::num::NonZeroU64;
+
+fn snap_for<'a>(
+    lines: &'a [String],
+    cursor: (usize, usize),
+    generation: u64,
+) -> EditorSnapshot<'a> {
+    let rev = NonZeroU64::new(generation.max(1)).unwrap();
+    let clamped = if lines.is_empty() {
+        (0, 0)
+    } else {
+        (cursor.0.min(lines.len() - 1), cursor.1)
+    };
+    EditorSnapshot::borrowed(lines, clamped, rev)
+}
 
 fn make_5000_line_buffer() -> Vec<String> {
     (0..5000)
@@ -26,6 +42,21 @@ fn bench_full_parse_5000_lines(c: &mut Criterion) {
         b.iter(|| {
             let pb = ParsedBuffer::parse(black_box(&lines));
             black_box(pb);
+        });
+    });
+}
+
+fn bench_compute_damage_range_5000_lines(c: &mut Criterion) {
+    let lines = make_5000_line_buffer();
+    let mut edited = lines.clone();
+    // Backspace at line boundary: shrinks the buffer by one row,
+    // forcing compute_damage_range's slow LCP/LCS path (the fast
+    // cursor-hint path bails on line-count changes).
+    edited.remove(2500);
+    c.bench_function("compute_damage_range_backspace_5000_lines", |b| {
+        b.iter(|| {
+            let r = compute_damage_range(black_box(&lines), black_box(&edited), 2500);
+            black_box(r);
         });
     });
 }
@@ -96,7 +127,7 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
 
     // Warm the view: do a full parse on the original buffer once.
     let mut warmed = MarkdownEditorView::new();
-    warmed.update(&lines, (2500, 0), rect, 1, None);
+    warmed.update(&snap_for(&lines, (2500, 0), 1), rect, None);
 
     // Edited buffer: single-char insert at row 2500 (same line count).
     let mut edited = lines.clone();
@@ -106,7 +137,7 @@ fn bench_full_view_update_5000_lines_incremental(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
-                v.update(black_box(&edited), (2500, edited[2500].len()), rect, 2, None);
+                v.update(&snap_for(black_box(&edited), (2500, edited[2500].len()), 2), rect, None);
                 black_box(v);
             },
             BatchSize::SmallInput,
@@ -122,7 +153,7 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
     let rect = Rect { x: 0, y: 0, width: 80, height: 40 };
 
     let mut warmed = MarkdownEditorView::new();
-    warmed.update(&lines, (2500, 0), rect, 1, None);
+    warmed.update(&snap_for(&lines, (2500, 0), 1), rect, None);
 
     // Edited buffer: single-char delete at row 2500 (Backspace mid-line).
     let mut edited = lines.clone();
@@ -132,7 +163,7 @@ fn bench_full_view_update_5000_lines_backspace(c: &mut Criterion) {
         b.iter_batched(
             || warmed.clone(),
             |mut v| {
-                v.update(black_box(&edited), (2500, edited[2500].len()), rect, 2, None);
+                v.update(&snap_for(black_box(&edited), (2500, edited[2500].len()), 2), rect, None);
                 black_box(v);
             },
             BatchSize::SmallInput,
@@ -150,7 +181,7 @@ fn bench_full_view_update_5000_lines_first_parse(c: &mut Criterion) {
     c.bench_function("full_view_update_5000_lines_first_parse", |b| {
         b.iter(|| {
             let mut v = MarkdownEditorView::new();
-            v.update(black_box(&lines), (0, 0), rect, 1, None);
+            v.update(&snap_for(black_box(&lines), (0, 0), 1), rect, None);
             black_box(v);
         });
     });
@@ -159,6 +190,7 @@ fn bench_full_view_update_5000_lines_first_parse(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_full_parse_5000_lines,
+    bench_compute_damage_range_5000_lines,
     bench_incremental_paragraph_insert_5000_lines,
     bench_incremental_fallback_5000_lines,
     bench_wrap_5000_lines,
