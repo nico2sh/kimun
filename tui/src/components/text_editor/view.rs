@@ -221,7 +221,9 @@ impl MarkdownEditorView {
 
     pub fn take_pending_full_parse(&mut self) -> Option<u64> {
         if let ParseState::Placeholder {
-            generation, spawned, ..
+            generation,
+            spawned,
+            ..
         } = &mut self.parse_state
         {
             if !*spawned {
@@ -312,15 +314,18 @@ impl MarkdownEditorView {
             if self.last_parse_was_incremental && verify_incremental_enabled() {
                 let fresh = ParsedBuffer::parse(lines);
                 assert_eq!(
-                    self.parse_state.buf().kinds, fresh.kinds,
+                    self.parse_state.buf().kinds,
+                    fresh.kinds,
                     "incremental kinds diverge from full parse at generation={generation}"
                 );
                 assert_eq!(
-                    self.parse_state.buf().lazy_depth, fresh.lazy_depth,
+                    self.parse_state.buf().lazy_depth,
+                    fresh.lazy_depth,
                     "incremental lazy_depth diverges from full parse at generation={generation}"
                 );
                 assert_eq!(
-                    self.parse_state.buf().reset_boundaries, fresh.reset_boundaries,
+                    self.parse_state.buf().reset_boundaries,
+                    fresh.reset_boundaries,
                     "incremental reset_boundaries diverge from full parse at generation={generation}"
                 );
                 assert_eq!(
@@ -329,7 +334,8 @@ impl MarkdownEditorView {
                     "incremental lines.len() diverges from full parse at generation={generation}"
                 );
                 for (i, (got, exp)) in self
-                    .parse_state.buf()
+                    .parse_state
+                    .buf()
                     .lines
                     .iter()
                     .zip(fresh.lines.iter())
@@ -384,12 +390,14 @@ impl MarkdownEditorView {
         // Horizontal cursor movement within the same element (or plain text with no elements)
         // does not change any wrap boundary — no recompute needed.
         let new_expanded = self
-            .parse_state.buf()
+            .parse_state
+            .buf()
             .lines
             .get(cursor.0)
             .and_then(|p| p.elem_at(cursor.1));
         let old_expanded = self
-            .parse_state.buf()
+            .parse_state
+            .buf()
             .lines
             .get(self.last_layout_cursor.0)
             .and_then(|p| p.elem_at(self.last_layout_cursor.1));
@@ -727,9 +735,15 @@ impl MarkdownEditorView {
             let new_blank = new_line.trim().is_empty();
             if old_blank != new_blank {
                 let above_non_blank = row > 0
-                    && !matches!(self.parse_state.buf().kinds[row - 1], LineConstructKind::Blank);
+                    && !matches!(
+                        self.parse_state.buf().kinds[row - 1],
+                        LineConstructKind::Blank
+                    );
                 let below_non_blank = row + 1 < self.parse_state.buf().kinds.len()
-                    && !matches!(self.parse_state.buf().kinds[row + 1], LineConstructKind::Blank);
+                    && !matches!(
+                        self.parse_state.buf().kinds[row + 1],
+                        LineConstructKind::Blank
+                    );
                 if above_non_blank || below_non_blank {
                     return METRICS.bail(BailReason::BlankTransition);
                 }
@@ -803,7 +817,9 @@ impl MarkdownEditorView {
                 if slice.kinds[idx] != self.parse_state.buf().kinds[row] {
                     return METRICS.bail(BailReason::VerifyFailed);
                 }
-                if slice.lines[idx].elements.len() != self.parse_state.buf().lines[row].elements.len() {
+                if slice.lines[idx].elements.len()
+                    != self.parse_state.buf().lines[row].elements.len()
+                {
                     return METRICS.bail(BailReason::VerifyFailed);
                 }
                 if slice.lines[idx].content_vis != self.parse_state.buf().lines[row].content_vis {
@@ -918,7 +934,9 @@ impl MarkdownEditorView {
         // there to absorb stale Nvim snapshots where cursor outran
         // lines, which the snapshot invariant now rules out.
         self.last_cursor_screen = None;
-        if focused && !self.parse_state.buf().lines.is_empty() && !self.layout.visual_lines().is_empty()
+        if focused
+            && !self.parse_state.buf().lines.is_empty()
+            && !self.layout.visual_lines().is_empty()
         {
             let cursor_vrow = self.cursor_vrow;
             if cursor_vrow >= scroll && cursor_vrow < scroll + height {
@@ -1613,7 +1631,8 @@ mod tests {
 
         let fresh = ParsedBuffer::parse(&lines);
         assert_eq!(
-            v.parse_state.buf().kinds, fresh.kinds,
+            v.parse_state.buf().kinds,
+            fresh.kinds,
             "spliced kinds must equal fresh full parse"
         );
         // The unclosed fence at row 350 widens to end-of-buffer (~351 lines,
@@ -1656,7 +1675,8 @@ mod tests {
         );
         // Placeholder kinds: every row is Plain — no fence detection yet.
         assert!(
-            v.parse_state.buf()
+            v.parse_state
+                .buf()
                 .kinds
                 .iter()
                 .all(|k| matches!(k, super::super::parse_incremental::LineConstructKind::Plain)),
@@ -1675,7 +1695,8 @@ mod tests {
         v.install_full_parse(generation, real);
         let fresh = ParsedBuffer::parse(&lines);
         assert_eq!(
-            v.parse_state.buf().kinds, fresh.kinds,
+            v.parse_state.buf().kinds,
+            fresh.kinds,
             "post-install kinds must match fresh full parse"
         );
     }
@@ -1689,7 +1710,8 @@ mod tests {
             "row count diverge"
         );
         for (i, (got, exp)) in v
-            .parse_state.buf()
+            .parse_state
+            .buf()
             .lines
             .iter()
             .zip(fresh.lines.iter())
