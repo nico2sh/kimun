@@ -532,8 +532,12 @@ impl MarkdownEditorView {
             self.rebuild_gutter_insets(lines, cursor.0);
             let line_count_changed = self.layout.row_starts_len() != lines.len();
             if width_changed || line_count_changed {
-                self.layout =
-                    WordWrapLayout::compute(lines, rect.width, &self.rendered_cache, &self.gutter_insets);
+                self.layout = WordWrapLayout::compute(
+                    lines,
+                    rect.width,
+                    &self.rendered_cache,
+                    &self.gutter_insets,
+                );
             } else {
                 match &self.last_text_change {
                     TextChangeKind::Full => {
@@ -900,16 +904,12 @@ impl MarkdownEditorView {
                 );
 
                 // Apply code-block background before selection so selection bg wins on selected text.
-                let spans = if let Some(bw) = self
-                    .code_box_width
-                    .get(vl.logical_row)
-                    .copied()
-                    .flatten()
-                {
-                    apply_code_box(spans, bw, theme)
-                } else {
-                    spans
-                };
+                let spans =
+                    if let Some(bw) = self.code_box_width.get(vl.logical_row).copied().flatten() {
+                        apply_code_box(spans, bw, theme)
+                    } else {
+                        spans
+                    };
 
                 // Apply selection highlight if this visual line is within the selection.
                 let spans = if let Some(((sel_sr, sel_sc), (sel_er, sel_ec))) = selection {
@@ -1038,9 +1038,8 @@ impl MarkdownEditorView {
     /// capped at `width`.
     fn rebuild_code_box_width(&mut self, lines: &[String], width: u16) {
         let mut out = vec![None; lines.len()];
-        let ranges = super::parse_incremental::code_block_ranges_from_kinds(
-            &self.parse_state.buf().kinds,
-        );
+        let ranges =
+            super::parse_incremental::code_block_ranges_from_kinds(&self.parse_state.buf().kinds);
         for r in ranges {
             let mut max_w = 0usize;
             for row in r.clone() {
@@ -1114,9 +1113,7 @@ impl MarkdownEditorView {
         // visual line, skip those hidden sigil chars so that rendered_col 0
         // maps to the first content char, not to the hidden ">".
         let effective_start_col = if gutter > 0 && vl.is_first_visual_line {
-            parsed
-                .blockquote_sigil_end()
-                .unwrap_or(vl.start_col)
+            parsed.blockquote_sigil_end().unwrap_or(vl.start_col)
         } else {
             vl.start_col
         };

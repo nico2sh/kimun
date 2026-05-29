@@ -498,8 +498,7 @@ impl MarkdownSpanner {
                 let is_content = pos < content_vis.len() && content_vis[pos];
                 let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
                 let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
-                let in_blockquote_sigil =
-                    blockquote_sigil_end.is_some_and(|end| pos < end);
+                let in_blockquote_sigil = blockquote_sigil_end.is_some_and(|end| pos < end);
                 let in_any_element = parsed.in_any_element(pos);
                 let in_expanded = expanded.is_some_and(|i| {
                     parsed.elements[i].start_char <= pos && pos < parsed.elements[i].end_char
@@ -618,11 +617,11 @@ mod tests {
         // Cursor just after "> " on a bare blockquote line. Rendered column must
         // be 2 (the "> " is revealed and visible on the cursor's own line), not 0.
         let col = MarkdownSpanner::rendered_cursor_col(
-            "> ",   // logical line
-            0,      // visual_start_col
-            2,      // cursor_col (end of line)
-            true,   // is_first_visual_line
-            false,  // force_raw
+            "> ",  // logical line
+            0,     // visual_start_col
+            2,     // cursor_col (end of line)
+            true,  // is_first_visual_line
+            false, // force_raw
         );
         assert_eq!(col, 2);
     }
@@ -634,7 +633,10 @@ mod tests {
         let spans = MarkdownSpanner::render("> hi", "> hi", 0, None, true, false, 40, &theme);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("│ "), "expected bar gutter, got {text:?}");
-        assert!(!text.contains('>'), "raw marker must be hidden, got {text:?}");
+        assert!(
+            !text.contains('>'),
+            "raw marker must be hidden, got {text:?}"
+        );
         assert!(text.contains("hi"));
     }
 
@@ -662,6 +664,9 @@ mod tests {
         let spans = MarkdownSpanner::render(">", ">", 0, None, true, false, 40, &theme);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("│ "), "expected bar gutter, got {text:?}");
-        assert!(!text.contains('>'), "raw marker must be hidden, got {text:?}");
+        assert!(
+            !text.contains('>'),
+            "raw marker must be hidden, got {text:?}"
+        );
     }
 }

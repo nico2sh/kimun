@@ -529,7 +529,7 @@ impl Theme {
             color_search_match: ThemeColor::Ansi(11), // bright yellow
             color_tag: ThemeColor::Ansi(3),           // yellow
             blockquote_bar: ThemeColor::Ansi(6),      // cyan (accent)
-            code_bg: ThemeColor::Reset,               // Reset by design: palette-adaptive, no box bg
+            code_bg: ThemeColor::Reset, // Reset by design: palette-adaptive, no box bg
         }
     }
 }
@@ -914,7 +914,10 @@ mod tests {
     fn new_decoration_fields_present_and_deserialize_default() {
         // Built-in theme exposes the fields.
         let t = Theme::gruvbox_dark();
-        assert_eq!(t.blockquote_bar, ThemeColor::from_string("#fabd2f").unwrap());
+        assert_eq!(
+            t.blockquote_bar,
+            ThemeColor::from_string("#fabd2f").unwrap()
+        );
         assert_eq!(t.code_bg, ThemeColor::from_string("#32302f").unwrap());
 
         // Old TOML without the fields still deserializes (serde defaults kick in).
