@@ -319,6 +319,41 @@ pub fn fence_ranges_from_kinds(kinds: &[LineConstructKind]) -> Vec<Range<usize>>
     ranges
 }
 
+/// Line ranges of every code block (fenced AND indented) in the buffer,
+/// in ascending order. Fenced blocks reuse the fence-marker/content
+/// scan; indented blocks are maximal runs of `IndentedCode`. Used by the
+/// view to paint the code-box background.
+pub fn code_block_ranges_from_kinds(kinds: &[LineConstructKind]) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i < kinds.len() {
+        match kinds[i] {
+            LineConstructKind::FenceMarker => {
+                let start = i;
+                i += 1;
+                while i < kinds.len() && kinds[i] == LineConstructKind::FenceContent {
+                    i += 1;
+                }
+                if i < kinds.len() && kinds[i] == LineConstructKind::FenceMarker {
+                    ranges.push(start..i + 1);
+                    i += 1;
+                } else {
+                    ranges.push(start..kinds.len());
+                }
+            }
+            LineConstructKind::IndentedCode => {
+                let start = i;
+                while i < kinds.len() && kinds[i] == LineConstructKind::IndentedCode {
+                    i += 1;
+                }
+                ranges.push(start..i);
+            }
+            _ => i += 1,
+        }
+    }
+    ranges
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,6 +804,21 @@ mod tests {
     #[test]
     fn fence_ranges_empty() {
         assert!(fence_ranges_from_kinds(&[]).is_empty());
+    }
+
+    #[test]
+    fn code_block_ranges_covers_fenced_and_indented() {
+        // Fenced block then a blank then an indented code block.
+        let k = kinds_of(&[
+            "```",          // FenceMarker
+            "let x = 1;",   // FenceContent
+            "```",          // FenceMarker
+            "",             // Blank
+            "    indented", // IndentedCode
+            "    code",     // IndentedCode
+        ]);
+        let r = code_block_ranges_from_kinds(&k);
+        assert_eq!(r, vec![0..3, 4..6]);
     }
 
     #[test]
