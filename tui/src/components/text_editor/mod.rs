@@ -1301,6 +1301,14 @@ impl TextEditorComponent {
         }
     }
 
+    /// Bind the redraw channel up front (e.g. on note open) so the
+    /// background full-parse task can wake the event-driven render loop
+    /// on the FIRST render of a large buffer, before any keystroke has
+    /// run `handle_input`. No-op after the first successful bind.
+    pub fn set_redraw_tx(&mut self, tx: &AppTx) {
+        self.bind_autocomplete_redraw(tx);
+    }
+
     /// Bind the autocomplete controller's redraw callback AND the
     /// editor's background-full-parse redraw signal to the app
     /// event bus. Called from `handle_input` (the first place where

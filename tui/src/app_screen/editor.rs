@@ -290,6 +290,7 @@ impl EditorScreen {
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
                 self.editor.set_text(content);
+                self.editor.set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
                 if self.backlinks_visible {
                     self.backlinks_panel.load(path.clone(), tx.clone());

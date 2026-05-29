@@ -96,6 +96,12 @@ pub struct MarkdownEditorView {
     /// responsive at the cost of one frame of unstyled markdown.
     /// See perf #9 in the holistic review.
     pending_full_parse: Option<u64>,
+    /// True while `parsed_buffer` is an unstyled `placeholder` awaiting
+    /// a background full parse. Forces Gate 1 to skip the incremental
+    /// splice path (the placeholder's all-`Plain` kinds would defeat the
+    /// structural guards and accept a wrong splice). Cleared by
+    /// `install_full_parse` or any synchronous full parse.
+    placeholder_active: bool,
 }
 
 /// True when `KIMUN_VIEW_VERIFY_INCREMENTAL=1` is set. Reads the
@@ -271,6 +277,7 @@ impl MarkdownEditorView {
             last_splice_path: None,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
             pending_full_parse: None,
+            placeholder_active: false,
         }
     }
 
@@ -302,6 +309,7 @@ impl MarkdownEditorView {
             return; // stale
         }
         self.parsed_buffer = buf;
+        self.placeholder_active = false;
         self.fence_ranges =
             super::parse_incremental::fence_ranges_from_kinds(&self.parsed_buffer.kinds);
         // Force Gate 2 full rebuild on the next update: the
@@ -332,7 +340,12 @@ impl MarkdownEditorView {
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
         if generation != self.last_seen_generation {
-            self.last_text_change = match self.try_incremental_parse(lines, cursor) {
+            let incremental = if self.placeholder_active {
+                None
+            } else {
+                self.try_incremental_parse(lines, cursor)
+            };
+            self.last_text_change = match incremental {
                 Some((range, slice, path)) => {
                     self.parsed_buffer.splice(range.clone(), slice);
                     self.last_parse_was_incremental = true;
@@ -353,8 +366,10 @@ impl MarkdownEditorView {
                         // styling is missing for one frame.
                         self.parsed_buffer = ParsedBuffer::placeholder(lines);
                         self.pending_full_parse = Some(generation);
+                        self.placeholder_active = true;
                     } else {
                         self.parsed_buffer = ParsedBuffer::parse(lines);
+                        self.placeholder_active = false;
                     }
                     self.last_parse_was_incremental = false;
                     self.last_splice_path = None;
@@ -1666,6 +1681,12 @@ mod tests {
         let mut v = MarkdownEditorView::new();
         let mut lines: Vec<String> = (0..1000).map(|i| format!("paragraph {i}")).collect();
         update_view(&mut v, &lines, (500, 0), rect(40), 1, None);
+        // The 1000-line buffer takes the async-parse placeholder path on
+        // first parse. Simulate the background task completing before the
+        // edit so the next update splices against a real (non-placeholder)
+        // buffer; Gate 1 deliberately refuses to incrementally splice the
+        // all-`Plain` placeholder.
+        v.install_full_parse(1, ParsedBuffer::parse(&lines));
 
         // Single-char insert at row 500.
         lines[500].push('x');
@@ -1681,6 +1702,40 @@ mod tests {
             v.last_parse_was_incremental,
             "single-char paragraph edit should take incremental path"
         );
+    }
+
+    #[test]
+    fn edit_while_placeholder_active_refuses_incremental_and_rearms() {
+        // Regression: a large-buffer edit installs an unstyled placeholder
+        // (all-`Plain` kinds) pending a background full parse. If the next
+        // edit lands before the parse completes, Gate 1 must NOT splice the
+        // placeholder — its all-`Plain` kinds defeat the structural guards
+        // and would lock in a wrong parse that install_full_parse then drops
+        // as stale. The edit must re-install a placeholder + re-arm pending.
+        let mut v = MarkdownEditorView::new();
+        let mut lines: Vec<String> = (0..1000).map(|i| format!("paragraph {i}")).collect();
+        update_view(&mut v, &lines, (0, 0), rect(40), 1, None);
+        assert!(v.placeholder_active, "first parse installs placeholder");
+        assert_eq!(v.take_pending_full_parse(), Some(1));
+
+        // Edit before the background parse resolves the placeholder.
+        lines[0].push_str("```");
+        update_view(&mut v, &lines, (0, lines[0].len()), rect(40), 2, None);
+        assert!(
+            !v.last_parse_was_incremental,
+            "must not splice the placeholder"
+        );
+        assert!(v.placeholder_active, "still placeholder pending parse");
+        assert_eq!(
+            v.take_pending_full_parse(),
+            Some(2),
+            "re-armed for new generation"
+        );
+
+        // Background parse for the latest generation completes.
+        v.install_full_parse(2, ParsedBuffer::parse(&lines));
+        assert!(!v.placeholder_active, "placeholder cleared on install");
+        assert_eq!(v.parsed_buffer.kinds, ParsedBuffer::parse(&lines).kinds);
     }
 
     #[test]
