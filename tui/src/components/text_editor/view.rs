@@ -53,7 +53,8 @@ pub struct MarkdownEditorView {
     pub last_cursor_screen: Option<(u16, u16)>,
     /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
     /// invocations across `render()`, cursor placement, and click mapping.
-    parsed_buffer: ParsedBuffer,
+    /// Either a Real or Placeholder parse — see [`ParseState`].
+    parse_state: ParseState,
     /// Last `text_revision` seen — gates the lines clone and parse-cache rebuild.
     /// Cursor-only moves do not bump `text_revision`, so navigating with the
     /// arrow keys reuses the parse cache instead of re-running pulldown-cmark
@@ -88,20 +89,6 @@ pub struct MarkdownEditorView {
     /// Tracks how Gate 1 changed (or did not change) the parse caches.
     /// Gate 2 reads this to decide the scope of rendered_cache rebuild.
     last_text_change: TextChangeKind,
-    /// `Some(generation)` when Gate 1 needed a full rebuild on a
-    /// large buffer and installed a `placeholder` `ParsedBuffer`
-    /// instead of running the full parse synchronously. The owning
-    /// component reads this via `take_pending_full_parse` and spawns
-    /// the parse on a background tokio task — typing stays
-    /// responsive at the cost of one frame of unstyled markdown.
-    /// See perf #9 in the holistic review.
-    pending_full_parse: Option<u64>,
-    /// True while `parsed_buffer` is an unstyled `placeholder` awaiting
-    /// a background full parse. Forces Gate 1 to skip the incremental
-    /// splice path (the placeholder's all-`Plain` kinds would defeat the
-    /// structural guards and accept a wrong splice). Cleared by
-    /// `install_full_parse` or any synchronous full parse.
-    placeholder_active: bool,
 }
 
 /// True when `KIMUN_VIEW_VERIFY_INCREMENTAL=1` is set. Reads the
@@ -133,6 +120,58 @@ pub enum SplicePath {
     Heuristic,
 }
 
+/// The editor's per-buffer parse cache: either a fully-styled **Real
+/// parse** or an unstyled **Placeholder parse** awaiting a background
+/// full parse (see `CONTEXT.md`). Modelling the distinction as a type
+/// makes the wrong-splice hazard unrepresentable: splicing is only
+/// reachable through [`ParseState::splice_real`], whose `Placeholder`
+/// arm is unreachable because Gate 1 declines the incremental path for
+/// placeholders. The placeholder's all-`Plain` line kinds would
+/// otherwise defeat the structural guards and accept a wrong splice.
+#[derive(Clone)]
+enum ParseState {
+    Real(ParsedBuffer),
+    /// `generation` is the `content_revision` the placeholder was
+    /// installed for — handed to the owning component so it knows which
+    /// buffer to parse on the background task. `spawned` flips true once
+    /// that task has been requested, so `take_pending_full_parse` hands
+    /// the generation out exactly once.
+    Placeholder {
+        buf: ParsedBuffer,
+        generation: u64,
+        spawned: bool,
+    },
+}
+
+impl ParseState {
+    /// State-agnostic buffer access. Render and Gate 2 read the buffer
+    /// in both states — the placeholder has valid row counts, so the
+    /// downstream path stays in-bounds; only the markdown styling is
+    /// missing while it is a placeholder.
+    fn buf(&self) -> &ParsedBuffer {
+        match self {
+            Self::Real(b) | Self::Placeholder { buf: b, .. } => b,
+        }
+    }
+
+    fn is_placeholder(&self) -> bool {
+        matches!(self, Self::Placeholder { .. })
+    }
+
+    /// Splice an incremental slice into a Real parse. Called only after
+    /// the `is_placeholder()` gate in Gate 1 has declined the
+    /// incremental path for placeholders, so the `Placeholder` arm is
+    /// unreachable.
+    fn splice_real(&mut self, range: std::ops::Range<usize>, slice: ParsedBuffer) {
+        match self {
+            Self::Real(b) => b.splice(range, slice),
+            Self::Placeholder { .. } => {
+                debug_assert!(false, "splice on placeholder parse");
+            }
+        }
+    }
+}
+
 impl MarkdownEditorView {
     pub fn new() -> Self {
         Self {
@@ -142,7 +181,9 @@ impl MarkdownEditorView {
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
             last_cursor_screen: None,
-            parsed_buffer: ParsedBuffer::placeholder(&[]),
+            // Empty buffer, spliceable — preserves the previous
+            // `placeholder_active: false` initial state.
+            parse_state: ParseState::Real(ParsedBuffer::placeholder(&[])),
             last_seen_generation: u64::MAX, // force rebuild on first update
             last_layout_generation: u64::MAX,
             last_layout_width: 0,
@@ -153,8 +194,6 @@ impl MarkdownEditorView {
             last_parse_was_incremental: false,
             last_splice_path: None,
             last_text_change: TextChangeKind::Full, // first update is a full rebuild
-            pending_full_parse: None,
-            placeholder_active: false,
         }
     }
 
@@ -173,7 +212,16 @@ impl MarkdownEditorView {
     /// responsible for calling `install_full_parse` when the task
     /// completes.
     pub fn take_pending_full_parse(&mut self) -> Option<u64> {
-        self.pending_full_parse.take()
+        if let ParseState::Placeholder {
+            generation, spawned, ..
+        } = &mut self.parse_state
+        {
+            if !*spawned {
+                *spawned = true;
+                return Some(*generation);
+            }
+        }
+        None
     }
 
     /// Install the result of a background full parse. No-op when
@@ -185,10 +233,9 @@ impl MarkdownEditorView {
         if generation != self.last_seen_generation {
             return; // stale
         }
-        self.parsed_buffer = buf;
-        self.placeholder_active = false;
+        self.parse_state = ParseState::Real(buf);
         self.fence_ranges =
-            super::parse_incremental::fence_ranges_from_kinds(&self.parsed_buffer.kinds);
+            super::parse_incremental::fence_ranges_from_kinds(&self.parse_state.buf().kinds);
         // Force Gate 2 full rebuild on the next update: the
         // placeholder's all-Plain kinds produced different fence
         // ranges and rendered masks than the real parse will.
@@ -216,14 +263,14 @@ impl MarkdownEditorView {
 
         // Gate 1: content changed — rebuild parse cache and snapshots.
         if generation != self.last_seen_generation {
-            let incremental = if self.placeholder_active {
+            let incremental = if self.parse_state.is_placeholder() {
                 None
             } else {
                 self.try_incremental_parse(lines, cursor)
             };
             self.last_text_change = match incremental {
                 Some((range, slice, path)) => {
-                    self.parsed_buffer.splice(range.clone(), slice);
+                    self.parse_state.splice_real(range.clone(), slice);
                     self.last_parse_was_incremental = true;
                     self.last_splice_path = Some(path);
                     TextChangeKind::Incremental(range)
@@ -240,12 +287,13 @@ impl MarkdownEditorView {
                         // `lines`, so the downstream Gate 2 / render
                         // path stays in-bounds; only the markdown
                         // styling is missing for one frame.
-                        self.parsed_buffer = ParsedBuffer::placeholder(lines);
-                        self.pending_full_parse = Some(generation);
-                        self.placeholder_active = true;
+                        self.parse_state = ParseState::Placeholder {
+                            buf: ParsedBuffer::placeholder(lines),
+                            generation,
+                            spawned: false,
+                        };
                     } else {
-                        self.parsed_buffer = ParsedBuffer::parse(lines);
-                        self.placeholder_active = false;
+                        self.parse_state = ParseState::Real(ParsedBuffer::parse(lines));
                     }
                     self.last_parse_was_incremental = false;
                     self.last_splice_path = None;
@@ -256,24 +304,24 @@ impl MarkdownEditorView {
             if self.last_parse_was_incremental && verify_incremental_enabled() {
                 let fresh = ParsedBuffer::parse(lines);
                 assert_eq!(
-                    self.parsed_buffer.kinds, fresh.kinds,
+                    self.parse_state.buf().kinds, fresh.kinds,
                     "incremental kinds diverge from full parse at generation={generation}"
                 );
                 assert_eq!(
-                    self.parsed_buffer.lazy_depth, fresh.lazy_depth,
+                    self.parse_state.buf().lazy_depth, fresh.lazy_depth,
                     "incremental lazy_depth diverges from full parse at generation={generation}"
                 );
                 assert_eq!(
-                    self.parsed_buffer.reset_boundaries, fresh.reset_boundaries,
+                    self.parse_state.buf().reset_boundaries, fresh.reset_boundaries,
                     "incremental reset_boundaries diverge from full parse at generation={generation}"
                 );
                 assert_eq!(
-                    self.parsed_buffer.lines.len(),
+                    self.parse_state.buf().lines.len(),
                     fresh.lines.len(),
                     "incremental lines.len() diverges from full parse at generation={generation}"
                 );
                 for (i, (got, exp)) in self
-                    .parsed_buffer
+                    .parse_state.buf()
                     .lines
                     .iter()
                     .zip(fresh.lines.iter())
@@ -283,7 +331,7 @@ impl MarkdownEditorView {
                 }
             }
             self.fence_ranges =
-                super::parse_incremental::fence_ranges_from_kinds(&self.parsed_buffer.kinds);
+                super::parse_incremental::fence_ranges_from_kinds(&self.parse_state.buf().kinds);
             // Incremental update of `lines_snapshot` mirrors the parse
             // path: on the splice path only the rows in `range` can
             // have changed (try_incremental_parse already bails when
@@ -328,12 +376,12 @@ impl MarkdownEditorView {
         // Horizontal cursor movement within the same element (or plain text with no elements)
         // does not change any wrap boundary — no recompute needed.
         let new_expanded = self
-            .parsed_buffer
+            .parse_state.buf()
             .lines
             .get(cursor.0)
             .and_then(|p| p.elem_at(cursor.1));
         let old_expanded = self
-            .parsed_buffer
+            .parse_state.buf()
             .lines
             .get(self.last_layout_cursor.0)
             .and_then(|p| p.elem_at(self.last_layout_cursor.1));
@@ -407,7 +455,7 @@ impl MarkdownEditorView {
                             let cursor_col = if i == cursor.0 { Some(cursor.1) } else { None };
                             MarkdownSpanner::visible_positions_with(
                                 l,
-                                &self.parsed_buffer.lines[i],
+                                &self.parse_state.buf().lines[i],
                                 cursor_col,
                                 force_raw,
                             )
@@ -427,7 +475,7 @@ impl MarkdownEditorView {
                         };
                         let new_entry = MarkdownSpanner::visible_positions_with(
                             &lines[row],
-                            &self.parsed_buffer.lines[row],
+                            &self.parse_state.buf().lines[row],
                             cursor_col,
                             force_raw,
                         );
@@ -527,14 +575,14 @@ impl MarkdownEditorView {
         };
         use super::widener_metrics::{BailReason, METRICS, SuccessPath};
 
-        if self.parsed_buffer.lines.is_empty() {
+        if self.parse_state.buf().lines.is_empty() {
             return None; // First parse — no snapshot to diff against. Uncategorised.
         }
         // Line count changes (insertions/deletions) require a full rebuild:
         // the widened range covers the same number of lines in the new buffer
         // as in the old kinds array, so a splice cannot reconcile the length
         // mismatch.
-        if lines.len() != self.parsed_buffer.lines.len() {
+        if lines.len() != self.parse_state.buf().lines.len() {
             return METRICS.bail(BailReason::LineCountChange);
         }
         let Some(damaged) = compute_damage_range(&self.lines_snapshot, lines, cursor.0) else {
@@ -546,7 +594,7 @@ impl MarkdownEditorView {
         // fence's extent beyond the widening window. Same for setext
         // underlines. Conservative fallback to full parse for correctness.
         for row in damaged.clone() {
-            let old_kind = self.parsed_buffer.kinds[row];
+            let old_kind = self.parse_state.buf().kinds[row];
             let old_line = self.lines_snapshot[row].as_str();
             let new_line = lines[row].as_str();
 
@@ -606,7 +654,7 @@ impl MarkdownEditorView {
             // doesn't catch. The deeper fix is a post-widening sanity
             // check on `widened.end + 1` — see the design doc's
             // "Blockquote/Plain/ListContinuation unlocks" follow-up.
-            let lazy = &self.parsed_buffer.lazy_depth;
+            let lazy = &self.parse_state.buf().lazy_depth;
             if lazy.is_empty() {
                 // Defensive: invariant violation (lazy_depth.len() should
                 // match lines.len()). Count as KindGuard to keep the
@@ -671,9 +719,9 @@ impl MarkdownEditorView {
             let new_blank = new_line.trim().is_empty();
             if old_blank != new_blank {
                 let above_non_blank = row > 0
-                    && !matches!(self.parsed_buffer.kinds[row - 1], LineConstructKind::Blank);
-                let below_non_blank = row + 1 < self.parsed_buffer.kinds.len()
-                    && !matches!(self.parsed_buffer.kinds[row + 1], LineConstructKind::Blank);
+                    && !matches!(self.parse_state.buf().kinds[row - 1], LineConstructKind::Blank);
+                let below_non_blank = row + 1 < self.parse_state.buf().kinds.len()
+                    && !matches!(self.parse_state.buf().kinds[row + 1], LineConstructKind::Blank);
                 if above_non_blank || below_non_blank {
                     return METRICS.bail(BailReason::BlankTransition);
                 }
@@ -705,13 +753,13 @@ impl MarkdownEditorView {
         // reparse span (~11 vs ~2 rows — both far under the 256 cap).
         let mut splice_path = SplicePath::Strict;
         let widened = match expand_to_reset_boundary(
-            &self.parsed_buffer.reset_boundaries,
-            self.parsed_buffer.lines.len(),
+            &self.parse_state.buf().reset_boundaries,
+            self.parse_state.buf().lines.len(),
             damaged.clone(),
         ) {
             WidenResult::Widened(r) => r,
             WidenResult::FullRebuild => {
-                match widen_to_safe(&self.parsed_buffer.kinds, damaged.clone()) {
+                match widen_to_safe(&self.parse_state.buf().kinds, damaged.clone()) {
                     WidenResult::Widened(r) => {
                         splice_path = SplicePath::Heuristic;
                         r
@@ -744,13 +792,13 @@ impl MarkdownEditorView {
                     continue; // Damaged row: kind change is expected/irrelevant.
                 }
                 let idx = row - widened.start;
-                if slice.kinds[idx] != self.parsed_buffer.kinds[row] {
+                if slice.kinds[idx] != self.parse_state.buf().kinds[row] {
                     return METRICS.bail(BailReason::VerifyFailed);
                 }
-                if slice.lines[idx].elements.len() != self.parsed_buffer.lines[row].elements.len() {
+                if slice.lines[idx].elements.len() != self.parse_state.buf().lines[row].elements.len() {
                     return METRICS.bail(BailReason::VerifyFailed);
                 }
-                if slice.lines[idx].content_vis != self.parsed_buffer.lines[row].content_vis {
+                if slice.lines[idx].content_vis != self.parse_state.buf().lines[row].content_vis {
                     return METRICS.bail(BailReason::VerifyFailed);
                 }
             }
@@ -774,7 +822,7 @@ impl MarkdownEditorView {
         let vlines = self.layout.visual_lines();
 
         let selection = self.selection;
-        let parsed_lines = &self.parsed_buffer.lines;
+        let parsed_lines = &self.parse_state.buf().lines;
         let fence_ranges = &self.fence_ranges;
 
         let visible: Vec<Line> = vlines
@@ -862,12 +910,12 @@ impl MarkdownEditorView {
         // there to absorb stale Nvim snapshots where cursor outran
         // lines, which the snapshot invariant now rules out.
         self.last_cursor_screen = None;
-        if focused && !self.parsed_buffer.lines.is_empty() && !self.layout.visual_lines().is_empty()
+        if focused && !self.parse_state.buf().lines.is_empty() && !self.layout.visual_lines().is_empty()
         {
             let cursor_vrow = self.cursor_vrow;
             if cursor_vrow >= scroll && cursor_vrow < scroll + height {
                 let vl = &self.layout.visual_lines()[cursor_vrow];
-                let parsed = &self.parsed_buffer.lines[cursor.0];
+                let parsed = &self.parse_state.buf().lines[cursor.0];
                 // Snapshot invariant + outer `!is_empty()` guard: cursor.0
                 // is in-bounds for `lines_snapshot` here.
                 let logical_line = lines[cursor.0].as_str();
@@ -891,12 +939,12 @@ impl MarkdownEditorView {
     /// Test accessor: the kinds vector of the current parsed buffer.
     /// Used by the proptest harness to assert incremental = full parse.
     pub fn parsed_buffer_kinds(&self) -> &[super::parse_incremental::LineConstructKind] {
-        &self.parsed_buffer.kinds
+        &self.parse_state.buf().kinds
     }
 
     /// Test accessor: the parsed lines of the current parsed buffer.
     pub fn parsed_buffer_lines(&self) -> &[super::markdown::ParsedLine] {
-        &self.parsed_buffer.lines
+        &self.parse_state.buf().lines
     }
 
     /// Test accessor: the rendered-position bitmask cache.
@@ -936,7 +984,7 @@ impl MarkdownEditorView {
         let vl = &vlines[vrow];
         let row_u16 = vl.logical_row.min(u16::MAX as usize) as u16;
         let logical_line = self.lines_snapshot[vl.logical_row].as_str();
-        let parsed = &self.parsed_buffer.lines[vl.logical_row];
+        let parsed = &self.parse_state.buf().lines[vl.logical_row];
         let force_raw = self.is_in_code_block(vl.logical_row);
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
@@ -1288,7 +1336,7 @@ mod tests {
         ];
         update_view(&mut v, &lines, (0, 0), rect(20), 1, None);
         assert_eq!(
-            v.parsed_buffer.lazy_depth,
+            v.parse_state.buf().lazy_depth,
             vec![1, 1, 1],
             "precondition: parsed_buffer.lazy_depth must mark all three rows as inside the block"
         );
@@ -1348,7 +1396,7 @@ mod tests {
         let mut v = MarkdownEditorView::new();
         let lines = vec!["hello".to_string(), "**bold**".to_string()];
         update_view(&mut v, &lines, (0, 0), rect(10), 1, None);
-        assert_eq!(v.parsed_buffer.lines.len(), 2);
+        assert_eq!(v.parse_state.buf().lines.len(), 2);
     }
 
     #[test]
@@ -1454,8 +1502,8 @@ mod tests {
 
         // The spliced result must equal a fresh full parse.
         let fresh = ParsedBuffer::parse(&lines);
-        assert_eq!(v.parsed_buffer.lines.len(), fresh.lines.len());
-        assert_eq!(v.parsed_buffer.kinds, fresh.kinds);
+        assert_eq!(v.parse_state.buf().lines.len(), fresh.lines.len());
+        assert_eq!(v.parse_state.buf().kinds, fresh.kinds);
         // And the incremental path was actually taken.
         assert!(
             v.last_parse_was_incremental,
@@ -1474,7 +1522,10 @@ mod tests {
         let mut v = MarkdownEditorView::new();
         let mut lines: Vec<String> = (0..1000).map(|i| format!("paragraph {i}")).collect();
         update_view(&mut v, &lines, (0, 0), rect(40), 1, None);
-        assert!(v.placeholder_active, "first parse installs placeholder");
+        assert!(
+            v.parse_state.is_placeholder(),
+            "first parse installs placeholder"
+        );
         assert_eq!(v.take_pending_full_parse(), Some(1));
 
         // Edit before the background parse resolves the placeholder.
@@ -1484,7 +1535,10 @@ mod tests {
             !v.last_parse_was_incremental,
             "must not splice the placeholder"
         );
-        assert!(v.placeholder_active, "still placeholder pending parse");
+        assert!(
+            v.parse_state.is_placeholder(),
+            "still placeholder pending parse"
+        );
         assert_eq!(
             v.take_pending_full_parse(),
             Some(2),
@@ -1493,8 +1547,26 @@ mod tests {
 
         // Background parse for the latest generation completes.
         v.install_full_parse(2, ParsedBuffer::parse(&lines));
-        assert!(!v.placeholder_active, "placeholder cleared on install");
-        assert_eq!(v.parsed_buffer.kinds, ParsedBuffer::parse(&lines).kinds);
+        assert!(
+            !v.parse_state.is_placeholder(),
+            "placeholder cleared on install"
+        );
+        assert_eq!(v.parse_state.buf().kinds, ParsedBuffer::parse(&lines).kinds);
+    }
+
+    #[test]
+    #[should_panic(expected = "splice on placeholder parse")]
+    fn splice_real_on_placeholder_is_rejected() {
+        // The type makes the wrong-splice hazard unrepresentable on the
+        // Gate 1 path; this guards the `ParseState::splice_real` contract
+        // directly so a future caller can't route a splice into a
+        // placeholder without tripping the assert.
+        let mut state = ParseState::Placeholder {
+            buf: ParsedBuffer::placeholder(&["x".to_string()]),
+            generation: 1,
+            spawned: false,
+        };
+        state.splice_real(0..1, ParsedBuffer::parse(&["y".to_string()]));
     }
 
     #[test]
@@ -1514,7 +1586,7 @@ mod tests {
 
         let fresh = ParsedBuffer::parse(&lines);
         assert_eq!(
-            v.parsed_buffer.kinds, fresh.kinds,
+            v.parse_state.buf().kinds, fresh.kinds,
             "spliced kinds must equal fresh full parse"
         );
         // The unclosed fence at row 350 widens to end-of-buffer (~351 lines,
@@ -1557,14 +1629,14 @@ mod tests {
         );
         // Placeholder kinds: every row is Plain — no fence detection yet.
         assert!(
-            v.parsed_buffer
+            v.parse_state.buf()
                 .kinds
                 .iter()
                 .all(|k| matches!(k, super::super::parse_incremental::LineConstructKind::Plain)),
             "placeholder must classify every row as Plain"
         );
         assert_eq!(
-            v.parsed_buffer.lines.len(),
+            v.parse_state.buf().lines.len(),
             lines.len(),
             "placeholder row count must match input"
         );
@@ -1576,21 +1648,21 @@ mod tests {
         v.install_full_parse(generation, real);
         let fresh = ParsedBuffer::parse(&lines);
         assert_eq!(
-            v.parsed_buffer.kinds, fresh.kinds,
+            v.parse_state.buf().kinds, fresh.kinds,
             "post-install kinds must match fresh full parse"
         );
     }
 
     fn full_rebuild_equals_view_state(v: &MarkdownEditorView, lines: &[String]) {
         let fresh = ParsedBuffer::parse(lines);
-        assert_eq!(v.parsed_buffer.kinds, fresh.kinds, "kinds diverge");
+        assert_eq!(v.parse_state.buf().kinds, fresh.kinds, "kinds diverge");
         assert_eq!(
-            v.parsed_buffer.lines.len(),
+            v.parse_state.buf().lines.len(),
             fresh.lines.len(),
             "row count diverge"
         );
         for (i, (got, exp)) in v
-            .parsed_buffer
+            .parse_state.buf()
             .lines
             .iter()
             .zip(fresh.lines.iter())
@@ -1820,7 +1892,7 @@ mod tests {
 
         // Pre-condition: no Label elements in the fence interior.
         for row in 3..5 {
-            let has_label = v.parsed_buffer.lines[row]
+            let has_label = v.parse_state.buf().lines[row]
                 .elements
                 .iter()
                 .any(|e| matches!(e.kind, ElementKind::Label));
@@ -1837,7 +1909,7 @@ mod tests {
 
         // Post-condition: still no Label elements in the fence interior.
         for row in 3..5 {
-            let has_label = v.parsed_buffer.lines[row]
+            let has_label = v.parse_state.buf().lines[row]
                 .elements
                 .iter()
                 .any(|e| matches!(e.kind, ElementKind::Label));
