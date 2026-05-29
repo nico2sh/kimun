@@ -115,8 +115,11 @@ pub struct ParsedLine {
     /// chars are hidden (`content_vis = false`) and replaced visually by
     /// `placeholder` when rendering.
     pub image_placeholders: Vec<ImagePlaceholder>,
-    /// Blockquote nesting depth (number of leading `>`), or `None` if this
-    /// line is not a blockquote. Set by `ParsedBuffer::parse`'s post-pass.
+    /// Blockquote nesting depth (number of Blockquote elements covering this
+    /// line), or `None` if this line is not part of a blockquote. Derived from
+    /// pulldown's structure so lazy-continuation lines (quote text with no `>`
+    /// prefix) and nested quotes report the correct depth. Set by
+    /// `ParsedBuffer::parse`.
     blockquote_depth: Option<u8>,
 }
 
@@ -387,6 +390,32 @@ mod tests {
     }
     fn text(spans: &[Span]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn blockquote_lazy_continuation_carries_depth() {
+        // A line with no leading `>` that lazily continues a blockquote
+        // (CommonMark §5.1) is part of the quote: pulldown spans the
+        // Blockquote element across it, so it must report the quote's depth
+        // and get the bar gutter — not just the quoted text color.
+        let buf = ParsedBuffer::parse(&["> first".to_string(), "second".to_string()]);
+        assert_eq!(buf.lines[0].blockquote_depth(), Some(1));
+        assert_eq!(
+            buf.lines[1].blockquote_depth(),
+            Some(1),
+            "lazy continuation line must carry the blockquote depth"
+        );
+
+        // Nested lazy continuation keeps the full depth.
+        let nested = ParsedBuffer::parse(&[">> a".to_string(), "b".to_string()]);
+        assert_eq!(nested.lines[0].blockquote_depth(), Some(2));
+        assert_eq!(nested.lines[1].blockquote_depth(), Some(2));
+
+        // A blank line ends the quote: the following line is NOT a continuation.
+        let ended =
+            ParsedBuffer::parse(&["> first".to_string(), String::new(), "plain".to_string()]);
+        assert_eq!(ended.lines[0].blockquote_depth(), Some(1));
+        assert_eq!(ended.lines[2].blockquote_depth(), None);
     }
 
     #[test]
