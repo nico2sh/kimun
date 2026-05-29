@@ -45,6 +45,11 @@ pub struct MarkdownEditorView {
     /// does a cheap point lookup against this list per row so all fenced
     /// blocks render `force_raw` regardless of where the cursor is.
     fence_ranges: Vec<Range<usize>>,
+    /// Per-logical-row code-box width (display cols), or `None` when the row
+    /// is not in a code block. All rows of one block share the block's
+    /// widest-rendered-line width, capped at the editor width. Rebuilt in
+    /// `update()` whenever text or width changes.
+    code_box_width: Vec<Option<u16>>,
     /// Cursor's last on-screen position (col, row), or `None` when the
     /// cursor was scrolled off-screen or the view was unfocused at the
     /// time of the previous `render`. Used as the anchor for floating
@@ -180,6 +185,7 @@ impl MarkdownEditorView {
             lines_snapshot: Vec::new(),
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
+            code_box_width: Vec::new(),
             last_cursor_screen: None,
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
@@ -557,6 +563,7 @@ impl MarkdownEditorView {
                     }
                 }
             }
+            self.rebuild_code_box_width(lines, rect.width);
             self.last_layout_generation = generation;
             self.last_layout_width = rect.width;
             self.last_layout_cursor = cursor;
@@ -980,6 +987,11 @@ impl MarkdownEditorView {
         &self.rendered_cache
     }
 
+    #[cfg(test)]
+    pub(crate) fn code_box_width_for_testing(&self) -> &[Option<u16>] {
+        &self.code_box_width
+    }
+
     fn is_in_code_block(&self, row: usize) -> bool {
         // Every line inside any fenced block renders force-raw (no markdown
         // re-styling, distinct fg color). Previously this checked only the
@@ -987,6 +999,31 @@ impl MarkdownEditorView {
         // the buffer looked like plain text until the cursor moved into
         // them.
         self.fence_ranges.iter().any(|r| r.contains(&row))
+    }
+
+    /// Rebuild `code_box_width` from the current parse kinds and snapshot
+    /// lines. Box width per block = max rendered display width of its lines,
+    /// capped at `width`.
+    fn rebuild_code_box_width(&mut self, lines: &[String], width: u16) {
+        let mut out = vec![None; lines.len()];
+        let ranges = super::parse_incremental::code_block_ranges_from_kinds(
+            &self.parse_state.buf().kinds,
+        );
+        for r in ranges {
+            let mut max_w = 0usize;
+            for row in r.clone() {
+                if let Some(line) = lines.get(row) {
+                    max_w = max_w.max(super::markdown::raw_display_width(line));
+                }
+            }
+            let boxed = (max_w.min(width as usize)) as u16;
+            for row in r {
+                if row < out.len() {
+                    out[row] = Some(boxed);
+                }
+            }
+        }
+        self.code_box_width = out;
     }
 
     /// Markdown-aware mouse click: maps a rendered screen column to
@@ -1158,6 +1195,43 @@ mod tests {
         };
         let snap = super::super::snapshot::EditorSnapshot::borrowed(lines, clamped, rev);
         v.update(&snap, rect, selection);
+    }
+
+    /// Build a freshly-updated view from `lines` with the cursor at
+    /// `cursor` and the given editor `width`, using the real snapshot +
+    /// `update()` path. Height is fixed at 24.
+    fn make_view_for_lines(
+        lines: &[String],
+        cursor: (usize, usize),
+        width: u16,
+    ) -> MarkdownEditorView {
+        let mut v = MarkdownEditorView::new();
+        let r = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height: 24,
+        };
+        update_view(&mut v, lines, cursor, r, 1, None);
+        v
+    }
+
+    #[test]
+    fn code_box_width_is_block_max_capped_to_width() {
+        let lines = vec![
+            "```".to_string(),
+            "let x = 1;".to_string(),    // 10
+            "let yy = 222;".to_string(), // 13 (widest)
+            "```".to_string(),
+            "plain".to_string(),
+        ];
+        let view = make_view_for_lines(&lines, (0, 0), 80); // width 80
+        let w = view.code_box_width_for_testing();
+        assert_eq!(w[0], Some(13));
+        assert_eq!(w[1], Some(13));
+        assert_eq!(w[2], Some(13));
+        assert_eq!(w[3], Some(13));
+        assert_eq!(w[4], None);
     }
 
     #[test]
