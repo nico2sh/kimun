@@ -539,6 +539,19 @@ impl ParsedBuffer {
                 }
             }
 
+            // Blockquote depth = number of Blockquote elements covering this
+            // line. Derived from pulldown's structure (via `emit_span`) rather
+            // than counting leading `>`, so lazy-continuation lines (CommonMark
+            // §5.1 — quote text with no `>` prefix) and nested quotes report the
+            // correct depth and get the bar gutter, not just the quote color.
+            let blockquote_depth = {
+                let n = els
+                    .iter()
+                    .filter(|e| e.kind == ElementKind::Blockquote)
+                    .count();
+                (n > 0).then_some(n.min(u8::MAX as usize) as u8)
+            };
+
             out.push(ParsedLine {
                 elements: els,
                 content_vis: cv,
@@ -546,7 +559,7 @@ impl ParsedBuffer {
                 elem_index,
                 list_sigil_end: list_sigil_end[row],
                 image_placeholders,
-                blockquote_depth: None,
+                blockquote_depth,
             });
         }
 
@@ -571,9 +584,6 @@ impl ParsedBuffer {
             }
             if depth > 0 {
                 kinds[row] = LineConstructKind::Blockquote(depth);
-                if let Some(pl) = out.get_mut(row) {
-                    pl.blockquote_depth = Some(depth);
-                }
             }
         }
 
