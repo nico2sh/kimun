@@ -362,8 +362,7 @@ mod tests {
         // `[[`/`#` opener, so the veto is never reached and the
         // (expensive in the real impl) zone query must not run.
         let mut o = CountingOracle { calls: 0 };
-        let r =
-            detect_trigger_with_oracle("hello world", 11, TriggerOptions::default(), &mut o);
+        let r = detect_trigger_with_oracle("hello world", 11, TriggerOptions::default(), &mut o);
         assert!(r.is_none());
         assert_eq!(o.calls, 0, "no opener must not consult the zone oracle");
     }
