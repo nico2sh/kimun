@@ -1107,16 +1107,34 @@ impl MarkdownEditorView {
         let logical_line = self.lines_snapshot[vl.logical_row].as_str();
         let parsed = &self.parse_state.buf().lines[vl.logical_row];
         let force_raw = self.is_in_code_block(vl.logical_row);
+        let gutter = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0);
+        let vcol = vcol.saturating_sub(gutter);
+        // When a blockquote gutter is drawn (gutter > 0), the ">" and space
+        // sigil chars are hidden and replaced by the "│ " bar. On the first
+        // visual line, skip those hidden sigil chars so that rendered_col 0
+        // maps to the first content char, not to the hidden ">".
+        let effective_start_col = if gutter > 0 && vl.is_first_visual_line {
+            parsed
+                .blockquote_sigil_end()
+                .unwrap_or(vl.start_col)
+        } else {
+            vl.start_col
+        };
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
             parsed,
-            vl.start_col,
+            effective_start_col,
             vcol,
             vl.is_first_visual_line,
             force_raw,
         );
         let col = logical_col.min(u16::MAX as usize) as u16;
         (row_u16, col)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn click_to_logical_for_testing(&self, vrow: usize, vcol: usize) -> (u16, u16) {
+        self.click_to_logical_u16(vrow, vcol)
     }
 }
 
@@ -2356,5 +2374,16 @@ mod tests {
         assert_eq!(total, 5); // padded to box width
         let bg = theme.code_bg.to_ratatui();
         assert!(out.iter().all(|s| s.style.bg == Some(bg)));
+    }
+
+    #[test]
+    fn click_on_barred_blockquote_maps_past_gutter() {
+        // Blockquote on row 0 is NOT the cursor row (cursor parked on row 1),
+        // so row 0 renders "│ hello". vrow 0 is that row's single visual line.
+        let lines = vec!["> hello".to_string(), "tail".to_string()];
+        let view = make_view_for_lines(&lines, (1, 0), 80);
+        // Click screen col 2 ('h' after the 2-col "│ " gutter) → logical col 2.
+        let (row, col) = view.click_to_logical_for_testing(0, 2);
+        assert_eq!((row, col), (0, 2));
     }
 }
