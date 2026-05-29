@@ -4,6 +4,7 @@ use crate::settings::themes::Theme;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use std::ops::Range;
@@ -884,6 +885,18 @@ impl MarkdownEditorView {
                     theme,
                 );
 
+                // Apply code-block background before selection so selection bg wins on selected text.
+                let spans = if let Some(bw) = self
+                    .code_box_width
+                    .get(vl.logical_row)
+                    .copied()
+                    .flatten()
+                {
+                    apply_code_box(spans, bw, theme)
+                } else {
+                    spans
+                };
+
                 // Apply selection highlight if this visual line is within the selection.
                 let spans = if let Some(((sel_sr, sel_sc), (sel_er, sel_ec))) = selection {
                     let row = vl.logical_row;
@@ -1153,6 +1166,36 @@ fn apply_selection_highlight<'a>(
     }
 
     result
+}
+
+/// Paint `code_bg` behind every span of a code-block visual line and pad the
+/// line with bg-colored spaces up to `box_width` display columns, producing a
+/// solid rectangle hugging the block's widest line. Content already wider than
+/// the box (the box was capped at editor width; wider rows wrap) is left as-is.
+fn apply_code_box<'a>(
+    spans: Vec<ratatui::text::Span<'a>>,
+    box_width: u16,
+    theme: &Theme,
+) -> Vec<ratatui::text::Span<'a>> {
+    use ratatui::text::Span;
+    let bg = theme.code_bg.to_ratatui();
+    let mut width = 0usize;
+    let mut out: Vec<Span<'a>> = spans
+        .into_iter()
+        .map(|s| {
+            width += s.content.width();
+            let style = s.style.bg(bg);
+            Span::styled(s.content, style)
+        })
+        .collect();
+    let target = box_width as usize;
+    if width < target {
+        out.push(Span::styled(
+            " ".repeat(target - width),
+            Style::default().bg(bg),
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -2253,5 +2296,17 @@ mod tests {
             "list-marker removal must NOT take incremental path \
              — looks_like_list_marker flip guard bails first"
         );
+    }
+
+    #[test]
+    fn apply_code_box_sets_bg_and_pads_to_width() {
+        use ratatui::text::Span;
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let spans = vec![Span::raw("ab")]; // 2 cols
+        let out = super::apply_code_box(spans, 5, &theme);
+        let total: usize = out.iter().map(|s| s.content.chars().count()).sum();
+        assert_eq!(total, 5); // padded to box width
+        let bg = theme.code_bg.to_ratatui();
+        assert!(out.iter().all(|s| s.style.bg == Some(bg)));
     }
 }
