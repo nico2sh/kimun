@@ -448,17 +448,31 @@ impl MarkdownSpanner {
         let expanded: Option<usize> = cursor_col.and_then(|c| parsed.elem_at(c));
         let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
         let list_sigil_end = parsed.list_sigil_end();
+        // Reveal the blockquote marker only while the cursor is on this line;
+        // otherwise it stays hidden and the view draws the `│` gutter instead.
+        let blockquote_sigil_end: Option<usize> = if cursor_col.is_some() {
+            parsed.blockquote_sigil_end()
+        } else {
+            None
+        };
 
         (0..total)
             .map(|pos| {
                 let is_content = pos < content_vis.len() && content_vis[pos];
                 let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
                 let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
+                let in_blockquote_sigil =
+                    blockquote_sigil_end.is_some_and(|end| pos < end);
                 let in_any_element = parsed.in_any_element(pos);
                 let in_expanded = expanded.is_some_and(|i| {
                     parsed.elements[i].start_char <= pos && pos < parsed.elements[i].end_char
                 });
-                is_content || in_heading_sigil || in_list_sigil || in_expanded || !in_any_element
+                is_content
+                    || in_heading_sigil
+                    || in_list_sigil
+                    || in_blockquote_sigil
+                    || in_expanded
+                    || !in_any_element
             })
             .collect()
     }
@@ -536,6 +550,31 @@ impl MarkdownSpanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blockquote_marker_visible_only_when_cursor_on_line() {
+        // Cursor on the line → "> " revealed (both chars visible).
+        let with_cursor = MarkdownSpanner::visible_positions("> hi", Some(2), false);
+        assert_eq!(&with_cursor[0..2], &[true, true]);
+
+        // Cursor off the line → "> " hidden (gutter draws the bar instead).
+        let no_cursor = MarkdownSpanner::visible_positions("> hi", None, false);
+        assert_eq!(&no_cursor[0..2], &[false, false]);
+    }
+
+    #[test]
+    fn blockquote_marker_stays_visible_when_cursor_in_inner_element() {
+        // Cursor (col 4) sits inside the bold span of "> **b**". elem_at resolves
+        // to the Bold element (start_char=2, end_char=7), not the line-spanning
+        // Blockquote, so only the new blockquote-sigil reveal keeps the "> "
+        // marker (cols 0,1) visible.
+        //
+        // Parsed: Blockquote [0,7), Bold [2,7); blockquote_sigil_end = Some(4).
+        // Without in_blockquote_sigil: cols 0,1 are in_any_element=true but
+        // in_expanded=false → hidden. With it: pos < 4 → visible.
+        let vis = MarkdownSpanner::visible_positions("> **b**", Some(4), false);
+        assert_eq!(&vis[0..2], &[true, true]);
+    }
 
     #[test]
     fn cursor_advances_over_blockquote_marker_on_its_line() {
