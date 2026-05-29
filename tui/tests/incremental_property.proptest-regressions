@@ -1,0 +1,23 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f6ee8a8a9d669dfc345fc07c2bd6f44427f9c1ca1ba0272ab7233f3234bc2f7a # shrinks to initial = ["```", "", "```", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], row = 36, ch = '0'
+cc 96eb414d5107c00bcfb77def72fe3807df40232deeafe8978e62b3aba523cb80 # shrinks to initial = [">     a", ">  ", "", "> a", "- a", "-  ", "```", "", "", "", "", ""], row = 19, ch = ' '
+cc 44f2cb1ecce6449a01e2f9a23b110f99662865a53a3c4e275409545eb5b7efbf # shrinks to initial = ["> a", "```", "", "```", ">  ", "", "", "", "", "", "> a", "", "> a", ">  ", "", "", "", ">  ", "", "> a", "a", "", "- a", ""], row = 22, ch = 'A'
+cc 447059ed6e60807dfa9a319ab04fe9fdc58998451eefc9d3e0e79273af9cb362 # shrinks to initial = ["", "- a", "", "", "", "", "", "    a", "```", "", "", "", "", "", "", "", "", "> a", "", ">  ", "", "", ""], row = 9, ch = ' '
+cc bfdfd6f37c8c1a94a8e661101272a9ec2abecc09ed683c8c01e93e66eebbfb97 # shrinks to initial = ["", "", "", "", "", "> a", "", "> a", "", "", "- a  ", "a", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], row = 37, ch = ' '
+cc 6804edc110c36721d21668537dcd5d597638d7b4cfb70c840e68d3f7a1c3e5e1 # shrinks to initial = ["-  ", "```", "", "", "", "", "", "", "", "", "", "", "", ""], row = 3, ch = ' '
+cc 5a8fb261da8de9961ce5f0214355be23e6d8f6aeac075e17575313bbd9243f0d # shrinks to initial = ["* a", "- a", "", "    a", "", "", "", "", "", ""], row = 3, ch = '0'
+cc bcfda56b9440b80f8545836e5f59b23646061470ec3b56caa4a209f331eaabf3 # shrinks to initial = ["", "", "", "", "", "", ">     ", "", "", "", "", "", ""], row = 45, ch = 'A'
+cc 59af98b16b9b14e85781dd35d51ef1c4d28953ef593738c38e8f7444d642e99e # shrinks to initial = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "> a", "", ""], row = 15, ch = '?'
+cc 8649f1d04deb57bb22c8182e47bbe66d78c2b3505b23f8e52c43bdbf0099450c # shrinks to initial = ["", "", "", "", "", "", "    ", "    ", "", "", "", "", ""], row = 19, ch = '!'
+cc 1e42f950f6b72c07418e377b788a775e5ebba01fc7efbc91b0cd58ebc110d810 # shrinks to initial = ["", "", "", "", "```", "```", "", "```", "", "```", "", ">  ", "", "", "", "", "", ">  ", "", "", "```", "", "", "", "", "", "", "", "```", "", "", "", "", "", "", "", "# a", "a  ", "", ""], row = 38, ch = '!'
+cc a10747732d5c03caaa578203dadc741217099d72238a25865ff51f224ea72f1e # shrinks to initial = ["a", "", ""], row = 1, ch = '*'
+cc 62105dca56b1be4afb373544f09a2537a2377259f386b9e2d3b7addd3cfa20ae # shrinks to initial = ["> a", "", "", "", "# a", "a", "*     ", "", "", "", "", "", "", "", "", ""], row = 38, ch = '!'
+cc 5c0402238d50c1bce1b928232a72338018aacffa81b58defd88160834743fb0e # shrinks to items = [">  ", ">  ", ">  ", ">  ", "> a", "> a", "> a", "> a", ">     ", ">  "], target_idx = 8, ch = 'a'
+cc 08abb1dbdd3258940346eac02534d4364c21b0fcdc909288c8566ab9936922b1 # shrinks to initial = ["", "> a", "", "", "", "", "", "", ">  ", "> a", "", "```", "", "", "```", "", ">  ", "-  ", ">     a", ">     ", ""], row = 19, ch = '!'
+cc d7ef0e63ea79683cebd95b1f241ef06ace281dbfe07fd0340db498c8972668f4 # shrinks to initial = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], row = 1, ch = '!'
+cc 5f193b1f92f82ca0feaed74775d853c9424c96cf8ad7231e9817e10ad76b31be # shrinks to initial = ["> a", "", ""], row = 2, ch = '!'

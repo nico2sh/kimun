@@ -6,6 +6,7 @@ pub mod event_handler;
 pub mod keys;
 pub mod settings;
 pub mod ui;
+pub mod util;
 
 #[cfg(test)]
 mod test_support;
@@ -203,6 +204,14 @@ async fn main() -> Result<()> {
     )?;
     terminal.show_cursor()?;
 
+    // IMPORTANT: dump via the BIN crate's own module path, not via
+    // `kimun_notes::...`. The lib + bin both declare `pub mod
+    // components;` in this Cargo package, so `widener_metrics::METRICS`
+    // is compiled into TWO separate crates with TWO separate atomic
+    // counters. The bin's runtime code (view.rs) bumps the bin's copy;
+    // `kimun_notes::...` would dump the lib's copy (always zero).
+    crate::components::text_editor::widener_metrics::dump_if_enabled();
+
     // Pin _guard liveness through end of scope, preventing NLL early-drop.
     let _ = &_guard;
     Ok(())
@@ -265,6 +274,11 @@ async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {
 
     screen.on_enter(tx).await;
     app.current_screen = Some(screen);
+    // Bumped here (not at every swap site) because every swap goes through
+    // this function. The main loop watches this counter to break its inner
+    // event drain whenever the screen identity changes, so queued events
+    // from the previous screen instance do not leak into the new one.
+    app.screen_generation = app.screen_generation.wrapping_add(1);
 }
 
 // async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: Box<dyn AppScreen>) {
@@ -293,70 +307,116 @@ where
     loop {
         terminal.draw(|f| ui::ui(f, app))?;
 
-        match events.next().await {
-            AppEvent::Quit => {
-                if let Some(screen) = app.current_screen.as_mut() {
-                    screen.on_exit(&tx).await;
+        // Block until at least one event arrives, then drain everything else
+        // that is already queued before drawing again. `Redraw` events are
+        // coalesced — the top-of-loop draw paints one frame for the whole
+        // batch instead of one frame per pending message. Crossterm input
+        // events never come through the mpsc channel, so a real key event
+        // always forces a fresh `events.next().await` (and therefore a
+        // dedicated draw) on the next iteration.
+        let mut event = events.next().await;
+        loop {
+            match event {
+                AppEvent::Quit => {
+                    if let Some(screen) = app.current_screen.as_mut() {
+                        screen.on_exit(&tx).await;
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-            AppEvent::Input(input) => {
-                match input {
-                    InputEvent::Key(key) => {
-                        tracing::debug!(
-                            "KEY: code={:?} mods={:?} kind={:?}",
-                            key.code,
-                            key.modifiers,
-                            key.kind
-                        );
-                        // Global shortcuts — fire before any screen gets the event.
-                        if let Some(combo) = key_event_to_combo(&key) {
-                            let action = {
-                                let s = app.settings.read().unwrap();
-                                tracing::debug!(
-                                    "COMBO: {} → {:?}",
-                                    combo,
+                AppEvent::Redraw => {
+                    // No-op: top-of-loop draw already happened (or is about to).
+                }
+                AppEvent::Input(input) => {
+                    match input {
+                        InputEvent::Key(key) => {
+                            tracing::debug!(
+                                "KEY: code={:?} mods={:?} kind={:?}",
+                                key.code,
+                                key.modifiers,
+                                key.kind
+                            );
+                            // Global shortcuts — fire before any screen gets the event.
+                            if let Some(combo) = key_event_to_combo(&key) {
+                                let action = {
+                                    let s = app.settings.read().unwrap();
+                                    tracing::debug!(
+                                        "COMBO: {} → {:?}",
+                                        combo,
+                                        s.key_bindings.get_action(&combo)
+                                    );
                                     s.key_bindings.get_action(&combo)
-                                );
-                                s.key_bindings.get_action(&combo)
-                            };
-                            match action {
-                                Some(ActionShortcuts::Quit) => {
-                                    tx.send(AppEvent::Quit).ok();
-                                    continue;
-                                }
-                                Some(ActionShortcuts::OpenSettings) => {
-                                    let already_on_settings = app
-                                        .current_screen
-                                        .as_ref()
-                                        .map(|s| s.get_kind() == ScreenKind::Settings)
-                                        .unwrap_or(false);
-                                    if !already_on_settings {
-                                        tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings))
-                                            .ok();
+                                };
+                                let handled_global = match action {
+                                    Some(ActionShortcuts::Quit) => {
+                                        tx.send(AppEvent::Quit).ok();
+                                        true
                                     }
-                                    continue;
+                                    Some(ActionShortcuts::OpenSettings) => {
+                                        let already_on_settings = app
+                                            .current_screen
+                                            .as_ref()
+                                            .map(|s| s.get_kind() == ScreenKind::Settings)
+                                            .unwrap_or(false);
+                                        if !already_on_settings {
+                                            tx.send(AppEvent::OpenScreen(
+                                                ScreenEvent::OpenSettings,
+                                            ))
+                                            .ok();
+                                        }
+                                        true
+                                    }
+                                    _ => false,
+                                };
+                                if handled_global {
+                                    // Skip screen-level handling for this key.
+                                    match events.try_next() {
+                                        Some(next) => {
+                                            event = next;
+                                            continue;
+                                        }
+                                        None => break,
+                                    }
                                 }
-                                _ => {}
+                            }
+                            if let Some(screen) = &mut app.current_screen {
+                                screen.handle_input(&InputEvent::Key(key), &tx);
                             }
                         }
-                        if let Some(screen) = &mut app.current_screen {
-                            screen.handle_input(&InputEvent::Key(key), &tx);
+                        InputEvent::Mouse(mouse_event) => {
+                            if let Some(screen) = &mut app.current_screen {
+                                screen.handle_input(&InputEvent::Mouse(mouse_event), &tx);
+                            }
                         }
-                    }
-                    InputEvent::Mouse(mouse_event) => {
-                        if let Some(screen) = &mut app.current_screen {
-                            screen.handle_input(&InputEvent::Mouse(mouse_event), &tx);
-                        }
-                    }
-                    InputEvent::Paste(text) => {
-                        if let Some(screen) = &mut app.current_screen {
-                            screen.handle_input(&InputEvent::Paste(text), &tx);
+                        InputEvent::Paste(text) => {
+                            if let Some(screen) = &mut app.current_screen {
+                                screen.handle_input(&InputEvent::Paste(text), &tx);
+                            }
                         }
                     }
                 }
+                msg => {
+                    // Capture screen identity around handle_app_message so we
+                    // can detect a synchronous screen swap (OpenScreen,
+                    // VaultConflict). Use `screen_generation` rather than
+                    // `ScreenKind`, because a swap between two screens of the
+                    // same kind (e.g. EditorScreen(A) → follow-link →
+                    // EditorScreen(B)) still leaks A's queued events into B
+                    // if we only compare kinds. Remaining queued events
+                    // belong to the OLD screen instance — break the drain so
+                    // they get a fresh outer iteration where they are routed
+                    // correctly (and the new screen gets its first draw
+                    // before further input).
+                    let before_gen = app.screen_generation;
+                    handle_app_message(msg, app, &tx).await?;
+                    if app.screen_generation != before_gen {
+                        break;
+                    }
+                }
             }
-            msg => handle_app_message(msg, app, &tx).await?,
+            match events.try_next() {
+                Some(next) => event = next,
+                None => break,
+            }
         }
     }
 }

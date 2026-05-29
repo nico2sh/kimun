@@ -2,8 +2,10 @@ pub mod autocomplete_glue;
 pub mod backend;
 pub mod markdown;
 pub mod nvim_rpc;
+pub mod parse_incremental;
 pub mod snapshot;
 pub mod view;
+pub mod widener_metrics;
 pub mod word_wrap;
 
 use arboard::Clipboard;
@@ -14,6 +16,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui_textarea::{CursorMove, DataCursor, TextArea};
+use std::num::NonZeroU64;
 
 /// Convert `TextArea::cursor()` from the library's `DataCursor` newtype to a
 /// plain `(row, col)` tuple — the neutral interchange type shared with the
@@ -21,6 +24,61 @@ use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 fn cursor_tuple(ta: &TextArea<'_>) -> (usize, usize) {
     let DataCursor(r, c) = ta.cursor();
     (r, c)
+}
+
+/// Build an `EditorSnapshot` from the editor's backend + content
+/// revision. Free function (not a method on `TextEditorComponent`) so
+/// production callers that need to mutate other fields of
+/// `TextEditorComponent` afterwards can pass `&self.backend` and
+/// `self.content_revision` directly — the borrow checker can split
+/// borrows across distinct fields but not across method calls.
+fn snapshot_from_backend(
+    backend: &BackendState,
+    content_revision: NonZeroU64,
+) -> EditorSnapshot<'_> {
+    match backend {
+        BackendState::Textarea(ta) => {
+            let cursor = cursor_tuple(ta);
+            EditorSnapshot::borrowed(ta.lines(), cursor, content_revision)
+        }
+        BackendState::Nvim(nvim) => {
+            let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+            let lines_len = snap.lines.len();
+            let cursor_row = if lines_len == 0 {
+                0
+            } else {
+                snap.cursor.0.min(lines_len - 1)
+            };
+            let cursor = (cursor_row, snap.cursor.1);
+            let lines = snap.lines.clone();
+            let rev = NonZeroU64::new(snap.content_gen.saturating_add(1))
+                .unwrap_or_else(|| NonZeroU64::new(1).unwrap());
+            drop(snap);
+            EditorSnapshot::owned(lines, cursor, rev)
+        }
+    }
+}
+
+/// Returns true if any autocomplete trigger char (`[` for `[[wikilink`,
+/// `#` for `#hashtag`) appears between the start of `line` and the
+/// cursor's char column. Walks backwards from the cursor so the common
+/// "user just typed inside a trigger" case short-circuits quickly. The
+/// scan stays within one row because triggers can't cross a newline.
+///
+/// UTF-8 safe: takes a char column and never slices on a byte that is
+/// not a codepoint boundary. Wikilinks can contain spaces
+/// (`[[my note title`), so the walk does NOT stop at whitespace — only
+/// the trigger char or start-of-row halts it.
+fn has_trigger_before_cursor(line: &str, col: usize) -> bool {
+    let cursor_byte = line
+        .char_indices()
+        .nth(col)
+        .map(|(b, _)| b)
+        .unwrap_or(line.len());
+    line[..cursor_byte]
+        .chars()
+        .rev()
+        .any(|c| c == '[' || c == '#')
 }
 
 /// Move or extend the selection by `movement`.
@@ -42,8 +100,10 @@ macro_rules! cursor_move {
 }
 
 use self::backend::BackendState;
-use self::snapshot::NvimMode;
+use self::markdown::ParsedBuffer;
+use self::snapshot::{EditorSnapshot, NvimMode};
 use self::view::MarkdownEditorView;
+use crate::util::single_slot_task::SingleSlotTask;
 
 /// If `marker` is an ordered-list marker like `"3. "`, returns the next marker
 /// (`"4. "`). Returns `None` for unordered markers or unrecognized input.
@@ -220,21 +280,32 @@ fn render_search_bar(
     }
 }
 
-/// Snapshot used to satisfy `AutocompleteHost`. The snapshot is owned so
-/// the controller's borrow does not overlap with the textarea's `&mut`
-/// borrow during key handling and replacement.
-struct EditorHostSnapshot {
-    lines: Vec<String>,
-    cursor_byte: usize,
+/// Snapshot used to satisfy `AutocompleteHost`. Wraps an
+/// `EditorSnapshot` (Cow-borrowed from the textarea on the common
+/// path — perf #8) plus the cursor's last-rendered screen
+/// position. The host's `cache_key` mirrors the editor's
+/// `content_revision`; `None` is reserved for hosts whose buffer
+/// has no stable identity (the search-box modal).
+struct EditorHostSnapshot<'a> {
+    snap: EditorSnapshot<'a>,
     cursor_screen: Option<(u16, u16)>,
+    cache_key: Option<NonZeroU64>,
 }
 
-impl AutocompleteHost for EditorHostSnapshot {
-    fn buffer_text(&self) -> String {
-        self.lines.join("\n")
+impl<'a> AutocompleteHost for EditorHostSnapshot<'a> {
+    fn buffer_snapshot(&self) -> EditorSnapshot<'_> {
+        // Re-package the inner snap as a fresh borrowed view tied
+        // to `&self`. `Cow::as_ref` works for both Borrowed and
+        // Owned variants — the latter only occurs on the Nvim path
+        // where the inner snapshot already paid the clone cost.
+        EditorSnapshot::borrowed(
+            self.snap.lines.as_ref(),
+            self.snap.cursor,
+            self.snap.content_revision,
+        )
     }
-    fn cursor_byte_offset(&self) -> usize {
-        self.cursor_byte
+    fn cache_key(&self) -> Option<NonZeroU64> {
+        self.cache_key
     }
     fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
         // Anchor at the cursor's last-rendered screen position. The
@@ -254,24 +325,72 @@ impl AutocompleteHost for EditorHostSnapshot {
     }
 }
 
+/// Free-function builder for `EditorHostSnapshot`. Production
+/// callers pass `&self.backend`, `self.content_revision`,
+/// `self.view.last_cursor_screen` directly so the borrow checker
+/// can split borrows from `&mut self.autocomplete`. Returns `None`
+/// on the Nvim backend (autocomplete is Textarea-only).
+fn build_editor_host_snapshot<'a>(
+    backend: &'a BackendState,
+    content_revision: NonZeroU64,
+    cursor_screen: Option<(u16, u16)>,
+) -> Option<EditorHostSnapshot<'a>> {
+    if !matches!(backend, BackendState::Textarea(_)) {
+        return None;
+    }
+    Some(EditorHostSnapshot {
+        snap: snapshot_from_backend(backend, content_revision),
+        cursor_screen,
+        cache_key: Some(content_revision),
+    })
+}
+
 /// Snapshot of the textarea backend used to classify a key event as a
 /// text edit (text differs) vs. a pure cursor move (text same, cursor
 /// moved) vs. a no-op (both same).
-struct TextareaSnapshot {
-    text: String,
-    cursor: (usize, usize),
-}
-
 pub struct TextEditorComponent {
     backend: BackendState,
     /// Tracks the rendered rect to map mouse click coordinates.
     rect: Rect,
     key_bindings: KeyBindings,
-    last_saved_text: String,
+    /// `content_revision` snapshot that matches the on-disk content.
+    /// `Some(content_revision)` after a successful save (or after
+    /// `set_text` loaded a note); `None` when the saved snapshot
+    /// diverges from the current buffer. Compared against
+    /// `content_revision` by `is_dirty()` so the per-frame title bar
+    /// avoids materialising the buffer and so cursor moves (which bump
+    /// `edit_generation` but not `content_revision`) don't flag the
+    /// buffer as dirty.
+    saved_content_rev: Option<NonZeroU64>,
     view: MarkdownEditorView,
-    /// Incremented on every mutating input event. Passed to `view.update()` so the view
-    /// can skip the expensive lines clone and parse-cache rebuild on idle frames.
+    /// Incremented on every input event that may affect rendering — text
+    /// edits AND cursor/selection moves. Drives view-cache invalidation in
+    /// non-perf-critical paths; do NOT use for dirty tracking (cursor moves
+    /// bump this too).
     edit_generation: u64,
+    /// Incremented only when the buffer text actually changes (insert,
+    /// delete, paste, undo/redo, autocomplete accept). Cursor-only
+    /// shortcuts (arrows, Home/End, select-all) do NOT bump this. On
+    /// the Nvim backend, `handle_key` does not bump either — the
+    /// reverse-refresh task in `backend.rs` sees `snap.lines` change
+    /// and bumps `snap.content_gen`; the editor mirrors that value
+    /// into `content_revision` at the render sync point. Consumers:
+    ///   - `handle_input` diffs it across a key event to classify the
+    ///     event as a text edit vs. a cursor move without materialising
+    ///     the buffer.
+    ///   - `view.update()` uses the value as the cache-invalidation
+    ///     key, so arrow-key navigation reuses the per-line parse cache
+    ///     instead of rebuilding it.
+    ///   - `AutocompleteHost::content_revision` exposes it as a
+    ///     `NonZeroU64` cache key.
+    ///   - `mark_saved_at_revision` / `is_dirty` use it as the
+    ///     save-correlation token; navigation keys never invalidate a
+    ///     save in flight.
+    ///
+    /// `NonZeroU64` because `Option<NonZeroU64>` is the cleanest way
+    /// to express "no cacheable revision" without a magic-value
+    /// sentinel and without a separate field.
+    content_revision: NonZeroU64,
     /// Current selection range in logical (row, byte-col) coordinates.
     /// Only tracked for the Textarea backend; always `None` for Nvim.
     selection: Option<((usize, usize), (usize, usize))>,
@@ -295,10 +414,24 @@ pub struct TextEditorComponent {
     /// `handle_input` because `AppTx` is not available at
     /// construction.
     autocomplete_redraw_bound: bool,
+    /// Background full-parse fallback for large buffers (perf #9).
+    /// The view installs a placeholder `ParsedBuffer` and signals
+    /// pending; this slot owns the spawned tokio task that runs
+    /// the real `ParsedBuffer::parse`. `SingleSlotTask` aborts the
+    /// previous spawn on a fresh edit, so a burst of edits resolves
+    /// against the latest content.
+    full_parse_task: SingleSlotTask<()>,
+    full_parse_tx: tokio::sync::mpsc::UnboundedSender<(u64, ParsedBuffer)>,
+    full_parse_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, ParsedBuffer)>,
+    /// `AppTx` clone bound the first time `handle_input` runs, so the
+    /// spawned full-parse task can post `AppEvent::Redraw` on
+    /// completion without waiting for the next user keystroke.
+    redraw_tx: Option<AppTx>,
 }
 
 impl TextEditorComponent {
     pub fn new(key_bindings: KeyBindings, settings: &AppSettings) -> Self {
+        let (full_parse_tx, full_parse_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             backend: BackendState::from_settings(
                 &settings.editor_backend,
@@ -306,9 +439,10 @@ impl TextEditorComponent {
             ),
             rect: Rect::default(),
             key_bindings,
-            last_saved_text: String::new(),
+            saved_content_rev: NonZeroU64::new(1),
             view: MarkdownEditorView::new(),
             edit_generation: 0,
+            content_revision: NonZeroU64::new(1).unwrap(),
             selection: None,
             clipboard: Clipboard::new().ok(),
             nvim_pending_z: false,
@@ -316,6 +450,10 @@ impl TextEditorComponent {
             autocomplete: None,
             autocomplete_vault: None,
             autocomplete_redraw_bound: false,
+            full_parse_task: SingleSlotTask::empty(),
+            full_parse_tx,
+            full_parse_rx,
+            redraw_tx: None,
         }
     }
 
@@ -351,20 +489,18 @@ impl TextEditorComponent {
     }
 
     /// Build a snapshot view of the editor state for the autocomplete
-    /// controller. Lives separately so the controller can borrow it
-    /// without colliding with the textarea's `&mut self` borrow.
-    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot> {
-        let BackendState::Textarea(ta) = &self.backend else {
-            return None;
-        };
-        let lines: Vec<String> = ta.lines().iter().map(|l| l.to_string()).collect();
-        let (row, col) = cursor_tuple(ta);
-        let cursor_byte = autocomplete_glue::row_char_col_to_byte(&lines, row, col);
-        Some(EditorHostSnapshot {
-            lines,
-            cursor_byte,
-            cursor_screen: self.view.last_cursor_screen,
-        })
+    /// controller. Method form wraps `build_editor_host_snapshot` for
+    /// callers that do not need to split borrows; production hot
+    /// paths (`refresh_autocomplete_if_open`, `sync_autocomplete`)
+    /// inline the free function instead so `&self.backend` and
+    /// `&mut self.autocomplete` can coexist.
+    #[allow(dead_code)]
+    fn autocomplete_host_snapshot(&self) -> Option<EditorHostSnapshot<'_>> {
+        build_editor_host_snapshot(
+            &self.backend,
+            self.content_revision,
+            self.view.last_cursor_screen,
+        )
     }
 
     /// Pull the latest async query results into the popup state. Called
@@ -375,23 +511,29 @@ impl TextEditorComponent {
         }
     }
 
-    /// Snapshot of the textarea backend's buffer text and cursor — `None`
-    /// for the Nvim backend. Used to detect whether a key event was a
-    /// text edit, a cursor-only move, or a true no-op so the autocomplete
-    /// can react correctly (sync on edit, refresh-if-open on cursor
-    /// move, do nothing otherwise).
-    fn textarea_snapshot(&self) -> Option<TextareaSnapshot> {
+    /// Cheap cursor read — `None` for the Nvim backend. Used by `handle_input`
+    /// to diff cursor position across a key event without materialising the
+    /// whole buffer.
+    fn textarea_cursor(&self) -> Option<(usize, usize)> {
         let BackendState::Textarea(ta) = &self.backend else {
             return None;
         };
-        Some(TextareaSnapshot {
-            text: ta.lines().join("\n"),
-            cursor: cursor_tuple(ta),
-        })
+        Some(cursor_tuple(ta))
     }
 
     fn refresh_autocomplete_if_open(&mut self) {
-        let Some(snapshot) = self.autocomplete_host_snapshot() else {
+        // No controller (e.g. Nvim backend) or popup closed → nothing to refresh.
+        if !self.autocomplete.as_ref().is_some_and(|c| c.is_open()) {
+            return;
+        }
+        // Inline the snapshot via the free function so `&self.backend`
+        // (the snapshot's borrow source) and `&mut self.autocomplete`
+        // (the controller below) can coexist via field-disjoint borrows.
+        let Some(snapshot) = build_editor_host_snapshot(
+            &self.backend,
+            self.content_revision,
+            self.view.last_cursor_screen,
+        ) else {
             self.close_autocomplete();
             return;
         };
@@ -404,7 +546,41 @@ impl TextEditorComponent {
     /// cursor. Call after any mutating key handle (typed letter, paste,
     /// backspace, cursor movement, etc.).
     fn sync_autocomplete(&mut self) {
-        let Some(snapshot) = self.autocomplete_host_snapshot() else {
+        let Some(controller) = self.autocomplete.as_ref() else {
+            return; // Nvim backend or no controller
+        };
+
+        // Fast-path bail: when the popup is closed AND no trigger character
+        // appears between the cursor and the start of the current row, no
+        // reconcile can open a popup. Skip the expensive buffer snapshot +
+        // pulldown-cmark scan.
+        //
+        // Trigger chars: `[` (for `[[wikilink`) and `#` (for `#hashtag`).
+        // Wikilinks can contain spaces (`[[my note title`), so the scan
+        // walks back to the start of the row, not to the nearest whitespace.
+        // The walk short-circuits on the first trigger char, so for typical
+        // lines it touches only a handful of chars before bailing or
+        // promoting to the slow path. Using `char_indices().rev()` keeps
+        // the walk UTF-8-safe — never slices mid-codepoint.
+        if !controller.is_open() {
+            let BackendState::Textarea(ta) = &self.backend else {
+                return;
+            };
+            let (row, col) = cursor_tuple(ta);
+            let line = ta.lines().get(row).map(|s| s.as_str()).unwrap_or("");
+            if !has_trigger_before_cursor(line, col) {
+                return;
+            }
+        }
+
+        // Slow path: build the borrowed snapshot for the controller to
+        // reconcile. Free function so `&self.backend` and
+        // `&mut self.autocomplete` can coexist.
+        let Some(snapshot) = build_editor_host_snapshot(
+            &self.backend,
+            self.content_revision,
+            self.view.last_cursor_screen,
+        ) else {
             if let Some(c) = self.autocomplete.as_mut() {
                 c.close();
             }
@@ -427,11 +603,43 @@ impl TextEditorComponent {
         }
     }
 
+    /// Single producer for the editor's atomic `(lines, cursor,
+    /// content_revision)` view. Downstream consumers (`MarkdownEditorView`,
+    /// `click_to_logical_u16`, the autocomplete host) take a
+    /// `&EditorSnapshot` and stop guarding against drift between cursor
+    /// and lines on every leaf access — the snapshot owns that
+    /// invariant at construction time.
+    ///
+    /// On the Textarea backend the snapshot borrows live lines (no
+    /// clone) and the cursor is already in-bounds. On the Nvim backend
+    /// the lines are cloned out from behind the `Mutex` (same cost as
+    /// today's render path) and the cursor row is clamped to
+    /// `lines.len() - 1` before the snapshot is returned.
+    ///
+    /// Production hot paths that also need `&mut self.view` (notably
+    /// `render`) must instead inline the snapshot via
+    /// `snapshot_from_backend(&self.backend, self.content_revision)`
+    /// so the borrow checker can split the borrows across distinct
+    /// fields.
+    pub fn view_snapshot(&self) -> EditorSnapshot<'_> {
+        snapshot_from_backend(&self.backend, self.content_revision)
+    }
+
     pub fn set_text(&mut self, text: String) {
-        // No-op when the buffer would be identical — preserves view
-        // scroll, selection, edit generation cache, and an open
-        // autocomplete popup. Saves the expensive lines clone too.
+        // No-op when the buffer would be identical — preserves view scroll,
+        // selection, edit generation cache, and an open autocomplete popup.
+        // Saves the expensive lines clone too. Still normalises the saved
+        // marker: if the buffer was flagged dirty by a previous divergent
+        // save, reloading the same content from disk should clear that
+        // flag rather than persist a phantom `[+]` in the title bar.
         if text == self.get_text() {
+            self.saved_content_rev = Some(self.content_revision);
+            if let BackendState::Nvim(nvim) = &self.backend {
+                nvim.snapshot
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .dirty = false;
+            }
             return;
         }
         match &mut self.backend {
@@ -443,7 +651,7 @@ impl TextEditorComponent {
                 nvim.set_text(&text);
             }
         }
-        self.edit_generation = self.edit_generation.wrapping_add(1);
+        self.bump_content();
         let reconstructed = self.get_text();
         self.mark_saved(reconstructed);
         // Buffer replaced — close any open autocomplete popup so it does
@@ -463,19 +671,67 @@ impl TextEditorComponent {
         }
     }
 
-    pub fn mark_saved(&mut self, text: String) {
+    /// Current content revision. Bumped on every text-mutating handler;
+    /// stable across cursor moves and idle frames. Used by the autosave
+    /// path to record "this snapshot was saved" without rebuilding the
+    /// buffer text on completion. `NonZeroU64` makes 0 unrepresentable
+    /// so callers can express "no revision" as `Option<NonZeroU64>::None`
+    /// without a magic-value sentinel.
+    pub fn content_revision(&self) -> NonZeroU64 {
+        self.content_revision
+    }
+
+    /// Mark the buffer as clean iff its current revision still matches
+    /// `rev` (i.e. no edits landed between the save being issued and
+    /// completing). Diverged revision → no-op: leave `saved_content_rev`
+    /// alone, because some OTHER mechanism (a synchronous `try_save`
+    /// racing this completion) may have already marked a NEWER revision
+    /// clean, and a stale completion must not clobber that. `is_dirty`
+    /// already reads true when `saved_content_rev != Some(self.content_revision)`,
+    /// so doing nothing on a mismatch keeps the editor correctly dirty
+    /// without overwriting a legitimately-newer saved snapshot.
+    pub fn mark_saved_at_revision(&mut self, rev: NonZeroU64) {
+        if rev != self.content_revision {
+            return;
+        }
         if let BackendState::Nvim(nvim) = &self.backend {
             nvim.snapshot
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .dirty = false;
         }
-        self.last_saved_text = text;
+        self.saved_content_rev = Some(rev);
+    }
+
+    /// Synchronous mark-saved used by `try_save` and `set_text`. Unlike
+    /// `mark_saved_at_revision` (which no-ops on a stale revision because
+    /// it can race a sync mark_saved), this one CLOBBERS `saved_content_rev`
+    /// to `None` when the supplied text diverges: the sync caller holds
+    /// `&mut self` for the whole save, so there is no concurrent newer
+    /// clean state to preserve, and the user typing between
+    /// `get_text()` and this call must show as dirty.
+    pub fn mark_saved(&mut self, text: String) {
+        let matches = text == self.get_text();
+        if matches {
+            if let BackendState::Nvim(nvim) = &self.backend {
+                nvim.snapshot
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .dirty = false;
+            }
+            self.saved_content_rev = Some(self.content_revision);
+        } else {
+            // Textarea: divergent save → stay dirty.
+            // Nvim: snapshot's `dirty` was untouched anyway; the Textarea
+            // dirty signal (saved_content_rev) is what is_dirty consults
+            // on the Textarea backend, and we explicitly mark it None here.
+            self.saved_content_rev = None;
+        }
     }
 
     pub fn is_dirty(&self) -> bool {
         match &self.backend {
-            BackendState::Textarea(_) => self.get_text() != self.last_saved_text,
+            BackendState::Textarea(_) => self.saved_content_rev != Some(self.content_revision),
             BackendState::Nvim(nvim) => {
                 nvim.snapshot
                     .lock()
@@ -581,11 +837,11 @@ impl TextEditorComponent {
                 }
                 ta.insert_str(wrapped.as_deref().unwrap_or(text));
                 self.selection = ta.selection_range();
-                self.edit_generation = self.edit_generation.wrapping_add(1);
+                self.bump_content();
             }
             BackendState::Nvim(nvim) => {
                 nvim.paste(text, tx.clone());
-                self.edit_generation = self.edit_generation.wrapping_add(1);
+                self.bump_content();
             }
         }
         // The buffer just changed under the popup's feet; reconcile
@@ -610,7 +866,7 @@ impl TextEditorComponent {
             }
             ta.insert_str(text);
             self.selection = ta.selection_range();
-            self.edit_generation = self.edit_generation.wrapping_add(1);
+            self.bump_content();
         }
         // See `paste_text` — out-of-band buffer mutation must
         // re-reconcile the popup state.
@@ -655,7 +911,7 @@ impl TextEditorComponent {
             }
         }
         self.selection = ta.selection_range();
-        self.edit_generation = self.edit_generation.wrapping_add(1);
+        self.bump_content();
     }
 
     /// Smart Enter: continue list markers, preserve indent, dedent on empty
@@ -734,7 +990,7 @@ impl TextEditorComponent {
             unreachable!()
         };
         self.selection = ta.selection_range();
-        self.edit_generation = self.edit_generation.wrapping_add(1);
+        self.bump_content();
         true
     }
 
@@ -846,12 +1102,41 @@ impl TextEditorComponent {
 
         if any_change {
             self.selection = ta.selection_range();
-            self.edit_generation = self.edit_generation.wrapping_add(1);
+            self.bump_content();
         }
     }
 }
 
 impl TextEditorComponent {
+    /// Bumps `edit_generation` only (cursor/selection moves, mouse clicks
+    /// that do not touch the buffer text). Lets the view invalidate its
+    /// cursor-dependent caches without telling the autocomplete controller
+    /// that the buffer changed.
+    #[inline]
+    fn bump_cursor(&mut self) {
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+    }
+
+    /// Bumps both `edit_generation` and `content_revision`. Use at every
+    /// site that mutates the buffer (insert, delete, paste, undo/redo,
+    /// autocomplete accept) on the Textarea backend. `handle_input` uses
+    /// the `content_revision` delta to detect a real text change without
+    /// materialising the buffer.
+    ///
+    /// Not called by the Nvim path — the reverse-refresh task in
+    /// `backend.rs` bumps `snap.content_gen` on real diffs and the
+    /// editor mirrors that value into `content_revision` at render time.
+    #[inline]
+    fn bump_content(&mut self) {
+        self.edit_generation = self.edit_generation.wrapping_add(1);
+        // NonZeroU64 enforces the skip-zero invariant for free: on
+        // wrap-around from u64::MAX, `NonZeroU64::new(0)` returns None
+        // and we substitute 1. 2^64 edits is astronomical but the
+        // invariant is type-checkable.
+        let next = self.content_revision.get().wrapping_add(1);
+        self.content_revision = NonZeroU64::new(next).unwrap_or(NonZeroU64::new(1).unwrap());
+    }
+
     /// If the Nvim process has died, fall back to a Textarea with the last known content.
     fn maybe_recover_from_dead_nvim(&mut self) {
         use std::sync::atomic::Ordering;
@@ -973,7 +1258,16 @@ impl TextEditorComponent {
         }
 
         nvim.handle_key(key, tx.clone());
-        self.edit_generation = self.edit_generation.wrapping_add(1);
+        // Nvim handle_key only bumps `edit_generation` (any-input
+        // counter for view-cache invalidation). `content_revision` is
+        // owned by the reverse-refresh task in `backend.rs`, which
+        // bumps `snap.content_gen` only when `snap.lines` actually
+        // diffs — that value is mirrored into `content_revision` at
+        // the next render sync point. Result: navigation keys never
+        // invalidate an in-flight save's revision token, and the
+        // autocomplete cache (when wired up on Nvim in a future
+        // revision) survives navigation.
+        self.bump_cursor();
         Some(EventState::Consumed)
     }
 
@@ -1007,11 +1301,26 @@ impl TextEditorComponent {
         }
     }
 
-    /// Bind the autocomplete controller's redraw callback to the app
+    /// Bind the redraw channel up front (e.g. on note open) so the
+    /// background full-parse task can wake the event-driven render loop
+    /// on the FIRST render of a large buffer, before any keystroke has
+    /// run `handle_input`. No-op after the first successful bind.
+    pub fn set_redraw_tx(&mut self, tx: &AppTx) {
+        self.bind_autocomplete_redraw(tx);
+    }
+
+    /// Bind the autocomplete controller's redraw callback AND the
+    /// editor's background-full-parse redraw signal to the app
     /// event bus. Called from `handle_input` (the first place where
-    /// the editor has access to `AppTx`) and is a no-op after the
-    /// first successful bind.
+    /// the editor has access to `AppTx`). The autocomplete piece is
+    /// a no-op after the first successful bind; the redraw_tx clone
+    /// is set unconditionally so a reset autocomplete controller
+    /// (e.g. after Nvim → Textarea fallback) doesn't lose the
+    /// editor's redraw channel.
     fn bind_autocomplete_redraw(&mut self, tx: &AppTx) {
+        if self.redraw_tx.is_none() {
+            self.redraw_tx = Some(tx.clone());
+        }
         if self.autocomplete_redraw_bound {
             return;
         }
@@ -1149,13 +1458,21 @@ impl TextEditorComponent {
                 }
                 KeyCode::Char('x') => {
                     self.copy_selection_to_clipboard();
-                    if let BackendState::Textarea(ta) = &mut self.backend {
-                        if ta.selection_range().is_some() {
-                            ta.cut();
-                        }
+                    let cut = if let BackendState::Textarea(ta) = &mut self.backend {
+                        // `ta.cut()` returns `false` when the selection was
+                        // empty / nothing to remove. Use its return value
+                        // directly rather than pre-checking selection_range —
+                        // one source of truth, no spurious view rebuild on
+                        // no-op Ctrl+X.
+                        let cut = ta.cut();
                         self.selection = ta.selection_range();
+                        cut
+                    } else {
+                        false
+                    };
+                    if cut {
+                        self.bump_content();
                     }
-                    self.edit_generation = self.edit_generation.wrapping_add(1);
                     return EventState::Consumed;
                 }
                 _ => {}
@@ -1197,7 +1514,7 @@ impl TextEditorComponent {
         };
         if handled {
             self.selection = ta.selection_range();
-            self.edit_generation = self.edit_generation.wrapping_add(1);
+            self.bump_cursor();
             return EventState::Consumed;
         }
 
@@ -1207,90 +1524,119 @@ impl TextEditorComponent {
         // Standard text-editor shortcuts.
         // `input_without_shortcuts` only handles chars, backspace, delete, tab, newline —
         // all navigation and editing shortcuts must be mapped explicitly.
-        let shortcut_handled = match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
-            // --- Cursor movement (Shift extends the selection) ---
-            (KeyModifiers::NONE, KeyCode::Left) => {
-                cursor_move!(ta, CursorMove::Back, shift);
-                true
-            }
-            (KeyModifiers::NONE, KeyCode::Right) => {
-                cursor_move!(ta, CursorMove::Forward, shift);
-                true
-            }
-            (KeyModifiers::NONE, KeyCode::Up) => {
-                cursor_move!(ta, CursorMove::Up, shift);
-                true
-            }
-            (KeyModifiers::NONE, KeyCode::Down) => {
-                cursor_move!(ta, CursorMove::Down, shift);
-                true
-            }
-            (KeyModifiers::NONE, KeyCode::Home) => {
-                cursor_move!(ta, CursorMove::Head, shift);
-                true
-            }
-            (KeyModifiers::NONE, KeyCode::End) => {
-                cursor_move!(ta, CursorMove::End, shift);
-                true
-            }
-            (KeyModifiers::NONE, KeyCode::PageUp) => {
-                cursor_move!(ta, CursorMove::ParagraphBack, shift);
-                true
-            }
-            (KeyModifiers::NONE, KeyCode::PageDown) => {
-                cursor_move!(ta, CursorMove::ParagraphForward, shift);
-                true
-            }
-            // Word navigation (Ctrl+arrow, Windows/Linux style)
-            (KeyModifiers::CONTROL, KeyCode::Left) => {
-                cursor_move!(ta, CursorMove::WordBack, shift);
-                true
-            }
-            (KeyModifiers::CONTROL, KeyCode::Right) => {
-                cursor_move!(ta, CursorMove::WordForward, shift);
-                true
-            }
-            // Document start / end
-            (KeyModifiers::CONTROL, KeyCode::Home) => {
-                cursor_move!(ta, CursorMove::Top, shift);
-                true
-            }
-            (KeyModifiers::CONTROL, KeyCode::End) => {
-                cursor_move!(ta, CursorMove::Bottom, shift);
-                true
-            }
-            // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
-            (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
-                ta.undo();
-                true
-            }
-            (KeyModifiers::CONTROL, KeyCode::Char('y'))
-            | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => {
-                ta.redo();
-                true
-            }
-            // Select all
-            (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                ta.move_cursor(CursorMove::Top);
-                ta.start_selection();
-                ta.move_cursor(CursorMove::Bottom);
-                true
-            }
-            // Delete word before / after cursor
-            (KeyModifiers::CONTROL, KeyCode::Backspace)
-            | (KeyModifiers::ALT, KeyCode::Backspace) => {
-                ta.delete_word();
-                true
-            }
-            (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
-                ta.delete_next_word();
-                true
-            }
-            _ => false,
-        };
-        if shortcut_handled {
+        // Outcome tracks whether the handled shortcut mutated the buffer, only
+        // moved the cursor, or did literally nothing (e.g. Ctrl+Z on an empty
+        // undo stack) — so neither `text_revision` nor `edit_generation` is
+        // bumped on true no-ops.
+        enum ShortcutOutcome {
+            NoOp,
+            CursorOnly,
+            TextMutated,
+        }
+        let outcome: Option<ShortcutOutcome> =
+            match (key.modifiers & !KeyModifiers::SHIFT, key.code) {
+                // --- Cursor movement (Shift extends the selection) ---
+                (KeyModifiers::NONE, KeyCode::Left) => {
+                    cursor_move!(ta, CursorMove::Back, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::Right) => {
+                    cursor_move!(ta, CursorMove::Forward, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::Up) => {
+                    cursor_move!(ta, CursorMove::Up, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::Down) => {
+                    cursor_move!(ta, CursorMove::Down, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::Home) => {
+                    cursor_move!(ta, CursorMove::Head, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::End) => {
+                    cursor_move!(ta, CursorMove::End, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::PageUp) => {
+                    cursor_move!(ta, CursorMove::ParagraphBack, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::NONE, KeyCode::PageDown) => {
+                    cursor_move!(ta, CursorMove::ParagraphForward, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                // Word navigation (Ctrl+arrow, Windows/Linux style)
+                (KeyModifiers::CONTROL, KeyCode::Left) => {
+                    cursor_move!(ta, CursorMove::WordBack, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::CONTROL, KeyCode::Right) => {
+                    cursor_move!(ta, CursorMove::WordForward, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                // Document start / end
+                (KeyModifiers::CONTROL, KeyCode::Home) => {
+                    cursor_move!(ta, CursorMove::Top, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                (KeyModifiers::CONTROL, KeyCode::End) => {
+                    cursor_move!(ta, CursorMove::Bottom, shift);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                // Undo / Redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). The textarea
+                // returns `false` when the stack is empty — no buffer change AND
+                // no cursor change, so emit NoOp and skip the view-cache bump.
+                (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
+                    if ta.undo() {
+                        Some(ShortcutOutcome::TextMutated)
+                    } else {
+                        Some(ShortcutOutcome::NoOp)
+                    }
+                }
+                (KeyModifiers::CONTROL, KeyCode::Char('y'))
+                | (KeyModifiers::CONTROL, KeyCode::Char('Z')) => {
+                    if ta.redo() {
+                        Some(ShortcutOutcome::TextMutated)
+                    } else {
+                        Some(ShortcutOutcome::NoOp)
+                    }
+                }
+                // Select all
+                (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+                    ta.move_cursor(CursorMove::Top);
+                    ta.start_selection();
+                    ta.move_cursor(CursorMove::Bottom);
+                    Some(ShortcutOutcome::CursorOnly)
+                }
+                // Delete word before / after cursor. Returns `false` when at a
+                // word boundary with nothing to delete — no buffer/cursor change.
+                (KeyModifiers::CONTROL, KeyCode::Backspace)
+                | (KeyModifiers::ALT, KeyCode::Backspace) => {
+                    if ta.delete_word() {
+                        Some(ShortcutOutcome::TextMutated)
+                    } else {
+                        Some(ShortcutOutcome::NoOp)
+                    }
+                }
+                (KeyModifiers::CONTROL, KeyCode::Delete) | (KeyModifiers::ALT, KeyCode::Delete) => {
+                    if ta.delete_next_word() {
+                        Some(ShortcutOutcome::TextMutated)
+                    } else {
+                        Some(ShortcutOutcome::NoOp)
+                    }
+                }
+                _ => None,
+            };
+        if let Some(kind) = outcome {
             self.selection = ta.selection_range();
-            self.edit_generation = self.edit_generation.wrapping_add(1);
+            match kind {
+                ShortcutOutcome::NoOp => {}
+                ShortcutOutcome::CursorOnly => self.bump_cursor(),
+                ShortcutOutcome::TextMutated => self.bump_content(),
+            }
             return EventState::Consumed;
         }
 
@@ -1315,9 +1661,18 @@ impl TextEditorComponent {
         let BackendState::Textarea(ta) = &mut self.backend else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
-        ta.input_without_shortcuts(*key);
+        // `input_without_shortcuts` returns `false` for keys the textarea
+        // ignores (F1-F12, KeyCode::Null, modifier-only releases, IME
+        // composing events). Only bump `text_revision` when the buffer
+        // actually changed — otherwise harmless keys would silently flip
+        // the editor to dirty and trigger needless autosaves.
+        let mutated = ta.input_without_shortcuts(*key);
         self.selection = ta.selection_range();
-        self.edit_generation = self.edit_generation.wrapping_add(1);
+        if mutated {
+            self.bump_content();
+        } else {
+            self.bump_cursor();
+        }
         EventState::Consumed
     }
 
@@ -1347,7 +1702,7 @@ impl TextEditorComponent {
             } else {
                 None
             };
-            self.edit_generation = self.edit_generation.wrapping_add(1);
+            self.bump_cursor();
             return EventState::Consumed;
         }
         // Now extract ta for remaining mouse operations.
@@ -1358,16 +1713,16 @@ impl TextEditorComponent {
             MouseEventKind::Down(_) => {
                 tx.send(AppEvent::FocusEditor).ok();
                 ta.cancel_selection();
-                let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
-                let vcol = (mouse.column - r.x) as usize;
-                let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
+                let (lrow, lcol) = self
+                    .view
+                    .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
                 ta.move_cursor(CursorMove::Jump(lrow, lcol));
                 ta.start_selection();
             }
             MouseEventKind::Drag(_) => {
-                let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
-                let vcol = (mouse.column - r.x) as usize;
-                let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
+                let (lrow, lcol) = self
+                    .view
+                    .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
                 ta.move_cursor(CursorMove::Jump(lrow, lcol));
             }
             _ => {
@@ -1375,7 +1730,9 @@ impl TextEditorComponent {
             }
         }
         self.selection = ta.selection_range();
-        self.edit_generation = self.edit_generation.wrapping_add(1);
+        // Mouse handling moves the cursor / selection but does not insert
+        // text — `ratatui-textarea` mouse handling is click/drag/scroll only.
+        self.bump_cursor();
         EventState::Consumed
     }
 }
@@ -1387,24 +1744,29 @@ impl Component for TextEditorComponent {
 
         match event {
             InputEvent::Key(key) => {
-                // Autocomplete popup, when open, gets first crack at the
-                // key. Accept / Dismiss are fully handled here; navigation
-                // is consumed but does nothing to the buffer; NotHandled
-                // falls through to the normal textarea flow (and then we
-                // resync the popup so the typed letter refines the query
-                // or breaks the trigger context).
-                if let (Some(host), Some(controller)) = (
-                    self.autocomplete_host_snapshot(),
-                    self.autocomplete.as_mut(),
-                ) && controller.is_open()
+                // Cheap popup-open probe first. The snapshot is now a
+                // Cow-borrowed view of the textarea's lines (zero
+                // allocation on the Textarea path — perf #8), so
+                // idle keystrokes pay nothing here even when popup
+                // checks fire. The free-function form lets `&self.backend`
+                // and `&mut self.autocomplete` coexist via field-disjoint
+                // borrows.
+                let popup_open = self.autocomplete.as_ref().is_some_and(|c| c.is_open());
+                if popup_open
+                    && let Some(host) = build_editor_host_snapshot(
+                        &self.backend,
+                        self.content_revision,
+                        self.view.last_cursor_screen,
+                    )
+                    && let Some(controller) = self.autocomplete.as_mut()
                 {
                     match controller.handle_key(*key, &host) {
                         HandleKeyOutcome::Accepted(action) => {
                             if let BackendState::Textarea(ta) = &mut self.backend {
                                 apply_accept_to_textarea(ta, &action);
-                                self.edit_generation = self.edit_generation.wrapping_add(1);
                                 self.selection = ta.selection_range();
                             }
+                            self.bump_content();
                             return EventState::Consumed;
                         }
                         HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
@@ -1416,43 +1778,38 @@ impl Component for TextEditorComponent {
                 if let Some(state) = self.handle_nvim_key(key, tx) {
                     return state;
                 }
-                // Capture full text + cursor before the key. After the
-                // key, distinguish three outcomes so the popup reacts
-                // correctly without auto-opening on cursor movement:
+                // Diff before/after using cheap counters instead of cloning
+                // the whole buffer. `text_revision` only bumps when the
+                // buffer actually changed (handlers call `bump_text`);
+                // cursor position is two `usize`s. Three outcomes:
                 //   - text changed → sync (may open a fresh popup)
                 //   - text unchanged, cursor moved → refresh (close
                 //     popup if cursor left the trigger range; never
                 //     open new popup just because the cursor passed
                 //     over an existing wikilink/hashtag)
                 //   - both unchanged → no autocomplete work needed
-                let snapshot_before = self.textarea_snapshot();
+                let text_rev_before = self.content_revision;
+                let cursor_before = self.textarea_cursor();
                 let result = self.handle_textarea_key(key, tx);
-                let snapshot_after = self.textarea_snapshot();
-                match (snapshot_before, snapshot_after) {
-                    (Some(before), Some(after)) if before.text != after.text => {
-                        self.sync_autocomplete();
-                    }
-                    (Some(before), Some(after)) if before.cursor != after.cursor => {
-                        self.refresh_autocomplete_if_open();
-                    }
-                    _ => {}
+                let cursor_after = self.textarea_cursor();
+                if self.content_revision != text_rev_before {
+                    self.sync_autocomplete();
+                } else if cursor_before != cursor_after {
+                    self.refresh_autocomplete_if_open();
                 }
                 result
             }
             InputEvent::Mouse(mouse) => {
-                let snapshot_before = self.textarea_snapshot();
+                let text_rev_before = self.content_revision;
+                let cursor_before = self.textarea_cursor();
                 let result = self.handle_mouse(mouse, tx);
-                let snapshot_after = self.textarea_snapshot();
+                let cursor_after = self.textarea_cursor();
                 // Mouse clicks typically only move the cursor — refresh
                 // (which may close the popup) but do not auto-open.
-                match (snapshot_before, snapshot_after) {
-                    (Some(before), Some(after)) if before.text != after.text => {
-                        self.sync_autocomplete();
-                    }
-                    (Some(before), Some(after)) if before.cursor != after.cursor => {
-                        self.refresh_autocomplete_if_open();
-                    }
-                    _ => {}
+                if self.content_revision != text_rev_before {
+                    self.sync_autocomplete();
+                } else if cursor_before != cursor_after {
+                    self.refresh_autocomplete_if_open();
                 }
                 result
             }
@@ -1482,29 +1839,69 @@ impl Component for TextEditorComponent {
         // Store the editor area (not the full rect) so mouse hit-testing ignores
         // clicks on the find-bar row.
         self.rect = editor_rect;
-        match &self.backend {
-            BackendState::Textarea(ta) => {
-                let cursor = cursor_tuple(ta);
-                let lines = ta.lines();
-                self.view.update(
-                    lines,
-                    cursor,
-                    editor_rect,
-                    self.edit_generation,
-                    self.selection,
-                );
-            }
+        // Phase 1: gather per-backend selection + (Nvim only) the
+        // content_gen the refresh task observed. Done before
+        // `view_snapshot()` so the Nvim path's content_revision mirror
+        // lands first.
+        let (selection, nvim_rev_to_mirror) = match &self.backend {
+            BackendState::Textarea(_) => (self.selection, None),
             BackendState::Nvim(nvim) => {
                 nvim.maybe_resize(editor_rect.width, editor_rect.height);
                 let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
-                let cursor = snap.cursor;
-                let lines = snap.lines.clone();
-                let content_gen = snap.content_gen;
                 let visual_selection = snap.visual_selection;
+                let content_gen = snap.content_gen;
                 drop(snap);
-                self.view
-                    .update(&lines, cursor, editor_rect, content_gen, visual_selection);
+                // Mirror the refresh task's view of "did content
+                // change" into our own `content_revision`. The
+                // refresh task only bumps `snap.content_gen` when
+                // `snap.lines` actually diffs (backend.rs:497) so
+                // navigation keystrokes leave the value alone, and
+                // an in-flight autosave's revision token stays valid
+                // across navigation. Skip-zero is handled by
+                // `NonZeroU64::new(0) == None`.
+                let rev = NonZeroU64::new(content_gen.saturating_add(1));
+                (visual_selection, rev)
             }
+        };
+        if let Some(rev) = nvim_rev_to_mirror {
+            self.content_revision = rev;
+        }
+        // Drain any completed background full-parse results BEFORE
+        // running view.update so a just-finished async parse lands
+        // before Gate 1 has a chance to install another placeholder.
+        // Generation mismatches drop silently (the spawned task's
+        // input is older than the current buffer).
+        while let Ok((generation, buf)) = self.full_parse_rx.try_recv() {
+            self.view.install_full_parse(generation, buf);
+        }
+
+        // Phase 2: single producer for the atomic snapshot. Borrowed
+        // on Textarea (zero clone), owned on Nvim (lines cloned out
+        // from behind the Mutex). Use the free function so the borrow
+        // checker can split `&self.backend` from `&mut self.view`.
+        let snap = snapshot_from_backend(&self.backend, self.content_revision);
+        self.view.update(&snap, editor_rect, selection);
+
+        // If `view.update` cap-tripped on a large buffer it
+        // installed a placeholder + pending-flag instead of running
+        // ParsedBuffer::parse synchronously. Spawn the real parse
+        // here so subsequent frames pick up the rich result via the
+        // drain loop above. `SingleSlotTask::spawn` aborts the prior
+        // task, so a burst of large-buffer edits resolves against
+        // the latest content.
+        if let Some(generation) = self.view.take_pending_full_parse() {
+            let lines: Vec<String> = snap.lines.iter().cloned().collect();
+            let tx = self.full_parse_tx.clone();
+            let redraw = self.redraw_tx.clone();
+            self.full_parse_task.spawn(async move {
+                let buf = ParsedBuffer::parse(&lines);
+                let _ = tx.send((generation, buf));
+                // Wake the render loop so the rich parse lands
+                // without waiting for the next keystroke.
+                if let Some(redraw) = redraw {
+                    let _ = redraw.send(AppEvent::Redraw);
+                }
+            });
         }
         // When the find bar is active, draw it AFTER the editor so its caret
         // (set via set_cursor_position) wins over the editor's caret call.
@@ -1608,6 +2005,53 @@ mod tests {
     }
 
     #[test]
+    fn has_trigger_before_cursor_finds_bracket() {
+        assert!(has_trigger_before_cursor("hello [[foo", 11));
+        assert!(has_trigger_before_cursor("[[a b c", 7));
+    }
+
+    #[test]
+    fn has_trigger_before_cursor_finds_hashtag() {
+        assert!(has_trigger_before_cursor("text #tag", 9));
+    }
+
+    #[test]
+    fn has_trigger_before_cursor_no_trigger_bails() {
+        assert!(!has_trigger_before_cursor("plain prose here", 16));
+        assert!(!has_trigger_before_cursor("", 0));
+    }
+
+    #[test]
+    fn has_trigger_before_cursor_handles_multibyte_no_panic() {
+        // Regression: the previous 64-byte saturating_sub slice could
+        // land mid-codepoint and panic on CJK / emoji / accented lines.
+        let line = "你好世界".to_string() + &"a".repeat(80);
+        let col = line.chars().count();
+        assert!(!has_trigger_before_cursor(&line, col));
+
+        let with_emoji = "🦀".repeat(20) + "[[note";
+        let col = with_emoji.chars().count();
+        assert!(has_trigger_before_cursor(&with_emoji, col));
+
+        let accented = "é".repeat(100);
+        let col = accented.chars().count();
+        assert!(!has_trigger_before_cursor(&accented, col));
+    }
+
+    #[test]
+    fn has_trigger_before_cursor_ignores_chars_after_cursor() {
+        // Trigger AFTER cursor must not match.
+        assert!(!has_trigger_before_cursor("foo [[bar", 3));
+    }
+
+    #[test]
+    fn has_trigger_before_cursor_wikilink_with_spaces() {
+        // Wikilink contents can contain spaces; we must still detect the
+        // opening bracket far back on the line.
+        assert!(has_trigger_before_cursor("[[my note title", 15));
+    }
+
+    #[test]
     fn fresh_editor_is_not_dirty() {
         let editor = make_editor();
         assert!(!editor.is_dirty());
@@ -1646,6 +2090,60 @@ mod tests {
             !editor.is_dirty(),
             "trailing newline should not make editor dirty after load"
         );
+    }
+
+    #[test]
+    fn cursor_move_does_not_dirty_buffer() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        assert!(!editor.is_dirty());
+        let tx = dummy_tx();
+        // Send a cursor-only key (Right arrow). It must bump `edit_generation`
+        // for view-cache invalidation but must NOT bump `text_revision`, so
+        // `is_dirty` stays false.
+        let key = ratatui::crossterm::event::KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        let _ = editor.handle_input(&InputEvent::Key(key), &tx);
+        assert!(
+            !editor.is_dirty(),
+            "cursor move must not mark the editor as dirty"
+        );
+    }
+
+    #[test]
+    fn empty_stack_undo_redo_does_not_dirty_or_bump_revision() {
+        // Regression: ShortcutOutcome::NoOp must apply for Ctrl+Z / Ctrl+Y
+        // when the undo/redo stack is empty. Both is_dirty and the
+        // raw content_revision counter stay put.
+        let mut editor = make_editor();
+        editor.set_text("foo".to_string());
+        let rev_before = editor.content_revision();
+        assert!(!editor.is_dirty());
+        let tx = dummy_tx();
+        for key_code in [KeyCode::Char('z'), KeyCode::Char('y')] {
+            let key = ratatui::crossterm::event::KeyEvent::new(key_code, KeyModifiers::CONTROL);
+            let _ = editor.handle_input(&InputEvent::Key(key), &tx);
+        }
+        assert!(
+            !editor.is_dirty(),
+            "empty-stack undo/redo must not flip is_dirty"
+        );
+        assert_eq!(
+            editor.content_revision(),
+            rev_before,
+            "empty-stack undo/redo must not bump content_revision"
+        );
+    }
+
+    #[test]
+    fn fresh_editor_content_revision_is_nonzero() {
+        // Regression: content_revision is typed `NonZeroU64`, which
+        // makes the "do not cache" sentinel for `AutocompleteHost`
+        // expressible as `Option::None` without a magic value.
+        // `NonZeroU64::get()` is always >= 1 by construction; this
+        // test is now a tautological smoke test that the constructor
+        // initialises the field.
+        let editor = make_editor();
+        assert!(editor.content_revision().get() >= 1);
     }
 
     #[test]
