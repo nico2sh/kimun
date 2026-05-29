@@ -251,12 +251,29 @@ pub struct Theme {
     /// Color for #hashtag label spans in the editor.
     #[serde(default = "default_color_tag")]
     pub color_tag: ThemeColor,
+    /// Color of the `│` blockquote bar drawn in place of `>` markers.
+    #[serde(default = "default_blockquote_bar")]
+    pub blockquote_bar: ThemeColor,
+    /// Background of fenced and indented code blocks (the "code box").
+    /// Inline `code` uses `bg_selected`, not this.
+    #[serde(default = "default_code_bg")]
+    pub code_bg: ThemeColor,
 }
 
 /// Serde default for `color_tag` — used when deserializing older theme TOML
 /// files that do not contain the field. Falls back to Gruvbox Dark's orange.
 fn default_color_tag() -> ThemeColor {
     ThemeColor::from_string("#fe8019").unwrap()
+}
+
+/// Serde default for `blockquote_bar` — Gruvbox Dark's accent yellow.
+fn default_blockquote_bar() -> ThemeColor {
+    ThemeColor::from_string("#fabd2f").unwrap()
+}
+
+/// Serde default for `code_bg` — Gruvbox Dark's panel background.
+fn default_code_bg() -> ThemeColor {
+    ThemeColor::from_string("#32302f").unwrap()
 }
 
 impl Default for Theme {
@@ -285,6 +302,8 @@ impl Theme {
             color_journal_date: ThemeColor::from_string("#8ec07c").unwrap(),
             color_search_match: ThemeColor::from_string("#b8bb26").unwrap(),
             color_tag: ThemeColor::from_string("#fe8019").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#fabd2f").unwrap(),
+            code_bg: ThemeColor::from_string("#32302f").unwrap(),
         }
     }
 
@@ -305,6 +324,8 @@ impl Theme {
             color_journal_date: ThemeColor::from_string("#689d6a").unwrap(),
             color_search_match: ThemeColor::from_string("#98971a").unwrap(),
             color_tag: ThemeColor::from_string("#af3a03").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#d79921").unwrap(),
+            code_bg: ThemeColor::from_string("#f2e5bc").unwrap(),
         }
     }
 
@@ -325,6 +346,8 @@ impl Theme {
             color_journal_date: ThemeColor::from_string("#94e2d5").unwrap(),
             color_search_match: ThemeColor::from_string("#a6e3a1").unwrap(),
             color_tag: ThemeColor::from_string("#fab387").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#cba6f7").unwrap(),
+            code_bg: ThemeColor::from_string("#181825").unwrap(),
         }
     }
 
@@ -345,6 +368,8 @@ impl Theme {
             color_journal_date: ThemeColor::from_string("#179299").unwrap(),
             color_search_match: ThemeColor::from_string("#40a02b").unwrap(),
             color_tag: ThemeColor::from_string("#fe640b").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#8839ef").unwrap(),
+            code_bg: ThemeColor::from_string("#e6e9ef").unwrap(),
         }
     }
 
@@ -365,6 +390,8 @@ impl Theme {
             color_journal_date: ThemeColor::from_string("#73daca").unwrap(),
             color_search_match: ThemeColor::from_string("#9ece6a").unwrap(),
             color_tag: ThemeColor::from_string("#ff9e64").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#7aa2f7").unwrap(),
+            code_bg: ThemeColor::from_string("#16161e").unwrap(),
         }
     }
 
@@ -385,6 +412,8 @@ impl Theme {
             color_journal_date: ThemeColor::from_string("#73daca").unwrap(),
             color_search_match: ThemeColor::from_string("#9ece6a").unwrap(),
             color_tag: ThemeColor::from_string("#ff9e64").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#bb9af7").unwrap(),
+            code_bg: ThemeColor::from_string("#1f2335").unwrap(),
         }
     }
 
@@ -405,6 +434,8 @@ impl Theme {
             color_journal_date: ThemeColor::from_string("#859900").unwrap(),
             color_search_match: ThemeColor::from_string("#b58900").unwrap(),
             color_tag: ThemeColor::from_string("#cb4b16").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#268bd2").unwrap(),
+            code_bg: ThemeColor::from_string("#073642").unwrap(),
         }
     }
 
@@ -425,6 +456,8 @@ impl Theme {
             color_journal_date: ThemeColor::from_string("#859900").unwrap(),
             color_search_match: ThemeColor::from_string("#b58900").unwrap(),
             color_tag: ThemeColor::from_string("#cb4b16").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#268bd2").unwrap(),
+            code_bg: ThemeColor::from_string("#eee8d5").unwrap(),
         }
     }
 
@@ -468,6 +501,8 @@ impl Theme {
             color_journal_date: ThemeColor::from_string("#8fbcbb").unwrap(),
             color_search_match: ThemeColor::from_string("#a3be8c").unwrap(),
             color_tag: ThemeColor::from_string("#d08770").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#88c0d0").unwrap(),
+            code_bg: ThemeColor::from_string("#3b4252").unwrap(),
         }
     }
 
@@ -493,6 +528,8 @@ impl Theme {
             color_journal_date: ThemeColor::Ansi(10), // bright green
             color_search_match: ThemeColor::Ansi(11), // bright yellow
             color_tag: ThemeColor::Ansi(3),           // yellow
+            blockquote_bar: ThemeColor::Ansi(6),      // cyan (accent)
+            code_bg: ThemeColor::Reset,               // Reset by design: palette-adaptive, no box bg
         }
     }
 }
@@ -871,5 +908,34 @@ mod tests {
         assert_eq!(theme.bg_selected, ThemeColor::Ansi(4));
         assert_eq!(theme.border_focused, ThemeColor::Ansi(6));
         assert_eq!(theme.color_directory, ThemeColor::Ansi(12));
+    }
+
+    #[test]
+    fn new_decoration_fields_present_and_deserialize_default() {
+        // Built-in theme exposes the fields.
+        let t = Theme::gruvbox_dark();
+        assert_eq!(t.blockquote_bar, ThemeColor::from_string("#fabd2f").unwrap());
+        assert_eq!(t.code_bg, ThemeColor::from_string("#32302f").unwrap());
+
+        // Old TOML without the fields still deserializes (serde defaults kick in).
+        let toml = r##"
+            name = "Old"
+            bg = "#000000"
+            bg_panel = "#111111"
+            bg_selected = "#222222"
+            fg = "#ffffff"
+            fg_secondary = "#cccccc"
+            fg_muted = "#888888"
+            fg_selected = "#ffffff"
+            border = "#333333"
+            border_focused = "#444444"
+            accent = "#55aaff"
+            color_directory = "#66ccee"
+            color_journal_date = "#77ddcc"
+            color_search_match = "#88eeaa"
+        "##;
+        let parsed: Theme = toml::from_str(toml).expect("old theme TOML must still parse");
+        assert_eq!(parsed.blockquote_bar, default_blockquote_bar());
+        assert_eq!(parsed.code_bg, default_code_bg());
     }
 }
