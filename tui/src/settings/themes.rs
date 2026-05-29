@@ -529,7 +529,10 @@ impl Theme {
             color_search_match: ThemeColor::Ansi(11), // bright yellow
             color_tag: ThemeColor::Ansi(3),           // yellow
             blockquote_bar: ThemeColor::Ansi(6),      // cyan (accent)
-            code_bg: ThemeColor::Reset, // Reset by design: palette-adaptive, no box bg
+            // Bright-black (gray) — a subtle code-block box that stays visible
+            // on both light and dark terminal palettes. `Reset` would equal the
+            // editor background and render no box at all.
+            code_bg: ThemeColor::Ansi(8),
         }
     }
 }
@@ -538,6 +541,32 @@ impl Theme {
 mod tests {
     use super::*;
     use ratatui::style::Style;
+
+    #[test]
+    fn every_builtin_theme_has_a_visible_code_bg() {
+        // `Reset` equals the editor background, so a code block would render no
+        // box at all (the ANSI-theme regression). Every built-in must use a
+        // real color for `code_bg`.
+        for theme in [
+            Theme::gruvbox_dark(),
+            Theme::gruvbox_light(),
+            Theme::catppuccin_mocha(),
+            Theme::catppuccin_latte(),
+            Theme::tokyo_night(),
+            Theme::tokyo_night_storm(),
+            Theme::solarized_dark(),
+            Theme::solarized_light(),
+            Theme::nord(),
+            Theme::ansi(),
+        ] {
+            assert_ne!(
+                theme.code_bg,
+                ThemeColor::Reset,
+                "theme {:?} has code_bg = Reset → invisible code box",
+                theme.name
+            );
+        }
+    }
 
     #[test]
     fn test_border_style_focused() {
