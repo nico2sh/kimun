@@ -368,6 +368,11 @@ impl MarkdownSpanner {
         } else {
             None
         };
+        let blockquote_sigil_end: Option<usize> = if is_first_visual_line {
+            parsed.blockquote_sigil_end()
+        } else {
+            None
+        };
 
         let end = cursor_col.min(logical_char_count);
         let mut rendered_col = 0usize;
@@ -400,12 +405,14 @@ impl MarkdownSpanner {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|s_end| pos < s_end);
             let in_list_sigil = list_sigil_end.is_some_and(|s_end| pos < s_end);
+            let in_blockquote_sigil = blockquote_sigil_end.is_some_and(|s_end| pos < s_end);
             let in_expanded_elem = expanded
                 .is_some_and(|i| elements[i].start_char <= pos && pos < elements[i].end_char);
             let in_any_element = parsed.in_any_element(pos);
             let visible = is_content
                 || in_heading_sigil
                 || in_list_sigil
+                || in_blockquote_sigil
                 || in_expanded_elem
                 || !in_any_element;
             if visible {
@@ -523,5 +530,24 @@ impl MarkdownSpanner {
             }
         }
         logical_char_count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_advances_over_blockquote_marker_on_its_line() {
+        // Cursor just after "> " on a bare blockquote line. Rendered column must
+        // be 2 (the "> " is revealed and visible on the cursor's own line), not 0.
+        let col = MarkdownSpanner::rendered_cursor_col(
+            "> ",   // logical line
+            0,      // visual_start_col
+            2,      // cursor_col (end of line)
+            true,   // is_first_visual_line
+            false,  // force_raw
+        );
+        assert_eq!(col, 2);
     }
 }
