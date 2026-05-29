@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.11.2...kimun-notes-v0.11.3) - 2026-05-29
+
+### Fixed
+
+- *(editor)* recompute spliced region's reset_boundaries
+- *(editor)* drop slice sentinels when merging reset_boundaries
+- *(editor)* wrap on grapheme-cluster boundaries by display width
+- *(editor)* run incremental-splice verify in release for non-provable tiers
+- *(editor)* guard async-parse placeholder + redraw on first open
+- *(editor)* clear last_splice_path on full-rebuild + cleanup post-soak debt
+- *(editor)* narrow §3.0 to ListMarker + lazy_depth==1 after 100k soak
+- *(editor)* abort the autosave handle on try_save timeout
+- *(editor)* empty-stack undo/redo/delete is a true no-op
+- *(editor)* text_revision starts at 1 and skips 0 on wraparound
+- *(editor)* drop dead cursor_code_block field + obsolete test
+- *(editor)* guard parsed_cache + visual_lines on stale cursor
+- *(editor)* cap try_save awaits at 5s to prevent quit hang
+- *(main-loop)* drain-break uses screen_generation, not ScreenKind
+- *(editor)* only drop autosave_task on completion when it's finished
+- *(editor)* mark_saved_at_revision no-ops on stale completion
+- *(editor)* nvim path bumps text_revision so autosave loses no edits
+- *(event-handler)* try_next panics on channel disconnect
+- *(editor)* nvim path bumps cursor counter, not text_revision
+- *(main-loop)* break event drain when screen identity changes
+- *(editor)* autosave completion uses revision, not text equality
+- *(autocomplete)* abort in-flight query on close + drop
+- *(editor)* clear dirty marker on set_text no-op reload
+- *(editor)* only bump text_revision when buffer truly changes
+- *(editor)* serialize autosave + recover from panicked tasks
+- *(editor)* don't clear Nvim dirty flag on divergent mark_saved
+- *(editor)* render every fenced code block with code-block style
+- *(editor)* split fence cache into text-keyed list + cursor lookup
+- *(editor)* track is_dirty against text_revision, not edit_generation
+
+### Other
+
+- *(autocomplete)* cargo fmt lazy-zone changes
+- *(autocomplete)* compute exclusion zones lazily
+- *(editor)* collapse nested ifs into let-chains (clippy)
+- *(editor)* cargo fmt parse_state accessor call sites
+- *(editor)* expose last_parse_was_incremental via accessor
+- *(editor)* assert reset_boundary Blank invariant in splice
+- *(editor)* shrink MarkdownEditorView interface
+- *(editor)* model parse cache as ParseState enum
+- *(editor)* drop write-only widener telemetry counters
+- *(editor)* consolidate block-opener heuristics into one classifier
+- *(editor)* linear-merge reset_boundaries on splice instead of re-sort
+- *(editor)* collapse widener to two tiers, drop IntraConstruct
+- cargo fmt
+- *(editor)* demote IntraConstruct verify to debug+env-only (PR 3)
+- *(editor)* three-tier widener + lazy-guard relax (PR 2 of 2)
+- *(editor)* intra_construct_boundaries field + tracking (PR 1 of 2)
+- *(editor)* ship parse-reset-boundaries-v2 hybrid widener
+- fix clippy warnings
+- cargo fmt
+- *(editor)* typing-path overhaul — review fixes, async parse, snapshot, task slot
+- tui benches
+- *(editor)* fast-path bail in sync_autocomplete
+- *(editor)* full-cycle bench for view.update + Clone on MarkdownEditorView
+- *(editor)* incremental WordWrapLayout in Gate 2
+- *(editor)* add WordWrapLayout::splice_range for damage-based wrap
+- *(editor)* incremental rendered_cache rebuild on text changes
+- *(editor)* use iter_batched for incremental bench
+- *(editor)* criterion benches for parse + wrap
+- *(editor)* structural-marker fallback + proptest harness
+- *(editor)* explicit tests for G1 (nested list), G3 (hashtag in fence), G8 (empty/1-line)
+- *(editor)* lock in correctness for structural-edit shapes
+- *(editor)* debug-only correctness assertion for incremental parses
+- *(editor)* wire try_incremental_parse into Gate 1
+- *(editor)* store ParsedBuffer in view; derive fence_ranges from kinds
+- *(editor)* derive fence ranges from LineConstructKind
+- *(editor)* fix widen_up over-pull across blank-separated lists
+- *(editor)* add widen_to_safe with cap-aware widening
+- *(editor)* tighten compute_damage_range fast path to O(window)
+- *(editor)* add compute_damage_range with cursor-row hint
+- *(editor)* harden ParsedBuffer::splice invariants + tests
+- *(editor)* add ParsedBuffer::parse_range and splice
+- *(editor)* tidy ParsedBuffer::parse kinds-population
+- *(editor)* populate LineConstructKind during ParsedBuffer::parse
+- *(editor)* convert ParsedBuffer to a struct with lines + kinds fields
+- *(editor)* scaffold parse_incremental module
+- close the three remaining low-priority coverage gaps
+- *(editor)* pin NoOp shortcut + nonzero initial text_revision
+- *(editor)* document the mark_saved vs mark_saved_at_revision asymmetry
+- *(event-handler)* try_next panic message names the right sender
+- *(autocomplete)* tighten DEFAULT_DEBOUNCE comment
+- *(editor)* document NvimBackend::set_text TOCTOU contract
+- *(autocomplete)* skip cache write on revision==0 sentinel
+- *(autocomplete)* cache buffer text alongside exclusion zones
+- *(autocomplete)* cache exclusion zones per buffer revision
+- *(main-loop)* coalesce queued events between draws
+- *(autocomplete)* debounce refinement queries by 80ms
+- *(editor)* slice-bounded grapheme walk in render_with
+- *(editor)* gate view caches on text_revision, not edit_generation
+- *(editor)* avoid per-keystroke buffer snapshots
+- *(editor)* make periodic autosave non-blocking
+- *(editor)* cache is_dirty via saved_generation
+
 ## [0.11.2](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.11.1...kimun-notes-v0.11.2) - 2026-05-26
 
 ### Fixed
