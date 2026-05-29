@@ -10,7 +10,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use super::host::AutocompleteHost;
 use super::popup::{PopupAction, PopupOutcome, handle_key as popup_handle_key};
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
-use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with_zones};
+use super::trigger::{TriggerKind, TriggerOptions, ZoneOracle, detect_trigger_with_oracle};
 #[cfg(test)]
 use crate::components::text_editor::snapshot::EditorSnapshot;
 use crate::util::single_slot_task::SingleSlotTask;
@@ -75,15 +75,16 @@ pub struct AutocompleteController {
     /// a popup (kind change / open) bypasses the debounce. Tests override
     /// to `Duration::ZERO` via `with_debounce`.
     debounce: Duration,
-    /// Cached exclusion zones AND the joined buffer text they were built
-    /// from, keyed on the host's `content_revision`. `is_inside_exclusion_zone`
-    /// was previously rerun on every reconcile and `host.buffer_text()` was
-    /// allocated unconditionally per call; now cursor moves answer both
-    /// queries from the cache and only text changes rebuild them. Hosts
-    /// whose buffer has no stable revision identity (search-box modal)
-    /// return `None` from `content_revision` and never populate this
-    /// slot.
-    cached_text: Option<(NonZeroU64, String, ExclusionZones)>,
+    /// The joined buffer text keyed on the host's `content_revision`,
+    /// plus its `ExclusionZones` computed LAZILY (`None` until the
+    /// trigger veto first needs them). The text is rebuilt only when the
+    /// revision moves; cursor moves reuse it. The zones — a full-buffer
+    /// pulldown-cmark + regex scan — are computed only when a `[[`/`#`
+    /// opener is found, then memoized here so a later cursor move at the
+    /// same revision reuses them. Hosts with no stable revision identity
+    /// (search-box modal) return `None` from `content_revision` and never
+    /// populate this slot.
+    cached_text: Option<(NonZeroU64, String, Option<ExclusionZones>)>,
     /// Optional callback used to wake the host's render loop after an
     /// async query posts its result. Decoupled from any specific event
     /// bus so the controller stays usable wherever the host can
@@ -101,6 +102,31 @@ struct QueryResult {
     generation: u64,
     kind: TriggerKind,
     items: Vec<Suggestion>,
+}
+
+/// [`ZoneOracle`] that computes `ExclusionZones` from `text` on first
+/// query and memoizes the result back into the borrowed slot — so the
+/// full-buffer scan runs at most once per buffer revision, and only when
+/// a trigger candidate actually reaches the exclusion veto.
+struct LazyZoneOracle<'a> {
+    text: &'a str,
+    zones: &'a mut Option<ExclusionZones>,
+}
+
+impl ZoneOracle for LazyZoneOracle<'_> {
+    fn contains(&mut self, cursor: usize) -> bool {
+        let text = self.text;
+        self.zones
+            .get_or_insert_with(|| ExclusionZones::from_text(text))
+            .contains(cursor)
+    }
+
+    fn contains_code_link_or_frontmatter(&mut self, cursor: usize) -> bool {
+        let text = self.text;
+        self.zones
+            .get_or_insert_with(|| ExclusionZones::from_text(text))
+            .contains_code_link_or_frontmatter(cursor)
+    }
 }
 
 impl AutocompleteController {
@@ -267,37 +293,41 @@ impl AutocompleteController {
         let snap = host.buffer_snapshot();
         let cursor = snap.cursor_byte_offset();
         let cache_key = host.cache_key();
-        // Rebuild buffer text AND exclusion zones only when the
-        // host's cache key has moved on. Cursor moves keep the key
-        // unchanged, so both the full-buffer join AND the
-        // pulldown-cmark + regex scans run at most once per text
-        // edit.
+        // Rebuild the joined buffer text only when the host's cache key
+        // has moved on; cursor moves reuse it. The expensive
+        // `ExclusionZones` scan (full-buffer pulldown-cmark + regex)
+        // stays LAZY — the oracle below computes it only if the local
+        // trigger scan finds a `[[`/`#` opener that needs the exclusion
+        // veto, and memoizes it into the cache slot so a later cursor
+        // move at the same revision reuses it. Normal prose keystrokes
+        // (no opener at the caret) never pay the scan at all.
         //
-        // `cache_key == None` opts the host out entirely (search-box
-        // modal). Treat as an unconditional miss AND skip persisting
-        // the rebuilt value so opt-out hosts don't churn the
-        // `cached_text` slot per keystroke.
-        let cached_match = cache_key.is_some_and(|rev| {
-            self.cached_text
-                .as_ref()
-                .is_some_and(|(cached_rev, _, _)| *cached_rev == rev)
-        });
-        let trigger = if cached_match {
-            let (_, text, zones) = self
-                .cached_text
-                .as_ref()
-                .expect("cached_match implies Some");
-            detect_trigger_with_zones(text, cursor, self.trigger_opts, Some(zones))
-        } else {
-            // Cache miss: join the borrowed lines once into the
-            // owned `String` the cache slot will hold.
-            let text = snap.lines.join("\n");
-            let zones = ExclusionZones::from_text(&text);
-            let trigger = detect_trigger_with_zones(&text, cursor, self.trigger_opts, Some(&zones));
-            if let Some(rev) = cache_key {
-                self.cached_text = Some((rev, text, zones));
+        // `cache_key == None` opts the host out (search-box modal): join
+        // locally, use a throwaway lazy memo, and never touch the cache.
+        let trigger = match cache_key {
+            Some(rev) => {
+                let hit = matches!(&self.cached_text, Some((r, _, _)) if *r == rev);
+                if !hit {
+                    self.cached_text = Some((rev, snap.lines.join("\n"), None));
+                }
+                let (_, text, zones_slot) =
+                    self.cached_text.as_mut().expect("just populated");
+                let text: &str = text;
+                let mut oracle = LazyZoneOracle {
+                    text,
+                    zones: zones_slot,
+                };
+                detect_trigger_with_oracle(text, cursor, self.trigger_opts, &mut oracle)
             }
-            trigger
+            None => {
+                let text = snap.lines.join("\n");
+                let mut zones: Option<ExclusionZones> = None;
+                let mut oracle = LazyZoneOracle {
+                    text: &text,
+                    zones: &mut zones,
+                };
+                detect_trigger_with_oracle(&text, cursor, self.trigger_opts, &mut oracle)
+            }
         };
 
         // Filter by mode before deciding anything else.
@@ -1140,6 +1170,29 @@ mod tests {
         assert!(
             c.cached_text.is_none(),
             "close() must drop cached_text so the buffer clone doesn't outlive the popup"
+        );
+    }
+
+    /// A `[[` candidate reaches the wikilink veto, so zones are computed
+    /// and memoized; a subsequent cursor-only move at the same revision
+    /// reuses them rather than recomputing.
+    #[tokio::test]
+    async fn trigger_candidate_computes_zones_once() {
+        let (_tmp, vault) = new_vault_with(&["memory"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+
+        let mut host = FakeHost::new("see [[me", 8);
+        c.sync(&host);
+        assert!(
+            c.cached_text.as_ref().unwrap().2.is_some(),
+            "a [[ candidate reaching the veto must compute and memoize zones"
+        );
+
+        host.cursor = 7;
+        c.sync(&host);
+        assert!(
+            c.cached_text.as_ref().unwrap().2.is_some(),
+            "memoized zones survive a cursor-only move at the same revision"
         );
     }
 }
