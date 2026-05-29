@@ -1513,6 +1513,16 @@ mod tests {
         let fresh = ParsedBuffer::parse(&lines);
         assert_eq!(v.parse_state.buf().lines.len(), fresh.lines.len());
         assert_eq!(v.parse_state.buf().kinds, fresh.kinds);
+        // Regression: the heuristic widener splices a slice whose
+        // local sentinel boundaries (slice rows 0 and len) are NOT
+        // genuine reset boundaries of the merged buffer. splice must
+        // not promote them — a 1000-line single-paragraph buffer has
+        // reset boundaries only at [0, 1000].
+        assert_eq!(
+            v.parse_state.buf().reset_boundaries,
+            fresh.reset_boundaries,
+            "heuristic splice must not introduce spurious reset boundaries"
+        );
         // And the incremental path was actually taken.
         assert!(
             v.last_parse_was_incremental,

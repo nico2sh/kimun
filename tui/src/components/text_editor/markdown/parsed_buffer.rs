@@ -734,7 +734,7 @@ impl ParsedBuffer {
         // changes line count (gated upstream in try_incremental_parse),
         // so boundaries outside `range` keep their indices. Boundaries
         // strictly inside `range` are dropped (the splice replaces
-        // them). The slice's own boundaries are shifted by
+        // them). The slice's own INTERIOR boundaries are shifted by
         // `range.start` and added.
         let lines_len = self.lines.len();
         // Linear merge instead of sort+dedup. The three runs are each
@@ -742,14 +742,23 @@ impl ParsedBuffer {
         // is sorted and only adjacent duplicates (at the run junctions)
         // need collapsing:
         //   - low:  self boundaries `b <= range.start`
-        //   - mid:  other's boundaries shifted by range.start. Since
-        //           `other.len() == range.len()` (line count unchanged),
-        //           these span `[range.start, range.end]` — its sentinels
-        //           `0` and `other.len()` map onto `range.start` and
-        //           `range.end`.
+        //   - mid:  other's INTERIOR boundaries shifted by range.start.
         //   - high: self boundaries `b >= range.end`
-        // Sentinels survive automatically: `0` lives in `low`,
-        // `lines_len` (== old line count, unchanged) lives in `high`.
+        //
+        // The slice's sentinel boundaries (`0` and `other.len()`, which
+        // shift onto `range.start` and `range.end`) are NOT promoted.
+        // They are artefacts of parsing the slice in isolation, not
+        // genuine reset boundaries of the merged buffer: the heuristic
+        // widener (`widen_to_safe`) chooses `range.start`/`range.end`
+        // for `LineConstructKind`-safety, which does NOT imply they are
+        // reset boundaries (e.g. mid-paragraph rows in a long
+        // blank-free buffer). `range.start`/`range.end` survive only
+        // when `self` already held them — carried by `low`/`high`. This
+        // keeps the Strict path unchanged (its edges ARE reset
+        // boundaries in `self`) while preventing spurious boundaries on
+        // the Heuristic path. Sentinels `0` and `lines_len` always
+        // survive via `low`/`high` respectively.
+        let slice_len = range.len();
         let mut merged: Vec<usize> =
             Vec::with_capacity(self.reset_boundaries.len() + other.reset_boundaries.len());
         merged.extend(
@@ -758,7 +767,14 @@ impl ParsedBuffer {
                 .copied()
                 .filter(|&b| b <= range.start),
         );
-        merged.extend(other.reset_boundaries.iter().map(|&b| range.start + b));
+        merged.extend(
+            other
+                .reset_boundaries
+                .iter()
+                .copied()
+                .filter(|&b| b != 0 && b != slice_len)
+                .map(|b| range.start + b),
+        );
         merged.extend(
             self.reset_boundaries
                 .iter()
