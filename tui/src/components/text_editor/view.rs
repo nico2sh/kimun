@@ -51,6 +51,11 @@ pub struct MarkdownEditorView {
     /// widest-rendered-line width, capped at the editor width. Rebuilt in
     /// `update()` whenever text or width changes.
     code_box_width: Vec<Option<u16>>,
+    /// Per-logical-row left gutter width (display cols) for the blockquote
+    /// bar: `depth + 1` on blockquote rows that are NOT the cursor row, else
+    /// 0. Cursor-dependent (the cursor row reveals raw `> `), so rebuilt with
+    /// the same cursor-affected-row logic as `rendered_cache`.
+    gutter_insets: Vec<usize>,
     /// Cursor's last on-screen position (col, row), or `None` when the
     /// cursor was scrolled off-screen or the view was unfocused at the
     /// time of the previous `render`. Used as the anchor for floating
@@ -187,6 +192,7 @@ impl MarkdownEditorView {
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
             code_box_width: Vec::new(),
+            gutter_insets: Vec::new(),
             last_cursor_screen: None,
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
@@ -523,14 +529,20 @@ impl MarkdownEditorView {
             //   cursor-position-sensitive whenever the cursor crosses
             //   an inline element boundary — same row or different
             //   row.
+            self.rebuild_gutter_insets(lines, cursor.0);
             let line_count_changed = self.layout.row_starts_len() != lines.len();
             if width_changed || line_count_changed {
-                self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache, &[]);
+                self.layout =
+                    WordWrapLayout::compute(lines, rect.width, &self.rendered_cache, &self.gutter_insets);
             } else {
                 match &self.last_text_change {
                     TextChangeKind::Full => {
-                        self.layout =
-                            WordWrapLayout::compute(lines, rect.width, &self.rendered_cache, &[]);
+                        self.layout = WordWrapLayout::compute(
+                            lines,
+                            rect.width,
+                            &self.rendered_cache,
+                            &self.gutter_insets,
+                        );
                     }
                     TextChangeKind::Incremental(range) => {
                         let start = range
@@ -547,7 +559,7 @@ impl MarkdownEditorView {
                             lines,
                             rect.width,
                             &self.rendered_cache,
-                            &[],
+                            &self.gutter_insets,
                             start..end,
                         );
                     }
@@ -559,7 +571,7 @@ impl MarkdownEditorView {
                                 lines,
                                 rect.width,
                                 &self.rendered_cache,
-                                &[],
+                                &self.gutter_insets,
                                 first..last + 1,
                             );
                         }
@@ -1007,6 +1019,11 @@ impl MarkdownEditorView {
         &self.code_box_width
     }
 
+    #[cfg(test)]
+    pub(crate) fn gutter_insets_for_testing(&self) -> &[usize] {
+        &self.gutter_insets
+    }
+
     fn is_in_code_block(&self, row: usize) -> bool {
         // Every line inside any fenced block renders force-raw (no markdown
         // re-styling, distinct fg color). Previously this checked only the
@@ -1039,6 +1056,24 @@ impl MarkdownEditorView {
             }
         }
         self.code_box_width = out;
+    }
+
+    /// Rebuild `gutter_insets` from parse state + cursor. A blockquote row
+    /// that is not the cursor row reserves `depth + 1` cols for the bar; the
+    /// cursor row reserves 0 (its markers are revealed raw).
+    fn rebuild_gutter_insets(&mut self, lines: &[String], cursor_row: usize) {
+        let parsed = &self.parse_state.buf().lines;
+        self.gutter_insets = (0..lines.len())
+            .map(|row| {
+                if row == cursor_row {
+                    return 0;
+                }
+                match parsed.get(row).and_then(|p| p.blockquote_depth()) {
+                    Some(d) => d as usize + 1,
+                    None => 0,
+                }
+            })
+            .collect();
     }
 
     /// Markdown-aware mouse click: maps a rendered screen column to
@@ -1259,6 +1294,16 @@ mod tests {
         };
         update_view(&mut v, lines, cursor, r, 1, None);
         v
+    }
+
+    #[test]
+    fn blockquote_gutter_inset_off_cursor_row_only() {
+        // Two blockquote lines; cursor on row 0.
+        let lines = vec!["> first".to_string(), ">> second".to_string()];
+        let view = make_view_for_lines(&lines, (0, 1), 80);
+        let g = view.gutter_insets_for_testing();
+        assert_eq!(g[0], 0); // cursor row → revealed, no gutter
+        assert_eq!(g[1], 3); // depth 2 → 2 bars + 1 space
     }
 
     #[test]
