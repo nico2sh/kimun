@@ -546,6 +546,7 @@ impl ParsedBuffer {
                 elem_index,
                 list_sigil_end: list_sigil_end[row],
                 image_placeholders,
+                blockquote_depth: None,
             });
         }
 
@@ -570,6 +571,9 @@ impl ParsedBuffer {
             }
             if depth > 0 {
                 kinds[row] = LineConstructKind::Blockquote(depth);
+                if let Some(pl) = out.get_mut(row) {
+                    pl.blockquote_depth = Some(depth);
+                }
             }
         }
 
@@ -665,6 +669,7 @@ impl ParsedBuffer {
                 elem_index: vec![0; total],
                 list_sigil_end: None,
                 image_placeholders: Vec::new(),
+                blockquote_depth: None,
             });
         }
         let kinds = vec![LineConstructKind::Plain; lines.len()];

@@ -115,6 +115,9 @@ pub struct ParsedLine {
     /// chars are hidden (`content_vis = false`) and replaced visually by
     /// `placeholder` when rendering.
     pub image_placeholders: Vec<ImagePlaceholder>,
+    /// Blockquote nesting depth (number of leading `>`), or `None` if this
+    /// line is not a blockquote. Set by `ParsedBuffer::parse`'s post-pass.
+    blockquote_depth: Option<u8>,
 }
 
 impl ParsedLine {
@@ -193,6 +196,33 @@ impl ParsedLine {
         self.list_sigil_end
     }
 
+    /// Blockquote nesting depth for this line, or `None` if not a blockquote.
+    pub fn blockquote_depth(&self) -> Option<u8> {
+        self.blockquote_depth
+    }
+
+    /// Char offset where the blockquote marker region (`>`/spaces) ends, i.e.
+    /// the first content char. `None` if this line is not a blockquote.
+    /// Mirrors `heading_sigil_end`: defaults to the element end when the quote
+    /// has no content (e.g. a bare `>`).
+    pub fn blockquote_sigil_end(&self) -> Option<usize> {
+        self.blockquote_depth?;
+        self.elements
+            .iter()
+            .find(|e| e.kind == ElementKind::Blockquote)
+            .map(|e| {
+                let mut first_content = e.end_char;
+                for i in e.start_char..e.end_char {
+                    if i < self.content_vis.len() && self.content_vis[i] {
+                        first_content = i;
+                        break;
+                    }
+                }
+                first_content
+            })
+            .or(Some(0))
+    }
+
     /// Diagnostic helper: compare every field for byte-identity. Used by
     /// the view's debug-only correctness assertion. Returns Ok(()) when
     /// all fields match, Err with a human-readable message describing the
@@ -211,6 +241,10 @@ impl ParsedLine {
         assert_eq!(
             self.list_sigil_end, other.list_sigil_end,
             "row {row} list_sigil_end diverge"
+        );
+        assert_eq!(
+            self.blockquote_depth, other.blockquote_depth,
+            "row {row} blockquote_depth diverge"
         );
         assert_eq!(
             self.elements.len(),
@@ -355,6 +389,20 @@ mod tests {
         spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    #[test]
+    fn blockquote_depth_and_sigil_end() {
+        let p = ParsedLine::parse("> hello");
+        assert_eq!(p.blockquote_depth(), Some(1));
+        // sigil region is "> " (2 chars); content starts at index 2.
+        assert_eq!(p.blockquote_sigil_end(), Some(2));
+
+        let p2 = ParsedLine::parse(">> deep");
+        assert_eq!(p2.blockquote_depth(), Some(2));
+
+        let plain = ParsedLine::parse("not a quote");
+        assert_eq!(plain.blockquote_depth(), None);
+        assert_eq!(plain.blockquote_sigil_end(), None);
+    }
     #[test]
     fn parse_bold_range() {
         let e = MarkdownSpanner::parse_elements("**bold**");
