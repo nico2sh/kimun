@@ -19,3 +19,5 @@ cc a10747732d5c03caaa578203dadc741217099d72238a25865ff51f224ea72f1e # shrinks to
 cc 62105dca56b1be4afb373544f09a2537a2377259f386b9e2d3b7addd3cfa20ae # shrinks to initial = ["> a", "", "", "", "# a", "a", "*     ", "", "", "", "", "", "", "", "", ""], row = 38, ch = '!'
 cc 5c0402238d50c1bce1b928232a72338018aacffa81b58defd88160834743fb0e # shrinks to items = [">  ", ">  ", ">  ", ">  ", "> a", "> a", "> a", "> a", ">     ", ">  "], target_idx = 8, ch = 'a'
 cc 08abb1dbdd3258940346eac02534d4364c21b0fcdc909288c8566ab9936922b1 # shrinks to initial = ["", "> a", "", "", "", "", "", "", ">  ", "> a", "", "```", "", "", "```", "", ">  ", "-  ", ">     a", ">     ", ""], row = 19, ch = '!'
+cc d7ef0e63ea79683cebd95b1f241ef06ace281dbfe07fd0340db498c8972668f4 # shrinks to initial = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", ""], row = 1, ch = '!'
+cc 5f193b1f92f82ca0feaed74775d853c9424c96cf8ad7231e9817e10ad76b31be # shrinks to initial = ["> a", "", ""], row = 2, ch = '!'
