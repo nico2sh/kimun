@@ -30,6 +30,21 @@ pub(super) fn string_display_width(s: &str) -> usize {
     s.graphemes(true).map(cluster_display_width).sum()
 }
 
+/// Display-column width of a raw line with all clusters visible and tabs
+/// expanded to the next tab stop. Mirrors the per-cluster column math in
+/// `spanner::render_with` (tab handling + `cluster_display_width`).
+pub(super) fn raw_display_width(line: &str) -> usize {
+    let mut col = 0usize;
+    for g in line.graphemes(true) {
+        if g == "\t" {
+            col += tab_width_at(col);
+        } else {
+            col += cluster_display_width(g);
+        }
+    }
+    col
+}
+
 /// Display width of a grapheme cluster.
 ///
 /// For multi-codepoint clusters (ZWJ sequences like 👨‍👩‍👧‍👦, variation selectors,
