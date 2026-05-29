@@ -79,8 +79,8 @@ pub struct MarkdownEditorView {
     /// incremental splice path, false when it took the full-parse fallback.
     /// Read by tests; not part of the production observable surface.
     pub last_parse_was_incremental: bool,
-    /// Diagnostic: which widener tier (`Strict` / `IntraConstruct` /
-    /// `Heuristic`) produced the most recent successful incremental
+    /// Diagnostic: which widener tier (`Strict` / `Heuristic`)
+    /// produced the most recent successful incremental
     /// splice. `None` when no incremental splice has happened yet
     /// (first parse or full-rebuild fallbacks). Read by unit tests
     /// asserting the chosen widener path.
@@ -105,9 +105,11 @@ pub struct MarkdownEditorView {
 }
 
 /// True when `KIMUN_VIEW_VERIFY_INCREMENTAL=1` is set. Reads the
-/// env var once per process and caches. Gates the optional verify
-/// loop on the heuristic widener path; the IntraConstruct path's
-/// verify runs unconditionally in release during proof-out.
+/// env var once per process and caches. Gates the debug-only
+/// full-kinds assertion in Gate 1 that compares every incremental
+/// splice against a fresh whole-buffer parse. (The per-splice
+/// undamaged-row verify on the heuristic path runs in release
+/// unconditionally — see `try_incremental_parse`.)
 fn verify_incremental_enabled() -> bool {
     static VERIFY: OnceLock<bool> = OnceLock::new();
     *VERIFY.get_or_init(|| {
@@ -126,11 +128,8 @@ fn verify_incremental_enabled() -> bool {
 pub enum SplicePath {
     /// Strict reset-boundary widener (`reset_boundaries`) succeeded.
     Strict,
-    /// Intra-construct boundary widener succeeded after strict
-    /// returned `FullRebuild`.
-    IntraConstruct,
-    /// `widen_to_safe` heuristic succeeded after both reset-boundary
-    /// attempts returned `FullRebuild`.
+    /// `widen_to_safe` heuristic succeeded after the strict
+    /// reset-boundary widener returned `FullRebuild`.
     Heuristic,
 }
 
@@ -743,9 +742,11 @@ impl MarkdownEditorView {
             // ListMarker/ListContinuation classification stays identical
             // across slice-vs-parent, and rows past widened.end are
             // unaffected by the slice's list-vs-non-list determination.
-            // The widener's intra-construct tier (or, on small buffers,
-            // the strict tier widening to the whole buffer) takes the
-            // splice. The looks_like_* / blank-transition flips run as
+            // The widener's heuristic tier (widen_to_safe over the
+            // loose-list blanks; or, on small buffers, the strict tier
+            // widening to the whole buffer) takes the splice. The
+            // post-slice verify backs this. The looks_like_* /
+            // blank-transition flips run as
             // separate guards above and below this check, so the relax
             // only ever fires on pure content edits.
             //
@@ -832,32 +833,29 @@ impl MarkdownEditorView {
             }
         }
 
-        // V3 three-tier widener (openspec change
-        // `intra-construct-reset-boundaries`):
+        // Two-tier widener:
         //
         //   1. `expand_to_reset_boundary(reset_boundaries, ...)` —
         //      strict. Provably equivalent to a fresh parse; no
         //      post-slice verify needed.
-        //   2. `expand_to_reset_boundary(intra_construct_boundaries, ...)`
-        //      — rendered-output equivalent. Splices across
-        //      End(Item) / End(BlockQuote) rows where the surrounding
-        //      lazy construct is still open. Per-row `kinds` /
-        //      `elements.len()` / `content_vis` match a fresh parse
-        //      slice, but `lazy_depth` / `reset_boundaries` metadata
-        //      may diverge — splice rebuilds both from the slice's
-        //      view. Post-slice verify runs in release (cheap; see
-        //      below) and bails to full rebuild on divergence.
-        //   3. `widen_to_safe` — heuristic fallback. NOT provably
-        //      equivalent; the post-slice verify is the correctness
-        //      mechanism, same release-on verify as (2).
+        //   2. `widen_to_safe` — heuristic fallback. NOT provably
+        //      equivalent; the post-slice verify (below, release-on)
+        //      is the correctness mechanism and bails to a full
+        //      rebuild on any divergence.
         //
         // After a §3.0 relax fires the strict widener usually
         // cap-trips (lazy_depth > 0 around the edit means no nearby
         // blank-with-depth-0 reset boundary), but we still try strict
         // first — it costs only a binary search and succeeds in
         // degenerate cases (e.g. small buffers where strict widens
-        // safely to the whole buffer). On failure we try
-        // intra-construct, then widen_to_safe.
+        // safely to the whole buffer). On failure we fall to
+        // widen_to_safe.
+        //
+        // A former middle tier (`intra_construct_boundaries`, the V3
+        // "IntraConstruct" path) was removed: it fired only on loose-
+        // list edits and `widen_to_safe` covers every such case with
+        // zero extra full rebuilds (measured), differing only in
+        // reparse span (~11 vs ~2 rows — both far under the 256 cap).
         let mut splice_path = SplicePath::Strict;
         let widened = match expand_to_reset_boundary(
             &self.parsed_buffer.reset_boundaries,
@@ -865,25 +863,15 @@ impl MarkdownEditorView {
             damaged.clone(),
         ) {
             WidenResult::Widened(r) => r,
-            WidenResult::FullRebuild => match expand_to_reset_boundary(
-                &self.parsed_buffer.intra_construct_boundaries,
-                self.parsed_buffer.lines.len(),
-                damaged.clone(),
-            ) {
-                WidenResult::Widened(r) => {
-                    splice_path = SplicePath::IntraConstruct;
-                    r
-                }
-                WidenResult::FullRebuild => {
-                    match widen_to_safe(&self.parsed_buffer.kinds, damaged.clone()) {
-                        WidenResult::Widened(r) => {
-                            splice_path = SplicePath::Heuristic;
-                            r
-                        }
-                        WidenResult::FullRebuild => return METRICS.bail(BailReason::CapTrip),
+            WidenResult::FullRebuild => {
+                match widen_to_safe(&self.parsed_buffer.kinds, damaged.clone()) {
+                    WidenResult::Widened(r) => {
+                        splice_path = SplicePath::Heuristic;
+                        r
                     }
+                    WidenResult::FullRebuild => return METRICS.bail(BailReason::CapTrip),
                 }
-            },
+            }
         };
         let slice = ParsedBuffer::parse_range(lines, widened.clone());
 
@@ -891,9 +879,9 @@ impl MarkdownEditorView {
         //
         // - Strict path: skipped. Provably equivalent to a fresh
         //   parse (see `reset_boundaries` docstring).
-        // - IntraConstruct / Heuristic paths: NOT provably equivalent,
-        //   so this verify is the correctness mechanism and runs in
-        //   release. It is cheap: `slice` was already parsed above
+        // - Heuristic path: NOT provably equivalent, so this verify
+        //   is the correctness mechanism and runs in release. It is
+        //   cheap: `slice` was already parsed above
         //   (unconditionally), and the loop only compares
         //   kinds/elements.len()/content_vis over the `widened` rows —
         //   bounded by the widen cap (≤256), negligible against the
@@ -902,10 +890,7 @@ impl MarkdownEditorView {
         //   rather than shipping a corrupt splice. The 600k proptest
         //   cases (100k × 6 strategies, 0 verify_failed) stay in the
         //   regression harness; this guard is the release backstop.
-        let verify_eligible_path = matches!(
-            splice_path,
-            SplicePath::IntraConstruct | SplicePath::Heuristic
-        );
+        let verify_eligible_path = matches!(splice_path, SplicePath::Heuristic);
         if verify_eligible_path {
             for row in widened.clone() {
                 if damaged.contains(&row) {
@@ -926,7 +911,6 @@ impl MarkdownEditorView {
 
         METRICS.ok(match splice_path {
             SplicePath::Strict => SuccessPath::ResetBoundary,
-            SplicePath::IntraConstruct => SuccessPath::IntraConstruct,
             SplicePath::Heuristic => SuccessPath::WidenToSafe,
         });
         Some((widened, slice, splice_path))
@@ -2200,12 +2184,13 @@ mod tests {
         assert!(v.last_parse_was_incremental);
     }
 
-    // §3.4 — intra-construct widener fires on an in-list content edit.
+    // §3.4 — heuristic widener fires on an in-list content edit.
     //
     // Needs a buffer big enough that strict widener (which on a
     // loose list with no interior reset boundaries expands to
-    // `[0, lines.len()]`) cap-trips. With MAX_INCREMENTAL_LINES=256
-    // we use ~500 items.
+    // `[0, lines.len()]`) cap-trips, so the edit falls to
+    // widen_to_safe over the loose-list blanks. With
+    // MAX_INCREMENTAL_LINES=256 we use ~500 items.
 
     fn make_loose_list(n_items: usize) -> Vec<String> {
         let mut out = Vec::with_capacity(n_items * 2);
@@ -2219,7 +2204,7 @@ mod tests {
     }
 
     #[test]
-    fn try_incremental_parse_uses_intra_construct_on_in_list_edit() {
+    fn try_incremental_parse_uses_heuristic_on_in_list_edit() {
         let mut v = MarkdownEditorView::new();
         let lines = make_loose_list(300);
         let mid_row = 200;
@@ -2239,12 +2224,12 @@ mod tests {
         assert!(
             v.last_parse_was_incremental,
             "edit inside large loose list must take incremental path \
-             (lazy-guard relaxation + intra-construct widener)"
+             (lazy-guard relaxation + widen_to_safe over the loose-list blanks)"
         );
         assert_eq!(
             v.last_splice_path,
-            Some(SplicePath::IntraConstruct),
-            "expected IntraConstruct path on large loose list edit, got {:?}",
+            Some(SplicePath::Heuristic),
+            "expected Heuristic path on large loose list edit, got {:?}",
             v.last_splice_path
         );
     }
@@ -2269,7 +2254,7 @@ mod tests {
     // The §3.5 spec scenario "- a" → "* a" produces ListMarker in
     // both. Slice parses "* a" alone as a list with `*` marker;
     // kinds[0] = ListMarker. Parent had ListMarker too. No
-    // divergence. Splice succeeds via IntraConstruct.
+    // divergence. Splice succeeds via the heuristic widener.
     //
     // This test instead asserts the negative: a more-aggressive
     // structural change (e.g. removing the marker entirely, turning
