@@ -1,4 +1,4 @@
-use super::markdown::{MarkdownSpanner, ParsedBuffer};
+use super::markdown::{MarkdownSpanner, ParsedBuffer, opener_shape};
 use super::word_wrap::WordWrapLayout;
 use crate::settings::themes::Theme;
 use ratatui::Frame;
@@ -131,128 +131,6 @@ pub enum SplicePath {
     /// `widen_to_safe` heuristic succeeded after the strict
     /// reset-boundary widener returned `FullRebuild`.
     Heuristic,
-}
-
-/// True when `line` looks syntactically like a fenced-code-block marker
-/// per CommonMark: optional leading indent (≤3 spaces), then 3+ backticks
-/// or 3+ tildes (no mixing).
-fn looks_like_fence_marker(line: &str) -> bool {
-    let trimmed = line.trim_start_matches(' ');
-    // Allow up to 3 spaces of indent (CommonMark spec §4.5).
-    let indent = line.len() - trimmed.len();
-    if indent > 3 {
-        return false;
-    }
-    (trimmed.starts_with("```") && trimmed.chars().take_while(|c| *c == '`').count() >= 3)
-        || (trimmed.starts_with("~~~") && trimmed.chars().take_while(|c| *c == '~').count() >= 3)
-}
-
-/// True when `line` looks like a setext underline (line of only `=` or
-/// only `-`, possibly with leading/trailing whitespace).
-fn looks_like_setext_underline(line: &str) -> bool {
-    let trimmed = line.trim();
-    !trimmed.is_empty() && (trimmed.chars().all(|c| c == '=') || trimmed.chars().all(|c| c == '-'))
-}
-
-/// True when `line` is a potential indented-code opener per CommonMark
-/// §4.4: 4+ leading spaces (or a leading tab) FOLLOWED BY non-whitespace
-/// content. A whitespace-only line — even one with a 4-space prefix —
-/// does NOT open an indented code block in pulldown's tokenization, so
-/// treating `"    "` (just spaces) as indented-code-like would miss the
-/// real transition when content arrives (`"    "` → `"    !"` is the
-/// flip that promotes the row to IndentedCode AND lazy-extends the
-/// block downward).
-fn looks_like_indented_code(line: &str) -> bool {
-    if let Some(rest) = line.strip_prefix('\t') {
-        return !rest.trim().is_empty();
-    }
-    let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
-    if leading_spaces < 4 {
-        return false;
-    }
-    !line[leading_spaces..].trim().is_empty()
-}
-
-/// True when `line` looks like an unordered (`-`/`*`/`+`) or
-/// ordered (`1.` / `1)`) list marker per CommonMark §5.2: ≤3 leading
-/// spaces of indent, then a bullet/ordered marker followed by space,
-/// tab, or end-of-line. A flip into or out of this shape opens or
-/// closes a `Tag::List` — which is lazy-continuable per §5.2 (loose
-/// lists merge across blank lines into a single list) — so the
-/// structural-marker guard treats it as a fallback trigger. Without
-/// this guard, an edit `"x"` → `"* x"` next to an existing
-/// blank-separated list silently leaks loose-list-merge divergence
-/// past the splice.
-fn looks_like_list_marker(line: &str) -> bool {
-    let trimmed = line.trim_start_matches(' ');
-    let indent = line.len() - trimmed.len();
-    if indent > 3 {
-        return false;
-    }
-    let mut chars = trimmed.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if matches!(first, '-' | '*' | '+') {
-        if !matches!(chars.next(), Some(' ' | '\t')) {
-            return false;
-        }
-        // Require non-whitespace content after the marker+space.
-        // Pulldown classifies marker-with-only-trailing-whitespace
-        // (`"*     "`, `"- "`) as a paragraph row, not a list — so
-        // a flip from "*     " to "*     x" promotes the row from
-        // Plain to ListMarker even though the prefix shape is
-        // identical. Without this tighter predicate the flip is
-        // invisible and the splice silently mis-classifies adjacent
-        // rows.
-        return chars.any(|c| !c.is_whitespace());
-    }
-    if first.is_ascii_digit() {
-        let mut digits = 1usize;
-        let mut next = chars.next();
-        while let Some(c) = next
-            && c.is_ascii_digit()
-        {
-            digits += 1;
-            if digits > 9 {
-                return false;
-            }
-            next = chars.next();
-        }
-        if !matches!(next, Some('.' | ')')) {
-            return false;
-        }
-        if !matches!(chars.next(), Some(' ' | '\t')) {
-            return false;
-        }
-        return chars.any(|c| !c.is_whitespace());
-    }
-    false
-}
-
-/// True when `line` looks like a blockquote opener per CommonMark
-/// §5.1: ≤3 leading spaces, then `>`. `Tag::BlockQuote` is
-/// lazy-continuable (its inner paragraph absorbs non-`>` lines via
-/// §5.1 lazy continuation), so a flip into or out of this shape
-/// shifts the construct's extent in ways the splice can't capture.
-fn looks_like_blockquote_marker(line: &str) -> bool {
-    let trimmed = line.trim_start_matches(' ');
-    let indent = line.len() - trimmed.len();
-    indent <= 3 && trimmed.starts_with('>')
-}
-
-/// True when `line` could open an HTML block per CommonMark §4.6:
-/// `<` after ≤3 spaces of indent. This is a conservative detector — it
-/// catches both block-level openers (`<div>`, `<table>`) and inline
-/// runs (`<span>`, `<br/>`). Inline HTML doesn't actually start a block
-/// (see commit handling `Event::InlineHtml`), but old and new will
-/// both report `true` so no transition is detected. The check only
-/// trips on a genuine "no-`<`" → "starts with `<`" flip, which is the
-/// shape that can promote a Plain row to HtmlBlock.
-fn looks_like_html_block_opener(line: &str) -> bool {
-    let trimmed = line.trim_start_matches(' ');
-    let indent = line.len() - trimmed.len();
-    indent <= 3 && trimmed.starts_with('<')
 }
 
 impl MarkdownEditorView {
@@ -676,55 +554,29 @@ impl MarkdownEditorView {
             let old_line = self.lines_snapshot[row].as_str();
             let new_line = lines[row].as_str();
 
-            // Old was a fence marker — any edit here may change its role
-            // (opener ↔ closer ↔ content), shifting the fence extent.
-            if matches!(old_kind, LineConstructKind::FenceMarker) {
-                return METRICS.bail(BailReason::KindGuard);
-            }
-            // New content introduces or removes a fence-marker prefix.
-            let old_fence = looks_like_fence_marker(old_line);
-            let new_fence = looks_like_fence_marker(new_line);
-            if old_fence != new_fence {
-                return METRICS.bail(BailReason::KindGuard);
-            }
-            // Old was a setext underline — same logic: removing or altering
-            // the underline changes which line above it becomes a heading.
-            if matches!(old_kind, LineConstructKind::SetextUnderline) {
-                return METRICS.bail(BailReason::KindGuard);
-            }
-            // New content looks like a setext underline but old did not
-            // (or vice versa) — the heading classification propagates up.
-            if looks_like_setext_underline(new_line) != looks_like_setext_underline(old_line) {
-                return METRICS.bail(BailReason::KindGuard);
-            }
-            // Indented-code or HTML-block opener flip. Either shape can
-            // lazy-extend through subsequent Plain rows (CommonMark §4.4,
-            // §4.6), and that extension reaches beyond the widening
-            // window — there's no safe boundary the widener can stop
-            // at, so we punt to a full parse.
+            // Old kind was a structural marker whose role an in-place edit
+            // can change (fence opener↔closer↔content, setext underline
+            // re-heading the line above) or which lazy-extends past the
+            // widening window (indented code / HTML block per CommonMark
+            // §4.4 / §4.6). These read pulldown's real classification, so
+            // any edit on such a row punts to a full parse.
             if matches!(
                 old_kind,
-                LineConstructKind::IndentedCode | LineConstructKind::HtmlBlock
+                LineConstructKind::FenceMarker
+                    | LineConstructKind::SetextUnderline
+                    | LineConstructKind::IndentedCode
+                    | LineConstructKind::HtmlBlock
             ) {
                 return METRICS.bail(BailReason::KindGuard);
             }
-            if looks_like_indented_code(new_line) != looks_like_indented_code(old_line) {
-                return METRICS.bail(BailReason::KindGuard);
-            }
-            if looks_like_html_block_opener(new_line) != looks_like_html_block_opener(old_line) {
-                return METRICS.bail(BailReason::KindGuard);
-            }
-            // List and blockquote opener flips are NEW lazy-continuable
-            // constructs (Tag::List, Tag::BlockQuote) — both can
-            // lazy-merge across adjacent blank rows with pre-existing
-            // lists/blockquotes (§5.2 loose lists, §5.1 paragraph
-            // continuation). Without these flip guards, an edit like
-            // `"x"` → `"* x"` next to a blank-separated list silently
-            // produces a loose-list-merge divergence.
-            if looks_like_list_marker(new_line) != looks_like_list_marker(old_line) {
-                return METRICS.bail(BailReason::KindGuard);
-            }
-            if looks_like_blockquote_marker(new_line) != looks_like_blockquote_marker(old_line) {
+            // Context-free block-opener shape flip: the edit gained or lost
+            // a fence / setext / indented-code / HTML / list / blockquote
+            // opener shape. Any such flip can open or close a (possibly
+            // lazy-continuable) construct that reshapes the document beyond
+            // the widening window — e.g. `"x"` → `"* x"` next to a
+            // blank-separated list leaks a loose-list merge. Comparing the
+            // whole `OpenerShape` catches a flip in any field at once.
+            if opener_shape(new_line) != opener_shape(old_line) {
                 return METRICS.bail(BailReason::KindGuard);
             }
 
@@ -745,7 +597,7 @@ impl MarkdownEditorView {
             // The widener's heuristic tier (widen_to_safe over the
             // loose-list blanks; or, on small buffers, the strict tier
             // widening to the whole buffer) takes the splice. The
-            // post-slice verify backs this. The looks_like_* /
+            // post-slice verify backs this. The opener-shape /
             // blank-transition flips run as
             // separate guards above and below this check, so the relax
             // only ever fires on pure content edits.
@@ -1364,72 +1216,6 @@ mod tests {
         terminal
             .draw(|f| v.render(f, f.area(), &theme, true))
             .expect("render must not panic on stale cursor");
-    }
-
-    #[test]
-    fn looks_like_indented_code_detects_tab_and_4_spaces() {
-        assert!(looks_like_indented_code("\tcode"));
-        assert!(looks_like_indented_code("    code"));
-        assert!(looks_like_indented_code("     code"));
-        assert!(!looks_like_indented_code("   code"));
-        assert!(!looks_like_indented_code("code"));
-    }
-
-    /// Whitespace-only lines never open an indented-code block in
-    /// pulldown's tokenization. The v2 fix tightened the predicate to
-    /// require non-whitespace content after the 4+ space (or tab)
-    /// prefix, so the `"    "` ↔ `"    !"` flip is detected by
-    /// `try_incremental_parse`'s structural-marker guard.
-    #[test]
-    fn looks_like_indented_code_rejects_whitespace_only() {
-        assert!(!looks_like_indented_code("    "));
-        assert!(!looks_like_indented_code("     "));
-        assert!(!looks_like_indented_code("\t"));
-        assert!(!looks_like_indented_code("\t   "));
-        assert!(looks_like_indented_code("    x"));
-        assert!(looks_like_indented_code("\tx"));
-    }
-
-    /// `looks_like_list_marker` mirrors pulldown's recognition: a
-    /// marker followed by ONLY whitespace is parsed as a paragraph,
-    /// not a list. Without this, edits like `"*     "` → `"*     !"`
-    /// (typed content arrives) would not flip the predicate and the
-    /// splice would mis-classify a row that pulldown promotes to
-    /// IndentedCode inside the new list item.
-    #[test]
-    fn looks_like_list_marker_recognizes_pulldown_pattern() {
-        assert!(looks_like_list_marker("* a"));
-        assert!(looks_like_list_marker("- a"));
-        assert!(looks_like_list_marker("+ a"));
-        assert!(looks_like_list_marker("1. a"));
-        assert!(looks_like_list_marker("12) a"));
-        assert!(looks_like_list_marker("   * a"));
-        assert!(!looks_like_list_marker("*"));
-        assert!(!looks_like_list_marker("* "));
-        assert!(!looks_like_list_marker("*     "));
-        assert!(!looks_like_list_marker("1."));
-        assert!(!looks_like_list_marker("1. "));
-        assert!(!looks_like_list_marker("    * a")); // 4-space indent = code
-        assert!(!looks_like_list_marker("1234567890. a")); // > 9 digits
-    }
-
-    #[test]
-    fn looks_like_blockquote_marker_recognizes_leading_gt() {
-        assert!(looks_like_blockquote_marker(">"));
-        assert!(looks_like_blockquote_marker("> a"));
-        assert!(looks_like_blockquote_marker("   > a"));
-        assert!(!looks_like_blockquote_marker("    > a")); // 4-space indent = code
-        assert!(!looks_like_blockquote_marker("a > b"));
-        assert!(!looks_like_blockquote_marker(""));
-    }
-
-    #[test]
-    fn looks_like_html_block_opener_detects_leading_lt() {
-        assert!(looks_like_html_block_opener("<div>"));
-        assert!(looks_like_html_block_opener("  <div>"));
-        assert!(looks_like_html_block_opener("   <table>"));
-        assert!(!looks_like_html_block_opener("    <div>")); // 4-space indent = code
-        assert!(!looks_like_html_block_opener("text <span>"));
     }
 
     #[test]
