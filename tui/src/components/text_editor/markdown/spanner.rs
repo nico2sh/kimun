@@ -179,6 +179,22 @@ impl MarkdownSpanner {
             )];
         }
 
+        // Blockquote gutter: when the cursor is off this line, draw a `│` bar
+        // per nesting depth (in `blockquote_bar`) in place of the hidden `>`
+        // markers, on EVERY visual row. When the cursor IS on the line the
+        // markers are revealed raw instead (handled by the sigil path below).
+        let bq_gutter: Option<Vec<Span<'a>>> = if cursor_col.is_none() {
+            parsed.blockquote_depth().map(|d| {
+                let style = Style::default().fg(theme.blockquote_bar.to_ratatui());
+                vec![
+                    Span::styled("│".repeat(d as usize), style),
+                    Span::styled(" ".to_string(), style),
+                ]
+            })
+        } else {
+            None
+        };
+
         let elements = &parsed.elements;
         let content_vis = &parsed.content_vis;
         let content_char_count = content.chars().count();
@@ -192,6 +208,11 @@ impl MarkdownSpanner {
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
             parsed.list_sigil_end()
+        } else {
+            None
+        };
+        let blockquote_sigil_end: Option<usize> = if is_first_visual_line {
+            parsed.blockquote_sigil_end()
         } else {
             None
         };
@@ -270,12 +291,17 @@ impl MarkdownSpanner {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
             let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
+            // Only reveal the raw `> ` markers when there is no gutter, i.e.
+            // when the cursor is on this line.
+            let in_blockquote_sigil =
+                bq_gutter.is_none() && blockquote_sigil_end.is_some_and(|end| pos < end);
             let in_expanded_elem = expanded
                 .is_some_and(|i| elements[i].start_char <= pos && pos < elements[i].end_char);
             let this_elem = parsed.elem_at(pos);
             let emit = is_content
                 || in_heading_sigil
                 || in_list_sigil
+                || in_blockquote_sigil
                 || in_expanded_elem
                 || this_elem.is_none();
             if !emit {
@@ -292,8 +318,9 @@ impl MarkdownSpanner {
                 continue;
             }
             let this_is_expanded = in_expanded_elem;
-            let this_is_sigil =
-                (in_heading_sigil || in_list_sigil) && !is_content && !in_expanded_elem;
+            let this_is_sigil = (in_heading_sigil || in_list_sigil || in_blockquote_sigil)
+                && !is_content
+                && !in_expanded_elem;
             if this_elem != seg_elem
                 || this_is_sigil != seg_is_sigil
                 || this_is_expanded != seg_is_expanded
@@ -328,11 +355,21 @@ impl MarkdownSpanner {
             &mut spans,
         );
 
-        if spans.is_empty() {
+        // Empty-content fallback. Skipped when a blockquote gutter will be
+        // prepended, otherwise a bare `>` line would re-emit its hidden raw
+        // marker on top of the gutter.
+        if spans.is_empty() && bq_gutter.is_none() {
             spans.push(Span::styled(
                 content,
                 Style::default().fg(theme.fg.to_ratatui()),
             ));
+        }
+        // Prepend the blockquote bar gutter (cursor-off-line case). Placed after
+        // the empty-fallback so a bare `>` line still gets its gutter without
+        // panicking.
+        if let Some(mut gutter) = bq_gutter {
+            gutter.extend(spans);
+            spans = gutter;
         }
         spans
     }
@@ -588,5 +625,43 @@ mod tests {
             false,  // force_raw
         );
         assert_eq!(col, 2);
+    }
+
+    #[test]
+    fn blockquote_renders_bar_when_cursor_off_line() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        // cursor_col = None → bar gutter, raw "> " hidden.
+        let spans = MarkdownSpanner::render("> hi", "> hi", 0, None, true, false, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("│ "), "expected bar gutter, got {text:?}");
+        assert!(!text.contains('>'), "raw marker must be hidden, got {text:?}");
+        assert!(text.contains("hi"));
+    }
+
+    #[test]
+    fn blockquote_reveals_raw_marker_when_cursor_on_line() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        // cursor_col = Some(..) → raw "> hi" shown, no bar.
+        let spans = MarkdownSpanner::render("> hi", "> hi", 0, Some(2), true, false, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "> hi");
+        assert!(!text.contains('│'));
+    }
+
+    #[test]
+    fn nested_blockquote_renders_two_bars() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let spans = MarkdownSpanner::render(">> x", ">> x", 0, None, true, false, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("││ "), "expected two bars, got {text:?}");
+    }
+
+    #[test]
+    fn bare_blockquote_renders_bar_gutter_without_panic() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let spans = MarkdownSpanner::render(">", ">", 0, None, true, false, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("│ "), "expected bar gutter, got {text:?}");
+        assert!(!text.contains('>'), "raw marker must be hidden, got {text:?}");
     }
 }
