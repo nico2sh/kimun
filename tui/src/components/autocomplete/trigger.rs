@@ -82,17 +82,69 @@ pub fn detect_trigger_with(
     detect_trigger_with_zones(text, cursor, opts, None)
 }
 
+/// Lazily answers the two exclusion-zone queries the trigger veto
+/// needs. Consulted ONLY after a wikilink/hashtag opener is found in the
+/// local backward scan, so a keystroke with no trigger candidate never
+/// pays for the full-buffer `ExclusionZones` scan (pulldown + regex).
+/// Implementors decide whether to precompute, recompute, or memoize.
+pub trait ZoneOracle {
+    /// Mirror of `ExclusionZones::contains` — the hashtag veto.
+    fn contains(&mut self, cursor: usize) -> bool;
+    /// Mirror of `ExclusionZones::contains_code_link_or_frontmatter` —
+    /// the wikilink veto.
+    fn contains_code_link_or_frontmatter(&mut self, cursor: usize) -> bool;
+}
+
+/// Oracle backed by a precomputed `ExclusionZones`.
+struct PrecomputedOracle<'a>(&'a ExclusionZones);
+impl ZoneOracle for PrecomputedOracle<'_> {
+    fn contains(&mut self, cursor: usize) -> bool {
+        self.0.contains(cursor)
+    }
+    fn contains_code_link_or_frontmatter(&mut self, cursor: usize) -> bool {
+        self.0.contains_code_link_or_frontmatter(cursor)
+    }
+}
+
+/// Oracle that recomputes per query from `text`. Used by the no-cache
+/// convenience paths (`detect_trigger`, `detect_trigger_with`) and
+/// tests; at most one veto query runs per call, so the recompute is
+/// paid only when a candidate opener is actually present.
+struct RecomputeOracle<'t>(&'t str);
+impl ZoneOracle for RecomputeOracle<'_> {
+    fn contains(&mut self, cursor: usize) -> bool {
+        is_inside_exclusion_zone(self.0, cursor)
+    }
+    fn contains_code_link_or_frontmatter(&mut self, cursor: usize) -> bool {
+        is_inside_code_link_or_frontmatter(self.0, cursor)
+    }
+}
+
 /// Variant of [`detect_trigger_with`] that accepts a precomputed
-/// `ExclusionZones` for the same `text`. The autocomplete controller
-/// caches one such instance per buffer revision so cursor moves don't
-/// repay the full-buffer pulldown-cmark parse + regex scans on every
-/// reconcile. When `zones` is `None`, falls back to the per-call
-/// computation (used by tests and the no-cache convenience function).
+/// `ExclusionZones` for the same `text`. When `zones` is `None`, the
+/// exclusion check recomputes per call (used by tests and the no-cache
+/// convenience function). Thin wrapper over [`detect_trigger_with_oracle`].
 pub fn detect_trigger_with_zones(
     text: &str,
     cursor: usize,
     opts: TriggerOptions,
     zones: Option<&ExclusionZones>,
+) -> Option<TriggerContext> {
+    match zones {
+        Some(z) => detect_trigger_with_oracle(text, cursor, opts, &mut PrecomputedOracle(z)),
+        None => detect_trigger_with_oracle(text, cursor, opts, &mut RecomputeOracle(text)),
+    }
+}
+
+/// Core trigger detection. The local backward scan from `cursor` runs
+/// unconditionally; `oracle` is consulted only at the exclusion veto,
+/// reached only once a `[[`/`#` opener has been found — so the caller's
+/// zone computation can stay lazy.
+pub fn detect_trigger_with_oracle(
+    text: &str,
+    cursor: usize,
+    opts: TriggerOptions,
+    oracle: &mut dyn ZoneOracle,
 ) -> Option<TriggerContext> {
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
@@ -175,11 +227,7 @@ pub fn detect_trigger_with_zones(
         // reopen-mid-target case the spec wants to support). Only
         // applied when the caller is editing Markdown (search box
         // disables this).
-        if opts.apply_exclusion_zone
-            && zones
-                .map(|z| z.contains_code_link_or_frontmatter(cursor))
-                .unwrap_or_else(|| is_inside_code_link_or_frontmatter(text, cursor))
-        {
+        if opts.apply_exclusion_zone && oracle.contains_code_link_or_frontmatter(cursor) {
             return None;
         }
         let query = text[inner_start..cursor].to_string();
@@ -204,11 +252,7 @@ pub fn detect_trigger_with_zones(
         // plain text. Checked before the word-boundary guard so a future
         // relaxation of the boundary rule cannot accidentally let popups
         // leak into excluded regions.
-        if opts.apply_exclusion_zone
-            && zones
-                .map(|z| z.contains(cursor))
-                .unwrap_or_else(|| is_inside_exclusion_zone(text, cursor))
-        {
+        if opts.apply_exclusion_zone && oracle.contains(cursor) {
             return None;
         }
 
@@ -293,6 +337,65 @@ mod tests {
 
     fn ctx(text: &str, cursor: usize) -> Option<TriggerContext> {
         detect_trigger(text, cursor)
+    }
+
+    /// Records how many times the exclusion veto consulted the oracle.
+    struct CountingOracle {
+        calls: usize,
+    }
+    impl ZoneOracle for CountingOracle {
+        fn contains(&mut self, _: usize) -> bool {
+            self.calls += 1;
+            false
+        }
+        fn contains_code_link_or_frontmatter(&mut self, _: usize) -> bool {
+            self.calls += 1;
+            false
+        }
+    }
+
+    // ---- Lazy exclusion oracle ----
+
+    #[test]
+    fn oracle_untouched_without_trigger_candidate() {
+        // Plain prose, caret at end: the local backward scan finds no
+        // `[[`/`#` opener, so the veto is never reached and the
+        // (expensive in the real impl) zone query must not run.
+        let mut o = CountingOracle { calls: 0 };
+        let r =
+            detect_trigger_with_oracle("hello world", 11, TriggerOptions::default(), &mut o);
+        assert!(r.is_none());
+        assert_eq!(o.calls, 0, "no opener must not consult the zone oracle");
+    }
+
+    #[test]
+    fn oracle_consulted_for_hashtag_candidate() {
+        let mut o = CountingOracle { calls: 0 };
+        let _ = detect_trigger_with_oracle("#tag", 4, TriggerOptions::default(), &mut o);
+        assert!(o.calls >= 1, "a # candidate must consult the veto oracle");
+    }
+
+    #[test]
+    fn oracle_consulted_for_wikilink_candidate() {
+        let mut o = CountingOracle { calls: 0 };
+        let _ = detect_trigger_with_oracle("[[me", 4, TriggerOptions::default(), &mut o);
+        assert!(o.calls >= 1, "a [[ candidate must consult the veto oracle");
+    }
+
+    #[test]
+    fn oracle_untouched_when_exclusion_disabled() {
+        // Search box (apply_exclusion_zone = false) must never consult
+        // the oracle even with an opener present.
+        let opts = TriggerOptions {
+            apply_exclusion_zone: false,
+            ..TriggerOptions::default()
+        };
+        let mut o = CountingOracle { calls: 0 };
+        let _ = detect_trigger_with_oracle("#tag", 4, opts, &mut o);
+        assert_eq!(
+            o.calls, 0,
+            "apply_exclusion_zone=false must skip the oracle entirely"
+        );
     }
 
     // ---- Wikilink trigger ----
