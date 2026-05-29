@@ -1262,7 +1262,363 @@ the runtime uses &mdash; just visualised.</p>
   applyOp("idle");
 </script>
 
-<h2>10. File map</h2>
+<h2>10. Interactive: live typing walkthrough</h2>
+
+<p>A scripted, mocked demo &mdash; <strong>not</strong> the real parser. Pick an edit and
+watch a caret type it into the sample buffer, then see the Gate&nbsp;1 pipeline play out in
+four stages: <em>scan</em> (what <code>compute_damage_range</code> finds), <em>match</em>
+(which guards fire &mdash; <code>opener_shape</code> flip, <code>lazy_depth</code>,
+blank-transition), <em>resolve</em> (which widener tier wins, or a bail), and
+<em>editor action</em> (what re-parses, re-wraps, repaints). Row tints: <span class="te-leg te-leg-dmg">damaged</span>
+<span class="te-leg te-leg-wide">widened slice</span> <span class="te-leg te-leg-bail">full rebuild</span>.</p>
+
+<div class="te-demo">
+  <div class="te-picker" id="te-picker"></div>
+  <div class="te-stage">
+    <div class="te-editor" id="te-editor" aria-label="sample editor"></div>
+    <aside class="te-panel">
+      <div class="te-chips">
+        <span class="te-chip"><span class="te-clabel">path</span><span class="te-cval" id="te-path">&mdash;</span></span>
+        <span class="te-chip"><span class="te-clabel">counter</span><span class="te-cval" id="te-counter">&mdash;</span></span>
+      </div>
+      <div class="te-card" data-stage="scan"><span class="te-cardk">1 &middot; scan</span><p id="te-scan">&mdash;</p></div>
+      <div class="te-card" data-stage="match"><span class="te-cardk">2 &middot; match</span><p id="te-match">&mdash;</p></div>
+      <div class="te-card" data-stage="resolve"><span class="te-cardk">3 &middot; resolve</span><p id="te-resolve">&mdash;</p></div>
+      <div class="te-card" data-stage="action"><span class="te-cardk">4 &middot; editor action</span><p id="te-action">&mdash;</p></div>
+    </aside>
+  </div>
+</div>
+
+<style>
+  .te-demo { margin: 14px 0 8px; }
+  .te-picker {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-bottom: 14px; padding: 10px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  }
+  .te-btn {
+    font: 12.5px/1.2 "JetBrains Mono", monospace;
+    background: var(--code-bg); color: var(--muted);
+    border: 1px solid var(--border); padding: 6px 10px; border-radius: 4px;
+    cursor: pointer; transition: all 0.12s ease;
+  }
+  .te-btn:hover { color: var(--fg); border-color: var(--dim); }
+  .te-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+  .te-stage { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: flex-start; }
+  .te-editor {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 4px; font: 12.5px/1.55 "JetBrains Mono", monospace;
+    overflow: hidden;
+  }
+  .te-row { display: flex; align-items: baseline; gap: 8px; padding: 0 8px; border-radius: 3px; transition: background 0.25s ease, box-shadow 0.25s ease; }
+  .te-gutter { color: var(--dim); width: 1.6em; text-align: right; flex: none; user-select: none; }
+  .te-kind {
+    color: var(--dim); width: 7.2em; flex: none; font-size: 10.5px; text-align: right;
+    text-transform: lowercase; letter-spacing: 0.3px; user-select: none; opacity: 0.7;
+  }
+  .te-text { color: var(--fg); white-space: pre; }
+  .te-text .te-mark { color: var(--accent); }
+  .te-caret { display: inline-block; width: 2px; height: 1.05em; background: var(--accent); transform: translateY(2px); animation: te-blink 1s step-end infinite; }
+  @keyframes te-blink { 50% { opacity: 0; } }
+  .te-row.dmg { background: rgba(250, 189, 47, 0.16); box-shadow: inset 2px 0 0 var(--accent); }
+  .te-row.wide { background: rgba(131, 165, 152, 0.13); box-shadow: inset 2px 0 0 var(--link); }
+  .te-row.wide.dmg { background: rgba(250, 189, 47, 0.16); box-shadow: inset 2px 0 0 var(--accent); }
+  .te-row.bail { background: rgba(251, 73, 52, 0.12); box-shadow: inset 2px 0 0 var(--red); }
+  .te-panel { display: flex; flex-direction: column; gap: 8px; }
+  .te-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .te-chip {
+    display: inline-flex; gap: 6px; align-items: baseline;
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 5px 9px; font: 12px/1.3 "JetBrains Mono", monospace;
+  }
+  .te-clabel { color: var(--muted); }
+  .te-cval { color: var(--green); font-weight: 600; }
+  .te-cval.orange { color: var(--orange); }
+  .te-cval.bail { color: var(--red); }
+  .te-card {
+    background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--border);
+    border-radius: 5px; padding: 9px 12px;
+    opacity: 0.32; transform: translateY(4px); transition: opacity 0.3s ease, transform 0.3s ease, border-color 0.3s ease;
+  }
+  .te-card.show { opacity: 1; transform: none; }
+  .te-card[data-stage="scan"].show { border-left-color: var(--accent); }
+  .te-card[data-stage="match"].show { border-left-color: var(--link); }
+  .te-card[data-stage="resolve"].show { border-left-color: var(--green); }
+  .te-card[data-stage="resolve"].show.bail { border-left-color: var(--red); }
+  .te-card[data-stage="action"].show { border-left-color: var(--purple); }
+  .te-cardk { font: 600 10.5px "JetBrains Mono", monospace; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .te-card p { margin: 5px 0 0; color: var(--fg); font-size: 12.5px; line-height: 1.45; }
+  .te-card p code { background: var(--code-bg); color: var(--orange); font-size: 11px; }
+  .te-leg { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 11.5px; }
+  .te-leg-dmg { background: rgba(250, 189, 47, 0.16); color: var(--accent); }
+  .te-leg-wide { background: rgba(131, 165, 152, 0.13); color: var(--link); }
+  .te-leg-bail { background: rgba(251, 73, 52, 0.12); color: var(--red); }
+  @media (max-width: 880px) { .te-stage { grid-template-columns: 1fr; } }
+</style>
+
+<script>
+(function () {
+  const BASE = [
+    "# Project notes",
+    "",
+    "Some prose that explains the",
+    "idea in a couple of sentences.",
+    "",
+    "- first task",
+    "",
+    "- second task",
+    "",
+    "```rust",
+    "fn main() {}",
+    "```",
+    "",
+    "> a remembered quote",
+  ];
+
+  // Schematic kind classifier — drives the row badges only (not logic).
+  function classifyKinds(lines) {
+    let inFence = false;
+    return lines.map((raw) => {
+      const t = raw.trim();
+      if (/^(```|~~~)/.test(t)) { const k = "FenceMarker"; inFence = !inFence; return k; }
+      if (inFence) return "FenceContent";
+      if (t === "") return "Blank";
+      if (/^#{1,6}\s/.test(t)) return "Heading";
+      if (raw.length - raw.trimStart().length >= 4) return "IndentedCode";
+      if (/^([-*+]\s+\S|\d{1,9}[.)]\s+\S)/.test(t)) return "ListMarker";
+      if (/^>/.test(t)) return "Blockquote";
+      return "Plain";
+    });
+  }
+
+  // Each scenario is fully mocked: the stage text is authored, not computed.
+  const SCENARIOS = [
+    {
+      id: "prose",
+      label: "Type in prose",
+      caret: { row: 3, col: BASE[3].length },
+      edit: { kind: "type", text: " and more" },
+      damaged: [3, 4],
+      widened: { from: 2, to: 4 },
+      path: "Strict reset boundary",
+      counter: "incremental_reset++",
+      counterClass: "",
+      stages: {
+        scan: "compute_damage_range takes the cursor-hint fast path: same line count, only row 3 differs in the ±4-row window. damaged = 3..4.",
+        match: "opener_shape(new) == opener_shape(old) (still plain prose). lazy_depth[2..=4] == 0. No blank flip. All guards pass.",
+        resolve: "Strict: expand_to_reset_boundary snaps to the Blank-depth-0 rows 1 and 4 → widened = 2..4. Provably equivalent to a fresh parse, so no post-slice verify.",
+        action: "ParsedBuffer::parse_range(2..4) → splice. WordWrapLayout.splice_range re-wraps rows 2..3; rendered_cache rebuilt for the damaged rows; repaint.",
+      },
+    },
+    {
+      id: "inlist",
+      label: "Edit inside a list item",
+      caret: { row: 5, col: BASE[5].length },
+      edit: { kind: "type", text: " done" },
+      damaged: [5, 6],
+      widened: { from: 5, to: 7 },
+      path: "Heuristic (widen_to_safe)",
+      counter: "incremental_fallback++",
+      counterClass: "orange",
+      stages: {
+        scan: "damaged = 5..6 (single row inside the loose list).",
+        match: "opener_shape unchanged. BUT lazy_depth[4..=6] > 0 (the list is open). §3.0 relax fires: old kind == ListMarker AND lazy_depth[5] == 1 → the bail is skipped, so the edit reaches the widener.",
+        resolve: "Strict cap-trips (no nearby Blank-depth-0 inside the list). Heuristic widen_to_safe snaps to the loose-list blanks → widened = 5..7. Post-slice verify runs in release over those rows and passes.",
+        action: "ParsedBuffer::parse_range(5..7) → splice. Re-wrap + rendered_cache for the span; repaint.",
+      },
+    },
+    {
+      id: "startlist",
+      label: "Turn prose into a list",
+      caret: { row: 3, col: 0 },
+      edit: { kind: "type", text: "- " },
+      damaged: [3, 4],
+      widened: "full",
+      bail: true,
+      path: "Bail → full rebuild",
+      counter: "full_kind_guard++",
+      counterClass: "bail",
+      stages: {
+        scan: "damaged = 3..4.",
+        match: "opener_shape(new).list_marker = true, opener_shape(old).list_marker = false → the OpenerShape structs compare unequal → KindGuard.",
+        resolve: "Bail → full rebuild. A new list is lazy-continuable: it can merge with the blank-separated list below, reshaping the document beyond any widening window.",
+        action: "ParsedBuffer::parse over the whole buffer. fence_ranges, rendered_cache, and WordWrapLayout all rebuild fully.",
+      },
+    },
+    {
+      id: "merge",
+      label: "Backspace merges two lines",
+      caret: { row: 4, col: 0 },
+      edit: { kind: "backspace" },
+      damaged: [3],
+      widened: "full",
+      bail: true,
+      path: "Bail → full rebuild",
+      counter: "full_line_count_change++",
+      counterClass: "bail",
+      stages: {
+        scan: "Backspace at column 0 joins row 4 into row 3 → the buffer loses a line. lines.len() != parsed_buffer.lines.len(), checked before the damage scan.",
+        match: "Skipped — the line-count guard bails first (a splice can't reconcile a row-count change).",
+        resolve: "Bail → full rebuild.",
+        action: "ParsedBuffer::parse over the whole buffer; full re-wrap + repaint.",
+      },
+    },
+  ];
+
+  const editorEl = document.getElementById("te-editor");
+  const pickerEl = document.getElementById("te-picker");
+  const els = {
+    path: document.getElementById("te-path"),
+    counter: document.getElementById("te-counter"),
+    scan: document.getElementById("te-scan"),
+    match: document.getElementById("te-match"),
+    resolve: document.getElementById("te-resolve"),
+    action: document.getElementById("te-action"),
+  };
+  const cards = {
+    scan: document.querySelector('.te-card[data-stage="scan"]'),
+    match: document.querySelector('.te-card[data-stage="match"]'),
+    resolve: document.querySelector('.te-card[data-stage="resolve"]'),
+    action: document.querySelector('.te-card[data-stage="action"]'),
+  };
+
+  let runId = 0;
+  const KINDLABEL = {
+    FenceMarker: "fence", FenceContent: "code", Blank: "blank", Heading: "heading",
+    IndentedCode: "indent", ListMarker: "list", Blockquote: "quote", Plain: "plain",
+  };
+
+  // Render the buffer. `caret` = {row,col}|null. `hl` = {damaged:Set, widened:Set, bail, markRow, markFrom}.
+  function render(lines, caret, hl) {
+    const kinds = classifyKinds(lines);
+    editorEl.innerHTML = "";
+    lines.forEach((line, i) => {
+      const row = document.createElement("div");
+      row.className = "te-row";
+      if (hl) {
+        if (hl.bail) row.classList.add("bail");
+        else {
+          if (hl.widened && hl.widened.has(i)) row.classList.add("wide");
+          if (hl.damaged && hl.damaged.has(i)) row.classList.add("dmg");
+        }
+      }
+      const gutter = document.createElement("span");
+      gutter.className = "te-gutter";
+      gutter.textContent = i;
+      const kind = document.createElement("span");
+      kind.className = "te-kind";
+      kind.textContent = KINDLABEL[kinds[i]] || "";
+      const text = document.createElement("span");
+      text.className = "te-text";
+      const caretHere = caret && caret.row === i;
+      // Highlight freshly-typed chars on the caret row.
+      const markFrom = caretHere && hl && typeof hl.markFrom === "number" ? hl.markFrom : -1;
+      if (caretHere) {
+        const c = Math.min(caret.col, line.length);
+        const head = line.slice(0, markFrom >= 0 ? markFrom : c);
+        const mark = markFrom >= 0 ? line.slice(markFrom, c) : "";
+        const tail = line.slice(c);
+        text.append(document.createTextNode(head));
+        if (mark) { const m = document.createElement("span"); m.className = "te-mark"; m.textContent = mark; text.append(m); }
+        const cb = document.createElement("span"); cb.className = "te-caret"; text.append(cb);
+        text.append(document.createTextNode(tail));
+      } else {
+        text.textContent = line.length ? line : " ";
+      }
+      row.append(gutter, kind, text);
+      editorEl.append(row);
+    });
+  }
+
+  const sleep = (ms, id) => new Promise((res) => setTimeout(() => res(id === runId), ms));
+
+  function setStages(s, bail) {
+    els.scan.textContent = s.scan;
+    els.match.textContent = s.match;
+    els.resolve.textContent = s.resolve;
+    els.action.textContent = s.action;
+    cards.resolve.classList.toggle("bail", !!bail);
+    Object.values(cards).forEach((c) => c.classList.remove("show"));
+  }
+
+  async function play(sc) {
+    const id = ++runId;
+    // Reset.
+    els.path.textContent = "—"; els.path.className = "te-cval";
+    els.counter.textContent = "—"; els.counter.className = "te-cval";
+    setStages({ scan: "—", match: "—", resolve: "—", action: "—" }, false);
+
+    const work = BASE.slice();
+    const caret = { row: sc.caret.row, col: sc.caret.col };
+    render(work, caret, null);
+    if (!(await sleep(550, id))) return;
+
+    // Animate the edit.
+    let markFrom = caret.col;
+    if (sc.edit.kind === "type") {
+      for (const ch of sc.edit.text) {
+        work[caret.row] = work[caret.row].slice(0, caret.col) + ch + work[caret.row].slice(caret.col);
+        caret.col += 1;
+        render(work, caret, { markFrom });
+        if (!(await sleep(95, id))) return;
+      }
+    } else if (sc.edit.kind === "backspace") {
+      // Join caret.row into the previous row.
+      const prev = caret.row - 1;
+      const prevLen = work[prev].length;
+      work[prev] = work[prev] + work[caret.row];
+      work.splice(caret.row, 1);
+      caret.row = prev; caret.col = prevLen; markFrom = prevLen;
+      render(work, caret, { markFrom });
+      if (!(await sleep(260, id))) return;
+    }
+    if (!(await sleep(260, id))) return;
+
+    // Stage 1: scan → damaged tint.
+    const damaged = new Set(sc.damaged);
+    const widened = sc.widened === "full"
+      ? new Set(work.map((_, i) => i))
+      : new Set(Array.from({ length: sc.widened.to - sc.widened.from }, (_, k) => sc.widened.from + k));
+    render(work, caret, { damaged, bail: false });
+    cards.scan.classList.add("show");
+    if (!(await sleep(700, id))) return;
+
+    // Stage 2: match.
+    cards.match.classList.add("show");
+    if (!(await sleep(650, id))) return;
+
+    // Stage 3: resolve → widened tint (or full-rebuild red).
+    if (sc.bail) render(work, caret, { bail: true });
+    else render(work, caret, { damaged, widened, bail: false });
+    cards.resolve.classList.add("show");
+    if (!(await sleep(650, id))) return;
+
+    // Stage 4: editor action + result chips.
+    cards.action.classList.add("show");
+    els.path.textContent = sc.path;
+    els.path.className = "te-cval" + (sc.counterClass ? " " + sc.counterClass : "");
+    els.counter.textContent = sc.counter;
+    els.counter.className = "te-cval" + (sc.counterClass ? " " + sc.counterClass : "");
+  }
+
+  SCENARIOS.forEach((sc, idx) => {
+    const b = document.createElement("button");
+    b.className = "te-btn" + (idx === 0 ? " active" : "");
+    b.textContent = sc.label;
+    b.addEventListener("click", () => {
+      pickerEl.querySelectorAll(".te-btn").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      play(sc);
+    });
+    pickerEl.append(b);
+  });
+
+  // Initial paint (static, no animation) so the widget isn't empty.
+  render(BASE.slice(), null, null);
+})();
+</script>
+
+<h2>11. File map</h2>
 
 <table>
   <thead><tr><th>File</th><th>Role</th></tr></thead>
