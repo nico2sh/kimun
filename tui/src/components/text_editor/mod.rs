@@ -1713,16 +1713,16 @@ impl TextEditorComponent {
             MouseEventKind::Down(_) => {
                 tx.send(AppEvent::FocusEditor).ok();
                 ta.cancel_selection();
-                let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
-                let vcol = (mouse.column - r.x) as usize;
-                let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
+                let (lrow, lcol) = self
+                    .view
+                    .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
                 ta.move_cursor(CursorMove::Jump(lrow, lcol));
                 ta.start_selection();
             }
             MouseEventKind::Drag(_) => {
-                let vrow = (mouse.row - r.y) as usize + self.view.visual_scroll_offset;
-                let vcol = (mouse.column - r.x) as usize;
-                let (lrow, lcol) = self.view.click_to_logical_u16(vrow, vcol);
+                let (lrow, lcol) = self
+                    .view
+                    .click_at_screen((mouse.row - r.y) as usize, (mouse.column - r.x) as usize);
                 ta.move_cursor(CursorMove::Jump(lrow, lcol));
             }
             _ => {
