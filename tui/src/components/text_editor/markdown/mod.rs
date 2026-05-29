@@ -5,9 +5,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod block_opener;
 mod detect;
 mod parsed_buffer;
 mod spanner;
+pub(super) use block_opener::opener_shape;
 pub use parsed_buffer::ParsedBuffer;
 pub use spanner::MarkdownSpanner;
 
