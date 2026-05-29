@@ -290,16 +290,21 @@ impl ParsedBuffer {
                         code_block_start = Some(range.start);
                     }
                     code_block_depth += 1;
-                    let hi = (er + 1).min(kinds.len());
+                    // Use the UNCLAMPED end row as the exclusive upper bound:
+                    // pulldown's exclusive byte end lands at the start of the
+                    // row *after* the block's content (or `lines.len()` at EOF),
+                    // so the content rows are `sr..end_row`. The previous
+                    // `er + 1` over-included the following line whenever it was a
+                    // less-indented paragraph (CommonMark §4.4: such a line ends
+                    // the block) or a trailing blank.
+                    let (end_row, _) = byte_to_row_col_unclamped(range.end, lines, &line_starts);
+                    let hi = end_row.min(kinds.len());
                     if hi > sr {
                         kinds[sr..hi].fill(LineConstructKind::IndentedCode);
-                        // CommonMark §4.4: trailing blank lines are not part of
-                        // an indented code block. Pulldown's range can include
-                        // one trailing blank — revert trailing whitespace-only
-                        // rows to Blank so the code box stops at the last real
-                        // code line. Interior blanks (followed by more code)
-                        // are left as IndentedCode. `sr` is always kept (the
-                        // block's first line is never blank).
+                        // EOF safety net: if pulldown ever includes a trailing
+                        // blank line in the range, revert trailing whitespace-only
+                        // rows to Blank. Interior blanks (followed by more code)
+                        // are left as IndentedCode; `sr` is always kept.
                         let mut row = hi;
                         while row > sr + 1 && lines[row - 1].trim().is_empty() {
                             kinds[row - 1] = LineConstructKind::Blank;

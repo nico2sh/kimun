@@ -450,6 +450,23 @@ mod tests {
             kinds(&["    a", "", "", "outro"]),
             vec![IndentedCode, Blank, Blank, Plain]
         );
+        // A less-indented content line (no blank before it) ends the block —
+        // it is NOT swallowed into the code block.
+        assert_eq!(
+            kinds(&["    Line 1", "    Line 2", "Line 3"]),
+            vec![IndentedCode, IndentedCode, Plain]
+        );
+        // Interior blanks (any number) between indented chunks stay in-block.
+        assert_eq!(
+            kinds(&["    line 1", "    line 2", "", "", "    line 3"]),
+            vec![
+                IndentedCode,
+                IndentedCode,
+                IndentedCode,
+                IndentedCode,
+                IndentedCode
+            ]
+        );
     }
 
     #[test]
