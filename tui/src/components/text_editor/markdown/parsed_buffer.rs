@@ -760,10 +760,12 @@ impl ParsedBuffer {
                 .filter(|&b| b < range.start),
         );
         for r in range.clone() {
-            if r != 0 && r != lines_len && self.lazy_depth[r] == 0 {
-                if let LineConstructKind::Blank = self.kinds[r] {
-                    merged.push(r);
-                }
+            if r != 0
+                && r != lines_len
+                && self.lazy_depth[r] == 0
+                && self.kinds[r] == LineConstructKind::Blank
+            {
+                merged.push(r);
             }
         }
         merged.extend(
