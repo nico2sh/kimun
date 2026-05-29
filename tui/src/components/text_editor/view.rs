@@ -1079,7 +1079,7 @@ impl MarkdownEditorView {
                     return 0;
                 }
                 match parsed.get(row).and_then(|p| p.blockquote_depth()) {
-                    Some(d) => d as usize + 1,
+                    Some(d) => super::markdown::blockquote_gutter_width(d),
                     None => 0,
                 }
             })
