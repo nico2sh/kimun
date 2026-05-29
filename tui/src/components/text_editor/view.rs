@@ -37,7 +37,7 @@ enum RenderedCacheRebuild {
 #[derive(Clone)]
 pub struct MarkdownEditorView {
     pub layout: WordWrapLayout,
-    pub visual_scroll_offset: usize,
+    visual_scroll_offset: usize,
     pub lines_snapshot: Vec<String>,
     pub cursor_snapshot: (usize, usize),
     /// Line ranges of every fenced code block in the buffer. Text-keyed
@@ -79,13 +79,13 @@ pub struct MarkdownEditorView {
     /// Diagnostic: true when the most recent Gate 1 invocation used the
     /// incremental splice path, false when it took the full-parse fallback.
     /// Read by tests; not part of the production observable surface.
-    pub last_parse_was_incremental: bool,
+    last_parse_was_incremental: bool,
     /// Diagnostic: which widener tier (`Strict` / `Heuristic`)
     /// produced the most recent successful incremental
     /// splice. `None` when no incremental splice has happened yet
     /// (first parse or full-rebuild fallbacks). Read by unit tests
     /// asserting the chosen widener path.
-    pub last_splice_path: Option<SplicePath>,
+    last_splice_path: Option<SplicePath>,
     /// Tracks how Gate 1 changed (or did not change) the parse caches.
     /// Gate 2 reads this to decide the scope of rendered_cache rebuild.
     last_text_change: TextChangeKind,
@@ -975,7 +975,16 @@ impl MarkdownEditorView {
     /// and `parsed_buffer.lines`, so direct indexing is safe — the
     /// previous defensive `(Some, Some) else fallback` block (Fix #2
     /// in the holistic review) is no longer needed.
-    pub fn click_to_logical_u16(&self, vrow: usize, vcol: usize) -> (u16, u16) {
+    /// Map a screen-relative click (row/col offset from the editor's
+    /// top-left corner) to logical (row, col). Owns the
+    /// visual-scroll-offset arithmetic so callers do not reach into
+    /// `visual_scroll_offset` — the view knows where it is scrolled.
+    pub fn click_at_screen(&self, screen_row: usize, screen_col: usize) -> (u16, u16) {
+        let vrow = screen_row + self.visual_scroll_offset;
+        self.click_to_logical_u16(vrow, screen_col)
+    }
+
+    fn click_to_logical_u16(&self, vrow: usize, vcol: usize) -> (u16, u16) {
         let vlines = self.layout.visual_lines();
         if vlines.is_empty() {
             return (0, 0);
