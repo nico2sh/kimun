@@ -179,7 +179,9 @@ impl MarkdownSpanner {
         // tab handling, instead of emitting a literal tab whose width the
         // terminal decides. The no-tab fast path borrows `content` (no alloc).
         if force_raw {
-            let style = Style::default().fg(theme.fg_secondary.to_ratatui());
+            // Use `fg` (the primary text color) so fenced code text matches
+            // indented code, which renders through the plain-text path (`fg`).
+            let style = Style::default().fg(theme.fg.to_ratatui());
             if !content.contains('\t') {
                 return vec![Span::styled(content, style)];
             }
