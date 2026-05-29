@@ -343,10 +343,10 @@ mod tests {
     use super::*;
     use crate::settings::workspace_config::{GlobalConfig, WorkspaceConfig, WorkspaceEntry};
     use ratatui::crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     fn make_settings(workspaces: Vec<(&str, &str)>, current: &str) -> AppSettings {
-        let mut ws_map = HashMap::new();
+        let mut ws_map = BTreeMap::new();
         for (name, path) in &workspaces {
             ws_map.insert(
                 name.to_string(),
