@@ -1323,6 +1323,38 @@ mod tests {
     }
 
     #[test]
+    fn code_box_background_reaches_rendered_cells() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let lines = vec![
+            "```".to_string(),
+            "let x = 1;".to_string(),
+            "```".to_string(),
+            "plain".to_string(),
+        ];
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let mut view = make_view_for_lines(&lines, (3, 0), 40);
+        let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        terminal
+            .draw(|f| view.render(f, f.area(), &theme, true))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let code_bg = theme.code_bg.to_ratatui();
+        let cell = |x: u16, y: u16| &buf.content[(y as usize) * 40 + (x as usize)];
+
+        // A cell on the fenced code content row carries the code-box bg...
+        assert_eq!(
+            cell(0, 1).bg,
+            code_bg,
+            "code content cell must have code_bg"
+        );
+        // ...including the padding past the text (box is a solid rectangle).
+        assert_eq!(cell(8, 1).bg, code_bg, "code-box padding must have code_bg");
+        // A prose row outside the block does NOT get the code bg.
+        assert_ne!(cell(0, 3).bg, code_bg, "prose row must not have code_bg");
+    }
+
+    #[test]
     fn blockquote_gutter_inset_off_cursor_row_only() {
         // Two blockquote lines; cursor on row 0.
         let lines = vec!["> first".to_string(), ">> second".to_string()];
