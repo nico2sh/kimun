@@ -915,6 +915,17 @@ impl MarkdownEditorView {
                 let spans = if let Some(((sel_sr, sel_sc), (sel_er, sel_ec))) = selection {
                     let row = vl.logical_row;
                     if row >= sel_sr && row <= sel_er {
+                        // The blockquote bar gutter occupies `gutter_off` screen
+                        // columns to the left of the content. On the first visual
+                        // line `rendered_cursor_col_with` already accounts for it
+                        // (it counts the revealed `> ` sigil, whose width equals
+                        // the gutter), so only continuation rows need the offset
+                        // added — they carry the gutter but no sigil to count.
+                        let gutter_off = if vl.is_first_visual_line {
+                            0
+                        } else {
+                            self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
+                        };
                         let start_rendered = if row == sel_sr {
                             MarkdownSpanner::rendered_cursor_col_with(
                                 logical_line,
@@ -923,7 +934,7 @@ impl MarkdownEditorView {
                                 sel_sc,
                                 vl.is_first_visual_line,
                                 force_raw,
-                            )
+                            ) + gutter_off
                         } else {
                             0
                         };
@@ -935,7 +946,7 @@ impl MarkdownEditorView {
                                 sel_ec,
                                 vl.is_first_visual_line,
                                 force_raw,
-                            )
+                            ) + gutter_off
                         } else {
                             // Entire line is selected; use a sentinel larger than any line width.
                             u16::MAX as usize

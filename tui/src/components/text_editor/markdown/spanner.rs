@@ -171,12 +171,31 @@ impl MarkdownSpanner {
                 Style::default().fg(theme.fg_muted.to_ratatui()),
             )];
         }
-        // Force-raw (inside fenced code block)
+        // Force-raw (inside fenced code block). Expand tabs to spaces (at the
+        // editor's TAB_STOP) so the rendered width is deterministic — matching
+        // `raw_display_width` (used to size the code box) and the non-force-raw
+        // tab handling, instead of emitting a literal tab whose width the
+        // terminal decides. The no-tab fast path borrows `content` (no alloc).
         if force_raw {
-            return vec![Span::styled(
-                content,
-                Style::default().fg(theme.fg_secondary.to_ratatui()),
-            )];
+            let style = Style::default().fg(theme.fg_secondary.to_ratatui());
+            if !content.contains('\t') {
+                return vec![Span::styled(content, style)];
+            }
+            let mut expanded = String::with_capacity(content.len());
+            let mut col = 0usize;
+            for cluster in content.graphemes(true) {
+                if cluster == "\t" {
+                    let w = tab_width_at(col);
+                    for _ in 0..w {
+                        expanded.push(' ');
+                    }
+                    col += w;
+                } else {
+                    expanded.push_str(cluster);
+                    col += cluster_display_width(cluster);
+                }
+            }
+            return vec![Span::styled(expanded, style)];
         }
 
         // Blockquote gutter: when the cursor is off this line, draw a `│` bar
@@ -383,7 +402,26 @@ impl MarkdownSpanner {
         force_raw: bool,
     ) -> usize {
         if force_raw {
-            return cursor_col.saturating_sub(visual_start_col);
+            // Tab-aware: code is rendered with tabs expanded to TAB_STOP, so the
+            // rendered cursor column must sum expanded widths, not char counts.
+            let mut rendered = 0usize;
+            let mut char_pos = 0usize;
+            for cluster in logical_line.graphemes(true) {
+                if char_pos >= cursor_col {
+                    break;
+                }
+                let pos = char_pos;
+                char_pos += cluster.chars().count();
+                if pos < visual_start_col {
+                    continue;
+                }
+                rendered += if cluster == "\t" {
+                    tab_width_at(rendered)
+                } else {
+                    cluster_display_width(cluster)
+                };
+            }
+            return rendered;
         }
         let trimmed = logical_line.trim();
         if is_first_visual_line && matches!(trimmed, "---" | "***" | "___") {
@@ -522,7 +560,27 @@ impl MarkdownSpanner {
         force_raw: bool,
     ) -> usize {
         if force_raw {
-            return visual_start_col + rendered_col;
+            // Tab-aware inverse of `rendered_cursor_col_with`'s force-raw branch:
+            // walk expanded widths to find the logical char at `rendered_col`.
+            let mut rendered = 0usize;
+            let mut char_pos = 0usize;
+            for cluster in logical_line.graphemes(true) {
+                let pos = char_pos;
+                if pos < visual_start_col {
+                    char_pos += cluster.chars().count();
+                    continue;
+                }
+                if rendered >= rendered_col {
+                    return pos;
+                }
+                rendered += if cluster == "\t" {
+                    tab_width_at(rendered)
+                } else {
+                    cluster_display_width(cluster)
+                };
+                char_pos += cluster.chars().count();
+            }
+            return char_pos;
         }
         let trimmed = logical_line.trim();
         if is_first_visual_line && matches!(trimmed, "---" | "***" | "___") {
@@ -538,6 +596,15 @@ impl MarkdownSpanner {
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
             parsed.list_sigil_end()
+        } else {
+            None
+        };
+        // Mirror `rendered_cursor_col_with`: on the first visual line a
+        // blockquote's `> ` markers are revealed (visible) when the cursor is on
+        // the row. On non-cursor rows the caller passes `visual_start_col` past
+        // the markers (the gutter case), so this clause is inert there.
+        let blockquote_sigil_end: Option<usize> = if is_first_visual_line {
+            parsed.blockquote_sigil_end()
         } else {
             None
         };
@@ -570,8 +637,14 @@ impl MarkdownSpanner {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
             let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
+            let in_blockquote_sigil = blockquote_sigil_end.is_some_and(|end| pos < end);
             let in_any_element = parsed.in_any_element(pos);
-            if is_content || in_heading_sigil || in_list_sigil || !in_any_element {
+            if is_content
+                || in_heading_sigil
+                || in_list_sigil
+                || in_blockquote_sigil
+                || !in_any_element
+            {
                 rendered_count += if cluster == "\t" {
                     tab_width_at(rendered_count)
                 } else {
@@ -586,6 +659,47 @@ impl MarkdownSpanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn force_raw_expands_tabs_and_cursor_maps_round_trip() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        // "\tx" force-raw: tab at col 0 → TAB_STOP (4) spaces, then 'x' → 5 cols.
+        let spans = MarkdownSpanner::render("\tx", "\tx", 0, None, true, true, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "    x", "tab must expand to 4 spaces in force-raw");
+
+        // Cursor after the tab (logical col 1) is at rendered col 4 (tab width).
+        let rc = MarkdownSpanner::rendered_cursor_col("\tx", 0, 1, true, true);
+        assert_eq!(rc, 4);
+        // Cursor after 'x' (logical col 2) is at rendered col 5.
+        let rc2 = MarkdownSpanner::rendered_cursor_col("\tx", 0, 2, true, true);
+        assert_eq!(rc2, 5);
+
+        // Inverse: rendered col 4 maps back to logical col 1 ('x'); col 0 → 0.
+        assert_eq!(
+            MarkdownSpanner::rendered_col_to_logical("\tx", 0, 4, true, true),
+            1
+        );
+        assert_eq!(
+            MarkdownSpanner::rendered_col_to_logical("\tx", 0, 0, true, true),
+            0
+        );
+    }
+
+    #[test]
+    fn click_maps_over_revealed_blockquote_marker_on_cursor_row() {
+        // Cursor-row blockquote (markers revealed, no gutter): rendered_col 0/1
+        // map to the '>' and ' ' (logical 0/1), rendered_col 2 to 'h' (logical 2)
+        // — not skipped as hidden.
+        assert_eq!(
+            MarkdownSpanner::rendered_col_to_logical("> hi", 0, 0, true, false),
+            0
+        );
+        assert_eq!(
+            MarkdownSpanner::rendered_col_to_logical("> hi", 0, 2, true, false),
+            2
+        );
+    }
 
     #[test]
     fn blockquote_marker_visible_only_when_cursor_on_line() {
