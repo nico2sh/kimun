@@ -211,6 +211,14 @@ impl MarkdownEditorView {
     /// the flag so the owner does not spawn twice; the owner is
     /// responsible for calling `install_full_parse` when the task
     /// completes.
+    /// Whether the most recent Gate 1 invocation took the incremental
+    /// splice path. Read-only diagnostic for the incremental-parse
+    /// property tests (`tui/tests/incremental_property.rs`); not part
+    /// of the production render path.
+    pub fn last_parse_was_incremental(&self) -> bool {
+        self.last_parse_was_incremental
+    }
+
     pub fn take_pending_full_parse(&mut self) -> Option<u64> {
         if let ParseState::Placeholder {
             generation, spawned, ..

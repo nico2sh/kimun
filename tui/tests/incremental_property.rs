@@ -123,7 +123,7 @@ proptest! {
         // Only assert equality when the incremental path was actually taken.
         // When try_incremental_parse fell back (last_parse_was_incremental=false)
         // the view already contains a fresh full parse — no assertion needed.
-        if !view.last_parse_was_incremental {
+        if !view.last_parse_was_incremental() {
             return Ok(());
         }
 
@@ -258,7 +258,7 @@ proptest! {
         let col_after = edited[target_row].chars().count();
         view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
 
-        if !view.last_parse_was_incremental {
+        if !view.last_parse_was_incremental() {
             return Ok(());
         }
 
@@ -310,7 +310,7 @@ proptest! {
         let col_after = edited[target_row].chars().count();
         view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
 
-        if !view.last_parse_was_incremental {
+        if !view.last_parse_was_incremental() {
             return Ok(());
         }
 
@@ -347,7 +347,7 @@ proptest! {
         let col_after = edited[target_row].chars().count();
         view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
 
-        if !view.last_parse_was_incremental {
+        if !view.last_parse_was_incremental() {
             return Ok(());
         }
 
@@ -388,7 +388,7 @@ proptest! {
         let col_after = edited[target_row].chars().count();
         view.update(&snap_for(&edited, (target_row, col_after), 2), test_rect(), None);
 
-        if !view.last_parse_was_incremental {
+        if !view.last_parse_was_incremental() {
             return Ok(());
         }
 
