@@ -211,12 +211,7 @@ impl WordWrapLayout {
     /// Compute word-wrap layout.
     /// `rendered`: per-line bitmask of which char positions are actually rendered (visible).
     /// Pass `&[]` to use raw char widths (e.g. in tests that don't involve markdown).
-    pub fn compute(
-        lines: &[String],
-        width: u16,
-        rendered: &[Vec<bool>],
-        insets: &[usize],
-    ) -> Self {
+    pub fn compute(lines: &[String], width: u16, rendered: &[Vec<bool>], insets: &[usize]) -> Self {
         let width = width as usize;
         let mut visual_lines = Vec::new();
         let mut row_starts = Vec::with_capacity(lines.len());
