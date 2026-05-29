@@ -525,12 +525,12 @@ impl MarkdownEditorView {
             //   row.
             let line_count_changed = self.layout.row_starts_len() != lines.len();
             if width_changed || line_count_changed {
-                self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
+                self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache, &[]);
             } else {
                 match &self.last_text_change {
                     TextChangeKind::Full => {
                         self.layout =
-                            WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
+                            WordWrapLayout::compute(lines, rect.width, &self.rendered_cache, &[]);
                     }
                     TextChangeKind::Incremental(range) => {
                         let start = range
@@ -547,6 +547,7 @@ impl MarkdownEditorView {
                             lines,
                             rect.width,
                             &self.rendered_cache,
+                            &[],
                             start..end,
                         );
                     }
@@ -558,6 +559,7 @@ impl MarkdownEditorView {
                                 lines,
                                 rect.width,
                                 &self.rendered_cache,
+                                &[],
                                 first..last + 1,
                             );
                         }
@@ -2131,7 +2133,8 @@ mod tests {
         update_view(&mut v, &edited, (100, edited[100].len()), rect(40), 2, None);
 
         // After incremental wrap, layout must equal a fresh compute of the edited buffer.
-        let fresh_layout = WordWrapLayout::compute(&edited, 40, v.rendered_cache_for_testing());
+        let fresh_layout =
+            WordWrapLayout::compute(&edited, 40, v.rendered_cache_for_testing(), &[]);
 
         let actual = v.layout.visual_lines();
         let fresh = fresh_layout.visual_lines();
