@@ -429,6 +429,30 @@ mod tests {
     }
 
     #[test]
+    fn indented_code_excludes_trailing_blank_keeps_interior() {
+        use super::super::parse_incremental::LineConstructKind::{Blank, IndentedCode, Plain};
+        let kinds = |lines: &[&str]| {
+            let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+            ParsedBuffer::parse(&owned).kinds
+        };
+        // Trailing blank after indented code is NOT part of the block.
+        assert_eq!(
+            kinds(&["    code", "", "outro"]),
+            vec![IndentedCode, Blank, Plain]
+        );
+        // Interior blank (between indented lines) stays part of the block.
+        assert_eq!(
+            kinds(&["    a", "", "    b"]),
+            vec![IndentedCode, IndentedCode, IndentedCode]
+        );
+        // Multiple trailing blanks all revert to Blank.
+        assert_eq!(
+            kinds(&["    a", "", "", "outro"]),
+            vec![IndentedCode, Blank, Blank, Plain]
+        );
+    }
+
+    #[test]
     fn gutter_width_matches_rendered() {
         // Locks the single-source contract: blockquote_gutter_width must equal
         // the display width of the actually-rendered blockquote_gutter string.

@@ -293,6 +293,18 @@ impl ParsedBuffer {
                     let hi = (er + 1).min(kinds.len());
                     if hi > sr {
                         kinds[sr..hi].fill(LineConstructKind::IndentedCode);
+                        // CommonMark §4.4: trailing blank lines are not part of
+                        // an indented code block. Pulldown's range can include
+                        // one trailing blank — revert trailing whitespace-only
+                        // rows to Blank so the code box stops at the last real
+                        // code line. Interior blanks (followed by more code)
+                        // are left as IndentedCode. `sr` is always kept (the
+                        // block's first line is never blank).
+                        let mut row = hi;
+                        while row > sr + 1 && lines[row - 1].trim().is_empty() {
+                            kinds[row - 1] = LineConstructKind::Blank;
+                            row -= 1;
+                        }
                     }
                 }
                 Event::End(TagEnd::CodeBlock) => {
