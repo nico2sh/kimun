@@ -790,6 +790,22 @@ impl ParsedBuffer {
             merged.first() == Some(&0) && merged.last() == Some(&lines_len),
             "splice: merged boundaries must start with 0 and end with lines.len() ({lines_len})"
         );
+        // Structural invariant: every interior reset boundary sits on a
+        // Blank row — `parse` only records non-sentinel boundaries at
+        // `kinds[r] == Blank` rows (0 and lines.len() are unconditional
+        // sentinels). A non-Blank interior boundary means the merge
+        // promoted a spurious one — the failure mode where the heuristic
+        // widener's range edges leak in as boundaries. Cheap (no full
+        // reparse), runs in every debug/test build so CI catches a merge
+        // regression that would otherwise only surface under
+        // `KIMUN_VIEW_VERIFY_INCREMENTAL`.
+        debug_assert!(
+            merged
+                .iter()
+                .all(|&b| b == 0 || b == lines_len || self.kinds[b] == LineConstructKind::Blank),
+            "splice: interior reset boundary on a non-Blank row — merge \
+             promoted a spurious boundary: {merged:?}"
+        );
         self.reset_boundaries = merged;
     }
 }
