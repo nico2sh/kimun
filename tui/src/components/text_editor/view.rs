@@ -845,12 +845,11 @@ impl MarkdownEditorView {
         //      `elements.len()` / `content_vis` match a fresh parse
         //      slice, but `lazy_depth` / `reset_boundaries` metadata
         //      may diverge — splice rebuilds both from the slice's
-        //      view. Post-slice verify runs only under
-        //      `cfg(debug_assertions) + KIMUN_VIEW_VERIFY_INCREMENTAL=1`
-        //      (demoted from release after the PR 3 proof-out).
+        //      view. Post-slice verify runs in release (cheap; see
+        //      below) and bails to full rebuild on divergence.
         //   3. `widen_to_safe` — heuristic fallback. NOT provably
         //      equivalent; the post-slice verify is the correctness
-        //      mechanism, same env-gated debug-only path as (2).
+        //      mechanism, same release-on verify as (2).
         //
         // After a §3.0 relax fires the strict widener usually
         // cap-trips (lazy_depth > 0 around the edit means no nearby
@@ -892,27 +891,22 @@ impl MarkdownEditorView {
         //
         // - Strict path: skipped. Provably equivalent to a fresh
         //   parse (see `reset_boundaries` docstring).
-        // - IntraConstruct path: gated on
-        //   `cfg(debug_assertions) + KIMUN_VIEW_VERIFY_INCREMENTAL=1`.
-        //   Demoted from release after the PR 3 proof-out: 0 verify_failed
-        //   across 1011 dogfooding attempts on 8 buffer shapes + 600k
-        //   proptest iterations (100k × 6 strategies). Combined with
-        //   the §3.0 narrowing to {ListMarker, lazy_depth==1}, the
-        //   IntraConstruct path is sound under every shape exercised
-        //   to date. The 600k proptest cases stay in the regression
-        //   harness to catch any pulldown-version-bump-induced drift.
-        // - Heuristic path: same gating. Demoted from release after
-        //   the v2 phase-7 proof-out (zero verify_failed across 1581
-        //   attempts on 8 buffer shapes).
-        //
-        // If a release-build divergence ever DOES surface (e.g. a
-        // pulldown version bump changes tokenisation), re-enable
-        // the relevant arm in release while a guard is added.
+        // - IntraConstruct / Heuristic paths: NOT provably equivalent,
+        //   so this verify is the correctness mechanism and runs in
+        //   release. It is cheap: `slice` was already parsed above
+        //   (unconditionally), and the loop only compares
+        //   kinds/elements.len()/content_vis over the `widened` rows —
+        //   bounded by the widen cap (≤256), negligible against the
+        //   parse_range that already ran. A divergence (e.g. a pulldown
+        //   version bump changing tokenisation) bails to a full rebuild
+        //   rather than shipping a corrupt splice. The 600k proptest
+        //   cases (100k × 6 strategies, 0 verify_failed) stay in the
+        //   regression harness; this guard is the release backstop.
         let verify_eligible_path = matches!(
             splice_path,
             SplicePath::IntraConstruct | SplicePath::Heuristic
         );
-        if verify_eligible_path && cfg!(debug_assertions) && verify_incremental_enabled() {
+        if verify_eligible_path {
             for row in widened.clone() {
                 if damaged.contains(&row) {
                     continue; // Damaged row: kind change is expected/irrelevant.
