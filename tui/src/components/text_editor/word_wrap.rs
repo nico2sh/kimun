@@ -60,11 +60,22 @@ fn wrap_one_row(
     logical_row: usize,
     line: &str,
     width: usize,
+    inset: usize,
     rendered_row: &[bool],
     scratch: &mut Vec<Cluster>,
     out: &mut Vec<VisualLine>,
 ) {
     use unicode_segmentation::UnicodeSegmentation;
+
+    // Reduce the available wrap width by the per-row left gutter (inset).
+    // When there is a gutter, `.max(1)` keeps forward progress on tiny panes.
+    // A genuine width==0 pane (inset 0) is left at 0 so it still hits the
+    // degenerate single-empty-line guard below.
+    let width = if inset == 0 {
+        width
+    } else {
+        width.saturating_sub(inset).max(1)
+    };
 
     scratch.clear();
     let mut char_pos = 0usize;
@@ -200,7 +211,12 @@ impl WordWrapLayout {
     /// Compute word-wrap layout.
     /// `rendered`: per-line bitmask of which char positions are actually rendered (visible).
     /// Pass `&[]` to use raw char widths (e.g. in tests that don't involve markdown).
-    pub fn compute(lines: &[String], width: u16, rendered: &[Vec<bool>]) -> Self {
+    pub fn compute(
+        lines: &[String],
+        width: u16,
+        rendered: &[Vec<bool>],
+        insets: &[usize],
+    ) -> Self {
         let width = width as usize;
         let mut visual_lines = Vec::new();
         let mut row_starts = Vec::with_capacity(lines.len());
@@ -215,10 +231,12 @@ impl WordWrapLayout {
         for (row, line) in lines.iter().enumerate() {
             row_starts.push(visual_lines.len());
             let rendered_row = rendered.get(row).map(|v| v.as_slice()).unwrap_or(&[]);
+            let inset = insets.get(row).copied().unwrap_or(0);
             wrap_one_row(
                 row,
                 line,
                 width,
+                inset,
                 rendered_row,
                 &mut scratch,
                 &mut visual_lines,
@@ -246,6 +264,7 @@ impl WordWrapLayout {
         lines: &[String],
         width: u16,
         rendered: &[Vec<bool>],
+        insets: &[usize],
         row_range: std::ops::Range<usize>,
     ) {
         if row_range.is_empty() {
@@ -283,10 +302,12 @@ impl WordWrapLayout {
         for row in row_range.clone() {
             new_row_starts_for_range.push(new_slice.len());
             let rendered_row = rendered.get(row).map(|v| v.as_slice()).unwrap_or(&[]);
+            let inset = insets.get(row).copied().unwrap_or(0);
             wrap_one_row(
                 row,
                 &lines[row],
                 width,
+                inset,
                 rendered_row,
                 &mut scratch,
                 &mut new_slice,
@@ -384,8 +405,22 @@ mod tests {
     }
 
     #[test]
+    fn left_inset_reduces_effective_wrap_width() {
+        // "aaaa bbbb" at width 9 with no inset → one visual line (9 cols fit).
+        let lines = vec!["aaaa bbbb".to_string()];
+        let no_inset = WordWrapLayout::compute(&lines, 9, &[], &[0]);
+        assert_eq!(no_inset.total_visual_lines(), 1);
+
+        // Same line, width 9, inset 2 → effective width 7 → wraps into 2 rows.
+        let inset = WordWrapLayout::compute(&lines, 9, &[], &[2]);
+        assert_eq!(inset.total_visual_lines(), 2);
+        assert_eq!(content_of(&inset.visual_lines()[0], &lines[0]), "aaaa");
+        assert_eq!(content_of(&inset.visual_lines()[1], &lines[0]), "bbbb");
+    }
+
+    #[test]
     fn empty_input_produces_one_visual_line() {
-        let layout = WordWrapLayout::compute(&[], 40, &[]);
+        let layout = WordWrapLayout::compute(&[], 40, &[], &[]);
         assert_eq!(layout.total_visual_lines(), 1);
         assert_eq!(layout.visual_lines()[0].logical_row, 0);
         assert!(layout.visual_lines()[0].is_first_visual_line);
@@ -394,7 +429,7 @@ mod tests {
     #[test]
     fn empty_string_produces_one_visual_line() {
         let src = String::new();
-        let layout = WordWrapLayout::compute(std::slice::from_ref(&src), 40, &[]);
+        let layout = WordWrapLayout::compute(std::slice::from_ref(&src), 40, &[], &[]);
         assert_eq!(layout.total_visual_lines(), 1);
         assert_eq!(content_of(&layout.visual_lines()[0], &src), "");
         assert!(layout.visual_lines()[0].is_first_visual_line);
@@ -403,7 +438,7 @@ mod tests {
     #[test]
     fn short_line_fits_on_one_visual_line() {
         let lines = ls("hello world");
-        let layout = WordWrapLayout::compute(&lines, 40, &[]);
+        let layout = WordWrapLayout::compute(&lines, 40, &[], &[]);
         assert_eq!(layout.total_visual_lines(), 1);
         assert_eq!(
             content_of(&layout.visual_lines()[0], &lines[0]),
@@ -416,7 +451,7 @@ mod tests {
     fn long_line_wraps_at_whitespace() {
         // "hello world foo" width=11 → "hello world" (11) fits; " foo" wraps
         let lines = ls("hello world foo");
-        let layout = WordWrapLayout::compute(&lines, 11, &[]);
+        let layout = WordWrapLayout::compute(&lines, 11, &[], &[]);
         assert_eq!(layout.total_visual_lines(), 2);
         assert_eq!(
             content_of(&layout.visual_lines()[0], &lines[0]),
@@ -430,7 +465,7 @@ mod tests {
     #[test]
     fn long_word_hard_breaks_at_width() {
         let lines = vec!["abcdefgh".to_string()];
-        let layout = WordWrapLayout::compute(&lines, 4, &[]);
+        let layout = WordWrapLayout::compute(&lines, 4, &[], &[]);
         assert_eq!(layout.total_visual_lines(), 2);
         assert_eq!(content_of(&layout.visual_lines()[0], &lines[0]), "abcd");
         assert_eq!(content_of(&layout.visual_lines()[1], &lines[0]), "efgh");
@@ -438,7 +473,7 @@ mod tests {
 
     #[test]
     fn two_logical_lines_have_correct_logical_rows() {
-        let layout = WordWrapLayout::compute(&ls("abc\nxyz"), 10, &[]);
+        let layout = WordWrapLayout::compute(&ls("abc\nxyz"), 10, &[], &[]);
         assert_eq!(layout.total_visual_lines(), 2);
         assert_eq!(layout.visual_lines()[0].logical_row, 0);
         assert_eq!(layout.visual_lines()[1].logical_row, 1);
@@ -450,7 +485,7 @@ mod tests {
         // (2 display columns), so at width=4 two fit per visual line —
         // the break is by display width, never mid-byte.
         let lines = vec!["あいう".to_string()];
-        let layout = WordWrapLayout::compute(&lines, 4, &[]);
+        let layout = WordWrapLayout::compute(&lines, 4, &[], &[]);
         assert_eq!(layout.total_visual_lines(), 2);
         assert_eq!(content_of(&layout.visual_lines()[0], &lines[0]), "あい");
         assert_eq!(content_of(&layout.visual_lines()[1], &lines[0]), "う");
@@ -460,7 +495,7 @@ mod tests {
     fn full_width_glyph_counts_as_two_columns() {
         // At width=2, a single full-width glyph fills the line on its own.
         let lines = vec!["あい".to_string()];
-        let layout = WordWrapLayout::compute(&lines, 2, &[]);
+        let layout = WordWrapLayout::compute(&lines, 2, &[], &[]);
         assert_eq!(layout.total_visual_lines(), 2);
         assert_eq!(content_of(&layout.visual_lines()[0], &lines[0]), "あ");
         assert_eq!(content_of(&layout.visual_lines()[1], &lines[0]), "い");
@@ -474,7 +509,7 @@ mod tests {
         // leave the renderer reclustering a partial slice (review #3).
         let combined = "e\u{0301}fg"; // é f g
         let lines = vec![combined.to_string()];
-        let layout = WordWrapLayout::compute(&lines, 1, &[]);
+        let layout = WordWrapLayout::compute(&lines, 1, &[], &[]);
         // Width 1: "é" (1 col, 2 scalars) | "f" | "g" → 3 visual lines,
         // and the first never splits the cluster.
         assert_eq!(layout.total_visual_lines(), 3);
@@ -485,13 +520,13 @@ mod tests {
 
     #[test]
     fn logical_to_visual_start_of_line() {
-        let layout = WordWrapLayout::compute(&ls("hello world"), 40, &[]);
+        let layout = WordWrapLayout::compute(&ls("hello world"), 40, &[], &[]);
         assert_eq!(layout.logical_to_visual(0, 0), (0, 0));
     }
 
     #[test]
     fn logical_to_visual_wrapped_cursor() {
-        let layout = WordWrapLayout::compute(&ls("hello world foo"), 11, &[]);
+        let layout = WordWrapLayout::compute(&ls("hello world foo"), 11, &[], &[]);
         let (vrow, vcol) = layout.logical_to_visual(0, 12);
         assert_eq!(vrow, 1);
         assert_eq!(vcol, 0);
@@ -499,13 +534,13 @@ mod tests {
 
     #[test]
     fn visual_to_logical_first_line() {
-        let layout = WordWrapLayout::compute(&ls("hello"), 40, &[]);
+        let layout = WordWrapLayout::compute(&ls("hello"), 40, &[], &[]);
         assert_eq!(layout.visual_to_logical(0, 3), (0, 3));
     }
 
     #[test]
     fn visual_to_logical_accounts_for_start_col() {
-        let layout = WordWrapLayout::compute(&ls("hello world foo"), 11, &[]);
+        let layout = WordWrapLayout::compute(&ls("hello world foo"), 11, &[], &[]);
         let (row, col) = layout.visual_to_logical(1, 0);
         assert_eq!(row, 0);
         assert_eq!(col, 12);
@@ -518,14 +553,14 @@ mod tests {
             "hello world foo".to_string(),
             "xyz".to_string(),
         ];
-        let layout = WordWrapLayout::compute(&lines, 11, &[]);
+        let layout = WordWrapLayout::compute(&lines, 11, &[], &[]);
         assert_eq!(layout.row_starts, vec![0, 1, 3]);
         assert_eq!(layout.logical_to_visual(2, 0), (3, 0));
     }
 
     #[test]
     fn coordinate_roundtrip_vrow_zero() {
-        let layout = WordWrapLayout::compute(&ls("hello world foo"), 11, &[]);
+        let layout = WordWrapLayout::compute(&ls("hello world foo"), 11, &[], &[]);
         let (row, col) = layout.visual_to_logical(0, 3);
         let (vrow2, vcol2) = layout.logical_to_visual(row, col);
         assert_eq!((vrow2, vcol2), (0, 3));
@@ -536,7 +571,7 @@ mod tests {
         // "あいう": あ=3 bytes, い=3 bytes, う=3 bytes; each 2 columns.
         // At width=4 the first visual line holds "あい" (bytes 0..6).
         let lines = vec!["あいう".to_string()];
-        let layout = WordWrapLayout::compute(&lines, 4, &[]);
+        let layout = WordWrapLayout::compute(&lines, 4, &[], &[]);
         let vl0 = &layout.visual_lines()[0];
         let vl1 = &layout.visual_lines()[1];
         assert_eq!((vl0.start_byte, vl0.end_byte), (0, 6)); // "あい"
@@ -546,9 +581,9 @@ mod tests {
     #[test]
     fn splice_range_full_buffer_equals_compute() {
         let lines = ls("hello world\nfoo bar baz\nlast line");
-        let mut layout = WordWrapLayout::compute(&lines, 40, &[]);
-        layout.splice_range(&lines, 40, &[], 0..lines.len());
-        let fresh = WordWrapLayout::compute(&lines, 40, &[]);
+        let mut layout = WordWrapLayout::compute(&lines, 40, &[], &[]);
+        layout.splice_range(&lines, 40, &[], &[], 0..lines.len());
+        let fresh = WordWrapLayout::compute(&lines, 40, &[], &[]);
         assert_eq!(layout.visual_lines(), fresh.visual_lines());
         assert_eq!(layout.row_starts, fresh.row_starts);
     }
@@ -557,13 +592,13 @@ mod tests {
     fn splice_range_middle_row_only() {
         // Edit row 1 — splice should only re-wrap row 1.
         let lines_before = ls("alpha beta\nfoo bar\ngamma delta");
-        let layout_before = WordWrapLayout::compute(&lines_before, 40, &[]);
+        let layout_before = WordWrapLayout::compute(&lines_before, 40, &[], &[]);
 
         let lines_after = ls("alpha beta\nFOO BAR\ngamma delta");
         let mut layout = layout_before.clone();
-        layout.splice_range(&lines_after, 40, &[], 1..2);
+        layout.splice_range(&lines_after, 40, &[], &[], 1..2);
 
-        let fresh = WordWrapLayout::compute(&lines_after, 40, &[]);
+        let fresh = WordWrapLayout::compute(&lines_after, 40, &[], &[]);
         assert_eq!(layout.visual_lines(), fresh.visual_lines());
         assert_eq!(layout.row_starts, fresh.row_starts);
     }
@@ -572,11 +607,11 @@ mod tests {
     fn splice_range_handles_wrap_count_change() {
         // Row 0: "short" (1 visual line) → "a very long line that will wrap" (2 visual lines at width 10).
         let lines_before = ls("short\ntail");
-        let mut layout = WordWrapLayout::compute(&lines_before, 10, &[]);
+        let mut layout = WordWrapLayout::compute(&lines_before, 10, &[], &[]);
         let lines_after = ls("a very long line that will wrap\ntail");
-        layout.splice_range(&lines_after, 10, &[], 0..1);
+        layout.splice_range(&lines_after, 10, &[], &[], 0..1);
 
-        let fresh = WordWrapLayout::compute(&lines_after, 10, &[]);
+        let fresh = WordWrapLayout::compute(&lines_after, 10, &[], &[]);
         assert_eq!(layout.visual_lines(), fresh.visual_lines());
         assert_eq!(layout.row_starts, fresh.row_starts);
     }
@@ -584,11 +619,11 @@ mod tests {
     #[test]
     fn splice_range_at_buffer_start() {
         let lines = ls("first line\nsecond line\nthird line");
-        let mut layout = WordWrapLayout::compute(&lines, 40, &[]);
+        let mut layout = WordWrapLayout::compute(&lines, 40, &[], &[]);
         let edited = ls("first EDITED line\nsecond line\nthird line");
-        layout.splice_range(&edited, 40, &[], 0..1);
+        layout.splice_range(&edited, 40, &[], &[], 0..1);
 
-        let fresh = WordWrapLayout::compute(&edited, 40, &[]);
+        let fresh = WordWrapLayout::compute(&edited, 40, &[], &[]);
         assert_eq!(layout.visual_lines(), fresh.visual_lines());
         assert_eq!(layout.row_starts, fresh.row_starts);
     }
@@ -596,11 +631,11 @@ mod tests {
     #[test]
     fn splice_range_at_buffer_end() {
         let lines = ls("first\nsecond\nthird");
-        let mut layout = WordWrapLayout::compute(&lines, 40, &[]);
+        let mut layout = WordWrapLayout::compute(&lines, 40, &[], &[]);
         let edited = ls("first\nsecond\nthird EDITED");
-        layout.splice_range(&edited, 40, &[], 2..3);
+        layout.splice_range(&edited, 40, &[], &[], 2..3);
 
-        let fresh = WordWrapLayout::compute(&edited, 40, &[]);
+        let fresh = WordWrapLayout::compute(&edited, 40, &[], &[]);
         assert_eq!(layout.visual_lines(), fresh.visual_lines());
         assert_eq!(layout.row_starts, fresh.row_starts);
     }
