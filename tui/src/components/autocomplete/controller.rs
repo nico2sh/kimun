@@ -310,8 +310,7 @@ impl AutocompleteController {
                 if !hit {
                     self.cached_text = Some((rev, snap.lines.join("\n"), None));
                 }
-                let (_, text, zones_slot) =
-                    self.cached_text.as_mut().expect("just populated");
+                let (_, text, zones_slot) = self.cached_text.as_mut().expect("just populated");
                 let text: &str = text;
                 let mut oracle = LazyZoneOracle {
                     text,
