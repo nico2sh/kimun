@@ -2,6 +2,7 @@ use crossterm::event::Event as CrosstermEvent;
 use crossterm::event::{EventStream, KeyEventKind};
 use futures::StreamExt;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TryRecvError;
 
 use crate::components::events::{AppEvent, AppTx, InputEvent};
 
@@ -38,6 +39,34 @@ impl EventHandler {
     /// Returns a cloned sender. Pass this to screens and components as `&AppTx`.
     pub fn app_sender(&self) -> AppTx {
         self.tx.clone()
+    }
+
+    /// Non-blocking peek of the app-message channel. Returns `None` when no
+    /// app message is immediately pending. Crossterm input is NOT polled here
+    /// — those events come through the stream and are only delivered via the
+    /// blocking `next()` await point.
+    ///
+    /// The main loop uses this to coalesce queued events (e.g. multiple
+    /// `Redraw` messages that pile up while a long-running async task was
+    /// firing them) between blocking awaits.
+    ///
+    /// `Disconnected` is structurally unreachable: `self.tx` is owned by
+    /// this `EventHandler` and live across the `&mut self` borrow, so at
+    /// least one sender always exists while `try_next` runs. Using
+    /// `unreachable!` flags the invariant for future readers (and panics
+    /// loudly if a refactor ever drops `tx` before the run-loop borrow
+    /// ends) without misnaming which sender was dropped.
+    pub fn try_next(&mut self) -> Option<AppEvent> {
+        match self.rx.try_recv() {
+            Ok(msg) => Some(msg),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                unreachable!(
+                    "EventHandler::tx is owned by this struct and the `&mut self` borrow \
+                     guarantees it outlives this call; channel cannot be Disconnected here"
+                )
+            }
+        }
     }
 
     /// Wait for the next event. App messages are drained first (`biased`), then

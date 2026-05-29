@@ -6,7 +6,8 @@ use content_extractor::{extract_title, get_content_data};
 pub use content_extractor::{
     get_chunks_and_links, get_content_chunks, is_inside_code_link_or_frontmatter,
     is_inside_exclusion_zone, is_remote_url, link_char_spans, link_target_filename,
-    target_looks_like_image, url_with_allowed_scheme, wikilink_char_spans, LinkSpan, LinkSpanKind,
+    target_looks_like_image, url_with_allowed_scheme, wikilink_char_spans, ExclusionZones,
+    LinkSpan, LinkSpanKind,
 };
 
 use crate::nfs::VaultPath;

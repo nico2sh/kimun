@@ -1,18 +1,40 @@
+use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
 
 use kimun_core::NoteVault;
+use kimun_core::note::ExclusionZones;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::host::AutocompleteHost;
 use super::popup::{PopupAction, PopupOutcome, handle_key as popup_handle_key};
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
-use super::trigger::{TriggerKind, TriggerOptions, detect_trigger_with};
+use super::trigger::{TriggerKind, TriggerOptions, ZoneOracle, detect_trigger_with_oracle};
+#[cfg(test)]
+use crate::components::text_editor::snapshot::EditorSnapshot;
+use crate::util::single_slot_task::SingleSlotTask;
 
 /// Hard cap on suggestions fetched from core per query. The popup itself
 /// only shows `max_visible_rows` at a time and scrolls inside the fetched
 /// set, so a few dozen rows is plenty.
 const DEFAULT_FETCH_LIMIT: usize = 50;
+
+/// Wait this long after a query-refinement keystroke before hitting the
+/// vault. Two cases:
+///
+/// - Fast typing (inter-keystroke gap < `DEFAULT_DEBOUNCE`): each new
+///   keystroke aborts the previous in-flight task while it is still
+///   inside `tokio::time::sleep`, so only the final keystroke's query
+///   reaches SQLite. This is the case the debounce is optimised for.
+/// - Normal typing (inter-keystroke gap ≥ `DEFAULT_DEBOUNCE`): every
+///   keystroke still runs its own query, with `DEFAULT_DEBOUNCE` of added
+///   latency between keystroke and popup update. The debounce does NOT
+///   reduce work in this regime — it bounds responsiveness.
+///
+/// The first query of a popup (kind change / popup opening) skips the
+/// debounce entirely so the popup feels instant on open.
+const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(80);
 
 /// Whether wikilink triggers are honoured. The editor uses
 /// `Both`; the search box uses `HashtagOnly` because the search syntax has
@@ -41,10 +63,28 @@ pub struct AutocompleteController {
     result_rx: UnboundedReceiver<QueryResult>,
     fetch_limit: usize,
     max_visible_rows: usize,
-    /// Handle of the most recently spawned query task. Cancelled before
-    /// the next spawn so a burst of keystrokes does not pile up N
-    /// concurrent SQLite queries holding the vault `Arc` open.
-    in_flight: Option<tokio::task::JoinHandle<()>>,
+    /// Handle of the most recently spawned query task. Spawning a new
+    /// query into this slot aborts the previous one, so a burst of
+    /// keystrokes does not pile up N concurrent SQLite queries holding
+    /// the vault `Arc` open. The slot's `Drop` also aborts, so the
+    /// task cannot outlive the controller.
+    in_flight: SingleSlotTask<()>,
+    /// Delay inserted before each refinement query hits the vault. A burst
+    /// of typing aborts the prior in-flight task during this window, so
+    /// only the final keystroke's query reaches SQLite. The first query of
+    /// a popup (kind change / open) bypasses the debounce. Tests override
+    /// to `Duration::ZERO` via `with_debounce`.
+    debounce: Duration,
+    /// The joined buffer text keyed on the host's `content_revision`,
+    /// plus its `ExclusionZones` computed LAZILY (`None` until the
+    /// trigger veto first needs them). The text is rebuilt only when the
+    /// revision moves; cursor moves reuse it. The zones — a full-buffer
+    /// pulldown-cmark + regex scan — are computed only when a `[[`/`#`
+    /// opener is found, then memoized here so a later cursor move at the
+    /// same revision reuses them. Hosts with no stable revision identity
+    /// (search-box modal) return `None` from `content_revision` and never
+    /// populate this slot.
+    cached_text: Option<(NonZeroU64, String, Option<ExclusionZones>)>,
     /// Optional callback used to wake the host's render loop after an
     /// async query posts its result. Decoupled from any specific event
     /// bus so the controller stays usable wherever the host can
@@ -64,6 +104,31 @@ struct QueryResult {
     items: Vec<Suggestion>,
 }
 
+/// [`ZoneOracle`] that computes `ExclusionZones` from `text` on first
+/// query and memoizes the result back into the borrowed slot — so the
+/// full-buffer scan runs at most once per buffer revision, and only when
+/// a trigger candidate actually reaches the exclusion veto.
+struct LazyZoneOracle<'a> {
+    text: &'a str,
+    zones: &'a mut Option<ExclusionZones>,
+}
+
+impl ZoneOracle for LazyZoneOracle<'_> {
+    fn contains(&mut self, cursor: usize) -> bool {
+        let text = self.text;
+        self.zones
+            .get_or_insert_with(|| ExclusionZones::from_text(text))
+            .contains(cursor)
+    }
+
+    fn contains_code_link_or_frontmatter(&mut self, cursor: usize) -> bool {
+        let text = self.text;
+        self.zones
+            .get_or_insert_with(|| ExclusionZones::from_text(text))
+            .contains_code_link_or_frontmatter(cursor)
+    }
+}
+
 impl AutocompleteController {
     pub fn new(vault: Arc<NoteVault>, mode: AutocompleteMode) -> Self {
         let (result_tx, result_rx) = unbounded_channel();
@@ -77,7 +142,9 @@ impl AutocompleteController {
             result_rx,
             fetch_limit: DEFAULT_FETCH_LIMIT,
             max_visible_rows: DEFAULT_MAX_VISIBLE_ROWS,
-            in_flight: None,
+            in_flight: SingleSlotTask::empty(),
+            debounce: DEFAULT_DEBOUNCE,
+            cached_text: None,
             redraw_cb: None,
         }
     }
@@ -87,6 +154,14 @@ impl AutocompleteController {
     /// (Markdown headers don't exist in a search input).
     pub fn with_trigger_opts(mut self, opts: TriggerOptions) -> Self {
         self.trigger_opts = opts;
+        self
+    }
+
+    /// Override the per-refinement debounce window. Tests pass
+    /// `Duration::ZERO` so query results land promptly inside `drain_results`.
+    #[cfg(test)]
+    pub fn with_debounce(mut self, debounce: Duration) -> Self {
+        self.debounce = debounce;
         self
     }
 
@@ -133,8 +208,19 @@ impl AutocompleteController {
     /// Use whenever focus moves away from the host or the host
     /// triggers a buffer-replacement that invalidates the trigger
     /// context (e.g. `set_text`).
+    ///
+    /// Also aborts any in-flight query task — without this, pressing Esc
+    /// during the 80ms debounce window leaks a spawned tokio task that
+    /// continues to the SQLite hit and posts a result discarded later
+    /// via generation mismatch.
     pub fn close(&mut self) {
         self.state = None;
+        self.in_flight.abort();
+        // Drop the cached buffer text + zones. On a multi-MB note these
+        // hold a full clone of the buffer + parsed exclusion-zone
+        // ranges; without this clear they survive popup dismissal
+        // until the next text edit overwrites the slot.
+        self.cached_text = None;
     }
 
     /// Route a key event through the popup when one is open. Returns a
@@ -201,9 +287,47 @@ impl AutocompleteController {
     }
 
     fn reconcile<H: AutocompleteHost>(&mut self, host: &H, allow_open: bool) {
-        let text = host.buffer_text();
-        let cursor = host.cursor_byte_offset();
-        let trigger = detect_trigger_with(&text, cursor, self.trigger_opts);
+        // Single borrow of the host's buffer + cursor. The snapshot
+        // is borrowed (Textarea backend) so no per-keystroke lines
+        // clone happens here.
+        let snap = host.buffer_snapshot();
+        let cursor = snap.cursor_byte_offset();
+        let cache_key = host.cache_key();
+        // Rebuild the joined buffer text only when the host's cache key
+        // has moved on; cursor moves reuse it. The expensive
+        // `ExclusionZones` scan (full-buffer pulldown-cmark + regex)
+        // stays LAZY — the oracle below computes it only if the local
+        // trigger scan finds a `[[`/`#` opener that needs the exclusion
+        // veto, and memoizes it into the cache slot so a later cursor
+        // move at the same revision reuses it. Normal prose keystrokes
+        // (no opener at the caret) never pay the scan at all.
+        //
+        // `cache_key == None` opts the host out (search-box modal): join
+        // locally, use a throwaway lazy memo, and never touch the cache.
+        let trigger = match cache_key {
+            Some(rev) => {
+                let hit = matches!(&self.cached_text, Some((r, _, _)) if *r == rev);
+                if !hit {
+                    self.cached_text = Some((rev, snap.lines.join("\n"), None));
+                }
+                let (_, text, zones_slot) = self.cached_text.as_mut().expect("just populated");
+                let text: &str = text;
+                let mut oracle = LazyZoneOracle {
+                    text,
+                    zones: zones_slot,
+                };
+                detect_trigger_with_oracle(text, cursor, self.trigger_opts, &mut oracle)
+            }
+            None => {
+                let text = snap.lines.join("\n");
+                let mut zones: Option<ExclusionZones> = None;
+                let mut oracle = LazyZoneOracle {
+                    text: &text,
+                    zones: &mut zones,
+                };
+                detect_trigger_with_oracle(&text, cursor, self.trigger_opts, &mut oracle)
+            }
+        };
 
         // Filter by mode before deciding anything else.
         let trigger = trigger.filter(|t| match (self.mode, t.kind) {
@@ -260,7 +384,11 @@ impl AutocompleteController {
         }
 
         if query_changed {
-            self.fire_query(trigger.kind, trigger.query);
+            // First query of a popup (kind change / open) fires instantly
+            // for snappy UX. Refinement queries on the same popup are
+            // debounced so a burst of typing only hits the vault once.
+            let instant = kind_changed;
+            self.fire_query(trigger.kind, trigger.query, instant);
         }
     }
 
@@ -282,22 +410,28 @@ impl AutocompleteController {
         }
     }
 
-    fn fire_query(&mut self, kind: TriggerKind, query: String) {
-        // Cancel any previous in-flight task — its result would be
-        // discarded on receive (generation mismatch) but the SQLite
-        // hit would still happen and the vault `Arc` would stay alive
-        // until the task drained. Aborting frees both.
-        if let Some(handle) = self.in_flight.take() {
-            handle.abort();
-        }
-
+    fn fire_query(&mut self, kind: TriggerKind, query: String, instant: bool) {
+        // `SingleSlotTask::spawn` aborts the previous in-flight task —
+        // its result would be discarded on receive (generation
+        // mismatch) but the SQLite hit would still happen and the
+        // vault `Arc` would stay alive until the task drained.
         self.generation = self.generation.wrapping_add(1);
         let req_gen = self.generation;
         let tx = self.result_tx.clone();
         let redraw = self.redraw_cb.clone();
         let vault = self.vault.clone();
         let limit = self.fetch_limit;
-        self.in_flight = Some(tokio::spawn(async move {
+        let debounce = if instant {
+            Duration::ZERO
+        } else {
+            self.debounce
+        };
+        self.in_flight.spawn(async move {
+            // Aborted by the next `fire_query` before this sleep completes
+            // for a burst of typing — the SQLite hit below never runs.
+            if !debounce.is_zero() {
+                tokio::time::sleep(debounce).await;
+            }
             let items: Vec<Suggestion> = match kind {
                 TriggerKind::Wikilink => match vault.suggest_notes_by_prefix(&query, limit).await {
                     Ok(notes) => notes
@@ -345,7 +479,7 @@ impl AutocompleteController {
             if let Some(redraw) = redraw {
                 redraw();
             }
-        }));
+        });
     }
 
     fn compute_accept<H: AutocompleteHost>(&self, host: &H) -> Option<AcceptAction> {
@@ -353,7 +487,10 @@ impl AutocompleteController {
         let suggestion = state.selected()?.clone();
         let kind = state.kind;
         let range = state.replace_range.clone();
-        let buffer = host.buffer_text();
+        // Accept is a once-per-popup-acceptance path; allocating the
+        // joined buffer text here is fine. The hot path is reconcile,
+        // which uses the cached `text` slot built once per text edit.
+        let buffer = host.buffer_snapshot().lines.join("\n");
 
         // Guard against a stale snapshot — if the live buffer shrank
         // below the trigger range, drop the accept rather than producing
@@ -502,11 +639,21 @@ mod tests {
     use kimun_core::nfs::VaultPath;
     use kimun_core::{NoteVault, VaultConfig};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::TempDir;
+
+    /// Global per-test counter so each `FakeHost::new` returns a distinct
+    /// `content_revision` and the controller's cache is invalidated between
+    /// successive sync calls in the same test (mirrors production where
+    /// rebuilding the buffer always advances the editor's revision).
+    static FAKE_REV: AtomicU64 = AtomicU64::new(1);
 
     struct FakeHost {
         buffer: String,
         cursor: usize,
+        /// `Some(rev)` to participate in the controller's cache.
+        /// `None` mirrors the search-box modal opting out.
+        revision: Option<NonZeroU64>,
     }
 
     impl FakeHost {
@@ -514,6 +661,7 @@ mod tests {
             Self {
                 buffer: buffer.to_string(),
                 cursor,
+                revision: NonZeroU64::new(FAKE_REV.fetch_add(1, Ordering::SeqCst)),
             }
         }
 
@@ -521,15 +669,45 @@ mod tests {
             self.buffer
                 .replace_range(action.range.clone(), &action.new_text);
             self.cursor = action.new_cursor_byte;
+            self.revision = self
+                .revision
+                .and_then(|r| NonZeroU64::new(r.get().wrapping_add(1)));
+        }
+
+        /// Split `self.buffer` into lines and convert the byte cursor
+        /// into `(row, char_col)`. Re-derived on every
+        /// `buffer_snapshot()` call so tests that mutate
+        /// `host.buffer` / `host.cursor` directly stay in sync.
+        fn lines_and_cursor(&self) -> (Vec<String>, (usize, usize)) {
+            let lines: Vec<String> = self.buffer.split('\n').map(|s| s.to_string()).collect();
+            let mut byte_running = 0;
+            for (row, line) in lines.iter().enumerate() {
+                let line_end = byte_running + line.len();
+                if self.cursor <= line_end {
+                    let col_byte = self.cursor - byte_running;
+                    let col = line[..col_byte].chars().count();
+                    return (lines, (row, col));
+                }
+                byte_running = line_end + 1; // +1 for '\n'
+            }
+            // Past EOF — clamp to last row's end.
+            let row = lines.len().saturating_sub(1);
+            let col = lines.get(row).map(|l| l.chars().count()).unwrap_or(0);
+            (lines, (row, col))
         }
     }
 
     impl AutocompleteHost for FakeHost {
-        fn buffer_text(&self) -> String {
-            self.buffer.clone()
+        fn buffer_snapshot(&self) -> EditorSnapshot<'_> {
+            let rev = self.revision.unwrap_or_else(|| NonZeroU64::new(1).unwrap());
+            let (lines, cursor) = self.lines_and_cursor();
+            // Owned because we constructed `lines` locally — tests
+            // don't hold the snapshot long enough to care about the
+            // allocation.
+            EditorSnapshot::owned(lines, cursor, rev)
         }
-        fn cursor_byte_offset(&self) -> usize {
-            self.cursor
+        fn cache_key(&self) -> Option<NonZeroU64> {
+            self.revision
         }
         fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
             Some((0, 0))
@@ -567,12 +745,18 @@ mod tests {
         controller.poll_results();
     }
 
+    /// Builds a controller with debounce disabled so tests don't pay the
+    /// 80ms refinement window before each query reaches the in-memory DB.
+    fn make_controller(vault: Arc<NoteVault>, mode: AutocompleteMode) -> AutocompleteController {
+        AutocompleteController::new(vault, mode).with_debounce(Duration::ZERO)
+    }
+
     // ---- Lifecycle ----
 
     #[tokio::test]
     async fn no_trigger_keeps_popup_closed() {
         let (_tmp, vault) = new_vault_with(&[], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("plain text", 5);
         c.sync(&host);
         assert!(!c.is_open());
@@ -581,7 +765,7 @@ mod tests {
     #[tokio::test]
     async fn wikilink_trigger_opens_popup_and_loads_results() {
         let (_tmp, vault) = new_vault_with(&["meeting", "music", "novel"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         // State exists immediately; is_open() flips to true only once
@@ -606,7 +790,7 @@ mod tests {
         // wikilink one — close it instead. Opening a wikilink popup
         // on cursor movement violates the refresh-only contract.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[("a", "x #proj")]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("#pro [[me", 4); // cursor after `#pro`
         c.sync(&host);
         drain_results(&mut c).await;
@@ -626,7 +810,7 @@ mod tests {
         // indent / Enter newline.
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -646,7 +830,7 @@ mod tests {
         // behaviour that prevents cursor-only navigation over an
         // existing wikilink from re-popping the suggestions.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         // Cursor inside an existing wikilink — but the popup is closed.
         let host = FakeHost::new("[[meeting]]", 4);
         c.refresh_if_open(&host);
@@ -656,7 +840,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_if_open_closes_popup_when_cursor_leaves_trigger() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -673,7 +857,7 @@ mod tests {
         // is_open() is false so Esc/Up/Down/Tab fall through to the
         // modal/editor instead of being swallowed.
         let (_tmp, vault) = new_vault_with(&[], &[]).await; // empty vault
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("see [[xyz", 9);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -685,7 +869,7 @@ mod tests {
     #[tokio::test]
     async fn hashtag_trigger_opens_popup_and_loads_results() {
         let (_tmp, vault) = new_vault_with(&[], &[("a", "x #projects"), ("b", "y #pro")]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("about #pro", 10);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -699,7 +883,7 @@ mod tests {
     #[tokio::test]
     async fn hashtag_only_mode_ignores_wikilinks() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::HashtagOnly);
+        let mut c = make_controller(vault, AutocompleteMode::HashtagOnly);
         let host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         assert!(!c.is_open());
@@ -708,7 +892,7 @@ mod tests {
     #[tokio::test]
     async fn losing_trigger_context_closes_popup() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -727,7 +911,7 @@ mod tests {
     #[tokio::test]
     async fn accepting_wikilink_inserts_name_and_closes_brackets() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -749,7 +933,7 @@ mod tests {
         // characters between the cursor and `]]` must be consumed, not
         // left as `[[meeting]]e]]`.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me]]", 7); // cursor between `m` and `e`
         c.sync(&host);
         drain_results(&mut c).await;
@@ -768,7 +952,7 @@ mod tests {
         // Buffer has a single stray `]` after the target — must not
         // produce `]]]`.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me]", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -786,7 +970,7 @@ mod tests {
         // `[[me|alias]]` — cursor in the target portion; alias must
         // survive and the cursor must land right before `|alias]]`.
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me|alias]]", 8); // cursor before `|`
         c.sync(&host);
         drain_results(&mut c).await;
@@ -804,7 +988,7 @@ mod tests {
     #[tokio::test]
     async fn accepting_wikilink_preserves_existing_closing_brackets() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("see [[me]]", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -821,7 +1005,7 @@ mod tests {
     #[tokio::test]
     async fn accepting_hashtag_inserts_label_no_trailing_space() {
         let (_tmp, vault) = new_vault_with(&[], &[("a", "x #projects")]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let mut host = FakeHost::new("about #pro", 10);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -838,7 +1022,7 @@ mod tests {
     #[tokio::test]
     async fn esc_dismisses_without_changing_buffer() {
         let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         let host = FakeHost::new("see [[me", 8);
         c.sync(&host);
         drain_results(&mut c).await;
@@ -854,7 +1038,7 @@ mod tests {
     #[tokio::test]
     async fn stale_results_are_dropped_on_query_change() {
         let (_tmp, vault) = new_vault_with(&["meeting", "memory"], &[]).await;
-        let mut c = AutocompleteController::new(vault, AutocompleteMode::Both);
+        let mut c = make_controller(vault, AutocompleteMode::Both);
         // First query for `me` — fires generation 1.
         let host1 = FakeHost::new("see [[me", 8);
         c.sync(&host1);
@@ -869,5 +1053,145 @@ mod tests {
         assert_eq!(st.query, "mem");
         let names: Vec<&str> = st.items.iter().map(|s| s.display.as_str()).collect();
         assert_eq!(names, vec!["memory"]);
+    }
+
+    /// Regression for the opt-out cache-write skip (originally commit
+    /// 5dc15309 against the `revision == 0` sentinel; now expressed
+    /// via `content_revision() -> None`). Two invariants:
+    ///   1. A sync from an opt-out host (revision == None) must NOT
+    ///      populate `cached_text` — the search-box modal would
+    ///      otherwise churn the heap allocating String + zones per
+    ///      keystroke for a slot nothing ever reads.
+    ///   2. An opt-out sync following a cached sync must NOT consult
+    ///      the previously-cached entry, even though the cache slot
+    ///      is Some(…). Otherwise stale zones from a prior editor
+    ///      session could serve a fresh search-box host as a false hit.
+    #[tokio::test]
+    async fn opt_out_revision_does_not_populate_or_consult_cache() {
+        let (_tmp, vault) = new_vault_with(&["meeting"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+
+        // (1) Opt-out from a fresh controller: cache stays empty.
+        let mut sentinel = FakeHost::new("see [[me", 8);
+        sentinel.revision = None;
+        c.sync(&sentinel);
+        assert!(
+            c.cached_text.is_none(),
+            "opt-out sync must not write to cached_text"
+        );
+
+        // Populate the cache with a normal (cached) reconcile.
+        let host = FakeHost::new("see [[me", 8); // FakeHost::new auto-bumps revision
+        c.sync(&host);
+        let cached_rev = c
+            .cached_text
+            .as_ref()
+            .map(|(rev, _, _)| *rev)
+            .expect("cached sync should have populated the cache");
+
+        // (2) Opt-out sync now: must not be served by the stale cache,
+        // and must not overwrite the cache slot either.
+        let mut sentinel2 = FakeHost::new("see [[nope", 10);
+        sentinel2.revision = None;
+        c.sync(&sentinel2);
+        let preserved_rev = c
+            .cached_text
+            .as_ref()
+            .map(|(rev, _, _)| *rev)
+            .expect("opt-out sync should leave the previous cache entry alone");
+        assert_eq!(
+            preserved_rev, cached_rev,
+            "opt-out sync must not overwrite cached_text"
+        );
+    }
+
+    /// Regression: cursor moves on a host whose `content_revision`
+    /// stays constant must HIT the cache slot — same key, same text
+    /// pointer, same zones — not rebuild `ExclusionZones` or
+    /// re-allocate the buffer text. This is the invariant the
+    /// `text_revision` → `content_revision` rename was designed to
+    /// preserve cleanly: cursor-only events never invalidate cached
+    /// zones.
+    #[tokio::test]
+    async fn cursor_only_move_within_trigger_hits_cache() {
+        let (_tmp, vault) = new_vault_with(&["memory"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+
+        // Open the popup at the end of `[[me`.
+        let mut host = FakeHost::new("see [[me", 8);
+        c.sync(&host);
+        let (cached_rev, cached_text_ptr) = {
+            let (rev, text, _) = c
+                .cached_text
+                .as_ref()
+                .expect("initial sync populates cache");
+            (*rev, text.as_ptr())
+        };
+
+        // Cursor moves one char back inside the same trigger token.
+        // Revision UNCHANGED — controller must serve from cache.
+        host.cursor = 7;
+        c.sync(&host);
+        let (preserved_rev, preserved_text_ptr) = {
+            let (rev, text, _) = c
+                .cached_text
+                .as_ref()
+                .expect("cursor-only sync must leave the cache populated");
+            (*rev, text.as_ptr())
+        };
+        assert_eq!(
+            preserved_rev, cached_rev,
+            "cursor-only sync must not change the cache key"
+        );
+        assert_eq!(
+            preserved_text_ptr, cached_text_ptr,
+            "cursor-only sync must reuse the cached String, not rebuild it"
+        );
+    }
+
+    /// Regression: `close()` must drop the `cached_text` slot. On a
+    /// multi-MB note the slot holds a full clone of the buffer plus
+    /// the parsed `ExclusionZones`; without the clear it survives
+    /// popup dismissal until the next text edit overwrites it.
+    #[tokio::test]
+    async fn close_clears_cached_text() {
+        let (_tmp, vault) = new_vault_with(&["memory"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+
+        let host = FakeHost::new("see [[me", 8);
+        c.sync(&host);
+        assert!(
+            c.cached_text.is_some(),
+            "sync should have populated cached_text"
+        );
+
+        c.close();
+        assert!(
+            c.cached_text.is_none(),
+            "close() must drop cached_text so the buffer clone doesn't outlive the popup"
+        );
+    }
+
+    /// A `[[` candidate reaches the wikilink veto, so zones are computed
+    /// and memoized; a subsequent cursor-only move at the same revision
+    /// reuses them rather than recomputing.
+    #[tokio::test]
+    async fn trigger_candidate_computes_zones_once() {
+        let (_tmp, vault) = new_vault_with(&["memory"], &[]).await;
+        let mut c = make_controller(vault, AutocompleteMode::Both);
+
+        let mut host = FakeHost::new("see [[me", 8);
+        c.sync(&host);
+        assert!(
+            c.cached_text.as_ref().unwrap().2.is_some(),
+            "a [[ candidate reaching the veto must compute and memoize zones"
+        );
+
+        host.cursor = 7;
+        c.sync(&host);
+        assert!(
+            c.cached_text.as_ref().unwrap().2.is_some(),
+            "memoized zones survive a cursor-only move at the same revision"
+        );
     }
 }

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use kimun_core::error::{FSError, VaultError};
@@ -27,6 +28,15 @@ use crate::keys::key_strike::KeyStrike;
 use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
+use crate::util::single_slot_task::SingleSlotTask;
+
+/// Hard cap on every blocking save path so a stuck disk (NFS hang,
+/// fsync stall) cannot freeze quit, navigation, or the next autosave
+/// tick. The same value is used both to wait for an in-flight
+/// background autosave and to bound our own synchronous save call —
+/// the worst-case quit time is therefore one cap plus the
+/// observability of `abort()` on a syscall in progress.
+const SAVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 enum Focus {
@@ -53,6 +63,15 @@ pub struct EditorScreen {
     dialogs: DialogManager,
     backlinks_panel: BacklinksPanel,
     backlinks_visible: bool,
+    /// Handle to the most recently spawned background autosave task.
+    /// `is_in_flight()` is the source of truth for "is a save still in
+    /// flight"; both successful completion AND panic flip it to false
+    /// so the next periodic tick can spawn fresh. The synchronous save
+    /// paths (`open_path` / `on_entry_op` / `on_exit`) await this slot
+    /// before issuing their own `vault.save_note`, so two concurrent
+    /// writes for the same path can never collide. Drop aborts the
+    /// in-flight task so the spawned future cannot outlive the screen.
+    autosave_task: SingleSlotTask<()>,
 }
 
 impl EditorScreen {
@@ -96,6 +115,7 @@ impl EditorScreen {
             dialogs: DialogManager::new(),
             backlinks_panel,
             backlinks_visible: false,
+            autosave_task: SingleSlotTask::empty(),
         }
     }
 }
@@ -270,6 +290,7 @@ impl EditorScreen {
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
                 self.editor.set_text(content);
+                self.editor.set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
                 if self.backlinks_visible {
                     self.backlinks_panel.load(path.clone(), tx.clone());
@@ -327,12 +348,73 @@ impl EditorScreen {
     }
 
     async fn try_save(&mut self) {
+        // Wait out any background autosave so two concurrent `vault.save_note`
+        // calls cannot race on the same path. Capped at 5s so a wedged
+        // filesystem (NFS hang, fsync stall, SQLite lock contention) does
+        // not freeze app-quit indefinitely.
+        //
+        // If the timeout fires we MUST abort the prior task and bail
+        // without issuing our own save: dropping a JoinHandle detaches
+        // the tokio task rather than cancelling it, so the spawned
+        // vault.save_note keeps running. Calling our own vault.save_note
+        // on the same path on top of that is the exact two-writer race
+        // the in-flight serialisation is meant to prevent. abort() is
+        // best-effort (will not unwind an in-progress syscall) but it
+        // stops any further await points in the spawned task. The editor
+        // stays dirty so the next session retries; the spawned task
+        // either finishes against the disk on its own or is killed when
+        // the process exits.
+        if self.autosave_task.is_in_flight() {
+            match self.autosave_task.await_with_timeout(SAVE_TIMEOUT).await {
+                Some(_) => {} // completed (success or panic) — slot already cleared
+                None => {
+                    // Timeout: abort the spawned task and bail.
+                    self.autosave_task.abort();
+                    return;
+                }
+            }
+        }
         if self.editor.is_dirty() {
             let text = self.editor.get_text();
-            if self.vault.save_note(&self.path, &text).await.is_ok() {
+            // Same cap on our own save so quit cannot hang on a stuck
+            // disk. A timeout returns Err(_); we skip mark_saved so the
+            // editor stays dirty for any subsequent retry.
+            let save = self.vault.save_note(&self.path, &text);
+            if matches!(tokio::time::timeout(SAVE_TIMEOUT, save).await, Ok(Ok(_))) {
                 self.editor.mark_saved(text);
             }
         }
+    }
+
+    /// Fire-and-forget autosave used by the periodic timer. The save runs in
+    /// a spawned tokio task so the main event loop is never blocked by the
+    /// filesystem + SQLite write. Completion is reported back as
+    /// `AppEvent::AutosaveCompleted`, which marks the editor clean iff the
+    /// editor is still at the revision that was written. `is_in_flight()`
+    /// on the `SingleSlotTask` slot is the "is a save in flight" signal;
+    /// it flips to false on both successful completion AND panic, so a
+    /// single panicked task can never permanently disable autosave.
+    fn spawn_autosave(&mut self, tx: &AppTx) {
+        // A previous task that hasn't reported completion yet still holds the
+        // lock on the file system + SQLite path; let it finish first.
+        if self.autosave_task.is_in_flight() {
+            return;
+        }
+        if !self.editor.is_dirty() {
+            return;
+        }
+        let text = self.editor.get_text();
+        let revision = self.editor.content_revision();
+        let vault = self.vault.clone();
+        let path = self.path.clone();
+        let tx = tx.clone();
+        self.autosave_task.spawn(async move {
+            let saved_revision = vault.save_note(&path, &text).await.ok().map(|_| revision);
+            let _ = tx.send(AppEvent::AutosaveCompleted {
+                path,
+                saved_revision,
+            });
+        });
     }
 
     fn focus_index(&self) -> u8 {
@@ -842,7 +924,26 @@ impl AppScreen for EditorScreen {
 
         match msg {
             AppEvent::Autosave => {
-                self.try_save().await;
+                self.spawn_autosave(tx);
+                None
+            }
+            AppEvent::AutosaveCompleted {
+                path,
+                saved_revision,
+            } => {
+                if path == self.path
+                    && let Some(rev) = saved_revision
+                {
+                    self.editor.mark_saved_at_revision(rev);
+                }
+                // `SingleSlotTask::is_in_flight()` flips to false the
+                // moment the spawned future returns (success or panic),
+                // so we don't have to clear the slot manually here —
+                // the next `spawn_autosave` tick will overwrite it.
+                // Skip explicit cleanup; was previously racy because a
+                // stale completion arriving after `try_save` had
+                // already cleared and respawned could wipe the fresh
+                // handle.
                 None
             }
             AppEvent::OpenPath(path) => {
@@ -968,4 +1069,10 @@ mod tests {
         // Verify DialogManager is accessible.
         fn _accepts_dialog_manager(_d: DialogManager) {}
     }
+
+    // The try_save timeout-abort regression tests (commits 55eb49ed +
+    // 5e28b796) previously lived here against `await_or_abort`. The
+    // logic now lives in `SingleSlotTask::await_with_timeout` and is
+    // covered by `single_slot_task_timeout_returns_none_keeps_handle`
+    // in `crate::util::single_slot_task`.
 }
