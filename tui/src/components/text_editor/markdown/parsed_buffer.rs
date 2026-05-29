@@ -730,57 +730,55 @@ impl ParsedBuffer {
         self.kinds.splice(range.clone(), other.kinds);
         self.lazy_depth.splice(range.clone(), other.lazy_depth);
 
-        // Merge `reset_boundaries`. The incremental splice path never
-        // changes line count (gated upstream in try_incremental_parse),
-        // so boundaries outside `range` keep their indices. Boundaries
-        // strictly inside `range` are dropped (the splice replaces
-        // them). The slice's own INTERIOR boundaries are shifted by
-        // `range.start` and added.
-        let lines_len = self.lines.len();
-        // Linear merge instead of sort+dedup. The three runs are each
-        // already sorted AND positionally ordered, so concatenating them
-        // is sorted and only adjacent duplicates (at the run junctions)
-        // need collapsing:
-        //   - low:  self boundaries `b <= range.start`
-        //   - mid:  other's INTERIOR boundaries shifted by range.start.
-        //   - high: self boundaries `b >= range.end`
+        // Rebuild `reset_boundaries`. The incremental splice path never
+        // changes line count (gated upstream in try_incremental_parse).
+        // Three runs, already sorted and positionally ordered:
+        //   - low:  self boundaries STRICTLY before the replaced region
+        //           (`b < range.start`). These rows are untouched.
+        //   - mid:  the replaced region's boundaries, RECOMPUTED from the
+        //           now-merged `kinds`/`lazy_depth` using the same rule as
+        //           `parse` (interior row is a boundary iff Blank with
+        //           lazy_depth 0). O(range.len()) ≤ the widen cap — no
+        //           pulldown reparse.
+        //   - high: self boundaries at/after `range.end` (untouched rows).
         //
-        // The slice's sentinel boundaries (`0` and `other.len()`, which
-        // shift onto `range.start` and `range.end`) are NOT promoted.
-        // They are artefacts of parsing the slice in isolation, not
-        // genuine reset boundaries of the merged buffer: the heuristic
-        // widener (`widen_to_safe`) chooses `range.start`/`range.end`
-        // for `LineConstructKind`-safety, which does NOT imply they are
-        // reset boundaries (e.g. mid-paragraph rows in a long
-        // blank-free buffer). `range.start`/`range.end` survive only
-        // when `self` already held them — carried by `low`/`high`. This
-        // keeps the Strict path unchanged (its edges ARE reset
-        // boundaries in `self`) while preventing spurious boundaries on
-        // the Heuristic path. Sentinels `0` and `lines_len` always
-        // survive via `low`/`high` respectively.
-        let slice_len = range.len();
-        let mut merged: Vec<usize> =
-            Vec::with_capacity(self.reset_boundaries.len() + other.reset_boundaries.len());
+        // Recomputing `mid` is the correctness fix: the edited rows'
+        // boundary status cannot be inherited. Inheriting `self`'s
+        // boundary at `range.start` (old `b <= range.start`) kept stale
+        // boundaries when the edit removed a Blank row; promoting the
+        // slice's sentinels invented boundaries the heuristic widener's
+        // non-reset edges never had. The post-splice `kinds`/`lazy_depth`
+        // are authoritative (the reset-boundary widening contract
+        // guarantees lazy_depth 0 at `range.start`, so the slice's
+        // isolated parse agrees with the parent context there).
+        let lines_len = self.lines.len();
+        let mut merged: Vec<usize> = Vec::with_capacity(self.reset_boundaries.len() + 1);
         merged.extend(
             self.reset_boundaries
                 .iter()
                 .copied()
-                .filter(|&b| b <= range.start),
+                .filter(|&b| b < range.start),
         );
-        merged.extend(
-            other
-                .reset_boundaries
-                .iter()
-                .copied()
-                .filter(|&b| b != 0 && b != slice_len)
-                .map(|b| range.start + b),
-        );
+        for r in range.clone() {
+            if r != 0 && r != lines_len && self.lazy_depth[r] == 0 {
+                if let LineConstructKind::Blank = self.kinds[r] {
+                    merged.push(r);
+                }
+            }
+        }
         merged.extend(
             self.reset_boundaries
                 .iter()
                 .copied()
                 .filter(|&b| b >= range.end),
         );
+        // Sentinel `0` survives in `low` whenever `range.start > 0`; when
+        // the edit starts at row 0 it is not interior, so add it back.
+        // `lines_len` always survives in `high` (self held it, and
+        // `range.end <= lines_len`).
+        if merged.first() != Some(&0) {
+            merged.insert(0, 0);
+        }
         merged.dedup();
         debug_assert!(
             merged.windows(2).all(|w| w[0] < w[1]),
