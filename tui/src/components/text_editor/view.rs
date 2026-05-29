@@ -225,11 +225,10 @@ impl MarkdownEditorView {
             spawned,
             ..
         } = &mut self.parse_state
+            && !*spawned
         {
-            if !*spawned {
-                *spawned = true;
-                return Some(*generation);
-            }
+            *spawned = true;
+            return Some(*generation);
         }
         None
     }
