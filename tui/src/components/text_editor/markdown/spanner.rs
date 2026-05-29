@@ -9,7 +9,9 @@
 //! (cursor-col, click-col → logical char index) used by the editor
 //! to keep the cursor in sync after wrapping.
 
-use super::{ElementKind, ParsedLine, cluster_display_width, span_style, tab_width_at};
+use super::{
+    ElementKind, ParsedLine, blockquote_gutter, cluster_display_width, span_style, tab_width_at,
+};
 use crate::settings::themes::Theme;
 use ratatui::style::Style;
 use ratatui::text::Span;
@@ -205,10 +207,7 @@ impl MarkdownSpanner {
         let bq_gutter: Option<Vec<Span<'a>>> = if cursor_col.is_none() {
             parsed.blockquote_depth().map(|d| {
                 let style = Style::default().fg(theme.blockquote_bar.to_ratatui());
-                vec![
-                    Span::styled("│".repeat(d as usize), style),
-                    Span::styled(" ".to_string(), style),
-                ]
+                vec![Span::styled(blockquote_gutter(d), style)]
             })
         } else {
             None

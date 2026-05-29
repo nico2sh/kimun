@@ -320,37 +320,26 @@ pub fn fence_ranges_from_kinds(kinds: &[LineConstructKind]) -> Vec<Range<usize>>
 }
 
 /// Line ranges of every code block (fenced AND indented) in the buffer,
-/// in ascending order. Fenced blocks reuse the fence-marker/content
-/// scan; indented blocks are maximal runs of `IndentedCode`. Used by the
-/// view to paint the code-box background.
+/// in ascending order. Reuses [`fence_ranges_from_kinds`] for fenced blocks
+/// (incl. unclosed-fence handling) and adds maximal `IndentedCode` runs.
+/// Used by the view to paint the code-box background.
 pub fn code_block_ranges_from_kinds(kinds: &[LineConstructKind]) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
+    let mut ranges = fence_ranges_from_kinds(kinds);
     let mut i = 0;
     while i < kinds.len() {
-        match kinds[i] {
-            LineConstructKind::FenceMarker => {
-                let start = i;
+        if kinds[i] == LineConstructKind::IndentedCode {
+            let start = i;
+            while i < kinds.len() && kinds[i] == LineConstructKind::IndentedCode {
                 i += 1;
-                while i < kinds.len() && kinds[i] == LineConstructKind::FenceContent {
-                    i += 1;
-                }
-                if i < kinds.len() && kinds[i] == LineConstructKind::FenceMarker {
-                    ranges.push(start..i + 1);
-                    i += 1;
-                } else {
-                    ranges.push(start..kinds.len());
-                }
             }
-            LineConstructKind::IndentedCode => {
-                let start = i;
-                while i < kinds.len() && kinds[i] == LineConstructKind::IndentedCode {
-                    i += 1;
-                }
-                ranges.push(start..i);
-            }
-            _ => i += 1,
+            ranges.push(start..i);
+        } else {
+            i += 1;
         }
     }
+    // Fenced ranges are collected first then indented ones appended; sort so the
+    // combined list is ascending. Fenced and indented spans never overlap.
+    ranges.sort_by_key(|r| r.start);
     ranges
 }
 
