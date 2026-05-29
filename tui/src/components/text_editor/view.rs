@@ -202,7 +202,6 @@ impl MarkdownEditorView {
         rect: Rect,
         selection: Option<((usize, usize), (usize, usize))>,
     ) {
-        super::widener_metrics::METRICS.view_updated();
         // Snapshot owns the (cursor, lines, content_revision) atomicity
         // — readers below can index `parsed_buffer.lines[cursor.0]`
         // without `.get()` guards once Gate 1 has rebuilt the parse
@@ -528,10 +527,7 @@ impl MarkdownEditorView {
         };
         use super::widener_metrics::{BailReason, METRICS, SuccessPath};
 
-        METRICS.entered();
-
         if self.parsed_buffer.lines.is_empty() {
-            METRICS.first_parse_seen();
             return None; // First parse — no snapshot to diff against. Uncategorised.
         }
         // Line count changes (insertions/deletions) require a full rebuild:
@@ -656,7 +652,6 @@ impl MarkdownEditorView {
                 let kind_qualifies = matches!(old_kind, LineConstructKind::ListMarker);
                 let depth_qualifies = row < lazy.len() && lazy[row] == 1;
                 if kind_qualifies && depth_qualifies {
-                    METRICS.lazy_guard_relaxed();
                     // Don't bail — let blank-transition guard run
                     // and reach the widener stage.
                 } else {

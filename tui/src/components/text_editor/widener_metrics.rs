@@ -70,16 +70,6 @@ pub enum SuccessPath {
 }
 
 pub struct WidenerMetrics {
-    /// Raw count of `try_incremental_parse` entries — bumped before
-    /// ANY early return, including the empty-buffer first-parse case
-    /// that the categorised counters skip. Lets us distinguish
-    /// "function never called" from "function called but always took
-    /// the uncounted first-parse path".
-    pub entries: AtomicU64,
-    /// Raw count of `MarkdownEditorView::update` calls — bumped
-    /// unconditionally on entry. Detects backends that bypass the
-    /// view-update path entirely.
-    pub view_updates: AtomicU64,
     pub incremental_reset: AtomicU64,
     pub incremental_fallback: AtomicU64,
     pub full_line_count_change: AtomicU64,
@@ -89,23 +79,11 @@ pub struct WidenerMetrics {
     pub full_blank_transition: AtomicU64,
     pub full_cap_trip: AtomicU64,
     pub full_verify_failed: AtomicU64,
-    /// First-parse / placeholder-installed: `parsed_buffer.lines`
-    /// was empty when the call started.
-    pub first_parse: AtomicU64,
-    /// Count of attempts where the row±1 `lazy_depth > 0` guard
-    /// WOULD have bailed under the old rule but the §3.0 conditional
-    /// relaxation let the attempt proceed (kind ∈ {ListMarker /
-    /// ListContinuation / Blockquote / Plain}). Surfaces the rate at
-    /// which the relaxation buys us time — if it stays near 0 the
-    /// relaxation is paying no rent.
-    pub lazy_guard_relaxed: AtomicU64,
 }
 
 impl WidenerMetrics {
     const fn new() -> Self {
         Self {
-            entries: AtomicU64::new(0),
-            view_updates: AtomicU64::new(0),
             incremental_reset: AtomicU64::new(0),
             incremental_fallback: AtomicU64::new(0),
             full_line_count_change: AtomicU64::new(0),
@@ -115,26 +93,7 @@ impl WidenerMetrics {
             full_blank_transition: AtomicU64::new(0),
             full_cap_trip: AtomicU64::new(0),
             full_verify_failed: AtomicU64::new(0),
-            first_parse: AtomicU64::new(0),
-            lazy_guard_relaxed: AtomicU64::new(0),
         }
-    }
-
-    /// Bump on every entry to `try_incremental_parse`, before any
-    /// early return.
-    pub fn entered(&self) {
-        self.entries.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Bump on every entry to `MarkdownEditorView::update`.
-    pub fn view_updated(&self) {
-        self.view_updates.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Bump when `try_incremental_parse` bailed on the empty-buffer
-    /// first-parse path (no parent state to splice against).
-    pub fn first_parse_seen(&self) {
-        self.first_parse.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a full-rebuild outcome and return `None` so callers can
@@ -162,18 +121,9 @@ impl WidenerMetrics {
         counter.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record that the row±1 `lazy_depth > 0` guard was conditionally
-    /// skipped (§3.0 relaxation). Independent of bail/ok outcome —
-    /// the attempt continues normally, this only counts the skip rate.
-    pub fn lazy_guard_relaxed(&self) {
-        self.lazy_guard_relaxed.fetch_add(1, Ordering::Relaxed);
-    }
-
     /// Read every counter into a snapshot for printing/derivations.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            entries: self.entries.load(Ordering::Relaxed),
-            view_updates: self.view_updates.load(Ordering::Relaxed),
             incremental_reset: self.incremental_reset.load(Ordering::Relaxed),
             incremental_fallback: self.incremental_fallback.load(Ordering::Relaxed),
             full_line_count_change: self.full_line_count_change.load(Ordering::Relaxed),
@@ -183,8 +133,6 @@ impl WidenerMetrics {
             full_blank_transition: self.full_blank_transition.load(Ordering::Relaxed),
             full_cap_trip: self.full_cap_trip.load(Ordering::Relaxed),
             full_verify_failed: self.full_verify_failed.load(Ordering::Relaxed),
-            first_parse: self.first_parse.load(Ordering::Relaxed),
-            lazy_guard_relaxed: self.lazy_guard_relaxed.load(Ordering::Relaxed),
         }
     }
 }
@@ -193,8 +141,6 @@ pub static METRICS: WidenerMetrics = WidenerMetrics::new();
 
 #[derive(Debug, Clone, Copy)]
 pub struct Snapshot {
-    pub entries: u64,
-    pub view_updates: u64,
     pub incremental_reset: u64,
     pub incremental_fallback: u64,
     pub full_line_count_change: u64,
@@ -204,8 +150,6 @@ pub struct Snapshot {
     pub full_blank_transition: u64,
     pub full_cap_trip: u64,
     pub full_verify_failed: u64,
-    pub first_parse: u64,
-    pub lazy_guard_relaxed: u64,
 }
 
 impl Snapshot {
@@ -286,11 +230,6 @@ pub fn dump_if_enabled() {
     let s = METRICS.snapshot();
     eprintln!(
         "[widener-metrics] session totals\n  \
-         view_updates            = {:>10}\n  \
-         try_incremental_entries = {:>10}\n  \
-         first_parse (uncounted) = {:>10}\n  \
-         lazy_guard_relaxed      = {:>10}\n  \
-         ---\n  \
          incremental_reset           = {:>10}  ({:5.1}%)\n  \
          incremental_fallback        = {:>10}  ({:5.1}%)\n  \
          full_line_count_change      = {:>10}  ({:5.1}%)\n  \
@@ -307,10 +246,6 @@ pub fn dump_if_enabled() {
          heuristic_path_share        = {:5.1}%\n  \
          guard_sprawl_rate           = {:5.1}%\n  \
          verify_hit_rate             = {:5.1}%",
-        s.view_updates,
-        s.entries,
-        s.first_parse,
-        s.lazy_guard_relaxed,
         s.incremental_reset,
         pct(s.incremental_reset, s.attempted()),
         s.incremental_fallback,
