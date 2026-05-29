@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use kimun_core::nfs::filename::{InvalidFilenameError, validate_filename};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -81,7 +81,10 @@ impl WorkspaceEntry {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceConfig {
     pub global: GlobalConfig,
-    pub workspaces: HashMap<String, WorkspaceEntry>,
+    /// Keyed by workspace name. `BTreeMap` (not `HashMap`) so serialization
+    /// order is deterministic — otherwise every config save reshuffles the
+    /// `[workspaces.*]` sections in the TOML file.
+    pub workspaces: BTreeMap<String, WorkspaceEntry>,
 }
 
 impl WorkspaceConfig {
@@ -90,7 +93,7 @@ impl WorkspaceConfig {
             global: GlobalConfig {
                 current_workspace: String::new(),
             },
-            workspaces: HashMap::new(),
+            workspaces: BTreeMap::new(),
         }
     }
 

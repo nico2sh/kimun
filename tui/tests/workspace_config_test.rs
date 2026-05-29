@@ -2,7 +2,7 @@ use chrono::Utc;
 use kimun_notes::settings::workspace_config::{
     GlobalConfig, WorkspaceConfig, WorkspaceConfigError, WorkspaceEntry,
 };
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[test]
@@ -11,7 +11,7 @@ fn workspace_config_serializes_to_toml() {
         global: GlobalConfig {
             current_workspace: "default".to_string(),
         },
-        workspaces: HashMap::from([(
+        workspaces: BTreeMap::from([(
             "default".to_string(),
             WorkspaceEntry {
                 path: PathBuf::from("/Users/user/notes"),
@@ -30,6 +30,48 @@ fn workspace_config_serializes_to_toml() {
     assert!(toml.contains("[global]"));
     assert!(toml.contains("current_workspace = \"default\""));
     assert!(toml.contains("[workspaces.default]"));
+}
+
+#[test]
+fn workspace_serialization_order_is_deterministic() {
+    // Workspaces are stored in a BTreeMap so the TOML output is sorted by name
+    // and stable across saves — otherwise every save reshuffles the sections
+    // (the bug where running the example app kept reordering config.toml).
+    let created = chrono::DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let entry = |path: &str| WorkspaceEntry {
+        path: PathBuf::from(path),
+        last_paths: vec![],
+        created,
+        quick_note_path: None,
+        inbox_path: None,
+        resolved_path: None,
+    };
+    let make = || WorkspaceConfig {
+        global: GlobalConfig {
+            current_workspace: "personal".to_string(),
+        },
+        // Inserted out of alphabetical order on purpose.
+        workspaces: BTreeMap::from([
+            ("work".to_string(), entry("work")),
+            ("personal".to_string(), entry("personal")),
+            ("archive".to_string(), entry("archive")),
+        ]),
+    };
+
+    let toml = toml::to_string(&make()).unwrap();
+    // Sorted by key regardless of insertion order.
+    let archive = toml.find("[workspaces.archive]").unwrap();
+    let personal = toml.find("[workspaces.personal]").unwrap();
+    let work = toml.find("[workspaces.work]").unwrap();
+    assert!(
+        archive < personal && personal < work,
+        "sections not sorted:\n{toml}"
+    );
+
+    // Re-serializing an equal config yields byte-identical output (no churn).
+    assert_eq!(toml, toml::to_string(&make()).unwrap());
 }
 
 #[test]
