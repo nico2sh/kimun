@@ -737,22 +737,39 @@ impl ParsedBuffer {
         // them). The slice's own boundaries are shifted by
         // `range.start` and added.
         let lines_len = self.lines.len();
-        let mut merged: Vec<usize> = self
-            .reset_boundaries
-            .iter()
-            .copied()
-            .filter(|&b| b <= range.start || b >= range.end)
-            .collect();
-        for b in other.reset_boundaries {
-            merged.push(range.start + b);
-        }
-        // The merge can drop `lines_len` if the prior buffer's tail
-        // boundary fell inside `range`. Re-add 0 and `lines_len` to
-        // preserve the sentinel invariant.
-        merged.push(0);
-        merged.push(lines_len);
-        merged.sort_unstable();
+        // Linear merge instead of sort+dedup. The three runs are each
+        // already sorted AND positionally ordered, so concatenating them
+        // is sorted and only adjacent duplicates (at the run junctions)
+        // need collapsing:
+        //   - low:  self boundaries `b <= range.start`
+        //   - mid:  other's boundaries shifted by range.start. Since
+        //           `other.len() == range.len()` (line count unchanged),
+        //           these span `[range.start, range.end]` — its sentinels
+        //           `0` and `other.len()` map onto `range.start` and
+        //           `range.end`.
+        //   - high: self boundaries `b >= range.end`
+        // Sentinels survive automatically: `0` lives in `low`,
+        // `lines_len` (== old line count, unchanged) lives in `high`.
+        let mut merged: Vec<usize> =
+            Vec::with_capacity(self.reset_boundaries.len() + other.reset_boundaries.len());
+        merged.extend(
+            self.reset_boundaries
+                .iter()
+                .copied()
+                .filter(|&b| b <= range.start),
+        );
+        merged.extend(other.reset_boundaries.iter().map(|&b| range.start + b));
+        merged.extend(
+            self.reset_boundaries
+                .iter()
+                .copied()
+                .filter(|&b| b >= range.end),
+        );
         merged.dedup();
+        debug_assert!(
+            merged.windows(2).all(|w| w[0] < w[1]),
+            "splice: merged boundaries must be strictly ascending: {merged:?}"
+        );
         debug_assert!(
             merged.first() == Some(&0) && merged.last() == Some(&lines_len),
             "splice: merged boundaries must start with 0 and end with lines.len() ({lines_len})"
