@@ -319,6 +319,30 @@ pub fn fence_ranges_from_kinds(kinds: &[LineConstructKind]) -> Vec<Range<usize>>
     ranges
 }
 
+/// Line ranges of every code block (fenced AND indented) in the buffer,
+/// in ascending order. Reuses [`fence_ranges_from_kinds`] for fenced blocks
+/// (incl. unclosed-fence handling) and adds maximal `IndentedCode` runs.
+/// Used by the view to paint the code-box background.
+pub fn code_block_ranges_from_kinds(kinds: &[LineConstructKind]) -> Vec<Range<usize>> {
+    let mut ranges = fence_ranges_from_kinds(kinds);
+    let mut i = 0;
+    while i < kinds.len() {
+        if kinds[i] == LineConstructKind::IndentedCode {
+            let start = i;
+            while i < kinds.len() && kinds[i] == LineConstructKind::IndentedCode {
+                i += 1;
+            }
+            ranges.push(start..i);
+        } else {
+            i += 1;
+        }
+    }
+    // Fenced ranges are collected first then indented ones appended; sort so the
+    // combined list is ascending. Fenced and indented spans never overlap.
+    ranges.sort_by_key(|r| r.start);
+    ranges
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,6 +793,21 @@ mod tests {
     #[test]
     fn fence_ranges_empty() {
         assert!(fence_ranges_from_kinds(&[]).is_empty());
+    }
+
+    #[test]
+    fn code_block_ranges_covers_fenced_and_indented() {
+        // Fenced block then a blank then an indented code block.
+        let k = kinds_of(&[
+            "```",          // FenceMarker
+            "let x = 1;",   // FenceContent
+            "```",          // FenceMarker
+            "",             // Blank
+            "    indented", // IndentedCode
+            "    code",     // IndentedCode
+        ]);
+        let r = code_block_ranges_from_kinds(&k);
+        assert_eq!(r, vec![0..3, 4..6]);
     }
 
     #[test]

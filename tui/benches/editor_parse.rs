@@ -112,7 +112,7 @@ fn bench_wrap_5000_lines(c: &mut Criterion) {
     let rendered: Vec<Vec<bool>> = pb.lines.iter().map(|p| p.content_vis.clone()).collect();
     c.bench_function("wrap_5000_lines", |b| {
         b.iter(|| {
-            let layout = WordWrapLayout::compute(black_box(&lines), 80, &rendered);
+            let layout = WordWrapLayout::compute(black_box(&lines), 80, &rendered, &[]);
             black_box(layout);
         });
     });
