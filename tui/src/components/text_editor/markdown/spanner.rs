@@ -10,7 +10,8 @@
 //! to keep the cursor in sync after wrapping.
 
 use super::{
-    ElementKind, ParsedLine, blockquote_gutter, cluster_display_width, span_style, tab_width_at,
+    ElementKind, ParsedLine, blockquote_gutter, cluster_display_width, cluster_width_at,
+    span_style, tab_width_at,
 };
 use crate::settings::themes::Theme;
 use ratatui::style::Style;
@@ -188,16 +189,15 @@ impl MarkdownSpanner {
             let mut expanded = String::with_capacity(content.len());
             let mut col = 0usize;
             for cluster in content.graphemes(true) {
+                let w = cluster_width_at(cluster, col);
                 if cluster == "\t" {
-                    let w = tab_width_at(col);
                     for _ in 0..w {
                         expanded.push(' ');
                     }
-                    col += w;
                 } else {
                     expanded.push_str(cluster);
-                    col += cluster_display_width(cluster);
                 }
+                col += w;
             }
             return vec![Span::styled(expanded, style)];
         }
@@ -416,11 +416,7 @@ impl MarkdownSpanner {
                 if pos < visual_start_col {
                     continue;
                 }
-                rendered += if cluster == "\t" {
-                    tab_width_at(rendered)
-                } else {
-                    cluster_display_width(cluster)
-                };
+                rendered += cluster_width_at(cluster, rendered);
             }
             return rendered;
         }
@@ -492,11 +488,7 @@ impl MarkdownSpanner {
                 || in_expanded_elem
                 || !in_any_element;
             if visible {
-                rendered_col += if cluster == "\t" {
-                    tab_width_at(rendered_col)
-                } else {
-                    cluster_display_width(cluster)
-                };
+                rendered_col += cluster_width_at(cluster, rendered_col);
             }
         }
         rendered_col
@@ -574,11 +566,7 @@ impl MarkdownSpanner {
                 if rendered >= rendered_col {
                     return pos;
                 }
-                rendered += if cluster == "\t" {
-                    tab_width_at(rendered)
-                } else {
-                    cluster_display_width(cluster)
-                };
+                rendered += cluster_width_at(cluster, rendered);
                 char_pos += cluster.chars().count();
             }
             return char_pos;
@@ -646,11 +634,7 @@ impl MarkdownSpanner {
                 || in_blockquote_sigil
                 || !in_any_element
             {
-                rendered_count += if cluster == "\t" {
-                    tab_width_at(rendered_count)
-                } else {
-                    cluster_display_width(cluster)
-                };
+                rendered_count += cluster_width_at(cluster, rendered_count);
             }
         }
         logical_char_count
