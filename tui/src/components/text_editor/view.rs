@@ -4,6 +4,7 @@ use crate::settings::themes::Theme;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use std::ops::Range;
@@ -45,6 +46,16 @@ pub struct MarkdownEditorView {
     /// does a cheap point lookup against this list per row so all fenced
     /// blocks render `force_raw` regardless of where the cursor is.
     fence_ranges: Vec<Range<usize>>,
+    /// Per-logical-row code-box width (display cols), or `None` when the row
+    /// is not in a code block. All rows of one block share the block's
+    /// widest-rendered-line width, capped at the editor width. Rebuilt in
+    /// `update()` whenever text or width changes.
+    code_box_width: Vec<Option<u16>>,
+    /// Per-logical-row left gutter width (display cols) for the blockquote
+    /// bar: `depth + 1` on blockquote rows that are NOT the cursor row, else
+    /// 0. Cursor-dependent (the cursor row reveals raw `> `), so rebuilt with
+    /// the same cursor-affected-row logic as `rendered_cache`.
+    gutter_insets: Vec<usize>,
     /// Cursor's last on-screen position (col, row), or `None` when the
     /// cursor was scrolled off-screen or the view was unfocused at the
     /// time of the previous `render`. Used as the anchor for floating
@@ -180,6 +191,8 @@ impl MarkdownEditorView {
             lines_snapshot: Vec::new(),
             cursor_snapshot: (0, 0),
             fence_ranges: Vec::new(),
+            code_box_width: Vec::new(),
+            gutter_insets: Vec::new(),
             last_cursor_screen: None,
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
@@ -516,14 +529,24 @@ impl MarkdownEditorView {
             //   cursor-position-sensitive whenever the cursor crosses
             //   an inline element boundary — same row or different
             //   row.
+            self.rebuild_gutter_insets(lines, cursor.0);
             let line_count_changed = self.layout.row_starts_len() != lines.len();
             if width_changed || line_count_changed {
-                self.layout = WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
+                self.layout = WordWrapLayout::compute(
+                    lines,
+                    rect.width,
+                    &self.rendered_cache,
+                    &self.gutter_insets,
+                );
             } else {
                 match &self.last_text_change {
                     TextChangeKind::Full => {
-                        self.layout =
-                            WordWrapLayout::compute(lines, rect.width, &self.rendered_cache);
+                        self.layout = WordWrapLayout::compute(
+                            lines,
+                            rect.width,
+                            &self.rendered_cache,
+                            &self.gutter_insets,
+                        );
                     }
                     TextChangeKind::Incremental(range) => {
                         let start = range
@@ -540,6 +563,7 @@ impl MarkdownEditorView {
                             lines,
                             rect.width,
                             &self.rendered_cache,
+                            &self.gutter_insets,
                             start..end,
                         );
                     }
@@ -551,11 +575,18 @@ impl MarkdownEditorView {
                                 lines,
                                 rect.width,
                                 &self.rendered_cache,
+                                &self.gutter_insets,
                                 first..last + 1,
                             );
                         }
                     }
                 }
+            }
+            // Code-box widths depend only on text content and the wrap width,
+            // not the cursor — so skip the (grapheme-walking) rebuild on
+            // cursor-only moves, where neither changed.
+            if !matches!(self.last_text_change, TextChangeKind::None) || width_changed {
+                self.rebuild_code_box_width(lines, rect.width);
             }
             self.last_layout_generation = generation;
             self.last_layout_width = rect.width;
@@ -877,10 +908,29 @@ impl MarkdownEditorView {
                     theme,
                 );
 
+                // Apply code-block background before selection so selection bg wins on selected text.
+                let spans =
+                    if let Some(bw) = self.code_box_width.get(vl.logical_row).copied().flatten() {
+                        apply_code_box(spans, bw, theme)
+                    } else {
+                        spans
+                    };
+
                 // Apply selection highlight if this visual line is within the selection.
                 let spans = if let Some(((sel_sr, sel_sc), (sel_er, sel_ec))) = selection {
                     let row = vl.logical_row;
                     if row >= sel_sr && row <= sel_er {
+                        // The blockquote bar gutter occupies `gutter_off` screen
+                        // columns to the left of the content. On the first visual
+                        // line `rendered_cursor_col_with` already accounts for it
+                        // (it counts the revealed `> ` sigil, whose width equals
+                        // the gutter), so only continuation rows need the offset
+                        // added — they carry the gutter but no sigil to count.
+                        let gutter_off = if vl.is_first_visual_line {
+                            0
+                        } else {
+                            self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0)
+                        };
                         let start_rendered = if row == sel_sr {
                             MarkdownSpanner::rendered_cursor_col_with(
                                 logical_line,
@@ -889,7 +939,7 @@ impl MarkdownEditorView {
                                 sel_sc,
                                 vl.is_first_visual_line,
                                 force_raw,
-                            )
+                            ) + gutter_off
                         } else {
                             0
                         };
@@ -901,7 +951,7 @@ impl MarkdownEditorView {
                                 sel_ec,
                                 vl.is_first_visual_line,
                                 force_raw,
-                            )
+                            ) + gutter_off
                         } else {
                             // Entire line is selected; use a sentinel larger than any line width.
                             u16::MAX as usize
@@ -980,6 +1030,16 @@ impl MarkdownEditorView {
         &self.rendered_cache
     }
 
+    #[cfg(test)]
+    pub(crate) fn code_box_width_for_testing(&self) -> &[Option<u16>] {
+        &self.code_box_width
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gutter_insets_for_testing(&self) -> &[usize] {
+        &self.gutter_insets
+    }
+
     fn is_in_code_block(&self, row: usize) -> bool {
         // Every line inside any fenced block renders force-raw (no markdown
         // re-styling, distinct fg color). Previously this checked only the
@@ -987,6 +1047,48 @@ impl MarkdownEditorView {
         // the buffer looked like plain text until the cursor moved into
         // them.
         self.fence_ranges.iter().any(|r| r.contains(&row))
+    }
+
+    /// Rebuild `code_box_width` from the current parse kinds and snapshot
+    /// lines. Box width per block = max rendered display width of its lines,
+    /// capped at `width`.
+    fn rebuild_code_box_width(&mut self, lines: &[String], width: u16) {
+        let mut out = vec![None; lines.len()];
+        let ranges =
+            super::parse_incremental::code_block_ranges_from_kinds(&self.parse_state.buf().kinds);
+        for r in ranges {
+            let mut max_w = 0usize;
+            for row in r.clone() {
+                if let Some(line) = lines.get(row) {
+                    max_w = max_w.max(super::markdown::raw_display_width(line));
+                }
+            }
+            let boxed = (max_w.min(width as usize)) as u16;
+            for row in r {
+                if row < out.len() {
+                    out[row] = Some(boxed);
+                }
+            }
+        }
+        self.code_box_width = out;
+    }
+
+    /// Rebuild `gutter_insets` from parse state + cursor. A blockquote row
+    /// that is not the cursor row reserves `depth + 1` cols for the bar; the
+    /// cursor row reserves 0 (its markers are revealed raw).
+    fn rebuild_gutter_insets(&mut self, lines: &[String], cursor_row: usize) {
+        let parsed = &self.parse_state.buf().lines;
+        self.gutter_insets = (0..lines.len())
+            .map(|row| {
+                if row == cursor_row {
+                    return 0;
+                }
+                match parsed.get(row).and_then(|p| p.blockquote_depth()) {
+                    Some(d) => super::markdown::blockquote_gutter_width(d),
+                    None => 0,
+                }
+            })
+            .collect();
     }
 
     /// Markdown-aware mouse click: maps a rendered screen column to
@@ -1020,16 +1122,32 @@ impl MarkdownEditorView {
         let logical_line = self.lines_snapshot[vl.logical_row].as_str();
         let parsed = &self.parse_state.buf().lines[vl.logical_row];
         let force_raw = self.is_in_code_block(vl.logical_row);
+        let gutter = self.gutter_insets.get(vl.logical_row).copied().unwrap_or(0);
+        let vcol = vcol.saturating_sub(gutter);
+        // When a blockquote gutter is drawn (gutter > 0), the ">" and space
+        // sigil chars are hidden and replaced by the "│ " bar. On the first
+        // visual line, skip those hidden sigil chars so that rendered_col 0
+        // maps to the first content char, not to the hidden ">".
+        let effective_start_col = if gutter > 0 && vl.is_first_visual_line {
+            parsed.blockquote_sigil_end().unwrap_or(vl.start_col)
+        } else {
+            vl.start_col
+        };
         let logical_col = MarkdownSpanner::rendered_col_to_logical_with(
             logical_line,
             parsed,
-            vl.start_col,
+            effective_start_col,
             vcol,
             vl.is_first_visual_line,
             force_raw,
         );
         let col = logical_col.min(u16::MAX as usize) as u16;
         (row_u16, col)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn click_to_logical_for_testing(&self, vrow: usize, vcol: usize) -> (u16, u16) {
+        self.click_to_logical_u16(vrow, vcol)
     }
 }
 
@@ -1118,6 +1236,36 @@ fn apply_selection_highlight<'a>(
     result
 }
 
+/// Paint `code_bg` behind every span of a code-block visual line and pad the
+/// line with bg-colored spaces up to `box_width` display columns, producing a
+/// solid rectangle hugging the block's widest line. Content already wider than
+/// the box (the box was capped at editor width; wider rows wrap) is left as-is.
+fn apply_code_box<'a>(
+    spans: Vec<ratatui::text::Span<'a>>,
+    box_width: u16,
+    theme: &Theme,
+) -> Vec<ratatui::text::Span<'a>> {
+    use ratatui::text::Span;
+    let bg = theme.code_bg.to_ratatui();
+    let mut width = 0usize;
+    let mut out: Vec<Span<'a>> = spans
+        .into_iter()
+        .map(|s| {
+            width += s.content.width();
+            let style = s.style.bg(bg);
+            Span::styled(s.content, style)
+        })
+        .collect();
+    let target = box_width as usize;
+    if width < target {
+        out.push(Span::styled(
+            " ".repeat(target - width),
+            Style::default().bg(bg),
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1158,6 +1306,85 @@ mod tests {
         };
         let snap = super::super::snapshot::EditorSnapshot::borrowed(lines, clamped, rev);
         v.update(&snap, rect, selection);
+    }
+
+    /// Build a freshly-updated view from `lines` with the cursor at
+    /// `cursor` and the given editor `width`, using the real snapshot +
+    /// `update()` path. Height is fixed at 24.
+    fn make_view_for_lines(
+        lines: &[String],
+        cursor: (usize, usize),
+        width: u16,
+    ) -> MarkdownEditorView {
+        let mut v = MarkdownEditorView::new();
+        let r = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height: 24,
+        };
+        update_view(&mut v, lines, cursor, r, 1, None);
+        v
+    }
+
+    #[test]
+    fn code_box_background_reaches_rendered_cells() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let lines = vec![
+            "```".to_string(),
+            "let x = 1;".to_string(),
+            "```".to_string(),
+            "plain".to_string(),
+        ];
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let mut view = make_view_for_lines(&lines, (3, 0), 40);
+        let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        terminal
+            .draw(|f| view.render(f, f.area(), &theme, true))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let code_bg = theme.code_bg.to_ratatui();
+        let cell = |x: u16, y: u16| &buf.content[(y as usize) * 40 + (x as usize)];
+
+        // A cell on the fenced code content row carries the code-box bg...
+        assert_eq!(
+            cell(0, 1).bg,
+            code_bg,
+            "code content cell must have code_bg"
+        );
+        // ...including the padding past the text (box is a solid rectangle).
+        assert_eq!(cell(8, 1).bg, code_bg, "code-box padding must have code_bg");
+        // A prose row outside the block does NOT get the code bg.
+        assert_ne!(cell(0, 3).bg, code_bg, "prose row must not have code_bg");
+    }
+
+    #[test]
+    fn blockquote_gutter_inset_off_cursor_row_only() {
+        // Two blockquote lines; cursor on row 0.
+        let lines = vec!["> first".to_string(), ">> second".to_string()];
+        let view = make_view_for_lines(&lines, (0, 1), 80);
+        let g = view.gutter_insets_for_testing();
+        assert_eq!(g[0], 0); // cursor row → revealed, no gutter
+        assert_eq!(g[1], 3); // depth 2 → 2 bars + 1 space
+    }
+
+    #[test]
+    fn code_box_width_is_block_max_capped_to_width() {
+        let lines = vec![
+            "```".to_string(),
+            "let x = 1;".to_string(),    // 10
+            "let yy = 222;".to_string(), // 13 (widest)
+            "```".to_string(),
+            "plain".to_string(),
+        ];
+        let view = make_view_for_lines(&lines, (0, 0), 80); // width 80
+        let w = view.code_box_width_for_testing();
+        assert_eq!(w[0], Some(13));
+        assert_eq!(w[1], Some(13));
+        assert_eq!(w[2], Some(13));
+        assert_eq!(w[3], Some(13));
+        assert_eq!(w[4], None);
     }
 
     #[test]
@@ -2014,7 +2241,8 @@ mod tests {
         update_view(&mut v, &edited, (100, edited[100].len()), rect(40), 2, None);
 
         // After incremental wrap, layout must equal a fresh compute of the edited buffer.
-        let fresh_layout = WordWrapLayout::compute(&edited, 40, v.rendered_cache_for_testing());
+        let fresh_layout =
+            WordWrapLayout::compute(&edited, 40, v.rendered_cache_for_testing(), &[]);
 
         let actual = v.layout.visual_lines();
         let fresh = fresh_layout.visual_lines();
@@ -2179,5 +2407,28 @@ mod tests {
             "list-marker removal must NOT take incremental path \
              — looks_like_list_marker flip guard bails first"
         );
+    }
+
+    #[test]
+    fn apply_code_box_sets_bg_and_pads_to_width() {
+        use ratatui::text::Span;
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let spans = vec![Span::raw("ab")]; // 2 cols
+        let out = super::apply_code_box(spans, 5, &theme);
+        let total: usize = out.iter().map(|s| s.content.chars().count()).sum();
+        assert_eq!(total, 5); // padded to box width
+        let bg = theme.code_bg.to_ratatui();
+        assert!(out.iter().all(|s| s.style.bg == Some(bg)));
+    }
+
+    #[test]
+    fn click_on_barred_blockquote_maps_past_gutter() {
+        // Blockquote on row 0 is NOT the cursor row (cursor parked on row 1),
+        // so row 0 renders "│ hello". vrow 0 is that row's single visual line.
+        let lines = vec!["> hello".to_string(), "tail".to_string()];
+        let view = make_view_for_lines(&lines, (1, 0), 80);
+        // Click screen col 2 ('h' after the 2-col "│ " gutter) → logical col 2.
+        let (row, col) = view.click_to_logical_for_testing(0, 2);
+        assert_eq!((row, col), (0, 2));
     }
 }

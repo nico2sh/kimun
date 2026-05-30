@@ -9,7 +9,10 @@
 //! (cursor-col, click-col → logical char index) used by the editor
 //! to keep the cursor in sync after wrapping.
 
-use super::{ElementKind, ParsedLine, cluster_display_width, span_style, tab_width_at};
+use super::{
+    ElementKind, ParsedLine, blockquote_gutter, cluster_display_width, cluster_width_at,
+    span_style, tab_width_at,
+};
 use crate::settings::themes::Theme;
 use ratatui::style::Style;
 use ratatui::text::Span;
@@ -171,13 +174,46 @@ impl MarkdownSpanner {
                 Style::default().fg(theme.fg_muted.to_ratatui()),
             )];
         }
-        // Force-raw (inside fenced code block)
+        // Force-raw (inside fenced code block). Expand tabs to spaces (at the
+        // editor's TAB_STOP) so the rendered width is deterministic — matching
+        // `raw_display_width` (used to size the code box) and the non-force-raw
+        // tab handling, instead of emitting a literal tab whose width the
+        // terminal decides. The no-tab fast path borrows `content` (no alloc).
         if force_raw {
-            return vec![Span::styled(
-                content,
-                Style::default().fg(theme.fg_secondary.to_ratatui()),
-            )];
+            // Use `fg` (the primary text color) so fenced code text matches
+            // indented code, which renders through the plain-text path (`fg`).
+            let style = Style::default().fg(theme.fg.to_ratatui());
+            if !content.contains('\t') {
+                return vec![Span::styled(content, style)];
+            }
+            let mut expanded = String::with_capacity(content.len());
+            let mut col = 0usize;
+            for cluster in content.graphemes(true) {
+                let w = cluster_width_at(cluster, col);
+                if cluster == "\t" {
+                    for _ in 0..w {
+                        expanded.push(' ');
+                    }
+                } else {
+                    expanded.push_str(cluster);
+                }
+                col += w;
+            }
+            return vec![Span::styled(expanded, style)];
         }
+
+        // Blockquote gutter: when the cursor is off this line, draw a `│` bar
+        // per nesting depth (in `blockquote_bar`) in place of the hidden `>`
+        // markers, on EVERY visual row. When the cursor IS on the line the
+        // markers are revealed raw instead (handled by the sigil path below).
+        let bq_gutter: Option<Vec<Span<'a>>> = if cursor_col.is_none() {
+            parsed.blockquote_depth().map(|d| {
+                let style = Style::default().fg(theme.blockquote_bar.to_ratatui());
+                vec![Span::styled(blockquote_gutter(d), style)]
+            })
+        } else {
+            None
+        };
 
         let elements = &parsed.elements;
         let content_vis = &parsed.content_vis;
@@ -192,6 +228,11 @@ impl MarkdownSpanner {
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
             parsed.list_sigil_end()
+        } else {
+            None
+        };
+        let blockquote_sigil_end: Option<usize> = if is_first_visual_line {
+            parsed.blockquote_sigil_end()
         } else {
             None
         };
@@ -270,12 +311,17 @@ impl MarkdownSpanner {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
             let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
+            // Only reveal the raw `> ` markers when there is no gutter, i.e.
+            // when the cursor is on this line.
+            let in_blockquote_sigil =
+                bq_gutter.is_none() && blockquote_sigil_end.is_some_and(|end| pos < end);
             let in_expanded_elem = expanded
                 .is_some_and(|i| elements[i].start_char <= pos && pos < elements[i].end_char);
             let this_elem = parsed.elem_at(pos);
             let emit = is_content
                 || in_heading_sigil
                 || in_list_sigil
+                || in_blockquote_sigil
                 || in_expanded_elem
                 || this_elem.is_none();
             if !emit {
@@ -292,8 +338,9 @@ impl MarkdownSpanner {
                 continue;
             }
             let this_is_expanded = in_expanded_elem;
-            let this_is_sigil =
-                (in_heading_sigil || in_list_sigil) && !is_content && !in_expanded_elem;
+            let this_is_sigil = (in_heading_sigil || in_list_sigil || in_blockquote_sigil)
+                && !is_content
+                && !in_expanded_elem;
             if this_elem != seg_elem
                 || this_is_sigil != seg_is_sigil
                 || this_is_expanded != seg_is_expanded
@@ -328,11 +375,21 @@ impl MarkdownSpanner {
             &mut spans,
         );
 
-        if spans.is_empty() {
+        // Empty-content fallback. Skipped when a blockquote gutter will be
+        // prepended, otherwise a bare `>` line would re-emit its hidden raw
+        // marker on top of the gutter.
+        if spans.is_empty() && bq_gutter.is_none() {
             spans.push(Span::styled(
                 content,
                 Style::default().fg(theme.fg.to_ratatui()),
             ));
+        }
+        // Prepend the blockquote bar gutter (cursor-off-line case). Placed after
+        // the empty-fallback so a bare `>` line still gets its gutter without
+        // panicking.
+        if let Some(mut gutter) = bq_gutter {
+            gutter.extend(spans);
+            spans = gutter;
         }
         spans
     }
@@ -346,7 +403,22 @@ impl MarkdownSpanner {
         force_raw: bool,
     ) -> usize {
         if force_raw {
-            return cursor_col.saturating_sub(visual_start_col);
+            // Tab-aware: code is rendered with tabs expanded to TAB_STOP, so the
+            // rendered cursor column must sum expanded widths, not char counts.
+            let mut rendered = 0usize;
+            let mut char_pos = 0usize;
+            for cluster in logical_line.graphemes(true) {
+                if char_pos >= cursor_col {
+                    break;
+                }
+                let pos = char_pos;
+                char_pos += cluster.chars().count();
+                if pos < visual_start_col {
+                    continue;
+                }
+                rendered += cluster_width_at(cluster, rendered);
+            }
+            return rendered;
         }
         let trimmed = logical_line.trim();
         if is_first_visual_line && matches!(trimmed, "---" | "***" | "___") {
@@ -365,6 +437,11 @@ impl MarkdownSpanner {
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
             parsed.list_sigil_end()
+        } else {
+            None
+        };
+        let blockquote_sigil_end: Option<usize> = if is_first_visual_line {
+            parsed.blockquote_sigil_end()
         } else {
             None
         };
@@ -400,20 +477,18 @@ impl MarkdownSpanner {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|s_end| pos < s_end);
             let in_list_sigil = list_sigil_end.is_some_and(|s_end| pos < s_end);
+            let in_blockquote_sigil = blockquote_sigil_end.is_some_and(|s_end| pos < s_end);
             let in_expanded_elem = expanded
                 .is_some_and(|i| elements[i].start_char <= pos && pos < elements[i].end_char);
             let in_any_element = parsed.in_any_element(pos);
             let visible = is_content
                 || in_heading_sigil
                 || in_list_sigil
+                || in_blockquote_sigil
                 || in_expanded_elem
                 || !in_any_element;
             if visible {
-                rendered_col += if cluster == "\t" {
-                    tab_width_at(rendered_col)
-                } else {
-                    cluster_display_width(cluster)
-                };
+                rendered_col += cluster_width_at(cluster, rendered_col);
             }
         }
         rendered_col
@@ -441,17 +516,30 @@ impl MarkdownSpanner {
         let expanded: Option<usize> = cursor_col.and_then(|c| parsed.elem_at(c));
         let heading_sigil_end: Option<usize> = parsed.heading_sigil_end();
         let list_sigil_end = parsed.list_sigil_end();
+        // Reveal the blockquote marker only while the cursor is on this line;
+        // otherwise it stays hidden and the view draws the `│` gutter instead.
+        let blockquote_sigil_end: Option<usize> = if cursor_col.is_some() {
+            parsed.blockquote_sigil_end()
+        } else {
+            None
+        };
 
         (0..total)
             .map(|pos| {
                 let is_content = pos < content_vis.len() && content_vis[pos];
                 let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
                 let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
+                let in_blockquote_sigil = blockquote_sigil_end.is_some_and(|end| pos < end);
                 let in_any_element = parsed.in_any_element(pos);
                 let in_expanded = expanded.is_some_and(|i| {
                     parsed.elements[i].start_char <= pos && pos < parsed.elements[i].end_char
                 });
-                is_content || in_heading_sigil || in_list_sigil || in_expanded || !in_any_element
+                is_content
+                    || in_heading_sigil
+                    || in_list_sigil
+                    || in_blockquote_sigil
+                    || in_expanded
+                    || !in_any_element
             })
             .collect()
     }
@@ -465,7 +553,23 @@ impl MarkdownSpanner {
         force_raw: bool,
     ) -> usize {
         if force_raw {
-            return visual_start_col + rendered_col;
+            // Tab-aware inverse of `rendered_cursor_col_with`'s force-raw branch:
+            // walk expanded widths to find the logical char at `rendered_col`.
+            let mut rendered = 0usize;
+            let mut char_pos = 0usize;
+            for cluster in logical_line.graphemes(true) {
+                let pos = char_pos;
+                if pos < visual_start_col {
+                    char_pos += cluster.chars().count();
+                    continue;
+                }
+                if rendered >= rendered_col {
+                    return pos;
+                }
+                rendered += cluster_width_at(cluster, rendered);
+                char_pos += cluster.chars().count();
+            }
+            return char_pos;
         }
         let trimmed = logical_line.trim();
         if is_first_visual_line && matches!(trimmed, "---" | "***" | "___") {
@@ -481,6 +585,15 @@ impl MarkdownSpanner {
         };
         let list_sigil_end: Option<usize> = if is_first_visual_line {
             parsed.list_sigil_end()
+        } else {
+            None
+        };
+        // Mirror `rendered_cursor_col_with`: on the first visual line a
+        // blockquote's `> ` markers are revealed (visible) when the cursor is on
+        // the row. On non-cursor rows the caller passes `visual_start_col` past
+        // the markers (the gutter case), so this clause is inert there.
+        let blockquote_sigil_end: Option<usize> = if is_first_visual_line {
+            parsed.blockquote_sigil_end()
         } else {
             None
         };
@@ -513,15 +626,146 @@ impl MarkdownSpanner {
             let is_content = pos < content_vis.len() && content_vis[pos];
             let in_heading_sigil = heading_sigil_end.is_some_and(|end| pos < end);
             let in_list_sigil = list_sigil_end.is_some_and(|end| pos < end);
+            let in_blockquote_sigil = blockquote_sigil_end.is_some_and(|end| pos < end);
             let in_any_element = parsed.in_any_element(pos);
-            if is_content || in_heading_sigil || in_list_sigil || !in_any_element {
-                rendered_count += if cluster == "\t" {
-                    tab_width_at(rendered_count)
-                } else {
-                    cluster_display_width(cluster)
-                };
+            if is_content
+                || in_heading_sigil
+                || in_list_sigil
+                || in_blockquote_sigil
+                || !in_any_element
+            {
+                rendered_count += cluster_width_at(cluster, rendered_count);
             }
         }
         logical_char_count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn force_raw_expands_tabs_and_cursor_maps_round_trip() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        // "\tx" force-raw: tab at col 0 → TAB_STOP (4) spaces, then 'x' → 5 cols.
+        let spans = MarkdownSpanner::render("\tx", "\tx", 0, None, true, true, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "    x", "tab must expand to 4 spaces in force-raw");
+
+        // Cursor after the tab (logical col 1) is at rendered col 4 (tab width).
+        let rc = MarkdownSpanner::rendered_cursor_col("\tx", 0, 1, true, true);
+        assert_eq!(rc, 4);
+        // Cursor after 'x' (logical col 2) is at rendered col 5.
+        let rc2 = MarkdownSpanner::rendered_cursor_col("\tx", 0, 2, true, true);
+        assert_eq!(rc2, 5);
+
+        // Inverse: rendered col 4 maps back to logical col 1 ('x'); col 0 → 0.
+        assert_eq!(
+            MarkdownSpanner::rendered_col_to_logical("\tx", 0, 4, true, true),
+            1
+        );
+        assert_eq!(
+            MarkdownSpanner::rendered_col_to_logical("\tx", 0, 0, true, true),
+            0
+        );
+    }
+
+    #[test]
+    fn click_maps_over_revealed_blockquote_marker_on_cursor_row() {
+        // Cursor-row blockquote (markers revealed, no gutter): rendered_col 0/1
+        // map to the '>' and ' ' (logical 0/1), rendered_col 2 to 'h' (logical 2)
+        // — not skipped as hidden.
+        assert_eq!(
+            MarkdownSpanner::rendered_col_to_logical("> hi", 0, 0, true, false),
+            0
+        );
+        assert_eq!(
+            MarkdownSpanner::rendered_col_to_logical("> hi", 0, 2, true, false),
+            2
+        );
+    }
+
+    #[test]
+    fn blockquote_marker_visible_only_when_cursor_on_line() {
+        // Cursor on the line → "> " revealed (both chars visible).
+        let with_cursor = MarkdownSpanner::visible_positions("> hi", Some(2), false);
+        assert_eq!(&with_cursor[0..2], &[true, true]);
+
+        // Cursor off the line → "> " hidden (gutter draws the bar instead).
+        let no_cursor = MarkdownSpanner::visible_positions("> hi", None, false);
+        assert_eq!(&no_cursor[0..2], &[false, false]);
+    }
+
+    #[test]
+    fn blockquote_marker_stays_visible_when_cursor_in_inner_element() {
+        // Cursor (col 4) sits inside the bold span of "> **b**". elem_at resolves
+        // to the Bold element (start_char=2, end_char=7), not the line-spanning
+        // Blockquote, so only the new blockquote-sigil reveal keeps the "> "
+        // marker (cols 0,1) visible.
+        //
+        // Parsed: Blockquote [0,7), Bold [2,7); blockquote_sigil_end = Some(4).
+        // Without in_blockquote_sigil: cols 0,1 are in_any_element=true but
+        // in_expanded=false → hidden. With it: pos < 4 → visible.
+        let vis = MarkdownSpanner::visible_positions("> **b**", Some(4), false);
+        assert_eq!(&vis[0..2], &[true, true]);
+    }
+
+    #[test]
+    fn cursor_advances_over_blockquote_marker_on_its_line() {
+        // Cursor just after "> " on a bare blockquote line. Rendered column must
+        // be 2 (the "> " is revealed and visible on the cursor's own line), not 0.
+        let col = MarkdownSpanner::rendered_cursor_col(
+            "> ",  // logical line
+            0,     // visual_start_col
+            2,     // cursor_col (end of line)
+            true,  // is_first_visual_line
+            false, // force_raw
+        );
+        assert_eq!(col, 2);
+    }
+
+    #[test]
+    fn blockquote_renders_bar_when_cursor_off_line() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        // cursor_col = None → bar gutter, raw "> " hidden.
+        let spans = MarkdownSpanner::render("> hi", "> hi", 0, None, true, false, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("│ "), "expected bar gutter, got {text:?}");
+        assert!(
+            !text.contains('>'),
+            "raw marker must be hidden, got {text:?}"
+        );
+        assert!(text.contains("hi"));
+    }
+
+    #[test]
+    fn blockquote_reveals_raw_marker_when_cursor_on_line() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        // cursor_col = Some(..) → raw "> hi" shown, no bar.
+        let spans = MarkdownSpanner::render("> hi", "> hi", 0, Some(2), true, false, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "> hi");
+        assert!(!text.contains('│'));
+    }
+
+    #[test]
+    fn nested_blockquote_renders_two_bars() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let spans = MarkdownSpanner::render(">> x", ">> x", 0, None, true, false, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("││ "), "expected two bars, got {text:?}");
+    }
+
+    #[test]
+    fn bare_blockquote_renders_bar_gutter_without_panic() {
+        let theme = crate::settings::themes::Theme::gruvbox_dark();
+        let spans = MarkdownSpanner::render(">", ">", 0, None, true, false, 40, &theme);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("│ "), "expected bar gutter, got {text:?}");
+        assert!(
+            !text.contains('>'),
+            "raw marker must be hidden, got {text:?}"
+        );
     }
 }

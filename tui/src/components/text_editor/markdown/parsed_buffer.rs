@@ -290,9 +290,25 @@ impl ParsedBuffer {
                         code_block_start = Some(range.start);
                     }
                     code_block_depth += 1;
-                    let hi = (er + 1).min(kinds.len());
+                    // Use the UNCLAMPED end row as the exclusive upper bound:
+                    // pulldown's exclusive byte end lands at the start of the
+                    // row *after* the block's content (or `lines.len()` at EOF),
+                    // so the content rows are `sr..end_row` — this already
+                    // excludes both a following less-indented paragraph
+                    // (CommonMark §4.4: such a line ends the block) and any
+                    // trailing blank line. The previous `er + 1` over-included
+                    // that following row.
+                    let (end_row, _) = byte_to_row_col_unclamped(range.end, lines, &line_starts);
+                    let hi = end_row.min(kinds.len());
                     if hi > sr {
                         kinds[sr..hi].fill(LineConstructKind::IndentedCode);
+                        // Invariant the bound above guarantees: the block never
+                        // ends on a trailing blank, so no trim is needed.
+                        debug_assert!(
+                            hi <= sr + 1 || !lines[hi - 1].trim().is_empty(),
+                            "indented block ended on trailing blank row {}",
+                            hi - 1
+                        );
                     }
                 }
                 Event::End(TagEnd::CodeBlock) => {
@@ -539,6 +555,19 @@ impl ParsedBuffer {
                 }
             }
 
+            // Blockquote depth = number of Blockquote elements covering this
+            // line. Derived from pulldown's structure (via `emit_span`) rather
+            // than counting leading `>`, so lazy-continuation lines (CommonMark
+            // §5.1 — quote text with no `>` prefix) and nested quotes report the
+            // correct depth and get the bar gutter, not just the quote color.
+            let blockquote_depth = {
+                let n = els
+                    .iter()
+                    .filter(|e| e.kind == ElementKind::Blockquote)
+                    .count();
+                (n > 0).then_some(n.min(u8::MAX as usize) as u8)
+            };
+
             out.push(ParsedLine {
                 elements: els,
                 content_vis: cv,
@@ -546,6 +575,7 @@ impl ParsedBuffer {
                 elem_index,
                 list_sigil_end: list_sigil_end[row],
                 image_placeholders,
+                blockquote_depth,
             });
         }
 
@@ -665,6 +695,7 @@ impl ParsedBuffer {
                 elem_index: vec![0; total],
                 list_sigil_end: None,
                 image_placeholders: Vec::new(),
+                blockquote_depth: None,
             });
         }
         let kinds = vec![LineConstructKind::Plain; lines.len()];

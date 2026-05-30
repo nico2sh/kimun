@@ -30,6 +30,47 @@ pub(super) fn string_display_width(s: &str) -> usize {
     s.graphemes(true).map(cluster_display_width).sum()
 }
 
+/// The blockquote bar gutter drawn in place of the hidden `>` markers: one
+/// `│` per nesting level followed by a single space. This is the single source
+/// of the gutter's shape — `render_with` draws this string, while wrap
+/// reservation and click mapping size themselves via [`blockquote_gutter_width`].
+/// The unit test `gutter_width_matches_rendered` locks the two in sync.
+pub(super) fn blockquote_gutter(depth: u8) -> String {
+    let mut s = "│".repeat(depth as usize);
+    s.push(' ');
+    s
+}
+
+/// Display-column width of [`blockquote_gutter`] for `depth` (`│`×depth + space,
+/// each one column → `depth + 1`). Used by the view to reserve the wrap inset and
+/// to offset click/selection columns.
+pub(super) fn blockquote_gutter_width(depth: u8) -> usize {
+    depth as usize + 1
+}
+
+/// Display-column width of a raw line with all clusters visible and tabs
+/// expanded to the next tab stop. Mirrors the per-cluster column math in
+/// `spanner::render_with` (tab handling + `cluster_display_width`).
+pub(super) fn raw_display_width(line: &str) -> usize {
+    let mut col = 0usize;
+    for g in line.graphemes(true) {
+        col += cluster_width_at(g, col);
+    }
+    col
+}
+
+/// Display width a grapheme cluster occupies when rendered at visual column
+/// `col`: a tab advances to the next tab stop, anything else is its intrinsic
+/// width. Single source of the tab-vs-cluster rule shared by `raw_display_width`
+/// and the force-raw render/cursor paths in `spanner`.
+pub(super) fn cluster_width_at(cluster: &str, col: usize) -> usize {
+    if cluster == "\t" {
+        tab_width_at(col)
+    } else {
+        cluster_display_width(cluster)
+    }
+}
+
 /// Display width of a grapheme cluster.
 ///
 /// For multi-codepoint clusters (ZWJ sequences like 👨‍👩‍👧‍👦, variation selectors,
@@ -100,6 +141,12 @@ pub struct ParsedLine {
     /// chars are hidden (`content_vis = false`) and replaced visually by
     /// `placeholder` when rendering.
     pub image_placeholders: Vec<ImagePlaceholder>,
+    /// Blockquote nesting depth (number of Blockquote elements covering this
+    /// line), or `None` if this line is not part of a blockquote. Derived from
+    /// pulldown's structure so lazy-continuation lines (quote text with no `>`
+    /// prefix) and nested quotes report the correct depth. Set by
+    /// `ParsedBuffer::parse`.
+    blockquote_depth: Option<u8>,
 }
 
 impl ParsedLine {
@@ -160,22 +207,41 @@ impl ParsedLine {
                     ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
                 )
             })
-            .map(|e| {
-                let mut first_content = e.end_char; // default: all chars are sigil
-                for i in e.start_char..e.end_char {
-                    if i < self.content_vis.len() && self.content_vis[i] {
-                        first_content = i;
-                        break;
-                    }
-                }
-                first_content
-            })
+            .map(|e| self.first_content_char(e))
+    }
+
+    /// Char offset of the first content (non-sigil) char inside `e`, or
+    /// `e.end_char` when the element is all sigil (e.g. a bare `#` / `>`).
+    /// Shared by `heading_sigil_end` and `blockquote_sigil_end`.
+    fn first_content_char(&self, e: &Element) -> usize {
+        for i in e.start_char..e.end_char {
+            if i < self.content_vis.len() && self.content_vis[i] {
+                return i;
+            }
+        }
+        e.end_char
     }
 
     /// Char offset where the list-item sigil ends on this line, or `None` if this
     /// line is not the first line of a list item.
     pub fn list_sigil_end(&self) -> Option<usize> {
         self.list_sigil_end
+    }
+
+    /// Blockquote nesting depth for this line, or `None` if not a blockquote.
+    pub fn blockquote_depth(&self) -> Option<u8> {
+        self.blockquote_depth
+    }
+
+    /// Char offset where the blockquote marker region (`>`/spaces) ends, i.e.
+    /// the first content char. `None` if this line is not part of a blockquote.
+    /// `blockquote_depth` is `Some` iff a Blockquote element exists (both are
+    /// element-derived), so the `find` always matches when this returns a value.
+    pub fn blockquote_sigil_end(&self) -> Option<usize> {
+        self.elements
+            .iter()
+            .find(|e| e.kind == ElementKind::Blockquote)
+            .map(|e| self.first_content_char(e))
     }
 
     /// Diagnostic helper: compare every field for byte-identity. Used by
@@ -196,6 +262,10 @@ impl ParsedLine {
         assert_eq!(
             self.list_sigil_end, other.list_sigil_end,
             "row {row} list_sigil_end diverge"
+        );
+        assert_eq!(
+            self.blockquote_depth, other.blockquote_depth,
+            "row {row} blockquote_depth diverge"
         );
         assert_eq!(
             self.elements.len(),
@@ -340,6 +410,100 @@ mod tests {
         spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    #[test]
+    fn blockquote_lazy_continuation_carries_depth() {
+        // A line with no leading `>` that lazily continues a blockquote
+        // (CommonMark §5.1) is part of the quote: pulldown spans the
+        // Blockquote element across it, so it must report the quote's depth
+        // and get the bar gutter — not just the quoted text color.
+        let buf = ParsedBuffer::parse(&["> first".to_string(), "second".to_string()]);
+        assert_eq!(buf.lines[0].blockquote_depth(), Some(1));
+        assert_eq!(
+            buf.lines[1].blockquote_depth(),
+            Some(1),
+            "lazy continuation line must carry the blockquote depth"
+        );
+
+        // Nested lazy continuation keeps the full depth.
+        let nested = ParsedBuffer::parse(&[">> a".to_string(), "b".to_string()]);
+        assert_eq!(nested.lines[0].blockquote_depth(), Some(2));
+        assert_eq!(nested.lines[1].blockquote_depth(), Some(2));
+
+        // A blank line ends the quote: the following line is NOT a continuation.
+        let ended =
+            ParsedBuffer::parse(&["> first".to_string(), String::new(), "plain".to_string()]);
+        assert_eq!(ended.lines[0].blockquote_depth(), Some(1));
+        assert_eq!(ended.lines[2].blockquote_depth(), None);
+    }
+
+    #[test]
+    fn indented_code_excludes_trailing_blank_keeps_interior() {
+        use super::super::parse_incremental::LineConstructKind::{Blank, IndentedCode, Plain};
+        let kinds = |lines: &[&str]| {
+            let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+            ParsedBuffer::parse(&owned).kinds
+        };
+        // Trailing blank after indented code is NOT part of the block.
+        assert_eq!(
+            kinds(&["    code", "", "outro"]),
+            vec![IndentedCode, Blank, Plain]
+        );
+        // Interior blank (between indented lines) stays part of the block.
+        assert_eq!(
+            kinds(&["    a", "", "    b"]),
+            vec![IndentedCode, IndentedCode, IndentedCode]
+        );
+        // Multiple trailing blanks all revert to Blank.
+        assert_eq!(
+            kinds(&["    a", "", "", "outro"]),
+            vec![IndentedCode, Blank, Blank, Plain]
+        );
+        // A less-indented content line (no blank before it) ends the block —
+        // it is NOT swallowed into the code block.
+        assert_eq!(
+            kinds(&["    Line 1", "    Line 2", "Line 3"]),
+            vec![IndentedCode, IndentedCode, Plain]
+        );
+        // Interior blanks (any number) between indented chunks stay in-block.
+        assert_eq!(
+            kinds(&["    line 1", "    line 2", "", "", "    line 3"]),
+            vec![
+                IndentedCode,
+                IndentedCode,
+                IndentedCode,
+                IndentedCode,
+                IndentedCode
+            ]
+        );
+    }
+
+    #[test]
+    fn gutter_width_matches_rendered() {
+        // Locks the single-source contract: blockquote_gutter_width must equal
+        // the display width of the actually-rendered blockquote_gutter string.
+        for d in 1u8..=4 {
+            assert_eq!(
+                blockquote_gutter_width(d),
+                string_display_width(&blockquote_gutter(d)),
+                "gutter width/string disagree at depth {d}"
+            );
+        }
+    }
+
+    #[test]
+    fn blockquote_depth_and_sigil_end() {
+        let p = ParsedLine::parse("> hello");
+        assert_eq!(p.blockquote_depth(), Some(1));
+        // sigil region is "> " (2 chars); content starts at index 2.
+        assert_eq!(p.blockquote_sigil_end(), Some(2));
+
+        let p2 = ParsedLine::parse(">> deep");
+        assert_eq!(p2.blockquote_depth(), Some(2));
+
+        let plain = ParsedLine::parse("not a quote");
+        assert_eq!(plain.blockquote_depth(), None);
+        assert_eq!(plain.blockquote_sigil_end(), None);
+    }
     #[test]
     fn parse_bold_range() {
         let e = MarkdownSpanner::parse_elements("**bold**");
