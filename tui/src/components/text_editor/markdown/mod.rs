@@ -54,13 +54,21 @@ pub(super) fn blockquote_gutter_width(depth: u8) -> usize {
 pub(super) fn raw_display_width(line: &str) -> usize {
     let mut col = 0usize;
     for g in line.graphemes(true) {
-        if g == "\t" {
-            col += tab_width_at(col);
-        } else {
-            col += cluster_display_width(g);
-        }
+        col += cluster_width_at(g, col);
     }
     col
+}
+
+/// Display width a grapheme cluster occupies when rendered at visual column
+/// `col`: a tab advances to the next tab stop, anything else is its intrinsic
+/// width. Single source of the tab-vs-cluster rule shared by `raw_display_width`
+/// and the force-raw render/cursor paths in `spanner`.
+pub(super) fn cluster_width_at(cluster: &str, col: usize) -> usize {
+    if cluster == "\t" {
+        tab_width_at(col)
+    } else {
+        cluster_display_width(cluster)
+    }
 }
 
 /// Display width of a grapheme cluster.

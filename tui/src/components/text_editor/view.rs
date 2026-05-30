@@ -582,7 +582,12 @@ impl MarkdownEditorView {
                     }
                 }
             }
-            self.rebuild_code_box_width(lines, rect.width);
+            // Code-box widths depend only on text content and the wrap width,
+            // not the cursor — so skip the (grapheme-walking) rebuild on
+            // cursor-only moves, where neither changed.
+            if !matches!(self.last_text_change, TextChangeKind::None) || width_changed {
+                self.rebuild_code_box_width(lines, rect.width);
+            }
             self.last_layout_generation = generation;
             self.last_layout_width = rect.width;
             self.last_layout_cursor = cursor;

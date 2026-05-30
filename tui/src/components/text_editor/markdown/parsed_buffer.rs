@@ -293,23 +293,22 @@ impl ParsedBuffer {
                     // Use the UNCLAMPED end row as the exclusive upper bound:
                     // pulldown's exclusive byte end lands at the start of the
                     // row *after* the block's content (or `lines.len()` at EOF),
-                    // so the content rows are `sr..end_row`. The previous
-                    // `er + 1` over-included the following line whenever it was a
-                    // less-indented paragraph (CommonMark §4.4: such a line ends
-                    // the block) or a trailing blank.
+                    // so the content rows are `sr..end_row` — this already
+                    // excludes both a following less-indented paragraph
+                    // (CommonMark §4.4: such a line ends the block) and any
+                    // trailing blank line. The previous `er + 1` over-included
+                    // that following row.
                     let (end_row, _) = byte_to_row_col_unclamped(range.end, lines, &line_starts);
                     let hi = end_row.min(kinds.len());
                     if hi > sr {
                         kinds[sr..hi].fill(LineConstructKind::IndentedCode);
-                        // EOF safety net: if pulldown ever includes a trailing
-                        // blank line in the range, revert trailing whitespace-only
-                        // rows to Blank. Interior blanks (followed by more code)
-                        // are left as IndentedCode; `sr` is always kept.
-                        let mut row = hi;
-                        while row > sr + 1 && lines[row - 1].trim().is_empty() {
-                            kinds[row - 1] = LineConstructKind::Blank;
-                            row -= 1;
-                        }
+                        // Invariant the bound above guarantees: the block never
+                        // ends on a trailing blank, so no trim is needed.
+                        debug_assert!(
+                            hi <= sr + 1 || !lines[hi - 1].trim().is_empty(),
+                            "indented block ended on trailing blank row {}",
+                            hi - 1
+                        );
                     }
                 }
                 Event::End(TagEnd::CodeBlock) => {
