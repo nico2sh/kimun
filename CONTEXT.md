@@ -33,3 +33,12 @@ The vertical `│` gutter the editor paints in place of the `>` sigils of a bloc
 
 **Code box**:
 The background rectangle the editor paints behind a code block (fenced or indented). Sized to the block's widest line and capped at the editor width — a box hugging the code, not a full-width band.
+
+### Search
+
+**Note link**:
+A note→note reference inside a note's body — either a `[[wikilink]]` or a markdown link resolving to a vault note. Attachments, images, and external URLs are *not* note links. Only note links participate in the **link filter**.
+
+**Link filter**:
+The search operator that selects notes by the note links they contain. "Notes that link to X" means notes whose body contains a note link **to** X — i.e. X's backlinks, not X's outgoing links. The target is matched by note name (extension optional, case-insensitive, `*` wildcards), across any folder unless a path is given to disambiguate.
+_Avoid_: backlink search (correct, but ambiguous about direction when read quickly)

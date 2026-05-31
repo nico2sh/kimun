@@ -65,7 +65,7 @@ fn qualify_columns(prefix: &str, cols: &str) -> String {
 }
 
 use super::{
-    nfs::{NoteEntryData, PATH_SEPARATOR},
+    nfs::{with_note_extension, NoteEntryData, PATH_SEPARATOR},
     VaultPath,
 };
 
@@ -81,7 +81,11 @@ use super::{
 //      forces a clean reindex so the table is filled for existing vaults.
 // 0.5: BREADCRUMB_SEP changed from `>` to `\x1f`. Bump forces a clean
 //      reindex so stale rows with the old separator are rewritten.
-const VERSION: &str = "0.8";
+// 0.9: Added `dest_name` column + index to `links` (bare lowercased filename
+//      of each link destination) so the `>`/`lk:` link filter matches notes
+//      by name with an indexed lookup instead of a leading-`%` scan. Bump
+//      forces a clean reindex so the column is populated for existing vaults.
+const VERSION: &str = "0.9";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone)]
@@ -258,7 +262,8 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     sqlx::query(
         "CREATE TABLE links (
             source TEXT,
-            destination TEXT
+            destination TEXT,
+            dest_name TEXT
         )",
     )
     .execute(&mut *tx)
@@ -267,6 +272,15 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     sqlx::query(
         "CREATE INDEX backlinks
             ON links(destination)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Backs the `>`/`lk:` link filter's name-anywhere match (folder-independent
+    // bare filename), so it never has to scan with a leading-`%` LIKE.
+    sqlx::query(
+        "CREATE INDEX links_by_dest_name
+            ON links(dest_name)",
     )
     .execute(&mut *tx)
     .await?;
@@ -303,14 +317,18 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     Ok(())
 }
 
+/// Joins the positive and negative conditions of one operator class. Positives
+/// AND together (each same-type term must match, matching the documented
+/// "all terms are ANDed" precedence and the `#`/`>`/`<` operators); negatives
+/// already AND.
 fn combine_conditions(positive: Vec<String>, negative: Vec<String>) -> Option<String> {
     match (positive.is_empty(), negative.is_empty()) {
         (true, true) => None,
-        (false, true) => Some(positive.join(" OR ")),
+        (false, true) => Some(positive.join(" AND ")),
         (true, false) => Some(negative.join(" AND ")),
         (false, false) => Some(format!(
-            "({}) AND ({})",
-            positive.join(" OR "),
+            "{} AND {}",
+            positive.join(" AND "),
             negative.join(" AND ")
         )),
     }
@@ -347,22 +365,6 @@ fn build_like_conditions(
     combine_conditions(positive_conditions, negative_conditions)
 }
 
-fn add_exclusion_conditions(
-    excluded_terms: &[String],
-    var_num: &mut usize,
-    exclusion_conditions: &mut Vec<String>,
-    params: &mut Vec<String>,
-) {
-    for excluded in excluded_terms {
-        exclusion_conditions.push(format!(
-            "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
-            var_num
-        ));
-        params.push(fts4_quote(excluded));
-        *var_num += 1;
-    }
-}
-
 /// Base query for the search fan-out. Aliases `notes.path` to `path` so the
 /// shared `row_to_note_entry` mapper finds all `NOTE_COLUMNS` keys. First
 /// column is qualified to disambiguate the `notesContent`/`notes` join; the
@@ -383,11 +385,11 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
     let mut params: Vec<String> = vec![];
     let mut queries: Vec<String> = vec![];
 
-    add_content_terms_query(search_terms, &mut var_num, &mut params, &mut queries);
-    add_breadcrumb_query(search_terms, &mut var_num, &mut params, &mut queries);
+    add_fts_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_filename_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_path_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_labels_query(search_terms, &mut var_num, &mut params, &mut queries);
+    add_links_query(search_terms, &mut var_num, &mut params, &mut queries);
 
     if queries.is_empty() {
         debug!("No query provided");
@@ -396,102 +398,83 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
     (queries.join(" INTERSECT "), params)
 }
 
-/// Free-text content terms: positive matches use FTS4 `MATCH`; exclusions use
-/// `NOT IN` subqueries because FTS4 doesn't support pure-negative queries.
-fn add_content_terms_query(
+/// Free-text + breadcrumb FTS branches. Content (whole-row) and breadcrumb
+/// (heading-path column) are *separate* INTERSECT branches: FTS4 allows only
+/// one `MATCH` per virtual table per SELECT, and its in-MATCH column filter
+/// (`breadcrumb:"x"`) is unreliable across builds, so the two cannot be folded
+/// into a single scan. Within each branch, the positive `MATCH` is ANDed with
+/// `NOT IN` subqueries for that field's exclusions (FTS4 has no reliable
+/// pure-negative / inline `-term`, so a subquery is used uniformly).
+fn add_fts_query(
     s: &SearchTerms,
     var_num: &mut usize,
     params: &mut Vec<String>,
     queries: &mut Vec<String>,
 ) {
-    if s.terms.is_empty() && s.excluded_terms.is_empty() {
-        return;
-    }
-    let mut exclusions = vec![];
-    add_exclusion_conditions(&s.excluded_terms, var_num, &mut exclusions, params);
-
-    if !s.terms.is_empty() {
-        let where_clause = if exclusions.is_empty() {
-            format!("notesContent MATCH ?{}", var_num)
-        } else {
-            format!(
-                "notesContent MATCH ?{} AND {}",
-                var_num,
-                exclusions.join(" AND ")
-            )
-        };
-        queries.push(format!("{} WHERE {}", search_base_sql(), where_clause));
-        let quoted: Vec<String> = s.terms.iter().map(|t| fts4_quote(t)).collect();
-        params.push(quoted.join(" "));
-        *var_num += 1;
-    } else if !exclusions.is_empty() {
-        // Pure exclusion: scan all notes, drop those matching the excluded terms.
-        queries.push(format!(
-            "{} WHERE {}",
-            search_base_sql(),
-            exclusions.join(" AND ")
-        ));
-    }
+    add_fts_field_query(
+        &s.terms,
+        &s.excluded_terms,
+        "notesContent",
+        fts4_quote,
+        var_num,
+        params,
+        queries,
+    );
+    add_fts_field_query(
+        &s.breadcrumb,
+        &s.excluded_breadcrumb,
+        "notesContent.breadcrumb",
+        fts4_quote,
+        var_num,
+        params,
+        queries,
+    );
 }
 
-/// Breadcrumb (heading-path) FTS column. Positive-only uses the column-scoped
-/// `MATCH`; mixed positive + exclusions inline column prefixes with `-`;
-/// exclusion-only uses `NOT IN`.
-fn add_breadcrumb_query(
-    s: &SearchTerms,
+/// Emits one FTS branch for a single field (`notesContent` for content,
+/// `notesContent.breadcrumb` for headings): a positive `MATCH` (all positive
+/// terms space-joined into one query) ANDed with one `NOT IN` subquery per
+/// excluded term. Pure-exclusion (no positives) drops the leading `MATCH`.
+fn add_fts_field_query(
+    positives: &[String],
+    excludeds: &[String],
+    match_target: &str,
+    quote: impl Fn(&str) -> String,
     var_num: &mut usize,
     params: &mut Vec<String>,
     queries: &mut Vec<String>,
 ) {
-    if s.breadcrumb.is_empty() && s.excluded_breadcrumb.is_empty() {
+    if positives.is_empty() && excludeds.is_empty() {
         return;
     }
-    if !s.breadcrumb.is_empty() {
-        if s.excluded_breadcrumb.is_empty() {
-            queries.push(format!(
-                "{} WHERE notesContent.breadcrumb MATCH ?{}",
-                search_base_sql(),
-                var_num
-            ));
-            params.push(
-                s.breadcrumb
-                    .iter()
-                    .map(|b| fts4_quote(b))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            );
-        } else {
-            let mut parts = Vec::with_capacity(s.breadcrumb.len() + s.excluded_breadcrumb.len());
-            for b in &s.breadcrumb {
-                parts.push(format!("breadcrumb: {}", fts4_quote(b)));
-            }
-            for b in &s.excluded_breadcrumb {
-                parts.push(format!("breadcrumb: -{}", fts4_quote(b)));
-            }
-            queries.push(format!(
-                "{} WHERE notesContent MATCH ?{}",
-                search_base_sql(),
-                var_num
-            ));
-            params.push(parts.join(" "));
-        }
+
+    let mut conditions: Vec<String> = vec![];
+
+    if !positives.is_empty() {
+        conditions.push(format!("{} MATCH ?{}", match_target, var_num));
+        params.push(
+            positives
+                .iter()
+                .map(|t| quote(t))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
         *var_num += 1;
-        return;
     }
-    // Exclusion-only: NOT IN with column-prefixed term per excluded breadcrumb.
-    let mut exclusions = vec![];
-    for excluded in &s.excluded_breadcrumb {
-        exclusions.push(format!(
-            "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent MATCH ?{})",
-            var_num
+
+    for term in excludeds {
+        conditions.push(format!(
+            "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE {} MATCH ?{})",
+            match_target, var_num
         ));
-        params.push(format!("breadcrumb: {}", fts4_quote(excluded)));
+        params.push(quote(term));
         *var_num += 1;
     }
+
     queries.push(format!(
         "{} WHERE {}",
         search_base_sql(),
-        exclusions.join(" AND ")
+        conditions.join(" AND ")
     ));
 }
 
@@ -533,18 +516,64 @@ fn add_path_query(
     }
 }
 
-/// Notes-only base SELECT (no `notesContent` join) so label-only queries
-/// don't pay an FTS scan. Same columns as `SEARCH_BASE_SQL` so INTERSECT
-/// branches line up.
-static LABEL_BASE_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+/// Notes-only base SELECT (no `notesContent` join) so membership-style filters
+/// (labels, links) don't pay an FTS scan. No `DISTINCT`: `notes.path` is the
+/// primary key, so every notes-only branch already yields unique paths (and
+/// `INTERSECT` dedups across branches regardless). Same columns as
+/// `SEARCH_BASE_SQL` so INTERSECT branches line up.
+static NOTES_BASE_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
-        "SELECT DISTINCT notes.path as path, {} FROM notes",
+        "SELECT notes.path as path, {} FROM notes",
         NOTE_COLUMNS_REST
     )
 });
 
-fn label_base_sql() -> &'static str {
-    &LABEL_BASE_SQL
+fn notes_base_sql() -> &'static str {
+    &NOTES_BASE_SQL
+}
+
+/// Fan-out shared by membership-style operators (labels, links): each positive
+/// term becomes its own INTERSECT branch (`notes.path IN (subquery)`); excluded
+/// terms are bundled into one notes-only SELECT chaining `NOT IN (subquery)` so
+/// the INTERSECT machinery still composes. `mk_subquery(term, var_num, params)`
+/// returns the inner `SELECT <col> FROM …` for one term (pushing its bind
+/// params and advancing `var_num`), or `None` to skip a degenerate term.
+fn add_membership_query<F>(
+    positives: &[String],
+    excludeds: &[String],
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+    mk_subquery: F,
+) where
+    F: Fn(&str, &mut usize, &mut Vec<String>) -> Option<String>,
+{
+    for term in positives {
+        if let Some(sub) = mk_subquery(term, var_num, params) {
+            queries.push(format!(
+                "{} WHERE notes.path IN ({})",
+                notes_base_sql(),
+                sub
+            ));
+        }
+    }
+
+    if excludeds.is_empty() {
+        return;
+    }
+    let mut clauses = Vec::with_capacity(excludeds.len());
+    for term in excludeds {
+        if let Some(sub) = mk_subquery(term, var_num, params) {
+            clauses.push(format!("notes.path NOT IN ({})", sub));
+        }
+    }
+    if !clauses.is_empty() {
+        queries.push(format!(
+            "{} WHERE {}",
+            notes_base_sql(),
+            clauses.join(" AND ")
+        ));
+    }
 }
 
 fn add_labels_query(
@@ -553,37 +582,101 @@ fn add_labels_query(
     params: &mut Vec<String>,
     queries: &mut Vec<String>,
 ) {
-    // Each positive label is its own INTERSECT branch backed by the
-    // labels_by_name index via an IN subquery against `labels`.
-    for label in &s.labels {
-        let q = format!(
-            "{} WHERE notes.path IN (SELECT path FROM labels WHERE name = ?{})",
-            label_base_sql(),
-            var_num
-        );
-        queries.push(q);
-        params.push(label.clone());
-        *var_num += 1;
-    }
-
-    // Excluded labels: bundled into a single notes-only SELECT with a
-    // chain of NOT IN clauses (so the INTERSECT machinery still composes).
-    if !s.excluded_labels.is_empty() {
-        let mut clauses = Vec::with_capacity(s.excluded_labels.len());
-        for label in &s.excluded_labels {
-            clauses.push(format!(
-                "notes.path NOT IN (SELECT path FROM labels WHERE name = ?{})",
-                var_num
-            ));
-            params.push(label.clone());
+    // Each label is matched via the labels PK autoindex.
+    add_membership_query(
+        &s.labels,
+        &s.excluded_labels,
+        var_num,
+        params,
+        queries,
+        |label, var_num, params| {
+            let sub = format!("SELECT path FROM labels WHERE name = ?{}", var_num);
+            params.push(label.to_string());
             *var_num += 1;
-        }
-        queries.push(format!(
-            "{} WHERE {}",
-            label_base_sql(),
-            clauses.join(" AND ")
-        ));
+            Some(sub)
+        },
+    );
+}
+
+/// Builds the `SELECT source FROM links WHERE …` subquery for one link-filter
+/// target (`>`/`lk:`). Matching is by note name, extension optional,
+/// case-insensitive, with `*` wildcards.
+///
+/// A bare name matches a link in *any* folder via the indexed `dest_name`
+/// column (the folder-independent basename) — no leading-`%` scan. A slash in
+/// the target anchors it to a full path via indexed equality on `destination`
+/// (covering both the relative and absolute stored forms). Wildcards fall back
+/// to `LIKE`, but the pattern is prefix-anchored so the index can still help
+/// (e.g. `proj*`).
+///
+/// This is the name-anywhere counterpart to [`get_backlinks`], which matches a
+/// *specific* note by its exact full path or bare name. Both rely on the same
+/// stored-form invariant: link destinations are lowercased, carry the note
+/// extension, and are either a bare relative name or a relative/absolute path.
+/// Returns `None` for an empty target.
+fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) -> Option<String> {
+    let lowered = target.trim().to_lowercase();
+    // A leading separator only signals "absolute"; both stored forms are
+    // matched anyway, so strip it before normalizing.
+    let stripped = lowered.strip_prefix(PATH_SEPARATOR).unwrap_or(&lowered);
+    if stripped.is_empty() {
+        return None;
     }
+    let is_path_qualified = stripped.contains(PATH_SEPARATOR);
+    let has_wildcard = stripped.contains('*');
+    let name = with_note_extension(stripped);
+
+    let body = if has_wildcard {
+        // Escape LIKE metacharacters in the literal, then turn user `*` into
+        // the SQL `%` wildcard. Destinations never contain `*`, so this is safe.
+        let pattern = escape_like_pattern(&name).replace('*', "%");
+        params.push(pattern);
+        let body = if is_path_qualified {
+            format!(
+                "destination LIKE ?{n} ESCAPE '\\' OR destination LIKE ('/' || ?{n}) ESCAPE '\\'",
+                n = var_num
+            )
+        } else {
+            format!("dest_name LIKE ?{n} ESCAPE '\\'", n = var_num)
+        };
+        *var_num += 1;
+        body
+    } else if is_path_qualified {
+        // Indexed equality on the full path (relative or absolute stored form).
+        params.push(name);
+        let body = format!(
+            "destination = ?{n} OR destination = ('/' || ?{n})",
+            n = var_num
+        );
+        *var_num += 1;
+        body
+    } else {
+        // Indexed equality on the folder-independent basename.
+        params.push(name);
+        let body = format!("dest_name = ?{n}", n = var_num);
+        *var_num += 1;
+        body
+    };
+    Some(format!("SELECT source FROM links WHERE {body}"))
+}
+
+/// Link filter (`>` / `lk:`). Each positive target is its own INTERSECT branch
+/// (AND semantics, like labels); exclusions are bundled into a single
+/// notes-only SELECT chaining `NOT IN`.
+fn add_links_query(
+    s: &SearchTerms,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+) {
+    add_membership_query(
+        &s.links,
+        &s.excluded_links,
+        var_num,
+        params,
+        queries,
+        link_subquery,
+    );
 }
 
 /// Builds basePath conditions for path-style search terms. A trailing
@@ -868,6 +961,12 @@ pub async fn get_notes(
     rows.iter().map(row_to_note_entry).collect()
 }
 
+/// Backlinks of a *specific* note: notes whose body links to exactly this note,
+/// matched by its full path OR its bare filename (wikilinks stored without a
+/// path). This is intentionally narrower than the `>`/`lk:` search filter
+/// (see [`link_subquery`]), which matches a name in *any* folder; keep the two
+/// in step on the stored-form invariant they share (lowercased, `.md`-suffixed
+/// destinations, bare-relative or relative/absolute path).
 pub async fn get_backlinks(
     pool: &SqlitePool,
     path: &VaultPath,
@@ -1008,6 +1107,9 @@ struct ChunkRow {
 struct LinkRow {
     path_idx: usize,
     destination: String,
+    /// Bare lowercased filename of `destination` (folder-independent), indexed
+    /// to back the link filter's name-anywhere match. See `link_subquery`.
+    dest_name: String,
 }
 
 struct LabelRow {
@@ -1094,6 +1196,8 @@ impl NoteBatch {
                     self.links.push(LinkRow {
                         path_idx: idx,
                         destination: p.to_string(),
+                        // Already lowercased by VaultPathSlice; folder-independent.
+                        dest_name: p.get_name(),
                     });
                 }
                 LinkType::Hashtag => {
@@ -1238,16 +1342,18 @@ impl BulkInsertRow for ChunkRow {
 }
 
 impl BulkInsertRow for LinkRow {
-    const HEADER: &'static str = "INSERT INTO links (source, destination) VALUES ";
+    const HEADER: &'static str = "INSERT INTO links (source, destination, dest_name) VALUES ";
     const FOOTER: &'static str = "";
-    const COLS: usize = 2;
+    const COLS: usize = 3;
 
     fn bind_to<'q>(
         &'q self,
         q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
         paths: &'q [String],
     ) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
-        q.bind(&paths[self.path_idx]).bind(&self.destination)
+        q.bind(&paths[self.path_idx])
+            .bind(&self.destination)
+            .bind(&self.dest_name)
     }
 }
 
@@ -1346,14 +1452,16 @@ pub async fn rename_note(
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("UPDATE links SET destination = ? WHERE destination = ?")
+    sqlx::query("UPDATE links SET destination = ?, dest_name = ? WHERE destination = ?")
         .bind(to.to_string())
+        .bind(&new_note_name)
         .bind(from.to_string())
         .execute(&mut **tx)
         .await?;
 
     // Update links that reference the note by filename only (wikilinks without path)
-    sqlx::query("UPDATE links SET destination = ? WHERE destination = ?")
+    sqlx::query("UPDATE links SET destination = ?, dest_name = ? WHERE destination = ?")
+        .bind(&new_note_name)
         .bind(&new_note_name)
         .bind(&old_note_name)
         .execute(&mut **tx)
@@ -1590,9 +1698,11 @@ mod tests {
     #[test]
     fn test_search_terms_query_multiple_paths() {
         let (sql, params) = build_search_sql_query("@file1 at:file2");
+        // Same-type operators AND together (consistent with #, >, <, and the
+        // documented "all terms are ANDed" precedence).
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\' OR notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\' AND notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "file1");
@@ -1806,9 +1916,16 @@ mod tests {
     fn test_breadcrumb_exclusion_sql_generation() {
         let (sql, params) = build_search_sql_query("<project -<draft");
 
-        assert!(sql.contains("notesContent MATCH"));
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "breadcrumb: \"project\" breadcrumb: -\"draft\"");
+        // Positive breadcrumb is a column-scoped MATCH; the exclusion is a
+        // robust NOT IN subquery (not the old, broken inline `breadcrumb: -term`).
+        assert!(sql.contains("notesContent.breadcrumb MATCH ?1"));
+        assert!(sql.contains(
+            "notes.path NOT IN (SELECT DISTINCT notesContent.path FROM notesContent WHERE notesContent.breadcrumb MATCH ?2)"
+        ));
+        assert_eq!(
+            params,
+            vec!["\"project\"".to_string(), "\"draft\"".to_string()]
+        );
     }
 
     #[test]
@@ -2039,6 +2156,436 @@ mod tests {
             "two labels should INTERSECT: {}",
             sql
         );
+    }
+
+    #[test]
+    fn test_search_terms_query_links_only() {
+        let (sql, params) = build_search_sql_query(">projects");
+        assert_eq!(params, vec!["projects.md".to_string()]);
+        assert!(
+            sql.contains("FROM notes")
+                && sql.contains("SELECT source FROM links")
+                && sql.contains("notes.path IN"),
+            "links query should select sources from links: {}",
+            sql
+        );
+        // Bare name (no wildcard) matches the indexed dest_name column with
+        // plain equality — no leading-`%` scan.
+        assert!(
+            sql.contains("dest_name = ?1"),
+            "expected indexed dest_name equality: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_search_terms_query_links_long_form() {
+        let (_sql, params) = build_search_sql_query("lk:projects");
+        assert_eq!(params, vec!["projects.md".to_string()]);
+    }
+
+    #[test]
+    fn test_search_terms_query_links_path_qualified() {
+        let (sql, params) = build_search_sql_query(">work/projects");
+        assert_eq!(params, vec!["work/projects.md".to_string()]);
+        // Path-qualified anchors to the full path (relative or absolute) via
+        // indexed equality on `destination`, not the bare-name column.
+        assert!(
+            sql.contains("destination = ?1 OR destination = ('/' || ?1)"),
+            "expected path-anchored equality: {}",
+            sql
+        );
+        assert!(!sql.contains("dest_name"));
+    }
+
+    #[test]
+    fn test_search_terms_query_links_wildcard() {
+        let (sql, params) = build_search_sql_query(">proj*");
+        assert_eq!(params, vec!["proj%.md".to_string()]);
+        // Wildcard bare name uses a prefix LIKE on the indexed dest_name column.
+        assert!(
+            sql.contains("dest_name LIKE ?1 ESCAPE '\\'"),
+            "expected dest_name LIKE for wildcard: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_search_terms_query_links_extension_optional() {
+        let (_sql, params) = build_search_sql_query(">projects.md");
+        assert_eq!(params, vec!["projects.md".to_string()]);
+    }
+
+    #[test]
+    fn test_search_terms_query_excluded_links() {
+        let (sql, params) = build_search_sql_query("->draft");
+        assert_eq!(params, vec!["draft.md".to_string()]);
+        assert!(
+            sql.contains("notes.path NOT IN (SELECT source FROM links"),
+            "excluded links should use NOT IN: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_search_terms_query_two_links_intersect() {
+        let (sql, params) = build_search_sql_query(">a >b");
+        assert_eq!(params.len(), 2);
+        assert!(
+            sql.contains("INTERSECT"),
+            "two links should INTERSECT: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_search_terms_query_links_combined_with_operators() {
+        // Free-text term + link + label all compose via INTERSECT.
+        let (sql, params) = build_search_sql_query("meeting >spec #urgent");
+        assert_eq!(sql.matches("INTERSECT").count(), 2);
+        assert!(sql.contains("notesContent MATCH"));
+        assert!(sql.contains("SELECT source FROM links"));
+        assert!(sql.contains("FROM labels WHERE name"));
+        // Params follow the fan-out order: content term, label, then link.
+        assert_eq!(
+            params,
+            vec![
+                "\"meeting\"".to_string(),
+                "urgent".to_string(),
+                "spec.md".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn search_combining_links_with_other_operators() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entries: Vec<(NoteEntryData, String)> = vec![
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/work/a.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "# Tasks\n[[spec]] meeting #urgent".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/b.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "[[spec]] casual".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/c.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "#urgent only, no link".to_string(),
+            ),
+        ];
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
+            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+            p.sort();
+            p
+        };
+
+        // link + free-text term.
+        let r = super::search_terms(db.pool(), ">spec meeting")
+            .await
+            .unwrap();
+        assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
+
+        // link + label.
+        let r = super::search_terms(db.pool(), ">spec #urgent")
+            .await
+            .unwrap();
+        assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
+
+        // link + excluded label.
+        let r = super::search_terms(db.pool(), ">spec -#urgent")
+            .await
+            .unwrap();
+        assert_eq!(paths(&r), vec!["/b.md".to_string()]);
+
+        // link + path filter.
+        let r = super::search_terms(db.pool(), ">spec /work").await.unwrap();
+        assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
+
+        // link + section (breadcrumb) filter.
+        let r = super::search_terms(db.pool(), ">spec <tasks")
+            .await
+            .unwrap();
+        assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
+
+        // link + filename filter.
+        let r = super::search_terms(db.pool(), ">spec @b").await.unwrap();
+        assert_eq!(paths(&r), vec!["/b.md".to_string()]);
+
+        // label without link still matches the non-linking note.
+        let r = super::search_terms(db.pool(), "#urgent -spec")
+            .await
+            .unwrap();
+        assert!(paths(&r).contains(&"/c.md".to_string()));
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn multiple_filename_terms_are_anded() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entries: Vec<(NoteEntryData, String)> = vec![
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/report-2024.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/report-2023.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y".to_string(),
+            ),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // @report @2024 must match ONLY the file containing both, not either.
+        let r = super::search_terms(db.pool(), "@report @2024")
+            .await
+            .unwrap();
+        let paths: Vec<String> = r.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(paths, vec!["/report-2024.md".to_string()]);
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn link_search_follows_rename() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entry = NoteEntryData {
+            path: VaultPath::note_path_from("/a.md"),
+            size: 10,
+            modified_secs: 0,
+        };
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &[(entry, "see [[target]]".to_string())])
+            .await
+            .unwrap();
+        // Rename the linked-to note; links (destination + dest_name) must follow.
+        super::rename_note(
+            &mut tx,
+            &VaultPath::note_path_from("/target.md"),
+            &VaultPath::note_path_from("/renamed.md"),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let r = super::search_terms(db.pool(), ">renamed").await.unwrap();
+        let paths: Vec<String> = r.iter().map(|(e, _)| e.path.to_string()).collect();
+        assert_eq!(paths, vec!["/a.md".to_string()]);
+
+        // The old name no longer matches.
+        let r = super::search_terms(db.pool(), ">target").await.unwrap();
+        assert!(r.is_empty());
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_by_link_returns_linking_notes() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entries: Vec<(NoteEntryData, String)> = vec![
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/index.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "links [[projects]] and [[work/spec]]".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/b.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "see [[projects]]".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/c.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "no links here".to_string(),
+            ),
+        ];
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
+            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+            p.sort();
+            p
+        };
+
+        // Notes that link to "projects".
+        let r = super::search_terms(db.pool(), ">projects").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/b.md".to_string(), "/index.md".to_string()]
+        );
+
+        // Extension optional.
+        let r = super::search_terms(db.pool(), ">projects.md")
+            .await
+            .unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/b.md".to_string(), "/index.md".to_string()]
+        );
+
+        // Bare name matches a note in a subfolder (name-anywhere).
+        let r = super::search_terms(db.pool(), ">spec").await.unwrap();
+        assert_eq!(paths(&r), vec!["/index.md".to_string()]);
+
+        // Path-qualified match.
+        let r = super::search_terms(db.pool(), ">work/spec").await.unwrap();
+        assert_eq!(paths(&r), vec!["/index.md".to_string()]);
+
+        // Wildcard.
+        let r = super::search_terms(db.pool(), ">proj*").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/b.md".to_string(), "/index.md".to_string()]
+        );
+
+        // Exclusion: all notes that do NOT link to projects (index and b both link it).
+        let r = super::search_terms(db.pool(), "->projects").await.unwrap();
+        assert_eq!(paths(&r), vec!["/c.md".to_string()]);
+
+        // Unknown target → no results.
+        let r = super::search_terms(db.pool(), ">nonexistent")
+            .await
+            .unwrap();
+        assert!(r.is_empty());
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fts_content_and_breadcrumb_combinations() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let mk = |p: &str, body: &str| {
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from(p),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                body.to_string(),
+            )
+        };
+        let entries = vec![
+            // "meeting" under a "Work" heading, also says "done".
+            mk("/a.md", "# Work\nmeeting notes, all done"),
+            // "meeting" but under "Personal", not "Work".
+            mk("/b.md", "# Personal\nmeeting with a friend"),
+            // "Work" heading but no "meeting".
+            mk("/c.md", "# Work\nbudget review"),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let paths = |r: &[(NoteEntryData, NoteContentData)]| {
+            let mut p: Vec<String> = r.iter().map(|(e, _)| e.path.to_string()).collect();
+            p.sort();
+            p
+        };
+
+        // content AND breadcrumb (both must hold).
+        let r = super::search_terms(db.pool(), "meeting <work")
+            .await
+            .unwrap();
+        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
+
+        // two content terms AND (only /a.md has both "meeting" and "notes").
+        let r = super::search_terms(db.pool(), "meeting notes")
+            .await
+            .unwrap();
+        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
+
+        // content positive + content exclusion.
+        let r = super::search_terms(db.pool(), "meeting -done")
+            .await
+            .unwrap();
+        assert_eq!(paths(&r), vec!["/b.md".to_string()]);
+
+        // breadcrumb positive + content exclusion.
+        let r = super::search_terms(db.pool(), "<work -budget")
+            .await
+            .unwrap();
+        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
+
+        // breadcrumb positive + breadcrumb exclusion.
+        let r = super::search_terms(db.pool(), "<work -<personal")
+            .await
+            .unwrap();
+        assert_eq!(paths(&r), vec!["/a.md".to_string(), "/c.md".to_string()]);
+
+        // pure content exclusion (no positives anywhere).
+        let r = super::search_terms(db.pool(), "-meeting").await.unwrap();
+        assert_eq!(paths(&r), vec!["/c.md".to_string()]);
+
+        // pure breadcrumb exclusion.
+        let r = super::search_terms(db.pool(), "-<work").await.unwrap();
+        assert_eq!(paths(&r), vec!["/b.md".to_string()]);
+
+        db.close().await.unwrap();
     }
 
     #[tokio::test]
