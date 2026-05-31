@@ -15,6 +15,9 @@ The MCP client spawns and manages the `kimun mcp` process automatically — you 
 |---|---|
 | `create_note` | Create a new note (fails if it already exists) |
 | `append_note` | Append text to a note (creates it if absent) |
+| `overwrite_note` | Replace a note's entire body with new content (destructive) |
+| `replace_in_note` | Replace a substring in a note; the match must be unique unless `replace_all` is set (destructive) |
+| `delete_note` | Delete a note (destructive) |
 | `show_note` | Return the full markdown content of a note |
 | `search_notes` | Search with `@filename`, `<heading`, `/path`, `#label`, `>note` (links-to / backlinks), `-exclusion` operators |
 | `list_notes` | List all notes, optionally filtered by path prefix |
@@ -25,6 +28,18 @@ The MCP client spawns and manages the `kimun mcp` process automatically — you 
 | `rename_note` | Rename a note within its current directory; backlinks in other notes are updated automatically |
 | `move_note` | Move a note to a new vault path; backlinks in other notes are updated automatically |
 | `quick_note` | Capture a thought into a timestamped note in the inbox directory |
+
+### Destructive tools and backups
+
+`overwrite_note`, `replace_in_note`, and `delete_note` are marked with the MCP
+`destructive` annotation, so a client that supports confirmation can prompt
+before they run.
+
+Every edit that overwrites or removes a note's content is backed up first: the
+old content is copied into a hidden, dated directory inside the vault (excluded
+from indexing and search) and kept for 30 days before automatic purge. This also
+covers the backlink rewrites performed by `rename_note` and `move_note`. If a
+backup cannot be written, the operation is aborted and the note is left untouched.
 
 ## Prompts
 
