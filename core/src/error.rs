@@ -16,6 +16,10 @@ pub enum VaultError {
     NoteExists { path: VaultPath },
     #[error("Directory already exists at: {path}")]
     DirectoryExists { path: VaultPath },
+    #[error("Text to replace not found in note: {path}")]
+    ReplaceTextNotFound { path: VaultPath },
+    #[error("Text to replace is not unique in note: {path}; replace every occurrence to proceed")]
+    ReplaceTextNotUnique { path: VaultPath },
     #[error("Case-sensitivity conflicts detected in vault:\n{}", conflicts.join("\n"))]
     CaseConflict { conflicts: Vec<String> },
     #[error("Background task failed: {0}")]
