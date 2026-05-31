@@ -169,7 +169,9 @@ async fn run_delete(
     use crate::cli::helpers::resolve_note_path;
 
     if !force {
-        return Err(color_eyre::eyre::eyre!("Refusing to delete without --force"));
+        return Err(color_eyre::eyre::eyre!(
+            "Refusing to delete without --force"
+        ));
     }
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
 

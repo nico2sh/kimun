@@ -539,10 +539,12 @@ pub(crate) async fn backup_note<P: AsRef<Path>>(
     }
     let content = tokio::fs::read(&src).await?;
 
-    let rel = src.strip_prefix(workspace_path).map_err(|_| FSError::InvalidPath {
-        path: src.to_string_lossy().into_owned(),
-        message: "note path escapes the workspace".to_string(),
-    })?;
+    let rel = src
+        .strip_prefix(workspace_path)
+        .map_err(|_| FSError::InvalidPath {
+            path: src.to_string_lossy().into_owned(),
+            message: "note path escapes the workspace".to_string(),
+        })?;
     let backups_root = workspace_path.join(".kimun").join("backups");
     purge_old_backups(&backups_root).await;
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();

@@ -738,7 +738,9 @@ impl NoteVault {
             text.matches(old).count()
         };
         if count == 0 {
-            return Err(VaultError::ReplaceTextNotFound { path: path.flatten() });
+            return Err(VaultError::ReplaceTextNotFound {
+                path: path.flatten(),
+            });
         }
         if !all && count > 1 {
             return Err(VaultError::ReplaceTextNotUnique {
@@ -2457,7 +2459,11 @@ mod modify_backup_tests {
     #[tokio::test]
     async fn purge_removes_backups_older_than_retention() {
         let (temp, vault) = backup_vault().await;
-        let old = temp.path().join(".kimun").join("backups").join("2000-01-01");
+        let old = temp
+            .path()
+            .join(".kimun")
+            .join("backups")
+            .join("2000-01-01");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("ancient.md"), "x").unwrap();
 
