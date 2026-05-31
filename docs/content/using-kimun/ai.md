@@ -17,8 +17,10 @@ Kimün offers two ways to let an AI assistant work with your vault: the **[CLI s
 | **Process model** | A new `kimun` process per command | One long-running `kimun mcp` process managed by the client |
 | **Best for** | Coding assistants and agents that already run shell commands | Desktop apps and editors with native MCP support |
 
-**Use the [CLI skill](@/using-kimun/ai-skills.md)** if you primarily work inside a terminal-based coding assistant like Claude Code. The skill teaches the agent the full `kimun` command surface so it can create notes, search the vault, and log journal entries as part of any session.
+**Use the [CLI skill](@/using-kimun/ai-skills.md)** if you primarily work inside a terminal-based coding assistant like Claude Code. The skill teaches the agent the full `kimun` command surface so it can create, edit, and remove notes, search the vault, and log journal entries as part of any session.
 
 **Use the [MCP server](@/using-kimun/ai-mcp-server.md)** if you use a desktop AI client such as Claude Desktop, or an editor with MCP support. The server exposes the same operations as structured tool calls and also provides prompt templates for journal reviews, connection finding, and brainstorming.
+
+Both expose the same destructive operations — overwrite, replace, and delete — and back up a note's previous content before changing it, so AI-driven edits stay recoverable.
 
 Both approaches can run simultaneously — the TUI, the CLI, and the MCP server all share the same SQLite index with safe concurrent reads.

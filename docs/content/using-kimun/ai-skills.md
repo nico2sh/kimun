@@ -9,10 +9,13 @@ Kimün ships with a ready-made **skill** for AI coding assistants. A skill is a 
 
 With the skill installed, an AI assistant can:
 
-- Create and append notes from findings, summaries, or research
+- Create, append, overwrite, replace text in, and delete notes
 - Log entries to your journal as part of a session
 - Search your vault for context before starting a task
 - Read specific notes on request
+
+Destructive edits (overwrite, replace, delete) back up the note's previous
+content automatically, so changes stay recoverable.
 
 ## Installation
 
@@ -40,12 +43,12 @@ Copy `skills/kimun-cli/SKILL.md` to wherever your tool loads skills from and fol
 
 The skill covers the full CLI surface that is useful for automation:
 
-- **Write commands** — `note create`, `note append`, `note journal`, including stdin piping behavior and path resolution rules
+- **Write commands** — `note create`, `note append`, `note overwrite`, `note replace`, `note delete`, and `journal`, including stdin piping, `--force` gating for destructive operations, and path resolution rules
 - **Search** — query syntax (`@`, `>`, `-` modifiers) and output formats (`--format json`, `--format paths`)
 - **Read** — `note show` and `notes` listing with JSON output
 - **Common patterns** — ready-to-use recipes for logging findings, capturing command output, and searching for context
 
-The skill also documents the key behavioral differences an agent needs to know — for example, that `create` fails if a note exists while `append` is always safe.
+The skill also documents the key behavioral differences an agent needs to know — for example, that `create` fails if a note exists while `append` is always safe, that `overwrite` and `delete` require `--force`, that `replace` needs a unique match (or `--all`), and that every destructive edit is backed up first.
 
 ## Example session
 
