@@ -94,6 +94,28 @@ pub struct QuickNoteParams {
     pub content: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct OverwriteNoteParams {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReplaceInNoteParams {
+    pub path: String,
+    /// Text to find
+    pub old: String,
+    /// Replacement text
+    pub new: String,
+    /// Replace every occurrence instead of requiring a unique match
+    pub replace_all: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteNoteParams {
+    pub path: String,
+}
+
 // ---------------------------------------------------------------------------
 // Handler struct
 // ---------------------------------------------------------------------------
@@ -170,6 +192,69 @@ impl KimunHandler {
             "Note saved: {}",
             vault_path
         ))]))
+    }
+
+    #[tool(
+        description = "Replace a note's entire content with new markdown. The previous content is backed up first. Destructive.",
+        annotations(destructive_hint = true)
+    )]
+    async fn overwrite_note(
+        &self,
+        Parameters(p): Parameters<OverwriteNoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let vault_path = Self::resolve_path(&p.path);
+        match self.vault.save_note(&vault_path, &p.content).await {
+            Ok(_) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Note saved: {}",
+                vault_path
+            ))])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
+    }
+
+    #[tool(
+        description = "Replace a substring in a note. The match must be unique unless replace_all is true. The previous content is backed up first. Destructive.",
+        annotations(destructive_hint = true)
+    )]
+    async fn replace_in_note(
+        &self,
+        Parameters(p): Parameters<ReplaceInNoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let vault_path = Self::resolve_path(&p.path);
+        let all = p.replace_all.unwrap_or(false);
+        match self
+            .vault
+            .replace_in_note(&vault_path, &p.old, &p.new, all)
+            .await
+        {
+            Ok(n) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Replaced {} occurrence(s) in {}",
+                n, vault_path
+            ))])),
+            Err(
+                e @ (kimun_core::error::VaultError::ReplaceTextNotFound { .. }
+                | kimun_core::error::VaultError::ReplaceTextNotUnique { .. }),
+            ) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
+    }
+
+    #[tool(
+        description = "Delete a note. The content is backed up first. Destructive.",
+        annotations(destructive_hint = true)
+    )]
+    async fn delete_note(
+        &self,
+        Parameters(p): Parameters<DeleteNoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let vault_path = Self::resolve_path(&p.path);
+        match self.vault.delete_note(&vault_path).await {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Note deleted: {}",
+                vault_path
+            ))])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
     }
 
     #[tool(description = "Return the full markdown content of a note.")]
@@ -624,7 +709,8 @@ impl ServerHandler for KimunHandler {
 
 pub async fn run(config_path: Option<PathBuf>) -> Result<()> {
     use crate::cli::helpers::create_and_init_vault;
-    let (vault, _) = create_and_init_vault(config_path).await?;
+    let (mut vault, _) = create_and_init_vault(config_path).await?;
+    vault.set_backup(true);
     let handler = KimunHandler::new(vault);
     let service = handler.serve(stdio()).await.map_err(|e| eyre!("{e}"))?;
     service.waiting().await.map_err(|e| eyre!("{e}"))?;
