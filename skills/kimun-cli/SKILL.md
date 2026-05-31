@@ -20,6 +20,7 @@ Kimün is a local-first, terminal notes app. Notes are plain Markdown files inde
 | Show note content | `kimun note show "path"` |
 | Search notes | `kimun search "query"` |
 | List notes | `kimun notes` |
+| List all labels | `kimun labels` |
 
 ## Writing Notes
 
@@ -92,7 +93,13 @@ kimu*          # starts with "kimu"
 | `@term` | `at:term` | filename contains term |
 | `<term` | `in:term` | Markdown section heading contains term |
 | `/term` | `pt:term` | note path (directory) contains term |
+| `#label` | `lb:label` | note carries that hashtag label (from `#label` in body) |
+| `>note` | `lk:note` | notes that link to `note` (its backlinks) |
 | `-term` | | exclude notes containing term |
+
+**Hashtag labels** — any `#name` token in a note body (letters/digits/underscore) is indexed as a label and is case-insensitive. Hashtags inside frontmatter, code spans, fenced blocks, HTML, link bodies, and wikilinks are NOT indexed. Multiple `#` filters AND together.
+
+**Link filter** — `>note` (or `lk:note`) matches notes that link to `note`. Matched by note name (`.md` optional, case-insensitive); a bare name matches a linked note in any folder, `>dir/note` disambiguates, and `*` wildcards work (`>proj*`). Only links to other notes count, not attachments or URLs.
 
 **Exclusion composes with all operators — `-` leads, then the operator:**
 
@@ -101,6 +108,8 @@ kimu*          # starts with "kimu"
 -@temp               # exclude notes with "temp" in filename
 -<draft              # exclude notes with "draft" in any section title
 -/private            # exclude notes under a "private/" path
+-#archived           # exclude notes carrying #archived label
+->draft              # exclude notes that link to "draft"
 ```
 
 **Combining filters** (all terms are ANDed):
@@ -111,7 +120,76 @@ meeting -cancelled           # "meeting" but not "cancelled"
 @2024 -<draft                # files from 2024, no "draft" section title
 /journal <tasks -done        # in journal/, "tasks" section, excluding "done"
 <personal kimun              # "kimun" under a "Personal" section
+>spec #urgent                # links to "spec" and labelled "urgent"
+>kimun ->draft               # links to "kimun" but not to "draft"
+#important -#archived        # notes carrying #important but not #archived
+meeting #important           # "meeting" in notes also carrying #important
 ```
+
+## Listing Labels
+
+`kimun labels` enumerates every distinct hashtag label in the vault with note counts. Three formats:
+
+```sh
+kimun labels                  # text: `name (N notes)` per line, alphabetical
+kimun labels --format paths   # bare label names, one per line (pipeable)
+kimun labels --format json    # JSON: { workspace, total, labels: [{name, note_count}] }
+```
+
+### When to reach for it
+
+- **Map the vault's topical landscape** before answering "what does the user write about?" — `kimun labels` is the cheapest taxonomy survey available.
+- **Discover orphan/typo labels** — single-use labels often reveal a typo (`#imporant` vs `#important`) or a rarely-touched topic worth pruning.
+- **Drive label-based agentic browsing** — pick a label, then `kimun search "#label" --format paths | kimun note show` to read every note under it.
+- **Build per-label digests / per-topic dashboards** programmatically.
+
+### JSON schema
+
+```json
+{
+  "workspace": "personal",
+  "total": 12,
+  "labels": [
+    { "name": "idea",    "note_count": 5 },
+    { "name": "reading", "note_count": 4 }
+  ]
+}
+```
+
+### Effective patterns
+
+```sh
+# Top 10 most-used labels (most signal-rich topics first)
+kimun labels --format json | jq -r '.labels | sort_by(-.note_count) | .[:10][] | "\(.note_count)\t\(.name)"'
+
+# Single-use labels (candidate orphans / typos)
+kimun labels --format json | jq -r '.labels[] | select(.note_count == 1) | .name'
+
+# Read every note carrying a label
+kimun search "#systems" --format paths | kimun note show
+
+# Cross-tabulate two labels (AND)
+kimun search "#api #perf" --format paths
+
+# Label minus another label (e.g. open ideas)
+kimun search "#idea -#done" --format paths
+
+# Per-label index file
+kimun labels --format paths | while read l; do
+  echo "## $l"
+  kimun search "#$l" --format paths | sed 's/^/- /'
+  echo
+done > vault-by-label.md
+
+# Quick "what do I work on?" summary
+kimun labels --format json | jq -r '.labels[] | "\(.note_count)\t\(.name)"' | sort -rn | head
+```
+
+### Notes
+
+- Label names are stored lowercase. `#Foo` and `#foo` collapse into one entry.
+- A label is only counted once per note even if the hashtag appears many times.
+- Counts reflect what's INDEXED — hashtags inside frontmatter, code, HTML, link bodies, and wikilinks are excluded.
 
 ## Reading Notes
 
@@ -168,11 +246,18 @@ kimun journal show
 
 # Chain: search → read all matching notes
 kimun search "meeting notes" --format paths | kimun note show
+
+# Survey topics before working: list labels, pick the relevant one, read all notes
+kimun labels
+kimun search "#api" --format paths | kimun note show
+
+# Pre-tag a captured note in one shot (labels live in body, not frontmatter)
+echo "Quick thought about caching. #idea #perf" | kimun note append "inbox/cache-thoughts"
 ```
 
 ## Common Mistakes
 
 - **`create` on an existing note** — it fails. Use `append` when you're not sure if the note exists.
 - **No stdin from a live terminal** — piping works (`echo "x" | kimun journal`); passing no content from an interactive terminal produces an empty write.
-- **Relative vs absolute paths** — if a `quick_note_path` is set in `config.toml`, relative paths are resolved against it. Prefix with `/` to always target the vault root explicitly.
+- **Relative vs absolute paths** — if a `quick_note_path` is set in `kimun_config.toml`, relative paths are resolved against it. Prefix with `/` to always target the vault root explicitly.
 - **`kimun journal show` — `--format paths` is not supported**; use `text` or `json`.

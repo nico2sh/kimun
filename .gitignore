@@ -32,3 +32,4 @@ docs/public/
 example/*/kimun.sqlite
 example/history/
 openspec/
+adr/

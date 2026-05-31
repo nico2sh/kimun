@@ -82,6 +82,33 @@ pt:docs          → same (long form)
 
 Paths are matched as prefixes, so `/docs` matches both `/docs/readme.md` and `/docs/guides/tutorial.md`.
 
+### `>` or `lk:` — link filter
+
+Filter to notes that **link to** a given note (its backlinks). A note matches when its body contains a note link — a `[[wikilink]]` or a Markdown link to a vault note — pointing at the target:
+
+```
+>projects        → notes that link to the note "projects"
+lk:projects      → same (long form)
+>projects.md     → same (the .md extension is optional)
+```
+
+The target is matched by note name, case-insensitively. The match is by **note identity**, not substring: `>projects` matches links to `projects` but not to `projects-archive`.
+
+A bare name matches a linked note in **any** folder. Add a path to disambiguate notes that share a name:
+
+```
+>projects        → links to any note named "projects" (e.g. work/projects, personal/projects)
+>work/projects   → links to work/projects only
+```
+
+Wildcards work here too:
+
+```
+>proj*           → notes linking to any note whose name starts with "proj"
+```
+
+Only links to other notes count — links to attachments, images, and external URLs are ignored.
+
 ## Labels
 
 Labels are `#name` tokens written directly in your note body. When Kimün indexes a note, any word starting with `#` followed by one or more `[A-Za-z0-9_]` characters is recorded as a label for that note.
@@ -148,9 +175,10 @@ Use the `-` prefix to exclude terms from search results. The `-` always leads, t
 -@temp               → exclude notes with "temp" in the filename
 -/private            → exclude notes under a "private/" directory
 -#draft              → exclude notes labelled "draft"
+->draft              → exclude notes that link to "draft"
 ```
 
-Long forms work the same way: `-in:draft`, `-at:temp`, `-pt:private`, `-lb:draft`.
+Long forms work the same way: `-in:draft`, `-at:temp`, `-pt:private`, `-lb:draft`, `-lk:draft`.
 
 ### Exclusion-only searches
 
@@ -225,6 +253,9 @@ The simple but great note taking app!
 | `lb:review` | notes labelled "review" | label filter (long form) |
 | `#finance #q2` | notes with both "finance" and "q2" labels | combined label filters |
 | `#project -#draft` | notes labelled "project" but not "draft" | label inclusion + exclusion |
+| `>kimun` | notes that link to the note "kimun" | link filter (backlinks) |
+| `lk:kimun #project` | notes linking to "kimun" and labelled "project" | link + label |
+| `>spec ->draft` | notes linking to "spec" but not to "draft" | link inclusion + exclusion |
 
 ## Edge cases
 

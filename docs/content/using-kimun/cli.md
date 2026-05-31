@@ -79,12 +79,15 @@ Searches support free text, filters, and operators:
 - **Free text:** Case-insensitive, diacritics ignored, `*` wildcard supported
 - **Filter by filename:** `@tasks` or `at:tasks`
 - **Filter by section:** `<personal` or `in:personal` (Markdown headers)
+- **Filter by path:** `/journal` or `pt:journal` (directory prefix)
 - **Filter by label (hashtag):** `#important` or `lb:important` — matches notes carrying that `#tag` in their body
+- **Filter by link:** `>projects` or `lk:projects` — notes that link to the note "projects" (its backlinks); name match, `.md` optional, `*` wildcards, `>dir/note` to disambiguate
 - **Exclusion:** `-` prefix leads, then the operator follows
   - Content: `meeting -cancelled`
   - Title: `-<draft` or `-in:draft`
   - Filename: `-@temp` or `-at:temp`
   - Label: `-#draft` or `-lb:draft`
+  - Link: `->draft` or `-lk:draft`
 
 For comprehensive search documentation, see the [Search](@/using-kimun/search.md) page.
 
@@ -102,6 +105,9 @@ kimun search "<personal kimun"
 
 # Find notes labelled #important but not #archived
 kimun search "#important -#archived"
+
+# Find notes that link to "projects"
+kimun search ">projects"
 
 # Combine with jq for advanced filtering
 kimun search "rust" --format json | jq '.notes[] | select(.metadata.tags[] == "rust")'
