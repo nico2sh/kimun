@@ -782,6 +782,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_overwrite_note_replaces_whole_body() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "n".to_string(),
+                content: "old body".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let result = handler
+            .overwrite_note(Parameters(OverwriteNoteParams {
+                path: "n".to_string(),
+                content: "new body".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "got: {:?}", result_text(&result));
+
+        let shown = handler
+            .show_note(Parameters(ShowNoteParams {
+                path: "n".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(result_text(&shown).contains("new body"));
+        assert!(!result_text(&shown).contains("old body"));
+    }
+
+    #[tokio::test]
+    async fn test_replace_in_note_unique_match() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "n".to_string(),
+                content: "hello world".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let result = handler
+            .replace_in_note(Parameters(ReplaceInNoteParams {
+                path: "n".to_string(),
+                old: "world".to_string(),
+                new: "there".to_string(),
+                replace_all: None,
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "got: {:?}", result_text(&result));
+
+        let shown = handler
+            .show_note(Parameters(ShowNoteParams {
+                path: "n".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(result_text(&shown).contains("hello there"));
+    }
+
+    #[tokio::test]
+    async fn test_replace_in_note_non_unique_is_error() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "n".to_string(),
+                content: "a a".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let result = handler
+            .replace_in_note(Parameters(ReplaceInNoteParams {
+                path: "n".to_string(),
+                old: "a".to_string(),
+                new: "b".to_string(),
+                replace_all: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_delete_note_removes_it() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "n".to_string(),
+                content: "x".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let result = handler
+            .delete_note(Parameters(DeleteNoteParams {
+                path: "n".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "got: {:?}", result_text(&result));
+
+        let shown = handler
+            .show_note(Parameters(ShowNoteParams {
+                path: "n".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(shown.is_error, Some(true));
+    }
+
+    #[tokio::test]
     async fn test_show_note_returns_content() {
         let (handler, _dir) = make_handler().await;
         handler
