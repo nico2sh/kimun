@@ -22,6 +22,20 @@ use super::utilities::path_to_string;
 pub const PATH_SEPARATOR: char = '/';
 const NOTE_EXTENSION: &str = ".md";
 
+/// Appends the note extension to `name` if it is not already present, without
+/// sanitizing the rest of the string. Unlike [`VaultPath::note_path_from`] this
+/// leaves wildcards and other non-path characters intact, so search patterns
+/// (e.g. `proj*`) keep their meaning. Use it only for building match patterns,
+/// never for constructing real vault paths.
+pub fn with_note_extension<S: AsRef<str>>(name: S) -> String {
+    let name = name.as_ref();
+    if name.ends_with(NOTE_EXTENSION) {
+        name.to_string()
+    } else {
+        format!("{name}{NOTE_EXTENSION}")
+    }
+}
+
 static RX_INCREMENT_SUFFIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"_(?P<number>[0-9]+)$").unwrap());
 
@@ -726,12 +740,7 @@ impl VaultPath {
     /// E.g. `/projects/rust-notes` → `/projects/rust-notes.md`
     /// If the path already ends with the extension, returns it unchanged.
     pub fn to_string_with_ext(&self) -> String {
-        let s = self.to_string();
-        if s.ends_with(NOTE_EXTENSION) {
-            s
-        } else {
-            format!("{}{}", s, NOTE_EXTENSION)
-        }
+        with_note_extension(self.to_string())
     }
 
     fn increment<S: AsRef<str>>(name: S) -> String {
@@ -1092,7 +1101,23 @@ pub(crate) fn get_file_walker<P: AsRef<Path>>(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::save_attachment;
+    use super::{save_attachment, with_note_extension};
+
+    #[test]
+    fn with_note_extension_appends_when_missing() {
+        assert_eq!(with_note_extension("projects"), "projects.md");
+    }
+
+    #[test]
+    fn with_note_extension_keeps_when_present() {
+        assert_eq!(with_note_extension("projects.md"), "projects.md");
+    }
+
+    #[test]
+    fn with_note_extension_preserves_wildcards_and_path() {
+        // Unlike VaultPath, this does not sanitize `*` so search wildcards survive.
+        assert_eq!(with_note_extension("work/proj*"), "work/proj*.md");
+    }
 
     /// Returns true if the filesystem at `dir` is case-sensitive.
     /// Used to skip "no duplicate lowercase entry" assertions on macOS and other

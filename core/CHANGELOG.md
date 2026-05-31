@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(core)* link query operator `>` / `lk:` (and exclusion `->` / `-lk:`) to filter notes by the notes they link to (backlinks); matches by note name with optional extension, path disambiguation, and `*` wildcards
+- *(core)* indexed `dest_name` column on the `links` table so the link filter matches by name with an index lookup instead of a full-table scan; bumps the cache version (existing vaults reindex on next launch)
+
+### Fixed
+
+- *(core)* search: multiple same-type filename/path filters (`@a @b`, `/x /y`) now AND together like the other operators and the documented precedence, instead of OR-ing
+- *(core)* search: combining a section filter with a section exclusion (`<work -<draft`) no longer returns zero results — breadcrumb exclusions now use a robust `NOT IN` subquery instead of an unreliable in-MATCH negation
+
 ## [0.2.13](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.12...kimun_core-v0.2.13) - 2026-05-29
 
 ### Fixed
