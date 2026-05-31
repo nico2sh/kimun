@@ -42,3 +42,24 @@ A note→note reference inside a note's body — either a `[[wikilink]]` or a ma
 **Link filter**:
 The search operator that selects notes by the note links they contain. "Notes that link to X" means notes whose body contains a note link **to** X — i.e. X's backlinks, not X's outgoing links. The target is matched by note name (extension optional, case-insensitive, `*` wildcards), across any folder unless a path is given to disambiguate.
 _Avoid_: backlink search (correct, but ambiguous about direction when read quickly)
+
+### Note editing
+
+**Automated edit**:
+A note mutation performed through the CLI or the MCP server rather than the TUI editor. Automated edits produce a **backup**; interactive TUI edits do not (the editor carries its own version history).
+_Avoid_: programmatic write, headless edit
+
+**Append**:
+Adding text to the end of a note, leaving existing content intact. The only additive write; never destructive.
+
+**Overwrite**:
+Replacing a note's **entire** body with new content. Distinct from append (additive) and replace (partial).
+_Avoid_: write, save (too generic — they don't signal that the old body is discarded)
+
+**Replace**:
+A targeted edit that swaps an existing substring for new text, leaving the rest of the note intact. The match must be unambiguous unless every occurrence is explicitly targeted. Distinct from overwrite (whole body).
+_Avoid_: find-and-replace (implies regex/global semantics by default), edit
+
+**Backup**:
+A pre-change copy of a note, taken automatically before an automated edit overwrites or removes its content, retained for later recovery and reclaimed once it ages out. Kept in a hidden directory inside the vault, so it is excluded from the index but travels with the notes when the vault is copied.
+_Avoid_: snapshot, version (those imply the TUI's own history, which is separate)

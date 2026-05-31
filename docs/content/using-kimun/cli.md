@@ -316,6 +316,68 @@ EOF
 kimun search "rust" --format paths | kimun note append "inbox/rust-refs"
 ```
 
+### Overwrite
+
+Replace a note's **entire** body with new content. Because it discards the old
+body, it requires `--force`.
+
+```sh
+kimun note overwrite "projects/roadmap" "Brand new body" --force
+echo "New body" | kimun note overwrite "projects/roadmap" --force
+```
+
+#### Features
+
+- Accepts content as a second argument or from stdin (when stdin is not a TTY)
+- Requires `--force`; without it the command refuses to run (there is no
+  interactive prompt — the CLI is built for automation)
+- Backs up the previous content first (see [Backups](#backups))
+
+### Replace
+
+Swap an existing substring for new text, leaving the rest of the note intact.
+
+```sh
+kimun note replace "projects/roadmap" "Q2" "Q3"
+kimun note replace "projects/roadmap" "TODO" "DONE" --all
+```
+
+#### Features
+
+- The `old` text must match **exactly once**; the command errors if it is missing
+  or appears more than once, so it never edits the wrong place
+- `--all` replaces every occurrence on purpose
+- No `--force` needed — it is a targeted, scriptable edit
+- Backs up the previous content first (see [Backups](#backups))
+
+### Delete
+
+Remove a note. Requires `--force`.
+
+```sh
+kimun note delete "inbox/stale-idea" --force
+```
+
+#### Features
+
+- Requires `--force`; without it the command refuses to run
+- Removes the note from the index as well as from disk
+- Backs up the deleted content first (see [Backups](#backups))
+
+### Backups
+
+Every CLI (and MCP) edit that overwrites or deletes a note's content copies the
+old content into a hidden, dated directory inside the vault before changing it.
+These backups are excluded from indexing and search, kept for 30 days, then
+purged automatically.
+
+- Covers `overwrite`, `replace`, `delete`, and the backlink rewrites performed by
+  rename/move. `create` and a first-time `append` have nothing to back up.
+- Interactive TUI editing does **not** create backups (the editor has its own
+  history).
+- If a backup cannot be written, the operation is aborted and the note is left
+  untouched (fail-closed).
+
 ## Quick Note
 
 Capture a thought instantly. The note is saved in the inbox directory with a timestamp-based filename.
