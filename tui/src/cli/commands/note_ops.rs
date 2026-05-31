@@ -39,6 +39,36 @@ pub enum NoteSubcommand {
         #[arg(long, value_enum, default_value = "text")]
         format: crate::cli::output::OutputFormat,
     },
+    /// Overwrite a note's entire content (requires --force; the old content is backed up)
+    Overwrite {
+        /// Note path, relative to quick_note_path or absolute from vault root
+        path: String,
+        /// New content (reads from stdin if omitted and stdin is not a TTY)
+        content: Option<String>,
+        /// Required: discards the existing note body
+        #[arg(long)]
+        force: bool,
+    },
+    /// Replace a substring in a note (the match must be unique unless --all)
+    Replace {
+        /// Note path, relative to quick_note_path or absolute from vault root
+        path: String,
+        /// Text to find
+        old: String,
+        /// Replacement text
+        new: String,
+        /// Replace every occurrence instead of requiring a unique match
+        #[arg(long)]
+        all: bool,
+    },
+    /// Delete a note (requires --force; the content is backed up first)
+    Delete {
+        /// Note path, relative to quick_note_path or absolute from vault root
+        path: String,
+        /// Required: confirms the deletion
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 pub async fn run(
@@ -66,7 +96,90 @@ pub async fn run(
             let resolved = resolve_show_paths(paths, reader)?;
             run_show(vault, &resolved, quick_note_path, format, workspace_name).await
         }
+        NoteSubcommand::Overwrite {
+            path,
+            content,
+            force,
+        } => run_overwrite(vault, &path, content, force, quick_note_path).await,
+        NoteSubcommand::Replace {
+            path,
+            old,
+            new,
+            all,
+        } => run_replace(vault, &path, &old, &new, all, quick_note_path).await,
+        NoteSubcommand::Delete { path, force } => {
+            run_delete(vault, &path, force, quick_note_path).await
+        }
     }
+}
+
+async fn run_overwrite(
+    vault: &NoteVault,
+    path_input: &str,
+    content: Option<String>,
+    force: bool,
+    quick_note_path: &str,
+) -> Result<()> {
+    use crate::cli::helpers::{resolve_content, resolve_note_path};
+
+    if !force {
+        return Err(color_eyre::eyre::eyre!(
+            "Refusing to overwrite without --force (this discards the existing note body)"
+        ));
+    }
+    let vault_path = resolve_note_path(path_input, quick_note_path)?;
+    let text = resolve_content(content)?;
+
+    vault
+        .save_note(&vault_path, &text)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+
+    println!("Note saved: {}", vault_path);
+    Ok(())
+}
+
+async fn run_replace(
+    vault: &NoteVault,
+    path_input: &str,
+    old: &str,
+    new: &str,
+    all: bool,
+    quick_note_path: &str,
+) -> Result<()> {
+    use crate::cli::helpers::resolve_note_path;
+
+    let vault_path = resolve_note_path(path_input, quick_note_path)?;
+
+    let count = vault
+        .replace_in_note(&vault_path, old, new, all)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+
+    println!("Replaced {} occurrence(s) in {}", count, vault_path);
+    Ok(())
+}
+
+async fn run_delete(
+    vault: &NoteVault,
+    path_input: &str,
+    force: bool,
+    quick_note_path: &str,
+) -> Result<()> {
+    use crate::cli::helpers::resolve_note_path;
+
+    if !force {
+        return Err(color_eyre::eyre::eyre!("Refusing to delete without --force"));
+    }
+    let vault_path = resolve_note_path(path_input, quick_note_path)?;
+
+    vault
+        .delete_note(&vault_path)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+
+    println!("Note deleted: {}", vault_path);
+    Ok(())
 }
 
 async fn run_create(
