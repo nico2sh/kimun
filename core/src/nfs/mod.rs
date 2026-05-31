@@ -496,6 +496,73 @@ async fn rename_path<P: AsRef<Path>>(
     tokio::fs::rename(full_from_path, full_to_path).await?;
     Ok(())
 }
+/// How long automated-edit backups are retained before the lazy purge reclaims
+/// them. Counted in whole days against the UTC backup date.
+const BACKUP_RETENTION_DAYS: i64 = 30;
+
+/// Best-effort sweep of the backups root: removes every `<YYYY-MM-DD>` directory
+/// whose date is older than [`BACKUP_RETENTION_DAYS`]. Runs on every backup
+/// write. Never fails the caller — backups are housekeeping, and a purge error
+/// must not block (and thereby abort) the edit that triggered it.
+async fn purge_old_backups(backups_root: &Path) {
+    let cutoff = chrono::Utc::now().date_naive() - chrono::Duration::days(BACKUP_RETENTION_DAYS);
+    let mut entries = match tokio::fs::read_dir(backups_root).await {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(&name.to_string_lossy(), "%Y-%m-%d") {
+            if date < cutoff {
+                let _ = tokio::fs::remove_dir_all(entry.path()).await;
+            }
+        }
+    }
+}
+
+/// Copies the current on-disk content of the note at `path` into a hidden, dated
+/// backup directory inside the vault, before the note is overwritten or deleted.
+/// The backup lives at `<workspace>/.kimun/backups/<YYYY-MM-DD>/<note>` — the
+/// note's on-disk path mirrored under the (UTC) date. If a backup of that name
+/// already exists (a repeat edit on the same day) a time suffix is appended so
+/// none are lost. Returns `Ok(())` without writing when the source note does not
+/// exist (nothing to back up). `.kimun` is hidden, so the indexer's walker skips
+/// it and backups never appear in search.
+pub(crate) async fn backup_note<P: AsRef<Path>>(
+    workspace_path: P,
+    path: &VaultPath,
+) -> Result<(), FSError> {
+    let workspace_path = workspace_path.as_ref();
+    let src = resolve_path_on_disk(workspace_path, path).await;
+    if !tokio::fs::try_exists(&src).await.unwrap_or(false) {
+        return Ok(());
+    }
+    let content = tokio::fs::read(&src).await?;
+
+    let rel = src.strip_prefix(workspace_path).map_err(|_| FSError::InvalidPath {
+        path: src.to_string_lossy().into_owned(),
+        message: "note path escapes the workspace".to_string(),
+    })?;
+    let backups_root = workspace_path.join(".kimun").join("backups");
+    purge_old_backups(&backups_root).await;
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let backup_dir = backups_root.join(date);
+    let mut dest = backup_dir.join(rel);
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+        let ts = chrono::Utc::now().format("%H%M%S%6f").to_string();
+        if let Some(name) = dest.file_name() {
+            let mut name = name.to_os_string();
+            name.push(format!(".{ts}"));
+            dest.set_file_name(name);
+        }
+    }
+    tokio::fs::write(&dest, &content).await?;
+    Ok(())
+}
+
 pub(crate) async fn delete_note<P: AsRef<Path>>(
     workspace_path: P,
     path: &VaultPath,

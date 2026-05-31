@@ -67,6 +67,11 @@ impl IndexReport {
 pub struct VaultConfig {
     pub workspace_path: std::path::PathBuf,
     pub db_path: Option<std::path::PathBuf>,
+    /// When `true`, destructive automated edits (overwrite, replace, delete, and
+    /// the backlink rewrites of rename/move) copy a note's previous content into
+    /// a hidden in-vault backup directory before mutating it. The TUI leaves this
+    /// off; the CLI and MCP server turn it on.
+    pub backup: bool,
 }
 
 impl VaultConfig {
@@ -74,11 +79,17 @@ impl VaultConfig {
         Self {
             workspace_path: workspace_path.into(),
             db_path: None,
+            backup: false,
         }
     }
 
     pub fn with_db_path(mut self, db_path: impl Into<std::path::PathBuf>) -> Self {
         self.db_path = Some(db_path.into());
+        self
+    }
+
+    pub fn with_backup(mut self, backup: bool) -> Self {
+        self.backup = backup;
         self
     }
 }
@@ -93,6 +104,9 @@ pub struct NoteVault {
     journal_path: VaultPath,
     inbox_path: VaultPath,
     vault_db: VaultDB,
+    /// Whether destructive writes back up the previous content first. Mirrors
+    /// [`VaultConfig::backup`]; see its docs.
+    backup: bool,
 }
 
 // SqlitePool doesn't implement PartialEq; two vaults are equivalent when they
@@ -109,6 +123,7 @@ impl NoteVault {
     /// needed.
     pub async fn new(config: VaultConfig) -> Result<Self, VaultError> {
         debug!("Creating new vault Instance");
+        let backup = config.backup;
         let workspace_path = config.workspace_path;
         if !workspace_path.exists() {
             return Err(VaultError::VaultPathNotFound {
@@ -131,6 +146,7 @@ impl NoteVault {
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
             vault_db,
+            backup,
         };
         Ok(note_vault)
     }
@@ -610,11 +626,22 @@ impl NoteVault {
             })
     }
 
+    /// Backs up the current content of `path` when this vault was opened with
+    /// backups enabled (CLI/MCP), and is a no-op otherwise (TUI). Called before
+    /// any destructive write so the previous content stays recoverable.
+    async fn backup_if_enabled(&self, path: &VaultPath) -> Result<(), VaultError> {
+        if self.backup {
+            nfs::backup_note(self.workspace_path(), path).await?;
+        }
+        Ok(())
+    }
+
     pub async fn save_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
         text: S,
     ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
+        self.backup_if_enabled(path).await?;
         let entry_data = nfs::save_note(self.workspace_path(), path, &text).await?;
         let note_details = NoteDetails::new(path, text);
         let content_data = note_details.get_content_data();
@@ -671,6 +698,7 @@ impl NoteVault {
     pub async fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         path.ensure_note()?;
+        self.backup_if_enabled(&path).await?;
 
         // Delete in DB first so the index never points at a missing file.
         let mut tx = self.vault_db.pool().begin().await?;
@@ -680,6 +708,43 @@ impl NoteVault {
         nfs::delete_note(self.workspace_path(), &path).await?;
 
         Ok(())
+    }
+
+    /// Replaces occurrences of `old` with `new` in the note at `path`.
+    ///
+    /// When `all` is `false` the match must be unique: returns
+    /// [`VaultError::ReplaceTextNotFound`] when `old` is absent and
+    /// [`VaultError::ReplaceTextNotUnique`] when it occurs more than once. When
+    /// `all` is `true` every occurrence is replaced. Returns the number of
+    /// replacements made.
+    pub async fn replace_in_note(
+        &self,
+        path: &VaultPath,
+        old: &str,
+        new: &str,
+        all: bool,
+    ) -> Result<usize, VaultError> {
+        let text = self.get_note_text(path).await?;
+        let count = if old.is_empty() {
+            0
+        } else {
+            text.matches(old).count()
+        };
+        if count == 0 {
+            return Err(VaultError::ReplaceTextNotFound { path: path.flatten() });
+        }
+        if !all && count > 1 {
+            return Err(VaultError::ReplaceTextNotUnique {
+                path: path.flatten(),
+            });
+        }
+        let updated = if all {
+            text.replace(old, new)
+        } else {
+            text.replacen(old, new, 1)
+        };
+        self.save_note(path, updated).await?;
+        Ok(count)
     }
 
     pub async fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
@@ -2246,5 +2311,185 @@ mod suggest_api_tests {
         let (_tmp, vault) = new_vault().await;
         let got = vault.suggest_tags_by_prefix("", 50).await.unwrap();
         assert!(got.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod modify_backup_tests {
+    use super::{NoteVault, VaultConfig};
+    use crate::error::VaultError;
+    use crate::nfs::VaultPath;
+    use std::path::{Path, PathBuf};
+
+    async fn backup_vault() -> (tempfile::TempDir, NoteVault) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp.path()).with_backup(true))
+            .await
+            .unwrap();
+        vault.validate_and_init().await.unwrap();
+        (temp, vault)
+    }
+
+    fn backups_dir_today(workspace: &Path) -> PathBuf {
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        workspace.join(".kimun").join("backups").join(date)
+    }
+
+    // ---- replace_in_note ----
+
+    #[tokio::test]
+    async fn replace_swaps_unique_substring() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "hello world").await.unwrap();
+
+        let n = vault
+            .replace_in_note(&p, "world", "there", false)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 1);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "hello there");
+    }
+
+    #[tokio::test]
+    async fn replace_errors_when_absent() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "hello").await.unwrap();
+
+        let e = vault
+            .replace_in_note(&p, "nope", "x", false)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(e, VaultError::ReplaceTextNotFound { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn replace_errors_when_not_unique() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a a a").await.unwrap();
+
+        let e = vault
+            .replace_in_note(&p, "a", "b", false)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(e, VaultError::ReplaceTextNotUnique { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "a a a");
+    }
+
+    #[tokio::test]
+    async fn replace_all_replaces_every_occurrence() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a a a").await.unwrap();
+
+        let n = vault.replace_in_note(&p, "a", "b", true).await.unwrap();
+
+        assert_eq!(n, 3);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "b b b");
+    }
+
+    // ---- backups ----
+
+    #[tokio::test]
+    async fn overwrite_backs_up_previous_content_when_enabled() {
+        let (temp, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "original").await.unwrap();
+
+        vault.save_note(&p, "updated").await.unwrap();
+
+        let backup = backups_dir_today(temp.path()).join("note.md");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "updated");
+    }
+
+    #[tokio::test]
+    async fn overwrite_does_not_back_up_when_disabled() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp.path())).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "original").await.unwrap();
+
+        vault.save_note(&p, "updated").await.unwrap();
+
+        assert!(!temp.path().join(".kimun").join("backups").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_backs_up_when_enabled() {
+        let (temp, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "content").await.unwrap();
+
+        vault.delete_note(&p).await.unwrap();
+
+        let backup = backups_dir_today(temp.path()).join("note.md");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "content");
+    }
+
+    #[tokio::test]
+    async fn repeat_same_day_edit_keeps_every_backup() {
+        let (temp, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "v0").await.unwrap();
+        vault.save_note(&p, "v1").await.unwrap();
+        vault.save_note(&p, "v2").await.unwrap();
+
+        let dir = backups_dir_today(temp.path());
+        let count = std::fs::read_dir(&dir).unwrap().count();
+        assert_eq!(count, 2, "both pre-images should be retained");
+    }
+
+    #[tokio::test]
+    async fn purge_removes_backups_older_than_retention() {
+        let (temp, vault) = backup_vault().await;
+        let old = temp.path().join(".kimun").join("backups").join("2000-01-01");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("ancient.md"), "x").unwrap();
+
+        // Any backup write triggers the lazy purge sweep.
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a").await.unwrap();
+        vault.save_note(&p, "b").await.unwrap();
+
+        assert!(!old.exists(), "stale date-dir should be purged");
+        assert!(
+            backups_dir_today(temp.path()).exists(),
+            "today's backup is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn backups_are_not_indexed() {
+        let (_temp, vault) = backup_vault().await;
+        let p = VaultPath::note_path_from("/note.md");
+        vault.create_note(&p, "live").await.unwrap();
+        vault.save_note(&p, "changed").await.unwrap();
+
+        // Re-scan the filesystem; the walker must skip the hidden .kimun dir.
+        vault.validate_and_init().await.unwrap();
+        let notes = vault.get_all_notes().await.unwrap();
+
+        let paths: Vec<String> = notes.iter().map(|(e, _)| e.path.to_string()).collect();
+        // The walker must skip the hidden `.kimun` backups dir: no indexed note
+        // may point into it.
+        assert!(
+            paths
+                .iter()
+                .all(|p| !p.contains(".kimun") && !p.contains("backups")),
+            "backup files must not be indexed: {paths:?}"
+        );
+        // The live note is still indexed.
+        assert!(
+            paths.iter().any(|p| p.contains("note")),
+            "live note should be indexed: {paths:?}"
+        );
     }
 }
