@@ -760,6 +760,65 @@ fn highlight_link(
     spans
 }
 
+/// Find the first paragraph containing any of `needles` (case-insensitive);
+/// fall back to the first non-blank line.
+fn extract_context_multi(text: &str, needles: &[String]) -> String {
+    let lowered: Vec<String> = needles.iter().map(|n| n.to_lowercase()).collect();
+    for para in &split_paragraphs(text) {
+        let lower = para.to_lowercase();
+        if lowered.iter().any(|n| !n.is_empty() && lower.contains(n)) {
+            return para.clone();
+        }
+    }
+    text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_string()
+}
+
+/// Highlight the earliest occurrence of any needle in `line` (bold accent).
+fn highlight_needles(
+    line: &str,
+    needles: &[String],
+    fg_muted: ratatui::style::Color,
+    bg: ratatui::style::Color,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let normal = Style::default().fg(fg_muted).bg(bg);
+    let bold = Style::default()
+        .fg(theme.accent.to_ratatui())
+        .bg(bg)
+        .add_modifier(Modifier::BOLD);
+    let mut best: Option<(usize, usize)> = None;
+    for needle in needles {
+        if needle.is_empty() {
+            continue;
+        }
+        if let Some((s, e)) = find_case_insensitive(line, needle)
+            && (best.is_none() || s < best.unwrap().0)
+        {
+            best = Some((s, e));
+        }
+    }
+    let Some((start, end)) = best else {
+        return vec![Span::styled(line.to_string(), normal)];
+    };
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled(line[..start].to_string(), normal));
+    }
+    spans.push(Span::styled(line[start..end].to_string(), bold));
+    if end < line.len() {
+        spans.push(Span::styled(line[end..].to_string(), normal));
+    }
+    spans
+}
+
+/// Needles to highlight for a query: its free-text terms + link targets.
+fn query_needles(query: &str) -> Vec<String> {
+    let st = kimun_core::SearchTerms::from_query_string(query);
+    let mut needles = st.terms.clone();
+    needles.extend(st.links.clone());
+    needles
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -894,5 +953,32 @@ Unrelated content.";
             &crate::settings::themes::Theme::default(),
         );
         assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn extract_context_matches_any_needle() {
+        let text = "# Title\n\nIntro line.\n\nA paragraph mentioning widget here.\n";
+        let result = extract_context_multi(text, &["widget".to_string()]);
+        assert!(result.contains("widget"));
+    }
+
+    #[test]
+    fn highlight_needles_highlights_first_match() {
+        let spans = highlight_needles(
+            "see widget and gadget",
+            &["gadget".to_string()],
+            ratatui::style::Color::Gray,
+            ratatui::style::Color::Black,
+            &crate::settings::themes::Theme::default(),
+        );
+        assert!(spans.iter().any(|s| s.content.contains("gadget")
+            && s.style.add_modifier.contains(Modifier::BOLD)));
+    }
+
+    #[test]
+    fn query_needles_extracts_terms_and_links() {
+        let n = query_needles("widget >spec");
+        assert!(n.iter().any(|x| x == "widget"));
+        assert!(n.iter().any(|x| x == "spec"));
     }
 }
