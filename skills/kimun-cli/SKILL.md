@@ -67,7 +67,8 @@ No `--force` needed (it's a targeted, scriptable edit).
 
 By default the find text is a **literal substring**. Add `--regex` to treat it as
 a regular expression; the replacement may then use capture references (`$1`,
-`${name}`; `$$` for a literal `$`). Inline flags `(?m)`, `(?s)`, `(?i)` control
+`${name}`; `$$` for a literal `$`, and `${1}`/`${name}` when the next character
+is alphanumeric, e.g. `${1}_`). Inline flags `(?m)`, `(?s)`, `(?i)` control
 line/case behaviour. An invalid pattern errors without touching the note.
 
 ```sh
