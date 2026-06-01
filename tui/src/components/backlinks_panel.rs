@@ -89,7 +89,7 @@ impl SearchRow for BacklinkEntry {
 // ---------------------------------------------------------------------------
 
 /// Row source for the Query panel. The engine holds the query TEMPLATE verbatim
-/// (e.g. `>{note}`, so the input shows the template); this source resolves
+/// (e.g. `<{note}`, so the input shows the template); this source resolves
 /// `{note}` against the shared current note at load time, preserving the exact
 /// "input shows the template, results are backlinks of the current note" UX.
 /// The shared sort handle lets the source order results by the panel's active
@@ -1009,7 +1009,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.set_note(VaultPath::note_path_from("x.md"), tx);
 
-        // Query template untouched (not reset to >{note}); a static query is
+        // Query template untouched (not reset to <{note}); a static query is
         // not reloaded, so it is not in a loading state.
         assert_eq!(panel.active_query(), "#todo");
         assert!(!panel.list.is_loading());

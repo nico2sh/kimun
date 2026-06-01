@@ -97,7 +97,7 @@ impl SearchRow for SearchItem {
 }
 
 pub const VIRTUAL_BACKLINKS_NAME: &str = "Backlinks (current note)";
-pub const VIRTUAL_BACKLINKS_QUERY: &str = ">{note}";
+pub const VIRTUAL_BACKLINKS_QUERY: &str = "<{note}";
 
 pub struct SavedSearchesModel;
 
@@ -407,7 +407,7 @@ mod tests {
     fn rank_exact_index_first() {
         let items = vec![
             SearchItem::saved(1, "todo", "#todo"),
-            SearchItem::saved(2, "backlinks-ish", ">{note}"),
+            SearchItem::saved(2, "backlinks-ish", "<{note}"),
             SearchItem::saved(3, "two-things", "#a"),
         ];
         let idx = rank_to_indices(&items, "2");

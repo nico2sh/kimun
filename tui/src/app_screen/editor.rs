@@ -527,7 +527,7 @@ impl EditorScreen {
         self.backlinks_visible = true;
         // The virtual backlinks entry's name should not override the
         // default "Backlinks" title — but the panel's title logic already
-        // shows "Backlinks" whenever the active query is `>{note}`, so it's
+        // shows "Backlinks" whenever the active query is `<{note}`, so it's
         // safe to always pass the name through.
         self.backlinks_panel
             .apply_query(query, Some(name), tx.clone());
@@ -1187,12 +1187,12 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         screen.apply_saved_search(
-            ">{note}".to_string(),
+            "<{note}".to_string(),
             "Backlinks (current note)".to_string(),
             &tx,
         );
         assert!(screen.backlinks_visible);
-        assert_eq!(screen.backlinks_panel.active_query(), ">{note}");
+        assert_eq!(screen.backlinks_panel.active_query(), "<{note}");
         assert!(matches!(screen.focus, Focus::Backlinks));
     }
 

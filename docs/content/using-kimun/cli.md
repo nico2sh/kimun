@@ -60,7 +60,7 @@ Search notes in the current workspace:
 ```sh
 kimun search "your search query"
 kimun search "meeting -cancelled"                # Exclude terms
-kimun search "@project -<draft"                  # Combine filters
+kimun search "=project -@draft"                  # Combine filters
 kimun search "#important"                        # Filter by hashtag label
 kimun search "meeting #important -#draft"        # Mix labels with other filters
 kimun search "rust" --format json                # JSON output
@@ -77,17 +77,19 @@ kimun search "rust" --format json                # JSON output
 Searches support free text, filters, and operators:
 
 - **Free text:** Case-insensitive, diacritics ignored, `*` wildcard supported
-- **Filter by filename:** `@tasks` or `at:tasks`
-- **Filter by section:** `<personal` or `in:personal` (Markdown headers)
+- **Filter by note name:** `=tasks` or `name:tasks`
+- **Filter by section:** `@personal` or `in:personal` (Markdown headers)
 - **Filter by path:** `/journal` or `pt:journal` (directory prefix)
 - **Filter by label (hashtag):** `#important` or `lb:important` — matches notes carrying that `#tag` in their body
-- **Filter by link:** `>projects` or `lk:projects` — notes that link to the note "projects" (its backlinks); name match, `.md` optional, `*` wildcards, `>dir/note` to disambiguate
+- **Filter by backlink:** `<projects` or `lk:projects` — notes that link to the note "projects" (its backlinks); name match, `.md` optional, `*` wildcards, `<dir/note` to disambiguate
+- **Filter by forward link:** `>projects` or `fwd:projects` — notes that the note "projects" links to (its forward links); same matching rules
 - **Exclusion:** `-` prefix leads, then the operator follows
   - Content: `meeting -cancelled`
-  - Title: `-<draft` or `-in:draft`
-  - Filename: `-@temp` or `-at:temp`
+  - Section: `-@draft` or `-in:draft`
+  - Note name: `-=temp` or `-name:temp`
   - Label: `-#draft` or `-lb:draft`
-  - Link: `->draft` or `-lk:draft`
+  - Backlink: `-<draft` or `-lk:draft`
+  - Forward link: `->draft` or `-fwd:draft`
 
 For comprehensive search documentation, see the [Search](@/using-kimun/search.md) page.
 
@@ -97,16 +99,19 @@ For comprehensive search documentation, see the [Search](@/using-kimun/search.md
 # Find notes about "rust"
 kimun search "rust"
 
-# Find in files matching "2024" but exclude "draft" in title
-kimun search "@2024 -<draft"
+# Find notes named "2024" but exclude "draft" in section titles
+kimun search "=2024 -@draft"
 
 # Find content under "Personal" section containing "kimun"
-kimun search "<personal kimun"
+kimun search "@personal kimun"
 
 # Find notes labelled #important but not #archived
 kimun search "#important -#archived"
 
-# Find notes that link to "projects"
+# Find notes that link to "projects" (its backlinks)
+kimun search "<projects"
+
+# Find notes that "projects" links to (its forward links)
 kimun search ">projects"
 
 # Combine with jq for advanced filtering
