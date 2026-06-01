@@ -483,13 +483,8 @@ impl QueryPanel {
             .style(theme.panel_style());
         let search_inner = search_block.inner(rows[0]);
         f.render_widget(search_block, rows[0]);
-        self.query_input.render(
-            f,
-            search_inner,
-            Style::default().fg(fg).bg(bg),
-            0,
-            focused,
-        );
+        self.query_input
+            .render(f, search_inner, Style::default().fg(fg).bg(bg), 0, focused);
 
         let inner = rows[1];
 
@@ -568,8 +563,10 @@ impl QueryPanel {
                 // Scrollable content.
                 let indent = 2usize;
                 let wrap_width = parts[2].width.saturating_sub(indent as u16 + 1) as usize;
-                let needles =
-                    query_needles(&resolve_query(self.active_query(), Some(&self.current_note)));
+                let needles = query_needles(&resolve_query(
+                    self.active_query(),
+                    Some(&self.current_note),
+                ));
 
                 let mut lines = Vec::new();
                 for line in text.lines() {
@@ -681,8 +678,10 @@ impl QueryPanel {
             let text = entry.full_text.as_deref().unwrap_or(&entry.context);
             let indent = 2usize;
             let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
-            let needles =
-                query_needles(&resolve_query(self.active_query(), Some(&self.current_note)));
+            let needles = query_needles(&resolve_query(
+                self.active_query(),
+                Some(&self.current_note),
+            ));
 
             let mut lines = Vec::new();
 
@@ -880,7 +879,10 @@ fn extract_context_multi(text: &str, needles: &[String]) -> String {
             return para.clone();
         }
     }
-    text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_string()
+    text.lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Highlight the earliest occurrence of any needle in `line` (bold accent).
@@ -984,8 +986,12 @@ mod tests {
             ratatui::style::Color::Black,
             &crate::settings::themes::Theme::default(),
         );
-        assert!(spans.iter().any(|s| s.content.contains("gadget")
-            && s.style.add_modifier.contains(Modifier::BOLD)));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.content.contains("gadget")
+                    && s.style.add_modifier.contains(Modifier::BOLD))
+        );
     }
 
     #[test]

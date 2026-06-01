@@ -521,7 +521,10 @@ mod tests {
 
     #[test]
     fn empty_filter_returns_all_in_order() {
-        let items = vec![SearchItem::saved(1, "a", "#a"), SearchItem::saved(2, "b", "#b")];
+        let items = vec![
+            SearchItem::saved(1, "a", "#a"),
+            SearchItem::saved(2, "b", "#b"),
+        ];
         let ranked = rank_items(&items, "");
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].name, "a");

@@ -540,7 +540,8 @@ impl EditorScreen {
         // default "Backlinks" title — but the panel's title logic already
         // shows "Backlinks" whenever the active query is `>{note}`, so it's
         // safe to always pass the name through.
-        self.backlinks_panel.apply_query(query, Some(name), tx.clone());
+        self.backlinks_panel
+            .apply_query(query, Some(name), tx.clone());
         self.set_focus(Focus::Backlinks);
     }
 

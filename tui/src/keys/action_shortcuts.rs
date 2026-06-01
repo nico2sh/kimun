@@ -320,9 +320,15 @@ mod tests {
         assert_eq!(ActionShortcuts::FileOperations.label(), "File operations");
         assert_eq!(ActionShortcuts::FollowLink.label(), "Follow link");
         assert_eq!(ActionShortcuts::QuickNote.label(), "Quick note");
-        assert_eq!(ActionShortcuts::ToggleQueryPanel.label(), "Toggle query panel");
+        assert_eq!(
+            ActionShortcuts::ToggleQueryPanel.label(),
+            "Toggle query panel"
+        );
         assert_eq!(ActionShortcuts::OpenSavedSearches.label(), "Saved searches");
-        assert_eq!(ActionShortcuts::SaveCurrentQuery.label(), "Save current query");
+        assert_eq!(
+            ActionShortcuts::SaveCurrentQuery.label(),
+            "Save current query"
+        );
         assert_eq!(ActionShortcuts::SwitchWorkspace.label(), "Switch workspace");
         assert_eq!(ActionShortcuts::FindInBuffer.label(), "Find in note");
         assert_eq!(ActionShortcuts::Text(TextAction::Bold).label(), "Bold");
@@ -371,7 +377,10 @@ mod tests {
 
     #[test]
     fn saved_search_actions_roundtrip() {
-        assert_eq!(ActionShortcuts::ToggleQueryPanel.to_string(), "ToggleQueryPanel");
+        assert_eq!(
+            ActionShortcuts::ToggleQueryPanel.to_string(),
+            "ToggleQueryPanel"
+        );
         assert_eq!(
             ActionShortcuts::try_from("ToggleQueryPanel".to_string()),
             Ok(ActionShortcuts::ToggleQueryPanel)

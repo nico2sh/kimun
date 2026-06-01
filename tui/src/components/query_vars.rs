@@ -20,9 +20,7 @@ pub fn query_has_variables(template: &str) -> bool {
 /// see ADR 0001). When no note is open, `{note}` resolves to the empty
 /// string.
 pub fn resolve_query(template: &str, current_note: Option<&VaultPath>) -> String {
-    let note_name = current_note
-        .map(|p| p.get_clean_name())
-        .unwrap_or_default();
+    let note_name = current_note.map(|p| p.get_clean_name()).unwrap_or_default();
     template.replace(VAR_NOTE, &note_name)
 }
 

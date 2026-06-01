@@ -76,8 +76,14 @@ mod tests {
     async fn write_then_read_roundtrips() {
         let dir = tempfile::TempDir::new().unwrap();
         let searches = vec![
-            SavedSearch { name: "todo".into(), query: "#todo".into() },
-            SavedSearch { name: "backlinks".into(), query: ">{note}".into() },
+            SavedSearch {
+                name: "todo".into(),
+                query: "#todo".into(),
+            },
+            SavedSearch {
+                name: "backlinks".into(),
+                query: ">{note}".into(),
+            },
         ];
         write_saved_searches(dir.path(), &searches).await.unwrap();
         let got = read_saved_searches(dir.path()).await.unwrap();
@@ -88,6 +94,10 @@ mod tests {
     async fn write_creates_kimun_dir() {
         let dir = tempfile::TempDir::new().unwrap();
         write_saved_searches(dir.path(), &[]).await.unwrap();
-        assert!(dir.path().join(".kimun").join("saved-searches.toml").exists());
+        assert!(dir
+            .path()
+            .join(".kimun")
+            .join("saved-searches.toml")
+            .exists());
     }
 }

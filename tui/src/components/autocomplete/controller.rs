@@ -339,9 +339,7 @@ impl AutocompleteController {
             (AutocompleteMode::HashtagOnly, TriggerKind::Wikilink | TriggerKind::LinkFilter) => {
                 false
             }
-            (AutocompleteMode::SearchQuery, TriggerKind::Hashtag | TriggerKind::LinkFilter) => {
-                true
-            }
+            (AutocompleteMode::SearchQuery, TriggerKind::Hashtag | TriggerKind::LinkFilter) => true,
             (AutocompleteMode::SearchQuery, TriggerKind::Wikilink) => false,
         });
 
@@ -472,16 +470,14 @@ impl AutocompleteController {
                         Vec::new()
                     }
                 },
-                TriggerKind::LinkFilter => {
-                    Self::link_filter_suggestions(&vault, &query)
-                        .await
-                        .into_iter()
-                        .map(|name| Suggestion {
-                            display: name,
-                            secondary: None,
-                        })
-                        .collect()
-                }
+                TriggerKind::LinkFilter => Self::link_filter_suggestions(&vault, &query)
+                    .await
+                    .into_iter()
+                    .map(|name| Suggestion {
+                        display: name,
+                        secondary: None,
+                    })
+                    .collect(),
                 TriggerKind::Hashtag => match vault.suggest_tags_by_prefix(&query, limit).await {
                     Ok(tags) => tags
                         .into_iter()
@@ -1209,7 +1205,10 @@ mod tests {
         let vault = crate::test_support::temp_vault("ac_linkfilter").await;
         vault.validate_and_init().await.unwrap();
         vault
-            .create_note(&kimun_core::nfs::VaultPath::note_path_from("/projects.md"), "x")
+            .create_note(
+                &kimun_core::nfs::VaultPath::note_path_from("/projects.md"),
+                "x",
+            )
             .await
             .unwrap();
         // Empty prefix → {note} offered.
