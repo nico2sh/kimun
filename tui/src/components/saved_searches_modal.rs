@@ -256,17 +256,24 @@ impl SavedSearchesModal {
         if item.is_virtual {
             return;
         }
+        // Delete and reload in a SINGLE task so the read is ordered after the
+        // write — otherwise the reload could race the delete and momentarily
+        // show the just-deleted entry.
+        if let Some(handle) = self.load_task.take() {
+            handle.abort();
+        }
         let vault = Arc::clone(&self.vault);
         let name = item.name.clone();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        self.load_rx = Some(result_rx);
         let tx_for_task = tx.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             vault.delete_saved_search(&name).await.ok();
+            let searches = vault.list_saved_searches().await.unwrap_or_default();
+            result_tx.send(searches).ok();
             tx_for_task.send(AppEvent::Redraw).ok();
         });
-        // Re-load the list so the deleted entry disappears. The delete and
-        // the subsequent list read both hit the same on-disk file; the
-        // reload reflects whatever state the file is in once the read runs.
-        self.schedule_load(tx.clone());
+        self.load_task = Some(handle);
     }
 }
 
