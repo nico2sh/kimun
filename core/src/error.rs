@@ -20,6 +20,8 @@ pub enum VaultError {
     ReplaceTextNotFound { path: VaultPath },
     #[error("Text to replace is not unique in note: {path}; replace every occurrence to proceed")]
     ReplaceTextNotUnique { path: VaultPath },
+    #[error("Invalid regular expression '{pattern}': {message}")]
+    InvalidRegex { pattern: String, message: String },
     #[error("Case-sensitivity conflicts detected in vault:\n{}", conflicts.join("\n"))]
     CaseConflict { conflicts: Vec<String> },
     #[error("Background task failed: {0}")]

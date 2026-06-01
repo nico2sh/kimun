@@ -105,10 +105,12 @@ pub struct ReplaceInNoteParams {
     pub path: String,
     /// Text to find
     pub old: String,
-    /// Replacement text
+    /// Replacement text (may use $1/${name} capture references when regex is true)
     pub new: String,
     /// Replace every occurrence instead of requiring a unique match
     pub replace_all: Option<bool>,
+    /// Treat `old` as a regular expression instead of a literal substring
+    pub regex: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -208,7 +210,7 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Replace a substring in a note. The match must be unique unless replace_all is true. The previous content is backed up first. Destructive.",
+        description = "Replace text in a note. `old` is a literal substring by default; set regex=true to treat it as a regular expression, in which case `new` may reference capture groups ($1, ${name}; $$ for a literal $). The match must be unique unless replace_all is true. The previous content is backed up first. Destructive.",
         annotations(destructive_hint = true)
     )]
     async fn replace_in_note(
@@ -217,9 +219,10 @@ impl KimunHandler {
     ) -> Result<CallToolResult, McpError> {
         let vault_path = Self::resolve_path(&p.path);
         let all = p.replace_all.unwrap_or(false);
+        let regex = p.regex.unwrap_or(false);
         match self
             .vault
-            .replace_in_note(&vault_path, &p.old, &p.new, all)
+            .replace_in_note(&vault_path, &p.old, &p.new, all, regex)
             .await
         {
             Ok(n) => Ok(CallToolResult::success(vec![Content::text(format!(
@@ -228,7 +231,8 @@ impl KimunHandler {
             ))])),
             Err(
                 e @ (kimun_core::error::VaultError::ReplaceTextNotFound { .. }
-                | kimun_core::error::VaultError::ReplaceTextNotUnique { .. }),
+                | kimun_core::error::VaultError::ReplaceTextNotUnique { .. }
+                | kimun_core::error::VaultError::InvalidRegex { .. }),
             ) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
             Err(e) => Err(McpError::internal_error(e.to_string(), None)),
         }
@@ -811,6 +815,7 @@ mod tests {
                 old: "world".to_string(),
                 new: "there".to_string(),
                 replace_all: None,
+                regex: None,
             }))
             .await
             .unwrap();
@@ -842,6 +847,7 @@ mod tests {
                 old: "a".to_string(),
                 new: "b".to_string(),
                 replace_all: None,
+                regex: None,
             }))
             .await
             .unwrap();

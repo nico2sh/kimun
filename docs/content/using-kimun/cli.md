@@ -335,18 +335,25 @@ echo "New body" | kimun note overwrite "projects/roadmap" --force
 
 ### Replace
 
-Swap an existing substring for new text, leaving the rest of the note intact.
+Swap text for new text, leaving the rest of the note intact. The find text is a
+literal substring by default, or a regular expression with `--regex`.
 
 ```sh
 kimun note replace "projects/roadmap" "Q2" "Q3"
 kimun note replace "projects/roadmap" "TODO" "DONE" --all
+kimun note replace "notes/log" "v\d+\.\d+" "v2.0" --regex
+kimun note replace "notes/log" "(\w+)@(\w+)" "$2.$1" --regex --all
 ```
 
 #### Features
 
-- The `old` text must match **exactly once**; the command errors if it is missing
+- The find text must match **exactly once**; the command errors if it is missing
   or appears more than once, so it never edits the wrong place
 - `--all` replaces every occurrence on purpose
+- `--regex` treats the find text as a regular expression; the replacement may
+  then reference capture groups (`$1`, `${name}`; use `$$` for a literal `$`).
+  Use inline flags for line/case behaviour — `(?m)`, `(?s)`, `(?i)`. An invalid
+  pattern errors without touching the note.
 - No `--force` needed — it is a targeted, scriptable edit
 - Backs up the previous content first (see [Backups](#backups))
 
