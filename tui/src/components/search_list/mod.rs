@@ -59,6 +59,17 @@ impl<R: SearchRow> SearchList<R> {
     pub fn query(&self) -> &str { &self.query }
     pub fn is_loading(&self) -> bool { self.loader.loading }
 
+    /// Set the query and (for `reload_on_query` sources) start a fresh load.
+    /// The generation guard in `LoadEngine` drops any in-flight stale results.
+    pub fn set_query(&mut self, q: impl Into<String>) {
+        self.query = q.into();
+        if self.source.reload_on_query() {
+            self.loader.start(self.source.clone(), self.query.clone());
+        }
+        // Local-filter sources (reload_on_query == false) re-filter locally;
+        // that path arrives with the Filter enum in a later task.
+    }
+
     #[cfg(test)]
     pub(crate) async fn poll_until_idle(&mut self) {
         for _ in 0..50 {
@@ -90,5 +101,17 @@ mod tests {
         list.poll_until_idle().await;
         assert_eq!(list.rows().len(), 2);
         assert_eq!(list.selected_row().map(|r| r.name.as_str()), Some("alpha"));
+    }
+
+    #[tokio::test]
+    async fn requery_supersedes_and_reloads() {
+        let src = VecSource { rows: vec![TestRow::new("alpha"), TestRow::new("alps"), TestRow::new("beta")], reload: true };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        assert_eq!(list.rows().len(), 3);
+        list.set_query("alp");
+        list.poll_until_idle().await;
+        assert_eq!(list.rows().len(), 2); // alpha, alps
+        assert!(list.rows().iter().all(|r| r.name.contains("alp")));
     }
 }
