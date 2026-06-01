@@ -181,6 +181,7 @@ fn visible_title(state: &AutocompleteState) -> String {
     let sigil = match state.kind {
         super::TriggerKind::Wikilink => "[[",
         super::TriggerKind::Hashtag => "#",
+        super::TriggerKind::LinkFilter => ">",
     };
     if state.query.is_empty() {
         sigil.to_string()
