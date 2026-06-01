@@ -14,7 +14,11 @@ use load::LoadEngine;
 use seams::Loaded as LoadedInner;
 use crate::components::autocomplete::{AutocompleteController, AutocompleteMode, HandleKeyOutcome, TriggerOptions};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::keys::key_combo::KeyCombo;
+use crate::settings::icons::Icons;
+use crate::settings::themes::Theme;
 use ratatui::crossterm::event::KeyEvent;
+use ratatui::{Frame, layout::Rect, style::Style, widgets::{List, ListItem, ListState}};
 
 fn fuzzy_indices<R: SearchRow>(rows: &[R], query: &str) -> Vec<usize> {
     use nucleo::pattern::{CaseMatching, Normalization, Pattern};
@@ -57,6 +61,19 @@ pub struct SearchList<R: SearchRow> {
     loader: LoadEngine<R>,
     input: SingleLineInput,
     autocomplete: Option<AutocompleteController>,
+    /// Key combos the caller wants to intercept before the engine acts.
+    intercept: Vec<KeyCombo>,
+    icons: Icons,
+    list_rect: Rect,
+}
+
+/// Mouse interaction result from [`SearchList::handle_mouse`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum SearchMouse {
+    Selected(usize),
+    Activated(usize),
+    Scrolled,
+    None,
 }
 
 pub struct SearchListBuilder<R: SearchRow> {
@@ -65,11 +82,21 @@ pub struct SearchListBuilder<R: SearchRow> {
     initial_query: String,
     filter: Filter<R>,
     autocomplete: Option<(Arc<dyn SuggestionSource>, AutocompleteMode)>,
+    intercept: Vec<KeyCombo>,
+    icons: Icons,
 }
 
 impl<R: SearchRow> SearchList<R> {
     pub fn builder(source: impl RowSource<R>, redraw: Arc<dyn Fn() + Send + Sync>) -> SearchListBuilder<R> {
-        SearchListBuilder { source: Arc::new(source), redraw, initial_query: String::new(), filter: Filter::SourceOrder, autocomplete: None }
+        SearchListBuilder {
+            source: Arc::new(source),
+            redraw,
+            initial_query: String::new(),
+            filter: Filter::SourceOrder,
+            autocomplete: None,
+            intercept: Vec::new(),
+            icons: Icons::new(false),
+        }
     }
 
     fn new(b: SearchListBuilder<R>) -> Self {
@@ -95,6 +122,9 @@ impl<R: SearchRow> SearchList<R> {
             loader,
             input,
             autocomplete,
+            intercept: b.intercept,
+            icons: b.icons,
+            list_rect: Rect::default(),
         }
     }
 
@@ -185,6 +215,14 @@ impl<R: SearchRow> SearchList<R> {
     pub fn handle_key(&mut self, key: &KeyEvent) -> KeyReaction {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
+        // Caller-registered intercepts get first crack — before autocomplete or
+        // any built-in binding.
+        if let Some(combo) = crate::keys::key_event_to_combo(key) {
+            if self.intercept.contains(&combo) {
+                return KeyReaction::Intercepted(combo);
+            }
+        }
+
         // Autocomplete popup gets first crack when open. Build snapshot before
         // taking &mut self.autocomplete to avoid borrow-checker conflict
         // (snapshot only reads self.input).
@@ -242,6 +280,68 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
+    pub fn render_query(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
+        self.input.render(
+            f,
+            area,
+            Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg_panel.to_ratatui()),
+            0,
+            focused,
+        );
+    }
+
+    pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
+        self.poll();
+        let sel = self.selected;
+        let items: Vec<ListItem> = self.display.iter()
+            .enumerate()
+            .filter_map(|(disp_idx, &row_idx)| {
+                self.rows.get(row_idx).map(|r| r.to_list_item(theme, &self.icons, sel == Some(disp_idx)))
+            })
+            .collect();
+        let mut state = ListState::default();
+        state.select(self.selected);
+        let list = List::new(items)
+            .highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
+        f.render_stateful_widget(list, area, &mut state);
+        self.list_rect = area;
+        let _ = focused;
+    }
+
+    pub fn render_autocomplete(&mut self, f: &mut Frame, clamp: Rect, theme: &Theme) {
+        if let Some(ac) = &mut self.autocomplete {
+            ac.poll_results();
+            let caret = self.input.last_caret_pos();
+            if let (Some(state), Some(anchor)) = (ac.state_mut(), caret) {
+                state.anchor = anchor;
+            }
+            if let Some(state) = ac.state() {
+                crate::components::autocomplete::render(f, state, clamp, theme);
+            }
+        }
+    }
+
+    pub fn handle_mouse(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> SearchMouse {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        use ratatui::layout::Position;
+        let r = self.list_rect;
+        if !r.contains(Position { x: m.column, y: m.row }) { return SearchMouse::None; }
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if m.row > r.y => {
+                let rel = (m.row - r.y - 1) as usize; // border-aware, consistent with note_browser
+                if rel < self.display.len() {
+                    let prev = self.selected;
+                    self.selected = Some(rel);
+                    return if prev == Some(rel) { SearchMouse::Activated(rel) } else { SearchMouse::Selected(rel) };
+                }
+                SearchMouse::None
+            }
+            MouseEventKind::ScrollUp => { self.select_prev(); SearchMouse::Scrolled }
+            MouseEventKind::ScrollDown => { self.select_next(); SearchMouse::Scrolled }
+            _ => SearchMouse::None,
+        }
+    }
+
     fn recompute_display(&mut self) {
         let q = self.query.trim();
         let mut idx: Vec<usize> = match &self.filter {
@@ -282,6 +382,8 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.autocomplete = Some((suggestions, mode));
         self
     }
+    pub fn intercept(mut self, v: Vec<KeyCombo>) -> Self { self.intercept = v; self }
+    pub fn icons(mut self, icons: Icons) -> Self { self.icons = icons; self }
     pub fn build(self) -> SearchList<R> { SearchList::new(self) }
 }
 
@@ -372,6 +474,16 @@ mod tests {
         list.poll_until_idle().await;
         assert_eq!(list.visible_rows().len(), 2);
         assert_eq!(list.selected_row().unwrap().name, "a");
+    }
+
+    #[tokio::test]
+    async fn intercepted_combo_returns_intercepted_without_acting() {
+        let src = VecSource { rows: vec![TestRow::new("a")], reload: true };
+        let combo = crate::keys::key_event_to_combo(&key(KeyCode::Enter)).unwrap();
+        let mut list = SearchList::builder(src, noop_redraw()).intercept(vec![combo.clone()]).build();
+        list.poll_until_idle().await;
+        // Enter is intercepted: engine returns Intercepted, does NOT submit/act.
+        assert_eq!(list.handle_key(&key(KeyCode::Enter)), KeyReaction::Intercepted(combo));
     }
 
     #[tokio::test]
