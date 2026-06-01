@@ -778,6 +778,18 @@ impl NoteVault {
         //    here aborts cleanly.
         let updates = self.read_backlink_rewrites(&from, &to).await?;
 
+        // 1a. Back up the pre-rewrite content of every note this rename will
+        //     modify — the backlink victims, plus the source itself (its
+        //     self-links are rewritten at the new path). Done before any FS
+        //     mutation so a backup failure aborts cleanly (fail-closed). These
+        //     writes go through nfs directly (not NoteVault::save_note), so the
+        //     backup gate is applied explicitly here.
+        if self.backup {
+            for path in updates.iter().map(|(p, _)| p).chain(std::iter::once(&from)) {
+                nfs::backup_note(self.workspace_path(), path).await?;
+            }
+        }
+
         // 2. Rename the source note on disk. If this fails, backlinks remain
         //    untouched and the DB is unchanged — clean abort.
         nfs::rename_note(self.workspace_path(), &from, &to)
@@ -2504,5 +2516,35 @@ mod modify_backup_tests {
             paths.iter().any(|p| p.contains("note")),
             "live note should be indexed: {paths:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn rename_backs_up_backlink_victims() {
+        let (temp, vault) = backup_vault().await;
+        let b = VaultPath::note_path_from("/b.md");
+        let a = VaultPath::note_path_from("/a.md");
+        vault.create_note(&b, "I am b").await.unwrap();
+        vault
+            .create_note(&a, "see [[b]] for details")
+            .await
+            .unwrap();
+
+        vault
+            .rename_note(&b, &VaultPath::note_path_from("/c.md"))
+            .await
+            .unwrap();
+
+        // The rename rewrites a's link b -> c. a's pre-rewrite content (still
+        // pointing at b) must be backed up, since the rewrite goes through nfs
+        // directly rather than NoteVault::save_note.
+        let backup = backups_dir_today(temp.path()).join("a.md");
+        let content = std::fs::read_to_string(&backup)
+            .unwrap_or_else(|e| panic!("victim backup a.md should exist: {e}"));
+        assert!(
+            content.contains("[[b]]"),
+            "backup should hold the pre-rewrite content: {content:?}"
+        );
+        // And the live note was actually rewritten to point at c.
+        assert!(vault.get_note_text(&a).await.unwrap().contains("[[c]]"));
     }
 }
