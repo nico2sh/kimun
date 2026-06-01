@@ -115,7 +115,7 @@ pub struct QueryPanel {
 impl QueryPanel {
     pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings) -> Self {
         let autocomplete =
-            AutocompleteController::new(vault.clone(), AutocompleteMode::SearchQuery)
+            AutocompleteController::new(std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault: vault.clone() }), AutocompleteMode::SearchQuery)
                 .with_trigger_opts(TriggerOptions {
                     disambiguate_header: false,
                     apply_exclusion_zone: false,

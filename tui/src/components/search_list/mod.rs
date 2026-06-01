@@ -6,7 +6,7 @@ mod load;
 #[cfg(test)]
 mod adapters;
 
-pub use seams::{Emit, Filter, Loaded, RowSource, SearchRow};
+pub use seams::{Emit, Filter, Loaded, RowSource, SearchRow, SuggestionItem, SuggestionSource, VaultSuggestions};
 
 use std::sync::Arc;
 use load::LoadEngine;

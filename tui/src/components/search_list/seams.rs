@@ -85,6 +85,58 @@ impl<R> Emit<R> {
     }
 }
 
+/// One autocomplete candidate: the inserted/display text plus an optional
+/// secondary line shown muted in the popup (a note path, a tag usage count).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestionItem {
+    pub display: String,
+    pub secondary: Option<String>,
+}
+
+impl SuggestionItem {
+    pub fn plain(display: impl Into<String>) -> Self {
+        Self { display: display.into(), secondary: None }
+    }
+}
+
+/// Autocomplete candidates for the query input, kept separate from the vault
+/// so the autocomplete host is testable in isolation.
+#[async_trait]
+pub trait SuggestionSource: Send + Sync + 'static {
+    async fn notes_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem>;
+    async fn tags_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem>;
+}
+
+/// Production adapter over the vault. Formats the secondary line (note path,
+/// tag usage count) so the popup looks exactly as before.
+pub struct VaultSuggestions {
+    pub vault: std::sync::Arc<kimun_core::NoteVault>,
+}
+
+#[async_trait]
+impl SuggestionSource for VaultSuggestions {
+    async fn notes_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem> {
+        self.vault
+            .suggest_notes_by_prefix(prefix, limit)
+            .await
+            .map(|v| v.into_iter().map(|n| SuggestionItem {
+                display: n.name,
+                secondary: Some(n.path.to_string()),
+            }).collect())
+            .unwrap_or_default()
+    }
+    async fn tags_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem> {
+        self.vault
+            .suggest_tags_by_prefix(prefix, limit)
+            .await
+            .map(|v| v.into_iter().map(|t| SuggestionItem {
+                display: t.label,
+                secondary: Some(format!("{}×", t.usage_count)),
+            }).collect())
+            .unwrap_or_default()
+    }
+}
+
 /// Where a `SearchList`'s rows come from. Vault-backed in the app, in-memory
 /// in tests. Streaming vs one-shot is a delivery detail of the SAME seam.
 #[async_trait]
@@ -105,5 +157,30 @@ pub trait RowSource<R: SearchRow>: Send + Sync + 'static {
     /// narrows the set per keystroke.
     fn reload_on_query(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod suggestion_tests {
+    use super::*;
+    struct Mem { notes: Vec<SuggestionItem>, tags: Vec<SuggestionItem> }
+    #[async_trait]
+    impl SuggestionSource for Mem {
+        async fn notes_by_prefix(&self, p: &str, _n: usize) -> Vec<SuggestionItem> {
+            self.notes.iter().filter(|x| x.display.starts_with(p)).cloned().collect()
+        }
+        async fn tags_by_prefix(&self, p: &str, _n: usize) -> Vec<SuggestionItem> {
+            self.tags.iter().filter(|x| x.display.starts_with(p)).cloned().collect()
+        }
+    }
+    #[tokio::test]
+    async fn mem_suggestions_filter_by_prefix() {
+        let m = Mem {
+            notes: vec![SuggestionItem { display: "projects".into(), secondary: Some("work/projects".into()) }],
+            tags: vec![SuggestionItem::plain("todo")],
+        };
+        assert_eq!(m.notes_by_prefix("pro", 9).await.len(), 1);
+        assert_eq!(m.notes_by_prefix("pro", 9).await[0].display, "projects");
+        assert_eq!(m.tags_by_prefix("to", 9).await[0].display, "todo");
     }
 }
