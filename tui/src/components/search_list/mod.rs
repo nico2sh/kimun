@@ -489,13 +489,20 @@ impl<R: SearchRow> SearchList<R> {
 
     #[cfg(test)]
     pub(crate) async fn poll_until_idle(&mut self) {
-        for _ in 0..50 {
+        // In-memory sources settle on the first poll (no sleep paid). Vault-backed
+        // sources run their read on a worker/blocking thread, which can starve
+        // under the full parallel suite — so once still loading, sleep a little
+        // between polls and use a generous ceiling. Early-breaks the instant the
+        // load lands, keeping the common (in-memory) path fast.
+        for _ in 0..600 {
             tokio::task::yield_now().await;
             self.poll();
             if !self.is_loading() {
                 break;
             }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
+        self.poll();
     }
 }
 
