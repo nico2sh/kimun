@@ -35,7 +35,7 @@ fn fuzzy_indices<R: SearchRow>(rows: &[R], query: &str) -> Vec<usize> {
             pat.score(h, &mut matcher).map(|s| (i, s))
         })
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
     scored.into_iter().map(|(i, _)| i).collect()
 }
 
@@ -222,16 +222,16 @@ impl<R: SearchRow> SearchList<R> {
 
         // Caller-registered intercepts get first crack — before autocomplete or
         // any built-in binding.
-        if let Some(combo) = crate::keys::key_event_to_combo(key) {
-            if self.intercept.contains(&combo) {
-                return KeyReaction::Intercepted(combo);
-            }
+        if let Some(combo) = crate::keys::key_event_to_combo(key)
+            && self.intercept.contains(&combo)
+        {
+            return KeyReaction::Intercepted(combo);
         }
 
         // Autocomplete popup gets first crack when open. Build snapshot before
         // taking &mut self.autocomplete to avoid borrow-checker conflict
         // (snapshot only reads self.input).
-        if self.autocomplete.as_ref().map_or(false, |ac| ac.is_open()) {
+        if self.autocomplete.as_ref().is_some_and(|ac| ac.is_open()) {
             let snap = self.autocomplete_snapshot();
             if let Some(ac) = &mut self.autocomplete {
                 match ac.handle_key(*key, &snap) {
@@ -350,7 +350,7 @@ impl<R: SearchRow> SearchList<R> {
         }
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) if m.row > r.y => {
-                let target_visual = (m.row - r.y - 1) as u16; // 0-based visual offset into the list body
+                let target_visual = m.row - r.y - 1; // 0-based visual offset into the list body
                 let mut acc: u16 = 0;
                 let mut hit: Option<usize> = None;
                 for (disp_idx, &row_idx) in self.display.iter().enumerate() {
@@ -565,7 +565,7 @@ mod tests {
     async fn intercepted_combo_returns_intercepted_without_acting() {
         let src = VecSource { rows: vec![TestRow::new("a")], reload: true };
         let combo = crate::keys::key_event_to_combo(&key(KeyCode::Enter)).unwrap();
-        let mut list = SearchList::builder(src, noop_redraw()).intercept(vec![combo.clone()]).build();
+        let mut list = SearchList::builder(src, noop_redraw()).intercept(vec![combo]).build();
         list.poll_until_idle().await;
         // Enter is intercepted: engine returns Intercepted, does NOT submit/act.
         assert_eq!(list.handle_key(&key(KeyCode::Enter)), KeyReaction::Intercepted(combo));

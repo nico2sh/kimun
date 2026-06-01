@@ -37,6 +37,10 @@ pub enum Loaded<R> {
     Done,
 }
 
+/// Ranking function for `Filter::Rank`: takes the full row slice and the current
+/// query string, returns display indices in preferred order (absent = hidden).
+pub type RankFn<R> = std::sync::Arc<dyn Fn(&[R], &str) -> Vec<usize> + Send + Sync>;
+
 /// How a loaded row set is narrowed/ordered for display. Three known
 /// strategies; none need test substitution, so folded in here.
 pub enum Filter<R: SearchRow> {
@@ -45,7 +49,7 @@ pub enum Filter<R: SearchRow> {
     /// Local nucleo fuzzy over `match_text`.
     Fuzzy,
     /// Local rank: `(rows, query) -> display indices` (lower = better; absent = hidden).
-    Rank(std::sync::Arc<dyn Fn(&[R], &str) -> Vec<usize> + Send + Sync>),
+    Rank(RankFn<R>),
 }
 
 /// The sink a `RowSource` writes rows into. Cheap to clone; carries the load
