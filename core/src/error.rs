@@ -48,6 +48,8 @@ pub enum FSError {
     VaultPathNotFound { path: VaultPath },
     #[error("Path already exists at: {path}")]
     AlreadyExists { path: VaultPath },
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 }
 
 impl FSError {
