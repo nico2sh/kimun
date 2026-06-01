@@ -4,6 +4,7 @@ pub mod nfs;
 pub mod note;
 pub mod utilities;
 pub use db::{DBStatus, NoteSuggestion, TagSuggestion};
+pub use db::search_terms::SearchTerms;
 pub use nfs::saved_searches::SavedSearch;
 pub use utilities::{app_log_dir, ensure_dir_exists};
 

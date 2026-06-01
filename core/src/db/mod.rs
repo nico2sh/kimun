@@ -1,5 +1,5 @@
 // mod async_db;
-mod search_terms;
+pub(crate) mod search_terms;
 
 use std::collections::HashMap;
 use std::fmt::Display;
