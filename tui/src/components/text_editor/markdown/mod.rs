@@ -201,21 +201,31 @@ impl ParsedLine {
     pub fn heading_sigil_end(&self) -> Option<usize> {
         self.elements
             .iter()
-            .find(|e| {
+            .position(|e| {
                 matches!(
                     e.kind,
                     ElementKind::HeadingH1 | ElementKind::HeadingH2 | ElementKind::HeadingH3
                 )
             })
-            .map(|e| self.first_content_char(e))
+            .map(|idx| self.first_content_char(idx))
     }
 
-    /// Char offset of the first content (non-sigil) char inside `e`, or
-    /// `e.end_char` when the element is all sigil (e.g. a bare `#` / `>`).
-    /// Shared by `heading_sigil_end` and `blockquote_sigil_end`.
-    fn first_content_char(&self, e: &Element) -> usize {
+    /// Char offset of the first content (non-sigil) char inside element
+    /// `elem_idx`, or its `end_char` when the element is all sigil (e.g. a bare
+    /// `#` / `>`). Shared by `heading_sigil_end` and `blockquote_sigil_end`.
+    ///
+    /// A hidden char (`content_vis == false`) that belongs to a *different*
+    /// element — e.g. the `[` of a `[link](url)` or the `*` of `**bold**`
+    /// immediately after `# ` — also terminates the sigil: its sigils belong to
+    /// the inner element, not the heading/blockquote marker, and are hidden by
+    /// that element's own render path.
+    fn first_content_char(&self, elem_idx: usize) -> usize {
+        let e = &self.elements[elem_idx];
         for i in e.start_char..e.end_char {
             if i < self.content_vis.len() && self.content_vis[i] {
+                return i;
+            }
+            if self.elem_at(i).is_some_and(|inner| inner != elem_idx) {
                 return i;
             }
         }
@@ -240,8 +250,8 @@ impl ParsedLine {
     pub fn blockquote_sigil_end(&self) -> Option<usize> {
         self.elements
             .iter()
-            .find(|e| e.kind == ElementKind::Blockquote)
-            .map(|e| self.first_content_char(e))
+            .position(|e| e.kind == ElementKind::Blockquote)
+            .map(|idx| self.first_content_char(idx))
     }
 
     /// Diagnostic helper: compare every field for byte-identity. Used by
@@ -903,6 +913,38 @@ mod tests {
         let s = MarkdownSpanner::render(line, line, 0, Some(1), true, false, 40, &t());
         assert!(!text(&s).contains("[["));
         assert!(!text(&s).contains("]]"));
+    }
+
+    #[test]
+    fn wikilink_in_heading_rendered() {
+        let line = "# See [[Topic]]";
+        let e = MarkdownSpanner::parse_elements(line);
+        assert!(
+            e.iter().any(|x| x.kind == ElementKind::WikiLink),
+            "wikilink inside heading should produce a WikiLink element"
+        );
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "# See Topic", "wikilink brackets hidden, # kept");
+    }
+
+    #[test]
+    fn heading_with_link_does_not_leak_bracket() {
+        let line = "# [text](http://x)";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        // `# ` sigil stays visible (heading marker); link sigils incl. the
+        // leading `[` are hidden, leaving just the display text.
+        assert_eq!(text(&s), "# text");
+    }
+
+    #[test]
+    fn heading_with_bold_does_not_leak_asterisk() {
+        let line = "# **bold**";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(
+            text(&s),
+            "# bold",
+            "leading * must not leak into heading sigil"
+        );
     }
 
     #[test]
