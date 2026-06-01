@@ -500,12 +500,32 @@ async fn rename_path<P: AsRef<Path>>(
 /// them. Counted in whole days against the UTC backup date.
 const BACKUP_RETENTION_DAYS: i64 = 30;
 
+/// The last `(backups_root, date)` purged in this process. The sweep is
+/// de-duplicated against this so it runs at most once per vault per UTC day
+/// rather than on every backup write — a single hub-note rename can back up
+/// thousands of victims in a row, and each would otherwise re-scan the root.
+static LAST_PURGE: std::sync::LazyLock<
+    std::sync::Mutex<Option<(std::path::PathBuf, chrono::NaiveDate)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
 /// Best-effort sweep of the backups root: removes every `<YYYY-MM-DD>` directory
-/// whose date is older than [`BACKUP_RETENTION_DAYS`]. Runs on every backup
-/// write. Never fails the caller — backups are housekeeping, and a purge error
-/// must not block (and thereby abort) the edit that triggered it.
+/// whose date is older than [`BACKUP_RETENTION_DAYS`]. Runs at most once per
+/// backups root per UTC day per process (see [`LAST_PURGE`]). Never fails the
+/// caller — backups are housekeeping, and a purge error must not block (and
+/// thereby abort) the edit that triggered it.
 async fn purge_old_backups(backups_root: &Path) {
-    let cutoff = chrono::Utc::now().date_naive() - chrono::Duration::days(BACKUP_RETENTION_DAYS);
+    let today = chrono::Utc::now().date_naive();
+    {
+        let mut last = LAST_PURGE.lock().unwrap();
+        if last
+            .as_ref()
+            .is_some_and(|(root, day)| root == backups_root && *day == today)
+        {
+            return;
+        }
+        *last = Some((backups_root.to_path_buf(), today));
+    }
+    let cutoff = today - chrono::Duration::days(BACKUP_RETENTION_DAYS);
     let mut entries = match tokio::fs::read_dir(backups_root).await {
         Ok(e) => e,
         Err(_) => return,
@@ -520,12 +540,40 @@ async fn purge_old_backups(backups_root: &Path) {
     }
 }
 
+/// Atomically reserves a free backup destination: tries the mirrored name first,
+/// then time-and-counter-suffixed variants, each via `create_new` so two writers
+/// racing on the same note get distinct files and no pre-image is ever clobbered.
+/// Returns the reserved (now-empty) path for the caller to copy into.
+async fn reserve_backup_dest(base: &Path) -> Result<std::path::PathBuf, FSError> {
+    let mut candidate = base.to_path_buf();
+    let mut attempt: u32 = 0;
+    loop {
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+            .await
+        {
+            Ok(_) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let ts = chrono::Utc::now().format("%H%M%S%6f");
+                let mut name = base.file_name().unwrap_or_default().to_os_string();
+                name.push(format!(".{ts}.{attempt}"));
+                candidate = base.with_file_name(name);
+                attempt = attempt.wrapping_add(1);
+            }
+            Err(e) => return Err(FSError::ReadFileError(e)),
+        }
+    }
+}
+
 /// Copies the current on-disk content of the note at `path` into a hidden, dated
 /// backup directory inside the vault, before the note is overwritten or deleted.
 /// The backup lives at `<workspace>/.kimun/backups/<YYYY-MM-DD>/<note>` — the
-/// note's on-disk path mirrored under the (UTC) date. If a backup of that name
-/// already exists (a repeat edit on the same day) a time suffix is appended so
-/// none are lost. Returns `Ok(())` without writing when the source note does not
+/// note's on-disk path mirrored under the (UTC) date. The destination is claimed
+/// atomically (see [`reserve_backup_dest`]); a repeat edit on the same day gets a
+/// time-suffixed sibling, and concurrent writers never overwrite each other's
+/// pre-image. Returns `Ok(())` without writing when the source note does not
 /// exist (nothing to back up). `.kimun` is hidden, so the indexer's walker skips
 /// it and backups never appear in search.
 pub(crate) async fn backup_note<P: AsRef<Path>>(
@@ -537,7 +585,6 @@ pub(crate) async fn backup_note<P: AsRef<Path>>(
     if !tokio::fs::try_exists(&src).await.unwrap_or(false) {
         return Ok(());
     }
-    let content = tokio::fs::read(&src).await?;
 
     let rel = src
         .strip_prefix(workspace_path)
@@ -548,20 +595,14 @@ pub(crate) async fn backup_note<P: AsRef<Path>>(
     let backups_root = workspace_path.join(".kimun").join("backups");
     purge_old_backups(&backups_root).await;
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let backup_dir = backups_root.join(date);
-    let mut dest = backup_dir.join(rel);
-    if let Some(parent) = dest.parent() {
+    let base = backups_root.join(date).join(rel);
+    if let Some(parent) = base.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
-        let ts = chrono::Utc::now().format("%H%M%S%6f").to_string();
-        if let Some(name) = dest.file_name() {
-            let mut name = name.to_os_string();
-            name.push(format!(".{ts}"));
-            dest.set_file_name(name);
-        }
-    }
-    tokio::fs::write(&dest, &content).await?;
+    // Reserve a unique name, then stream the source into it — no full read into
+    // memory, and the reserved name can't be clobbered by a concurrent backup.
+    let dest = reserve_backup_dest(&base).await?;
+    tokio::fs::copy(&src, &dest).await?;
     Ok(())
 }
 

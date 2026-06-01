@@ -626,13 +626,6 @@ impl NoteVault {
             })
     }
 
-    /// Enables or disables pre-edit backups after construction, for callers that
-    /// build their vault through a shared helper (e.g. the MCP server) rather
-    /// than setting [`VaultConfig::backup`] directly.
-    pub fn set_backup(&mut self, backup: bool) {
-        self.backup = backup;
-    }
-
     /// Backs up the current content of `path` when this vault was opened with
     /// backups enabled (CLI/MCP), and is a no-op otherwise (TUI). Called before
     /// any destructive write so the previous content stays recoverable.

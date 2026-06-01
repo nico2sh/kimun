@@ -709,8 +709,7 @@ impl ServerHandler for KimunHandler {
 
 pub async fn run(config_path: Option<PathBuf>) -> Result<()> {
     use crate::cli::helpers::create_and_init_vault;
-    let (mut vault, _) = create_and_init_vault(config_path).await?;
-    vault.set_backup(true);
+    let (vault, _) = create_and_init_vault(config_path).await?;
     let handler = KimunHandler::new(vault);
     let service = handler.serve(stdio()).await.map_err(|e| eyre!("{e}"))?;
     service.waiting().await.map_err(|e| eyre!("{e}"))?;
