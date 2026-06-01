@@ -52,8 +52,24 @@ A named query persisted in the vault under `.kimun/`, so it travels with the not
 _Avoid_: bookmark, smart folder, filter (too generic)
 
 **Saved Searches modal**:
-A global picker, opened by a single key binding, listing the vault's **saved searches** for keyboard selection (arrows/enter plus numeric quick-select 1–9). Picking one runs it in the **Query panel**. Distinct from the Ctrl+K **note browser**, which finds individual notes rather than choosing a query.
-_Avoid_: search list, query menu
+A global picker, opened by a single key binding, listing the vault's **saved searches** for keyboard selection (arrows/enter plus numeric quick-select 1–9). Picking one runs it in the **Query panel**. Distinct from the Ctrl+K **note browser**, which finds individual notes rather than choosing a query. It is one **SearchList** surface, not to be confused with the module itself.
+_Avoid_: query menu
+
+### TUI search surfaces
+
+**SearchList**:
+The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, and the directory sidebar. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, and selection; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview, the note browser's preview pane) composes on top rather than living inside it.
+_Avoid_: list widget, search box (each names only a part)
+
+**Row source**:
+The seam that supplies a **SearchList** with the rows for a query. Vault-backed in the app (search, backlinks, saved searches, directory listing), in-memory in tests — so a SearchList is exercised without a real vault. Streaming and one-shot delivery are the same source, not different seams.
+_Avoid_: provider (too generic), repository
+
+**Search row**:
+What a single row must tell its **SearchList** to be listed, filtered, navigated, and drawn — the only thing that varies with the row's type (a note, a saved search, a directory entry). Anything richer is read back by the caller from the selected row.
+
+**Suggestion source**:
+The seam that supplies the query input's autocomplete with candidates (note names for `>`, tag labels for `#`), kept separate from the **row source** and from the vault so the autocomplete host is testable in isolation.
 
 **Query panel**:
 The right-hand panel of the editor. Shows the list of notes matching an active query, with the same expandable list/preview affordances as the rest of the app. Backlinks are not a distinct feature here — they are the default query `>{note}`, so a freshly opened panel shows the current note's backlinks. The panel title reflects the active query (reads "Backlinks" when the query is `>{note}`).
