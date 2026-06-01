@@ -6,13 +6,32 @@ mod load;
 #[cfg(test)]
 mod adapters;
 
-pub use seams::{Emit, Loaded, RowSource, SearchRow};
+pub use seams::{Emit, Filter, Loaded, RowSource, SearchRow};
 
 use std::sync::Arc;
 use load::LoadEngine;
 use seams::Loaded as LoadedInner;
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use ratatui::crossterm::event::KeyEvent;
+
+fn fuzzy_indices<R: SearchRow>(rows: &[R], query: &str) -> Vec<usize> {
+    use nucleo::pattern::{CaseMatching, Normalization, Pattern};
+    use nucleo::{Matcher, Utf32Str};
+    let mut matcher = Matcher::new(nucleo::Config::DEFAULT);
+    let pat = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    let mut scored: Vec<(usize, u32)> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| {
+            let hay = r.match_text()?;
+            let mut buf = Vec::new();
+            let h = Utf32Str::new(hay, &mut buf);
+            pat.score(h, &mut matcher).map(|s| (i, s))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.into_iter().map(|(i, _)| i).collect()
+}
 
 /// Verdict returned by [`SearchList::handle_key`].
 #[derive(Debug, PartialEq, Eq)]
@@ -27,7 +46,11 @@ pub enum KeyReaction {
 pub struct SearchList<R: SearchRow> {
     source: Arc<dyn RowSource<R>>,
     rows: Vec<R>,
+    /// Indices into `rows` in display order (after filtering/ranking).
+    display: Vec<usize>,
+    /// Index into `display` (not `rows`) of the selected item.
     selected: Option<usize>,
+    filter: Filter<R>,
     query: String,
     loader: LoadEngine<R>,
     input: SingleLineInput,
@@ -37,39 +60,72 @@ pub struct SearchListBuilder<R: SearchRow> {
     source: Arc<dyn RowSource<R>>,
     redraw: Arc<dyn Fn() + Send + Sync>,
     initial_query: String,
+    filter: Filter<R>,
 }
 
 impl<R: SearchRow> SearchList<R> {
     pub fn builder(source: impl RowSource<R>, redraw: Arc<dyn Fn() + Send + Sync>) -> SearchListBuilder<R> {
-        SearchListBuilder { source: Arc::new(source), redraw, initial_query: String::new() }
+        SearchListBuilder { source: Arc::new(source), redraw, initial_query: String::new(), filter: Filter::SourceOrder }
     }
 
     fn new(b: SearchListBuilder<R>) -> Self {
         let mut loader = LoadEngine::new(b.redraw.clone());
         loader.start(b.source.clone(), b.initial_query.clone());
         let input = SingleLineInput::with_value(&b.initial_query);
-        Self { source: b.source, rows: Vec::new(), selected: None, query: b.initial_query, loader, input }
+        Self {
+            source: b.source,
+            rows: Vec::new(),
+            display: Vec::new(),
+            selected: None,
+            filter: b.filter,
+            query: b.initial_query,
+            loader,
+            input,
+        }
     }
 
     pub fn poll(&mut self) {
         for ev in self.loader.drain() {
             match ev {
-                LoadedInner::Replace(rows) => { self.rows = rows; self.clamp_selection(); }
+                LoadedInner::Replace(rows) => {
+                    let mut rows = rows;
+                    if let Some(lead) = self.source.leading_row(&self.query) {
+                        rows.insert(0, lead);
+                    }
+                    self.rows = rows;
+                }
                 LoadedInner::Push(row) => {
                     self.rows.push(row);
-                    if self.selected.is_none() && !self.rows.is_empty() { self.selected = Some(0); }
                 }
                 LoadedInner::Done => {}
             }
         }
+        self.recompute_display();
+        if self.selected.is_none() && !self.display.is_empty() {
+            self.selected = Some(0);
+        }
     }
 
     fn clamp_selection(&mut self) {
-        self.selected = if self.rows.is_empty() { None } else { Some(self.selected.unwrap_or(0).min(self.rows.len() - 1)) };
+        self.selected = if self.display.is_empty() {
+            None
+        } else {
+            Some(self.selected.unwrap_or(0).min(self.display.len() - 1))
+        };
     }
 
     pub fn rows(&self) -> &[R] { &self.rows }
-    pub fn selected_row(&self) -> Option<&R> { self.selected.and_then(|i| self.rows.get(i)) }
+
+    pub fn selected_row(&self) -> Option<&R> {
+        self.selected
+            .and_then(|i| self.display.get(i))
+            .and_then(|&ri| self.rows.get(ri))
+    }
+
+    pub fn visible_rows(&self) -> Vec<&R> {
+        self.display.iter().filter_map(|&i| self.rows.get(i)).collect()
+    }
+
     pub fn query(&self) -> &str { &self.query }
     pub fn is_loading(&self) -> bool { self.loader.loading }
 
@@ -79,19 +135,19 @@ impl<R: SearchRow> SearchList<R> {
         self.query = q.into();
         if self.source.reload_on_query() {
             self.loader.start(self.source.clone(), self.query.clone());
+        } else {
+            self.recompute_display();
         }
-        // Local-filter sources (reload_on_query == false) re-filter locally;
-        // that path arrives with the Filter enum in a later task.
     }
 
     pub fn select_next(&mut self) {
-        if self.rows.is_empty() { return; }
-        let n = self.rows.len();
+        if self.display.is_empty() { return; }
+        let n = self.display.len();
         self.selected = Some(self.selected.map_or(0, |i| (i + 1).min(n - 1)));
     }
 
     pub fn select_prev(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.display.is_empty() { return; }
         self.selected = Some(self.selected.map_or(0, |i| i.saturating_sub(1)));
     }
 
@@ -120,6 +176,29 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
+    fn recompute_display(&mut self) {
+        let q = self.query.trim();
+        let mut idx: Vec<usize> = match &self.filter {
+            Filter::SourceOrder => (0..self.rows.len()).collect(),
+            Filter::Fuzzy if q.is_empty() => (0..self.rows.len()).collect(),
+            Filter::Fuzzy => fuzzy_indices(&self.rows, q),
+            Filter::Rank(_) if q.is_empty() => (0..self.rows.len()).collect(),
+            Filter::Rank(f) => {
+                let f = f.clone();
+                f(&self.rows, q)
+            }
+        };
+        // Filter-exempt rows (match_text() == None: Up / Create / virtual pinned)
+        // are always present; prepend any that the filter dropped.
+        for i in 0..self.rows.len() {
+            if self.rows[i].match_text().is_none() && !idx.contains(&i) {
+                idx.insert(0, i);
+            }
+        }
+        self.display = idx;
+        self.clamp_selection();
+    }
+
     #[cfg(test)]
     pub(crate) async fn poll_until_idle(&mut self) {
         for _ in 0..50 {
@@ -132,6 +211,7 @@ impl<R: SearchRow> SearchList<R> {
 
 impl<R: SearchRow> SearchListBuilder<R> {
     pub fn initial_query(mut self, q: impl Into<String>) -> Self { self.initial_query = q.into(); self }
+    pub fn filter(mut self, f: Filter<R>) -> Self { self.filter = f; self }
     pub fn build(self) -> SearchList<R> { SearchList::new(self) }
 }
 
@@ -187,5 +267,40 @@ mod tests {
         assert_eq!(list.handle_key(&key(KeyCode::Char('a'))), KeyReaction::Consumed);
         list.poll_until_idle().await;
         assert_eq!(list.query(), "a");
+    }
+
+    #[tokio::test]
+    async fn rank_filter_orders_by_closure() {
+        let src = VecSource { rows: vec![TestRow::new("todo"), TestRow::new("today"), TestRow::new("misc")], reload: false };
+        let rank = std::sync::Arc::new(|rows: &[TestRow], q: &str| -> Vec<usize> {
+            let mut idx: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].name.contains(q)).collect();
+            idx.sort_by_key(|&i| if rows[i].name == q { 0 } else { 1 });
+            idx
+        });
+        let mut list = SearchList::builder(src, noop_redraw()).filter(Filter::Rank(rank)).build();
+        list.poll_until_idle().await;
+        list.set_query("today");
+        list.poll();
+        assert_eq!(list.selected_row().unwrap().name, "today");
+    }
+
+    #[tokio::test]
+    async fn fuzzy_filter_narrows_local_set() {
+        let src = VecSource { rows: vec![TestRow::new("alpha"), TestRow::new("beta")], reload: false };
+        let mut list = SearchList::builder(src, noop_redraw()).filter(Filter::Fuzzy).build();
+        list.poll_until_idle().await;
+        list.set_query("alp");
+        list.poll();
+        assert_eq!(list.visible_rows().len(), 1);
+        assert_eq!(list.selected_row().unwrap().name, "alpha");
+    }
+
+    #[tokio::test]
+    async fn source_order_unfiltered_passthrough() {
+        let src = VecSource { rows: vec![TestRow::new("a"), TestRow::new("b")], reload: true };
+        let mut list = SearchList::builder(src, noop_redraw()).build(); // default Filter::SourceOrder
+        list.poll_until_idle().await;
+        assert_eq!(list.visible_rows().len(), 2);
+        assert_eq!(list.selected_row().unwrap().name, "a");
     }
 }
