@@ -221,7 +221,6 @@ async fn run_append(
     quick_note_path: &str,
 ) -> Result<()> {
     use crate::cli::helpers::{resolve_content, resolve_note_path};
-    use kimun_core::error::FSError;
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
     let text = resolve_content(content)?;
@@ -230,34 +229,10 @@ async fn run_append(
         return Ok(());
     }
 
-    match vault.get_note_text(&vault_path).await {
-        Ok(existing) => {
-            let combined = format!("{}\n{}", existing, text);
-            vault
-                .save_note(&vault_path, &combined)
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-        }
-        Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
-            match vault.create_note(&vault_path, &text).await {
-                Ok(_) => {}
-                Err(VaultError::NoteExists { .. }) => {
-                    // Race: note created between our get and create — re-read and save
-                    let existing = vault
-                        .get_note_text(&vault_path)
-                        .await
-                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-                    let combined = format!("{}\n{}", existing, text);
-                    vault
-                        .save_note(&vault_path, &combined)
-                        .await
-                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-                }
-                Err(e) => return Err(color_eyre::eyre::eyre!("{}", e)),
-            }
-        }
-        Err(e) => return Err(color_eyre::eyre::eyre!("{}", e)),
-    }
+    vault
+        .append_to_note(&vault_path, &text, None)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
 
     println!("Note saved: {}", vault_path);
     Ok(())

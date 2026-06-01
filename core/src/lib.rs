@@ -659,6 +659,44 @@ impl NoteVault {
         lock.lock_owned().await
     }
 
+    /// Acquires the per-note locks for several notes at once, in a stable
+    /// (sorted, deduped) order so concurrent multi-note operations (e.g. two
+    /// renames with overlapping victims) can't deadlock. Hold the returned
+    /// guards for the duration of the operation.
+    async fn lock_notes<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a VaultPath>,
+    ) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+        let mut keys: Vec<VaultPath> = paths.into_iter().map(|p| p.flatten()).collect();
+        keys.sort();
+        keys.dedup();
+        let mut guards = Vec::with_capacity(keys.len());
+        for key in &keys {
+            guards.push(self.lock_note(key).await);
+        }
+        guards
+    }
+
+    /// Appends `text` to the note at `path`, creating it (with `default`
+    /// content) when absent. The read and the write run under the per-note lock
+    /// so concurrent appends to the same note can't lose an update.
+    pub async fn append_to_note(
+        &self,
+        path: &VaultPath,
+        text: &str,
+        default: Option<String>,
+    ) -> Result<(), VaultError> {
+        let _guard = self.lock_note(path).await;
+        let existing = self.load_or_create_note(path, default).await?;
+        let combined = if existing.is_empty() {
+            text.to_string()
+        } else {
+            format!("{existing}\n{text}")
+        };
+        self.save_note_unlocked(path, combined).await?;
+        Ok(())
+    }
+
     pub async fn save_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
@@ -806,6 +844,24 @@ impl NoteVault {
     pub async fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
+
+        // Lock the source, the destination, and every backlink victim for the
+        // whole rename, so a concurrent in-process write to any of them can't
+        // interleave with the read → backup → rewrite below (lost update / stale
+        // backup). Locks are taken in a stable order to stay deadlock-free.
+        let victims: Vec<VaultPath> = db::get_backlinks(self.vault_db.pool(), &from)
+            .await?
+            .into_iter()
+            .map(|(e, _)| e.path)
+            .filter(|p| *p != from)
+            .collect();
+        let _guards = self
+            .lock_notes(
+                std::iter::once(&from)
+                    .chain(std::iter::once(&to))
+                    .chain(victims.iter()),
+            )
+            .await;
 
         // 1. Read every backlink file (excluding the source itself), computing
         //    rewritten contents in memory. No FS mutations yet — failure
@@ -2608,5 +2664,32 @@ mod modify_backup_tests {
 
         // All eight replacements survived; none lost to a racing writer.
         assert_eq!(vault.get_note_text(&path).await.unwrap(), "A B C D E F G H");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_appends_do_not_lose_updates() {
+        let (_temp, vault) = backup_vault().await;
+        let path = VaultPath::note_path_from("/log.md");
+        let lines = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
+        // append_to_note does its read-or-create + write under the per-note lock,
+        // so concurrent appends to one note all land (none lost to a racing read).
+        let mut handles = Vec::new();
+        for l in lines {
+            let v = vault.clone();
+            let p = path.clone();
+            handles.push(tokio::spawn(async move {
+                v.append_to_note(&p, l, None).await.unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let text = vault.get_note_text(&path).await.unwrap();
+        assert_eq!(text.lines().count(), lines.len(), "lines: {text:?}");
+        for l in lines {
+            assert!(text.contains(l), "missing {l} in {text:?}");
+        }
     }
 }
