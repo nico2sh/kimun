@@ -1003,4 +1003,49 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].filename.contains("a"));
     }
+
+    fn fake_entry(name: &str) -> BacklinkEntry {
+        BacklinkEntry {
+            path: VaultPath::note_path_from(name),
+            title: name.to_string(),
+            filename: format!("{name}.md"),
+            context: String::new(),
+            full_text: Some(String::new()),
+        }
+    }
+
+    /// A static query (no `{note}`) must survive navigation: `set_note` leaves
+    /// its results and query text untouched (no clear, no re-run).
+    #[tokio::test]
+    async fn static_query_survives_navigation() {
+        let vault = crate::test_support::temp_vault("nav-static").await;
+        let kb = crate::settings::AppSettings::default().key_bindings.clone();
+        let mut panel = QueryPanel::new(vault, kb);
+        panel.set_active_query("#todo".to_string());
+        panel.on_loaded(vec![fake_entry("a")]);
+        assert_eq!(panel.entries.len(), 1);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_note(VaultPath::note_path_from("x.md"), tx);
+
+        assert_eq!(panel.active_query(), "#todo"); // not reset to >{note}
+        assert!(!panel.loading); // static query → no re-run
+        assert_eq!(panel.entries.len(), 1); // results untouched
+    }
+
+    /// A `{note}` query re-runs on navigation: `set_note` kicks off a fresh
+    /// search (clears results, sets loading).
+    #[tokio::test]
+    async fn note_variable_query_reruns_on_navigation() {
+        let vault = crate::test_support::temp_vault("nav-var").await;
+        let kb = crate::settings::AppSettings::default().key_bindings.clone();
+        let mut panel = QueryPanel::new(vault, kb);
+        panel.set_active_query(">{note}".to_string());
+        panel.on_loaded(vec![fake_entry("a")]);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_note(VaultPath::note_path_from("x.md"), tx);
+
+        assert!(panel.loading); // run_query started
+    }
 }
