@@ -107,6 +107,12 @@ pub struct NoteVault {
     /// Whether destructive writes back up the previous content first. Mirrors
     /// [`VaultConfig::backup`]; see its docs.
     backup: bool,
+    /// Per-note in-process write locks. Concurrent content mutations to the same
+    /// note (e.g. parallel MCP tool calls) serialize on these so a read-modify-
+    /// write like `replace` can't lose an update. Shared across clones via `Arc`.
+    /// Grows with the number of distinct notes mutated this process; entries are
+    /// tiny.
+    note_locks: Arc<std::sync::Mutex<HashMap<VaultPath, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 // SqlitePool doesn't implement PartialEq; two vaults are equivalent when they
@@ -147,6 +153,7 @@ impl NoteVault {
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
             vault_db,
             backup,
+            note_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         };
         Ok(note_vault)
     }
@@ -636,7 +643,35 @@ impl NoteVault {
         Ok(())
     }
 
+    /// Acquires the per-note write lock, serializing content mutations to `path`
+    /// within this process so a read-modify-write (e.g. `replace`) can't be
+    /// interleaved by another in-process writer. Cross-process writers are not
+    /// covered — a local single-user vault rarely sees that, and backups make any
+    /// clobbered version recoverable.
+    async fn lock_note(&self, path: &VaultPath) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = path.flatten();
+        let lock = {
+            let mut map = self.note_locks.lock().unwrap();
+            map.entry(key)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+
     pub async fn save_note<S: AsRef<str>>(
+        &self,
+        path: &VaultPath,
+        text: S,
+    ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
+        let _guard = self.lock_note(path).await;
+        self.save_note_unlocked(path, text).await
+    }
+
+    /// Like [`save_note`] but assumes the caller already holds the per-note lock
+    /// (see [`lock_note`]). Used by read-modify-write operations such as
+    /// [`replace_in_note`] that hold the lock across both the read and the write.
+    async fn save_note_unlocked<S: AsRef<str>>(
         &self,
         path: &VaultPath,
         text: S,
@@ -698,6 +733,7 @@ impl NoteVault {
     pub async fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         path.ensure_note()?;
+        let _guard = self.lock_note(&path).await;
         self.backup_if_enabled(&path).await?;
 
         // Delete in DB first so the index never points at a missing file.
@@ -724,6 +760,9 @@ impl NoteVault {
         new: &str,
         all: bool,
     ) -> Result<usize, VaultError> {
+        // Hold the per-note lock across the read and the write so a concurrent
+        // in-process writer can't change the note between them (lost update).
+        let _guard = self.lock_note(path).await;
         let text = self.get_note_text(path).await?;
         let count = if old.is_empty() {
             0
@@ -745,7 +784,9 @@ impl NoteVault {
         } else {
             text.replacen(old, new, 1)
         };
-        self.save_note(path, updated).await?;
+        // Already holding the per-note lock from above; use the unlocked save so
+        // we don't re-acquire it (the tokio Mutex is not reentrant).
+        self.save_note_unlocked(path, updated).await?;
         Ok(count)
     }
 
@@ -2539,5 +2580,33 @@ mod modify_backup_tests {
         );
         // And the live note was actually rewritten to point at c.
         assert!(vault.get_note_text(&a).await.unwrap().contains("[[c]]"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_replaces_do_not_lose_updates() {
+        let (_temp, vault) = backup_vault().await;
+        let path = VaultPath::note_path_from("/note.md");
+        let tokens = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        vault.create_note(&path, tokens.join(" ")).await.unwrap();
+
+        // Fire every replace concurrently against the same note. Each does a
+        // read-modify-write; without the per-note lock, racing reads would drop
+        // most updates (last-writer-wins). Clones share the lock map.
+        let mut handles = Vec::new();
+        for t in tokens {
+            let v = vault.clone();
+            let p = path.clone();
+            handles.push(tokio::spawn(async move {
+                v.replace_in_note(&p, t, &t.to_uppercase(), false)
+                    .await
+                    .unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // All eight replacements survived; none lost to a racing writer.
+        assert_eq!(vault.get_note_text(&path).await.unwrap(), "A B C D E F G H");
     }
 }
