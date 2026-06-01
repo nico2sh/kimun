@@ -203,6 +203,13 @@ impl EditorScreen {
         true
     }
 
+    /// Persist a saved search via core. Used by the SaveSearchConfirmed handler
+    /// and unit tests.
+    #[cfg(test)]
+    async fn persist_saved_search(&self, name: &str, query: &str) -> Result<(), VaultError> {
+        self.vault.save_search(name, query).await
+    }
+
     async fn follow_link(&mut self, target: String, tx: &AppTx) {
         // External URL — hand off to the OS browser/handler.
         if kimun_core::note::is_remote_url(&target) {
@@ -678,6 +685,14 @@ impl AppScreen for EditorScreen {
                     self.toggle_backlinks(tx);
                     return EventState::Consumed;
                 }
+                Some(ActionShortcuts::SaveCurrentQuery) => {
+                    let query = self.backlinks_panel.active_query().to_string();
+                    if !query.trim().is_empty() {
+                        self.dialogs.open_save_search(query, self.focus_index());
+                        self.set_focus(Focus::Dialog);
+                    }
+                    return EventState::Consumed;
+                }
                 Some(ActionShortcuts::SwitchWorkspace) => {
                     let s = self.settings.read().unwrap();
                     self.dialogs.open_workspace_switcher(&s, self.focus_index());
@@ -1038,6 +1053,15 @@ impl AppScreen for EditorScreen {
                 self.backlinks_panel.on_loaded(entries);
                 None
             }
+            AppEvent::SaveSearchConfirmed { name, query } => {
+                let vault = self.vault.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = vault.save_search(&name, &query).await {
+                        tracing::warn!("failed to save search '{}': {}", name, e);
+                    }
+                });
+                None
+            }
             AppEvent::InsertAtCursor(text) => {
                 if matches!(self.focus, Focus::Editor) {
                     self.editor.insert_at_cursor(&text, tx);
@@ -1073,6 +1097,23 @@ mod tests {
 
         // Verify DialogManager is accessible.
         fn _accepts_dialog_manager(_d: DialogManager) {}
+    }
+
+    #[tokio::test]
+    async fn persist_saved_search_writes_via_core() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let screen = EditorScreen::new(vault, VaultPath::root(), settings);
+
+        screen.persist_saved_search("t", "#todo").await.unwrap();
+
+        let all = screen.vault.list_saved_searches().await.unwrap();
+        assert!(all.iter().any(|s| s.name == "t" && s.query == "#todo"));
     }
 
     // The try_save timeout-abort regression tests (commits 55eb49ed +
