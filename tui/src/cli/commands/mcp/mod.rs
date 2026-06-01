@@ -94,6 +94,32 @@ pub struct QuickNoteParams {
     pub content: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct OverwriteNoteParams {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReplaceInNoteParams {
+    pub path: String,
+    /// Text to find
+    pub old: String,
+    /// Replacement text (may use $1/${name} capture references when regex is true)
+    pub new: String,
+    /// Replace every occurrence instead of requiring a unique match
+    pub replace_all: Option<bool>,
+    /// Treat `old` as a regular expression instead of a literal substring
+    pub regex: Option<bool>,
+    /// Preview the resulting content without writing the note (dry run)
+    pub preview: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteNoteParams {
+    pub path: String,
+}
+
 // ---------------------------------------------------------------------------
 // Handler struct
 // ---------------------------------------------------------------------------
@@ -152,24 +178,110 @@ impl KimunHandler {
         Parameters(p): Parameters<AppendNoteParams>,
     ) -> Result<CallToolResult, McpError> {
         let vault_path = Self::resolve_path(&p.path);
-        let existing = self
-            .vault
-            .load_or_create_note(&vault_path, None)
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        let combined = if existing.is_empty() {
-            p.content
-        } else {
-            format!("{}\n{}", existing, p.content)
-        };
         self.vault
-            .save_note(&vault_path, &combined)
+            .append_to_note(&vault_path, &p.content, None)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Note saved: {}",
             vault_path
         ))]))
+    }
+
+    #[tool(
+        description = "Replace a note's entire content with new markdown. The previous content is backed up first. Destructive.",
+        annotations(destructive_hint = true)
+    )]
+    async fn overwrite_note(
+        &self,
+        Parameters(p): Parameters<OverwriteNoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let vault_path = Self::resolve_path(&p.path);
+        if p.content.is_empty() {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Refusing to overwrite with empty content (this would wipe the note); pass content, or use delete_note to remove it",
+            )]));
+        }
+        match self.vault.save_note(&vault_path, &p.content).await {
+            Ok(_) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Note saved: {}",
+                vault_path
+            ))])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
+    }
+
+    #[tool(
+        description = "Replace text in a note. `old` is a literal substring by default; set regex=true to treat it as a regular expression, in which case `new` may reference capture groups ($1, ${name}; $$ for a literal $). The match must be unique unless replace_all is true. Set preview=true to get the resulting content back without writing (dry run). The previous content is backed up first. Destructive.",
+        annotations(destructive_hint = true)
+    )]
+    async fn replace_in_note(
+        &self,
+        Parameters(p): Parameters<ReplaceInNoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let vault_path = Self::resolve_path(&p.path);
+        let all = p.replace_all.unwrap_or(false);
+        let regex = p.regex.unwrap_or(false);
+
+        if p.preview.unwrap_or(false) {
+            return match self
+                .vault
+                .preview_replace(&vault_path, &p.old, &p.new, all, regex)
+                .await
+            {
+                Ok(pv) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    "{} occurrence(s) would be replaced in {} (preview — not written). Resulting content:\n\n{}",
+                    pv.count, vault_path, pv.content
+                ))])),
+                Err(
+                    e @ (kimun_core::error::VaultError::ReplaceTextNotFound { .. }
+                    | kimun_core::error::VaultError::ReplaceTextNotUnique { .. }
+                    | kimun_core::error::VaultError::InvalidRegex { .. }),
+                ) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            };
+        }
+
+        match self
+            .vault
+            .replace_in_note(&vault_path, &p.old, &p.new, all, regex)
+            .await
+        {
+            Ok(n) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Replaced {} occurrence(s) in {}",
+                n, vault_path
+            ))])),
+            Err(
+                e @ (kimun_core::error::VaultError::ReplaceTextNotFound { .. }
+                | kimun_core::error::VaultError::ReplaceTextNotUnique { .. }
+                | kimun_core::error::VaultError::InvalidRegex { .. }),
+            ) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
+    }
+
+    #[tool(
+        description = "Delete a note. The content is backed up first. Destructive.",
+        annotations(destructive_hint = true)
+    )]
+    async fn delete_note(
+        &self,
+        Parameters(p): Parameters<DeleteNoteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let vault_path = Self::resolve_path(&p.path);
+        match self.vault.delete_note(&vault_path).await {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Note deleted: {}",
+                vault_path
+            ))])),
+            Err(kimun_core::error::VaultError::FSError(
+                kimun_core::error::FSError::VaultPathNotFound { .. },
+            )) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Note not found: {}",
+                vault_path
+            ))])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
     }
 
     #[tool(description = "Return the full markdown content of a note.")]
@@ -274,32 +386,15 @@ impl KimunHandler {
             }
         };
 
-        let (vault_path, existing) = if p.date.is_none() {
-            // Today — use journal_entry() which handles create-if-absent internally
-            let (details, existing) = self
-                .vault
-                .journal_entry()
-                .await
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-            (details.path, existing)
-        } else {
-            // Specific date — build path manually
-            let journal_path = self
-                .vault
-                .journal_path()
-                .append(&VaultPath::note_path_from(&date_str))
-                .absolute();
-            let existing = self
-                .vault
-                .load_or_create_note(&journal_path, Some(format!("# {}\n\n", date_str)))
-                .await
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-            (journal_path, existing)
-        };
-
-        let combined = format!("{}\n{}", existing, p.text);
+        // Both today and a specific date resolve to journal/<date>; append under
+        // the per-note lock so concurrent journal writes can't lose an entry.
+        let vault_path = self
+            .vault
+            .journal_path()
+            .append(&VaultPath::note_path_from(&date_str))
+            .absolute();
         self.vault
-            .save_note(&vault_path, &combined)
+            .append_to_note(&vault_path, &p.text, Some(format!("# {}\n\n", date_str)))
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -693,6 +788,122 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_note_replaces_whole_body() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "n".to_string(),
+                content: "old body".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let result = handler
+            .overwrite_note(Parameters(OverwriteNoteParams {
+                path: "n".to_string(),
+                content: "new body".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "got: {:?}", result_text(&result));
+
+        let shown = handler
+            .show_note(Parameters(ShowNoteParams {
+                path: "n".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(result_text(&shown).contains("new body"));
+        assert!(!result_text(&shown).contains("old body"));
+    }
+
+    #[tokio::test]
+    async fn test_replace_in_note_unique_match() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "n".to_string(),
+                content: "hello world".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let result = handler
+            .replace_in_note(Parameters(ReplaceInNoteParams {
+                path: "n".to_string(),
+                old: "world".to_string(),
+                new: "there".to_string(),
+                replace_all: None,
+                regex: None,
+                preview: None,
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "got: {:?}", result_text(&result));
+
+        let shown = handler
+            .show_note(Parameters(ShowNoteParams {
+                path: "n".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(result_text(&shown).contains("hello there"));
+    }
+
+    #[tokio::test]
+    async fn test_replace_in_note_non_unique_is_error() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "n".to_string(),
+                content: "a a".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let result = handler
+            .replace_in_note(Parameters(ReplaceInNoteParams {
+                path: "n".to_string(),
+                old: "a".to_string(),
+                new: "b".to_string(),
+                replace_all: None,
+                regex: None,
+                preview: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_delete_note_removes_it() {
+        let (handler, _dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "n".to_string(),
+                content: "x".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let result = handler
+            .delete_note(Parameters(DeleteNoteParams {
+                path: "n".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "got: {:?}", result_text(&result));
+
+        let shown = handler
+            .show_note(Parameters(ShowNoteParams {
+                path: "n".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(shown.is_error, Some(true));
     }
 
     #[tokio::test]

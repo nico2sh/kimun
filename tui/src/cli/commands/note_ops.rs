@@ -39,6 +39,42 @@ pub enum NoteSubcommand {
         #[arg(long, value_enum, default_value = "text")]
         format: crate::cli::output::OutputFormat,
     },
+    /// Overwrite a note's entire content (requires --force; the old content is backed up)
+    Overwrite {
+        /// Note path, relative to quick_note_path or absolute from vault root
+        path: String,
+        /// New content (reads from stdin if omitted and stdin is not a TTY)
+        content: Option<String>,
+        /// Required: discards the existing note body
+        #[arg(long)]
+        force: bool,
+    },
+    /// Replace text in a note (literal by default; the match must be unique unless --all)
+    Replace {
+        /// Note path, relative to quick_note_path or absolute from vault root
+        path: String,
+        /// Text to find (a regular expression when --regex is set)
+        old: String,
+        /// Replacement text ($1/${name} capture references work with --regex)
+        new: String,
+        /// Replace every occurrence instead of requiring a unique match
+        #[arg(long)]
+        all: bool,
+        /// Treat the find text as a regular expression instead of a literal substring
+        #[arg(long)]
+        regex: bool,
+        /// Print the resulting note content without writing it (dry run)
+        #[arg(long)]
+        preview: bool,
+    },
+    /// Delete a note (requires --force; the content is backed up first)
+    Delete {
+        /// Note path, relative to quick_note_path or absolute from vault root
+        path: String,
+        /// Required: confirms the deletion
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 pub async fn run(
@@ -66,7 +102,129 @@ pub async fn run(
             let resolved = resolve_show_paths(paths, reader)?;
             run_show(vault, &resolved, quick_note_path, format, workspace_name).await
         }
+        NoteSubcommand::Overwrite {
+            path,
+            content,
+            force,
+        } => run_overwrite(vault, &path, content, force, quick_note_path).await,
+        NoteSubcommand::Replace {
+            path,
+            old,
+            new,
+            all,
+            regex,
+            preview,
+        } => {
+            run_replace(
+                vault,
+                &path,
+                &old,
+                &new,
+                all,
+                regex,
+                preview,
+                quick_note_path,
+            )
+            .await
+        }
+        NoteSubcommand::Delete { path, force } => {
+            run_delete(vault, &path, force, quick_note_path).await
+        }
     }
+}
+
+async fn run_overwrite(
+    vault: &NoteVault,
+    path_input: &str,
+    content: Option<String>,
+    force: bool,
+    quick_note_path: &str,
+) -> Result<()> {
+    use crate::cli::helpers::{resolve_content, resolve_note_path};
+
+    if !force {
+        return Err(color_eyre::eyre::eyre!(
+            "Refusing to overwrite without --force (this discards the existing note body)"
+        ));
+    }
+    let vault_path = resolve_note_path(path_input, quick_note_path)?;
+    let text = resolve_content(content)?;
+    if text.is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "Refusing to overwrite with empty content (this would wipe the note); pass content, or use `note delete` to remove it"
+        ));
+    }
+
+    vault
+        .save_note(&vault_path, &text)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+
+    println!("Note saved: {}", vault_path);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_replace(
+    vault: &NoteVault,
+    path_input: &str,
+    old: &str,
+    new: &str,
+    all: bool,
+    regex: bool,
+    preview: bool,
+    quick_note_path: &str,
+) -> Result<()> {
+    use crate::cli::helpers::resolve_note_path;
+
+    let vault_path = resolve_note_path(path_input, quick_note_path)?;
+
+    if preview {
+        let pv = vault
+            .preview_replace(&vault_path, old, new, all, regex)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+        // Report the count on stderr so stdout is just the resulting content
+        // (pipe-friendly, e.g. into a diff).
+        eprintln!(
+            "{} occurrence(s) would be replaced in {} (preview — not written)",
+            pv.count, vault_path
+        );
+        print!("{}", pv.content);
+        return Ok(());
+    }
+
+    let count = vault
+        .replace_in_note(&vault_path, old, new, all, regex)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+
+    println!("Replaced {} occurrence(s) in {}", count, vault_path);
+    Ok(())
+}
+
+async fn run_delete(
+    vault: &NoteVault,
+    path_input: &str,
+    force: bool,
+    quick_note_path: &str,
+) -> Result<()> {
+    use crate::cli::helpers::resolve_note_path;
+
+    if !force {
+        return Err(color_eyre::eyre::eyre!(
+            "Refusing to delete without --force"
+        ));
+    }
+    let vault_path = resolve_note_path(path_input, quick_note_path)?;
+
+    vault
+        .delete_note(&vault_path)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+
+    println!("Note deleted: {}", vault_path);
+    Ok(())
 }
 
 async fn run_create(
@@ -101,7 +259,6 @@ async fn run_append(
     quick_note_path: &str,
 ) -> Result<()> {
     use crate::cli::helpers::{resolve_content, resolve_note_path};
-    use kimun_core::error::FSError;
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
     let text = resolve_content(content)?;
@@ -110,34 +267,10 @@ async fn run_append(
         return Ok(());
     }
 
-    match vault.get_note_text(&vault_path).await {
-        Ok(existing) => {
-            let combined = format!("{}\n{}", existing, text);
-            vault
-                .save_note(&vault_path, &combined)
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-        }
-        Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {
-            match vault.create_note(&vault_path, &text).await {
-                Ok(_) => {}
-                Err(VaultError::NoteExists { .. }) => {
-                    // Race: note created between our get and create — re-read and save
-                    let existing = vault
-                        .get_note_text(&vault_path)
-                        .await
-                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-                    let combined = format!("{}\n{}", existing, text);
-                    vault
-                        .save_note(&vault_path, &combined)
-                        .await
-                        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-                }
-                Err(e) => return Err(color_eyre::eyre::eyre!("{}", e)),
-            }
-        }
-        Err(e) => return Err(color_eyre::eyre::eyre!("{}", e)),
-    }
+    vault
+        .append_to_note(&vault_path, &text, None)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
 
     println!("Note saved: {}", vault_path);
     Ok(())
