@@ -464,7 +464,10 @@ impl TextEditorComponent {
     pub fn set_vault(&mut self, vault: Arc<NoteVault>) {
         self.autocomplete_vault = Some(vault.clone());
         if matches!(self.backend, BackendState::Textarea(_)) {
-            self.autocomplete = Some(AutocompleteController::new(std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault }), AutocompleteMode::Both));
+            self.autocomplete = Some(AutocompleteController::new(
+                std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault }),
+                AutocompleteMode::Both,
+            ));
         }
     }
 
@@ -482,7 +485,10 @@ impl TextEditorComponent {
         let Some(vault) = self.autocomplete_vault.clone() else {
             return;
         };
-        self.autocomplete = Some(AutocompleteController::new(std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault }), AutocompleteMode::Both));
+        self.autocomplete = Some(AutocompleteController::new(
+            std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault }),
+            AutocompleteMode::Both,
+        ));
         // Fresh controller — `bind_autocomplete_redraw` must rebind
         // on the next handle_input.
         self.autocomplete_redraw_bound = false;

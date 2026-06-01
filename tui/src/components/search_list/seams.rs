@@ -67,7 +67,11 @@ impl<R> Emit<R> {
         generation: u64,
         redraw: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
-        Self { tx, generation, redraw }
+        Self {
+            tx,
+            generation,
+            redraw,
+        }
     }
 
     /// One-shot: deliver the whole set.
@@ -99,7 +103,10 @@ pub struct SuggestionItem {
 
 impl SuggestionItem {
     pub fn plain(display: impl Into<String>) -> Self {
-        Self { display: display.into(), secondary: None }
+        Self {
+            display: display.into(),
+            secondary: None,
+        }
     }
 }
 
@@ -123,20 +130,28 @@ impl SuggestionSource for VaultSuggestions {
         self.vault
             .suggest_notes_by_prefix(prefix, limit)
             .await
-            .map(|v| v.into_iter().map(|n| SuggestionItem {
-                display: n.name,
-                secondary: Some(n.path.to_string()),
-            }).collect())
+            .map(|v| {
+                v.into_iter()
+                    .map(|n| SuggestionItem {
+                        display: n.name,
+                        secondary: Some(n.path.to_string()),
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
     async fn tags_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem> {
         self.vault
             .suggest_tags_by_prefix(prefix, limit)
             .await
-            .map(|v| v.into_iter().map(|t| SuggestionItem {
-                display: t.label,
-                secondary: Some(format!("{}×", t.usage_count)),
-            }).collect())
+            .map(|v| {
+                v.into_iter()
+                    .map(|t| SuggestionItem {
+                        display: t.label,
+                        secondary: Some(format!("{}×", t.usage_count)),
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -167,20 +182,34 @@ pub trait RowSource<R: SearchRow>: Send + Sync + 'static {
 #[cfg(test)]
 mod suggestion_tests {
     use super::*;
-    struct Mem { notes: Vec<SuggestionItem>, tags: Vec<SuggestionItem> }
+    struct Mem {
+        notes: Vec<SuggestionItem>,
+        tags: Vec<SuggestionItem>,
+    }
     #[async_trait]
     impl SuggestionSource for Mem {
         async fn notes_by_prefix(&self, p: &str, _n: usize) -> Vec<SuggestionItem> {
-            self.notes.iter().filter(|x| x.display.starts_with(p)).cloned().collect()
+            self.notes
+                .iter()
+                .filter(|x| x.display.starts_with(p))
+                .cloned()
+                .collect()
         }
         async fn tags_by_prefix(&self, p: &str, _n: usize) -> Vec<SuggestionItem> {
-            self.tags.iter().filter(|x| x.display.starts_with(p)).cloned().collect()
+            self.tags
+                .iter()
+                .filter(|x| x.display.starts_with(p))
+                .cloned()
+                .collect()
         }
     }
     #[tokio::test]
     async fn mem_suggestions_filter_by_prefix() {
         let m = Mem {
-            notes: vec![SuggestionItem { display: "projects".into(), secondary: Some("work/projects".into()) }],
+            notes: vec![SuggestionItem {
+                display: "projects".into(),
+                secondary: Some("work/projects".into()),
+            }],
             tags: vec![SuggestionItem::plain("todo")],
         };
         assert_eq!(m.notes_by_prefix("pro", 9).await.len(), 1);

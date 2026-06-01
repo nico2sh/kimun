@@ -1,24 +1,33 @@
 //! `SearchList`: the one module behind every query-input-over-an-async-loaded
 //! list surface in the TUI. See CONTEXT.md.
 
-mod seams;
-mod load;
-mod host;
 #[cfg(test)]
 mod adapters;
+mod host;
+mod load;
+mod seams;
 
-pub use seams::{Emit, Filter, Loaded, RowSource, SearchRow, SuggestionItem, SuggestionSource, VaultSuggestions};
+pub use seams::{
+    Emit, Filter, Loaded, RowSource, SearchRow, SuggestionItem, SuggestionSource, VaultSuggestions,
+};
 
-use std::sync::Arc;
-use load::LoadEngine;
-use seams::Loaded as LoadedInner;
-use crate::components::autocomplete::{AutocompleteController, AutocompleteMode, HandleKeyOutcome, TriggerOptions};
+use crate::components::autocomplete::{
+    AutocompleteController, AutocompleteMode, HandleKeyOutcome, TriggerOptions,
+};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::keys::key_combo::KeyCombo;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
+use load::LoadEngine;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::{Frame, layout::Rect, style::Style, widgets::{List, ListItem, ListState}};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::Style,
+    widgets::{List, ListItem, ListState},
+};
+use seams::Loaded as LoadedInner;
+use std::sync::Arc;
 
 fn fuzzy_indices<R: SearchRow>(rows: &[R], query: &str) -> Vec<usize> {
     use nucleo::pattern::{CaseMatching, Normalization, Pattern};
@@ -92,7 +101,10 @@ pub struct SearchListBuilder<R: SearchRow> {
 }
 
 impl<R: SearchRow> SearchList<R> {
-    pub fn builder(source: impl RowSource<R>, redraw: Arc<dyn Fn() + Send + Sync>) -> SearchListBuilder<R> {
+    pub fn builder(
+        source: impl RowSource<R>,
+        redraw: Arc<dyn Fn() + Send + Sync>,
+    ) -> SearchListBuilder<R> {
         SearchListBuilder {
             source: Arc::new(source),
             redraw,
@@ -110,8 +122,11 @@ impl<R: SearchRow> SearchList<R> {
         let input = SingleLineInput::with_value(&b.initial_query);
         let autocomplete = b.autocomplete.map(|(suggestions, mode)| {
             #[allow(unused_mut)]
-            let mut ac = AutocompleteController::new(suggestions, mode)
-                .with_trigger_opts(TriggerOptions { disambiguate_header: false, apply_exclusion_zone: false });
+            let mut ac =
+                AutocompleteController::new(suggestions, mode).with_trigger_opts(TriggerOptions {
+                    disambiguate_header: false,
+                    apply_exclusion_zone: false,
+                });
             #[cfg(test)]
             let mut ac = ac.with_debounce(std::time::Duration::ZERO);
             ac.set_redraw_callback(b.redraw.clone());
@@ -193,7 +208,9 @@ impl<R: SearchRow> SearchList<R> {
         };
     }
 
-    pub fn rows(&self) -> &[R] { &self.rows }
+    pub fn rows(&self) -> &[R] {
+        &self.rows
+    }
 
     pub fn selected_row(&self) -> Option<&R> {
         self.selected
@@ -202,11 +219,18 @@ impl<R: SearchRow> SearchList<R> {
     }
 
     pub fn visible_rows(&self) -> Vec<&R> {
-        self.display.iter().filter_map(|&i| self.rows.get(i)).collect()
+        self.display
+            .iter()
+            .filter_map(|&i| self.rows.get(i))
+            .collect()
     }
 
-    pub fn query(&self) -> &str { &self.query }
-    pub fn is_loading(&self) -> bool { self.loader.loading }
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+    pub fn is_loading(&self) -> bool {
+        self.loader.loading
+    }
 
     /// Set the query and (for `reload_on_query` sources) start a fresh load.
     /// The generation guard in `LoadEngine` drops any in-flight stale results.
@@ -225,13 +249,17 @@ impl<R: SearchRow> SearchList<R> {
     }
 
     pub fn select_next(&mut self) {
-        if self.display.is_empty() { return; }
+        if self.display.is_empty() {
+            return;
+        }
         let n = self.display.len();
         self.selected = Some(self.selected.map_or(0, |i| (i + 1).min(n - 1)));
     }
 
     pub fn select_prev(&mut self) {
-        if self.display.is_empty() { return; }
+        if self.display.is_empty() {
+            return;
+        }
         self.selected = Some(self.selected.map_or(0, |i| i.saturating_sub(1)));
     }
 
@@ -254,19 +282,31 @@ impl<R: SearchRow> SearchList<R> {
             if let Some(ac) = &mut self.autocomplete {
                 match ac.handle_key(*key, &snap) {
                     HandleKeyOutcome::Accepted(action) => {
-                        self.input.replace_range_bytes(action.range.clone(), &action.new_text, action.new_cursor_byte);
+                        self.input.replace_range_bytes(
+                            action.range.clone(),
+                            &action.new_text,
+                            action.new_cursor_byte,
+                        );
                         self.set_query(self.input.value().to_string());
                         return KeyReaction::Consumed;
                     }
-                    HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => return KeyReaction::Consumed,
+                    HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
+                        return KeyReaction::Consumed;
+                    }
                     HandleKeyOutcome::NotHandled => {}
                 }
             }
         }
 
         match key.code {
-            KeyCode::Up => { self.select_prev(); return KeyReaction::Consumed; }
-            KeyCode::Down => { self.select_next(); return KeyReaction::Consumed; }
+            KeyCode::Up => {
+                self.select_prev();
+                return KeyReaction::Consumed;
+            }
+            KeyCode::Down => {
+                self.select_next();
+                return KeyReaction::Consumed;
+            }
             KeyCode::Enter => return KeyReaction::Submit,
             KeyCode::Esc => return KeyReaction::Cancel,
             _ => {}
@@ -284,18 +324,27 @@ impl<R: SearchRow> SearchList<R> {
         let snap = self.autocomplete_snapshot();
         match outcome {
             InputOutcome::Changed => {
-                if let Some(ac) = &mut self.autocomplete { ac.sync(&snap); }
+                if let Some(ac) = &mut self.autocomplete {
+                    ac.sync(&snap);
+                }
             }
             InputOutcome::Consumed => {
-                if let Some(ac) = &mut self.autocomplete { ac.refresh_if_open(&snap); }
+                if let Some(ac) = &mut self.autocomplete {
+                    ac.refresh_if_open(&snap);
+                }
             }
             InputOutcome::Cancel | InputOutcome::Submit => {
-                if let Some(ac) = &mut self.autocomplete { ac.close(); }
+                if let Some(ac) = &mut self.autocomplete {
+                    ac.close();
+                }
             }
             InputOutcome::NotConsumed => {}
         }
         match outcome {
-            InputOutcome::Changed => { self.set_query(self.input.value().to_string()); KeyReaction::Consumed }
+            InputOutcome::Changed => {
+                self.set_query(self.input.value().to_string());
+                KeyReaction::Consumed
+            }
             InputOutcome::Consumed => KeyReaction::Consumed,
             InputOutcome::Submit => KeyReaction::Submit,
             InputOutcome::Cancel => KeyReaction::Cancel,
@@ -307,7 +356,9 @@ impl<R: SearchRow> SearchList<R> {
         self.input.render(
             f,
             area,
-            Style::default().fg(theme.fg.to_ratatui()).bg(theme.bg_panel.to_ratatui()),
+            Style::default()
+                .fg(theme.fg.to_ratatui())
+                .bg(theme.bg_panel.to_ratatui()),
             0,
             focused,
         );
@@ -316,16 +367,20 @@ impl<R: SearchRow> SearchList<R> {
     pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
         self.poll();
         let sel = self.selected;
-        let items: Vec<ListItem> = self.display.iter()
+        let items: Vec<ListItem> = self
+            .display
+            .iter()
             .enumerate()
             .filter_map(|(disp_idx, &row_idx)| {
-                self.rows.get(row_idx).map(|r| r.to_list_item(theme, &self.icons, sel == Some(disp_idx)))
+                self.rows
+                    .get(row_idx)
+                    .map(|r| r.to_list_item(theme, &self.icons, sel == Some(disp_idx)))
             })
             .collect();
         let mut state = ListState::default();
         state.select(self.selected);
-        let list = List::new(items)
-            .highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
+        let list =
+            List::new(items).highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
         f.render_stateful_widget(list, area, &mut state);
         self.list_rect = area;
         let _ = focused;
@@ -363,7 +418,10 @@ impl<R: SearchRow> SearchList<R> {
             ac.close();
         }
         let r = self.list_rect;
-        if !r.contains(Position { x: m.column, y: m.row }) {
+        if !r.contains(Position {
+            x: m.column,
+            y: m.row,
+        }) {
             return SearchMouse::None;
         }
         match m.kind {
@@ -372,7 +430,11 @@ impl<R: SearchRow> SearchList<R> {
                 let mut acc: u16 = 0;
                 let mut hit: Option<usize> = None;
                 for (disp_idx, &row_idx) in self.display.iter().enumerate() {
-                    let h = self.rows.get(row_idx).map(|row| row.visual_height()).unwrap_or(1);
+                    let h = self
+                        .rows
+                        .get(row_idx)
+                        .map(|row| row.visual_height())
+                        .unwrap_or(1);
                     if target_visual < acc + h {
                         hit = Some(disp_idx);
                         break;
@@ -382,12 +444,22 @@ impl<R: SearchRow> SearchList<R> {
                 if let Some(disp_idx) = hit {
                     let prev = self.selected;
                     self.selected = Some(disp_idx);
-                    return if prev == Some(disp_idx) { SearchMouse::Activated(disp_idx) } else { SearchMouse::Selected(disp_idx) };
+                    return if prev == Some(disp_idx) {
+                        SearchMouse::Activated(disp_idx)
+                    } else {
+                        SearchMouse::Selected(disp_idx)
+                    };
                 }
                 SearchMouse::None
             }
-            MouseEventKind::ScrollUp => { self.select_prev(); SearchMouse::Scrolled }
-            MouseEventKind::ScrollDown => { self.select_next(); SearchMouse::Scrolled }
+            MouseEventKind::ScrollUp => {
+                self.select_prev();
+                SearchMouse::Scrolled
+            }
+            MouseEventKind::ScrollDown => {
+                self.select_next();
+                SearchMouse::Scrolled
+            }
             _ => SearchMouse::None,
         }
     }
@@ -420,66 +492,118 @@ impl<R: SearchRow> SearchList<R> {
         for _ in 0..50 {
             tokio::task::yield_now().await;
             self.poll();
-            if !self.is_loading() { break; }
+            if !self.is_loading() {
+                break;
+            }
         }
     }
 }
 
 impl<R: SearchRow> SearchListBuilder<R> {
-    pub fn initial_query(mut self, q: impl Into<String>) -> Self { self.initial_query = q.into(); self }
-    pub fn filter(mut self, f: Filter<R>) -> Self { self.filter = f; self }
-    pub fn autocomplete(mut self, suggestions: Arc<dyn SuggestionSource>, mode: AutocompleteMode) -> Self {
+    pub fn initial_query(mut self, q: impl Into<String>) -> Self {
+        self.initial_query = q.into();
+        self
+    }
+    pub fn filter(mut self, f: Filter<R>) -> Self {
+        self.filter = f;
+        self
+    }
+    pub fn autocomplete(
+        mut self,
+        suggestions: Arc<dyn SuggestionSource>,
+        mode: AutocompleteMode,
+    ) -> Self {
         self.autocomplete = Some((suggestions, mode));
         self
     }
-    pub fn intercept(mut self, v: Vec<KeyCombo>) -> Self { self.intercept = v; self }
-    pub fn icons(mut self, icons: Icons) -> Self { self.icons = icons; self }
-    pub fn build(self) -> SearchList<R> { SearchList::new(self) }
+    pub fn intercept(mut self, v: Vec<KeyCombo>) -> Self {
+        self.intercept = v;
+        self
+    }
+    pub fn icons(mut self, icons: Icons) -> Self {
+        self.icons = icons;
+        self
+    }
+    pub fn build(self) -> SearchList<R> {
+        SearchList::new(self)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::adapters::{ScriptedStreamSource, TestRow, VecSource};
+    use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn noop_redraw() -> std::sync::Arc<dyn Fn() + Send + Sync> {
         std::sync::Arc::new(|| {})
     }
 
-    fn key(c: KeyCode) -> KeyEvent { KeyEvent::new(c, KeyModifiers::NONE) }
+    fn key(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
 
     fn mouse_down_at(col: u16, row: u16) -> ratatui::crossterm::event::MouseEvent {
         use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-        MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: col, row, modifiers: KeyModifiers::NONE }
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
     }
 
     #[derive(Clone, Debug, PartialEq)]
-    struct TallRow { name: String, height: u16 }
+    struct TallRow {
+        name: String,
+        height: u16,
+    }
     impl SearchRow for TallRow {
-        fn to_list_item(&self, _t: &crate::settings::themes::Theme, _i: &crate::settings::icons::Icons, _s: bool) -> ratatui::widgets::ListItem<'static> {
+        fn to_list_item(
+            &self,
+            _t: &crate::settings::themes::Theme,
+            _i: &crate::settings::icons::Icons,
+            _s: bool,
+        ) -> ratatui::widgets::ListItem<'static> {
             ratatui::widgets::ListItem::new(self.name.clone())
         }
-        fn visual_height(&self) -> u16 { self.height }
-        fn match_text(&self) -> Option<&str> { Some(&self.name) }
+        fn visual_height(&self) -> u16 {
+            self.height
+        }
+        fn match_text(&self) -> Option<&str> {
+            Some(&self.name)
+        }
     }
     struct TallSource(Vec<TallRow>);
     #[async_trait::async_trait]
     impl RowSource<TallRow> for TallSource {
-        async fn load(&self, _q: &str, emit: Emit<TallRow>) { emit.replace(self.0.clone()); }
+        async fn load(&self, _q: &str, emit: Emit<TallRow>) {
+            emit.replace(self.0.clone());
+        }
     }
 
     #[tokio::test]
     async fn mouse_maps_visual_row_to_display_index_by_height() {
         // Row 0 occupies 3 visual rows, row 1 occupies 1. List rect at y=0 (border row 0).
         let src = TallSource(vec![
-            TallRow { name: "a".into(), height: 3 },
-            TallRow { name: "b".into(), height: 1 },
+            TallRow {
+                name: "a".into(),
+                height: 3,
+            },
+            TallRow {
+                name: "b".into(),
+                height: 1,
+            },
         ]);
         let mut list = SearchList::builder(src, noop_redraw()).build();
         list.poll_until_idle().await;
         // Force the recorded list rect (render not run in test): list area starts after a border at y=0.
-        list.set_list_rect(ratatui::layout::Rect { x: 0, y: 0, width: 20, height: 10 });
+        list.set_list_rect(ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 10,
+        });
         // A left-click at row 4 = border(0) + 3 rows of "a" (1..=3) -> row 4 is the FIRST row of "b".
         let m = mouse_down_at(2, 4);
         assert!(matches!(list.handle_mouse(&m), SearchMouse::Selected(1)));
@@ -492,7 +616,10 @@ mod tests {
 
     #[tokio::test]
     async fn initial_load_populates_rows() {
-        let src = VecSource { rows: vec![TestRow::new("alpha"), TestRow::new("beta")], reload: true };
+        let src = VecSource {
+            rows: vec![TestRow::new("alpha"), TestRow::new("beta")],
+            reload: true,
+        };
         let mut list = SearchList::builder(src, noop_redraw()).build();
         list.poll_until_idle().await;
         assert_eq!(list.rows().len(), 2);
@@ -501,7 +628,14 @@ mod tests {
 
     #[tokio::test]
     async fn requery_supersedes_and_reloads() {
-        let src = VecSource { rows: vec![TestRow::new("alpha"), TestRow::new("alps"), TestRow::new("beta")], reload: true };
+        let src = VecSource {
+            rows: vec![
+                TestRow::new("alpha"),
+                TestRow::new("alps"),
+                TestRow::new("beta"),
+            ],
+            reload: true,
+        };
         let mut list = SearchList::builder(src, noop_redraw()).build();
         list.poll_until_idle().await;
         assert_eq!(list.rows().len(), 3);
@@ -513,7 +647,10 @@ mod tests {
 
     #[tokio::test]
     async fn arrows_navigate_and_enter_submits() {
-        let src = VecSource { rows: vec![TestRow::new("a"), TestRow::new("b")], reload: true };
+        let src = VecSource {
+            rows: vec![TestRow::new("a"), TestRow::new("b")],
+            reload: true,
+        };
         let mut list = SearchList::builder(src, noop_redraw()).build();
         list.poll_until_idle().await;
         assert_eq!(list.handle_key(&key(KeyCode::Down)), KeyReaction::Consumed);
@@ -524,23 +661,40 @@ mod tests {
 
     #[tokio::test]
     async fn typing_a_char_changes_query() {
-        let src = VecSource { rows: vec![TestRow::new("alpha"), TestRow::new("beta")], reload: true };
+        let src = VecSource {
+            rows: vec![TestRow::new("alpha"), TestRow::new("beta")],
+            reload: true,
+        };
         let mut list = SearchList::builder(src, noop_redraw()).build();
         list.poll_until_idle().await;
-        assert_eq!(list.handle_key(&key(KeyCode::Char('a'))), KeyReaction::Consumed);
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Char('a'))),
+            KeyReaction::Consumed
+        );
         list.poll_until_idle().await;
         assert_eq!(list.query(), "a");
     }
 
     #[tokio::test]
     async fn rank_filter_orders_by_closure() {
-        let src = VecSource { rows: vec![TestRow::new("todo"), TestRow::new("today"), TestRow::new("misc")], reload: false };
+        let src = VecSource {
+            rows: vec![
+                TestRow::new("todo"),
+                TestRow::new("today"),
+                TestRow::new("misc"),
+            ],
+            reload: false,
+        };
         let rank = std::sync::Arc::new(|rows: &[TestRow], q: &str| -> Vec<usize> {
-            let mut idx: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].name.contains(q)).collect();
+            let mut idx: Vec<usize> = (0..rows.len())
+                .filter(|&i| rows[i].name.contains(q))
+                .collect();
             idx.sort_by_key(|&i| if rows[i].name == q { 0 } else { 1 });
             idx
         });
-        let mut list = SearchList::builder(src, noop_redraw()).filter(Filter::Rank(rank)).build();
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Rank(rank))
+            .build();
         list.poll_until_idle().await;
         list.set_query("today");
         list.poll();
@@ -549,8 +703,13 @@ mod tests {
 
     #[tokio::test]
     async fn fuzzy_filter_narrows_local_set() {
-        let src = VecSource { rows: vec![TestRow::new("alpha"), TestRow::new("beta")], reload: false };
-        let mut list = SearchList::builder(src, noop_redraw()).filter(Filter::Fuzzy).build();
+        let src = VecSource {
+            rows: vec![TestRow::new("alpha"), TestRow::new("beta")],
+            reload: false,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .build();
         list.poll_until_idle().await;
         list.set_query("alp");
         list.poll();
@@ -560,8 +719,12 @@ mod tests {
 
     #[tokio::test]
     async fn streamed_rows_arrive_then_done_and_filter_locally() {
-        let src = ScriptedStreamSource { batches: vec![vec![TestRow::new("alpha")], vec![TestRow::new("beta")]] };
-        let mut list = SearchList::builder(src, noop_redraw()).filter(Filter::Fuzzy).build();
+        let src = ScriptedStreamSource {
+            batches: vec![vec![TestRow::new("alpha")], vec![TestRow::new("beta")]],
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .build();
         list.poll_until_idle().await;
         assert_eq!(list.rows().len(), 2);
         assert!(!list.is_loading());
@@ -572,7 +735,10 @@ mod tests {
 
     #[tokio::test]
     async fn source_order_unfiltered_passthrough() {
-        let src = VecSource { rows: vec![TestRow::new("a"), TestRow::new("b")], reload: true };
+        let src = VecSource {
+            rows: vec![TestRow::new("a"), TestRow::new("b")],
+            reload: true,
+        };
         let mut list = SearchList::builder(src, noop_redraw()).build(); // default Filter::SourceOrder
         list.poll_until_idle().await;
         assert_eq!(list.visible_rows().len(), 2);
@@ -581,12 +747,20 @@ mod tests {
 
     #[tokio::test]
     async fn intercepted_combo_returns_intercepted_without_acting() {
-        let src = VecSource { rows: vec![TestRow::new("a")], reload: true };
+        let src = VecSource {
+            rows: vec![TestRow::new("a")],
+            reload: true,
+        };
         let combo = crate::keys::key_event_to_combo(&key(KeyCode::Enter)).unwrap();
-        let mut list = SearchList::builder(src, noop_redraw()).intercept(vec![combo]).build();
+        let mut list = SearchList::builder(src, noop_redraw())
+            .intercept(vec![combo])
+            .build();
         list.poll_until_idle().await;
         // Enter is intercepted: engine returns Intercepted, does NOT submit/act.
-        assert_eq!(list.handle_key(&key(KeyCode::Enter)), KeyReaction::Intercepted(combo));
+        assert_eq!(
+            list.handle_key(&key(KeyCode::Enter)),
+            KeyReaction::Intercepted(combo)
+        );
     }
 
     #[tokio::test]
@@ -594,17 +768,44 @@ mod tests {
         struct Mem;
         #[async_trait::async_trait]
         impl crate::components::search_list::SuggestionSource for Mem {
-            async fn notes_by_prefix(&self, _p: &str, _n: usize) -> Vec<crate::components::search_list::SuggestionItem> { vec![] }
-            async fn tags_by_prefix(&self, p: &str, _n: usize) -> Vec<crate::components::search_list::SuggestionItem> {
-                if "projects".starts_with(p) { vec![crate::components::search_list::SuggestionItem::plain("projects")] } else { vec![] }
+            async fn notes_by_prefix(
+                &self,
+                _p: &str,
+                _n: usize,
+            ) -> Vec<crate::components::search_list::SuggestionItem> {
+                vec![]
+            }
+            async fn tags_by_prefix(
+                &self,
+                p: &str,
+                _n: usize,
+            ) -> Vec<crate::components::search_list::SuggestionItem> {
+                if "projects".starts_with(p) {
+                    vec![crate::components::search_list::SuggestionItem::plain(
+                        "projects",
+                    )]
+                } else {
+                    vec![]
+                }
             }
         }
-        let src = VecSource { rows: vec![], reload: true };
+        let src = VecSource {
+            rows: vec![],
+            reload: true,
+        };
         let mut list = SearchList::builder(src, noop_redraw())
-            .autocomplete(std::sync::Arc::new(Mem), crate::components::autocomplete::AutocompleteMode::SearchQuery)
+            .autocomplete(
+                std::sync::Arc::new(Mem),
+                crate::components::autocomplete::AutocompleteMode::SearchQuery,
+            )
             .build();
-        for c in ['#','p','r','o'] { let _ = list.handle_key(&key(KeyCode::Char(c))); }
-        for _ in 0..50 { tokio::task::yield_now().await; list.poll(); }
+        for c in ['#', 'p', 'r', 'o'] {
+            let _ = list.handle_key(&key(KeyCode::Char(c)));
+        }
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            list.poll();
+        }
         let _ = list.handle_key(&key(KeyCode::Tab));
         assert_eq!(list.query(), "#projects");
     }

@@ -96,10 +96,7 @@ impl RowSource<FileListEntry> for DirListingSource {
         if query.is_empty() {
             None
         } else {
-            let path = self
-                .dir
-                .append(&VaultPath::note_path_from(query))
-                .flatten();
+            let path = self.dir.append(&VaultPath::note_path_from(query)).flatten();
             Some(FileListEntry::CreateNote {
                 filename: path.to_string(),
                 path,
@@ -307,9 +304,7 @@ impl Component for SidebarComponent {
                     MouseEventKind::ScrollDown => list.select_next(),
                     _ => match list.handle_mouse(mouse) {
                         SearchMouse::Activated(_) => self.activate_selected_entry(tx),
-                        SearchMouse::Selected(_)
-                        | SearchMouse::Scrolled
-                        | SearchMouse::None => {}
+                        SearchMouse::Selected(_) | SearchMouse::Scrolled | SearchMouse::None => {}
                     },
                 }
             }
@@ -664,8 +659,7 @@ mod tests {
     /// path `SortReverseOrder` drives) flips first/last note.
     #[tokio::test(flavor = "multi_thread")]
     async fn reverse_sort_flips_listing_order() {
-        let mut sidebar =
-            sidebar_with_notes("sidebar-sort", &["alpha", "bravo", "charlie"]).await;
+        let mut sidebar = sidebar_with_notes("sidebar-sort", &["alpha", "bravo", "charlie"]).await;
         let (tx, _rx) = unbounded_channel();
         navigate_to_root(&mut sidebar, &tx).await;
 
@@ -689,8 +683,7 @@ mod tests {
     /// field; the listing remains populated and the shared field advances.
     #[tokio::test(flavor = "multi_thread")]
     async fn cycle_sort_field_reorders_and_advances_field() {
-        let mut sidebar =
-            sidebar_with_notes("sidebar-cycle", &["alpha", "bravo"]).await;
+        let mut sidebar = sidebar_with_notes("sidebar-cycle", &["alpha", "bravo"]).await;
         let (tx, _rx) = unbounded_channel();
         navigate_to_root(&mut sidebar, &tx).await;
 

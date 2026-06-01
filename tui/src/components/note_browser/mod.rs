@@ -57,7 +57,15 @@ impl NoteBrowserModal {
         icons: Icons,
         tx: AppTx,
     ) -> Self {
-        Self::new_with_query(title, provider, vault, key_bindings, icons, tx, String::new())
+        Self::new_with_query(
+            title,
+            provider,
+            vault,
+            key_bindings,
+            icons,
+            tx,
+            String::new(),
+        )
     }
 
     /// Construct the modal with a pre-filled search query.
@@ -74,7 +82,15 @@ impl NoteBrowserModal {
         tx: AppTx,
         query: S,
     ) -> Self {
-        Self::new_with_query(title, provider, vault, key_bindings, icons, tx, query.into())
+        Self::new_with_query(
+            title,
+            provider,
+            vault,
+            key_bindings,
+            icons,
+            tx,
+            query.into(),
+        )
     }
 
     fn new_with_query(
@@ -90,7 +106,9 @@ impl NoteBrowserModal {
             .initial_query(initial_query)
             .icons(icons)
             .autocomplete(
-                Arc::new(VaultSuggestions { vault: vault.clone() }),
+                Arc::new(VaultSuggestions {
+                    vault: vault.clone(),
+                }),
                 AutocompleteMode::SearchQuery,
             )
             .build();
@@ -408,10 +426,7 @@ mod tests {
         }
     }
 
-    async fn make_modal_with(
-        source: impl RowSource<FileListEntry>,
-        tx: AppTx,
-    ) -> NoteBrowserModal {
+    async fn make_modal_with(source: impl RowSource<FileListEntry>, tx: AppTx) -> NoteBrowserModal {
         let vault = temp_vault("modal").await;
         let settings = AppSettings::default();
         NoteBrowserModal::new(
