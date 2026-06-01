@@ -377,11 +377,16 @@ mod tests {
     /// wall-clock time to land (the vault read runs on a worker thread under
     /// the multi-thread runtime).
     async fn poll_engine_idle(modal: &mut SavedSearchesModal) {
-        for _ in 0..50 {
+        // Generous ceiling: the spawned vault read runs on a worker thread, and
+        // under the full parallel suite those workers are contended, so a tight
+        // budget races the load. Early-breaks the instant the load lands, so the
+        // common path stays fast; the high cap only matters under heavy load.
+        for _ in 0..600 {
             modal.list.poll();
             if !modal.list.is_loading() {
                 break;
             }
+            tokio::task::yield_now().await;
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         modal.list.poll();
