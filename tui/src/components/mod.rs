@@ -11,6 +11,7 @@ pub mod indexing;
 pub mod note_browser;
 pub mod query_vars;
 pub mod saved_searches_modal;
+pub mod search_list;
 pub mod settings;
 pub mod sidebar;
 pub mod single_line_input;
