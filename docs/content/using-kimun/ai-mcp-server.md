@@ -16,7 +16,7 @@ The MCP client spawns and manages the `kimun mcp` process automatically — you 
 | `create_note` | Create a new note (fails if it already exists) |
 | `append_note` | Append text to a note (creates it if absent) |
 | `overwrite_note` | Replace a note's entire body with new content (destructive) |
-| `replace_in_note` | Replace a substring in a note; the match must be unique unless `replace_all` is set (destructive) |
+| `replace_in_note` | Replace text in a note (literal, or a regex with `regex: true` — then `new` may use `$1`/`${name}` captures); the match must be unique unless `replace_all` is set (destructive) |
 | `delete_note` | Delete a note (destructive) |
 | `show_note` | Return the full markdown content of a note |
 | `search_notes` | Search with `@filename`, `<heading`, `/path`, `#label`, `>note` (links-to / backlinks), `-exclusion` operators |

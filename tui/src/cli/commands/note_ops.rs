@@ -49,17 +49,20 @@ pub enum NoteSubcommand {
         #[arg(long)]
         force: bool,
     },
-    /// Replace a substring in a note (the match must be unique unless --all)
+    /// Replace text in a note (literal by default; the match must be unique unless --all)
     Replace {
         /// Note path, relative to quick_note_path or absolute from vault root
         path: String,
-        /// Text to find
+        /// Text to find (a regular expression when --regex is set)
         old: String,
-        /// Replacement text
+        /// Replacement text ($1/${name} capture references work with --regex)
         new: String,
         /// Replace every occurrence instead of requiring a unique match
         #[arg(long)]
         all: bool,
+        /// Treat the find text as a regular expression instead of a literal substring
+        #[arg(long)]
+        regex: bool,
     },
     /// Delete a note (requires --force; the content is backed up first)
     Delete {
@@ -106,7 +109,8 @@ pub async fn run(
             old,
             new,
             all,
-        } => run_replace(vault, &path, &old, &new, all, quick_note_path).await,
+            regex,
+        } => run_replace(vault, &path, &old, &new, all, regex, quick_note_path).await,
         NoteSubcommand::Delete { path, force } => {
             run_delete(vault, &path, force, quick_note_path).await
         }
@@ -150,6 +154,7 @@ async fn run_replace(
     old: &str,
     new: &str,
     all: bool,
+    regex: bool,
     quick_note_path: &str,
 ) -> Result<()> {
     use crate::cli::helpers::resolve_note_path;
@@ -157,7 +162,7 @@ async fn run_replace(
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
 
     let count = vault
-        .replace_in_note(&vault_path, old, new, all)
+        .replace_in_note(&vault_path, old, new, all, regex)
         .await
         .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
 

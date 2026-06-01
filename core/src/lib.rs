@@ -784,43 +784,73 @@ impl NoteVault {
         Ok(())
     }
 
-    /// Replaces occurrences of `old` with `new` in the note at `path`.
+    /// Replaces occurrences of `pattern` with `replacement` in the note at
+    /// `path`.
+    ///
+    /// `pattern` is a literal substring by default. When `regex` is `true` it is
+    /// a regular expression ([`regex`] crate syntax) and `replacement` may
+    /// reference capture groups (`$1`, `${name}`; use `$$` for a literal `$`).
+    /// Use inline flags for line/case behaviour, e.g. `(?m)`, `(?s)`, `(?i)`.
     ///
     /// When `all` is `false` the match must be unique: returns
-    /// [`VaultError::ReplaceTextNotFound`] when `old` is absent and
-    /// [`VaultError::ReplaceTextNotUnique`] when it occurs more than once. When
-    /// `all` is `true` every occurrence is replaced. Returns the number of
-    /// replacements made.
+    /// [`VaultError::ReplaceTextNotFound`] when there is no match and
+    /// [`VaultError::ReplaceTextNotUnique`] when there is more than one. When
+    /// `all` is `true` every match is replaced. An invalid regex yields
+    /// [`VaultError::InvalidRegex`]. Returns the number of replacements made.
     pub async fn replace_in_note(
         &self,
         path: &VaultPath,
-        old: &str,
-        new: &str,
+        pattern: &str,
+        replacement: &str,
         all: bool,
+        regex: bool,
     ) -> Result<usize, VaultError> {
         // Hold the per-note lock across the read and the write so a concurrent
         // in-process writer can't change the note between them (lost update).
         let _guard = self.lock_note(path).await;
         let text = self.get_note_text(path).await?;
-        let count = if old.is_empty() {
-            0
+
+        let (count, updated) = if regex {
+            let re = regex::Regex::new(pattern).map_err(|e| VaultError::InvalidRegex {
+                pattern: pattern.to_string(),
+                message: e.to_string(),
+            })?;
+            let count = re.find_iter(&text).count();
+            if count == 0 {
+                return Err(VaultError::ReplaceTextNotFound {
+                    path: path.flatten(),
+                });
+            }
+            if !all && count > 1 {
+                return Err(VaultError::ReplaceTextNotUnique {
+                    path: path.flatten(),
+                });
+            }
+            // regex `replacen` treats a limit of 0 as "replace all".
+            let limit = if all { 0 } else { 1 };
+            (count, re.replacen(&text, limit, replacement).into_owned())
         } else {
-            text.matches(old).count()
-        };
-        if count == 0 {
-            return Err(VaultError::ReplaceTextNotFound {
-                path: path.flatten(),
-            });
-        }
-        if !all && count > 1 {
-            return Err(VaultError::ReplaceTextNotUnique {
-                path: path.flatten(),
-            });
-        }
-        let updated = if all {
-            text.replace(old, new)
-        } else {
-            text.replacen(old, new, 1)
+            let count = if pattern.is_empty() {
+                0
+            } else {
+                text.matches(pattern).count()
+            };
+            if count == 0 {
+                return Err(VaultError::ReplaceTextNotFound {
+                    path: path.flatten(),
+                });
+            }
+            if !all && count > 1 {
+                return Err(VaultError::ReplaceTextNotUnique {
+                    path: path.flatten(),
+                });
+            }
+            let updated = if all {
+                text.replace(pattern, replacement)
+            } else {
+                text.replacen(pattern, replacement, 1)
+            };
+            (count, updated)
         };
         // Already holding the per-note lock from above; use the unlocked save so
         // we don't re-acquire it (the tokio Mutex is not reentrant).
@@ -2455,7 +2485,7 @@ mod modify_backup_tests {
         vault.create_note(&p, "hello world").await.unwrap();
 
         let n = vault
-            .replace_in_note(&p, "world", "there", false)
+            .replace_in_note(&p, "world", "there", false, false)
             .await
             .unwrap();
 
@@ -2470,7 +2500,7 @@ mod modify_backup_tests {
         vault.create_note(&p, "hello").await.unwrap();
 
         let e = vault
-            .replace_in_note(&p, "nope", "x", false)
+            .replace_in_note(&p, "nope", "x", false, false)
             .await
             .unwrap_err();
 
@@ -2485,7 +2515,7 @@ mod modify_backup_tests {
         vault.create_note(&p, "a a a").await.unwrap();
 
         let e = vault
-            .replace_in_note(&p, "a", "b", false)
+            .replace_in_note(&p, "a", "b", false, false)
             .await
             .unwrap_err();
 
@@ -2499,10 +2529,89 @@ mod modify_backup_tests {
         let p = VaultPath::new("note.md");
         vault.create_note(&p, "a a a").await.unwrap();
 
-        let n = vault.replace_in_note(&p, "a", "b", true).await.unwrap();
+        let n = vault
+            .replace_in_note(&p, "a", "b", true, false)
+            .await
+            .unwrap();
 
         assert_eq!(n, 3);
         assert_eq!(vault.get_note_text(&p).await.unwrap(), "b b b");
+    }
+
+    #[tokio::test]
+    async fn replace_regex_unique_swaps_match() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "version 1.2.3 here").await.unwrap();
+
+        let n = vault
+            .replace_in_note(&p, r"\d+\.\d+\.\d+", "9.9.9", false, true)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 1);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "version 9.9.9 here");
+    }
+
+    #[tokio::test]
+    async fn replace_regex_all_with_capture_groups() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a1 b2 c3").await.unwrap();
+
+        let n = vault
+            .replace_in_note(&p, r"([a-z])(\d)", "$2$1", true, true)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 3);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "1a 2b 3c");
+    }
+
+    #[tokio::test]
+    async fn replace_regex_not_unique_errors() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "cat cot cut").await.unwrap();
+
+        let e = vault
+            .replace_in_note(&p, r"c.t", "X", false, true)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(e, VaultError::ReplaceTextNotUnique { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "cat cot cut");
+    }
+
+    #[tokio::test]
+    async fn replace_regex_invalid_pattern_errors_and_leaves_note() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "untouched").await.unwrap();
+
+        let e = vault
+            .replace_in_note(&p, "(unclosed", "y", false, true)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(e, VaultError::InvalidRegex { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "untouched");
+    }
+
+    #[tokio::test]
+    async fn replace_literal_treats_metachars_literally() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a.b and axb").await.unwrap();
+
+        // Literal mode: "a.b" matches only the literal, not the regex "a<any>b".
+        let n = vault
+            .replace_in_note(&p, "a.b", "Z", false, false)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 1);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "Z and axb");
     }
 
     // ---- backups ----
@@ -2653,7 +2762,7 @@ mod modify_backup_tests {
             let v = vault.clone();
             let p = path.clone();
             handles.push(tokio::spawn(async move {
-                v.replace_in_note(&p, t, &t.to_uppercase(), false)
+                v.replace_in_note(&p, t, &t.to_uppercase(), false, false)
                     .await
                     .unwrap();
             }));
