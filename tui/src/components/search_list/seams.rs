@@ -37,6 +37,17 @@ pub enum Loaded<R> {
     Done,
 }
 
+/// How a loaded row set is narrowed/ordered for display. Three known
+/// strategies; none need test substitution, so folded in here.
+pub enum Filter<R: SearchRow> {
+    /// Trust the source's order (server-side filter already applied).
+    SourceOrder,
+    /// Local nucleo fuzzy over `match_text`.
+    Fuzzy,
+    /// Local rank: `(rows, query) -> display indices` (lower = better; absent = hidden).
+    Rank(std::sync::Arc<dyn Fn(&[R], &str) -> Vec<usize> + Send + Sync>),
+}
+
 /// The sink a `RowSource` writes rows into. Cheap to clone; carries the load
 /// generation so the engine can drop results from a superseded load.
 #[derive(Clone)]
