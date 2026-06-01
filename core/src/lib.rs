@@ -67,6 +67,11 @@ impl IndexReport {
 pub struct VaultConfig {
     pub workspace_path: std::path::PathBuf,
     pub db_path: Option<std::path::PathBuf>,
+    /// When `true`, destructive automated edits (overwrite, replace, delete, and
+    /// the backlink rewrites of rename/move) copy a note's previous content into
+    /// a hidden in-vault backup directory before mutating it. The TUI leaves this
+    /// off; the CLI and MCP server turn it on.
+    pub backup: bool,
 }
 
 impl VaultConfig {
@@ -74,6 +79,7 @@ impl VaultConfig {
         Self {
             workspace_path: workspace_path.into(),
             db_path: None,
+            backup: false,
         }
     }
 
@@ -81,6 +87,20 @@ impl VaultConfig {
         self.db_path = Some(db_path.into());
         self
     }
+
+    pub fn with_backup(mut self, backup: bool) -> Self {
+        self.backup = backup;
+        self
+    }
+}
+
+/// Result of a dry-run replace ([`NoteVault::preview_replace`]): how many matches
+/// would be replaced, and the note's content after the replacement. Nothing is
+/// written to disk.
+#[derive(Debug, Clone)]
+pub struct ReplacePreview {
+    pub count: usize,
+    pub content: String,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +113,15 @@ pub struct NoteVault {
     journal_path: VaultPath,
     inbox_path: VaultPath,
     vault_db: VaultDB,
+    /// Whether destructive writes back up the previous content first. Mirrors
+    /// [`VaultConfig::backup`]; see its docs.
+    backup: bool,
+    /// Per-note in-process write locks. Concurrent content mutations to the same
+    /// note (e.g. parallel MCP tool calls) serialize on these so a read-modify-
+    /// write like `replace` can't lose an update. Shared across clones via `Arc`.
+    /// Grows with the number of distinct notes mutated this process; entries are
+    /// tiny.
+    note_locks: Arc<std::sync::Mutex<HashMap<VaultPath, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 // SqlitePool doesn't implement PartialEq; two vaults are equivalent when they
@@ -109,6 +138,7 @@ impl NoteVault {
     /// needed.
     pub async fn new(config: VaultConfig) -> Result<Self, VaultError> {
         debug!("Creating new vault Instance");
+        let backup = config.backup;
         let workspace_path = config.workspace_path;
         if !workspace_path.exists() {
             return Err(VaultError::VaultPathNotFound {
@@ -131,6 +161,8 @@ impl NoteVault {
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
             vault_db,
+            backup,
+            note_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         };
         Ok(note_vault)
     }
@@ -610,11 +642,88 @@ impl NoteVault {
             })
     }
 
+    /// Backs up the current content of `path` when this vault was opened with
+    /// backups enabled (CLI/MCP), and is a no-op otherwise (TUI). Called before
+    /// any destructive write so the previous content stays recoverable.
+    async fn backup_if_enabled(&self, path: &VaultPath) -> Result<(), VaultError> {
+        if self.backup {
+            nfs::backup_note(self.workspace_path(), path).await?;
+        }
+        Ok(())
+    }
+
+    /// Acquires the per-note write lock, serializing content mutations to `path`
+    /// within this process so a read-modify-write (e.g. `replace`) can't be
+    /// interleaved by another in-process writer. Cross-process writers are not
+    /// covered — a local single-user vault rarely sees that, and backups make any
+    /// clobbered version recoverable.
+    async fn lock_note(&self, path: &VaultPath) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = path.flatten();
+        let lock = {
+            let mut map = self.note_locks.lock().unwrap();
+            map.entry(key)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+
+    /// Acquires the per-note locks for several notes at once, in a stable
+    /// (sorted, deduped) order so concurrent multi-note operations (e.g. two
+    /// renames with overlapping victims) can't deadlock. Hold the returned
+    /// guards for the duration of the operation.
+    async fn lock_notes<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a VaultPath>,
+    ) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+        let mut keys: Vec<VaultPath> = paths.into_iter().map(|p| p.flatten()).collect();
+        keys.sort();
+        keys.dedup();
+        let mut guards = Vec::with_capacity(keys.len());
+        for key in &keys {
+            guards.push(self.lock_note(key).await);
+        }
+        guards
+    }
+
+    /// Appends `text` to the note at `path`, creating it (with `default`
+    /// content) when absent. The read and the write run under the per-note lock
+    /// so concurrent appends to the same note can't lose an update.
+    pub async fn append_to_note(
+        &self,
+        path: &VaultPath,
+        text: &str,
+        default: Option<String>,
+    ) -> Result<(), VaultError> {
+        let _guard = self.lock_note(path).await;
+        let existing = self.load_or_create_note(path, default).await?;
+        let combined = if existing.is_empty() {
+            text.to_string()
+        } else {
+            format!("{existing}\n{text}")
+        };
+        self.save_note_unlocked(path, combined).await?;
+        Ok(())
+    }
+
     pub async fn save_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
         text: S,
     ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
+        let _guard = self.lock_note(path).await;
+        self.save_note_unlocked(path, text).await
+    }
+
+    /// Like [`save_note`] but assumes the caller already holds the per-note lock
+    /// (see [`lock_note`]). Used by read-modify-write operations such as
+    /// [`replace_in_note`] that hold the lock across both the read and the write.
+    async fn save_note_unlocked<S: AsRef<str>>(
+        &self,
+        path: &VaultPath,
+        text: S,
+    ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
+        self.backup_if_enabled(path).await?;
         let entry_data = nfs::save_note(self.workspace_path(), path, &text).await?;
         let note_details = NoteDetails::new(path, text);
         let content_data = note_details.get_content_data();
@@ -671,6 +780,8 @@ impl NoteVault {
     pub async fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         path.ensure_note()?;
+        let _guard = self.lock_note(&path).await;
+        self.backup_if_enabled(&path).await?;
 
         // Delete in DB first so the index never points at a missing file.
         let mut tx = self.vault_db.pool().begin().await?;
@@ -680,6 +791,116 @@ impl NoteVault {
         nfs::delete_note(self.workspace_path(), &path).await?;
 
         Ok(())
+    }
+
+    /// Computes the result of replacing `pattern` with `replacement` in `text`.
+    /// Pure — no I/O, no locking.
+    ///
+    /// `pattern` is a literal substring by default. When `regex` is `true` it is
+    /// a regular expression ([`regex`] crate syntax) and `replacement` may
+    /// reference capture groups (`$1`, `${name}`; use `$$` for a literal `$`).
+    /// Use inline flags for line/case behaviour, e.g. `(?m)`, `(?s)`, `(?i)`.
+    ///
+    /// When `all` is `false` the match must be unique: returns
+    /// [`VaultError::ReplaceTextNotFound`] when there is no match and
+    /// [`VaultError::ReplaceTextNotUnique`] when there is more than one. When
+    /// `all` is `true` every match is replaced. An invalid regex yields
+    /// [`VaultError::InvalidRegex`]. `path` is only used to build the errors.
+    /// Returns `(match count, new content)`.
+    fn compute_replacement(
+        text: &str,
+        pattern: &str,
+        replacement: &str,
+        all: bool,
+        regex: bool,
+        path: &VaultPath,
+    ) -> Result<(usize, String), VaultError> {
+        let count;
+        let updated;
+        if regex {
+            let re = regex::Regex::new(pattern).map_err(|e| VaultError::InvalidRegex {
+                pattern: pattern.to_string(),
+                message: e.to_string(),
+            })?;
+            count = re.find_iter(text).count();
+            if count == 0 {
+                return Err(VaultError::ReplaceTextNotFound {
+                    path: path.flatten(),
+                });
+            }
+            if !all && count > 1 {
+                return Err(VaultError::ReplaceTextNotUnique {
+                    path: path.flatten(),
+                });
+            }
+            // regex `replacen` treats a limit of 0 as "replace all".
+            let limit = if all { 0 } else { 1 };
+            updated = re.replacen(text, limit, replacement).into_owned();
+        } else {
+            count = if pattern.is_empty() {
+                0
+            } else {
+                text.matches(pattern).count()
+            };
+            if count == 0 {
+                return Err(VaultError::ReplaceTextNotFound {
+                    path: path.flatten(),
+                });
+            }
+            if !all && count > 1 {
+                return Err(VaultError::ReplaceTextNotUnique {
+                    path: path.flatten(),
+                });
+            }
+            updated = if all {
+                text.replace(pattern, replacement)
+            } else {
+                text.replacen(pattern, replacement, 1)
+            };
+        }
+        Ok((count, updated))
+    }
+
+    /// Replaces occurrences of `pattern` with `replacement` in the note at
+    /// `path`, writing the result. See [`compute_replacement`] for the matching
+    /// rules (literal vs `regex`, unique-unless-`all`, capture references).
+    /// Returns the number of replacements made.
+    pub async fn replace_in_note(
+        &self,
+        path: &VaultPath,
+        pattern: &str,
+        replacement: &str,
+        all: bool,
+        regex: bool,
+    ) -> Result<usize, VaultError> {
+        // Hold the per-note lock across the read and the write so a concurrent
+        // in-process writer can't change the note between them (lost update).
+        let _guard = self.lock_note(path).await;
+        let text = self.get_note_text(path).await?;
+        let (count, updated) =
+            Self::compute_replacement(&text, pattern, replacement, all, regex, path)?;
+        // Already holding the per-note lock; use the unlocked save so we don't
+        // re-acquire it (the tokio Mutex is not reentrant).
+        self.save_note_unlocked(path, updated).await?;
+        Ok(count)
+    }
+
+    /// Dry-run of [`replace_in_note`]: computes what the note would contain after
+    /// the replacement **without writing** (and without taking the write lock —
+    /// the result is advisory). Returns the same errors the real replace would
+    /// (not found / not unique / invalid regex).
+    pub async fn preview_replace(
+        &self,
+        path: &VaultPath,
+        pattern: &str,
+        replacement: &str,
+        all: bool,
+        regex: bool,
+    ) -> Result<ReplacePreview, VaultError> {
+        let text = self.get_note_text(path).await?;
+        let (count, content) =
+            Self::compute_replacement(&text, pattern, replacement, all, regex, path)?;
+        Ok(ReplacePreview { count, content })
     }
 
     pub async fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
@@ -699,10 +920,40 @@ impl NoteVault {
         let from = from.flatten();
         let to = to.flatten();
 
+        // Lock the source, the destination, and every backlink victim for the
+        // whole rename, so a concurrent in-process write to any of them can't
+        // interleave with the read → backup → rewrite below (lost update / stale
+        // backup). Locks are taken in a stable order to stay deadlock-free.
+        let victims: Vec<VaultPath> = db::get_backlinks(self.vault_db.pool(), &from)
+            .await?
+            .into_iter()
+            .map(|(e, _)| e.path)
+            .filter(|p| *p != from)
+            .collect();
+        let _guards = self
+            .lock_notes(
+                std::iter::once(&from)
+                    .chain(std::iter::once(&to))
+                    .chain(victims.iter()),
+            )
+            .await;
+
         // 1. Read every backlink file (excluding the source itself), computing
         //    rewritten contents in memory. No FS mutations yet — failure
         //    here aborts cleanly.
         let updates = self.read_backlink_rewrites(&from, &to).await?;
+
+        // 1a. Back up the pre-rewrite content of every note this rename will
+        //     modify — the backlink victims, plus the source itself (its
+        //     self-links are rewritten at the new path). Done before any FS
+        //     mutation so a backup failure aborts cleanly (fail-closed). These
+        //     writes go through nfs directly (not NoteVault::save_note), so the
+        //     backup gate is applied explicitly here.
+        if self.backup {
+            for path in updates.iter().map(|(p, _)| p).chain(std::iter::once(&from)) {
+                nfs::backup_note(self.workspace_path(), path).await?;
+            }
+        }
 
         // 2. Rename the source note on disk. If this fails, backlinks remain
         //    untouched and the DB is unchanged — clean abort.
@@ -2246,5 +2497,384 @@ mod suggest_api_tests {
         let (_tmp, vault) = new_vault().await;
         let got = vault.suggest_tags_by_prefix("", 50).await.unwrap();
         assert!(got.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod modify_backup_tests {
+    use super::{NoteVault, VaultConfig};
+    use crate::error::VaultError;
+    use crate::nfs::VaultPath;
+    use std::path::{Path, PathBuf};
+
+    async fn backup_vault() -> (tempfile::TempDir, NoteVault) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp.path()).with_backup(true))
+            .await
+            .unwrap();
+        vault.validate_and_init().await.unwrap();
+        (temp, vault)
+    }
+
+    fn backups_dir_today(workspace: &Path) -> PathBuf {
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        workspace.join(".kimun").join("backups").join(date)
+    }
+
+    // ---- replace_in_note ----
+
+    #[tokio::test]
+    async fn replace_swaps_unique_substring() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "hello world").await.unwrap();
+
+        let n = vault
+            .replace_in_note(&p, "world", "there", false, false)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 1);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "hello there");
+    }
+
+    #[tokio::test]
+    async fn replace_errors_when_absent() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "hello").await.unwrap();
+
+        let e = vault
+            .replace_in_note(&p, "nope", "x", false, false)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(e, VaultError::ReplaceTextNotFound { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn replace_errors_when_not_unique() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a a a").await.unwrap();
+
+        let e = vault
+            .replace_in_note(&p, "a", "b", false, false)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(e, VaultError::ReplaceTextNotUnique { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "a a a");
+    }
+
+    #[tokio::test]
+    async fn replace_all_replaces_every_occurrence() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a a a").await.unwrap();
+
+        let n = vault
+            .replace_in_note(&p, "a", "b", true, false)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 3);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "b b b");
+    }
+
+    #[tokio::test]
+    async fn replace_regex_unique_swaps_match() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "version 1.2.3 here").await.unwrap();
+
+        let n = vault
+            .replace_in_note(&p, r"\d+\.\d+\.\d+", "9.9.9", false, true)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 1);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "version 9.9.9 here");
+    }
+
+    #[tokio::test]
+    async fn replace_regex_all_with_capture_groups() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a1 b2 c3").await.unwrap();
+
+        let n = vault
+            .replace_in_note(&p, r"([a-z])(\d)", "$2$1", true, true)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 3);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "1a 2b 3c");
+    }
+
+    #[tokio::test]
+    async fn replace_regex_not_unique_errors() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "cat cot cut").await.unwrap();
+
+        let e = vault
+            .replace_in_note(&p, r"c.t", "X", false, true)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(e, VaultError::ReplaceTextNotUnique { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "cat cot cut");
+    }
+
+    #[tokio::test]
+    async fn replace_regex_invalid_pattern_errors_and_leaves_note() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "untouched").await.unwrap();
+
+        let e = vault
+            .replace_in_note(&p, "(unclosed", "y", false, true)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(e, VaultError::InvalidRegex { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "untouched");
+    }
+
+    #[tokio::test]
+    async fn replace_literal_treats_metachars_literally() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a.b and axb").await.unwrap();
+
+        // Literal mode: "a.b" matches only the literal, not the regex "a<any>b".
+        let n = vault
+            .replace_in_note(&p, "a.b", "Z", false, false)
+            .await
+            .unwrap();
+
+        assert_eq!(n, 1);
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "Z and axb");
+    }
+
+    #[tokio::test]
+    async fn preview_replace_reports_result_without_writing() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "hello world").await.unwrap();
+
+        let pv = vault
+            .preview_replace(&p, "world", "there", false, false)
+            .await
+            .unwrap();
+        assert_eq!(pv.count, 1);
+        assert_eq!(pv.content, "hello there");
+
+        // The note on disk is untouched.
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn preview_replace_surfaces_same_errors() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a a").await.unwrap();
+
+        let e = vault
+            .preview_replace(&p, "a", "b", false, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, VaultError::ReplaceTextNotUnique { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "a a");
+    }
+
+    // ---- backups ----
+
+    #[tokio::test]
+    async fn overwrite_backs_up_previous_content_when_enabled() {
+        let (temp, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "original").await.unwrap();
+
+        vault.save_note(&p, "updated").await.unwrap();
+
+        let backup = backups_dir_today(temp.path()).join("note.md");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original");
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "updated");
+    }
+
+    #[tokio::test]
+    async fn overwrite_does_not_back_up_when_disabled() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(temp.path())).await.unwrap();
+        vault.validate_and_init().await.unwrap();
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "original").await.unwrap();
+
+        vault.save_note(&p, "updated").await.unwrap();
+
+        assert!(!temp.path().join(".kimun").join("backups").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_backs_up_when_enabled() {
+        let (temp, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "content").await.unwrap();
+
+        vault.delete_note(&p).await.unwrap();
+
+        let backup = backups_dir_today(temp.path()).join("note.md");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "content");
+    }
+
+    #[tokio::test]
+    async fn repeat_same_day_edit_keeps_every_backup() {
+        let (temp, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "v0").await.unwrap();
+        vault.save_note(&p, "v1").await.unwrap();
+        vault.save_note(&p, "v2").await.unwrap();
+
+        let dir = backups_dir_today(temp.path());
+        let count = std::fs::read_dir(&dir).unwrap().count();
+        assert_eq!(count, 2, "both pre-images should be retained");
+    }
+
+    #[tokio::test]
+    async fn purge_removes_backups_older_than_retention() {
+        let (temp, vault) = backup_vault().await;
+        let old = temp
+            .path()
+            .join(".kimun")
+            .join("backups")
+            .join("2000-01-01");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("ancient.md"), "x").unwrap();
+
+        // Any backup write triggers the lazy purge sweep.
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a").await.unwrap();
+        vault.save_note(&p, "b").await.unwrap();
+
+        assert!(!old.exists(), "stale date-dir should be purged");
+        assert!(
+            backups_dir_today(temp.path()).exists(),
+            "today's backup is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn backups_are_not_indexed() {
+        let (_temp, vault) = backup_vault().await;
+        let p = VaultPath::note_path_from("/note.md");
+        vault.create_note(&p, "live").await.unwrap();
+        vault.save_note(&p, "changed").await.unwrap();
+
+        // Re-scan the filesystem; the walker must skip the hidden .kimun dir.
+        vault.validate_and_init().await.unwrap();
+        let notes = vault.get_all_notes().await.unwrap();
+
+        let paths: Vec<String> = notes.iter().map(|(e, _)| e.path.to_string()).collect();
+        // The walker must skip the hidden `.kimun` backups dir: no indexed note
+        // may point into it.
+        assert!(
+            paths
+                .iter()
+                .all(|p| !p.contains(".kimun") && !p.contains("backups")),
+            "backup files must not be indexed: {paths:?}"
+        );
+        // The live note is still indexed.
+        assert!(
+            paths.iter().any(|p| p.contains("note")),
+            "live note should be indexed: {paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_backs_up_backlink_victims() {
+        let (temp, vault) = backup_vault().await;
+        let b = VaultPath::note_path_from("/b.md");
+        let a = VaultPath::note_path_from("/a.md");
+        vault.create_note(&b, "I am b").await.unwrap();
+        vault
+            .create_note(&a, "see [[b]] for details")
+            .await
+            .unwrap();
+
+        vault
+            .rename_note(&b, &VaultPath::note_path_from("/c.md"))
+            .await
+            .unwrap();
+
+        // The rename rewrites a's link b -> c. a's pre-rewrite content (still
+        // pointing at b) must be backed up, since the rewrite goes through nfs
+        // directly rather than NoteVault::save_note.
+        let backup = backups_dir_today(temp.path()).join("a.md");
+        let content = std::fs::read_to_string(&backup)
+            .unwrap_or_else(|e| panic!("victim backup a.md should exist: {e}"));
+        assert!(
+            content.contains("[[b]]"),
+            "backup should hold the pre-rewrite content: {content:?}"
+        );
+        // And the live note was actually rewritten to point at c.
+        assert!(vault.get_note_text(&a).await.unwrap().contains("[[c]]"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_replaces_do_not_lose_updates() {
+        let (_temp, vault) = backup_vault().await;
+        let path = VaultPath::note_path_from("/note.md");
+        let tokens = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        vault.create_note(&path, tokens.join(" ")).await.unwrap();
+
+        // Fire every replace concurrently against the same note. Each does a
+        // read-modify-write; without the per-note lock, racing reads would drop
+        // most updates (last-writer-wins). Clones share the lock map.
+        let mut handles = Vec::new();
+        for t in tokens {
+            let v = vault.clone();
+            let p = path.clone();
+            handles.push(tokio::spawn(async move {
+                v.replace_in_note(&p, t, &t.to_uppercase(), false, false)
+                    .await
+                    .unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // All eight replacements survived; none lost to a racing writer.
+        assert_eq!(vault.get_note_text(&path).await.unwrap(), "A B C D E F G H");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_appends_do_not_lose_updates() {
+        let (_temp, vault) = backup_vault().await;
+        let path = VaultPath::note_path_from("/log.md");
+        let lines = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
+        // append_to_note does its read-or-create + write under the per-note lock,
+        // so concurrent appends to one note all land (none lost to a racing read).
+        let mut handles = Vec::new();
+        for l in lines {
+            let v = vault.clone();
+            let p = path.clone();
+            handles.push(tokio::spawn(async move {
+                v.append_to_note(&p, l, None).await.unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let text = vault.get_note_text(&path).await.unwrap();
+        assert_eq!(text.lines().count(), lines.len(), "lines: {text:?}");
+        for l in lines {
+            assert!(text.contains(l), "missing {l} in {text:?}");
+        }
     }
 }

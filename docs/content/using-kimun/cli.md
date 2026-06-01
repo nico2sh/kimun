@@ -316,6 +316,80 @@ EOF
 kimun search "rust" --format paths | kimun note append "inbox/rust-refs"
 ```
 
+### Overwrite
+
+Replace a note's **entire** body with new content. Because it discards the old
+body, it requires `--force`.
+
+```sh
+kimun note overwrite "projects/roadmap" "Brand new body" --force
+echo "New body" | kimun note overwrite "projects/roadmap" --force
+```
+
+#### Features
+
+- Accepts content as a second argument or from stdin (when stdin is not a TTY)
+- Requires `--force`; without it the command refuses to run (there is no
+  interactive prompt — the CLI is built for automation)
+- Backs up the previous content first (see [Backups](#backups))
+
+### Replace
+
+Swap text for new text, leaving the rest of the note intact. The find text is a
+literal substring by default, or a regular expression with `--regex`.
+
+```sh
+kimun note replace "projects/roadmap" "Q2" "Q3"
+kimun note replace "projects/roadmap" "TODO" "DONE" --all
+kimun note replace "notes/log" "v\d+\.\d+" "v2.0" --regex
+kimun note replace "notes/log" "(\w+)@(\w+)" "$2.$1" --regex --all
+kimun note replace "projects/roadmap" "TODO" "DONE" --all --preview
+```
+
+#### Features
+
+- The find text must match **exactly once**; the command errors if it is missing
+  or appears more than once, so it never edits the wrong place
+- `--all` replaces every occurrence on purpose
+- `--regex` treats the find text as a regular expression; the replacement may
+  then reference capture groups (`$1`, `${name}`; use `$$` for a literal `$`,
+  and `${1}`/`${name}` when the next character is alphanumeric, e.g. `${1}_`).
+  Use inline flags for line/case behaviour — `(?m)`, `(?s)`, `(?i)`. An invalid
+  pattern errors without touching the note.
+- `--preview` is a dry run: it prints the resulting note content to stdout (the
+  match count goes to stderr) and writes **nothing**. Pipe it to compare, e.g.
+  `kimun note replace … --preview | diff <(kimun note show "…") -`
+- No `--force` needed — it is a targeted, scriptable edit
+- Backs up the previous content first (see [Backups](#backups))
+
+### Delete
+
+Remove a note. Requires `--force`.
+
+```sh
+kimun note delete "inbox/stale-idea" --force
+```
+
+#### Features
+
+- Requires `--force`; without it the command refuses to run
+- Removes the note from the index as well as from disk
+- Backs up the deleted content first (see [Backups](#backups))
+
+### Backups
+
+Every CLI (and MCP) edit that overwrites or deletes a note's content copies the
+old content into a hidden, dated directory inside the vault before changing it.
+These backups are excluded from indexing and search, kept for 30 days, then
+purged automatically.
+
+- Covers `overwrite`, `replace`, `delete`, and the backlink rewrites performed by
+  rename/move. `create` and a first-time `append` have nothing to back up.
+- Interactive TUI editing does **not** create backups (the editor has its own
+  history).
+- If a backup cannot be written, the operation is aborted and the note is left
+  untouched (fail-closed).
+
 ## Quick Note
 
 Capture a thought instantly. The note is saved in the inbox directory with a timestamp-based filename.
