@@ -334,15 +334,32 @@ impl<R: SearchRow> SearchList<R> {
     pub fn handle_mouse(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> SearchMouse {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Position;
+        // Any mouse interaction dismisses an open autocomplete popup (matches
+        // the old modal: a click on the preview/border closes a stale popup).
+        if let Some(ac) = &mut self.autocomplete {
+            ac.close();
+        }
         let r = self.list_rect;
-        if !r.contains(Position { x: m.column, y: m.row }) { return SearchMouse::None; }
+        if !r.contains(Position { x: m.column, y: m.row }) {
+            return SearchMouse::None;
+        }
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) if m.row > r.y => {
-                let rel = (m.row - r.y - 1) as usize; // border-aware, consistent with note_browser
-                if rel < self.display.len() {
+                let target_visual = (m.row - r.y - 1) as u16; // 0-based visual offset into the list body
+                let mut acc: u16 = 0;
+                let mut hit: Option<usize> = None;
+                for (disp_idx, &row_idx) in self.display.iter().enumerate() {
+                    let h = self.rows.get(row_idx).map(|row| row.visual_height()).unwrap_or(1);
+                    if target_visual < acc + h {
+                        hit = Some(disp_idx);
+                        break;
+                    }
+                    acc += h;
+                }
+                if let Some(disp_idx) = hit {
                     let prev = self.selected;
-                    self.selected = Some(rel);
-                    return if prev == Some(rel) { SearchMouse::Activated(rel) } else { SearchMouse::Selected(rel) };
+                    self.selected = Some(disp_idx);
+                    return if prev == Some(disp_idx) { SearchMouse::Activated(disp_idx) } else { SearchMouse::Selected(disp_idx) };
                 }
                 SearchMouse::None
             }
@@ -408,6 +425,47 @@ mod tests {
     }
 
     fn key(c: KeyCode) -> KeyEvent { KeyEvent::new(c, KeyModifiers::NONE) }
+
+    fn mouse_down_at(col: u16, row: u16) -> ratatui::crossterm::event::MouseEvent {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: col, row, modifiers: KeyModifiers::NONE }
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct TallRow { name: String, height: u16 }
+    impl SearchRow for TallRow {
+        fn to_list_item(&self, _t: &crate::settings::themes::Theme, _i: &crate::settings::icons::Icons, _s: bool) -> ratatui::widgets::ListItem<'static> {
+            ratatui::widgets::ListItem::new(self.name.clone())
+        }
+        fn visual_height(&self) -> u16 { self.height }
+        fn match_text(&self) -> Option<&str> { Some(&self.name) }
+    }
+    struct TallSource(Vec<TallRow>);
+    #[async_trait::async_trait]
+    impl RowSource<TallRow> for TallSource {
+        async fn load(&self, _q: &str, emit: Emit<TallRow>) { emit.replace(self.0.clone()); }
+    }
+
+    #[tokio::test]
+    async fn mouse_maps_visual_row_to_display_index_by_height() {
+        // Row 0 occupies 3 visual rows, row 1 occupies 1. List rect at y=0 (border row 0).
+        let src = TallSource(vec![
+            TallRow { name: "a".into(), height: 3 },
+            TallRow { name: "b".into(), height: 1 },
+        ]);
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        // Force the recorded list rect (render not run in test): list area starts after a border at y=0.
+        list.set_list_rect(ratatui::layout::Rect { x: 0, y: 0, width: 20, height: 10 });
+        // A left-click at row 4 = border(0) + 3 rows of "a" (1..=3) -> row 4 is the FIRST row of "b".
+        let m = mouse_down_at(2, 4);
+        assert!(matches!(list.handle_mouse(&m), SearchMouse::Selected(1)));
+        assert_eq!(list.selected_row().unwrap().name, "b");
+        // A click at row 2 = within "a" (rows 1..=3) -> display index 0.
+        let m = mouse_down_at(2, 2);
+        list.handle_mouse(&m);
+        assert_eq!(list.selected_row().unwrap().name, "a");
+    }
 
     #[tokio::test]
     async fn initial_load_populates_rows() {
