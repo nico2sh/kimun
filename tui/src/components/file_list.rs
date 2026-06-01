@@ -247,6 +247,25 @@ impl FileListEntry {
     }
 }
 
+impl crate::components::search_list::SearchRow for FileListEntry {
+    fn to_list_item(&self, theme: &Theme, icons: &Icons, _selected: bool) -> ListItem<'static> {
+        // Reuse the collapsed row rendering FileListComponent already uses;
+        // the engine applies the selection highlight via `highlight_style`.
+        FileListEntry::to_list_item(self, theme, icons)
+    }
+
+    fn visual_height(&self) -> u16 {
+        FileListEntry::visual_height(self)
+    }
+
+    fn match_text(&self) -> Option<&str> {
+        match self {
+            Self::Note { filename, .. } | Self::CreateNote { filename, .. } => Some(filename),
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Nucleo helper
 // ---------------------------------------------------------------------------

@@ -308,6 +308,16 @@ impl<R: SearchRow> SearchList<R> {
         let _ = focused;
     }
 
+    /// Override the rect used for mouse hit-testing. Hosts that draw the list
+    /// inside their own bordered block render into the block's inner area but
+    /// must record the block's OUTER rect, because [`handle_mouse`] hit-tests
+    /// as `row - rect.y - 1` (assuming the first row of `rect` is a border).
+    ///
+    /// [`handle_mouse`]: Self::handle_mouse
+    pub fn set_list_rect(&mut self, rect: Rect) {
+        self.list_rect = rect;
+    }
+
     pub fn render_autocomplete(&mut self, f: &mut Frame, clamp: Rect, theme: &Theme) {
         if let Some(ac) = &mut self.autocomplete {
             ac.poll_results();
