@@ -65,6 +65,11 @@ pub struct SearchList<R: SearchRow> {
     intercept: Vec<KeyCombo>,
     icons: Icons,
     list_rect: Rect,
+    /// Load generation whose rows are currently held. When a newer generation
+    /// (a requery / reload) delivers its first event, `poll` clears the stale
+    /// rows before applying it — required for streamed (`Push`) sources, which
+    /// would otherwise append onto a superseded load's rows.
+    applied_generation: u64,
 }
 
 /// Mouse interaction result from [`SearchList::handle_mouse`].
@@ -125,11 +130,24 @@ impl<R: SearchRow> SearchList<R> {
             intercept: b.intercept,
             icons: b.icons,
             list_rect: Rect::default(),
+            applied_generation: 0,
         }
     }
 
     pub fn poll(&mut self) {
-        for ev in self.loader.drain() {
+        let drained = self.loader.drain();
+        if !drained.is_empty() {
+            // A newer load delivered its first event(s): drop the prior load's
+            // rows so a streamed source starts from a clean slate (one-shot
+            // `Replace` overwrites anyway, but `Push` would otherwise append).
+            let current_gen = self.loader.generation();
+            if current_gen != self.applied_generation {
+                self.rows.clear();
+                self.selected = None;
+                self.applied_generation = current_gen;
+            }
+        }
+        for ev in drained {
             match ev {
                 LoadedInner::Replace(rows) => {
                     let mut rows = rows;
