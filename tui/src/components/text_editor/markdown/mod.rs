@@ -134,6 +134,12 @@ pub struct ParsedLine {
     /// Per-char element index, 1-based (0 = no element). Enables O(1) `elem_at`.
     /// Stored as `u16`; supports up to 65535 elements per line.
     elem_index: Vec<u16>,
+    /// Per-char text-modifier mask (`MOD_BOLD` / `MOD_ITALIC` / `MOD_STRIKE`)
+    /// OR-ed from *every* element covering the char, so an inner Link/WikiLink
+    /// nested inside `**…**` / `*…*` still renders bold/italic. `elem_index`
+    /// only tracks the innermost element (for fg/underline), which would
+    /// otherwise drop the outer emphasis modifiers.
+    modifier_mask: Vec<u8>,
     /// Char offset where the list-item sigil (indent + marker + space) ends on
     /// this line, or `None` if this line is not the first line of a list item.
     list_sigil_end: Option<usize>,
@@ -190,6 +196,12 @@ impl ParsedLine {
     /// Whether `pos` falls inside any tracked element. O(1) via precomputed `elem_vis`.
     pub fn in_any_element(&self, pos: usize) -> bool {
         self.elem_vis.get(pos).copied().unwrap_or(false)
+    }
+
+    /// Combined emphasis-modifier mask (`MOD_*`) for the char at `pos`, OR-ed
+    /// across all covering elements. `0` outside any emphasis element.
+    pub(super) fn modifiers_at(&self, pos: usize) -> u8 {
+        self.modifier_mask.get(pos).copied().unwrap_or(0)
     }
 
     /// Returns the char offset of the first *content* char inside a heading element
@@ -344,6 +356,36 @@ pub(super) fn list_marker_len(s: &str) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// Per-char emphasis-modifier bits, OR-ed across nested elements.
+pub(super) const MOD_BOLD: u8 = 1 << 0;
+pub(super) const MOD_ITALIC: u8 = 1 << 1;
+pub(super) const MOD_STRIKE: u8 = 1 << 2;
+
+/// Emphasis bit contributed by an element kind, or `0` for non-emphasis kinds.
+pub(super) fn modifier_bit(kind: ElementKind) -> u8 {
+    match kind {
+        ElementKind::Bold => MOD_BOLD,
+        ElementKind::Italic => MOD_ITALIC,
+        ElementKind::Strikethrough => MOD_STRIKE,
+        _ => 0,
+    }
+}
+
+/// Translates a `MOD_*` mask into ratatui [`Modifier`] flags.
+pub(super) fn mask_to_modifier(mask: u8) -> Modifier {
+    let mut m = Modifier::empty();
+    if mask & MOD_BOLD != 0 {
+        m |= Modifier::BOLD;
+    }
+    if mask & MOD_ITALIC != 0 {
+        m |= Modifier::ITALIC;
+    }
+    if mask & MOD_STRIKE != 0 {
+        m |= Modifier::CROSSED_OUT;
+    }
+    m
 }
 
 pub(super) fn span_style(kind: Option<ElementKind>, is_sigil_region: bool, theme: &Theme) -> Style {
@@ -944,6 +986,62 @@ mod tests {
             text(&s),
             "# bold",
             "leading * must not leak into heading sigil"
+        );
+    }
+
+    #[test]
+    fn bold_wikilink_is_bold() {
+        let line = "**[[Topic]]**";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "Topic");
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::BOLD)
+                    && sp.content.contains("Topic")),
+            "wikilink wrapped in ** must render bold"
+        );
+    }
+
+    #[test]
+    fn italic_link_is_italic() {
+        let line = "*[text](http://x)*";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "text");
+        assert!(
+            s.iter()
+                .any(|sp| sp.style.add_modifier.contains(Modifier::ITALIC)
+                    && sp.content.contains("text")),
+            "link wrapped in * must render italic"
+        );
+    }
+
+    #[test]
+    fn bold_italic_wikilink_is_bold_and_italic() {
+        let line = "***[[Topic]]***";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "Topic");
+        assert!(
+            s.iter().any(|sp| {
+                sp.content.contains("Topic")
+                    && sp.style.add_modifier.contains(Modifier::BOLD)
+                    && sp.style.add_modifier.contains(Modifier::ITALIC)
+            }),
+            "wikilink in *** *** must render both bold and italic"
+        );
+    }
+
+    #[test]
+    fn bold_italic_plain_text() {
+        let line = "***text***";
+        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        assert_eq!(text(&s), "text");
+        assert!(
+            s.iter().any(|sp| {
+                sp.content.contains("text")
+                    && sp.style.add_modifier.contains(Modifier::BOLD)
+                    && sp.style.add_modifier.contains(Modifier::ITALIC)
+            }),
+            "*** *** must render both bold and italic"
         );
     }
 
