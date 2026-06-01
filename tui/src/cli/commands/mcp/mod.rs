@@ -174,18 +174,8 @@ impl KimunHandler {
         Parameters(p): Parameters<AppendNoteParams>,
     ) -> Result<CallToolResult, McpError> {
         let vault_path = Self::resolve_path(&p.path);
-        let existing = self
-            .vault
-            .load_or_create_note(&vault_path, None)
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        let combined = if existing.is_empty() {
-            p.content
-        } else {
-            format!("{}\n{}", existing, p.content)
-        };
         self.vault
-            .save_note(&vault_path, &combined)
+            .append_to_note(&vault_path, &p.content, None)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -203,6 +193,11 @@ impl KimunHandler {
         Parameters(p): Parameters<OverwriteNoteParams>,
     ) -> Result<CallToolResult, McpError> {
         let vault_path = Self::resolve_path(&p.path);
+        if p.content.is_empty() {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Refusing to overwrite with empty content (this would wipe the note); pass content, or use delete_note to remove it",
+            )]));
+        }
         match self.vault.save_note(&vault_path, &p.content).await {
             Ok(_) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "Note saved: {}",
@@ -251,6 +246,12 @@ impl KimunHandler {
         match self.vault.delete_note(&vault_path).await {
             Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "Note deleted: {}",
+                vault_path
+            ))])),
+            Err(kimun_core::error::VaultError::FSError(
+                kimun_core::error::FSError::VaultPathNotFound { .. },
+            )) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Note not found: {}",
                 vault_path
             ))])),
             Err(e) => Err(McpError::internal_error(e.to_string(), None)),
@@ -359,32 +360,15 @@ impl KimunHandler {
             }
         };
 
-        let (vault_path, existing) = if p.date.is_none() {
-            // Today — use journal_entry() which handles create-if-absent internally
-            let (details, existing) = self
-                .vault
-                .journal_entry()
-                .await
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-            (details.path, existing)
-        } else {
-            // Specific date — build path manually
-            let journal_path = self
-                .vault
-                .journal_path()
-                .append(&VaultPath::note_path_from(&date_str))
-                .absolute();
-            let existing = self
-                .vault
-                .load_or_create_note(&journal_path, Some(format!("# {}\n\n", date_str)))
-                .await
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-            (journal_path, existing)
-        };
-
-        let combined = format!("{}\n{}", existing, p.text);
+        // Both today and a specific date resolve to journal/<date>; append under
+        // the per-note lock so concurrent journal writes can't lose an entry.
+        let vault_path = self
+            .vault
+            .journal_path()
+            .append(&VaultPath::note_path_from(&date_str))
+            .absolute();
         self.vault
-            .save_note(&vault_path, &combined)
+            .append_to_note(&vault_path, &p.text, Some(format!("# {}\n\n", date_str)))
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 

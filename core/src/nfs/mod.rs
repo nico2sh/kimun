@@ -515,15 +515,16 @@ static LAST_PURGE: std::sync::LazyLock<
 /// thereby abort) the edit that triggered it.
 async fn purge_old_backups(backups_root: &Path) {
     let today = chrono::Utc::now().date_naive();
+    // Skip if we already swept this root today (in this process). The marker is
+    // only stamped AFTER a successful sweep below, so a transient failure (e.g.
+    // the dir not existing yet, or a read error) is retried on the next backup.
+    if LAST_PURGE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(root, day)| root == backups_root && *day == today)
     {
-        let mut last = LAST_PURGE.lock().unwrap();
-        if last
-            .as_ref()
-            .is_some_and(|(root, day)| root == backups_root && *day == today)
-        {
-            return;
-        }
-        *last = Some((backups_root.to_path_buf(), today));
+        return;
     }
     let cutoff = today - chrono::Duration::days(BACKUP_RETENTION_DAYS);
     let mut entries = match tokio::fs::read_dir(backups_root).await {
@@ -538,6 +539,7 @@ async fn purge_old_backups(backups_root: &Path) {
             }
         }
     }
+    *LAST_PURGE.lock().unwrap() = Some((backups_root.to_path_buf(), today));
 }
 
 /// Atomically reserves a free backup destination: tries the mirrored name first,
@@ -582,8 +584,13 @@ pub(crate) async fn backup_note<P: AsRef<Path>>(
 ) -> Result<(), FSError> {
     let workspace_path = workspace_path.as_ref();
     let src = resolve_path_on_disk(workspace_path, path).await;
-    if !tokio::fs::try_exists(&src).await.unwrap_or(false) {
-        return Ok(());
+    // Fail closed: only skip the backup when the source is genuinely absent.
+    // A probe error (FS unhealthy) must abort the edit, not silently proceed
+    // without a pre-image.
+    match tokio::fs::try_exists(&src).await {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(e) => return Err(FSError::ReadFileError(e)),
     }
 
     let rel = src

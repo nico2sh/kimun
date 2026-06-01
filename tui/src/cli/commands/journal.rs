@@ -70,29 +70,12 @@ async fn run_append(vault: &NoteVault, date: Option<&str>, content: Option<Strin
         return Ok(());
     }
 
-    let (vault_path, existing) = match date {
-        None => {
-            // Today — journal_entry() handles create-if-absent internally.
-            let (details, existing) = vault
-                .journal_entry()
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-            (details.path, existing)
-        }
-        Some(d) => {
-            let date_str = resolve_date(Some(d))?;
-            let vault_path = journal_entry_path(vault, &date_str);
-            let existing = vault
-                .load_or_create_note(&vault_path, Some(format!("# {}\n\n", date_str)))
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
-            (vault_path, existing)
-        }
-    };
-
-    let combined = format!("{}\n{}", existing, text);
+    // Today and a specific date both resolve to journal/<date>; append under the
+    // per-note lock so concurrent journal writes can't lose an entry.
+    let date_str = resolve_date(date)?;
+    let vault_path = journal_entry_path(vault, &date_str);
     vault
-        .save_note(&vault_path, &combined)
+        .append_to_note(&vault_path, &text, Some(format!("# {}\n\n", date_str)))
         .await
         .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
 
