@@ -3,6 +3,7 @@
 
 mod seams;
 mod load;
+mod host;
 #[cfg(test)]
 mod adapters;
 
@@ -11,6 +12,7 @@ pub use seams::{Emit, Filter, Loaded, RowSource, SearchRow, SuggestionItem, Sugg
 use std::sync::Arc;
 use load::LoadEngine;
 use seams::Loaded as LoadedInner;
+use crate::components::autocomplete::{AutocompleteController, AutocompleteMode, HandleKeyOutcome, TriggerOptions};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use ratatui::crossterm::event::KeyEvent;
 
@@ -54,6 +56,7 @@ pub struct SearchList<R: SearchRow> {
     query: String,
     loader: LoadEngine<R>,
     input: SingleLineInput,
+    autocomplete: Option<AutocompleteController>,
 }
 
 pub struct SearchListBuilder<R: SearchRow> {
@@ -61,17 +64,27 @@ pub struct SearchListBuilder<R: SearchRow> {
     redraw: Arc<dyn Fn() + Send + Sync>,
     initial_query: String,
     filter: Filter<R>,
+    autocomplete: Option<(Arc<dyn SuggestionSource>, AutocompleteMode)>,
 }
 
 impl<R: SearchRow> SearchList<R> {
     pub fn builder(source: impl RowSource<R>, redraw: Arc<dyn Fn() + Send + Sync>) -> SearchListBuilder<R> {
-        SearchListBuilder { source: Arc::new(source), redraw, initial_query: String::new(), filter: Filter::SourceOrder }
+        SearchListBuilder { source: Arc::new(source), redraw, initial_query: String::new(), filter: Filter::SourceOrder, autocomplete: None }
     }
 
     fn new(b: SearchListBuilder<R>) -> Self {
         let mut loader = LoadEngine::new(b.redraw.clone());
         loader.start(b.source.clone(), b.initial_query.clone());
         let input = SingleLineInput::with_value(&b.initial_query);
+        let autocomplete = b.autocomplete.map(|(suggestions, mode)| {
+            #[allow(unused_mut)]
+            let mut ac = AutocompleteController::new(suggestions, mode)
+                .with_trigger_opts(TriggerOptions { disambiguate_header: false, apply_exclusion_zone: false });
+            #[cfg(test)]
+            let mut ac = ac.with_debounce(std::time::Duration::ZERO);
+            ac.set_redraw_callback(b.redraw.clone());
+            ac
+        });
         Self {
             source: b.source,
             rows: Vec::new(),
@@ -81,6 +94,7 @@ impl<R: SearchRow> SearchList<R> {
             query: b.initial_query,
             loader,
             input,
+            autocomplete,
         }
     }
 
@@ -103,6 +117,23 @@ impl<R: SearchRow> SearchList<R> {
         self.recompute_display();
         if self.selected.is_none() && !self.display.is_empty() {
             self.selected = Some(0);
+        }
+        if let Some(ac) = &mut self.autocomplete {
+            ac.poll_results();
+        }
+    }
+
+    /// Build a host snapshot from the current input state.
+    /// Only reads `self.input` so the result can be stored in a local
+    /// before taking `&mut self.autocomplete`, resolving the borrow conflict.
+    fn autocomplete_snapshot(&self) -> host::SearchBoxHostSnapshot {
+        let value = self.input.value().to_string();
+        let cursor_byte = self.input.cursor_byte();
+        let col = value[..cursor_byte.min(value.len())].chars().count();
+        host::SearchBoxHostSnapshot {
+            lines: vec![value],
+            cursor: (0, col),
+            caret_pos: self.input.last_caret_pos(),
         }
     }
 
@@ -153,6 +184,25 @@ impl<R: SearchRow> SearchList<R> {
 
     pub fn handle_key(&mut self, key: &KeyEvent) -> KeyReaction {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        // Autocomplete popup gets first crack when open. Build snapshot before
+        // taking &mut self.autocomplete to avoid borrow-checker conflict
+        // (snapshot only reads self.input).
+        if self.autocomplete.as_ref().map_or(false, |ac| ac.is_open()) {
+            let snap = self.autocomplete_snapshot();
+            if let Some(ac) = &mut self.autocomplete {
+                match ac.handle_key(*key, &snap) {
+                    HandleKeyOutcome::Accepted(action) => {
+                        self.input.replace_range_bytes(action.range.clone(), &action.new_text, action.new_cursor_byte);
+                        self.set_query(self.input.value().to_string());
+                        return KeyReaction::Consumed;
+                    }
+                    HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => return KeyReaction::Consumed,
+                    HandleKeyOutcome::NotHandled => {}
+                }
+            }
+        }
+
         match key.code {
             KeyCode::Up => { self.select_prev(); return KeyReaction::Consumed; }
             KeyCode::Down => { self.select_next(); return KeyReaction::Consumed; }
@@ -167,7 +217,23 @@ impl<R: SearchRow> SearchList<R> {
                 return KeyReaction::Unhandled;
             }
         }
-        match self.input.handle_key(key) {
+        let outcome = self.input.handle_key(key);
+        // Sync/refresh/close the autocomplete popup based on the input outcome.
+        // Build snapshot before taking &mut self.autocomplete (same borrow trick).
+        let snap = self.autocomplete_snapshot();
+        match outcome {
+            InputOutcome::Changed => {
+                if let Some(ac) = &mut self.autocomplete { ac.sync(&snap); }
+            }
+            InputOutcome::Consumed => {
+                if let Some(ac) = &mut self.autocomplete { ac.refresh_if_open(&snap); }
+            }
+            InputOutcome::Cancel | InputOutcome::Submit => {
+                if let Some(ac) = &mut self.autocomplete { ac.close(); }
+            }
+            InputOutcome::NotConsumed => {}
+        }
+        match outcome {
             InputOutcome::Changed => { self.set_query(self.input.value().to_string()); KeyReaction::Consumed }
             InputOutcome::Consumed => KeyReaction::Consumed,
             InputOutcome::Submit => KeyReaction::Submit,
@@ -212,6 +278,10 @@ impl<R: SearchRow> SearchList<R> {
 impl<R: SearchRow> SearchListBuilder<R> {
     pub fn initial_query(mut self, q: impl Into<String>) -> Self { self.initial_query = q.into(); self }
     pub fn filter(mut self, f: Filter<R>) -> Self { self.filter = f; self }
+    pub fn autocomplete(mut self, suggestions: Arc<dyn SuggestionSource>, mode: AutocompleteMode) -> Self {
+        self.autocomplete = Some((suggestions, mode));
+        self
+    }
     pub fn build(self) -> SearchList<R> { SearchList::new(self) }
 }
 
@@ -302,5 +372,25 @@ mod tests {
         list.poll_until_idle().await;
         assert_eq!(list.visible_rows().len(), 2);
         assert_eq!(list.selected_row().unwrap().name, "a");
+    }
+
+    #[tokio::test]
+    async fn autocomplete_accept_rewrites_query_without_vault() {
+        struct Mem;
+        #[async_trait::async_trait]
+        impl crate::components::search_list::SuggestionSource for Mem {
+            async fn notes_by_prefix(&self, _p: &str, _n: usize) -> Vec<crate::components::search_list::SuggestionItem> { vec![] }
+            async fn tags_by_prefix(&self, p: &str, _n: usize) -> Vec<crate::components::search_list::SuggestionItem> {
+                if "projects".starts_with(p) { vec![crate::components::search_list::SuggestionItem::plain("projects")] } else { vec![] }
+            }
+        }
+        let src = VecSource { rows: vec![], reload: true };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .autocomplete(std::sync::Arc::new(Mem), crate::components::autocomplete::AutocompleteMode::SearchQuery)
+            .build();
+        for c in ['#','p','r','o'] { let _ = list.handle_key(&key(KeyCode::Char(c))); }
+        for _ in 0..50 { tokio::task::yield_now().await; list.poll(); }
+        let _ = list.handle_key(&key(KeyCode::Tab));
+        assert_eq!(list.query(), "#projects");
     }
 }
