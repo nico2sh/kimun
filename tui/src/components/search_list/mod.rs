@@ -11,6 +11,18 @@ pub use seams::{Emit, Loaded, RowSource, SearchRow};
 use std::sync::Arc;
 use load::LoadEngine;
 use seams::Loaded as LoadedInner;
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use ratatui::crossterm::event::KeyEvent;
+
+/// Verdict returned by [`SearchList::handle_key`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyReaction {
+    Consumed,
+    Submit,
+    Cancel,
+    Intercepted(crate::keys::key_combo::KeyCombo),
+    Unhandled,
+}
 
 pub struct SearchList<R: SearchRow> {
     source: Arc<dyn RowSource<R>>,
@@ -18,6 +30,7 @@ pub struct SearchList<R: SearchRow> {
     selected: Option<usize>,
     query: String,
     loader: LoadEngine<R>,
+    input: SingleLineInput,
 }
 
 pub struct SearchListBuilder<R: SearchRow> {
@@ -34,7 +47,8 @@ impl<R: SearchRow> SearchList<R> {
     fn new(b: SearchListBuilder<R>) -> Self {
         let mut loader = LoadEngine::new(b.redraw.clone());
         loader.start(b.source.clone(), b.initial_query.clone());
-        Self { source: b.source, rows: Vec::new(), selected: None, query: b.initial_query, loader }
+        let input = SingleLineInput::with_value(&b.initial_query);
+        Self { source: b.source, rows: Vec::new(), selected: None, query: b.initial_query, loader, input }
     }
 
     pub fn poll(&mut self) {
@@ -70,6 +84,42 @@ impl<R: SearchRow> SearchList<R> {
         // that path arrives with the Filter enum in a later task.
     }
 
+    pub fn select_next(&mut self) {
+        if self.rows.is_empty() { return; }
+        let n = self.rows.len();
+        self.selected = Some(self.selected.map_or(0, |i| (i + 1).min(n - 1)));
+    }
+
+    pub fn select_prev(&mut self) {
+        if self.rows.is_empty() { return; }
+        self.selected = Some(self.selected.map_or(0, |i| i.saturating_sub(1)));
+    }
+
+    pub fn handle_key(&mut self, key: &KeyEvent) -> KeyReaction {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        match key.code {
+            KeyCode::Up => { self.select_prev(); return KeyReaction::Consumed; }
+            KeyCode::Down => { self.select_next(); return KeyReaction::Consumed; }
+            KeyCode::Enter => return KeyReaction::Submit,
+            KeyCode::Esc => return KeyReaction::Cancel,
+            _ => {}
+        }
+        // Drop Ctrl/Alt-modified chars so combos don't leak as text.
+        if let KeyCode::Char(_) = key.code {
+            let non_shift = key.modifiers - KeyModifiers::SHIFT;
+            if !non_shift.is_empty() {
+                return KeyReaction::Unhandled;
+            }
+        }
+        match self.input.handle_key(key) {
+            InputOutcome::Changed => { self.set_query(self.input.value().to_string()); KeyReaction::Consumed }
+            InputOutcome::Consumed => KeyReaction::Consumed,
+            InputOutcome::Submit => KeyReaction::Submit,
+            InputOutcome::Cancel => KeyReaction::Cancel,
+            InputOutcome::NotConsumed => KeyReaction::Unhandled,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) async fn poll_until_idle(&mut self) {
         for _ in 0..50 {
@@ -89,10 +139,13 @@ impl<R: SearchRow> SearchListBuilder<R> {
 mod tests {
     use super::*;
     use super::adapters::{TestRow, VecSource};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn noop_redraw() -> std::sync::Arc<dyn Fn() + Send + Sync> {
         std::sync::Arc::new(|| {})
     }
+
+    fn key(c: KeyCode) -> KeyEvent { KeyEvent::new(c, KeyModifiers::NONE) }
 
     #[tokio::test]
     async fn initial_load_populates_rows() {
@@ -113,5 +166,26 @@ mod tests {
         list.poll_until_idle().await;
         assert_eq!(list.rows().len(), 2); // alpha, alps
         assert!(list.rows().iter().all(|r| r.name.contains("alp")));
+    }
+
+    #[tokio::test]
+    async fn arrows_navigate_and_enter_submits() {
+        let src = VecSource { rows: vec![TestRow::new("a"), TestRow::new("b")], reload: true };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        assert_eq!(list.handle_key(&key(KeyCode::Down)), KeyReaction::Consumed);
+        assert_eq!(list.selected_row().unwrap().name, "b");
+        assert_eq!(list.handle_key(&key(KeyCode::Enter)), KeyReaction::Submit);
+        assert_eq!(list.handle_key(&key(KeyCode::Esc)), KeyReaction::Cancel);
+    }
+
+    #[tokio::test]
+    async fn typing_a_char_changes_query() {
+        let src = VecSource { rows: vec![TestRow::new("alpha"), TestRow::new("beta")], reload: true };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        assert_eq!(list.handle_key(&key(KeyCode::Char('a'))), KeyReaction::Consumed);
+        list.poll_until_idle().await;
+        assert_eq!(list.query(), "a");
     }
 }
