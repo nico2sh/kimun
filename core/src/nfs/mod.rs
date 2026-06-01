@@ -1,4 +1,5 @@
 pub mod filename;
+pub mod saved_searches;
 pub mod visitor;
 use std::{
     fmt::Display,
