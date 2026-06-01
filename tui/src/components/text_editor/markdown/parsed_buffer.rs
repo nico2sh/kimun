@@ -545,12 +545,18 @@ impl ParsedBuffer {
             let total = line.chars().count();
             let mut elem_vis = vec![false; total];
             let mut elem_index = vec![0u16; total];
+            // OR-ed emphasis mask: unlike elem_index (innermost wins), every
+            // covering Bold/Italic/Strikethrough contributes, so a Link or
+            // WikiLink nested in `**…**` / `*…*` keeps the outer emphasis.
+            let mut modifier_mask = vec![0u8; total];
             for (i, e) in els.iter().enumerate() {
                 let tag = (i + 1) as u16;
+                let bit = super::modifier_bit(e.kind);
                 for pos in e.start_char..e.end_char {
                     if pos < total {
                         elem_vis[pos] = true;
                         elem_index[pos] = tag;
+                        modifier_mask[pos] |= bit;
                     }
                 }
             }
@@ -573,6 +579,7 @@ impl ParsedBuffer {
                 content_vis: cv,
                 elem_vis,
                 elem_index,
+                modifier_mask,
                 list_sigil_end: list_sigil_end[row],
                 image_placeholders,
                 blockquote_depth,
@@ -693,6 +700,7 @@ impl ParsedBuffer {
                 content_vis: vec![true; total],
                 elem_vis: vec![false; total],
                 elem_index: vec![0; total],
+                modifier_mask: vec![0; total],
                 list_sigil_end: None,
                 image_placeholders: Vec::new(),
                 blockquote_depth: None,
