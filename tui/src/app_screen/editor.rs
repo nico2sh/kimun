@@ -20,6 +20,7 @@ use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::NoteBrowserModal;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
+use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
@@ -45,6 +46,7 @@ enum Focus {
     NoteBrowser,
     Dialog,
     Backlinks,
+    SavedSearches,
 }
 
 pub struct EditorScreen {
@@ -60,6 +62,7 @@ pub struct EditorScreen {
     footer: FooterBar,
     autosave: AutosaveTimer,
     note_browser: Option<NoteBrowserModal>,
+    saved_searches_modal: Option<SavedSearchesModal>,
     dialogs: DialogManager,
     backlinks_panel: QueryPanel,
     backlinks_visible: bool,
@@ -112,6 +115,7 @@ impl EditorScreen {
             footer,
             autosave: AutosaveTimer::new(),
             note_browser: None,
+            saved_searches_modal: None,
             dialogs: DialogManager::new(),
             backlinks_panel,
             backlinks_visible: false,
@@ -431,6 +435,7 @@ impl EditorScreen {
             Focus::NoteBrowser => 2,
             Focus::Dialog => 3,
             Focus::Backlinks => 4,
+            Focus::SavedSearches => 5,
         }
     }
 
@@ -440,6 +445,7 @@ impl EditorScreen {
             2 => Focus::NoteBrowser,
             3 => Focus::Dialog,
             4 => Focus::Backlinks,
+            5 => Focus::SavedSearches,
             _ => Focus::Editor,
         }
     }
@@ -526,6 +532,16 @@ impl EditorScreen {
         if !self.sidebar_visible {
             self.focus_editor();
         }
+    }
+
+    fn apply_saved_search(&mut self, query: String, name: String, tx: &AppTx) {
+        self.backlinks_visible = true;
+        // The virtual backlinks entry's name should not override the
+        // default "Backlinks" title — but the panel's title logic already
+        // shows "Backlinks" whenever the active query is `>{note}`, so it's
+        // safe to always pass the name through.
+        self.backlinks_panel.apply_query(query, Some(name), tx.clone());
+        self.set_focus(Focus::Backlinks);
     }
 
     fn toggle_backlinks(&mut self, tx: &AppTx) {
@@ -685,6 +701,27 @@ impl AppScreen for EditorScreen {
                     self.toggle_backlinks(tx);
                     return EventState::Consumed;
                 }
+                Some(ActionShortcuts::OpenSavedSearches) => {
+                    // toggle: if already open, close it
+                    if self.saved_searches_modal.is_some() {
+                        self.saved_searches_modal = None;
+                        if matches!(self.focus, Focus::SavedSearches) {
+                            self.set_focus(Focus::Editor);
+                        }
+                    } else {
+                        let s = self.settings.read().unwrap();
+                        let modal = SavedSearchesModal::new(
+                            self.vault.clone(),
+                            s.key_bindings.clone(),
+                            s.icons(),
+                            tx.clone(),
+                        );
+                        drop(s);
+                        self.saved_searches_modal = Some(modal);
+                        self.set_focus(Focus::SavedSearches);
+                    }
+                    return EventState::Consumed;
+                }
                 Some(ActionShortcuts::SaveCurrentQuery) => {
                     let query = self.backlinks_panel.active_query().to_string();
                     if !query.trim().is_empty() {
@@ -749,6 +786,12 @@ impl AppScreen for EditorScreen {
             {
                 return modal.handle_input(event, tx);
             }
+            // Saved searches modal intercepts all mouse events when open.
+            if matches!(self.focus, Focus::SavedSearches)
+                && let Some(modal) = &mut self.saved_searches_modal
+            {
+                return modal.handle_input(event, tx);
+            }
             if self.sidebar_visible && self.sidebar.handle_input(event, tx).is_consumed() {
                 return EventState::Consumed;
             }
@@ -771,6 +814,13 @@ impl AppScreen for EditorScreen {
                 }
             }
             Focus::Dialog => self.dialogs.handle_input(event, tx),
+            Focus::SavedSearches => {
+                if let Some(modal) = &mut self.saved_searches_modal {
+                    modal.handle_input(event, tx)
+                } else {
+                    EventState::NotConsumed
+                }
+            }
             Focus::Backlinks => {
                 if let InputEvent::Key(key) = event {
                     // Give the panel first crack (its autocomplete popup may
@@ -895,6 +945,7 @@ impl AppScreen for EditorScreen {
             Focus::NoteBrowser => "NOTE BROWSER",
             Focus::Dialog => "DIALOG",
             Focus::Backlinks => "BACKLINKS",
+            Focus::SavedSearches => "SAVED SEARCHES",
         };
         let hints = match self.focus {
             Focus::Editor => self.editor.hint_shortcuts(),
@@ -906,12 +957,20 @@ impl AppScreen for EditorScreen {
                 .unwrap_or_default(),
             Focus::Dialog => vec![],
             Focus::Backlinks => self.backlinks_panel.hint_shortcuts(),
+            Focus::SavedSearches => self
+                .saved_searches_modal
+                .as_ref()
+                .map(|m| m.hint_shortcuts())
+                .unwrap_or_default(),
         };
         self.footer
             .render(f, rows[2], theme, focus_label, &hints, &self.icons);
 
         // Modal overlay — rendered last so it appears on top of everything.
         if let Some(modal) = &mut self.note_browser {
+            modal.render(f, f.area(), &self.theme, true);
+        }
+        if let Some(modal) = &mut self.saved_searches_modal {
             modal.render(f, f.area(), &self.theme, true);
         }
 
@@ -1005,6 +1064,18 @@ impl AppScreen for EditorScreen {
                 }
                 None
             }
+            AppEvent::CloseSavedSearches => {
+                self.saved_searches_modal = None;
+                if matches!(self.focus, Focus::SavedSearches) {
+                    self.set_focus(Focus::Editor);
+                }
+                None
+            }
+            AppEvent::SavedSearchSelected { query, name } => {
+                self.saved_searches_modal = None;
+                self.apply_saved_search(query, name, tx);
+                None
+            }
             AppEvent::FollowLink(target) => {
                 self.follow_link(target, tx).await;
                 None
@@ -1092,6 +1163,7 @@ mod tests {
             Focus::NoteBrowser => "NOTE BROWSER",
             Focus::Dialog => "DIALOG",
             Focus::Backlinks => "BACKLINKS",
+            Focus::SavedSearches => "SAVED SEARCHES",
         };
         assert_eq!(label, "DIALOG");
 
@@ -1114,6 +1186,28 @@ mod tests {
 
         let all = screen.vault.list_saved_searches().await.unwrap();
         assert!(all.iter().any(|s| s.name == "t" && s.query == "#todo"));
+    }
+
+    #[tokio::test]
+    async fn applying_saved_search_sets_panel_query_and_focuses_it() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut screen = EditorScreen::new(vault, VaultPath::root(), settings);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.apply_saved_search(
+            ">{note}".to_string(),
+            "Backlinks (current note)".to_string(),
+            &tx,
+        );
+        assert!(screen.backlinks_visible);
+        assert_eq!(screen.backlinks_panel.active_query(), ">{note}");
+        assert!(matches!(screen.focus, Focus::Backlinks));
     }
 
     // The try_save timeout-abort regression tests (commits 55eb49ed +

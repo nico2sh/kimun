@@ -165,6 +165,14 @@ impl QueryPanel {
         self.saved_search_name = name;
     }
 
+    /// Apply a query (e.g. from a saved search) and run it immediately.
+    /// `name` drives the title (`None` for the default backlinks query).
+    pub fn apply_query(&mut self, query: String, name: Option<String>, tx: AppTx) {
+        self.set_active_query(query);
+        self.set_saved_search_name(name);
+        self.run_query(tx);
+    }
+
     fn autocomplete_snapshot(&self) -> SearchBoxHostSnapshot {
         let value = self.query_input.value().to_string();
         let cursor_byte = self.query_input.cursor_byte();
