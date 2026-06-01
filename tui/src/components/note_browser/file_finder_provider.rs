@@ -7,8 +7,9 @@ use kimun_core::note::NoteContentData;
 use nucleo::Matcher;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 
-use super::{NoteBrowserProvider, format_journal_date};
+use super::format_journal_date;
 use crate::components::file_list::FileListEntry;
+use crate::components::search_list::{Emit, RowSource};
 
 // ---------------------------------------------------------------------------
 // MatchEntry — adapts (index, haystack_str) for nucleo match_list
@@ -66,8 +67,8 @@ impl FileFinderProvider {
 }
 
 #[async_trait]
-impl NoteBrowserProvider for FileFinderProvider {
-    async fn load(&self, query: &str) -> Vec<FileListEntry> {
+impl RowSource<FileListEntry> for FileFinderProvider {
+    async fn load(&self, query: &str, emit: Emit<FileListEntry>) {
         let vault = Arc::clone(&self.vault);
         let notes = self
             .notes_cache
@@ -77,10 +78,12 @@ impl NoteBrowserProvider for FileFinderProvider {
         if query.is_empty() {
             let mut sorted = notes.clone();
             sorted.sort_by_key(|(entry, _)| std::cmp::Reverse(entry.modified_secs));
-            return sorted
+            let entries: Vec<FileListEntry> = sorted
                 .iter()
                 .map(|(entry, content)| self.to_entry(entry, content))
                 .collect();
+            emit.replace(entries);
+            return;
         }
 
         // Non-empty query: nucleo fuzzy filter
@@ -103,28 +106,28 @@ impl NoteBrowserProvider for FileFinderProvider {
         .await
         .unwrap_or_default();
 
-        let mut result: Vec<FileListEntry> = matched
+        let result: Vec<FileListEntry> = matched
             .into_iter()
             .map(|(e, _score)| self.to_entry(&notes[e.idx].0, &notes[e.idx].1))
             .collect();
 
-        // Prepend CreateNote entry so the user can create a note with this query as the path.
+        // The "Create: <query>" affordance is supplied as a leading row by the
+        // engine (see `leading_row`), so it is not part of the loaded set.
+        emit.replace(result);
+    }
+
+    fn leading_row(&self, query: &str) -> Option<FileListEntry> {
+        if query.is_empty() {
+            return None;
+        }
+        // Build a note with `query` resolved against the current directory.
         let resolved = self
             .current_dir
             .append(&VaultPath::note_path_from(query))
             .flatten();
-        result.insert(
-            0,
-            FileListEntry::CreateNote {
-                filename: resolved.to_string(),
-                path: resolved,
-            },
-        );
-
-        result
-    }
-
-    fn allows_create(&self) -> bool {
-        true
+        Some(FileListEntry::CreateNote {
+            filename: resolved.to_string(),
+            path: resolved,
+        })
     }
 }

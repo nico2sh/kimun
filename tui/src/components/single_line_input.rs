@@ -76,14 +76,6 @@ impl SingleLineInput {
         self.last_caret_pos
     }
 
-    /// Test-only: prime the caret cache without going through `render`.
-    /// Allows overlay logic anchored on the caret (e.g. the autocomplete
-    /// popup) to be exercised in headless unit tests that never render.
-    #[cfg(test)]
-    pub(crate) fn set_last_caret_pos_for_tests(&mut self, pos: Option<(u16, u16)>) {
-        self.last_caret_pos = pos;
-    }
-
     /// Overwrite a byte `range` of the value with `new_text`, then place
     /// the cursor at byte offset `new_cursor_byte` in the updated value.
     /// Used by the hashtag autocomplete to apply an `AcceptAction`. All
