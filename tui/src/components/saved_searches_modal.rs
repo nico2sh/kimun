@@ -154,13 +154,25 @@ pub fn rank_to_indices(rows: &[SearchItem], filter: &str) -> Vec<usize> {
 /// Loads the vault's saved searches once (`reload_on_query == false`); the
 /// local [`Filter::Rank`] narrows the set per keystroke. The virtual backlinks
 /// row is supplied by [`leading_row`](RowSource::leading_row), not the load.
+///
+/// Deletes are routed THROUGH the load (via `pending_delete`) so the delete and
+/// the subsequent list-read happen in one ordered async step — avoiding the
+/// race where a separately-spawned delete and a `reload()` interleave and the
+/// reload reads pre-delete state.
 struct SavedSearchSource {
     vault: Arc<NoteVault>,
+    pending_delete: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 #[async_trait]
 impl RowSource<SearchItem> for SavedSearchSource {
     async fn load(&self, _query: &str, emit: Emit<SearchItem>) {
+        // Drain any pending delete BEFORE listing, so the list read below is
+        // ordered strictly after the delete completes.
+        let to_delete = self.pending_delete.lock().unwrap().take();
+        if let Some(name) = to_delete {
+            self.vault.delete_saved_search(&name).await.ok();
+        }
         let user = self.vault.list_saved_searches().await.unwrap_or_default();
         emit.replace(SavedSearchesModel::user_items(user));
     }
@@ -185,7 +197,9 @@ impl RowSource<SearchItem> for SavedSearchSource {
 
 pub struct SavedSearchesModal {
     list: SearchList<SearchItem>,
-    vault: Arc<NoteVault>,
+    /// Shared with the [`SavedSearchSource`]: setting this then calling
+    /// `list.reload()` makes the source delete-then-list in one ordered load.
+    pending_delete: Arc<std::sync::Mutex<Option<String>>>,
     delete_combo: KeyCombo,
 }
 
@@ -194,9 +208,11 @@ impl SavedSearchesModal {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let delete_combo = key_event_to_combo(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE))
             .expect("Delete maps to a key combo");
+        let pending_delete = Arc::new(std::sync::Mutex::new(None));
         let list = SearchList::builder(
             SavedSearchSource {
-                vault: vault.clone(),
+                vault,
+                pending_delete: pending_delete.clone(),
             },
             redraw_callback(tx),
         )
@@ -206,7 +222,7 @@ impl SavedSearchesModal {
         .build();
         Self {
             list,
-            vault,
+            pending_delete,
             delete_combo,
         }
     }
@@ -237,13 +253,10 @@ impl Component for SavedSearchesModal {
             InputEvent::Key(key) => match self.list.handle_key(key) {
                 KeyReaction::Intercepted(c) if c == self.delete_combo => {
                     if let Some(item) = self.list.selected_row().filter(|i| !i.is_virtual) {
-                        let name = item.name.clone();
-                        let vault = self.vault.clone();
-                        let tx2 = tx.clone();
-                        tokio::spawn(async move {
-                            vault.delete_saved_search(&name).await.ok();
-                            tx2.send(AppEvent::Redraw).ok();
-                        });
+                        // Hand the name to the source and re-run the load: the
+                        // source deletes-then-lists in one ordered async step, so
+                        // the new rows can never reflect pre-delete state.
+                        *self.pending_delete.lock().unwrap() = Some(item.name.clone());
                         self.list.reload();
                     }
                     EventState::Consumed
@@ -360,6 +373,20 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
 
+    /// Drive the modal's engine to idle, giving the background load real
+    /// wall-clock time to land (the vault read runs on a worker thread under
+    /// the multi-thread runtime).
+    async fn poll_engine_idle(modal: &mut SavedSearchesModal) {
+        for _ in 0..50 {
+            modal.list.poll();
+            if !modal.list.is_loading() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        modal.list.poll();
+    }
+
     #[test]
     fn user_items_skip_virtual_and_number_first_nine() {
         let user: Vec<SavedSearch> = (0..11)
@@ -408,6 +435,68 @@ mod tests {
         let idx = rank_to_indices(&items, "ide");
         assert_eq!(idx.len(), 1);
         assert_eq!(items[idx[0]].name, "ideas");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delete_removes_row_via_ordered_reload() {
+        let vault = temp_vault("saved_searches_delete").await;
+        vault
+            .save_search("todo", "#todo")
+            .await
+            .expect("save search");
+        vault
+            .save_search("ideas", "#ideas")
+            .await
+            .expect("save search");
+        let settings = AppSettings::default();
+        let (tx, _rx) = unbounded_channel();
+        let mut modal = SavedSearchesModal::new(
+            vault.clone(),
+            settings.key_bindings.clone(),
+            settings.icons(),
+            tx.clone(),
+        );
+        poll_engine_idle(&mut modal).await;
+
+        // Select the first USER row (skip the pinned virtual backlinks row).
+        modal.handle_input(
+            &InputEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            &tx,
+        );
+        let target = modal
+            .list
+            .selected_row()
+            .filter(|i| !i.is_virtual)
+            .expect("a non-virtual row is selected")
+            .name
+            .clone();
+
+        // Delete: this sets pending_delete and reloads (delete-then-list, ordered).
+        modal.handle_input(
+            &InputEvent::Key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
+            &tx,
+        );
+        poll_engine_idle(&mut modal).await;
+
+        // Vault state: the deleted name is gone, one user search remains.
+        let remaining = vault.list_saved_searches().await.expect("list");
+        assert_eq!(remaining.len(), 1, "one saved search should remain");
+        assert!(
+            !remaining.iter().any(|s| s.name == target),
+            "deleted name {target} should be gone from the vault"
+        );
+
+        // Visible list no longer contains the deleted row.
+        let visible: Vec<String> = modal
+            .list
+            .visible_rows()
+            .iter()
+            .map(|r| r.name.clone())
+            .collect();
+        assert!(
+            !visible.contains(&target),
+            "deleted name {target} should be gone from the visible rows, got {visible:?}"
+        );
     }
 
     #[tokio::test]

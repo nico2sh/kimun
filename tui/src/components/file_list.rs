@@ -245,7 +245,33 @@ impl crate::components::search_list::SearchRow for FileListEntry {
     fn match_text(&self) -> Option<&str> {
         match self {
             Self::Note { filename, .. } | Self::CreateNote { filename, .. } => Some(filename),
+            // Directories participate in the fuzzy filter (matched on their name,
+            // the same text the old `search_str` arm used). `Up` stays exempt.
+            Self::Directory { name, .. } => Some(name),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::search_list::SearchRow;
+
+    #[test]
+    fn directory_match_text_is_some_name() {
+        let dir = FileListEntry::Directory {
+            path: VaultPath::note_path_from("projects"),
+            name: "projects".to_string(),
+        };
+        assert_eq!(SearchRow::match_text(&dir), Some("projects"));
+    }
+
+    #[test]
+    fn up_match_text_is_none() {
+        let up = FileListEntry::Up {
+            parent: VaultPath::root(),
+        };
+        assert_eq!(SearchRow::match_text(&up), None);
     }
 }

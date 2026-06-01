@@ -42,6 +42,10 @@ pub struct NoteBrowserModal {
     // Preview async loading
     preview_task: Option<tokio::task::JoinHandle<()>>,
     preview_rx: Option<Receiver<String>>,
+    /// Path the preview pane is currently showing (or loading). Compared at
+    /// render time against the engine's selected row so an async server-side
+    /// reload that auto-selects a different row still refreshes the preview.
+    preview_path: Option<VaultPath>,
 }
 
 impl NoteBrowserModal {
@@ -98,6 +102,7 @@ impl NoteBrowserModal {
             preview_text: String::new(),
             preview_task: None,
             preview_rx: None,
+            preview_path: None,
         };
         modal.refresh_preview(None);
         modal
@@ -154,12 +159,19 @@ impl NoteBrowserModal {
         }
     }
 
-    /// Refresh the preview for whatever the engine currently has selected.
-    fn refresh_preview_from_list(&mut self) {
-        let path = self.list.selected_row().and_then(|e| match e {
+    /// The note path the engine currently has selected, if the selected row is
+    /// a note (non-note rows yield `None`).
+    fn selected_note_path(&self) -> Option<VaultPath> {
+        self.list.selected_row().and_then(|e| match e {
             FileListEntry::Note { path, .. } => Some(path.clone()),
             _ => None,
-        });
+        })
+    }
+
+    /// Refresh the preview for whatever the engine currently has selected.
+    fn refresh_preview_from_list(&mut self) {
+        let path = self.selected_note_path();
+        self.preview_path = path.clone();
         match path {
             Some(path) => self.schedule_preview(path),
             None => {
@@ -295,6 +307,14 @@ impl Component for NoteBrowserModal {
         // Override the rect the engine recorded so the border row is accounted
         // for during mouse hit-testing.
         self.list.set_list_rect(columns[0]);
+
+        // Authoritative preview trigger: `list.render` just polled, which is
+        // where an async server-side reload lands and may auto-select a new
+        // row 0. If the selected note path differs from what the preview is
+        // showing, refresh. Guarded by the path diff so there's no redraw loop.
+        if self.selected_note_path() != self.preview_path {
+            self.refresh_preview_from_list();
+        }
 
         let preview_block = Block::default()
             .title(" Preview ")
@@ -479,6 +499,25 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, AppEvent::CloseNoteBrowser)),
             "expected CloseNoteBrowser, got {events:?}"
+        );
+    }
+
+    /// Selecting a note row updates the tracked `preview_path`; this is the
+    /// state the render-time diff compares against to detect stale previews
+    /// after an async reload.
+    #[tokio::test]
+    async fn refresh_preview_tracks_selected_path() {
+        let (tx, _rx) = unbounded_channel();
+        let path = VaultPath::note_path_from("/a.md");
+        let mut modal = make_modal_with(OneNoteSource { path: path.clone() }, tx.clone()).await;
+        modal.list.poll_until_idle().await;
+        assert_eq!(modal.preview_path, None, "no path tracked before refresh");
+
+        modal.refresh_preview_from_list();
+        assert_eq!(
+            modal.preview_path,
+            Some(path),
+            "preview_path should track the selected note"
         );
     }
 
