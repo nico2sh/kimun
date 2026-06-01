@@ -1126,7 +1126,16 @@ impl Display for VaultPathSlice {
 }
 
 fn filter_files(dir: &ignore::DirEntry) -> bool {
-    !dir.path().starts_with(".")
+    // Prune dotfile / dot-directory entries (e.g. the hidden `.kimun` backups
+    // dir) so they never enter the index. `path().starts_with(".")` does NOT
+    // work here — the walker root is an absolute path, so an entry's path never
+    // begins with "."; check the entry's own name instead. The `ignore` crate's
+    // default hidden filter also covers these, but excluding them explicitly
+    // keeps the walk correct even if that default is ever disabled.
+    dir.file_name()
+        .to_str()
+        .map(|name| !name.starts_with('.'))
+        .unwrap_or(true)
 }
 
 pub(crate) fn list_directories<P: AsRef<Path>>(

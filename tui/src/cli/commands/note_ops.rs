@@ -129,6 +129,11 @@ async fn run_overwrite(
     }
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
     let text = resolve_content(content)?;
+    if text.is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "Refusing to overwrite with empty content (this would wipe the note); pass content, or use `note delete` to remove it"
+        ));
+    }
 
     vault
         .save_note(&vault_path, &text)
