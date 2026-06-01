@@ -43,6 +43,8 @@ const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(80);
 pub enum AutocompleteMode {
     Both,
     HashtagOnly,
+    /// Search-query box: hashtags (labels) + link-filter (`>`) note names.
+    SearchQuery,
 }
 
 /// Owns the popup lifecycle and the (debounced via generation tokens)
@@ -331,11 +333,16 @@ impl AutocompleteController {
 
         // Filter by mode before deciding anything else.
         let trigger = trigger.filter(|t| match (self.mode, t.kind) {
-            (AutocompleteMode::Both, _) => true,
+            (AutocompleteMode::Both, TriggerKind::Wikilink | TriggerKind::Hashtag) => true,
+            (AutocompleteMode::Both, TriggerKind::LinkFilter) => false,
             (AutocompleteMode::HashtagOnly, TriggerKind::Hashtag) => true,
             (AutocompleteMode::HashtagOnly, TriggerKind::Wikilink | TriggerKind::LinkFilter) => {
                 false
             }
+            (AutocompleteMode::SearchQuery, TriggerKind::Hashtag | TriggerKind::LinkFilter) => {
+                true
+            }
+            (AutocompleteMode::SearchQuery, TriggerKind::Wikilink) => false,
         });
 
         let Some(trigger) = trigger else {
@@ -412,6 +419,19 @@ impl AutocompleteController {
         }
     }
 
+    /// Build link-filter suggestions: the `{note}` variable when it matches the
+    /// prefix, followed by note names. Pure + async so it can be unit-tested.
+    pub(super) async fn link_filter_suggestions(vault: &NoteVault, prefix: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        if prefix.is_empty() || "note".starts_with(&prefix.to_lowercase()) {
+            out.push("{note}".to_string());
+        }
+        if let Ok(found) = vault.suggest_notes_by_prefix(prefix, 20).await {
+            out.extend(found.into_iter().map(|n| n.name));
+        }
+        out
+    }
+
     fn fire_query(&mut self, kind: TriggerKind, query: String, instant: bool) {
         // `SingleSlotTask::spawn` aborts the previous in-flight task —
         // its result would be discarded on receive (generation
@@ -452,10 +472,16 @@ impl AutocompleteController {
                         Vec::new()
                     }
                 },
-                // LinkFilter suggestion source is wired in a later task;
-                // for now fall through to an empty list so detection can
-                // be tested end-to-end without suggestion plumbing.
-                TriggerKind::LinkFilter => Vec::new(),
+                TriggerKind::LinkFilter => {
+                    Self::link_filter_suggestions(&vault, &query)
+                        .await
+                        .into_iter()
+                        .map(|name| Suggestion {
+                            display: name,
+                            secondary: None,
+                        })
+                        .collect()
+                }
                 TriggerKind::Hashtag => match vault.suggest_tags_by_prefix(&query, limit).await {
                     Ok(tags) => tags
                         .into_iter()
@@ -1176,6 +1202,22 @@ mod tests {
             c.cached_text.is_none(),
             "close() must drop cached_text so the buffer clone doesn't outlive the popup"
         );
+    }
+
+    #[tokio::test]
+    async fn link_filter_suggestions_include_note_var_and_names() {
+        let vault = crate::test_support::temp_vault("ac_linkfilter").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&kimun_core::nfs::VaultPath::note_path_from("/projects.md"), "x")
+            .await
+            .unwrap();
+        // Empty prefix → {note} offered.
+        let s = AutocompleteController::link_filter_suggestions(&vault, "").await;
+        assert!(s.iter().any(|x| x == "{note}"));
+        // Prefix "pro" → note name surfaced.
+        let s = AutocompleteController::link_filter_suggestions(&vault, "pro").await;
+        assert!(s.iter().any(|x| x == "projects"));
     }
 
     /// A `[[` candidate reaches the wikilink veto, so zones are computed
