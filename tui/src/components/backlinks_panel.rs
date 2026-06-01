@@ -365,13 +365,9 @@ impl QueryPanel {
             self.scroll_content(key);
             return EventState::Consumed;
         }
-        // Enter cycles expand (the engine would Submit; the panel's policy is to
-        // toggle the expand state instead).
-        if key.code == KeyCode::Enter {
-            self.toggle_expand();
-            return EventState::Consumed;
-        }
-
+        // NOTE: Enter is NOT pre-checked here. It must reach the engine so an
+        // open autocomplete popup can accept on Enter; only when the popup is
+        // closed does the engine return `Submit`, which toggles expand below.
         match self.list.handle_key(key) {
             KeyReaction::Intercepted(c) if self.sort_cycle_combos.contains(&c) => {
                 self.cycle_sort();
@@ -398,8 +394,8 @@ impl QueryPanel {
                 EventState::Consumed
             }
             KeyReaction::Submit => {
-                // Unreachable: Enter is handled by the pre-check above. Kept for
-                // completeness.
+                // Enter with the autocomplete popup closed: the panel's policy
+                // is to cycle the expand state of the selected row.
                 self.toggle_expand();
                 EventState::Consumed
             }
