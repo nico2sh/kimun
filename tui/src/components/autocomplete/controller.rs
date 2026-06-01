@@ -763,7 +763,8 @@ mod tests {
     /// 80ms refinement window before each query reaches the in-memory DB.
     fn make_controller(vault: Arc<NoteVault>, mode: AutocompleteMode) -> AutocompleteController {
         use crate::components::search_list::VaultSuggestions;
-        AutocompleteController::new(Arc::new(VaultSuggestions { vault }), mode).with_debounce(Duration::ZERO)
+        AutocompleteController::new(Arc::new(VaultSuggestions { vault }), mode)
+            .with_debounce(Duration::ZERO)
     }
 
     // ---- Lifecycle ----
@@ -1195,7 +1196,9 @@ mod tests {
         impl SuggestionSource for MemSuggestions {
             async fn notes_by_prefix(&self, prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
                 let all = vec![SuggestionItem::plain("projects")];
-                all.into_iter().filter(|x| x.display.starts_with(prefix)).collect()
+                all.into_iter()
+                    .filter(|x| x.display.starts_with(prefix))
+                    .collect()
             }
             async fn tags_by_prefix(&self, _prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
                 Vec::new()
@@ -1204,13 +1207,25 @@ mod tests {
         let mem = MemSuggestions;
         // Empty prefix → {note} offered and notes with empty prefix match.
         let s = AutocompleteController::link_filter_suggestions(&mem, "").await;
-        assert!(s.iter().any(|x| x.display == "{note}"), "{{note}} must appear for empty prefix");
-        assert!(s.iter().any(|x| x.display == "projects"), "projects must appear for empty prefix");
+        assert!(
+            s.iter().any(|x| x.display == "{note}"),
+            "{{note}} must appear for empty prefix"
+        );
+        assert!(
+            s.iter().any(|x| x.display == "projects"),
+            "projects must appear for empty prefix"
+        );
         // Prefix "pro" → note name surfaced, {note} absent.
         let s = AutocompleteController::link_filter_suggestions(&mem, "pro").await;
-        assert!(s.iter().any(|x| x.display == "projects"), "projects must appear for prefix 'pro'");
+        assert!(
+            s.iter().any(|x| x.display == "projects"),
+            "projects must appear for prefix 'pro'"
+        );
         // "pro" does not start "note" so {note} should not appear
-        assert!(!s.iter().any(|x| x.display == "{note}"), "{{note}} must not appear for prefix 'pro'");
+        assert!(
+            !s.iter().any(|x| x.display == "{note}"),
+            "{{note}} must not appear for prefix 'pro'"
+        );
     }
 
     /// A `[[` candidate reaches the wikilink veto, so zones are computed

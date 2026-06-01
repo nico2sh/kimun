@@ -12,7 +12,9 @@ pub struct TestRow {
 
 impl TestRow {
     pub fn new(name: &str) -> Self {
-        Self { name: name.to_string() }
+        Self {
+            name: name.to_string(),
+        }
     }
 }
 
@@ -41,7 +43,11 @@ pub struct VecSource {
 impl RowSource<TestRow> for VecSource {
     async fn load(&self, query: &str, emit: Emit<TestRow>) {
         let out: Vec<TestRow> = if self.reload && !query.is_empty() {
-            self.rows.iter().filter(|r| r.name.contains(query)).cloned().collect()
+            self.rows
+                .iter()
+                .filter(|r| r.name.contains(query))
+                .cloned()
+                .collect()
         } else {
             self.rows.clone()
         };

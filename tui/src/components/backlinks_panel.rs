@@ -18,8 +18,8 @@ use crate::components::query_vars::{query_has_variables, resolve_query};
 use crate::components::search_list::{
     Emit, KeyReaction, RowSource, SearchList, SearchRow, VaultSuggestions,
 };
-use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::KeyBindings;
+use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::key_combo::KeyCombo;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;

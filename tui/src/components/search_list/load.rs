@@ -19,7 +19,14 @@ pub(super) struct LoadEngine<R: SearchRow> {
 impl<R: SearchRow> LoadEngine<R> {
     pub(super) fn new(redraw: Arc<dyn Fn() + Send + Sync>) -> Self {
         let (tx, rx) = channel();
-        Self { generation: 0, rx, tx, task: None, redraw, loading: false }
+        Self {
+            generation: 0,
+            rx,
+            tx,
+            task: None,
+            redraw,
+            loading: false,
+        }
     }
 
     pub(super) fn start(&mut self, source: Arc<dyn RowSource<R>>, query: String) {
