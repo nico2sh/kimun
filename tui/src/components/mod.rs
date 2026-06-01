@@ -9,6 +9,7 @@ pub mod file_list;
 pub mod footer_bar;
 pub mod indexing;
 pub mod note_browser;
+pub mod query_vars;
 pub mod settings;
 pub mod sidebar;
 pub mod single_line_input;
