@@ -94,6 +94,15 @@ impl VaultConfig {
     }
 }
 
+/// Result of a dry-run replace ([`NoteVault::preview_replace`]): how many matches
+/// would be replaced, and the note's content after the replacement. Nothing is
+/// written to disk.
+#[derive(Debug, Clone)]
+pub struct ReplacePreview {
+    pub count: usize,
+    pub content: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct NoteVault {
     /// Stored as `Arc<Path>` (not `Arc<PathBuf>`) because (a) it impls
@@ -784,8 +793,8 @@ impl NoteVault {
         Ok(())
     }
 
-    /// Replaces occurrences of `pattern` with `replacement` in the note at
-    /// `path`.
+    /// Computes the result of replacing `pattern` with `replacement` in `text`.
+    /// Pure — no I/O, no locking.
     ///
     /// `pattern` is a literal substring by default. When `regex` is `true` it is
     /// a regular expression ([`regex`] crate syntax) and `replacement` may
@@ -796,26 +805,24 @@ impl NoteVault {
     /// [`VaultError::ReplaceTextNotFound`] when there is no match and
     /// [`VaultError::ReplaceTextNotUnique`] when there is more than one. When
     /// `all` is `true` every match is replaced. An invalid regex yields
-    /// [`VaultError::InvalidRegex`]. Returns the number of replacements made.
-    pub async fn replace_in_note(
-        &self,
-        path: &VaultPath,
+    /// [`VaultError::InvalidRegex`]. `path` is only used to build the errors.
+    /// Returns `(match count, new content)`.
+    fn compute_replacement(
+        text: &str,
         pattern: &str,
         replacement: &str,
         all: bool,
         regex: bool,
-    ) -> Result<usize, VaultError> {
-        // Hold the per-note lock across the read and the write so a concurrent
-        // in-process writer can't change the note between them (lost update).
-        let _guard = self.lock_note(path).await;
-        let text = self.get_note_text(path).await?;
-
-        let (count, updated) = if regex {
+        path: &VaultPath,
+    ) -> Result<(usize, String), VaultError> {
+        let count;
+        let updated;
+        if regex {
             let re = regex::Regex::new(pattern).map_err(|e| VaultError::InvalidRegex {
                 pattern: pattern.to_string(),
                 message: e.to_string(),
             })?;
-            let count = re.find_iter(&text).count();
+            count = re.find_iter(text).count();
             if count == 0 {
                 return Err(VaultError::ReplaceTextNotFound {
                     path: path.flatten(),
@@ -828,9 +835,9 @@ impl NoteVault {
             }
             // regex `replacen` treats a limit of 0 as "replace all".
             let limit = if all { 0 } else { 1 };
-            (count, re.replacen(&text, limit, replacement).into_owned())
+            updated = re.replacen(text, limit, replacement).into_owned();
         } else {
-            let count = if pattern.is_empty() {
+            count = if pattern.is_empty() {
                 0
             } else {
                 text.matches(pattern).count()
@@ -845,17 +852,55 @@ impl NoteVault {
                     path: path.flatten(),
                 });
             }
-            let updated = if all {
+            updated = if all {
                 text.replace(pattern, replacement)
             } else {
                 text.replacen(pattern, replacement, 1)
             };
-            (count, updated)
-        };
-        // Already holding the per-note lock from above; use the unlocked save so
-        // we don't re-acquire it (the tokio Mutex is not reentrant).
+        }
+        Ok((count, updated))
+    }
+
+    /// Replaces occurrences of `pattern` with `replacement` in the note at
+    /// `path`, writing the result. See [`compute_replacement`] for the matching
+    /// rules (literal vs `regex`, unique-unless-`all`, capture references).
+    /// Returns the number of replacements made.
+    pub async fn replace_in_note(
+        &self,
+        path: &VaultPath,
+        pattern: &str,
+        replacement: &str,
+        all: bool,
+        regex: bool,
+    ) -> Result<usize, VaultError> {
+        // Hold the per-note lock across the read and the write so a concurrent
+        // in-process writer can't change the note between them (lost update).
+        let _guard = self.lock_note(path).await;
+        let text = self.get_note_text(path).await?;
+        let (count, updated) =
+            Self::compute_replacement(&text, pattern, replacement, all, regex, path)?;
+        // Already holding the per-note lock; use the unlocked save so we don't
+        // re-acquire it (the tokio Mutex is not reentrant).
         self.save_note_unlocked(path, updated).await?;
         Ok(count)
+    }
+
+    /// Dry-run of [`replace_in_note`]: computes what the note would contain after
+    /// the replacement **without writing** (and without taking the write lock —
+    /// the result is advisory). Returns the same errors the real replace would
+    /// (not found / not unique / invalid regex).
+    pub async fn preview_replace(
+        &self,
+        path: &VaultPath,
+        pattern: &str,
+        replacement: &str,
+        all: bool,
+        regex: bool,
+    ) -> Result<ReplacePreview, VaultError> {
+        let text = self.get_note_text(path).await?;
+        let (count, content) =
+            Self::compute_replacement(&text, pattern, replacement, all, regex, path)?;
+        Ok(ReplacePreview { count, content })
     }
 
     pub async fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
@@ -2612,6 +2657,37 @@ mod modify_backup_tests {
 
         assert_eq!(n, 1);
         assert_eq!(vault.get_note_text(&p).await.unwrap(), "Z and axb");
+    }
+
+    #[tokio::test]
+    async fn preview_replace_reports_result_without_writing() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "hello world").await.unwrap();
+
+        let pv = vault
+            .preview_replace(&p, "world", "there", false, false)
+            .await
+            .unwrap();
+        assert_eq!(pv.count, 1);
+        assert_eq!(pv.content, "hello there");
+
+        // The note on disk is untouched.
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn preview_replace_surfaces_same_errors() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "a a").await.unwrap();
+
+        let e = vault
+            .preview_replace(&p, "a", "b", false, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, VaultError::ReplaceTextNotUnique { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "a a");
     }
 
     // ---- backups ----

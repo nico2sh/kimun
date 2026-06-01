@@ -14,7 +14,7 @@ Kimün is a local-first, terminal notes app. Notes are plain Markdown files inde
 | Create note | `kimun note create "path" "content"` |
 | Append to note | `kimun note append "path" "content"` |
 | Overwrite a note | `kimun note overwrite "path" "content" --force` |
-| Replace text in a note | `kimun note replace "path" "old" "new" [--all] [--regex]` |
+| Replace text in a note | `kimun note replace "path" "old" "new" [--all] [--regex] [--preview]` |
 | Delete a note | `kimun note delete "path" --force` |
 | Log to today's journal | `kimun journal "text"` |
 | Log to a specific date | `kimun journal --date YYYY-MM-DD "text"` |
@@ -71,11 +71,15 @@ a regular expression; the replacement may then use capture references (`$1`,
 is alphanumeric, e.g. `${1}_`). Inline flags `(?m)`, `(?s)`, `(?i)` control
 line/case behaviour. An invalid pattern errors without touching the note.
 
+`--preview` is a dry run: it prints the resulting note content to stdout (match
+count to stderr) and writes nothing — useful to inspect before committing.
+
 ```sh
 kimun note replace "projects/roadmap" "Q2" "Q3"
 kimun note replace "projects/roadmap" "TODO" "DONE" --all
 kimun note replace "notes/log" "v\d+\.\d+" "v2.0" --regex
 kimun note replace "notes/log" "(\w+)@(\w+)" "$2.$1" --regex --all
+kimun note replace "projects/roadmap" "TODO" "DONE" --all --preview
 ```
 
 ### Delete
