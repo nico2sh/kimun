@@ -809,4 +809,58 @@ mod tests {
         let _ = list.handle_key(&key(KeyCode::Tab));
         assert_eq!(list.query(), "#projects");
     }
+
+    // Regression: Enter (not just Tab) must accept an open autocomplete popup,
+    // and the engine must report Consumed — NOT Submit — so a host does not
+    // mistake the accept for a list submit. (A QueryPanel Enter pre-check used
+    // to swallow this, breaking accept-on-Enter in the right sidebar.)
+    #[tokio::test]
+    async fn enter_accepts_open_popup_and_reports_consumed() {
+        struct Mem;
+        #[async_trait::async_trait]
+        impl crate::components::search_list::SuggestionSource for Mem {
+            async fn notes_by_prefix(
+                &self,
+                _p: &str,
+                _n: usize,
+            ) -> Vec<crate::components::search_list::SuggestionItem> {
+                vec![]
+            }
+            async fn tags_by_prefix(
+                &self,
+                p: &str,
+                _n: usize,
+            ) -> Vec<crate::components::search_list::SuggestionItem> {
+                if "projects".starts_with(p) {
+                    vec![crate::components::search_list::SuggestionItem::plain(
+                        "projects",
+                    )]
+                } else {
+                    vec![]
+                }
+            }
+        }
+        let src = VecSource {
+            rows: vec![],
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .autocomplete(
+                std::sync::Arc::new(Mem),
+                crate::components::autocomplete::AutocompleteMode::SearchQuery,
+            )
+            .build();
+        for c in ['#', 'p', 'r', 'o'] {
+            let _ = list.handle_key(&key(KeyCode::Char(c)));
+        }
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            list.poll();
+        }
+        // Popup is open: Enter accepts the suggestion and reports Consumed.
+        assert_eq!(list.handle_key(&key(KeyCode::Enter)), KeyReaction::Consumed);
+        assert_eq!(list.query(), "#projects");
+        // Popup now closed: a second Enter falls through to Submit.
+        assert_eq!(list.handle_key(&key(KeyCode::Enter)), KeyReaction::Submit);
+    }
 }
