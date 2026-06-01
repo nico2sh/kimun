@@ -34,6 +34,13 @@ impl<R: SearchRow> LoadEngine<R> {
         }));
     }
 
+    /// The generation of the most recently started load. `poll` compares this
+    /// against the generation it last applied so it can clear stale rows from a
+    /// superseded load before applying a streamed (`Push`) source's results.
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(super) fn drain(&mut self) -> Vec<Loaded<R>> {
         let mut out = Vec::new();
         while let Ok((stamp, ev)) = self.rx.try_recv() {

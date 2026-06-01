@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::settings::themes::Theme;
 use async_trait::async_trait;
@@ -19,6 +19,8 @@ use crate::components::search_list::{
     Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse,
 };
 use crate::keys::KeyBindings;
+use crate::keys::action_shortcuts::ActionShortcuts;
+use crate::keys::key_combo::KeyCombo;
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 
@@ -29,8 +31,10 @@ use crate::settings::icons::Icons;
 struct DirListingSource {
     vault: Arc<NoteVault>,
     dir: VaultPath,
-    sort_field: SortField,
-    sort_order: SortOrder,
+    /// Shared sort field/order. `load` reads it so the sidebar's interactive
+    /// sort shortcuts (cycle field / reverse order) re-order the listing on
+    /// reload; initialised per-directory from the default/journal settings.
+    sort: Arc<Mutex<(SortField, SortOrder)>>,
 }
 
 #[async_trait]
@@ -56,8 +60,9 @@ impl RowSource<FileListEntry> for DirListingSource {
         // thread, sort the gathered entries, then push them in display order.
         let vault = self.vault.clone();
         let dir = self.dir.clone();
-        let field = self.sort_field;
-        let order = self.sort_order;
+        // Read the active sort out of the lock, then drop the guard before the
+        // await on the blocking task.
+        let (field, order) = *self.sort.lock().unwrap();
         let drain = tokio::task::spawn_blocking(move || {
             let mut entries: Vec<FileListEntry> = Vec::new();
             while let Ok(result) = rx.recv() {
@@ -118,26 +123,47 @@ pub struct SidebarComponent {
     default_sort_order: SortOrder,
     journal_sort_field: SortField,
     journal_sort_order: SortOrder,
+    /// Shared sort field/order for the active listing. `DirListingSource::load`
+    /// reads it; the sort shortcuts mutate it then reload. Re-created per
+    /// `navigate` from the per-dir defaults.
+    sort: Arc<Mutex<(SortField, SortOrder)>>,
+    /// Combos the engine intercepts: cycle sort field / reverse sort order.
+    sort_cycle_combos: Vec<KeyCombo>,
+    sort_reverse_combos: Vec<KeyCombo>,
     rendered_rect: Rect,
     list_rect: Rect,
 }
 
 impl SidebarComponent {
     pub fn new(
-        _key_bindings: KeyBindings,
+        key_bindings: KeyBindings,
         vault: Arc<NoteVault>,
         icons: Icons,
         settings: &AppSettings,
     ) -> Self {
+        let combos = |action: &ActionShortcuts| -> Vec<KeyCombo> {
+            key_bindings
+                .to_hashmap()
+                .get(action)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let sort_cycle_combos = combos(&ActionShortcuts::CycleSortField);
+        let sort_reverse_combos = combos(&ActionShortcuts::SortReverseOrder);
+        let default_sort_field = SortField::from(settings.default_sort_field);
+        let default_sort_order = SortOrder::from(settings.default_sort_order);
         Self {
             current_dir: VaultPath::root(),
             list: None,
             vault,
             icons,
-            default_sort_field: SortField::from(settings.default_sort_field),
-            default_sort_order: SortOrder::from(settings.default_sort_order),
+            default_sort_field,
+            default_sort_order,
             journal_sort_field: SortField::from(settings.journal_sort_field),
             journal_sort_order: SortOrder::from(settings.journal_sort_order),
+            sort: Arc::new(Mutex::new((default_sort_field, default_sort_order))),
+            sort_cycle_combos,
+            sort_reverse_combos,
             rendered_rect: Rect::default(),
             list_rect: Rect::default(),
         }
@@ -167,19 +193,48 @@ impl SidebarComponent {
     /// the engine with a fresh `DirListingSource` for the new dir.
     pub fn navigate(&mut self, dir: VaultPath, tx: &AppTx) {
         self.current_dir = dir.clone();
+        // Initialise the shared sort from this dir's defaults (journal dirs get
+        // their own); the interactive sort shortcuts mutate it in place.
         let (sort_field, sort_order) = self.sort_for(&dir);
+        self.sort = Arc::new(Mutex::new((sort_field, sort_order)));
         let source = DirListingSource {
             vault: self.vault.clone(),
             dir,
-            sort_field,
-            sort_order,
+            sort: self.sort.clone(),
         };
+        // Intercept the sort combos that are actually bound (skip unbound).
+        let mut intercept = Vec::new();
+        intercept.extend(self.sort_cycle_combos.iter().cloned());
+        intercept.extend(self.sort_reverse_combos.iter().cloned());
         self.list = Some(
             SearchList::builder(source, redraw_callback(tx.clone()))
                 .filter(Filter::Fuzzy)
                 .icons(self.icons.clone())
+                .intercept(intercept)
                 .build(),
         );
+    }
+
+    /// Advance the sort field, then reload so the source re-orders the listing.
+    fn cycle_sort(&mut self) {
+        {
+            let mut s = self.sort.lock().unwrap();
+            s.0 = s.0.cycle();
+        }
+        if let Some(list) = &mut self.list {
+            list.reload();
+        }
+    }
+
+    /// Toggle the sort order, then reload so the source re-orders the listing.
+    fn reverse_sort(&mut self) {
+        {
+            let mut s = self.sort.lock().unwrap();
+            s.1 = s.1.toggle();
+        }
+        if let Some(list) = &mut self.list {
+            list.reload();
+        }
     }
 
     /// Number of note rows currently visible (excludes Up / dirs / create).
@@ -262,12 +317,21 @@ impl Component for SidebarComponent {
         }
 
         if let InputEvent::Key(key) = event {
-            let Some(list) = &mut self.list else {
+            if self.list.is_none() {
                 return EventState::NotConsumed;
-            };
-            match list.handle_key(key) {
+            }
+            let reaction = self.list.as_mut().unwrap().handle_key(key);
+            match reaction {
                 KeyReaction::Submit => {
                     self.activate_selected_entry(tx);
+                    EventState::Consumed
+                }
+                KeyReaction::Intercepted(c) if self.sort_cycle_combos.contains(&c) => {
+                    self.cycle_sort();
+                    EventState::Consumed
+                }
+                KeyReaction::Intercepted(c) if self.sort_reverse_combos.contains(&c) => {
+                    self.reverse_sort();
                     EventState::Consumed
                 }
                 KeyReaction::Consumed | KeyReaction::Cancel => EventState::Consumed,
@@ -561,5 +625,84 @@ mod tests {
         navigate_to_root(&mut sidebar, &tx).await;
         assert!(!sidebar.is_empty());
         assert_eq!(sidebar.note_count(), 1);
+    }
+
+    /// Poll the (already-navigated) engine to idle so a reload's streamed rows
+    /// have arrived.
+    async fn poll_to_idle(sidebar: &mut SidebarComponent) {
+        for _ in 0..50 {
+            if let Some(list) = &mut sidebar.list {
+                list.poll();
+                if !list.is_loading() {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        if let Some(list) = &mut sidebar.list {
+            list.poll();
+        }
+    }
+
+    /// Names of the visible note rows, in display order.
+    fn note_names(sidebar: &SidebarComponent) -> Vec<String> {
+        sidebar
+            .list
+            .as_ref()
+            .unwrap()
+            .visible_rows()
+            .iter()
+            .filter_map(|e| match e {
+                FileListEntry::Note { filename, .. } => Some(filename.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Regression: the interactive sort shortcuts must re-order the listing.
+    /// Reversing the sort order (via the shared sort handle + reload, the same
+    /// path `SortReverseOrder` drives) flips first/last note.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reverse_sort_flips_listing_order() {
+        let mut sidebar =
+            sidebar_with_notes("sidebar-sort", &["alpha", "bravo", "charlie"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+
+        let before = note_names(&sidebar);
+        assert_eq!(before.len(), 3, "expected three notes, got {before:?}");
+
+        // Drive the same mutation the SortReverseOrder shortcut performs.
+        sidebar.reverse_sort();
+        poll_to_idle(&mut sidebar).await;
+
+        let after = note_names(&sidebar);
+        assert_eq!(after.len(), 3, "still three notes after reversing");
+        assert_eq!(
+            after,
+            before.iter().rev().cloned().collect::<Vec<_>>(),
+            "reversing the sort order should reverse the listing"
+        );
+    }
+
+    /// Cycling the sort field (Name → Title) re-runs the source with the new
+    /// field; the listing remains populated and the shared field advances.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cycle_sort_field_reorders_and_advances_field() {
+        let mut sidebar =
+            sidebar_with_notes("sidebar-cycle", &["alpha", "bravo"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+
+        let field_before = sidebar.sort.lock().unwrap().0.label();
+        sidebar.cycle_sort();
+        poll_to_idle(&mut sidebar).await;
+
+        let field_after = sidebar.sort.lock().unwrap().0.label();
+        assert_ne!(
+            field_before, field_after,
+            "cycling should advance the sort field"
+        );
+        assert_eq!(note_names(&sidebar).len(), 2, "notes survive the resort");
     }
 }
