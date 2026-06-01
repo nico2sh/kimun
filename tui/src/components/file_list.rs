@@ -169,7 +169,7 @@ impl FileListEntry {
     }
 
     /// Sort key for the given field.
-    fn sort_key(&self, field: SortField) -> String {
+    pub(crate) fn sort_key(&self, field: SortField) -> String {
         match self {
             Self::Up { .. } => String::new(),
             Self::Note {
