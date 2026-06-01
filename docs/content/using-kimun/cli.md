@@ -351,7 +351,8 @@ kimun note replace "notes/log" "(\w+)@(\w+)" "$2.$1" --regex --all
   or appears more than once, so it never edits the wrong place
 - `--all` replaces every occurrence on purpose
 - `--regex` treats the find text as a regular expression; the replacement may
-  then reference capture groups (`$1`, `${name}`; use `$$` for a literal `$`).
+  then reference capture groups (`$1`, `${name}`; use `$$` for a literal `$`,
+  and `${1}`/`${name}` when the next character is alphanumeric, e.g. `${1}_`).
   Use inline flags for line/case behaviour — `(?m)`, `(?s)`, `(?i)`. An invalid
   pattern errors without touching the note.
 - No `--force` needed — it is a targeted, scriptable edit
