@@ -3,8 +3,8 @@ pub mod error;
 pub mod nfs;
 pub mod note;
 pub mod utilities;
-pub use db::{DBStatus, NoteSuggestion, TagSuggestion};
 pub use db::search_terms::SearchTerms;
+pub use db::{DBStatus, NoteSuggestion, TagSuggestion};
 pub use nfs::saved_searches::SavedSearch;
 pub use utilities::{app_log_dir, ensure_dir_exists};
 
@@ -625,7 +625,10 @@ impl NoteVault {
     /// preserving the existing position on overwrite). Appends if new.
     pub async fn save_search(&self, name: &str, query: &str) -> Result<(), VaultError> {
         let mut all = saved_searches::read_saved_searches(self.workspace_path()).await?;
-        let entry = SavedSearch { name: name.to_string(), query: query.to_string() };
+        let entry = SavedSearch {
+            name: name.to_string(),
+            query: query.to_string(),
+        };
         match all.iter_mut().find(|s| s.name.eq_ignore_ascii_case(name)) {
             Some(existing) => *existing = entry,
             None => all.push(entry),
@@ -2944,12 +2947,23 @@ mod saved_search_tests {
         let all = vault.list_saved_searches().await.unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(
-            all.iter().find(|s| s.name.eq_ignore_ascii_case("todo")).unwrap().query,
+            all.iter()
+                .find(|s| s.name.eq_ignore_ascii_case("todo"))
+                .unwrap()
+                .query,
             "#todo #urgent"
         );
 
-        vault.rename_saved_search("links", "backlinks").await.unwrap();
-        assert!(vault.list_saved_searches().await.unwrap().iter().any(|s| s.name == "backlinks"));
+        vault
+            .rename_saved_search("links", "backlinks")
+            .await
+            .unwrap();
+        assert!(vault
+            .list_saved_searches()
+            .await
+            .unwrap()
+            .iter()
+            .any(|s| s.name == "backlinks"));
 
         vault.delete_saved_search("todo").await.unwrap();
         let all = vault.list_saved_searches().await.unwrap();
