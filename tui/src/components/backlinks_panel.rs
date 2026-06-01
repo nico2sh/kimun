@@ -25,7 +25,8 @@ use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 /// The default query the panel runs: backlinks to the current note.
-const DEFAULT_QUERY: &str = ">{note}";
+/// Per ADR-0005, backlinks are `<` / `lk:` (`>` is now forward links).
+const DEFAULT_QUERY: &str = "<{note}";
 
 // ---------------------------------------------------------------------------
 // BacklinkEntry
@@ -945,7 +946,7 @@ mod tests {
 
     #[test]
     fn query_needles_extracts_terms_and_links() {
-        let n = query_needles("widget >spec");
+        let n = query_needles("widget <spec");
         assert!(n.iter().any(|x| x == "widget"));
         assert!(n.iter().any(|x| x == "spec"));
     }
