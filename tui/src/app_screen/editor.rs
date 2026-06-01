@@ -91,7 +91,7 @@ impl EditorScreen {
             first_key(&ActionShortcuts::OpenSettings),
             first_key(&ActionShortcuts::Quit),
             first_key(&ActionShortcuts::ToggleSidebar),
-            first_key(&ActionShortcuts::ToggleBacklinks),
+            first_key(&ActionShortcuts::ToggleQueryPanel),
         );
         let icons = s.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &s);
@@ -674,7 +674,7 @@ impl AppScreen for EditorScreen {
                     }
                     return EventState::Consumed;
                 }
-                Some(ActionShortcuts::ToggleBacklinks) => {
+                Some(ActionShortcuts::ToggleQueryPanel) => {
                     self.toggle_backlinks(tx);
                     return EventState::Consumed;
                 }
