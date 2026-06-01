@@ -333,7 +333,9 @@ impl AutocompleteController {
         let trigger = trigger.filter(|t| match (self.mode, t.kind) {
             (AutocompleteMode::Both, _) => true,
             (AutocompleteMode::HashtagOnly, TriggerKind::Hashtag) => true,
-            (AutocompleteMode::HashtagOnly, TriggerKind::Wikilink) => false,
+            (AutocompleteMode::HashtagOnly, TriggerKind::Wikilink | TriggerKind::LinkFilter) => {
+                false
+            }
         });
 
         let Some(trigger) = trigger else {
@@ -450,6 +452,10 @@ impl AutocompleteController {
                         Vec::new()
                     }
                 },
+                // LinkFilter suggestion source is wired in a later task;
+                // for now fall through to an empty list so detection can
+                // be tested end-to-end without suggestion plumbing.
+                TriggerKind::LinkFilter => Vec::new(),
                 TriggerKind::Hashtag => match vault.suggest_tags_by_prefix(&query, limit).await {
                     Ok(tags) => tags
                         .into_iter()
@@ -538,7 +544,7 @@ impl AutocompleteController {
                     new_cursor_byte,
                 })
             }
-            TriggerKind::Hashtag => {
+            TriggerKind::Hashtag | TriggerKind::LinkFilter => {
                 let new_cursor_byte = range.start.saturating_add(suggestion.display.len());
                 Some(AcceptAction {
                     range,
