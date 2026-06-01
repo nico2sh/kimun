@@ -111,6 +111,8 @@ pub struct ReplaceInNoteParams {
     pub replace_all: Option<bool>,
     /// Treat `old` as a regular expression instead of a literal substring
     pub regex: Option<bool>,
+    /// Preview the resulting content without writing the note (dry run)
+    pub preview: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -210,7 +212,7 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Replace text in a note. `old` is a literal substring by default; set regex=true to treat it as a regular expression, in which case `new` may reference capture groups ($1, ${name}; $$ for a literal $). The match must be unique unless replace_all is true. The previous content is backed up first. Destructive.",
+        description = "Replace text in a note. `old` is a literal substring by default; set regex=true to treat it as a regular expression, in which case `new` may reference capture groups ($1, ${name}; $$ for a literal $). The match must be unique unless replace_all is true. Set preview=true to get the resulting content back without writing (dry run). The previous content is backed up first. Destructive.",
         annotations(destructive_hint = true)
     )]
     async fn replace_in_note(
@@ -220,6 +222,26 @@ impl KimunHandler {
         let vault_path = Self::resolve_path(&p.path);
         let all = p.replace_all.unwrap_or(false);
         let regex = p.regex.unwrap_or(false);
+
+        if p.preview.unwrap_or(false) {
+            return match self
+                .vault
+                .preview_replace(&vault_path, &p.old, &p.new, all, regex)
+                .await
+            {
+                Ok(pv) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    "{} occurrence(s) would be replaced in {} (preview — not written). Resulting content:\n\n{}",
+                    pv.count, vault_path, pv.content
+                ))])),
+                Err(
+                    e @ (kimun_core::error::VaultError::ReplaceTextNotFound { .. }
+                    | kimun_core::error::VaultError::ReplaceTextNotUnique { .. }
+                    | kimun_core::error::VaultError::InvalidRegex { .. }),
+                ) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            };
+        }
+
         match self
             .vault
             .replace_in_note(&vault_path, &p.old, &p.new, all, regex)
@@ -816,6 +838,7 @@ mod tests {
                 new: "there".to_string(),
                 replace_all: None,
                 regex: None,
+                preview: None,
             }))
             .await
             .unwrap();
@@ -848,6 +871,7 @@ mod tests {
                 new: "b".to_string(),
                 replace_all: None,
                 regex: None,
+                preview: None,
             }))
             .await
             .unwrap();

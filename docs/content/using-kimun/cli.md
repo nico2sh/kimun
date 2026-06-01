@@ -343,6 +343,7 @@ kimun note replace "projects/roadmap" "Q2" "Q3"
 kimun note replace "projects/roadmap" "TODO" "DONE" --all
 kimun note replace "notes/log" "v\d+\.\d+" "v2.0" --regex
 kimun note replace "notes/log" "(\w+)@(\w+)" "$2.$1" --regex --all
+kimun note replace "projects/roadmap" "TODO" "DONE" --all --preview
 ```
 
 #### Features
@@ -355,6 +356,9 @@ kimun note replace "notes/log" "(\w+)@(\w+)" "$2.$1" --regex --all
   and `${1}`/`${name}` when the next character is alphanumeric, e.g. `${1}_`).
   Use inline flags for line/case behaviour — `(?m)`, `(?s)`, `(?i)`. An invalid
   pattern errors without touching the note.
+- `--preview` is a dry run: it prints the resulting note content to stdout (the
+  match count goes to stderr) and writes **nothing**. Pipe it to compare, e.g.
+  `kimun note replace … --preview | diff <(kimun note show "…") -`
 - No `--force` needed — it is a targeted, scriptable edit
 - Backs up the previous content first (see [Backups](#backups))
 

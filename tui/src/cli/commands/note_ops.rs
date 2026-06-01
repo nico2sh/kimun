@@ -63,6 +63,9 @@ pub enum NoteSubcommand {
         /// Treat the find text as a regular expression instead of a literal substring
         #[arg(long)]
         regex: bool,
+        /// Print the resulting note content without writing it (dry run)
+        #[arg(long)]
+        preview: bool,
     },
     /// Delete a note (requires --force; the content is backed up first)
     Delete {
@@ -110,7 +113,20 @@ pub async fn run(
             new,
             all,
             regex,
-        } => run_replace(vault, &path, &old, &new, all, regex, quick_note_path).await,
+            preview,
+        } => {
+            run_replace(
+                vault,
+                &path,
+                &old,
+                &new,
+                all,
+                regex,
+                preview,
+                quick_note_path,
+            )
+            .await
+        }
         NoteSubcommand::Delete { path, force } => {
             run_delete(vault, &path, force, quick_note_path).await
         }
@@ -148,6 +164,7 @@ async fn run_overwrite(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_replace(
     vault: &NoteVault,
     path_input: &str,
@@ -155,11 +172,27 @@ async fn run_replace(
     new: &str,
     all: bool,
     regex: bool,
+    preview: bool,
     quick_note_path: &str,
 ) -> Result<()> {
     use crate::cli::helpers::resolve_note_path;
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
+
+    if preview {
+        let pv = vault
+            .preview_replace(&vault_path, old, new, all, regex)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+        // Report the count on stderr so stdout is just the resulting content
+        // (pipe-friendly, e.g. into a diff).
+        eprintln!(
+            "{} occurrence(s) would be replaced in {} (preview — not written)",
+            pv.count, vault_path
+        );
+        print!("{}", pv.content);
+        return Ok(());
+    }
 
     let count = vault
         .replace_in_note(&vault_path, old, new, all, regex)
