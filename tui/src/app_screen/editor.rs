@@ -1121,10 +1121,6 @@ impl AppScreen for EditorScreen {
                 self.on_entry_op(from, tx).await;
                 None
             }
-            AppEvent::BacklinksLoaded(entries) => {
-                self.backlinks_panel.on_loaded(entries);
-                None
-            }
             AppEvent::SaveSearchConfirmed { name, query } => {
                 let vault = self.vault.clone();
                 tokio::spawn(async move {
