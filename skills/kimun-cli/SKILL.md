@@ -13,6 +13,9 @@ Kimün is a local-first, terminal notes app. Notes are plain Markdown files inde
 |------|---------|
 | Create note | `kimun note create "path" "content"` |
 | Append to note | `kimun note append "path" "content"` |
+| Overwrite a note | `kimun note overwrite "path" "content" --force` |
+| Replace text in a note | `kimun note replace "path" "old" "new" [--all] [--regex]` |
+| Delete a note | `kimun note delete "path" --force` |
 | Log to today's journal | `kimun journal "text"` |
 | Log to a specific date | `kimun journal --date YYYY-MM-DD "text"` |
 | Show today's journal | `kimun journal show` |
@@ -41,6 +44,54 @@ Appends to a note. **Creates it automatically if it doesn't exist.** Safe to use
 kimun note append "inbox/log" "New entry"
 echo "Entry" | kimun note append "inbox/log"
 ```
+
+## Modifying Notes
+
+Three destructive operations let you change or remove existing content. Each one
+**backs up the note first** (see below), so an edit is recoverable.
+
+### Overwrite
+Replaces a note's **entire** body. Requires `--force` (it discards the old body).
+Content comes from an argument or stdin.
+
+```sh
+kimun note overwrite "projects/roadmap" "Brand new body" --force
+echo "New body" | kimun note overwrite "projects/roadmap" --force
+```
+
+### Replace
+Swaps text for new text, leaving the rest of the note intact. The find text must
+match **exactly once** — the command errors if it is missing or appears more than
+once, so it never edits the wrong spot. Use `--all` to replace every occurrence.
+No `--force` needed (it's a targeted, scriptable edit).
+
+By default the find text is a **literal substring**. Add `--regex` to treat it as
+a regular expression; the replacement may then use capture references (`$1`,
+`${name}`; `$$` for a literal `$`). Inline flags `(?m)`, `(?s)`, `(?i)` control
+line/case behaviour. An invalid pattern errors without touching the note.
+
+```sh
+kimun note replace "projects/roadmap" "Q2" "Q3"
+kimun note replace "projects/roadmap" "TODO" "DONE" --all
+kimun note replace "notes/log" "v\d+\.\d+" "v2.0" --regex
+kimun note replace "notes/log" "(\w+)@(\w+)" "$2.$1" --regex --all
+```
+
+### Delete
+Removes a note. Requires `--force`.
+
+```sh
+kimun note delete "inbox/stale-idea" --force
+```
+
+### Automatic backups
+Every CLI/MCP edit that overwrites or deletes a note's content first copies the
+old content into a hidden, dated backup inside the vault (excluded from search).
+Backups are kept for 30 days, then purged automatically. This covers `overwrite`,
+`replace`, `delete`, and the backlink rewrites done by rename/move. `create` and
+`append` of a new note have nothing to back up. Interactive TUI editing does not
+back up (the editor has its own history). If a backup can't be written, the edit
+is aborted (fail-closed) — the note is left untouched.
 
 ## Journal
 
@@ -258,6 +309,8 @@ echo "Quick thought about caching. #idea #perf" | kimun note append "inbox/cache
 ## Common Mistakes
 
 - **`create` on an existing note** — it fails. Use `append` when you're not sure if the note exists.
+- **`overwrite`/`delete` without `--force`** — they refuse to run. The flag is the confirmation; there is no interactive prompt (the CLI is built for automation).
+- **`replace` with a non-unique `old` string** — it errors rather than guess. Make the match unique, or pass `--all` to replace every occurrence on purpose.
 - **No stdin from a live terminal** — piping works (`echo "x" | kimun journal`); passing no content from an interactive terminal produces an empty write.
 - **Relative vs absolute paths** — if a `quick_note_path` is set in `kimun_config.toml`, relative paths are resolved against it. Prefix with `/` to always target the vault root explicitly.
 - **`kimun journal show` — `--format paths` is not supported**; use `text` or `json`.
