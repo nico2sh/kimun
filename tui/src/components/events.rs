@@ -117,6 +117,9 @@ pub enum AppEvent {
     /// User switched to a different workspace. Carries the workspace name.
     /// Handled by main.rs to rebuild the vault and navigate to StartScreen.
     WorkspaceSwitched(String),
+
+    /// Persist a saved search (emitted by the save-search dialog on submit).
+    SaveSearchConfirmed { name: String, query: String },
 }
 
 impl AppEvent {
