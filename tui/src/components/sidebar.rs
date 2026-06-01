@@ -1,30 +1,119 @@
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 
 use crate::settings::themes::Theme;
+use async_trait::async_trait;
 use chrono::NaiveDate;
-use kimun_core::SearchResult;
 use kimun_core::nfs::VaultPath;
-use kimun_core::{NoteVault, ResultType};
+use kimun_core::{NoteVault, NotesValidation, ResultType, VaultBrowseOptionsBuilder};
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEventKind};
+use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
-use crate::components::file_list::{FileListComponent, FileListEntry, SortField, SortOrder};
+use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::file_list::{FileListEntry, SortField, SortOrder};
+use crate::components::search_list::{
+    Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse,
+};
 use crate::keys::KeyBindings;
 use crate::settings::AppSettings;
 use crate::settings::icons::Icons;
 
+/// Streamed `RowSource` over one directory's listing. Pushes an `Up` row first
+/// (when not at root) so it is always present, then forwards each
+/// `browse_vault` result. Loads once; a local `Filter::Fuzzy` narrows the set
+/// and `leading_row` provides the "Create: …" affordance.
+struct DirListingSource {
+    vault: Arc<NoteVault>,
+    dir: VaultPath,
+    sort_field: SortField,
+    sort_order: SortOrder,
+}
+
+#[async_trait]
+impl RowSource<FileListEntry> for DirListingSource {
+    async fn load(&self, _query: &str, emit: Emit<FileListEntry>) {
+        // Up row first (if not root) — pushed so it's always present.
+        if !self.dir.is_root_or_empty() {
+            emit.push(FileListEntry::Up {
+                parent: self.dir.get_parent_path().0,
+            });
+        }
+
+        let (options, rx) = VaultBrowseOptionsBuilder::new(&self.dir)
+            .recursive(false)
+            .validation(NotesValidation::Full)
+            .build();
+
+        let vault = self.vault.clone();
+        // browse_vault fills `rx`; spawn it so we can drain concurrently.
+        let browse = tokio::spawn(async move { vault.browse_vault(options).await });
+
+        // `rx` is a std mpsc Receiver; `recv` blocks, so drain it on a blocking
+        // thread, sort the gathered entries, then push them in display order.
+        let vault = self.vault.clone();
+        let dir = self.dir.clone();
+        let field = self.sort_field;
+        let order = self.sort_order;
+        let drain = tokio::task::spawn_blocking(move || {
+            let mut entries: Vec<FileListEntry> = Vec::new();
+            while let Ok(result) = rx.recv() {
+                if matches!(result.rtype, ResultType::Directory) && result.path == dir {
+                    continue;
+                }
+                let journal_date = vault.journal_date(&result.path).map(format_journal_date);
+                entries.push(FileListEntry::from_result(result, journal_date));
+            }
+            entries.sort_by(|a, b| {
+                let ka = a.sort_key(field);
+                let kb = b.sort_key(field);
+                match order {
+                    SortOrder::Ascending => ka.cmp(&kb),
+                    SortOrder::Descending => kb.cmp(&ka),
+                }
+            });
+            entries
+        });
+
+        if let Ok(entries) = drain.await {
+            for entry in entries {
+                emit.push(entry);
+            }
+        }
+        let _ = browse.await;
+        emit.done();
+    }
+
+    fn leading_row(&self, query: &str) -> Option<FileListEntry> {
+        if query.is_empty() {
+            None
+        } else {
+            let path = self
+                .dir
+                .append(&VaultPath::note_path_from(query))
+                .flatten();
+            Some(FileListEntry::CreateNote {
+                filename: path.to_string(),
+                path,
+            })
+        }
+    }
+
+    fn reload_on_query(&self) -> bool {
+        // Load the directory once; the local fuzzy filter narrows it and
+        // `leading_row` keeps the create affordance in sync per keystroke.
+        false
+    }
+}
+
 pub struct SidebarComponent {
     current_dir: VaultPath,
-    pub file_list: FileListComponent,
-    pending_rx: Option<Receiver<SearchResult>>,
+    list: Option<SearchList<FileListEntry>>,
     vault: Arc<NoteVault>,
+    icons: Icons,
     default_sort_field: SortField,
     default_sort_order: SortOrder,
     journal_sort_field: SortField,
@@ -35,16 +124,16 @@ pub struct SidebarComponent {
 
 impl SidebarComponent {
     pub fn new(
-        key_bindings: KeyBindings,
+        _key_bindings: KeyBindings,
         vault: Arc<NoteVault>,
         icons: Icons,
         settings: &AppSettings,
     ) -> Self {
         Self {
             current_dir: VaultPath::root(),
-            file_list: FileListComponent::new(key_bindings, icons),
-            pending_rx: None,
+            list: None,
             vault,
+            icons,
             default_sort_field: SortField::from(settings.default_sort_field),
             default_sort_order: SortOrder::from(settings.default_sort_order),
             journal_sort_field: SortField::from(settings.journal_sort_field),
@@ -58,90 +147,76 @@ impl SidebarComponent {
         &self.current_dir
     }
 
+    /// `true` until a directory has been loaded (no engine yet). The editor
+    /// uses this to decide whether to issue the first-open navigation.
     pub fn is_empty(&self) -> bool {
-        self.file_list.is_empty()
+        self.list.is_none()
     }
 
-    pub fn start_loading(&mut self, rx: Receiver<SearchResult>, current_dir: VaultPath) {
-        self.current_dir = current_dir.clone();
-        self.file_list.clear();
-        self.file_list.loading = true;
-
-        // Apply the appropriate sort defaults for this directory.
-        if &current_dir == self.vault.journal_path() {
-            self.file_list.sort_field = self.journal_sort_field;
-            self.file_list.sort_order = self.journal_sort_order;
+    /// Sort field/order to apply for `dir` (journal dirs get their own).
+    fn sort_for(&self, dir: &VaultPath) -> (SortField, SortOrder) {
+        if dir == self.vault.journal_path() {
+            (self.journal_sort_field, self.journal_sort_order)
         } else {
-            self.file_list.sort_field = self.default_sort_field;
-            self.file_list.sort_order = self.default_sort_order;
-        }
-
-        if !current_dir.is_root_or_empty() {
-            let parent = current_dir.get_parent_path().0;
-            self.file_list.add_up_entry(parent);
-        }
-
-        self.pending_rx = Some(rx);
-        self.sync_create_entry();
-    }
-
-    fn sync_create_entry(&mut self) {
-        if self.file_list.search_query.is_empty() {
-            self.file_list.set_create_entry(None);
-        } else {
-            let path = self
-                .current_dir
-                .append(&VaultPath::note_path_from(
-                    self.file_list.search_query.value(),
-                ))
-                .flatten();
-            let filename = path.to_string();
-            self.file_list
-                .set_create_entry(Some(FileListEntry::CreateNote { filename, path }));
+            (self.default_sort_field, self.default_sort_order)
         }
     }
 
+    /// (Re)build the engine for `dir`, replacing any prior listing. This is the
+    /// single directory-navigation entry point: changing directory = rebuild
+    /// the engine with a fresh `DirListingSource` for the new dir.
+    pub fn navigate(&mut self, dir: VaultPath, tx: &AppTx) {
+        self.current_dir = dir.clone();
+        let (sort_field, sort_order) = self.sort_for(&dir);
+        let source = DirListingSource {
+            vault: self.vault.clone(),
+            dir,
+            sort_field,
+            sort_order,
+        };
+        self.list = Some(
+            SearchList::builder(source, redraw_callback(tx.clone()))
+                .filter(Filter::Fuzzy)
+                .icons(self.icons.clone())
+                .build(),
+        );
+    }
+
+    /// Number of note rows currently visible (excludes Up / dirs / create).
+    fn note_count(&self) -> usize {
+        match &self.list {
+            None => 0,
+            Some(list) => list
+                .visible_rows()
+                .iter()
+                .filter(|e| matches!(e, FileListEntry::Note { .. }))
+                .count(),
+        }
+    }
+
+    /// Act on the selected row: Up/Note/Directory → `OpenPath` (directories and
+    /// Up route back through the editor's navigate, rebuilding the engine);
+    /// CreateNote → materialise the note, then open it.
     fn activate_selected_entry(&self, tx: &AppTx) {
-        if let Some(FileListEntry::CreateNote { path, .. }) = self.file_list.selected_entry() {
-            let path = path.clone();
-            let vault = Arc::clone(&self.vault);
-            let tx2 = tx.clone();
-            tokio::spawn(async move {
-                if let Err(e) = vault.load_or_create_note(&path, None).await {
-                    tracing::warn!("create note failed for {path}: {e}");
-                    return;
-                }
-                tx2.send(AppEvent::OpenPath(path)).ok();
-            });
+        let Some(list) = &self.list else { return };
+        let Some(entry) = list.selected_row() else {
             return;
-        }
-        self.file_list.activate_selected(tx);
-    }
-
-    fn poll_loading(&mut self) {
-        let Some(rx) = &self.pending_rx else { return };
-        loop {
-            match rx.try_recv() {
-                Ok(result) => {
-                    if matches!(&result.rtype, ResultType::Directory)
-                        && result.path == self.current_dir
-                    {
-                        continue;
+        };
+        match entry {
+            FileListEntry::CreateNote { path, .. } => {
+                let path = path.clone();
+                let vault = Arc::clone(&self.vault);
+                let tx2 = tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = vault.load_or_create_note(&path, None).await {
+                        tracing::warn!("create note failed for {path}: {e}");
+                        return;
                     }
-                    let journal_date = self
-                        .vault
-                        .journal_date(&result.path)
-                        .map(format_journal_date);
-                    self.file_list
-                        .push_entry(FileListEntry::from_result(result, journal_date));
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.pending_rx = None;
-                    self.file_list.loading = false;
-                    self.file_list.finalize_sort();
-                    break;
-                }
+                    tx2.send(AppEvent::OpenPath(path)).ok();
+                });
+            }
+            other => {
+                tx.send(AppEvent::OpenPath(other.path().clone())).ok();
             }
         }
     }
@@ -163,52 +238,51 @@ impl Component for SidebarComponent {
             if !self.rendered_rect.contains(pos) {
                 return EventState::NotConsumed;
             }
-            match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) => {
-                    tx.send(AppEvent::FocusSidebar).ok();
-                    if self.list_rect.contains(pos) && mouse.row > self.list_rect.y {
-                        // row 0 of the list block is the border; rows start at y+1.
-                        let rel_row = mouse.row - self.list_rect.y - 1;
-                        let prev = self.file_list.selected_display_idx();
-                        if let Some(idx) = self.file_list.select_at_visual_row(rel_row)
-                            && prev == Some(idx)
-                        {
-                            self.activate_selected_entry(tx);
-                        }
-                    }
+            // Any click in the sidebar focuses it.
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                tx.send(AppEvent::FocusSidebar).ok();
+            }
+            if let Some(list) = &mut self.list {
+                match mouse.kind {
+                    // Scroll anywhere within the sidebar bounds moves the list
+                    // selection — even when the cursor is over the header or
+                    // search box (the engine only hit-tests scroll inside its
+                    // own list rect, so handle it here).
+                    MouseEventKind::ScrollUp => list.select_prev(),
+                    MouseEventKind::ScrollDown => list.select_next(),
+                    _ => match list.handle_mouse(mouse) {
+                        SearchMouse::Activated(_) => self.activate_selected_entry(tx),
+                        SearchMouse::Selected(_)
+                        | SearchMouse::Scrolled
+                        | SearchMouse::None => {}
+                    },
                 }
-                MouseEventKind::ScrollUp => self.file_list.scroll_up(),
-                MouseEventKind::ScrollDown => self.file_list.scroll_down(),
-                _ => {}
             }
             return EventState::Consumed;
         }
 
-        if let InputEvent::Key(key) = event
-            && key.code == KeyCode::Enter
-        {
-            self.activate_selected_entry(tx);
-            return EventState::Consumed;
+        if let InputEvent::Key(key) = event {
+            let Some(list) = &mut self.list else {
+                return EventState::NotConsumed;
+            };
+            match list.handle_key(key) {
+                KeyReaction::Submit => {
+                    self.activate_selected_entry(tx);
+                    EventState::Consumed
+                }
+                KeyReaction::Consumed | KeyReaction::Cancel => EventState::Consumed,
+                KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
+            }
+        } else {
+            EventState::NotConsumed
         }
-
-        let result = self.file_list.handle_input(event, tx);
-
-        // After a key that modifies the search query, keep the create entry in sync.
-        if let InputEvent::Key(key) = event
-            && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace)
-        {
-            self.sync_create_entry();
-        }
-
-        result
     }
 
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        self.file_list.hint_shortcuts()
+        Vec::new()
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        self.poll_loading();
         self.rendered_rect = rect;
 
         let rows = Layout::default()
@@ -231,7 +305,7 @@ impl Component for SidebarComponent {
         let header_inner = header.inner(rows[0]);
         f.render_widget(header, rows[0]);
         f.render_widget(
-            Paragraph::new(format!("{} notes", self.file_list.note_count())).style(
+            Paragraph::new(format!("{} notes", self.note_count())).style(
                 Style::default()
                     .fg(theme.fg_muted.to_ratatui())
                     .bg(theme.bg_panel.to_ratatui()),
@@ -246,17 +320,21 @@ impl Component for SidebarComponent {
             .style(theme.panel_style());
         let search_inner = search_block.inner(rows[1]);
         f.render_widget(search_block, rows[1]);
-        self.file_list.search_query.render(
-            f,
-            search_inner,
-            Style::default()
-                .fg(theme.fg.to_ratatui())
-                .bg(theme.bg_panel.to_ratatui()),
-            0,
-            focused,
-        );
 
-        self.file_list.render(f, rows[2], theme, focused);
+        let list_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .style(theme.panel_style());
+        let list_inner = list_block.inner(rows[2]);
+        f.render_widget(list_block, rows[2]);
+
+        if let Some(list) = &mut self.list {
+            list.render_query(f, search_inner, theme, focused);
+            list.render(f, list_inner, theme, focused);
+            // Record the OUTER list rect for mouse hit-testing (the engine
+            // hit-tests as `row - rect.y - 1`, expecting row 0 to be a border).
+            list.set_list_rect(rows[2]);
+        }
     }
 }
 
@@ -270,6 +348,26 @@ mod tests {
 
     async fn make_sidebar() -> SidebarComponent {
         let vault = temp_vault("sidebar").await;
+        vault.validate_and_init().await.unwrap();
+        let settings = AppSettings::default();
+        SidebarComponent::new(
+            settings.key_bindings.clone(),
+            vault,
+            settings.icons(),
+            &settings,
+        )
+    }
+
+    /// Build a sidebar over `vault` after creating each named note at root.
+    async fn sidebar_with_notes(prefix: &str, names: &[&str]) -> SidebarComponent {
+        let vault = temp_vault(prefix).await;
+        vault.validate_and_init().await.unwrap();
+        for name in names {
+            vault
+                .create_note(&VaultPath::note_path_from(name), "body")
+                .await
+                .unwrap();
+        }
         let settings = AppSettings::default();
         SidebarComponent::new(
             settings.key_bindings.clone(),
@@ -326,34 +424,55 @@ mod tests {
         })
     }
 
-    fn push_note(sidebar: &mut SidebarComponent, name: &str) {
-        sidebar.file_list.entries.push(FileListEntry::Note {
-            path: VaultPath::note_path_from(name),
-            title: name.to_string(),
-            filename: format!("{name}.md"),
-            journal_date: None,
-        });
+    /// Load the sidebar at the vault root, then poll the engine to idle so the
+    /// streamed rows have arrived.
+    async fn navigate_to_root(sidebar: &mut SidebarComponent, tx: &AppTx) {
+        sidebar.navigate(VaultPath::root(), tx);
+        // The streamed source spawns `browse_vault` + a blocking drain; give the
+        // background work real time to land, polling the engine between waits.
+        for _ in 0..50 {
+            if let Some(list) = &mut sidebar.list {
+                list.poll();
+                if !list.is_loading() {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        if let Some(list) = &mut sidebar.list {
+            list.poll();
+        }
     }
 
     /// Two clicks on the same list row activate it: first selects, second sends
     /// `OpenPath` (or, for `CreateNote`, materialises the note then opens it).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn mouse_double_click_on_list_row_sends_open_path() {
-        let mut sidebar = make_sidebar().await;
-        push_note(&mut sidebar, "alpha");
+        let mut sidebar = sidebar_with_notes("sidebar-dbl", &["alpha"]).await;
+        let (tx, mut rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+
         sidebar.rendered_rect = Rect {
             x: 0,
             y: 3,
             width: 30,
             height: 20,
         };
+        // The engine records the outer list rect; clicks hit-test as row - y - 1.
+        if let Some(list) = &mut sidebar.list {
+            list.set_list_rect(Rect {
+                x: 0,
+                y: 9,
+                width: 30,
+                height: 14,
+            });
+        }
         sidebar.list_rect = Rect {
             x: 0,
             y: 9,
             width: 30,
             height: 14,
         };
-        let (tx, mut rx) = unbounded_channel();
 
         // First click: in list area, on the first row (list_rect.y + 1).
         sidebar.handle_input(&mouse_down_at(5, 10), &tx);
@@ -362,7 +481,6 @@ mod tests {
 
         // Second click on the same row activates the entry.
         sidebar.handle_input(&mouse_down_at(5, 10), &tx);
-        // First event from the second click is FocusSidebar; the next is OpenPath.
         let mut events = Vec::new();
         while let Ok(evt) = rx.try_recv() {
             events.push(evt);
@@ -377,36 +495,44 @@ mod tests {
 
     /// Scroll wheel anywhere in the sidebar bounds scrolls the file list — even
     /// when the cursor is over the header or search box.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn scroll_down_in_sidebar_bounds_scrolls_list() {
-        let mut sidebar = make_sidebar().await;
-        push_note(&mut sidebar, "alpha");
-        push_note(&mut sidebar, "beta");
-        // Pin selection to index 0 so ScrollDown moves it to 1.
-        sidebar.file_list.select_at_visual_row(0);
+        let mut sidebar = sidebar_with_notes("sidebar-scroll", &["alpha", "beta"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+
         sidebar.rendered_rect = Rect {
             x: 0,
             y: 3,
             width: 30,
             height: 20,
         };
-        sidebar.list_rect = Rect {
-            x: 0,
-            y: 9,
-            width: 30,
-            height: 14,
-        };
-        let (tx, _rx) = unbounded_channel();
-        assert_eq!(sidebar.file_list.selected_display_idx(), Some(0));
+        if let Some(list) = &mut sidebar.list {
+            list.set_list_rect(Rect {
+                x: 0,
+                y: 9,
+                width: 30,
+                height: 14,
+            });
+        }
+
+        let first = sidebar
+            .list
+            .as_ref()
+            .unwrap()
+            .selected_row()
+            .map(|e| e.path().to_string());
 
         // Scroll down with the cursor inside the sidebar header (not the list).
         let result = sidebar.handle_input(&scroll_event_at(5, 4, MouseEventKind::ScrollDown), &tx);
         assert_eq!(result, EventState::Consumed);
-        assert_eq!(
-            sidebar.file_list.selected_display_idx(),
-            Some(1),
-            "scroll-from-header should still scroll the list"
-        );
+        let after = sidebar
+            .list
+            .as_ref()
+            .unwrap()
+            .selected_row()
+            .map(|e| e.path().to_string());
+        assert_ne!(first, after, "scroll-from-header should move the selection");
     }
 
     #[tokio::test]
@@ -424,5 +550,16 @@ mod tests {
         let result = sidebar.handle_input(&mouse_down_at(50, 10), &tx);
         assert_eq!(result, EventState::NotConsumed);
         assert!(rx.try_recv().is_err());
+    }
+
+    /// Navigating loads the directory's notes via the streamed source.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigate_loads_directory_notes() {
+        let mut sidebar = sidebar_with_notes("sidebar-nav", &["hello"]).await;
+        assert!(sidebar.is_empty());
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+        assert!(!sidebar.is_empty());
+        assert_eq!(sidebar.note_count(), 1);
     }
 }

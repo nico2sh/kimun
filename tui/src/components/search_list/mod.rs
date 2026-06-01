@@ -422,7 +422,7 @@ impl<R: SearchRow> SearchListBuilder<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::adapters::{TestRow, VecSource};
+    use super::adapters::{ScriptedStreamSource, TestRow, VecSource};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn noop_redraw() -> std::sync::Arc<dyn Fn() + Send + Sync> {
@@ -538,6 +538,18 @@ mod tests {
         list.poll();
         assert_eq!(list.visible_rows().len(), 1);
         assert_eq!(list.selected_row().unwrap().name, "alpha");
+    }
+
+    #[tokio::test]
+    async fn streamed_rows_arrive_then_done_and_filter_locally() {
+        let src = ScriptedStreamSource { batches: vec![vec![TestRow::new("alpha")], vec![TestRow::new("beta")]] };
+        let mut list = SearchList::builder(src, noop_redraw()).filter(Filter::Fuzzy).build();
+        list.poll_until_idle().await;
+        assert_eq!(list.rows().len(), 2);
+        assert!(!list.is_loading());
+        list.set_query("alp");
+        list.poll();
+        assert_eq!(list.visible_rows().len(), 1);
     }
 
     #[tokio::test]

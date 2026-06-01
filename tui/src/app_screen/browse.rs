@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kimun_core::nfs::VaultPath;
-use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
+use kimun_core::NoteVault;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
@@ -17,7 +17,6 @@ use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
 pub struct BrowseScreen {
-    vault: Arc<NoteVault>,
     sidebar: SidebarComponent,
     theme: Theme,
     path: VaultPath,
@@ -29,29 +28,21 @@ impl BrowseScreen {
         let kb = s.key_bindings.clone();
         let theme = s.get_theme();
         let icons = s.icons();
-        let sidebar = SidebarComponent::new(kb, vault.clone(), icons, &s);
+        let sidebar = SidebarComponent::new(kb, vault, icons, &s);
         drop(s);
         Self {
             sidebar,
-            vault,
             theme,
             path,
         }
     }
 
     async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
-        let (options, rx) = VaultBrowseOptionsBuilder::new(&dir)
-            .recursive(false)
-            .validation(kimun_core::NotesValidation::Full)
-            .build();
+        // The sidebar hosts a streamed `SearchList`; (re)building its engine for
+        // `dir` runs `browse_vault` inside the source and emits rows as they
+        // arrive.
         self.path = dir.clone();
-        let vault = self.vault.clone();
-        let tx2 = tx.clone();
-        tokio::spawn(async move {
-            vault.browse_vault(options).await.ok();
-            tx2.send(AppEvent::Redraw).ok();
-        });
-        self.sidebar.start_loading(rx, dir);
+        self.sidebar.navigate(dir, tx);
     }
 }
 
