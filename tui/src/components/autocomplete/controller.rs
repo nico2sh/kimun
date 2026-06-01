@@ -43,7 +43,7 @@ const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(80);
 pub enum AutocompleteMode {
     Both,
     HashtagOnly,
-    /// Search-query box: hashtags (labels) + link-filter (`>`) note names.
+    /// Search-query box: hashtags (labels) + note-name operators (`<`, `>`, `=`).
     SearchQuery,
 }
 

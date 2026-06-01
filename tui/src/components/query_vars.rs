@@ -4,8 +4,8 @@
 
 use kimun_core::nfs::VaultPath;
 
-/// The current-note variable. A bare `>` typed in the query panel is sugar
-/// that expands to `>{note}` (handled at the input layer, not here).
+/// The current-note variable. A bare `<` typed in the query panel is sugar
+/// that expands to `<{note}` (handled at the input layer, not here).
 pub const VAR_NOTE: &str = "{note}";
 
 /// True if `template` contains any query variable. The query panel uses
@@ -16,7 +16,7 @@ pub fn query_has_variables(template: &str) -> bool {
 
 /// Resolve all query variables in `template` against the open note,
 /// producing a plain query string for `vault.search_notes`. `{note}`
-/// becomes the note's clean name (matching how `>` targets are matched —
+/// becomes the note's clean name (matching how `<` targets are matched —
 /// see ADR 0001). When no note is open, `{note}` resolves to the empty
 /// string.
 pub fn resolve_query(template: &str, current_note: Option<&VaultPath>) -> String {
@@ -30,21 +30,21 @@ mod tests {
 
     #[test]
     fn detects_variables() {
-        assert!(query_has_variables(">{note}"));
-        assert!(query_has_variables("#todo >{note}"));
+        assert!(query_has_variables("<{note}"));
+        assert!(query_has_variables("#todo <{note}"));
         assert!(!query_has_variables("#todo"));
     }
 
     #[test]
     fn resolves_note_variable() {
         let p = VaultPath::note_path_from("work/spec.md");
-        assert_eq!(resolve_query(">{note}", Some(&p)), ">spec");
-        assert_eq!(resolve_query("#todo >{note}", Some(&p)), "#todo >spec");
+        assert_eq!(resolve_query("<{note}", Some(&p)), "<spec");
+        assert_eq!(resolve_query("#todo <{note}", Some(&p)), "#todo <spec");
     }
 
     #[test]
     fn resolves_to_empty_without_note() {
-        assert_eq!(resolve_query(">{note}", None), ">");
+        assert_eq!(resolve_query("<{note}", None), "<");
         assert_eq!(resolve_query("#todo", None), "#todo");
     }
 }
