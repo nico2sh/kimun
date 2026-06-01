@@ -9,12 +9,21 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
+use crate::components::autocomplete::{
+    self, AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
+    TriggerOptions,
+};
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx};
+use crate::components::events::{AppEvent, AppTx, redraw_callback};
 use crate::components::file_list::{SortField, SortOrder};
+use crate::components::query_vars::{query_has_variables, resolve_query};
+use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::keys::{KeyBindings, key_event_to_combo};
 use crate::settings::themes::Theme;
+
+/// The default query the panel runs: backlinks to the current note.
+const DEFAULT_QUERY: &str = ">{note}";
 
 // ---------------------------------------------------------------------------
 // BacklinkEntry
@@ -44,10 +53,43 @@ enum ExpandState {
 }
 
 // ---------------------------------------------------------------------------
-// BacklinksPanel
+// SearchBoxHostSnapshot
 // ---------------------------------------------------------------------------
 
-pub struct BacklinksPanel {
+/// Snapshot of the query input that satisfies `AutocompleteHost`.
+/// Owned so the controller's borrow doesn't overlap with the input's
+/// `&mut` borrow during key handling and replacement. Mirrors the
+/// snapshot in `note_browser/mod.rs` (duplicated here intentionally;
+/// the type is tiny and self-contained).
+struct SearchBoxHostSnapshot {
+    lines: Vec<String>,
+    cursor: (usize, usize),
+    caret_pos: Option<(u16, u16)>,
+}
+
+impl AutocompleteHost for SearchBoxHostSnapshot {
+    fn buffer_snapshot(&self) -> crate::components::text_editor::snapshot::EditorSnapshot<'_> {
+        use std::num::NonZeroU64;
+        let dummy = NonZeroU64::new(1).unwrap();
+        crate::components::text_editor::snapshot::EditorSnapshot::borrowed(
+            &self.lines,
+            self.cursor,
+            dummy,
+        )
+    }
+    fn cache_key(&self) -> Option<std::num::NonZeroU64> {
+        None
+    }
+    fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
+        self.caret_pos
+    }
+}
+
+// ---------------------------------------------------------------------------
+// QueryPanel
+// ---------------------------------------------------------------------------
+
+pub struct QueryPanel {
     entries: Vec<BacklinkEntry>,
     expand_states: Vec<ExpandState>,
     list_state: ListState,
@@ -57,14 +99,27 @@ pub struct BacklinksPanel {
     sort_order: SortOrder,
     vault: Arc<NoteVault>,
     key_bindings: KeyBindings,
+    /// Editable query line. Defaults to the backlinks query `>{note}`.
+    query_input: SingleLineInput,
+    /// Name of the saved search currently applied (drives the title);
+    /// `None` for the default / a manually-edited query.
+    saved_search_name: Option<String>,
+    /// Autocomplete for the query line (`#` tags, `>` link targets).
+    autocomplete: AutocompleteController,
     /// Scroll offset for full-expanded content view.
     content_scroll: usize,
     /// Maximum scroll offset (computed during render).
     content_scroll_max: usize,
 }
 
-impl BacklinksPanel {
+impl QueryPanel {
     pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings) -> Self {
+        let autocomplete =
+            AutocompleteController::new(vault.clone(), AutocompleteMode::SearchQuery)
+                .with_trigger_opts(TriggerOptions {
+                    disambiguate_header: false,
+                    apply_exclusion_zone: false,
+                });
         Self {
             entries: Vec::new(),
             expand_states: Vec::new(),
@@ -75,8 +130,49 @@ impl BacklinksPanel {
             sort_order: SortOrder::Ascending,
             vault,
             key_bindings,
+            query_input: SingleLineInput::with_value(DEFAULT_QUERY),
+            saved_search_name: None,
+            // The redraw callback needs an `AppTx`, which `new` does not
+            // receive (the panel is built before the app event channel in
+            // some construction orders). It is wired lazily via
+            // `ensure_redraw_callback` the first time a key arrives with a
+            // `tx`, before the popup can open.
+            autocomplete,
             content_scroll: 0,
             content_scroll_max: 0,
+        }
+    }
+
+    /// Wire the autocomplete redraw callback. Idempotent-ish: callers
+    /// invoke this once a `tx` is available (the panel is created before
+    /// the app event channel in some construction orders).
+    fn ensure_redraw_callback(&mut self, tx: &AppTx) {
+        self.autocomplete
+            .set_redraw_callback(redraw_callback(tx.clone()));
+    }
+
+    // ── Query accessors ─────────────────────────────────────────────────
+
+    pub fn active_query(&self) -> &str {
+        self.query_input.value()
+    }
+
+    pub fn set_active_query(&mut self, q: String) {
+        self.query_input.set_value(q);
+    }
+
+    pub fn set_saved_search_name(&mut self, name: Option<String>) {
+        self.saved_search_name = name;
+    }
+
+    fn autocomplete_snapshot(&self) -> SearchBoxHostSnapshot {
+        let value = self.query_input.value().to_string();
+        let cursor_byte = self.query_input.cursor_byte();
+        let col = value[..cursor_byte.min(value.len())].chars().count();
+        SearchBoxHostSnapshot {
+            lines: vec![value],
+            cursor: (0, col),
+            caret_pos: self.query_input.last_caret_pos(),
         }
     }
 
@@ -104,21 +200,30 @@ impl BacklinksPanel {
 
     // ── Loading ─────────────────────────────────────────────────────────
 
-    /// Begin loading backlinks for `note_path`. Clears existing state, sets
-    /// `loading = true`, and spawns a background task that sends
-    /// `AppEvent::BacklinksLoaded` when finished.
-    pub fn load(&mut self, note_path: VaultPath, tx: AppTx) {
+    /// Record the newly-open note. Re-runs the query only when it depends
+    /// on `{note}` (otherwise the existing results stay untouched).
+    pub fn set_note(&mut self, note_path: VaultPath, tx: AppTx) {
+        self.current_note = note_path;
+        if query_has_variables(self.active_query()) {
+            self.run_query(tx);
+        }
+    }
+
+    /// Resolve the active query against the current note and spawn a
+    /// background search. Clears existing state and sets `loading = true`;
+    /// the task sends `AppEvent::BacklinksLoaded` when finished.
+    fn run_query(&mut self, tx: AppTx) {
         self.entries.clear();
         self.expand_states.clear();
         self.list_state.select(None);
         self.loading = true;
-        self.current_note = note_path.clone();
         self.content_scroll = 0;
         self.content_scroll_max = 0;
 
+        let q = resolve_query(self.active_query(), Some(&self.current_note));
         let vault = Arc::clone(&self.vault);
         tokio::spawn(async move {
-            let entries = load_backlinks(&vault, &note_path).await;
+            let entries = load_query(&vault, &q).await;
             let _ = tx.send(AppEvent::BacklinksLoaded(entries));
         });
     }
@@ -175,6 +280,32 @@ impl BacklinksPanel {
     // ── Input handling ──────────────────────────────────────────────────
 
     pub fn handle_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
+        // Lazily wire the redraw callback now that we have a tx.
+        self.ensure_redraw_callback(tx);
+
+        // Autocomplete popup gets first crack at the key when open:
+        // Up/Down/Tab/Enter/Esc navigate / accept / dismiss the popup
+        // instead of bubbling to the panel's list-nav handling.
+        if self.autocomplete.is_open() {
+            let snapshot = self.autocomplete_snapshot();
+            match self.autocomplete.handle_key(*key, &snapshot) {
+                HandleKeyOutcome::Accepted(action) => {
+                    self.query_input.replace_range_bytes(
+                        action.range.clone(),
+                        &action.new_text,
+                        action.new_cursor_byte,
+                    );
+                    self.saved_search_name = None;
+                    self.run_query(tx.clone());
+                    return EventState::Consumed;
+                }
+                HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
+                    return EventState::Consumed;
+                }
+                HandleKeyOutcome::NotHandled => {}
+            }
+        }
+
         // Check for action shortcuts first.
         if let Some(combo) = key_event_to_combo(key) {
             match self.key_bindings.get_action(&combo) {
@@ -224,8 +355,37 @@ impl BacklinksPanel {
                 self.toggle_expand();
                 EventState::Consumed
             }
-            KeyCode::Esc => EventState::NotConsumed,
-            _ => EventState::NotConsumed,
+            KeyCode::Esc => {
+                // If the popup is open it was already handled above; here
+                // Esc bubbles to the editor for focus changes.
+                EventState::NotConsumed
+            }
+            _ => {
+                // Forward to the query input (text editing).
+                let outcome = self.query_input.handle_key(key);
+                let snapshot = self.autocomplete_snapshot();
+                match outcome {
+                    InputOutcome::Changed => {
+                        // Manual edit drops the saved-search label.
+                        self.saved_search_name = None;
+                        self.autocomplete.sync(&snapshot);
+                        self.run_query(tx.clone());
+                        EventState::Consumed
+                    }
+                    InputOutcome::Consumed => {
+                        self.autocomplete.refresh_if_open(&snapshot);
+                        EventState::Consumed
+                    }
+                    // Submit (Enter) / Cancel (Esc) are handled by the
+                    // explicit arms above and never reach here. Anything
+                    // unrecognised bubbles to the editor.
+                    InputOutcome::Submit | InputOutcome::Cancel => {
+                        self.autocomplete.close();
+                        EventState::NotConsumed
+                    }
+                    InputOutcome::NotConsumed => EventState::NotConsumed,
+                }
+            }
         }
     }
 
@@ -279,35 +439,67 @@ impl BacklinksPanel {
     // ── Rendering ──────────────────────────────────────────────────────
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
+        self.autocomplete.poll_results();
+
         let border_style = theme.border_style(focused);
         let fg = theme.fg.to_ratatui();
         let fg_muted = theme.fg_muted.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
         let sort_indicator = format!("{}{}", self.sort_field.label(), self.sort_order.label());
-        let title = format!("Backlinks ({}) {}", self.entries.len(), sort_indicator);
+        let title = if self.active_query() == DEFAULT_QUERY {
+            format!("Backlinks ({}) {}", self.entries.len(), sort_indicator)
+        } else if let Some(name) = &self.saved_search_name {
+            format!("{} ({}) {}", name, self.entries.len(), sort_indicator)
+        } else {
+            format!("Query ({}) {}", self.entries.len(), sort_indicator)
+        };
 
         let outer = Block::default()
             .title(title)
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
-        let inner = outer.inner(rect);
+        let outer_inner = outer.inner(rect);
         f.render_widget(outer, rect);
+
+        // Split off the query line (top) from the list/preview (rest).
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .split(outer_inner);
+        let search_block = Block::default()
+            .title(" Query")
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .style(theme.panel_style());
+        let search_inner = search_block.inner(rows[0]);
+        f.render_widget(search_block, rows[0]);
+        self.query_input.render(
+            f,
+            search_inner,
+            Style::default().fg(fg).bg(bg),
+            0,
+            focused,
+        );
+
+        let inner = rows[1];
 
         if self.loading {
             f.render_widget(
                 Paragraph::new("  Loading...").style(Style::default().fg(fg_muted).bg(bg)),
                 inner,
             );
+            self.render_autocomplete_popup(f, rect, theme);
             return;
         }
 
         if self.entries.is_empty() {
             f.render_widget(
-                Paragraph::new("  No backlinks").style(Style::default().fg(fg_muted).bg(bg)),
+                Paragraph::new("  No results").style(Style::default().fg(fg_muted).bg(bg)),
                 inner,
             );
+            self.render_autocomplete_popup(f, rect, theme);
             return;
         }
 
@@ -368,13 +560,14 @@ impl BacklinksPanel {
                 // Scrollable content.
                 let indent = 2usize;
                 let wrap_width = parts[2].width.saturating_sub(indent as u16 + 1) as usize;
-                let target = self.current_note.get_clean_name().to_lowercase();
+                let needles =
+                    query_needles(&resolve_query(self.active_query(), Some(&self.current_note)));
 
                 let mut lines = Vec::new();
                 for line in text.lines() {
                     let wrapped = wrap_line(line, wrap_width);
                     for wline in wrapped {
-                        let spans = highlight_link(&wline, &target, fg_muted, bg, theme);
+                        let spans = highlight_needles(&wline, &needles, fg_muted, bg, theme);
                         let mut indented =
                             vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                         indented.extend(spans);
@@ -394,6 +587,7 @@ impl BacklinksPanel {
                     parts[2],
                 );
             }
+            self.render_autocomplete_popup(f, rect, theme);
             return;
         }
 
@@ -479,23 +673,25 @@ impl BacklinksPanel {
             let text = entry.full_text.as_deref().unwrap_or(&entry.context);
             let indent = 2usize;
             let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
-            let target = self.current_note.get_clean_name().to_lowercase();
+            let needles =
+                query_needles(&resolve_query(self.active_query(), Some(&self.current_note)));
 
             let mut lines = Vec::new();
 
-            // Track which rendered line contains the first link match.
+            // Track which rendered line contains the first needle match.
             let mut link_line: Option<usize> = None;
 
             for line in text.lines() {
                 let wrapped = wrap_line(line, wrap_width);
                 for wline in wrapped {
                     if link_line.is_none()
-                        && (find_case_insensitive(&wline, &format!("[[{}", target)).is_some()
-                            || find_case_insensitive(&wline, &format!("({})", target)).is_some())
+                        && needles
+                            .iter()
+                            .any(|n| !n.is_empty() && find_case_insensitive(&wline, n).is_some())
                     {
                         link_line = Some(lines.len());
                     }
-                    let spans = highlight_link(&wline, &target, fg_muted, bg, theme);
+                    let spans = highlight_needles(&wline, &needles, fg_muted, bg, theme);
                     let mut indented =
                         vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                     indented.extend(spans);
@@ -525,6 +721,21 @@ impl BacklinksPanel {
                 area,
             );
         }
+
+        self.render_autocomplete_popup(f, rect, theme);
+    }
+
+    /// Re-anchor the autocomplete popup on the query input's freshly
+    /// rendered caret and render it, clamped to the panel rect so it never
+    /// spills past the panel border.
+    fn render_autocomplete_popup(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
+        let live_anchor = self.query_input.last_caret_pos();
+        if let (Some(state), Some(anchor)) = (self.autocomplete.state_mut(), live_anchor) {
+            state.anchor = anchor;
+        }
+        if let Some(state) = self.autocomplete.state() {
+            autocomplete::render(f, state, rect, theme);
+        }
     }
 }
 
@@ -532,25 +743,19 @@ impl BacklinksPanel {
 // Standalone async helpers
 // ---------------------------------------------------------------------------
 
-/// Load all backlinks for `note_path` from the vault, fetching note text and
-/// extracting context for each one.
-async fn load_backlinks(vault: &NoteVault, note_path: &VaultPath) -> Vec<BacklinkEntry> {
-    let backlinks = match vault.get_backlinks(note_path).await {
-        Ok(bl) => bl,
-        Err(_) => return Vec::new(),
-    };
-
-    let target_name = note_path.get_clean_name();
-
-    let mut entries = Vec::with_capacity(backlinks.len());
-    for (entry_data, content_data) in backlinks {
+/// Run `query` (already a resolved plain query string) and build entries.
+/// Sources from full-text / query search via `vault.search_notes`.
+async fn load_query(vault: &NoteVault, query: &str) -> Vec<BacklinkEntry> {
+    let needles = query_needles(query);
+    let results = vault.search_notes(query).await.unwrap_or_default();
+    let mut entries = Vec::with_capacity(results.len());
+    for (entry_data, content_data) in results {
         let text = vault
             .get_note_text(&entry_data.path)
             .await
             .unwrap_or_default();
-        let context = extract_context(&text, &target_name);
-        let (_parent, filename) = entry_data.path.get_parent_path();
-
+        let context = extract_context_multi(&text, &needles);
+        let (_p, filename) = entry_data.path.get_parent_path();
         entries.push(BacklinkEntry {
             path: entry_data.path,
             title: content_data.title,
@@ -559,55 +764,7 @@ async fn load_backlinks(vault: &NoteVault, note_path: &VaultPath) -> Vec<Backlin
             full_text: Some(text),
         });
     }
-
     entries
-}
-
-/// Find the paragraph in `text` that contains a link to `target_name`.
-///
-/// A "paragraph" is a run of consecutive non-blank lines. The function
-/// searches for several link patterns (case-insensitive):
-/// - `[[target_name]]`        — full wikilink
-/// - `[[target_name`          — partial wikilink (e.g. with alias)
-/// - `(target_name)`          — markdown link
-/// - `(target_name.md)`       — markdown link with extension
-///
-/// If no match is found, returns the first non-blank line as a fallback.
-fn extract_context(text: &str, target_name: &str) -> String {
-    let target_lower = target_name.to_lowercase();
-
-    // Build the name with extension via VaultPath (avoids hardcoding `.md`).
-    let with_ext = VaultPath::note_path_from(&target_lower)
-        .to_string_with_ext()
-        .to_lowercase();
-    // Extract just the filename portion (after the last `/`).
-    let filename_ext = with_ext.rsplit('/').next().unwrap_or(&with_ext);
-
-    // Build search needles (lowercase).
-    let wikilink_full = format!("[[{}]]", target_lower);
-    let wikilink_partial = format!("[[{}", target_lower);
-    let md_link = format!("({})", target_lower);
-    let md_link_ext = format!("({})", filename_ext);
-
-    // Split text into paragraphs (groups of consecutive non-blank lines).
-    let paragraphs = split_paragraphs(text);
-
-    for para in &paragraphs {
-        let lower = para.to_lowercase();
-        if lower.contains(&wikilink_full)
-            || lower.contains(&wikilink_partial)
-            || lower.contains(&md_link)
-            || lower.contains(&md_link_ext)
-        {
-            return para.clone();
-        }
-    }
-
-    // Fallback: first non-blank line.
-    text.lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .to_string()
 }
 
 /// Split text into paragraphs. A paragraph is one or more consecutive
@@ -705,61 +862,6 @@ fn find_case_insensitive(haystack: &str, needle: &str) -> Option<(usize, usize)>
     None
 }
 
-/// Render a line with link references to `target` in bold.
-/// Splits the line into owned spans: normal text in `fg_muted`, link matches in bold accent.
-/// Uses case-insensitive char-by-char matching to avoid byte-index mismatches.
-fn highlight_link(
-    line: &str,
-    target: &str,
-    fg_muted: ratatui::style::Color,
-    bg: ratatui::style::Color,
-    theme: &Theme,
-) -> Vec<Span<'static>> {
-    let normal_style = Style::default().fg(fg_muted).bg(bg);
-    let bold_style = Style::default()
-        .fg(theme.accent.to_ratatui())
-        .bg(bg)
-        .add_modifier(Modifier::BOLD);
-
-    // Build the with-extension form for markdown links.
-    let with_ext = VaultPath::note_path_from(target)
-        .to_string_with_ext()
-        .to_lowercase();
-    let filename_ext = with_ext.rsplit('/').next().unwrap_or(&with_ext).to_string();
-
-    // Build all needles to search for.
-    let needles = [
-        format!("[[{}]]", target),
-        format!("[[{}", target),
-        format!("({})", target),
-        format!("({})", filename_ext),
-    ];
-
-    // Find the earliest matching needle by byte position.
-    let mut best_match: Option<(usize, usize)> = None; // (byte_start, byte_end)
-    for needle in &needles {
-        if let Some((start, end)) = find_case_insensitive(line, needle)
-            && (best_match.is_none() || start < best_match.unwrap().0)
-        {
-            best_match = Some((start, end));
-        }
-    }
-
-    let Some((start, end)) = best_match else {
-        return vec![Span::styled(line.to_string(), normal_style)];
-    };
-
-    let mut spans = Vec::new();
-    if start > 0 {
-        spans.push(Span::styled(line[..start].to_string(), normal_style));
-    }
-    spans.push(Span::styled(line[start..end].to_string(), bold_style));
-    if end < line.len() {
-        spans.push(Span::styled(line[end..].to_string(), normal_style));
-    }
-    spans
-}
-
 /// Find the first paragraph containing any of `needles` (case-insensitive);
 /// fall back to the first non-blank line.
 fn extract_context_multi(text: &str, needles: &[String]) -> String {
@@ -828,47 +930,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_context_finds_wikilink_paragraph() {
-        let text = "\
-# Heading
-
-This is an intro paragraph.
-
-Here I reference [[my-note]] in some context
-that spans two lines.
-
-Another paragraph without links.";
-
-        let result = extract_context(text, "my-note");
-        assert!(result.contains("[[my-note]]"));
-        assert!(result.contains("that spans two lines"));
-    }
-
-    #[test]
-    fn extract_context_fallback_to_first_line() {
-        let text = "\
-# No links here
-
-Just a normal paragraph.";
-
-        let result = extract_context(text, "other-note");
-        assert_eq!(result, "# No links here");
-    }
-
-    #[test]
-    fn extract_context_finds_markdown_link() {
-        let text = "\
-# Title
-
-See [related](my-note.md) for details.
-
-Unrelated content.";
-
-        let result = extract_context(text, "my-note");
-        assert!(result.contains("(my-note.md)"));
-    }
-
-    #[test]
     fn wrap_line_fits_within_width() {
         let result = wrap_line("short", 20);
         assert_eq!(result, vec!["short"]);
@@ -900,62 +961,6 @@ Unrelated content.";
     }
 
     #[test]
-    fn highlight_link_bolds_wikilink() {
-        let spans = highlight_link(
-            "see [[my-note]] here",
-            "my-note",
-            ratatui::style::Color::Gray,
-            ratatui::style::Color::Black,
-            &crate::settings::themes::Theme::default(),
-        );
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[0].content, "see ");
-        assert_eq!(spans[1].content, "[[my-note]]");
-        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(spans[2].content, " here");
-    }
-
-    #[test]
-    fn highlight_link_case_insensitive() {
-        let spans = highlight_link(
-            "See [[My-Note]] here",
-            "my-note",
-            ratatui::style::Color::Gray,
-            ratatui::style::Color::Black,
-            &crate::settings::themes::Theme::default(),
-        );
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[1].content, "[[My-Note]]");
-        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn highlight_link_markdown_with_extension() {
-        let spans = highlight_link(
-            "see [link](my-note.md) here",
-            "my-note",
-            ratatui::style::Color::Gray,
-            ratatui::style::Color::Black,
-            &crate::settings::themes::Theme::default(),
-        );
-        assert_eq!(spans.len(), 3);
-        assert!(spans[1].content.contains("my-note.md"));
-        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn highlight_link_no_match_returns_single_span() {
-        let spans = highlight_link(
-            "nothing here",
-            "other",
-            ratatui::style::Color::Gray,
-            ratatui::style::Color::Black,
-            &crate::settings::themes::Theme::default(),
-        );
-        assert_eq!(spans.len(), 1);
-    }
-
-    #[test]
     fn extract_context_matches_any_needle() {
         let text = "# Title\n\nIntro line.\n\nA paragraph mentioning widget here.\n";
         let result = extract_context_multi(text, &["widget".to_string()]);
@@ -980,5 +985,22 @@ Unrelated content.";
         let n = query_needles("widget >spec");
         assert!(n.iter().any(|x| x == "widget"));
         assert!(n.iter().any(|x| x == "spec"));
+    }
+
+    #[tokio::test]
+    async fn query_panel_load_query_lists_matches() {
+        let vault = crate::test_support::temp_vault("qp").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/a.md"), "alpha #todo")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/b.md"), "beta")
+            .await
+            .unwrap();
+        let entries = load_query(&vault, "#todo").await;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].filename.contains("a"));
     }
 }

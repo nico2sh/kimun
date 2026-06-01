@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::autosave_timer::AutosaveTimer;
-use crate::components::backlinks_panel::BacklinksPanel;
+use crate::components::backlinks_panel::QueryPanel;
 use crate::components::dialog_manager::DialogManager;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
@@ -61,7 +61,7 @@ pub struct EditorScreen {
     autosave: AutosaveTimer,
     note_browser: Option<NoteBrowserModal>,
     dialogs: DialogManager,
-    backlinks_panel: BacklinksPanel,
+    backlinks_panel: QueryPanel,
     backlinks_visible: bool,
     /// Handle to the most recently spawned background autosave task.
     /// `is_in_flight()` is the source of truth for "is a save still in
@@ -95,7 +95,7 @@ impl EditorScreen {
         );
         let icons = s.icons();
         let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &s);
-        let backlinks_panel = BacklinksPanel::new(vault.clone(), kb.clone());
+        let backlinks_panel = QueryPanel::new(vault.clone(), kb.clone());
         let mut editor = TextEditorComponent::new(kb, &s);
         editor.set_vault(vault.clone());
         drop(s);
@@ -293,7 +293,7 @@ impl EditorScreen {
                 self.editor.set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
                 if self.backlinks_visible {
-                    self.backlinks_panel.load(path.clone(), tx.clone());
+                    self.backlinks_panel.set_note(path.clone(), tx.clone());
                 }
             }
             Err(e) => {
@@ -506,7 +506,7 @@ impl EditorScreen {
             Focus::Editor => {
                 if !self.backlinks_visible {
                     self.backlinks_visible = true;
-                    self.backlinks_panel.load(self.path.clone(), tx.clone());
+                    self.backlinks_panel.set_note(self.path.clone(), tx.clone());
                 }
                 self.set_focus(Focus::Backlinks);
             }
@@ -524,7 +524,7 @@ impl EditorScreen {
     fn toggle_backlinks(&mut self, tx: &AppTx) {
         self.backlinks_visible = !self.backlinks_visible;
         if self.backlinks_visible {
-            self.backlinks_panel.load(self.path.clone(), tx.clone());
+            self.backlinks_panel.set_note(self.path.clone(), tx.clone());
             self.set_focus(Focus::Backlinks);
         } else if matches!(self.focus, Focus::Backlinks) {
             self.focus_editor();
@@ -758,12 +758,17 @@ impl AppScreen for EditorScreen {
             Focus::Dialog => self.dialogs.handle_input(event, tx),
             Focus::Backlinks => {
                 if let InputEvent::Key(key) = event {
-                    // Esc goes directly to editor (not through directional navigation).
-                    if key.code == ratatui::crossterm::event::KeyCode::Esc {
+                    // Give the panel first crack (its autocomplete popup may
+                    // consume Esc to close itself). If the panel doesn't
+                    // consume it, Esc returns focus to the editor.
+                    let state = self.backlinks_panel.handle_key(key, tx);
+                    if state == EventState::NotConsumed
+                        && key.code == ratatui::crossterm::event::KeyCode::Esc
+                    {
                         self.focus_editor();
                         return EventState::Consumed;
                     }
-                    self.backlinks_panel.handle_key(key, tx)
+                    state
                 } else {
                     EventState::NotConsumed
                 }
