@@ -204,9 +204,8 @@ impl DialogManager {
         );
     }
 
-    /// Convenience: open the save-search name dialog.
-    /// Wired into the sidebar query panel in Task 12.
-    #[allow(dead_code)]
+    /// Convenience: open the save-search name dialog (used by the
+    /// `SaveCurrentQuery` action in the editor screen).
     pub fn open_save_search(&mut self, query: String, current_focus: u8) {
         self.open(
             ActiveDialog::SaveSearch(SaveSearchDialog::new(query)),
