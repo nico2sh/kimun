@@ -14,9 +14,15 @@ use super::{Element, ElementKind, ImagePlaceholder, string_display_width};
 /// (e.g. `[[icon]]` inside a markdown link's display text).
 pub(super) fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Element>) {
     for span in kimun_core::note::wikilink_char_spans(line) {
-        let overlaps = elements
-            .iter()
-            .any(|e| span.start >= e.start_char && span.end <= e.end_char);
+        // Skip spans nested inside a markdown link's display text (e.g.
+        // `[[icon]]` in `[[[icon]]](url)`). Block-level elements such as
+        // headings and blockquotes wrap their whole inline content, so they
+        // must NOT suppress wikilinks they happen to contain.
+        let overlaps = elements.iter().any(|e| {
+            matches!(e.kind, ElementKind::Link | ElementKind::Image)
+                && span.start >= e.start_char
+                && span.end <= e.end_char
+        });
         if overlaps {
             continue;
         }
