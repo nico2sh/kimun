@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
@@ -7,19 +8,20 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
-use crate::components::autocomplete::{
-    self, AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
-    TriggerOptions,
-};
+use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, redraw_callback};
+use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::components::query_vars::{query_has_variables, resolve_query};
-use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::components::search_list::{
+    Emit, KeyReaction, RowSource, SearchList, SearchRow, VaultSuggestions,
+};
 use crate::keys::action_shortcuts::ActionShortcuts;
-use crate::keys::{KeyBindings, key_event_to_combo};
+use crate::keys::KeyBindings;
+use crate::keys::key_combo::KeyCombo;
+use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 /// The default query the panel runs: backlinks to the current note.
@@ -41,6 +43,89 @@ pub struct BacklinkEntry {
     pub full_text: Option<String>,
 }
 
+impl SearchRow for BacklinkEntry {
+    fn to_list_item(&self, theme: &Theme, _icons: &Icons, selected: bool) -> ListItem<'static> {
+        let fg = theme.fg.to_ratatui();
+        let fg_muted = theme.fg_muted.to_ratatui();
+        let bg = theme.bg_panel.to_ratatui();
+        let title_style = if selected {
+            Style::default()
+                .fg(theme.fg_selected.to_ratatui())
+                .bg(theme.bg_selected.to_ratatui())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(fg).bg(bg)
+        };
+        let title_display = if self.title.is_empty() {
+            &self.filename
+        } else {
+            &self.title
+        };
+        ListItem::new(Line::from(vec![
+            Span::styled(format!("  {} ", title_display), title_style),
+            Span::styled(
+                format!(" {}", self.filename),
+                Style::default().fg(fg_muted).bg(if selected {
+                    theme.bg_selected.to_ratatui()
+                } else {
+                    bg
+                }),
+            ),
+        ]))
+    }
+
+    fn match_text(&self) -> Option<&str> {
+        Some(&self.filename)
+    }
+
+    fn visual_height(&self) -> u16 {
+        1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BacklinkSource
+// ---------------------------------------------------------------------------
+
+/// Row source for the Query panel. The engine holds the query TEMPLATE verbatim
+/// (e.g. `>{note}`, so the input shows the template); this source resolves
+/// `{note}` against the shared current note at load time, preserving the exact
+/// "input shows the template, results are backlinks of the current note" UX.
+/// The shared sort handle lets the source order results by the panel's active
+/// sort field/order (the engine itself uses `SourceOrder`).
+struct BacklinkSource {
+    vault: Arc<NoteVault>,
+    current_note: Arc<Mutex<VaultPath>>,
+    sort: Arc<Mutex<(SortField, SortOrder)>>,
+}
+
+#[async_trait]
+impl RowSource<BacklinkEntry> for BacklinkSource {
+    async fn load(&self, query: &str, emit: Emit<BacklinkEntry>) {
+        // Clone the note out of the lock, then drop the guard before awaiting.
+        let note = self.current_note.lock().unwrap().clone();
+        let q = resolve_query(query, Some(&note));
+        let mut entries = load_query(&self.vault, &q).await;
+        let (field, order) = *self.sort.lock().unwrap();
+        sort_entries(&mut entries, field, order);
+        emit.replace(entries);
+    }
+}
+
+/// Sort backlink entries in place by the given field and order.
+fn sort_entries(entries: &mut [BacklinkEntry], field: SortField, order: SortOrder) {
+    entries.sort_by(|a, b| {
+        let cmp = match field {
+            SortField::Name => a.filename.to_lowercase().cmp(&b.filename.to_lowercase()),
+            SortField::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+        };
+        match order {
+            SortOrder::Ascending => cmp,
+            SortOrder::Descending => cmp.reverse(),
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // ExpandState (private)
 // ---------------------------------------------------------------------------
@@ -53,378 +138,307 @@ enum ExpandState {
 }
 
 // ---------------------------------------------------------------------------
-// SearchBoxHostSnapshot
-// ---------------------------------------------------------------------------
-
-/// Snapshot of the query input that satisfies `AutocompleteHost`.
-/// Owned so the controller's borrow doesn't overlap with the input's
-/// `&mut` borrow during key handling and replacement. Mirrors the
-/// snapshot in `note_browser/mod.rs` (duplicated here intentionally;
-/// the type is tiny and self-contained).
-struct SearchBoxHostSnapshot {
-    lines: Vec<String>,
-    cursor: (usize, usize),
-    caret_pos: Option<(u16, u16)>,
-}
-
-impl AutocompleteHost for SearchBoxHostSnapshot {
-    fn buffer_snapshot(&self) -> crate::components::text_editor::snapshot::EditorSnapshot<'_> {
-        use std::num::NonZeroU64;
-        let dummy = NonZeroU64::new(1).unwrap();
-        crate::components::text_editor::snapshot::EditorSnapshot::borrowed(
-            &self.lines,
-            self.cursor,
-            dummy,
-        )
-    }
-    fn cache_key(&self) -> Option<std::num::NonZeroU64> {
-        None
-    }
-    fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
-        self.caret_pos
-    }
-}
-
-// ---------------------------------------------------------------------------
 // QueryPanel
 // ---------------------------------------------------------------------------
 
 pub struct QueryPanel {
-    entries: Vec<BacklinkEntry>,
-    expand_states: Vec<ExpandState>,
-    list_state: ListState,
-    loading: bool,
-    current_note: VaultPath,
-    sort_field: SortField,
-    sort_order: SortOrder,
-    vault: Arc<NoteVault>,
-    key_bindings: KeyBindings,
-    /// Editable query line. Defaults to the backlinks query `>{note}`.
-    query_input: SingleLineInput,
-    /// Name of the saved search currently applied (drives the title);
-    /// `None` for the default / a manually-edited query.
+    /// The SearchList engine: owns the query input, the result list, and the
+    /// hashtag/link autocomplete.
+    list: SearchList<BacklinkEntry>,
+    /// Shared handle to the current note. `BacklinkSource::load` reads this to
+    /// resolve `{note}` in the query template.
+    current_note: Arc<Mutex<VaultPath>>,
+    /// Name of the saved search currently applied (drives the title); `None`
+    /// for the default / a manually-edited query.
     saved_search_name: Option<String>,
-    /// Autocomplete for the query line (`#` tags, `>` link targets).
-    autocomplete: AutocompleteController,
+    /// Shared sort field/order. `BacklinkSource::load` reads it to order
+    /// results; the panel mutates it on sort shortcuts then reloads.
+    sort: Arc<Mutex<(SortField, SortOrder)>>,
+    /// Expand state of the currently-selected row. Reset to `Collapsed` on any
+    /// navigation or query change.
+    expand: ExpandState,
+    /// The path the `expand` state belongs to, used to detect selection changes
+    /// (the engine owns the list, so we re-anchor expand on the selected row).
+    expand_path: Option<VaultPath>,
     /// Scroll offset for full-expanded content view.
     content_scroll: usize,
     /// Maximum scroll offset (computed during render).
     content_scroll_max: usize,
+    key_bindings: KeyBindings,
+    /// Shared sender filled the first time a `tx` arrives. The engine's redraw
+    /// callback reads this slot, so async loads/autocomplete wake the render
+    /// loop once the app event channel is wired (the panel is built before the
+    /// channel exists in some construction orders).
+    redraw_tx: Arc<Mutex<Option<AppTx>>>,
+    /// Combos that the engine intercepts: sort cycle / reverse / follow-link.
+    sort_cycle_combos: Vec<KeyCombo>,
+    sort_reverse_combos: Vec<KeyCombo>,
+    follow_link_combos: Vec<KeyCombo>,
 }
 
 impl QueryPanel {
     pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings) -> Self {
-        let autocomplete =
-            AutocompleteController::new(std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault: vault.clone() }), AutocompleteMode::SearchQuery)
-                .with_trigger_opts(TriggerOptions {
-                    disambiguate_header: false,
-                    apply_exclusion_zone: false,
-                });
+        let icons = Icons::new(false);
+        let current_note = Arc::new(Mutex::new(VaultPath::empty()));
+        let sort = Arc::new(Mutex::new((SortField::Name, SortOrder::Ascending)));
+        // The redraw callback reads a shared slot that `set_note`/`handle_key`
+        // fill once a `tx` is available (the panel is constructed before the
+        // app event channel in some orders). Until then it is a no-op.
+        let redraw_tx: Arc<Mutex<Option<AppTx>>> = Arc::new(Mutex::new(None));
+        let redraw: Arc<dyn Fn() + Send + Sync> = {
+            let slot = redraw_tx.clone();
+            Arc::new(move || {
+                if let Some(tx) = slot.lock().unwrap().as_ref() {
+                    let _ = tx.send(AppEvent::Redraw);
+                }
+            })
+        };
+        let source = BacklinkSource {
+            vault: vault.clone(),
+            current_note: current_note.clone(),
+            sort: sort.clone(),
+        };
+        let combos = |action: &ActionShortcuts| -> Vec<KeyCombo> {
+            key_bindings
+                .to_hashmap()
+                .get(action)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let sort_cycle_combos = combos(&ActionShortcuts::CycleSortField);
+        let sort_reverse_combos = combos(&ActionShortcuts::SortReverseOrder);
+        let follow_link_combos = combos(&ActionShortcuts::FollowLink);
+
+        let mut intercept = Vec::new();
+        intercept.extend(sort_cycle_combos.iter().cloned());
+        intercept.extend(sort_reverse_combos.iter().cloned());
+        intercept.extend(follow_link_combos.iter().cloned());
+
+        let list = SearchList::builder(source, redraw)
+            .initial_query(DEFAULT_QUERY)
+            .icons(icons.clone())
+            .autocomplete(
+                Arc::new(VaultSuggestions {
+                    vault: vault.clone(),
+                }),
+                AutocompleteMode::SearchQuery,
+            )
+            .intercept(intercept)
+            .build();
+
         Self {
-            entries: Vec::new(),
-            expand_states: Vec::new(),
-            list_state: ListState::default(),
-            loading: false,
-            current_note: VaultPath::empty(),
-            sort_field: SortField::Name,
-            sort_order: SortOrder::Ascending,
-            vault,
-            key_bindings,
-            query_input: SingleLineInput::with_value(DEFAULT_QUERY),
+            list,
+            current_note,
             saved_search_name: None,
-            // The redraw callback needs an `AppTx`, which `new` does not
-            // receive (the panel is built before the app event channel in
-            // some construction orders). It is wired lazily via
-            // `ensure_redraw_callback` the first time a key arrives with a
-            // `tx`, before the popup can open.
-            autocomplete,
+            sort,
+            expand: ExpandState::Collapsed,
+            expand_path: None,
             content_scroll: 0,
             content_scroll_max: 0,
+            key_bindings,
+            redraw_tx,
+            sort_cycle_combos,
+            sort_reverse_combos,
+            follow_link_combos,
         }
-    }
-
-    /// Wire the autocomplete redraw callback. Idempotent-ish: callers
-    /// invoke this once a `tx` is available (the panel is created before
-    /// the app event channel in some construction orders).
-    fn ensure_redraw_callback(&mut self, tx: &AppTx) {
-        self.autocomplete
-            .set_redraw_callback(redraw_callback(tx.clone()));
     }
 
     // ── Query accessors ─────────────────────────────────────────────────
 
     pub fn active_query(&self) -> &str {
-        self.query_input.value()
+        self.list.query()
     }
 
     pub fn set_active_query(&mut self, q: String) {
-        self.query_input.set_value(q);
+        self.list.set_query(q);
+        self.reset_expand();
     }
 
     pub fn set_saved_search_name(&mut self, name: Option<String>) {
         self.saved_search_name = name;
     }
 
-    /// Apply a query (e.g. from a saved search) and run it immediately.
-    /// `name` drives the title (`None` for the default backlinks query).
+    /// Apply a query template (e.g. from a saved search) and run it. The engine
+    /// holds the template verbatim; `{note}` is resolved at load. `name` drives
+    /// the title (`None` for the default backlinks query).
     pub fn apply_query(&mut self, query: String, name: Option<String>, tx: AppTx) {
+        self.ensure_redraw_tx(&tx);
         self.set_active_query(query);
         self.set_saved_search_name(name);
-        self.run_query(tx);
-    }
-
-    fn autocomplete_snapshot(&self) -> SearchBoxHostSnapshot {
-        let value = self.query_input.value().to_string();
-        let cursor_byte = self.query_input.cursor_byte();
-        let col = value[..cursor_byte.min(value.len())].chars().count();
-        SearchBoxHostSnapshot {
-            lines: vec![value],
-            cursor: (0, col),
-            caret_pos: self.query_input.last_caret_pos(),
-        }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
+    fn current_note(&self) -> VaultPath {
+        self.current_note.lock().unwrap().clone()
+    }
+
+    /// Fill the shared redraw slot so the engine's async loads / autocomplete
+    /// wake the render loop. Idempotent.
+    fn ensure_redraw_tx(&self, tx: &AppTx) {
+        let mut slot = self.redraw_tx.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(tx.clone());
+        }
+    }
+
+    /// Resolve the active query template against the current note (the form the
+    /// source actually searches; used to derive highlight needles).
+    fn resolved_query(&self) -> String {
+        resolve_query(self.list.query(), Some(&self.current_note()))
+    }
+
     /// Returns true if the selected entry is in full-expand mode (content takes
     /// the whole panel, up/down scrolls content).
     fn is_full_expanded(&self) -> bool {
-        self.list_state
-            .selected()
-            .and_then(|i| self.expand_states.get(i))
-            .is_some_and(|s| *s == ExpandState::Full)
+        self.list.selected_row().is_some() && self.expand == ExpandState::Full
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.list.rows().is_empty()
     }
 
     pub fn selected_path(&self) -> Option<&VaultPath> {
-        self.list_state
-            .selected()
-            .and_then(|i| self.entries.get(i))
-            .map(|e| &e.path)
+        self.list.selected_row().map(|e| &e.path)
+    }
+
+    fn reset_expand(&mut self) {
+        self.expand = ExpandState::Collapsed;
+        self.expand_path = None;
+        self.content_scroll = 0;
+        self.content_scroll_max = 0;
+    }
+
+    /// Re-anchor the expand state on the currently-selected row. If selection
+    /// has moved to a different row, collapse it.
+    fn sync_expand_anchor(&mut self) {
+        let sel = self.list.selected_row().map(|e| e.path.clone());
+        if sel != self.expand_path {
+            self.expand = ExpandState::Collapsed;
+            self.expand_path = sel;
+            self.content_scroll = 0;
+        }
     }
 
     // ── Loading ─────────────────────────────────────────────────────────
 
-    /// Record the newly-open note. Re-runs the query only when it depends
-    /// on `{note}` (otherwise the existing results stay untouched).
+    /// Record the newly-open note. Re-runs the query only when it depends on
+    /// `{note}` (otherwise the existing results stay untouched).
     pub fn set_note(&mut self, note_path: VaultPath, tx: AppTx) {
-        self.current_note = note_path;
-        if query_has_variables(self.active_query()) {
-            self.run_query(tx);
+        self.ensure_redraw_tx(&tx);
+        *self.current_note.lock().unwrap() = note_path;
+        if query_has_variables(self.list.query()) {
+            self.list.reload();
+            self.reset_expand();
         }
     }
 
-    /// Resolve the active query against the current note and spawn a
-    /// background search. Clears existing state and sets `loading = true`;
-    /// the task sends `AppEvent::BacklinksLoaded` when finished.
-    fn run_query(&mut self, tx: AppTx) {
-        self.entries.clear();
-        self.expand_states.clear();
-        self.list_state.select(None);
-        self.loading = true;
-        self.content_scroll = 0;
-        self.content_scroll_max = 0;
-
-        let q = resolve_query(self.active_query(), Some(&self.current_note));
-        let vault = Arc::clone(&self.vault);
-        tokio::spawn(async move {
-            let entries = load_query(&vault, &q).await;
-            let _ = tx.send(AppEvent::BacklinksLoaded(entries));
-        });
-    }
-
-    /// Called when the background task completes. Stores the entries, applies
-    /// the current sort, and initialises expand states.
-    pub fn on_loaded(&mut self, entries: Vec<BacklinkEntry>) {
-        self.entries = entries;
-        self.apply_sort();
-        self.expand_states = vec![ExpandState::Collapsed; self.entries.len()];
-        self.loading = false;
-        if !self.entries.is_empty() {
-            self.list_state.select(Some(0));
+    /// Advance the sort field, then reload so the source re-orders the results.
+    fn cycle_sort(&mut self) {
+        {
+            let mut s = self.sort.lock().unwrap();
+            s.0 = s.0.cycle();
         }
+        self.list.reload();
+        self.reset_expand();
     }
 
-    /// Sort `entries` (and their parallel `expand_states`) by the active
-    /// sort field and order.
-    pub fn apply_sort(&mut self) {
-        let field = self.sort_field;
-        let order = self.sort_order;
-
-        // Build index permutation so we can reorder expand_states in sync.
-        let mut indices: Vec<usize> = (0..self.entries.len()).collect();
-        indices.sort_by(|&a, &b| {
-            let cmp = match field {
-                SortField::Name => self.entries[a]
-                    .filename
-                    .to_lowercase()
-                    .cmp(&self.entries[b].filename.to_lowercase()),
-                SortField::Title => self.entries[a]
-                    .title
-                    .to_lowercase()
-                    .cmp(&self.entries[b].title.to_lowercase()),
-            };
-            match order {
-                SortOrder::Ascending => cmp,
-                SortOrder::Descending => cmp.reverse(),
-            }
-        });
-
-        let sorted_entries: Vec<BacklinkEntry> =
-            indices.iter().map(|&i| self.entries[i].clone()).collect();
-        let sorted_states: Vec<ExpandState> = if self.expand_states.len() == self.entries.len() {
-            indices.iter().map(|&i| self.expand_states[i]).collect()
-        } else {
-            vec![ExpandState::Collapsed; sorted_entries.len()]
-        };
-
-        self.entries = sorted_entries;
-        self.expand_states = sorted_states;
+    /// Toggle the sort order, then reload so the source re-orders the results.
+    fn reverse_sort(&mut self) {
+        {
+            let mut s = self.sort.lock().unwrap();
+            s.1 = s.1.toggle();
+        }
+        self.list.reload();
+        self.reset_expand();
     }
 
     // ── Input handling ──────────────────────────────────────────────────
 
     pub fn handle_key(&mut self, key: &KeyEvent, tx: &AppTx) -> EventState {
-        // Lazily wire the redraw callback now that we have a tx.
-        self.ensure_redraw_callback(tx);
+        self.ensure_redraw_tx(tx);
+        self.sync_expand_anchor();
 
-        // Autocomplete popup gets first crack at the key when open:
-        // Up/Down/Tab/Enter/Esc navigate / accept / dismiss the popup
-        // instead of bubbling to the panel's list-nav handling.
-        if self.autocomplete.is_open() {
-            let snapshot = self.autocomplete_snapshot();
-            match self.autocomplete.handle_key(*key, &snapshot) {
-                HandleKeyOutcome::Accepted(action) => {
-                    self.query_input.replace_range_bytes(
-                        action.range.clone(),
-                        &action.new_text,
-                        action.new_cursor_byte,
-                    );
+        // Full-expand takes over Up/Down for content scroll BEFORE the engine
+        // sees them.
+        if self.is_full_expanded() && matches!(key.code, KeyCode::Up | KeyCode::Down) {
+            self.scroll_content(key);
+            return EventState::Consumed;
+        }
+        // Enter cycles expand (the engine would Submit; the panel's policy is to
+        // toggle the expand state instead).
+        if key.code == KeyCode::Enter {
+            self.toggle_expand();
+            return EventState::Consumed;
+        }
+
+        match self.list.handle_key(key) {
+            KeyReaction::Intercepted(c) if self.sort_cycle_combos.contains(&c) => {
+                self.cycle_sort();
+                EventState::Consumed
+            }
+            KeyReaction::Intercepted(c) if self.sort_reverse_combos.contains(&c) => {
+                self.reverse_sort();
+                EventState::Consumed
+            }
+            KeyReaction::Intercepted(c) if self.follow_link_combos.contains(&c) => {
+                if let Some(path) = self.selected_path().cloned() {
+                    tx.send(AppEvent::OpenPath(path)).ok();
+                }
+                EventState::Consumed
+            }
+            KeyReaction::Consumed => {
+                // A query edit or navigation: drop the saved-search label (a
+                // manual edit is no longer the named search) and re-anchor the
+                // expand state on the (possibly new) selection.
+                if self.list.query() != DEFAULT_QUERY {
                     self.saved_search_name = None;
-                    self.run_query(tx.clone());
-                    return EventState::Consumed;
                 }
-                HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
-                    return EventState::Consumed;
-                }
-                HandleKeyOutcome::NotHandled => {}
-            }
-        }
-
-        // Check for action shortcuts first.
-        if let Some(combo) = key_event_to_combo(key) {
-            match self.key_bindings.get_action(&combo) {
-                Some(ActionShortcuts::CycleSortField) => {
-                    self.sort_field = self.sort_field.cycle();
-                    self.apply_sort();
-                    self.expand_states = vec![ExpandState::Collapsed; self.entries.len()];
-                    return EventState::Consumed;
-                }
-                Some(ActionShortcuts::SortReverseOrder) => {
-                    self.sort_order = self.sort_order.toggle();
-                    self.apply_sort();
-                    self.expand_states = vec![ExpandState::Collapsed; self.entries.len()];
-                    return EventState::Consumed;
-                }
-                // FocusSidebar / FocusEditor are intercepted at the
-                // EditorScreen level for directional navigation.
-                Some(ActionShortcuts::FollowLink) => {
-                    if let Some(path) = self.selected_path().cloned() {
-                        tx.send(AppEvent::OpenPath(path)).ok();
-                    }
-                    return EventState::Consumed;
-                }
-                _ => {}
-            }
-        }
-
-        match key.code {
-            KeyCode::Up => {
-                if self.is_full_expanded() {
-                    self.content_scroll = self.content_scroll.saturating_sub(1);
-                } else {
-                    self.move_selection(-1);
-                }
+                self.sync_expand_anchor();
                 EventState::Consumed
             }
-            KeyCode::Down => {
-                if self.is_full_expanded() {
-                    // Increment freely; render() clamps to content_scroll_max.
-                    self.content_scroll += 1;
-                } else {
-                    self.move_selection(1);
-                }
-                EventState::Consumed
-            }
-            KeyCode::Enter => {
+            KeyReaction::Submit => {
+                // Unreachable: Enter is handled by the pre-check above. Kept for
+                // completeness.
                 self.toggle_expand();
                 EventState::Consumed
             }
-            KeyCode::Esc => {
-                // If the popup is open it was already handled above; here
-                // Esc bubbles to the editor for focus changes.
-                EventState::NotConsumed
-            }
-            _ => {
-                // Forward to the query input (text editing).
-                let outcome = self.query_input.handle_key(key);
-                let snapshot = self.autocomplete_snapshot();
-                match outcome {
-                    InputOutcome::Changed => {
-                        // Manual edit drops the saved-search label.
-                        self.saved_search_name = None;
-                        self.autocomplete.sync(&snapshot);
-                        self.run_query(tx.clone());
-                        EventState::Consumed
-                    }
-                    InputOutcome::Consumed => {
-                        self.autocomplete.refresh_if_open(&snapshot);
-                        EventState::Consumed
-                    }
-                    // Submit (Enter) / Cancel (Esc) are handled by the
-                    // explicit arms above and never reach here. Anything
-                    // unrecognised bubbles to the editor.
-                    InputOutcome::Submit | InputOutcome::Cancel => {
-                        self.autocomplete.close();
-                        EventState::NotConsumed
-                    }
-                    InputOutcome::NotConsumed => EventState::NotConsumed,
-                }
-            }
+            // Esc bubbles to the editor for focus changes.
+            KeyReaction::Cancel => EventState::NotConsumed,
+            KeyReaction::Unhandled => EventState::NotConsumed,
+            KeyReaction::Intercepted(_) => EventState::Consumed,
         }
     }
 
-    fn move_selection(&mut self, delta: i32) {
-        if self.entries.is_empty() {
-            return;
+    fn scroll_content(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Up => {
+                self.content_scroll = self.content_scroll.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                // Increment freely; render() clamps to content_scroll_max.
+                self.content_scroll += 1;
+            }
+            _ => {}
         }
-        let current = self.list_state.selected().unwrap_or(0) as i32;
-        let next = (current + delta).clamp(0, self.entries.len() as i32 - 1) as usize;
-        self.list_state.select(Some(next));
     }
 
     fn toggle_expand(&mut self) {
-        let Some(idx) = self.list_state.selected() else {
-            return;
-        };
-        if idx >= self.expand_states.len() {
+        if self.list.selected_row().is_none() {
             return;
         }
-
-        match self.expand_states[idx] {
+        self.expand_path = self.list.selected_row().map(|e| e.path.clone());
+        match self.expand {
             ExpandState::Collapsed => {
-                self.expand_states[idx] = ExpandState::Context;
+                self.expand = ExpandState::Context;
             }
             ExpandState::Context => {
                 self.content_scroll = 0;
-                self.expand_states[idx] = ExpandState::Full;
+                self.expand = ExpandState::Full;
             }
             ExpandState::Full => {
                 self.content_scroll = 0;
-                self.expand_states[idx] = ExpandState::Collapsed;
+                self.expand = ExpandState::Collapsed;
             }
         }
     }
@@ -447,20 +461,22 @@ impl QueryPanel {
     // ── Rendering ──────────────────────────────────────────────────────
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        self.autocomplete.poll_results();
+        self.list.poll();
+        self.sync_expand_anchor();
 
         let border_style = theme.border_style(focused);
-        let fg = theme.fg.to_ratatui();
         let fg_muted = theme.fg_muted.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
-        let sort_indicator = format!("{}{}", self.sort_field.label(), self.sort_order.label());
-        let title = if self.active_query() == DEFAULT_QUERY {
-            format!("Backlinks ({}) {}", self.entries.len(), sort_indicator)
+        let count = self.list.visible_rows().len();
+        let (sort_field, sort_order) = *self.sort.lock().unwrap();
+        let sort_indicator = format!("{}{}", sort_field.label(), sort_order.label());
+        let title = if self.list.query() == DEFAULT_QUERY {
+            format!("Backlinks ({}) {}", count, sort_indicator)
         } else if let Some(name) = &self.saved_search_name {
-            format!("{} ({}) {}", name, self.entries.len(), sort_indicator)
+            format!("{} ({}) {}", name, count, sort_indicator)
         } else {
-            format!("Query ({}) {}", self.entries.len(), sort_indicator)
+            format!("Query ({}) {}", count, sort_indicator)
         };
 
         let outer = Block::default()
@@ -483,39 +499,34 @@ impl QueryPanel {
             .style(theme.panel_style());
         let search_inner = search_block.inner(rows[0]);
         f.render_widget(search_block, rows[0]);
-        self.query_input
-            .render(f, search_inner, Style::default().fg(fg).bg(bg), 0, focused);
+        self.list.render_query(f, search_inner, theme, focused);
 
         let inner = rows[1];
 
-        if self.loading {
+        if self.list.is_loading() {
             f.render_widget(
                 Paragraph::new("  Loading...").style(Style::default().fg(fg_muted).bg(bg)),
                 inner,
             );
-            self.render_autocomplete_popup(f, rect, theme);
+            self.list.render_autocomplete(f, rect, theme);
             return;
         }
 
-        if self.entries.is_empty() {
+        if self.list.visible_rows().is_empty() {
             f.render_widget(
                 Paragraph::new("  No results").style(Style::default().fg(fg_muted).bg(bg)),
                 inner,
             );
-            self.render_autocomplete_popup(f, rect, theme);
+            self.list.render_autocomplete(f, rect, theme);
             return;
         }
 
-        let selected = self.list_state.selected();
-        let selected_state = selected
-            .and_then(|i| self.expand_states.get(i).copied())
-            .unwrap_or(ExpandState::Collapsed);
+        let selected_state = self.expand;
 
         // Full mode: content takes the entire panel, no list visible.
         if selected_state == ExpandState::Full {
-            if let Some(idx) = selected
-                && let Some(entry) = self.entries.get(idx)
-            {
+            if let Some(entry) = self.list.selected_row() {
+                let entry = entry.clone();
                 let text = entry.full_text.as_deref().unwrap_or(&entry.context);
 
                 // Split into fixed header (title + divider) and scrollable content.
@@ -563,10 +574,7 @@ impl QueryPanel {
                 // Scrollable content.
                 let indent = 2usize;
                 let wrap_width = parts[2].width.saturating_sub(indent as u16 + 1) as usize;
-                let needles = query_needles(&resolve_query(
-                    self.active_query(),
-                    Some(&self.current_note),
-                ));
+                let needles = query_needles(&self.resolved_query());
 
                 let mut lines = Vec::new();
                 for line in text.lines() {
@@ -592,7 +600,7 @@ impl QueryPanel {
                     parts[2],
                 );
             }
-            self.render_autocomplete_popup(f, rect, theme);
+            self.list.render_autocomplete(f, rect, theme);
             return;
         }
 
@@ -601,7 +609,7 @@ impl QueryPanel {
 
         let (list_area, divider_area, content_area) = if has_context {
             let max_list = inner.height / 2;
-            let list_height = (self.entries.len() as u16).min(max_list).max(1);
+            let list_height = (count as u16).min(max_list).max(1);
             let areas = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -615,49 +623,10 @@ impl QueryPanel {
             (inner, None, None)
         };
 
-        // Build list items (1 line per entry).
-        let items: Vec<ListItem> = self
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| {
-                let is_selected = selected == Some(i);
-                let title_style = if is_selected {
-                    Style::default()
-                        .fg(theme.fg_selected.to_ratatui())
-                        .bg(theme.bg_selected.to_ratatui())
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(fg).bg(bg)
-                };
-                let title_display = if entry.title.is_empty() {
-                    &entry.filename
-                } else {
-                    &entry.title
-                };
-                let expand_marker = match self.expand_states.get(i) {
-                    Some(ExpandState::Context) => "\u{25BC}",
-                    _ => " ",
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{} {} ", expand_marker, title_display), title_style),
-                    Span::styled(
-                        format!(" {}", entry.filename),
-                        Style::default().fg(fg_muted).bg(if is_selected {
-                            theme.bg_selected.to_ratatui()
-                        } else {
-                            bg
-                        }),
-                    ),
-                ]))
-            })
-            .collect();
-
-        let list = List::new(items)
-            .style(Style::default().bg(bg))
-            .highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
-
-        f.render_stateful_widget(list, list_area, &mut self.list_state);
+        // The engine draws the collapsed list (1 line per row, with the
+        // selected-row marker handled in `to_list_item`).
+        self.list.render(f, list_area, theme, focused);
+        self.list.set_list_rect(list_area);
 
         // Divider between list and content.
         if let Some(div) = divider_area {
@@ -671,17 +640,14 @@ impl QueryPanel {
         // Render context preview below the list: show the full note text
         // scrolled so the first link occurrence is visible with context above.
         if let Some(area) = content_area
-            && let Some(idx) = selected
-            && let Some(entry) = self.entries.get(idx)
             && selected_state == ExpandState::Context
+            && let Some(entry) = self.list.selected_row()
         {
+            let entry = entry.clone();
             let text = entry.full_text.as_deref().unwrap_or(&entry.context);
             let indent = 2usize;
             let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
-            let needles = query_needles(&resolve_query(
-                self.active_query(),
-                Some(&self.current_note),
-            ));
+            let needles = query_needles(&self.resolved_query());
 
             let mut lines = Vec::new();
 
@@ -729,20 +695,7 @@ impl QueryPanel {
             );
         }
 
-        self.render_autocomplete_popup(f, rect, theme);
-    }
-
-    /// Re-anchor the autocomplete popup on the query input's freshly
-    /// rendered caret and render it, clamped to the panel rect so it never
-    /// spills past the panel border.
-    fn render_autocomplete_popup(&mut self, f: &mut Frame, rect: Rect, theme: &Theme) {
-        let live_anchor = self.query_input.last_caret_pos();
-        if let (Some(state), Some(anchor)) = (self.autocomplete.state_mut(), live_anchor) {
-            state.anchor = anchor;
-        }
-        if let Some(state) = self.autocomplete.state() {
-            autocomplete::render(f, state, rect, theme);
-        }
+        self.list.render_autocomplete(f, rect, theme);
     }
 }
 
@@ -1018,48 +971,134 @@ mod tests {
         assert!(entries[0].filename.contains("a"));
     }
 
-    fn fake_entry(name: &str) -> BacklinkEntry {
-        BacklinkEntry {
-            path: VaultPath::note_path_from(name),
-            title: name.to_string(),
-            filename: format!("{name}.md"),
-            context: String::new(),
-            full_text: Some(String::new()),
+    fn make_panel(vault: Arc<NoteVault>) -> QueryPanel {
+        let kb = crate::settings::AppSettings::default().key_bindings.clone();
+        QueryPanel::new(vault, kb)
+    }
+
+    /// Drive the engine until its async load settles. Unlike the engine's
+    /// `poll_until_idle` (tight `yield_now` loop), this gives the spawned
+    /// sqlite-backed search task real wall-clock time to complete — `load_query`
+    /// awaits a full-text search plus per-result `get_note_text`, which a
+    /// yield-only loop does not advance fast enough.
+    async fn settle(panel: &mut QueryPanel) {
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            panel.list.poll();
+            if !panel.list.is_loading() {
+                break;
+            }
         }
     }
 
     /// A static query (no `{note}`) must survive navigation: `set_note` leaves
-    /// its results and query text untouched (no clear, no re-run).
-    #[tokio::test]
+    /// its query template untouched and does NOT reload the engine.
+    // Multi-thread flavour: the engine drives the source load on a spawned
+    // task, and `search_notes` awaits a sqlite pool that needs the IO driver
+    // (a current-thread runtime only advances the spawned task on `yield_now`).
+    #[tokio::test(flavor = "multi_thread")]
     async fn static_query_survives_navigation() {
         let vault = crate::test_support::temp_vault("nav-static").await;
-        let kb = crate::settings::AppSettings::default().key_bindings.clone();
-        let mut panel = QueryPanel::new(vault, kb);
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/a.md"), "alpha #todo")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
         panel.set_active_query("#todo".to_string());
-        panel.on_loaded(vec![fake_entry("a")]);
-        assert_eq!(panel.entries.len(), 1);
+        settle(&mut panel).await;
+        assert_eq!(panel.list.visible_rows().len(), 1);
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.set_note(VaultPath::note_path_from("x.md"), tx);
 
-        assert_eq!(panel.active_query(), "#todo"); // not reset to >{note}
-        assert!(!panel.loading); // static query → no re-run
-        assert_eq!(panel.entries.len(), 1); // results untouched
+        // Query template untouched (not reset to >{note}); a static query is
+        // not reloaded, so it is not in a loading state.
+        assert_eq!(panel.active_query(), "#todo");
+        assert!(!panel.list.is_loading());
+        settle(&mut panel).await;
+        assert_eq!(panel.list.visible_rows().len(), 1); // results untouched
     }
 
-    /// A `{note}` query re-runs on navigation: `set_note` kicks off a fresh
-    /// search (clears results, sets loading).
-    #[tokio::test]
+    /// A `{note}` query re-runs on navigation: `set_note` resolves `{note}`
+    /// against the new note and reloads, so results follow the open note.
+    #[tokio::test(flavor = "multi_thread")]
     async fn note_variable_query_reruns_on_navigation() {
         let vault = crate::test_support::temp_vault("nav-var").await;
-        let kb = crate::settings::AppSettings::default().key_bindings.clone();
-        let mut panel = QueryPanel::new(vault, kb);
-        panel.set_active_query(">{note}".to_string());
-        panel.on_loaded(vec![fake_entry("a")]);
+        vault.validate_and_init().await.unwrap();
+        // `target` is linked from `linker`; opening `target` should surface
+        // `linker` as a backlink.
+        vault
+            .create_note(&VaultPath::note_path_from("/target.md"), "I am the target")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/linker.md"), "see [[target]]")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        assert_eq!(panel.active_query(), DEFAULT_QUERY);
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        panel.set_note(VaultPath::note_path_from("x.md"), tx);
+        panel.set_note(VaultPath::note_path_from("/target.md"), tx);
+        settle(&mut panel).await;
 
-        assert!(panel.loading); // run_query started
+        // The `{note}` query resolved against `target` and found the backlink.
+        assert!(
+            panel
+                .list
+                .visible_rows()
+                .iter()
+                .any(|e| e.filename.contains("linker")),
+            "expected linker as a backlink, got {:?}",
+            panel
+                .list
+                .visible_rows()
+                .iter()
+                .map(|e| e.filename.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Navigating to a different `{note}` re-resolves and changes results.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn note_variable_query_changes_with_note() {
+        let vault = crate::test_support::temp_vault("nav-var2").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/a.md"), "I am a")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/b.md"), "I am b")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/links_a.md"), "see [[a]]")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        panel.set_note(VaultPath::note_path_from("/a.md"), tx.clone());
+        settle(&mut panel).await;
+        assert!(
+            panel
+                .list
+                .visible_rows()
+                .iter()
+                .any(|e| e.filename.contains("links_a"))
+        );
+
+        panel.set_note(VaultPath::note_path_from("/b.md"), tx);
+        settle(&mut panel).await;
+        assert!(
+            !panel
+                .list
+                .visible_rows()
+                .iter()
+                .any(|e| e.filename.contains("links_a")),
+            "b has no backlinks, expected empty"
+        );
     }
 }
