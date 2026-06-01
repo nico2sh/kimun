@@ -201,6 +201,11 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
+    /// Re-run the source load for the current query (e.g. after a mutation).
+    pub fn reload(&mut self) {
+        self.loader.start(self.source.clone(), self.query.clone());
+    }
+
     pub fn select_next(&mut self) {
         if self.display.is_empty() { return; }
         let n = self.display.len();
