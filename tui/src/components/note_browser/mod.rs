@@ -141,7 +141,7 @@ impl NoteBrowserModal {
         // and disable the exclusion-zone check (literal `` ` `` /
         // brackets in a query shouldn't suppress hashtag triggers).
         let mut autocomplete =
-            AutocompleteController::new(vault.clone(), AutocompleteMode::HashtagOnly)
+            AutocompleteController::new(vault.clone(), AutocompleteMode::SearchQuery)
                 .with_trigger_opts(TriggerOptions {
                     disambiguate_header: false,
                     apply_exclusion_zone: false,
