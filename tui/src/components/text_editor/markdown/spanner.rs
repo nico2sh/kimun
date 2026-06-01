@@ -11,7 +11,7 @@
 
 use super::{
     ElementKind, ParsedLine, blockquote_gutter, cluster_display_width, cluster_width_at,
-    span_style, tab_width_at,
+    mask_to_modifier, span_style, tab_width_at,
 };
 use crate::settings::themes::Theme;
 use ratatui::style::Style;
@@ -242,6 +242,7 @@ impl MarkdownSpanner {
         let mut seg_elem: Option<usize> = None;
         let mut seg_is_sigil = false;
         let mut seg_is_expanded = false;
+        let mut seg_mods: u8 = 0;
         // Tracks the current rendered visual column for tab-stop calculation.
         let mut visual_col = 0usize;
 
@@ -249,6 +250,7 @@ impl MarkdownSpanner {
                      seg_elem: Option<usize>,
                      seg_is_sigil: bool,
                      seg_is_expanded: bool,
+                     seg_mods: u8,
                      spans: &mut Vec<Span<'a>>| {
             if seg_str.is_empty() {
                 return;
@@ -257,7 +259,11 @@ impl MarkdownSpanner {
             let style = if seg_is_expanded {
                 Style::default().fg(theme.fg_muted.to_ratatui())
             } else {
+                // OR in emphasis modifiers from outer elements so a Link /
+                // WikiLink nested in `**…**` / `*…*` keeps the bold/italic the
+                // innermost-element style alone would drop.
                 span_style(seg_elem.map(|i| elements[i].kind), seg_is_sigil, theme)
+                    .add_modifier(mask_to_modifier(seg_mods))
             };
             spans.push(Span::styled(seg, style));
         };
@@ -297,6 +303,7 @@ impl MarkdownSpanner {
                         seg_elem,
                         seg_is_sigil,
                         seg_is_expanded,
+                        seg_mods,
                         &mut spans,
                     );
                     let style = span_style(Some(ElementKind::Image), false, theme);
@@ -305,6 +312,7 @@ impl MarkdownSpanner {
                     seg_elem = None;
                     seg_is_sigil = false;
                     seg_is_expanded = false;
+                    seg_mods = 0;
                 }
             }
 
@@ -330,31 +338,37 @@ impl MarkdownSpanner {
                     seg_elem,
                     seg_is_sigil,
                     seg_is_expanded,
+                    seg_mods,
                     &mut spans,
                 );
                 seg_elem = None;
                 seg_is_sigil = false;
                 seg_is_expanded = false;
+                seg_mods = 0;
                 continue;
             }
             let this_is_expanded = in_expanded_elem;
             let this_is_sigil = (in_heading_sigil || in_list_sigil || in_blockquote_sigil)
                 && !is_content
                 && !in_expanded_elem;
+            let this_mods = parsed.modifiers_at(pos);
             if this_elem != seg_elem
                 || this_is_sigil != seg_is_sigil
                 || this_is_expanded != seg_is_expanded
+                || this_mods != seg_mods
             {
                 flush(
                     &mut seg_str,
                     seg_elem,
                     seg_is_sigil,
                     seg_is_expanded,
+                    seg_mods,
                     &mut spans,
                 );
                 seg_elem = this_elem;
                 seg_is_sigil = this_is_sigil;
                 seg_is_expanded = this_is_expanded;
+                seg_mods = this_mods;
             }
             if cluster == "\t" {
                 let tw = tab_width_at(visual_col);
@@ -372,6 +386,7 @@ impl MarkdownSpanner {
             seg_elem,
             seg_is_sigil,
             seg_is_expanded,
+            seg_mods,
             &mut spans,
         );
 
