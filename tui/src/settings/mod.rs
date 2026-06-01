@@ -184,7 +184,7 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
         .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)
-        .add(KeyStrike::KeyE, ActionShortcuts::ToggleBacklinks)
+        .add(KeyStrike::KeyE, ActionShortcuts::ToggleQueryPanel)
         .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer);
 
     // File operations menu (F2 — no modifier, reliable in all terminals).
@@ -192,7 +192,16 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::F2, ActionShortcuts::FileOperations);
 
     kb.batch_add()
+        .add(KeyStrike::F3, ActionShortcuts::OpenSavedSearches);
+
+    kb.batch_add()
         .add(KeyStrike::F4, ActionShortcuts::SwitchWorkspace);
+
+    // Ctrl+Shift+S — save the current query to saved searches.
+    kb.batch_add()
+        .with_ctrl()
+        .with_shift()
+        .add(KeyStrike::KeyS, ActionShortcuts::SaveCurrentQuery);
 
     kb
 }

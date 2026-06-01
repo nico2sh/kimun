@@ -45,8 +45,10 @@ pub enum ActionShortcuts {
     FollowLink,
     // Quick capture
     QuickNote,
-    // Backlinks panel
-    ToggleBacklinks,
+    // Query panel
+    ToggleQueryPanel,
+    OpenSavedSearches,
+    SaveCurrentQuery,
     // Workspace
     SwitchWorkspace,
     // In-buffer find (Ctrl+F by default; reopens / advances to next match if
@@ -62,7 +64,9 @@ impl ActionShortcuts {
             | ActionShortcuts::FocusEditor
             | ActionShortcuts::CycleSortField
             | ActionShortcuts::SortReverseOrder
-            | ActionShortcuts::ToggleBacklinks
+            | ActionShortcuts::ToggleQueryPanel
+            | ActionShortcuts::OpenSavedSearches
+            | ActionShortcuts::SaveCurrentQuery
             | ActionShortcuts::SwitchWorkspace => ShortcutCategory::Navigation,
 
             ActionShortcuts::SearchNotes
@@ -97,7 +101,9 @@ impl ActionShortcuts {
             ActionShortcuts::FileOperations => "File operations".into(),
             ActionShortcuts::FollowLink => "Follow link".into(),
             ActionShortcuts::QuickNote => "Quick note".into(),
-            ActionShortcuts::ToggleBacklinks => "Toggle backlinks".into(),
+            ActionShortcuts::ToggleQueryPanel => "Toggle query panel".into(),
+            ActionShortcuts::OpenSavedSearches => "Saved searches".into(),
+            ActionShortcuts::SaveCurrentQuery => "Save current query".into(),
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
             ActionShortcuts::FindInBuffer => "Find in note".into(),
             ActionShortcuts::Text(ta) => match ta {
@@ -132,7 +138,9 @@ impl Display for ActionShortcuts {
             ActionShortcuts::FileOperations => "FileOperations".to_string(),
             ActionShortcuts::FollowLink => "FollowLink".to_string(),
             ActionShortcuts::QuickNote => "QuickNote".to_string(),
-            ActionShortcuts::ToggleBacklinks => "ToggleBacklinks".to_string(),
+            ActionShortcuts::ToggleQueryPanel => "ToggleQueryPanel".to_string(),
+            ActionShortcuts::OpenSavedSearches => "OpenSavedSearches".to_string(),
+            ActionShortcuts::SaveCurrentQuery => "SaveCurrentQuery".to_string(),
             ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
             ActionShortcuts::FindInBuffer => "FindInBuffer".to_string(),
         };
@@ -159,7 +167,10 @@ impl TryFrom<String> for ActionShortcuts {
             "FileOperations" => ActionShortcuts::FileOperations,
             "FollowLink" => ActionShortcuts::FollowLink,
             "QuickNote" => ActionShortcuts::QuickNote,
-            "ToggleBacklinks" => ActionShortcuts::ToggleBacklinks,
+            "ToggleQueryPanel" => ActionShortcuts::ToggleQueryPanel,
+            "ToggleBacklinks" => ActionShortcuts::ToggleQueryPanel,
+            "OpenSavedSearches" => ActionShortcuts::OpenSavedSearches,
+            "SaveCurrentQuery" => ActionShortcuts::SaveCurrentQuery,
             "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
             "FindInBuffer" => ActionShortcuts::FindInBuffer,
             _ => {
@@ -225,7 +236,15 @@ mod tests {
             ShortcutCategory::Navigation
         );
         assert_eq!(
-            ActionShortcuts::ToggleBacklinks.category(),
+            ActionShortcuts::ToggleQueryPanel.category(),
+            ShortcutCategory::Navigation
+        );
+        assert_eq!(
+            ActionShortcuts::OpenSavedSearches.category(),
+            ShortcutCategory::Navigation
+        );
+        assert_eq!(
+            ActionShortcuts::SaveCurrentQuery.category(),
             ShortcutCategory::Navigation
         );
         assert_eq!(
@@ -301,7 +320,9 @@ mod tests {
         assert_eq!(ActionShortcuts::FileOperations.label(), "File operations");
         assert_eq!(ActionShortcuts::FollowLink.label(), "Follow link");
         assert_eq!(ActionShortcuts::QuickNote.label(), "Quick note");
-        assert_eq!(ActionShortcuts::ToggleBacklinks.label(), "Toggle backlinks");
+        assert_eq!(ActionShortcuts::ToggleQueryPanel.label(), "Toggle query panel");
+        assert_eq!(ActionShortcuts::OpenSavedSearches.label(), "Saved searches");
+        assert_eq!(ActionShortcuts::SaveCurrentQuery.label(), "Save current query");
         assert_eq!(ActionShortcuts::SwitchWorkspace.label(), "Switch workspace");
         assert_eq!(ActionShortcuts::FindInBuffer.label(), "Find in note");
         assert_eq!(ActionShortcuts::Text(TextAction::Bold).label(), "Bold");
@@ -345,6 +366,28 @@ mod tests {
         assert_eq!(
             ActionShortcuts::try_from("FileOperations".to_string()),
             Ok(ActionShortcuts::FileOperations)
+        );
+    }
+
+    #[test]
+    fn saved_search_actions_roundtrip() {
+        assert_eq!(ActionShortcuts::ToggleQueryPanel.to_string(), "ToggleQueryPanel");
+        assert_eq!(
+            ActionShortcuts::try_from("ToggleQueryPanel".to_string()),
+            Ok(ActionShortcuts::ToggleQueryPanel)
+        );
+        // legacy alias still parses to the renamed action
+        assert_eq!(
+            ActionShortcuts::try_from("ToggleBacklinks".to_string()),
+            Ok(ActionShortcuts::ToggleQueryPanel)
+        );
+        assert_eq!(
+            ActionShortcuts::try_from("OpenSavedSearches".to_string()),
+            Ok(ActionShortcuts::OpenSavedSearches)
+        );
+        assert_eq!(
+            ActionShortcuts::try_from("SaveCurrentQuery".to_string()),
+            Ok(ActionShortcuts::SaveCurrentQuery)
         );
     }
 }
