@@ -120,6 +120,11 @@ pub enum AppEvent {
 
     /// Persist a saved search (emitted by the save-search dialog on submit).
     SaveSearchConfirmed { name: String, query: String },
+
+    /// A saved search was chosen in the Saved Searches modal.
+    SavedSearchSelected { query: String, name: String },
+    /// Close the Saved Searches modal (Esc / after select).
+    CloseSavedSearches,
 }
 
 impl AppEvent {
