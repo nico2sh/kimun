@@ -189,8 +189,11 @@ pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String
         OrderField::Title => "title",
         OrderField::FileName => "file",
     };
-    let prefix = if asc { ORDER_LETTER } else { "-or" }; // "or" / "-or"
-    let directive = format!("{}:{}", prefix, field_term);
+    let directive = if asc {
+        format!("{}:{}", ORDER_LETTER, field_term)
+    } else {
+        format!("-{}:{}", ORDER_LETTER, field_term)
+    };
     if kept.is_empty() {
         directive
     } else {
@@ -773,6 +776,15 @@ mod tests {
         let st = SearchTerms::from_query_string(&q);
         assert!(matches!(st.order_by.first(), Some(OrderBy::Title { asc: false })));
         assert!(st.terms.iter().any(|t| t == "note"));
+    }
+
+    #[test]
+    fn with_order_strips_all_existing_directives() {
+        use super::{with_order_directive, OrderField};
+        assert_eq!(
+            with_order_directive("or:title foo -or:file", OrderField::FileName, true),
+            "foo or:file"
+        );
     }
 
     #[test]
