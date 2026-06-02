@@ -1,7 +1,6 @@
 pub mod autocomplete;
 pub mod autosave_timer;
 pub mod backlinks_panel;
-pub mod dialog_manager;
 pub mod dialogs;
 pub mod event_state;
 pub mod events;
