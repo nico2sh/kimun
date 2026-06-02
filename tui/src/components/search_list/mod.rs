@@ -256,6 +256,13 @@ impl<R: SearchRow> SearchList<R> {
     pub fn query(&self) -> &str {
         &self.query
     }
+
+    /// The visible text in the query input widget. Test-only: lets callers
+    /// assert the input bar reflects a programmatic query change.
+    #[cfg(test)]
+    pub(crate) fn input_value(&self) -> &str {
+        self.input.value()
+    }
     pub fn is_loading(&self) -> bool {
         self.loader.loading
     }
@@ -269,6 +276,17 @@ impl<R: SearchRow> SearchList<R> {
         } else {
             self.recompute_display();
         }
+    }
+
+    /// Set the query AND the visible input text (cursor to end), then run
+    /// `set_query`. For PROGRAMMATIC query changes — a saved search applied, a
+    /// sort directive rewritten — so the input bar reflects the new query. The
+    /// interactive keystroke path keeps using `set_query` directly, since the
+    /// input widget already holds the typed text (and its cursor must not jump).
+    pub fn set_query_text(&mut self, q: impl Into<String>) {
+        let q = q.into();
+        self.input.set_value(q.clone());
+        self.set_query(q);
     }
 
     /// Re-run the source load for the current query (e.g. after a mutation).
