@@ -10,10 +10,11 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
+use crate::app_screen::overlay_host::{OverlayHost, OverlayKind, OverlayMsg};
 use crate::components::Component;
 use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::backlinks_panel::QueryPanel;
-use crate::components::dialog_manager::DialogManager;
+use crate::components::dialogs::ActiveDialog;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
 use crate::components::footer_bar::FooterBar;
@@ -39,14 +40,12 @@ use crate::util::single_slot_task::SingleSlotTask;
 /// observability of `abort()` on a syscall in progress.
 const SAVE_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Sidebar,
     Editor,
-    NoteBrowser,
-    Dialog,
+    Overlay,
     Backlinks,
-    SavedSearches,
 }
 
 pub struct EditorScreen {
@@ -61,9 +60,7 @@ pub struct EditorScreen {
     sidebar_visible: bool,
     footer: FooterBar,
     autosave: AutosaveTimer,
-    note_browser: Option<NoteBrowserModal>,
-    saved_searches_modal: Option<SavedSearchesModal>,
-    dialogs: DialogManager,
+    overlays: OverlayHost,
     backlinks_panel: QueryPanel,
     backlinks_visible: bool,
     /// Handle to the most recently spawned background autosave task.
@@ -114,9 +111,7 @@ impl EditorScreen {
             sidebar_visible: true,
             footer,
             autosave: AutosaveTimer::new(),
-            note_browser: None,
-            saved_searches_modal: None,
-            dialogs: DialogManager::new(),
+            overlays: OverlayHost::new(),
             backlinks_panel,
             backlinks_visible: false,
             autosave_task: SingleSlotTask::empty(),
@@ -245,29 +240,31 @@ impl EditorScreen {
         let path = kimun_core::nfs::VaultPath::note_path_from(target_clean);
         match self.vault.open_or_search(&path).await {
             Ok(results) if results.is_empty() => {
-                self.dialogs
-                    .open_create_note(path, self.vault.clone(), self.focus_index());
-                self.set_focus(Focus::Dialog);
+                self.overlays.open(
+                    Box::new(ActiveDialog::create_note(path, self.vault.clone())),
+                    self.panel_focus_token(),
+                );
+                self.set_focus(Focus::Overlay);
             }
             Ok(mut results) if results.len() == 1 => {
                 let (entry, _) = results.remove(0);
                 self.open_path(entry.path, tx).await;
             }
             Ok(results) => {
-                // Multiple matches — show picker.
                 use crate::components::note_browser::link_results_provider::LinkResultsProvider;
                 let provider = LinkResultsProvider::from_results(results);
                 let s = self.settings.read().unwrap();
-                self.note_browser = Some(NoteBrowserModal::new(
+                let modal = NoteBrowserModal::new(
                     format!("Follow: {target}"),
                     provider,
                     self.vault.clone(),
                     s.key_bindings.clone(),
                     s.icons(),
                     tx.clone(),
-                ));
+                );
                 drop(s);
-                self.set_focus(Focus::NoteBrowser);
+                self.overlays.open(Box::new(modal), self.panel_focus_token());
+                self.set_focus(Focus::Overlay);
             }
             Err(e) => {
                 self.footer.flash(format!("Link error: {e}"), tx);
@@ -309,12 +306,11 @@ impl EditorScreen {
             }
             Err(e) => {
                 if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
-                    self.dialogs.open_create_note(
-                        self.path.clone(),
-                        self.vault.clone(),
-                        self.focus_index(),
+                    self.overlays.open(
+                        Box::new(ActiveDialog::create_note(self.path.clone(), self.vault.clone())),
+                        self.panel_focus_token(),
                     );
-                    self.set_focus(Focus::Dialog);
+                    self.set_focus(Focus::Overlay);
                 } else {
                     tracing::error!("Failed to read note {}: {e}", self.path);
                     let parent = self.path.get_parent_path().0;
@@ -417,38 +413,32 @@ impl EditorScreen {
         });
     }
 
-    fn focus_index(&self) -> u8 {
+    /// Panel focus token saved by `OverlayHost` so close restores the opener.
+    /// Only the three panel focuses are representable; `Focus::Overlay` maps to
+    /// `Editor` defensively (an overlay never opens from another overlay).
+    fn panel_focus_token(&self) -> u8 {
         match self.focus {
             Focus::Sidebar => 0,
-            Focus::Editor => 1,
-            Focus::NoteBrowser => 2,
-            Focus::Dialog => 3,
             Focus::Backlinks => 4,
-            Focus::SavedSearches => 5,
+            Focus::Editor | Focus::Overlay => 1,
         }
     }
 
-    fn focus_from_index(idx: u8) -> Focus {
+    fn focus_from_token(idx: u8) -> Focus {
         match idx {
             0 => Focus::Sidebar,
-            2 => Focus::NoteBrowser,
-            3 => Focus::Dialog,
             4 => Focus::Backlinks,
-            5 => Focus::SavedSearches,
             _ => Focus::Editor,
         }
     }
 
+    /// Close the active overlay (if any) and restore the opener panel focus.
     fn restore_focus(&mut self) {
         let restored = self
-            .dialogs
+            .overlays
             .close()
-            .map(Self::focus_from_index)
+            .map(Self::focus_from_token)
             .unwrap_or(Focus::Editor);
-        // Route through set_focus so the autocomplete-close invariant
-        // (no popup while another component owns focus) holds even on
-        // post-dialog focus restoration. Harmless when target is
-        // Editor — set_focus only closes when transitioning AWAY.
         self.set_focus(restored);
     }
 
@@ -625,48 +615,44 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SearchNotes) => {
-                    if self.note_browser.is_some() {
-                        self.note_browser = None;
-                        if matches!(self.focus, Focus::NoteBrowser) {
-                            self.set_focus(Focus::Editor);
-                        }
-                    } else {
+                    if self.overlays.active_kind() == Some(OverlayKind::NoteBrowser) {
+                        self.restore_focus();
+                    } else if !self.overlays.is_open() {
                         let s = self.settings.read().unwrap();
                         let provider =
                             SearchNotesProvider::new(self.vault.clone(), s.current_last_paths());
-                        self.note_browser = Some(NoteBrowserModal::new(
+                        let modal = NoteBrowserModal::new(
                             "Note Browser",
                             provider,
                             self.vault.clone(),
                             s.key_bindings.clone(),
                             s.icons(),
                             tx.clone(),
-                        ));
+                        );
                         drop(s);
-                        self.set_focus(Focus::NoteBrowser);
+                        self.overlays.open(Box::new(modal), self.panel_focus_token());
+                        self.set_focus(Focus::Overlay);
                     }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::OpenNote) => {
-                    if self.note_browser.is_some() {
-                        self.note_browser = None;
-                        if matches!(self.focus, Focus::NoteBrowser) {
-                            self.set_focus(Focus::Editor);
-                        }
-                    } else {
+                    if self.overlays.active_kind() == Some(OverlayKind::NoteBrowser) {
+                        self.restore_focus();
+                    } else if !self.overlays.is_open() {
                         let current_dir = self.path.get_parent_path().0;
                         let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
                         let s = self.settings.read().unwrap();
-                        self.note_browser = Some(NoteBrowserModal::new(
+                        let modal = NoteBrowserModal::new(
                             "Find Note",
                             provider,
                             self.vault.clone(),
                             s.key_bindings.clone(),
                             s.icons(),
                             tx.clone(),
-                        ));
+                        );
                         drop(s);
-                        self.set_focus(Focus::NoteBrowser);
+                        self.overlays.open(Box::new(modal), self.panel_focus_token());
+                        self.set_focus(Focus::Overlay);
                     }
                     return EventState::Consumed;
                 }
@@ -692,13 +678,9 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::OpenSavedSearches) => {
-                    // toggle: if already open, close it
-                    if self.saved_searches_modal.is_some() {
-                        self.saved_searches_modal = None;
-                        if matches!(self.focus, Focus::SavedSearches) {
-                            self.set_focus(Focus::Editor);
-                        }
-                    } else {
+                    if self.overlays.active_kind() == Some(OverlayKind::SavedSearches) {
+                        self.restore_focus();
+                    } else if !self.overlays.is_open() {
                         let s = self.settings.read().unwrap();
                         let modal = SavedSearchesModal::new(
                             self.vault.clone(),
@@ -707,30 +689,36 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.saved_searches_modal = Some(modal);
-                        self.set_focus(Focus::SavedSearches);
+                        self.overlays.open(Box::new(modal), self.panel_focus_token());
+                        self.set_focus(Focus::Overlay);
                     }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SaveCurrentQuery) => {
                     let query = self.backlinks_panel.active_query().to_string();
                     if !query.trim().is_empty() {
-                        self.dialogs.open_save_search(query, self.focus_index());
-                        self.set_focus(Focus::Dialog);
+                        self.overlays.open(
+                            Box::new(ActiveDialog::save_search(query)),
+                            self.panel_focus_token(),
+                        );
+                        self.set_focus(Focus::Overlay);
                     }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SwitchWorkspace) => {
                     let s = self.settings.read().unwrap();
-                    self.dialogs.open_workspace_switcher(&s, self.focus_index());
+                    let dialog = ActiveDialog::workspace_switcher(&s);
                     drop(s);
-                    self.set_focus(Focus::Dialog);
+                    self.overlays.open(Box::new(dialog), self.panel_focus_token());
+                    self.set_focus(Focus::Overlay);
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::QuickNote) => {
-                    self.dialogs
-                        .open_quick_note(self.vault.clone(), self.focus_index());
-                    self.set_focus(Focus::Dialog);
+                    self.overlays.open(
+                        Box::new(ActiveDialog::quick_note(self.vault.clone())),
+                        self.panel_focus_token(),
+                    );
+                    self.set_focus(Focus::Overlay);
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FindInBuffer) if matches!(self.focus, Focus::Editor) => {
@@ -748,12 +736,13 @@ impl AppScreen for EditorScreen {
                         // F1 opens the help modal (only when no other dialog is active).
                         if combo.key == KeyStrike::F1
                             && combo.modifiers.is_empty()
-                            && !self.dialogs.is_open()
+                            && !self.overlays.is_open()
                         {
                             let s = self.settings.read().unwrap();
-                            self.dialogs.open_help(&s.key_bindings, self.focus_index());
+                            let dialog = ActiveDialog::help(&s.key_bindings);
                             drop(s);
-                            self.set_focus(Focus::Dialog);
+                            self.overlays.open(Box::new(dialog), self.panel_focus_token());
+                            self.set_focus(Focus::Overlay);
                         }
                         // All F-keys (including F1 when a dialog is already open) are consumed
                         // and never forwarded to the embedded editor.
@@ -763,30 +752,16 @@ impl AppScreen for EditorScreen {
             }
         }
 
-        // Mouse events are routed to all components regardless of focus so that
-        // clicking anywhere can transfer focus correctly.
         if matches!(event, InputEvent::Mouse(_)) {
-            // Dialog swallows all mouse events while open.
-            if matches!(self.focus, Focus::Dialog) {
-                return EventState::Consumed;
-            }
-            // Note browser modal intercepts all mouse events when open.
-            if matches!(self.focus, Focus::NoteBrowser)
-                && let Some(modal) = &mut self.note_browser
-            {
-                return modal.handle_input(event, tx);
-            }
-            // Saved searches modal intercepts all mouse events when open.
-            if matches!(self.focus, Focus::SavedSearches)
-                && let Some(modal) = &mut self.saved_searches_modal
-            {
-                return modal.handle_input(event, tx);
+            // An open overlay captures all mouse events.
+            if self.overlays.is_open() {
+                return self.overlays.handle_input(event, tx);
             }
             if self.sidebar_visible && self.sidebar.handle_input(event, tx).is_consumed() {
                 return EventState::Consumed;
             }
-            // Backlinks panel consumes mouse events in its focus to prevent
-            // clicks from falling through to the editor.
+            // Query panel consumes mouse events in its focus to prevent
+            // clicks falling through to the editor.
             if matches!(self.focus, Focus::Backlinks) {
                 return EventState::Consumed;
             }
@@ -796,21 +771,7 @@ impl AppScreen for EditorScreen {
         match self.focus {
             Focus::Sidebar => self.sidebar.handle_input(event, tx),
             Focus::Editor => self.editor.handle_input(event, tx),
-            Focus::NoteBrowser => {
-                if let Some(modal) = &mut self.note_browser {
-                    modal.handle_input(event, tx)
-                } else {
-                    EventState::NotConsumed
-                }
-            }
-            Focus::Dialog => self.dialogs.handle_input(event, tx),
-            Focus::SavedSearches => {
-                if let Some(modal) = &mut self.saved_searches_modal {
-                    modal.handle_input(event, tx)
-                } else {
-                    EventState::NotConsumed
-                }
-            }
+            Focus::Overlay => self.overlays.handle_input(event, tx),
             Focus::Backlinks => {
                 if let InputEvent::Key(key) = event {
                     // Give the panel first crack (its autocomplete popup may
@@ -932,63 +893,95 @@ impl AppScreen for EditorScreen {
         let focus_label = match self.focus {
             Focus::Editor => "EDITOR",
             Focus::Sidebar => "SIDEBAR",
-            Focus::NoteBrowser => "NOTE BROWSER",
-            Focus::Dialog => "DIALOG",
             Focus::Backlinks => "BACKLINKS",
-            Focus::SavedSearches => "SAVED SEARCHES",
+            Focus::Overlay => match self.overlays.active_kind() {
+                Some(OverlayKind::NoteBrowser) => "NOTE BROWSER",
+                Some(OverlayKind::SavedSearches) => "SAVED SEARCHES",
+                Some(OverlayKind::Dialog) => "DIALOG",
+                None => "EDITOR",
+            },
         };
         let hints = match self.focus {
             Focus::Editor => self.editor.hint_shortcuts(),
             Focus::Sidebar => self.sidebar.hint_shortcuts(),
-            Focus::NoteBrowser => self
-                .note_browser
-                .as_ref()
-                .map(|m| m.hint_shortcuts())
-                .unwrap_or_default(),
-            Focus::Dialog => vec![],
             Focus::Backlinks => self.backlinks_panel.hint_shortcuts(),
-            Focus::SavedSearches => self
-                .saved_searches_modal
-                .as_ref()
-                .map(|m| m.hint_shortcuts())
-                .unwrap_or_default(),
+            Focus::Overlay => self.overlays.hint_shortcuts(),
         };
         self.footer
             .render(f, rows[2], theme, focus_label, &hints, &self.icons);
 
-        // Modal overlay — rendered last so it appears on top of everything.
-        if let Some(modal) = &mut self.note_browser {
-            modal.render(f, f.area(), &self.theme, true);
-        }
-        if let Some(modal) = &mut self.saved_searches_modal {
-            modal.render(f, f.area(), &self.theme, true);
-        }
-
-        // Dialog overlay — rendered after the note browser so it appears on top.
-        self.dialogs.render(f, f.area(), &self.theme);
+        // Overlay — rendered last so it appears on top of everything.
+        self.overlays.render(f, f.area(), &self.theme);
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
-        // Let the dialog manager handle dialog-related events first.
-        if self
-            .dialogs
-            .handle_app_message(&msg, &self.vault, tx, self.focus_index())
-        {
-            // CloseDialog was handled inside the manager; restore our focus.
-            if matches!(msg, AppEvent::CloseDialog) {
+        // Show* events open a fresh dialog overlay.
+        match &msg {
+            AppEvent::ShowFileOpsMenu(path) => {
+                self.overlays.open(
+                    Box::new(ActiveDialog::Menu(
+                        crate::components::dialogs::FileOpsMenuDialog::new(path.clone()),
+                    )),
+                    self.panel_focus_token(),
+                );
+                self.set_focus(Focus::Overlay);
+                return None;
+            }
+            AppEvent::ShowDeleteDialog(path) => {
+                self.overlays.open(
+                    Box::new(ActiveDialog::Delete(
+                        crate::components::dialogs::DeleteConfirmDialog::new(
+                            path.clone(),
+                            self.vault.clone(),
+                        ),
+                    )),
+                    self.panel_focus_token(),
+                );
+                self.set_focus(Focus::Overlay);
+                return None;
+            }
+            AppEvent::ShowRenameDialog(path) => {
+                self.overlays.open(
+                    Box::new(ActiveDialog::Rename(
+                        crate::components::dialogs::RenameDialog::new(
+                            path.clone(),
+                            self.vault.clone(),
+                        ),
+                    )),
+                    self.panel_focus_token(),
+                );
+                self.set_focus(Focus::Overlay);
+                return None;
+            }
+            AppEvent::ShowMoveDialog(path) => {
+                self.overlays.open(
+                    Box::new(ActiveDialog::Move(
+                        crate::components::dialogs::MoveDialog::new(
+                            path.clone(),
+                            self.vault.clone(),
+                            tx,
+                        ),
+                    )),
+                    self.panel_focus_token(),
+                );
+                self.set_focus(Focus::Overlay);
+                return None;
+            }
+            AppEvent::CloseOverlay => {
                 self.restore_focus();
+                return None;
             }
-            // Show* events switch focus to the dialog.
-            if matches!(
-                msg,
-                AppEvent::ShowFileOpsMenu(_)
-                    | AppEvent::ShowDeleteDialog(_)
-                    | AppEvent::ShowRenameDialog(_)
-                    | AppEvent::ShowMoveDialog(_)
-            ) {
-                self.set_focus(Focus::Dialog);
+            _ => {}
+        }
+
+        // Route validation / async-result messages to the active overlay.
+        match self.overlays.handle_app_message(&msg, &self.vault, tx) {
+            OverlayMsg::Consumed => return None,
+            OverlayMsg::Close => {
+                self.restore_focus();
+                return None;
             }
-            return None;
+            OverlayMsg::NotConsumed => {}
         }
 
         match msg {
@@ -1016,7 +1009,7 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::OpenPath(path) => {
-                if self.dialogs.is_open() {
+                if self.overlays.is_open() {
                     self.restore_focus();
                 }
                 if path.is_note() {
@@ -1047,22 +1040,8 @@ impl AppScreen for EditorScreen {
                 }
                 None
             }
-            AppEvent::CloseNoteBrowser => {
-                self.note_browser = None;
-                if matches!(self.focus, Focus::NoteBrowser) {
-                    self.set_focus(Focus::Editor);
-                }
-                None
-            }
-            AppEvent::CloseSavedSearches => {
-                self.saved_searches_modal = None;
-                if matches!(self.focus, Focus::SavedSearches) {
-                    self.set_focus(Focus::Editor);
-                }
-                None
-            }
             AppEvent::SavedSearchSelected { query, name } => {
-                self.saved_searches_modal = None;
+                self.overlays.close();
                 self.apply_saved_search(query, name, tx);
                 None
             }
@@ -1074,7 +1053,7 @@ impl AppScreen for EditorScreen {
                 let initial = format!("#{name}");
                 let s = self.settings.read().unwrap();
                 let provider = SearchNotesProvider::new(self.vault.clone(), s.current_last_paths());
-                self.note_browser = Some(NoteBrowserModal::with_initial_query(
+                let modal = NoteBrowserModal::with_initial_query(
                     "Note Browser",
                     provider,
                     self.vault.clone(),
@@ -1082,9 +1061,10 @@ impl AppScreen for EditorScreen {
                     s.icons(),
                     tx.clone(),
                     initial,
-                ));
+                );
                 drop(s);
-                self.set_focus(Focus::NoteBrowser);
+                self.overlays.open(Box::new(modal), self.panel_focus_token());
+                self.set_focus(Focus::Overlay);
                 None
             }
             AppEvent::EntryCreated(path) => {
@@ -1138,23 +1118,19 @@ impl AppScreen for EditorScreen {
 mod tests {
     use super::*;
 
-    /// Compile-time test: verifies that `Focus::Dialog` variant exists and that
-    /// `DialogManager` is importable in this module.  No runtime setup needed.
+    /// Compile-time test: the collapsed `Focus` enum and `OverlayKind` are
+    /// usable from this module.
     #[test]
-    fn focus_dialog_variant_and_dialog_manager_compile() {
-        let focus = Focus::Dialog;
+    fn focus_overlay_variant_and_overlay_kind_compile() {
+        let focus = Focus::Overlay;
         let label = match focus {
             Focus::Editor => "EDITOR",
             Focus::Sidebar => "SIDEBAR",
-            Focus::NoteBrowser => "NOTE BROWSER",
-            Focus::Dialog => "DIALOG",
             Focus::Backlinks => "BACKLINKS",
-            Focus::SavedSearches => "SAVED SEARCHES",
+            Focus::Overlay => "OVERLAY",
         };
-        assert_eq!(label, "DIALOG");
-
-        // Verify DialogManager is accessible.
-        fn _accepts_dialog_manager(_d: DialogManager) {}
+        assert_eq!(label, "OVERLAY");
+        let _kind = OverlayKind::Dialog;
     }
 
     #[tokio::test]

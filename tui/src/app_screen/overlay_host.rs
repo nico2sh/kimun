@@ -31,7 +31,9 @@ pub enum OverlayMsg {
     Close,
 }
 
-pub trait Overlay {
+// `Send`: an `OverlayHost` lives in `EditorScreen`, whose `#[async_trait]`
+// `AppScreen` methods desugar to `Send` futures — so the boxed overlay must be `Send`.
+pub trait Overlay: Send {
     fn kind(&self) -> OverlayKind;
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState;
     fn handle_app_message(
