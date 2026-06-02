@@ -187,6 +187,7 @@ fn visible_title(state: &AutocompleteState) -> String {
             .opener
             .map(|c| c.to_string())
             .unwrap_or_else(|| ">".to_string()),
+        super::TriggerKind::SavedSearch => "?".to_string(),
     };
     if state.query.is_empty() {
         sigil

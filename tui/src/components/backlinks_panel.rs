@@ -17,6 +17,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::components::query_vars::{query_has_variables, resolve_query};
+use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
     Emit, KeyReaction, RowSource, SearchList, SearchRow, VaultSuggestions,
 };
@@ -154,9 +155,10 @@ pub struct QueryPanel {
     /// Shared handle to the current note. `BacklinkSource::load` reads this to
     /// resolve `{note}` in the query template.
     current_note: Arc<Mutex<VaultPath>>,
-    /// Name of the saved search currently applied (drives the title); `None`
-    /// for the default / a manually-edited query.
-    saved_search_name: Option<String>,
+    /// The saved-search breadcrumb shown on the query searchbox border. Owns
+    /// its own sticky/clear/edited state machine; this panel only forwards
+    /// query events to it. See [`SavedSearchBreadcrumb`] and `adr/0006`.
+    saved_search: SavedSearchBreadcrumb,
     /// Expand state of the currently-selected row. Reset to `Collapsed` on any
     /// navigation or query change.
     expand: ExpandState,
@@ -230,7 +232,7 @@ impl QueryPanel {
         Self {
             list,
             current_note,
-            saved_search_name: None,
+            saved_search: SavedSearchBreadcrumb::default(),
             expand: ExpandState::Collapsed,
             expand_path: None,
             content_scroll: 0,
@@ -255,17 +257,28 @@ impl QueryPanel {
         self.reset_expand();
     }
 
-    pub fn set_saved_search_name(&mut self, name: Option<String>) {
-        self.saved_search_name = name;
+    /// The breadcrumb label for the query searchbox border, or `None` when no
+    /// saved search is active. See `adr/0006`.
+    pub fn saved_search_breadcrumb(&self) -> Option<String> {
+        self.saved_search.label(self.list.query())
+    }
+
+    /// `true` when the live query carries no saved-search provenance worth
+    /// showing — an empty field, or the default backlinks query (which the
+    /// panel title already renders as "Backlinks", so a breadcrumb there would
+    /// contradict it). Drives the breadcrumb's clear condition.
+    fn query_is_blank(&self) -> bool {
+        let q = self.list.query();
+        q.trim().is_empty() || kimun_core::strip_order_directive(q) == DEFAULT_QUERY
     }
 
     /// Apply a query template (e.g. from a saved search) and run it. The engine
-    /// holds the template verbatim; `{note}` is resolved at load. `name` drives
-    /// the title (`None` for the default backlinks query).
+    /// holds the template verbatim; `{note}` is resolved at load. `name` pins
+    /// the breadcrumb (`None` for the default backlinks query).
     pub fn apply_query(&mut self, query: String, name: Option<String>, tx: AppTx) {
         self.ensure_redraw_tx(&tx);
-        self.set_active_query(query);
-        self.set_saved_search_name(name);
+        self.set_active_query(query.clone());
+        self.saved_search.set(name, &query);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
@@ -372,10 +385,9 @@ impl QueryPanel {
         let asc = matches!(order, SortOrder::Ascending);
         let rewritten = with_order_directive(self.list.query(), order_field, asc);
         self.list.set_query(rewritten);
-        // A sort rewrites the query, so it is no longer the named saved search
-        // (mirrors the manual-edit path in `handle_key`). The title falls back
-        // to "Backlinks"/"Query" via the order-insensitive check in `render`.
-        self.saved_search_name = None;
+        // A sort only rewrites the order directive — the breadcrumb stays
+        // (and `saved_search_breadcrumb` ignores the directive, so it is not
+        // marked edited). See `adr/0006`.
         self.reset_expand();
     }
 
@@ -402,12 +414,13 @@ impl QueryPanel {
                 EventState::Consumed
             }
             KeyReaction::Consumed => {
-                // A query edit or navigation: drop the saved-search label (a
-                // manual edit is no longer the named search) and re-anchor the
-                // expand state on the (possibly new) selection.
-                if self.list.query() != DEFAULT_QUERY {
-                    self.saved_search_name = None;
-                }
+                // Forward the query event to the breadcrumb: a `?name`
+                // expansion pins it, a blank query clears it, a manual edit
+                // keeps it (sticky). See `adr/0006`.
+                let accepted = self.list.take_accepted_saved_search();
+                let blank = self.query_is_blank();
+                self.saved_search
+                    .on_query_consumed(accepted, self.list.query(), blank);
                 self.sync_expand_anchor();
                 EventState::Consumed
             }
@@ -496,10 +509,10 @@ impl QueryPanel {
         // Compare ignoring the order directive so that sorting the default
         // backlinks query (`<{note} or:title`) still reads as "Backlinks".
         let base_query = kimun_core::strip_order_directive(self.list.query());
+        // The saved-search name lives on the query searchbox border (the
+        // breadcrumb below), not here, so the outer title stays generic.
         let title = if base_query == DEFAULT_QUERY {
             format!("Backlinks ({}) {}", count, sort_indicator)
-        } else if let Some(name) = &self.saved_search_name {
-            format!("{} ({}) {}", name, count, sort_indicator)
         } else {
             format!("Query ({}) {}", count, sort_indicator)
         };
@@ -517,8 +530,11 @@ impl QueryPanel {
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(0)])
             .split(outer_inner);
+        // The saved-search breadcrumb (`‹ name ›` / `‹ name • edited ›`) titles
+        // the query searchbox when a saved search is active. See `adr/0006`.
+        let search_title = self.saved_search.border_title(self.list.query(), " Query");
         let search_block = Block::default()
-            .title(" Query")
+            .title(search_title)
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
@@ -1070,21 +1086,105 @@ mod tests {
         assert_eq!(names, sorted, "directive-less query must be name-ascending");
     }
 
-    /// Regression: applying a sort rewrites the query, so the panel is no longer
-    /// the named saved search — the stale name must be dropped.
+    /// Accepting a `?name` expansion through the panel pins the saved-search
+    /// breadcrumb to the accepted name and runs the stored query. See `adr/0006`.
     #[tokio::test(flavor = "multi_thread")]
-    async fn apply_sort_clears_saved_search_name() {
+    async fn accepting_saved_search_pins_breadcrumb() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let vault = crate::test_support::temp_vault("qp-ss-accept").await;
+        vault.validate_and_init().await.unwrap();
+        vault.save_search("todo-week", "#todo").await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Clear the default query so `?` is the leading char, then type a
+        // prefix, draining the async popup load between keystrokes so the
+        // suggestion lands before we accept.
+        panel.set_active_query(String::new());
+        for ch in ['?', 't', 'o'] {
+            panel.handle_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+            for _ in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                panel.list.poll();
+            }
+        }
+        panel.handle_key(&KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &tx);
+
+        assert_eq!(panel.active_query(), "#todo");
+        assert_eq!(
+            panel.saved_search_breadcrumb().as_deref(),
+            Some("todo-week")
+        );
+    }
+
+    /// Editing the expanded query keeps the breadcrumb (sticky provenance) and
+    /// marks it `• edited` once the text diverges from the stored query. See
+    /// `adr/0006`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn editing_expanded_query_keeps_breadcrumb_marked_edited() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let vault = crate::test_support::temp_vault("qp-ss-edit").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.apply_query("#todo".to_string(), Some("todo".to_string()), tx.clone());
+        assert_eq!(panel.saved_search_breadcrumb().as_deref(), Some("todo"));
+
+        // A manual edit must NOT drop the breadcrumb; it gains the marker.
+        panel.handle_key(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &tx);
+        assert_eq!(panel.active_query(), "#todox");
+        assert_eq!(
+            panel.saved_search_breadcrumb().as_deref(),
+            Some("todo • edited")
+        );
+    }
+
+    /// Emptying the query field clears the breadcrumb entirely (one of the two
+    /// clear triggers, the other being a fresh expansion). See `adr/0006`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn emptying_field_clears_breadcrumb() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let vault = crate::test_support::temp_vault("qp-ss-empty").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.apply_query("#todo".to_string(), Some("todo".to_string()), tx.clone());
+
+        // Backspace the whole "#todo" away.
+        for _ in 0.."#todo".len() {
+            panel.handle_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &tx);
+        }
+        assert_eq!(panel.active_query(), "");
+        assert_eq!(panel.saved_search_breadcrumb(), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_query_pins_breadcrumb() {
         let vault = crate::test_support::temp_vault("qp-name").await;
         vault.validate_and_init().await.unwrap();
         let mut panel = make_panel(vault);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        panel.set_active_query("#todo".to_string());
-        panel.set_saved_search_name(Some("todo".to_string()));
+        panel.apply_query("#todo".to_string(), Some("todo".to_string()), tx.clone());
+        assert_eq!(panel.saved_search_breadcrumb().as_deref(), Some("todo"));
+    }
+
+    /// Applying a sort rewrites the query's order directive but keeps the
+    /// breadcrumb sticky — and NOT marked edited, because the edited check
+    /// ignores the order directive. See `adr/0006`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_keeps_saved_search_breadcrumb() {
+        let vault = crate::test_support::temp_vault("qp-sort-name").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.apply_query("#todo".to_string(), Some("todo".to_string()), tx.clone());
 
         panel.apply_sort(SortField::Title, SortOrder::Ascending, &tx);
-        assert!(
-            panel.saved_search_name.is_none(),
-            "sorting a saved search must clear its name"
+        assert_eq!(panel.active_query(), "#todo or:title");
+        assert_eq!(
+            panel.saved_search_breadcrumb().as_deref(),
+            Some("todo"),
+            "sorting keeps the unedited breadcrumb"
         );
     }
 

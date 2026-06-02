@@ -14,6 +14,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::file_list::FileListEntry;
 use crate::components::overlay::{Overlay, OverlayKind};
+use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
     KeyReaction, RowSource, SearchList, SearchMouse, VaultSuggestions,
 };
@@ -49,6 +50,10 @@ pub struct NoteBrowserModal {
     preview_path: Option<VaultPath>,
     /// Used to resolve the save-current-query shortcut for the hint bar.
     key_bindings: KeyBindings,
+    /// The saved-search breadcrumb shown on the search border. Owns its
+    /// sticky/clear/edited state machine; the modal only forwards query events.
+    /// See [`SavedSearchBreadcrumb`] and `adr/0006`.
+    saved_search: SavedSearchBreadcrumb,
 }
 
 impl NoteBrowserModal {
@@ -125,6 +130,7 @@ impl NoteBrowserModal {
             preview_rx: None,
             preview_path: None,
             key_bindings,
+            saved_search: SavedSearchBreadcrumb::default(),
         };
         modal.refresh_preview(None);
         modal
@@ -227,6 +233,13 @@ impl NoteBrowserModal {
         tx.send(AppEvent::OpenPath(path)).ok();
     }
 
+    /// The saved-search breadcrumb label for the search border, or `None` when
+    /// no saved search is active. See `adr/0006`.
+    #[cfg(test)]
+    fn saved_search_breadcrumb(&self) -> Option<String> {
+        self.saved_search.label(self.list.query())
+    }
+
     // ── Test-only accessors ────────────────────────────────────────────────
 
     /// Returns the current search input text. Test-only.
@@ -272,6 +285,13 @@ impl Overlay for NoteBrowserModal {
                     EventState::Consumed
                 }
                 KeyReaction::Consumed => {
+                    // Forward the query event to the breadcrumb: a `?name`
+                    // expansion pins it, an emptied field clears it, a manual
+                    // edit keeps it (sticky). See `adr/0006`.
+                    let accepted = self.list.take_accepted_saved_search();
+                    let blank = self.list.query().trim().is_empty();
+                    self.saved_search
+                        .on_query_consumed(accepted, self.list.query(), blank);
                     self.refresh_preview_from_list();
                     EventState::Consumed
                 }
@@ -307,8 +327,13 @@ impl Overlay for NoteBrowserModal {
             .split(inner);
 
         // ── Search box ────────────────────────────────────────────────────
+        // A saved-search breadcrumb (`‹ name ›` / `‹ name • edited ›`) titles
+        // the search box when a `?name` expansion is active. See `adr/0006`.
+        let search_title = self
+            .saved_search
+            .border_title(self.list.query(), " Search ");
         let search_block = Block::default()
-            .title(" Search ")
+            .title(search_title)
             .borders(Borders::ALL)
             .border_style(theme.border_style(true))
             .style(theme.panel_style());
@@ -533,5 +558,51 @@ mod tests {
             }
         }
         assert!(sent, "expected CloseOverlay on Esc");
+    }
+
+    /// Accepting a `?name` expansion in the Ctrl+K browser pins the saved-search
+    /// breadcrumb and runs the stored query. See `adr/0006`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn accepting_saved_search_pins_breadcrumb() {
+        let vault = temp_vault("modal-ss").await;
+        vault.validate_and_init().await.unwrap();
+        vault.save_search("todo-week", "#todo").await.unwrap();
+        let settings = AppSettings::default();
+        let (tx, _rx) = unbounded_channel();
+        let mut modal = NoteBrowserModal::new(
+            "test",
+            OneNoteSource {
+                path: VaultPath::note_path_from("/a.md"),
+            },
+            vault,
+            settings.key_bindings.clone(),
+            settings.icons(),
+            tx.clone(),
+        );
+
+        // Type a leading `?` and a prefix, draining the async popup between
+        // keystrokes so the suggestion lands before we accept.
+        for ch in ['?', 't', 'o'] {
+            Overlay::handle_input(
+                &mut modal,
+                &InputEvent::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                &tx,
+            );
+            for _ in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                modal.list.poll();
+            }
+        }
+        Overlay::handle_input(
+            &mut modal,
+            &InputEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            &tx,
+        );
+
+        assert_eq!(modal.query_text(), "#todo");
+        assert_eq!(
+            modal.saved_search_breadcrumb().as_deref(),
+            Some("todo-week")
+        );
     }
 }

@@ -9,6 +9,9 @@ pub enum TriggerKind {
     Wikilink,
     Hashtag,
     LinkFilter,
+    /// A leading `?` in a query input: autocompletes saved-search names.
+    /// Accepting expands to the search's stored query (see `adr/0006`).
+    SavedSearch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +48,13 @@ pub struct TriggerOptions {
     /// text and the markdown parser would falsely classify literal
     /// backticks / brackets as code or link spans.
     pub apply_exclusion_zone: bool,
+    /// When `true`, a leading `?` opens a [`TriggerKind::SavedSearch`]
+    /// trigger. Only the search-query box enables it; the editor leaves it
+    /// `false` so a note that opens with `?` cannot shadow the `#`/`[[`
+    /// triggers the backward scan would otherwise find. Gating here (rather
+    /// than dropping the trigger after the fact) keeps detection the single
+    /// authority on whether `?` is special. See `adr/0006`.
+    pub allow_saved_search: bool,
 }
 
 impl Default for TriggerOptions {
@@ -52,6 +62,7 @@ impl Default for TriggerOptions {
         Self {
             disambiguate_header: true,
             apply_exclusion_zone: true,
+            allow_saved_search: false,
         }
     }
 }
@@ -154,6 +165,30 @@ pub fn detect_trigger_with_oracle(
     if cursor > text.len() || !text.is_char_boundary(cursor) {
         return None;
     }
+
+    // SavedSearch: a leading `?` (only blanks before it, on the first line)
+    // owns the whole query. Checked before the backward scan because `?` is
+    // not an opener for any other trigger. A saved-search name may contain
+    // spaces, so the prefix runs from just after `?` to the cursor. Only the
+    // search-query box opts in (`allow_saved_search`); see `adr/0006`.
+    if opts.allow_saved_search
+        && let Some(q_pos) = text.find('?')
+        && text[..q_pos].bytes().all(|b| b == b' ' || b == b'\t')
+    {
+        let inner_start = q_pos + 1;
+        // `inner_start > cursor` when the caret sits on/before the `?`
+        // (e.g. text "?x", cursor 0) — no prefix yet, so don't trigger.
+        if inner_start <= cursor {
+            return Some(TriggerContext {
+                kind: TriggerKind::SavedSearch,
+                query: text[inner_start..cursor].to_string(),
+                replace_range: inner_start..cursor,
+                anchor_col: inner_start,
+                opener: None,
+            });
+        }
+    }
+
     // The exclusion-zone check is applied selectively below — only for
     // hashtags. A wikilink trigger inside an already-closed `[[foo]]`
     // means the user is editing the target portion, which the spec
@@ -436,6 +471,18 @@ mod tests {
         detect_trigger(text, cursor)
     }
 
+    /// `ctx` with the search-box opt-in for the leading-`?` SavedSearch trigger.
+    fn ctx_ss(text: &str, cursor: usize) -> Option<TriggerContext> {
+        detect_trigger_with(
+            text,
+            cursor,
+            TriggerOptions {
+                allow_saved_search: true,
+                ..TriggerOptions::default()
+            },
+        )
+    }
+
     /// Records how many times the exclusion veto consulted the oracle.
     struct CountingOracle {
         calls: usize,
@@ -553,6 +600,45 @@ mod tests {
         assert_eq!(t.anchor_col, 7);
     }
 
+    // ---- SavedSearch trigger ----
+
+    #[test]
+    fn saved_search_opens_on_leading_question_mark() {
+        let t = ctx_ss("?to", 3).unwrap();
+        assert_eq!(t.kind, TriggerKind::SavedSearch);
+        assert_eq!(t.query, "to");
+        assert_eq!(t.replace_range, 1..3);
+        assert_eq!(t.anchor_col, 1);
+    }
+
+    #[test]
+    fn saved_search_opens_with_empty_query() {
+        let t = ctx_ss("?", 1).unwrap();
+        assert_eq!(t.kind, TriggerKind::SavedSearch);
+        assert_eq!(t.query, "");
+        assert_eq!(t.replace_range, 1..1);
+    }
+
+    #[test]
+    fn saved_search_not_triggered_when_not_leading() {
+        // `?` is only special as the leading (blank-prefixed) char.
+        assert_ne!(
+            ctx_ss("#a ?to", 6).map(|t| t.kind),
+            Some(TriggerKind::SavedSearch)
+        );
+        assert_ne!(
+            ctx_ss("note ?x", 7).map(|t| t.kind),
+            Some(TriggerKind::SavedSearch)
+        );
+    }
+
+    #[test]
+    fn saved_search_off_by_default() {
+        // Without the opt-in (the editor's default), a leading `?` is inert,
+        // so it can't shadow the hashtag/wikilink scan.
+        assert_eq!(ctx("?to", 3), None);
+    }
+
     #[test]
     fn hashtag_closes_when_word_char_boundary_passes() {
         // A space after `#proj` breaks the hashtag context.
@@ -632,6 +718,7 @@ mod tests {
         let opts = TriggerOptions {
             disambiguate_header: false,
             apply_exclusion_zone: false,
+            allow_saved_search: false,
         };
         assert!(detect_trigger_with("##tag", 1, opts).is_none());
         assert!(detect_trigger_with("##", 1, opts).is_none());
@@ -783,6 +870,7 @@ mod tests {
         let opts = TriggerOptions {
             disambiguate_header: false,
             apply_exclusion_zone: true,
+            allow_saved_search: false,
         };
         let t = detect_trigger_with("#", 1, opts).unwrap();
         assert_eq!(t.kind, TriggerKind::Hashtag);
@@ -797,6 +885,7 @@ mod tests {
         let opts = TriggerOptions {
             disambiguate_header: false,
             apply_exclusion_zone: true,
+            allow_saved_search: false,
         };
         let t = detect_trigger_with("#", 1, opts);
         assert!(t.is_some());
@@ -808,6 +897,7 @@ mod tests {
         let opts = TriggerOptions {
             disambiguate_header: false,
             apply_exclusion_zone: true,
+            allow_saved_search: false,
         };
         let t = detect_trigger_with("foo #pro", 8, opts).unwrap();
         assert_eq!(t.kind, TriggerKind::Hashtag);
@@ -847,6 +937,7 @@ mod tests {
         let opts = TriggerOptions {
             disambiguate_header: false,
             apply_exclusion_zone: false,
+            allow_saved_search: false,
         };
         let t = detect_trigger_with("`#abc", 5, opts).unwrap();
         assert_eq!(t.kind, TriggerKind::Hashtag);
