@@ -69,6 +69,9 @@ use super::{
     VaultPath,
 };
 
+// 0.10: Added `links(source)` and `notes(noteName)` indexes so the forward-link
+//       filter `>`/`fwd:` and bare-name source resolution are index-served
+//       instead of full scans. Bump forces a clean reindex.
 // 0.8: Tightened hashtag word-boundary rule — `##tag`, `#tag#more`, and
 //      similar adjacent-`#` patterns are no longer treated as labels. Bump
 //      forces a clean reindex so the `labels` table drops the stale rows
@@ -85,7 +88,7 @@ use super::{
 //      of each link destination) so the `>`/`lk:` link filter matches notes
 //      by name with an indexed lookup instead of a leading-`%` scan. Bump
 //      forces a clean reindex so the column is populated for existing vaults.
-const VERSION: &str = "0.9";
+const VERSION: &str = "0.10";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone)]
@@ -276,11 +279,30 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     .execute(&mut *tx)
     .await?;
 
-    // Backs the `>`/`lk:` link filter's name-anywhere match (folder-independent
+    // Backs the `<`/`lk:` backlink filter's name-anywhere match (folder-independent
     // bare filename), so it never has to scan with a leading-`%` LIKE.
     sqlx::query(
         "CREATE INDEX links_by_dest_name
             ON links(dest_name)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Backs the `>`/`fwd:` forward-link filter, which filters/joins on
+    // `links.source`, so it never has to full-scan the links table.
+    sqlx::query(
+        "CREATE INDEX links_by_source
+            ON links(source)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Backs bare-name source resolution (the `>`/`fwd:` filter joins links
+    // back to `notes.noteName`), so the join is index-served instead of a
+    // full scan.
+    sqlx::query(
+        "CREATE INDEX notes_by_name
+            ON notes(noteName)",
     )
     .execute(&mut *tx)
     .await?;

@@ -136,20 +136,20 @@ kimun search "*report*"       # Matches "report", "reports", "quarterly-report"
 
 ### Advanced Search Operators
 
-#### Filename Filtering (`@` or `at:`)
+#### Note Name Filtering (`=` or `name:`)
 
 ```sh
-kimun search "@tasks"         # Only notes with "tasks" in filename
-kimun search "at:project"     # Same as above
-kimun search "@2024"          # Files with "2024" in name
+kimun search "=tasks"         # Only notes with "tasks" in the name
+kimun search "name:project"   # Same as above
+kimun search "=2024"          # Notes with "2024" in the name
 ```
 
-#### Section/Title Filtering (`<` or `in:`)
+#### Section/Heading Filtering (`@` or `in:`)
 
 ```sh
-kimun search "<personal"      # Content under "Personal" headings
+kimun search "@personal"      # Content under "Personal" headings
 kimun search "in:work"        # Content under "Work" headings
-kimun search "<project status" # "status" under "Project" sections
+kimun search "@project status" # "status" under "Project" sections
 ```
 
 #### Path Filtering (`/` or `pt:`)
@@ -160,42 +160,57 @@ kimun search "pt:docs"        # Notes in docs path
 kimun search "/2024/reports"  # Specific path structure
 ```
 
+#### Link Filtering (`<`/`lk:` backlinks, `>`/`fwd:` forward links)
+
+```sh
+kimun search "<projects"      # Notes that link TO "projects" (its backlinks)
+kimun search "lk:projects"    # Same as above
+kimun search ">projects"      # Notes that "projects" links TO (its forward links)
+kimun search "fwd:projects"   # Same as above
+```
+
 #### Exclusion Operators (`-` prefix)
 
 ```sh
 # Content exclusion
 kimun search "meeting -cancelled"      # Notes with "meeting" but not "cancelled"
 
-# Filename exclusion
-kimun search "@project -@draft"        # Project files excluding drafts
-kimun search "at:2024 -at:temp"       # 2024 files excluding temporary ones
+# Note name exclusion
+kimun search "=project -=draft"        # Project notes excluding drafts
+kimun search "name:2024 -name:temp"    # 2024 notes excluding temporary ones
 
-# Title exclusion
-kimun search "<project -<draft"       # Project sections excluding draft titles
-kimun search "in:work -in:archived"   # Work sections excluding archived
+# Section/heading exclusion
+kimun search "@project -@draft"        # Project sections excluding draft headings
+kimun search "in:work -in:archived"    # Work sections excluding archived
 
 # Path exclusion
 kimun search "/docs -/private"        # Docs path excluding private subdirs
 kimun search "pt:notes -pt:old"       # Notes path excluding old directories
 
+# Link exclusion
+kimun search "<spec -<draft"          # Links to "spec" but not to "draft"
+
 # Exclusion-only searches
 kimun search "-cancelled"             # All notes except those with "cancelled"
-kimun search "-<draft"               # All notes except those with "draft" in title
-kimun search "-@temp"                # All notes except temporary files
+kimun search "-@draft"               # All notes except those with "draft" in a heading
+kimun search "-=temp"                # All notes except those with "temp" in the name
 ```
 
 #### Combining Operators
 
 ```sh
 # Complex queries combining multiple operators
-kimun search "@tasks <work report -cancelled"
-# Files with "tasks" in name, under "Work" sections, containing "report", excluding "cancelled"
+kimun search "=tasks @work report -cancelled"
+# Notes named "tasks", under "Work" sections, containing "report", excluding "cancelled"
 
-kimun search "/journal/2024 <daily -weekend"
+kimun search "/journal/2024 @daily -weekend"
 # Notes in 2024 journal path, under "Daily" headings, excluding weekend entries
 
-kimun search "@project -@draft -<archived status"
-# Project files (not drafts), non-archived sections, containing "status"
+kimun search "=project -=draft -@archived status"
+# Project notes (not drafts), no "archived" heading, containing "status"
+
+kimun search "<roadmap >spec"
+# Notes that link to "roadmap" and that "spec" links to
 ```
 
 ### Output Formats
@@ -455,7 +470,7 @@ fi
 #!/bin/bash
 # project-report.sh
 kimun workspace use work
-kimun search "@project status" --format json | \
+kimun search "=project status" --format json | \
   jq '.notes[] | select(.metadata.tags[] | contains("active"))' | \
   jq -r '"\(.title): \(.path)"'
 ```
@@ -685,10 +700,10 @@ kimun search "meeting" --path "journal/2024/"
 kimun search "*"
 
 # Efficient: Combined filters
-kimun search "@status <weekly"
+kimun search "=status @weekly"
 
 # Less efficient: Multiple separate queries
-kimun search "@status" && kimun search "<weekly"
+kimun search "=status" && kimun search "@weekly"
 ```
 
 #### JSON Output Optimization

@@ -38,6 +38,10 @@ pub struct AutocompleteState {
     /// Screen anchor where the popup is rendered (column, row in cells).
     /// Host computes from the trigger byte offset.
     pub anchor: (u16, u16),
+    /// For a `LinkFilter` popup, the operator char that opened it (`<`,
+    /// `>`, or `=`) so the title renders the matching sigil. `None` for
+    /// `Wikilink`/`Hashtag` (fixed sigils) and until set from the trigger.
+    pub opener: Option<char>,
 }
 
 impl AutocompleteState {
@@ -51,6 +55,7 @@ impl AutocompleteState {
             scroll_offset: 0,
             max_visible_rows: DEFAULT_MAX_VISIBLE_ROWS,
             anchor,
+            opener: None,
         }
     }
 
