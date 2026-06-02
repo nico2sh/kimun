@@ -898,12 +898,11 @@ impl AppScreen for EditorScreen {
             Focus::Editor => "EDITOR",
             Focus::Sidebar => "SIDEBAR",
             Focus::Backlinks => "BACKLINKS",
-            Focus::Overlay => match self.overlays.active_kind() {
-                Some(OverlayKind::NoteBrowser) => "NOTE BROWSER",
-                Some(OverlayKind::SavedSearches) => "SAVED SEARCHES",
-                Some(OverlayKind::Dialog) => "DIALOG",
-                None => "EDITOR",
-            },
+            Focus::Overlay => self
+                .overlays
+                .active_kind()
+                .map(|k| k.label())
+                .unwrap_or("EDITOR"),
         };
         let hints = match self.focus {
             Focus::Editor => self.editor.hint_shortcuts(),
@@ -919,57 +918,46 @@ impl AppScreen for EditorScreen {
     }
 
     async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
-        // Show* events open a fresh dialog overlay.
-        match &msg {
+        // Route validation / async-result messages to the active overlay first,
+        // so an open dialog still receives its events. Show*/CloseOverlay are
+        // NotConsumed by overlays and fall through to the owned match below.
+        match self.overlays.handle_app_message(&msg, &self.vault, tx) {
+            OverlayMsg::Consumed => return None,
+            OverlayMsg::NotConsumed => {}
+        }
+
+        match msg {
             AppEvent::ShowFileOpsMenu(path) => {
                 self.overlays.open(
-                    Box::new(ActiveDialog::Menu(
-                        crate::components::dialogs::FileOpsMenuDialog::new(path.clone()),
-                    )),
+                    Box::new(ActiveDialog::file_ops_menu(path)),
                     self.panel_focus_token(),
                 );
                 self.set_focus(Focus::Overlay);
-                return None;
+                None
             }
             AppEvent::ShowDeleteDialog(path) => {
                 self.overlays.open(
-                    Box::new(ActiveDialog::Delete(
-                        crate::components::dialogs::DeleteConfirmDialog::new(
-                            path.clone(),
-                            self.vault.clone(),
-                        ),
-                    )),
+                    Box::new(ActiveDialog::delete(path, self.vault.clone())),
                     self.panel_focus_token(),
                 );
                 self.set_focus(Focus::Overlay);
-                return None;
+                None
             }
             AppEvent::ShowRenameDialog(path) => {
                 self.overlays.open(
-                    Box::new(ActiveDialog::Rename(
-                        crate::components::dialogs::RenameDialog::new(
-                            path.clone(),
-                            self.vault.clone(),
-                        ),
-                    )),
+                    Box::new(ActiveDialog::rename(path, self.vault.clone())),
                     self.panel_focus_token(),
                 );
                 self.set_focus(Focus::Overlay);
-                return None;
+                None
             }
             AppEvent::ShowMoveDialog(path) => {
                 self.overlays.open(
-                    Box::new(ActiveDialog::Move(
-                        crate::components::dialogs::MoveDialog::new(
-                            path.clone(),
-                            self.vault.clone(),
-                            tx,
-                        ),
-                    )),
+                    Box::new(ActiveDialog::move_to(path, self.vault.clone(), tx)),
                     self.panel_focus_token(),
                 );
                 self.set_focus(Focus::Overlay);
-                return None;
+                None
             }
             AppEvent::CloseOverlay => {
                 // Dismiss-to-opener. Guarded by is_open() on purpose: a
@@ -980,18 +968,8 @@ impl AppScreen for EditorScreen {
                 if self.overlays.is_open() {
                     self.restore_focus();
                 }
-                return None;
+                None
             }
-            _ => {}
-        }
-
-        // Route validation / async-result messages to the active overlay.
-        match self.overlays.handle_app_message(&msg, &self.vault, tx) {
-            OverlayMsg::Consumed => return None,
-            OverlayMsg::NotConsumed => {}
-        }
-
-        match msg {
             AppEvent::Autosave => {
                 self.spawn_autosave(tx);
                 None
