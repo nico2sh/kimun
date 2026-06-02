@@ -230,7 +230,7 @@ impl QueryPanel {
     }
 
     pub fn set_active_query(&mut self, q: String) {
-        self.list.set_query(q);
+        self.list.set_query_text(q);
         self.reset_expand();
     }
 
@@ -348,7 +348,7 @@ impl QueryPanel {
         };
         let asc = matches!(order, SortOrder::Ascending);
         let rewritten = with_order_directive(self.list.query(), order_field, asc);
-        self.list.set_query(rewritten);
+        self.list.set_query_text(rewritten);
         self.reset_expand();
     }
 
@@ -1003,6 +1003,31 @@ mod tests {
 
         panel.apply_sort(SortField::Name, SortOrder::Descending, &tx);
         assert_eq!(panel.active_query(), "widget -or:file");
+    }
+
+    /// Regression: a programmatic sort change must update the VISIBLE input bar,
+    /// not just the internal query string. (Previously `set_query` left the
+    /// input widget stale, so the bar didn't show the `or:` directive.)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_updates_visible_input_bar() {
+        let vault = crate::test_support::temp_vault("qp-bar").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("widget".to_string());
+        assert_eq!(
+            panel.list.input_value(),
+            "widget",
+            "set_active_query syncs the bar"
+        );
+
+        panel.apply_sort(SortField::Title, SortOrder::Ascending, &tx);
+        assert_eq!(panel.active_query(), "widget or:title");
+        assert_eq!(
+            panel.list.input_value(),
+            "widget or:title",
+            "the input bar must reflect the rewritten query"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
