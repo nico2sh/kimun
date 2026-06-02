@@ -69,6 +69,8 @@ in:meeting       → content under a "Meeting" heading
 
 Section names are matched case-insensitively against heading text. A note matches if any of its sections contain the search term.
 
+> **Wildcards on `@` are prefix-only.** The section filter is full-text indexed, so `*` works only at the **end** of a term (`@meet*` matches "meeting", "meetup") and matches whole words. Unlike `=`, `<`, `>`, and `/` — which support `*` anywhere (`*report`, `ta*sk`) — the section filter does **not** support leading or mid-term `*`.
+
 ### `/` or `pt:` — path filter
 
 Filter notes by their full path within the workspace:
