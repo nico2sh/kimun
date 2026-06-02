@@ -63,7 +63,14 @@ pub struct SearchList<R: SearchRow> {
     rows: Vec<R>,
     /// Indices into `rows` in display order (after filtering/ranking).
     display: Vec<usize>,
-    /// Index into `display` (not `rows`) of the selected item.
+    /// A synthetic, query-fresh, filter-exempt row pinned at visible position 0
+    /// (the "Create: <q>" affordance / saved-searches virtual entry). Held
+    /// separately from `rows` so it works regardless of delivery (one-shot
+    /// `Replace` or streamed `Push`) and refreshes on every query change. See
+    /// [`RowSource::leading_row`].
+    leading: Option<R>,
+    /// Index into the VISIBLE sequence `[leading?] ++ display` of the selected
+    /// item.
     selected: Option<usize>,
     filter: Filter<R>,
     query: String,
@@ -136,6 +143,7 @@ impl<R: SearchRow> SearchList<R> {
             source: b.source,
             rows: Vec::new(),
             display: Vec::new(),
+            leading: None,
             selected: None,
             filter: b.filter,
             query: b.initial_query,
@@ -165,10 +173,6 @@ impl<R: SearchRow> SearchList<R> {
         for ev in drained {
             match ev {
                 LoadedInner::Replace(rows) => {
-                    let mut rows = rows;
-                    if let Some(lead) = self.source.leading_row(&self.query) {
-                        rows.insert(0, lead);
-                    }
                     self.rows = rows;
                 }
                 LoadedInner::Push(row) => {
@@ -178,7 +182,7 @@ impl<R: SearchRow> SearchList<R> {
             }
         }
         self.recompute_display();
-        if self.selected.is_none() && !self.display.is_empty() {
+        if self.selected.is_none() && self.visible_len() > 0 {
             self.selected = Some(0);
         }
         if let Some(ac) = &mut self.autocomplete {
@@ -201,27 +205,48 @@ impl<R: SearchRow> SearchList<R> {
     }
 
     fn clamp_selection(&mut self) {
-        self.selected = if self.display.is_empty() {
+        let len = self.visible_len();
+        self.selected = if len == 0 {
             None
         } else {
-            Some(self.selected.unwrap_or(0).min(self.display.len() - 1))
+            Some(self.selected.unwrap_or(0).min(len - 1))
         };
     }
 
+    /// `1` when a leading row is pinned at visible position 0, else `0`.
+    fn leading_offset(&self) -> usize {
+        self.leading.is_some() as usize
+    }
+
+    /// Length of the visible sequence `[leading?] ++ display`.
+    pub fn visible_len(&self) -> usize {
+        self.leading_offset() + self.display.len()
+    }
+
+    /// Row at visible position `pos` in `[leading?] ++ display`.
+    fn visible_row(&self, pos: usize) -> Option<&R> {
+        if self.leading.is_some() && pos == 0 {
+            self.leading.as_ref()
+        } else {
+            self.rows
+                .get(*self.display.get(pos - self.leading_offset())?)
+        }
+    }
+
+    /// The source-delivered rows only (NOT the leading row). Prefer
+    /// [`visible_len`](Self::visible_len)/[`visible_rows`](Self::visible_rows)
+    /// for visible counts.
     pub fn rows(&self) -> &[R] {
         &self.rows
     }
 
     pub fn selected_row(&self) -> Option<&R> {
-        self.selected
-            .and_then(|i| self.display.get(i))
-            .and_then(|&ri| self.rows.get(ri))
+        self.selected.and_then(|p| self.visible_row(p))
     }
 
     pub fn visible_rows(&self) -> Vec<&R> {
-        self.display
-            .iter()
-            .filter_map(|&i| self.rows.get(i))
+        (0..self.visible_len())
+            .filter_map(|p| self.visible_row(p))
             .collect()
     }
 
@@ -249,15 +274,15 @@ impl<R: SearchRow> SearchList<R> {
     }
 
     pub fn select_next(&mut self) {
-        if self.display.is_empty() {
+        let n = self.visible_len();
+        if n == 0 {
             return;
         }
-        let n = self.display.len();
         self.selected = Some(self.selected.map_or(0, |i| (i + 1).min(n - 1)));
     }
 
     pub fn select_prev(&mut self) {
-        if self.display.is_empty() {
+        if self.visible_len() == 0 {
             return;
         }
         self.selected = Some(self.selected.map_or(0, |i| i.saturating_sub(1)));
@@ -367,14 +392,10 @@ impl<R: SearchRow> SearchList<R> {
     pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
         self.poll();
         let sel = self.selected;
-        let items: Vec<ListItem> = self
-            .display
-            .iter()
-            .enumerate()
-            .filter_map(|(disp_idx, &row_idx)| {
-                self.rows
-                    .get(row_idx)
-                    .map(|r| r.to_list_item(theme, &self.icons, sel == Some(disp_idx)))
+        let items: Vec<ListItem> = (0..self.visible_len())
+            .filter_map(|pos| {
+                self.visible_row(pos)
+                    .map(|r| r.to_list_item(theme, &self.icons, sel == Some(pos)))
             })
             .collect();
         let mut state = ListState::default();
@@ -429,25 +450,26 @@ impl<R: SearchRow> SearchList<R> {
                 let target_visual = m.row - r.y - 1; // 0-based visual offset into the list body
                 let mut acc: u16 = 0;
                 let mut hit: Option<usize> = None;
-                for (disp_idx, &row_idx) in self.display.iter().enumerate() {
+                // Walk the VISIBLE sequence (leading row at position 0, then the
+                // display rows) so visual offsets map to visible positions.
+                for pos in 0..self.visible_len() {
                     let h = self
-                        .rows
-                        .get(row_idx)
-                        .map(|row| row.visual_height())
+                        .visible_row(pos)
+                        .map(|r| r.visual_height())
                         .unwrap_or(1);
                     if target_visual < acc + h {
-                        hit = Some(disp_idx);
+                        hit = Some(pos);
                         break;
                     }
                     acc += h;
                 }
-                if let Some(disp_idx) = hit {
+                if let Some(pos) = hit {
                     let prev = self.selected;
-                    self.selected = Some(disp_idx);
-                    return if prev == Some(disp_idx) {
-                        SearchMouse::Activated(disp_idx)
+                    self.selected = Some(pos);
+                    return if prev == Some(pos) {
+                        SearchMouse::Activated(pos)
                     } else {
-                        SearchMouse::Selected(disp_idx)
+                        SearchMouse::Selected(pos)
                     };
                 }
                 SearchMouse::None
@@ -466,6 +488,9 @@ impl<R: SearchRow> SearchList<R> {
 
     fn recompute_display(&mut self) {
         let q = self.query.trim();
+        // The leading row is query-fresh: rebuilt on every poll AND on every
+        // local-filter `set_query`, so it never goes stale.
+        self.leading = self.source.leading_row(q);
         let mut idx: Vec<usize> = match &self.filter {
             Filter::SourceOrder => (0..self.rows.len()).collect(),
             Filter::Fuzzy if q.is_empty() => (0..self.rows.len()).collect(),
@@ -538,7 +563,10 @@ impl<R: SearchRow> SearchListBuilder<R> {
 
 #[cfg(test)]
 mod tests {
-    use super::adapters::{ScriptedStreamSource, TestRow, VecSource};
+    use super::adapters::{
+        ScriptedStreamLeadSource, ScriptedStreamSource, StreamRow, TestRow, VecSource,
+        VecSourceWithLead,
+    };
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -869,5 +897,91 @@ mod tests {
         assert_eq!(list.query(), "#projects");
         // Popup now closed: a second Enter falls through to Submit.
         assert_eq!(list.handle_key(&key(KeyCode::Enter)), KeyReaction::Submit);
+    }
+
+    // Regression (P0): a STREAMED source (sidebar shape) supplies a query-fresh
+    // leading row. It must appear at visible position 0 even though rows arrive
+    // via Push (never Replace), be present when the query matches no streamed
+    // row, and refresh when the query changes (reload_on_query() == false).
+    #[tokio::test]
+    async fn streamed_source_leading_row_is_pinned_and_query_fresh() {
+        let src = ScriptedStreamLeadSource {
+            items: vec!["alpha".into(), "beta".into()],
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .initial_query("zz")
+            .build();
+        list.poll_until_idle().await;
+        // Leading present even though "zz" matches no streamed Item.
+        let vis = list.visible_rows();
+        assert_eq!(vis[0], &StreamRow::Create("zz".into()));
+        assert_eq!(list.visible_len(), 1); // just the leading; no Item matches
+        // Query-fresh: changing the query rebuilds the leading and re-filters.
+        list.set_query("alp");
+        list.poll();
+        let vis = list.visible_rows();
+        assert_eq!(vis[0], &StreamRow::Create("alp".into()));
+        assert_eq!(vis[1], &StreamRow::Item("alpha".into()));
+        assert_eq!(list.visible_len(), 2);
+        // Empty query: leading disappears, both Items show.
+        list.set_query("");
+        list.poll();
+        assert!(
+            list.visible_rows()
+                .iter()
+                .all(|r| matches!(r, StreamRow::Item(_)))
+        );
+        assert_eq!(list.visible_len(), 2);
+    }
+
+    // Regression guard for the saved-searches virtual entry: a one-shot
+    // (Replace) source with a leading row still pins it at position 0.
+    #[tokio::test]
+    async fn oneshot_source_leading_row_still_works() {
+        let src = VecSourceWithLead {
+            rows: vec![TestRow::new("alpha"), TestRow::new("beta")],
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .initial_query("alp")
+            .build();
+        list.poll_until_idle().await;
+        let vis = list.visible_rows();
+        assert_eq!(vis[0].name, "create:alp");
+        assert_eq!(vis[1].name, "alpha");
+        assert_eq!(list.visible_len(), 2);
+    }
+
+    // Selection walks the VISIBLE sequence: position 0 is the leading row, and
+    // select_next steps from the leading to the first real row.
+    #[tokio::test]
+    async fn selection_includes_leading_at_position_zero() {
+        let src = VecSourceWithLead {
+            rows: vec![TestRow::new("alpha"), TestRow::new("alps")],
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .filter(Filter::Fuzzy)
+            .initial_query("alp")
+            .build();
+        list.poll_until_idle().await;
+        // Auto-selected position 0 -> the leading.
+        assert_eq!(list.selected_row().unwrap().name, "create:alp");
+        list.handle_key(&key(KeyCode::Down));
+        assert_eq!(list.selected_row().unwrap().name, "alpha");
+    }
+
+    // A source with NO leading row has no off-by-one: visible_len == display.
+    #[tokio::test]
+    async fn no_leading_row_visible_len_matches_display() {
+        let src = VecSource {
+            rows: vec![TestRow::new("a"), TestRow::new("b")],
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        assert_eq!(list.visible_len(), 2);
+        assert_eq!(list.visible_rows().len(), 2);
+        assert_eq!(list.selected_row().unwrap().name, "a");
     }
 }
