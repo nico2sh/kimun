@@ -68,16 +68,16 @@ The file browser supports type-ahead: press any letter to jump to the first dire
 
 ### Focus Management
 
-- **`Ctrl+L`** — Move focus right (Sidebar → Editor → Backlinks)
-- **`Ctrl+H`** — Move focus left (Backlinks → Editor → Sidebar)
+- **`Ctrl+L`** — Move focus right (Sidebar → Editor → Query panel)
+- **`Ctrl+H`** — Move focus left (Query panel → Editor → Sidebar)
 
-Focus moves directionally through the visible panels. If the target panel is hidden, it is opened automatically (e.g., pressing `Ctrl+L` from the editor opens the backlinks panel if it's not visible).
+Focus moves directionally through the visible panels. If the target panel is hidden, it is opened automatically (e.g., pressing `Ctrl+L` from the editor opens the query panel if it's not visible).
 
 ### Panels and Views
 
 - **`Ctrl+F`** — Toggle the note browser panel visibility
 - **`Ctrl+Y`** — Toggle the preview pane (Editor only)
-- **`Ctrl+E`** — Toggle the backlinks panel (right side)
+- **`Ctrl+E`** — Toggle the query panel (right side); see [Query Panel](#query-panel)
 - **`Ctrl+T`** — Toggle the sidebar
 
 ### Sorting
@@ -89,17 +89,43 @@ Focus moves directionally through the visible panels. If the target panel is hid
 
 Press `Ctrl+W` to open the quick note dialog. Type a thought and press Enter to save it — the note is created in your inbox directory with a timestamp filename, and you stay on the current note without interruption. Use Shift+Enter to save and immediately open the new note instead.
 
-### Backlinks Panel
+### Query Panel
 
-Press `Ctrl+E` to toggle the backlinks panel on the right side of the editor. It shows all notes that link to the current note — useful for understanding context and navigating related ideas without leaving your current work.
+Press `Ctrl+E` to toggle the query panel on the right side of the editor. It runs a [search query](@/using-kimun/search.md) and lists the matching notes beside your work. By default it shows the current note's **backlinks** — the notes that link to it — because its starting query is `<{note}` (see [Query variables](@/using-kimun/search.md#query-variables)). Edit the query and the panel becomes an always-available search next to the editor.
 
-- **Up/Down** — navigate the backlinks list
-- **Enter** — expand the selected backlink to show the paragraph that contains the link. Press Enter again to show the full note content. Press Enter a third time to collapse.
-- **Ctrl+G** — open the selected backlink in the editor
-- **Ctrl+N / Ctrl+R** — sort backlinks by name or title, toggle sort order
+- **Type** — edit the query; results update as you type. A bare `<` is shorthand for `<{note}` (backlinks of the current note).
+- **Up/Down** — navigate the result list
+- **Enter** — expand the selected note to show the paragraph around the match. Press Enter again for the full note, a third time to collapse.
+- **Ctrl+G** — open the selected note in the editor
+- **Ctrl+N / Ctrl+R** — sort by name or title, toggle sort order
+- **Ctrl+D** — save the current query as a named [saved search](#saved-searches)
 - **Esc** — return focus to the editor
 
-The panel loads backlinks when toggled on and refreshes automatically when you switch notes. Panel visibility is remembered for the session.
+The panel title reflects the active query (it reads "Backlinks" when the query is `<{note}`). It loads when toggled on and re-runs automatically when you switch notes if the query references the current note. Panel visibility is remembered for the session.
+
+### Saved Searches
+
+Saved searches store a query under a name so you can re-run it any time — common filters, project views, or backlink queries, one keystroke away.
+
+**Saving a query.** Press `Ctrl+D` to save the current query:
+
+- From the **query panel** — saves the panel's active query.
+- From the **search modal** (`Ctrl+K`) — saves whatever you have typed in the search box.
+
+A small dialog asks for a name; press Enter to store it. The query is saved as a *template*, so a saved `<{note}` resolves against whichever note is open when you later run it (see [Query variables](@/using-kimun/search.md#query-variables)).
+
+**Running and managing.** Press `F3` to open the Saved Searches picker:
+
+| Key | Action |
+|-----|--------|
+| Type | filter the list by name |
+| `1`–`9` | quick-select the n-th saved search |
+| `↑` / `↓` | move the selection |
+| `Enter` | run the selected search in the query panel |
+| `Delete` | remove the selected saved search |
+| `Esc` | close the picker |
+
+Running a saved search opens the query panel (if hidden) and loads its results there.
 
 ### Following Links
 
@@ -190,14 +216,16 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 | Toggle preview | `Ctrl+Y` |
 | New journal entry | `Ctrl+J` |
 | Quick note | `Ctrl+W` |
-| Toggle backlinks panel | `Ctrl+E` |
+| Toggle query panel | `Ctrl+E` |
+| Save current query | `Ctrl+D` |
+| Open saved searches | `F3` |
 | Switch workspace | `F4` |
 | Toggle sidebar | `Ctrl+T` |
 | Bold | `Ctrl+B` |
 | Italic | `Ctrl+I` |
 | Strikethrough | `Ctrl+S` |
-| Focus right (Sidebar → Editor → Backlinks) | `Ctrl+L` |
-| Focus left (Backlinks → Editor → Sidebar) | `Ctrl+H` |
+| Focus right (Sidebar → Editor → Query panel) | `Ctrl+L` |
+| Focus left (Query panel → Editor → Sidebar) | `Ctrl+H` |
 | Cycle sort field (name/title) | `Ctrl+N` |
 | Reverse sort order | `Ctrl+R` |
 | Follow link under cursor | `Ctrl+G` |

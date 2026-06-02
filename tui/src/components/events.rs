@@ -47,8 +47,9 @@ pub enum AppEvent {
     IndexingDone(Result<Duration, String>),
     /// Open (or create) today's journal entry and switch to it in the editor.
     OpenJournal,
-    /// Sent by NoteBrowserModal on Esc or after Enter+open.
-    CloseNoteBrowser,
+    /// Dismiss the active editor overlay (note browser, Saved Searches modal,
+    /// or dialog). The single close path for everything owned by `OverlayHost`.
+    CloseOverlay,
     /// Follow the link under the editor cursor: note name/path or external URL.
     FollowLink(String),
     /// Open the search modal pre-filled with `#<name>` to browse notes by label.
@@ -83,8 +84,6 @@ pub enum AppEvent {
     EntryCreated(VaultPath),
     /// A dialog operation failed; carries a human-readable error message.
     DialogError(String),
-    /// Dismiss the currently visible dialog without taking action.
-    CloseDialog,
 
     /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
     /// Carries a formatted, human-readable error message.
@@ -125,8 +124,6 @@ pub enum AppEvent {
         query: String,
         name: String,
     },
-    /// Close the Saved Searches modal (Esc / after select).
-    CloseSavedSearches,
 }
 
 impl AppEvent {
@@ -186,7 +183,6 @@ mod tests {
             AppEvent::EntryRenamed { from: _, to: _ } => {}
             AppEvent::EntryMoved { from: _, to: _ } => {}
             AppEvent::DialogError(_) => {}
-            AppEvent::CloseDialog => {}
             _ => {}
         }
     }

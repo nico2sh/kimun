@@ -4,7 +4,8 @@
 //! virtual "Backlinks (current note)" entry at the top. Typing filters by name
 //! and by a leading 1–9 quick-select index (an exact index match ranks first).
 //! Enter emits [`AppEvent::SavedSearchSelected`] (the editor runs the query in
-//! the panel) and closes; Esc closes; Delete removes the selected user entry.
+//! the panel and closes this overlay itself); Esc emits
+//! [`AppEvent::CloseOverlay`]; Delete removes the selected user entry.
 //!
 //! Hosts a [`SearchList`] engine: the vault load is a load-once
 //! [`RowSource`] (`reload_on_query == false`), name/index ranking is the
@@ -20,9 +21,9 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph};
 
-use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
 };
@@ -229,10 +230,14 @@ impl SavedSearchesModal {
 }
 
 // ---------------------------------------------------------------------------
-// Component impl
+// Overlay impl
 // ---------------------------------------------------------------------------
 
-impl Component for SavedSearchesModal {
+impl Overlay for SavedSearchesModal {
+    fn kind(&self) -> OverlayKind {
+        OverlayKind::SavedSearches
+    }
+
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
             InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
@@ -243,7 +248,6 @@ impl Component for SavedSearchesModal {
                             name: item.name.clone(),
                         })
                         .ok();
-                        tx.send(AppEvent::CloseSavedSearches).ok();
                     }
                     EventState::Consumed
                 }
@@ -268,12 +272,11 @@ impl Component for SavedSearchesModal {
                             name: item.name.clone(),
                         })
                         .ok();
-                        tx.send(AppEvent::CloseSavedSearches).ok();
                     }
                     EventState::Consumed
                 }
                 KeyReaction::Cancel => {
-                    tx.send(AppEvent::CloseSavedSearches).ok();
+                    tx.send(AppEvent::CloseOverlay).ok();
                     EventState::Consumed
                 }
                 KeyReaction::Consumed => EventState::Consumed,
@@ -283,7 +286,7 @@ impl Component for SavedSearchesModal {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, _focused: bool) {
+    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         let popup_rect = crate::components::centered_rect(60, 60, area);
 
         // Clear the area behind the modal so the editor doesn't bleed through.
@@ -449,7 +452,8 @@ mod tests {
         poll_engine_idle(&mut modal).await;
 
         // Select the first USER row (skip the pinned virtual backlinks row).
-        modal.handle_input(
+        Overlay::handle_input(
+            &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
             &tx,
         );
@@ -462,7 +466,8 @@ mod tests {
             .clone();
 
         // Delete: this sets pending_delete and reloads (delete-then-list, ordered).
-        modal.handle_input(
+        Overlay::handle_input(
+            &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
             &tx,
         );
@@ -489,8 +494,11 @@ mod tests {
         );
     }
 
+    /// Pressing Enter emits SavedSearchSelected only. The editor's handler for
+    /// that event closes the overlay itself (focusing the Query panel), so the
+    /// modal does NOT also emit CloseOverlay (that would be redundant).
     #[tokio::test]
-    async fn enter_emits_selected_and_close() {
+    async fn enter_emits_selected_not_close() {
         let vault = temp_vault("saved_searches_modal").await;
         vault
             .save_search("todo", "#todo")
@@ -510,7 +518,8 @@ mod tests {
         );
         modal.list.poll_until_idle().await;
 
-        modal.handle_input(
+        Overlay::handle_input(
+            &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &tx,
         );
@@ -526,10 +535,8 @@ mod tests {
             "expected SavedSearchSelected, got {events:?}"
         );
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, AppEvent::CloseSavedSearches)),
-            "expected CloseSavedSearches, got {events:?}"
+            !events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)),
+            "select must not emit CloseOverlay; editor's SavedSearchSelected handler closes the overlay, got {events:?}"
         );
     }
 }
