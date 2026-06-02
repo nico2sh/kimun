@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
@@ -18,8 +18,9 @@ enum Row {
 }
 
 /// Modal that edits sort field / order (+ a sidebar-only "group directories"
-/// toggle). Changes apply live: each toggle emits `AppEvent::SortChanged`.
-/// `s` (sidebar only) emits `SortSaveDefault`; Enter/Esc emit `CloseOverlay`.
+/// toggle). Changes apply live: each toggle emits `AppEvent::SortChanged`
+/// (`persist = false`). `s` (sidebar only) emits the same event with
+/// `persist = true` (save as default); Enter/Esc emit `CloseOverlay`.
 pub struct SortDialog {
     target: SortTarget,
     pub(crate) field: SortField,
@@ -50,12 +51,15 @@ impl SortDialog {
         self.rows.len()
     }
 
-    fn emit_change(&self, tx: &AppTx) {
+    /// Emit the current selection. `persist` requests saving it as the default
+    /// (sidebar's `s` key); a plain toggle sends `persist = false` for live apply.
+    fn emit(&self, tx: &AppTx, persist: bool) {
         tx.send(AppEvent::SortChanged {
             target: self.target,
             field: self.field,
             order: self.order,
             group_directories: self.group_dirs,
+            persist,
         })
         .ok();
     }
@@ -66,7 +70,7 @@ impl SortDialog {
             Row::Order => self.order = self.order.toggle(),
             Row::GroupDirs => self.group_dirs = !self.group_dirs,
         }
-        self.emit_change(tx);
+        self.emit(tx, false);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
@@ -81,13 +85,7 @@ impl SortDialog {
                 self.toggle_selected(tx);
             }
             KeyCode::Char('s') if self.target == SortTarget::Sidebar => {
-                tx.send(AppEvent::SortSaveDefault {
-                    target: self.target,
-                    field: self.field,
-                    order: self.order,
-                    group_directories: self.group_dirs,
-                })
-                .ok();
+                self.emit(tx, true);
             }
             KeyCode::Enter | KeyCode::Esc => {
                 tx.send(AppEvent::CloseOverlay).ok();
@@ -133,7 +131,8 @@ impl crate::components::Component for SortDialog {
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
-        let outer_height = self.rows.len() as u16 + 4;
+        // rows + borders(2) + footer(1).
+        let outer_height = self.rows.len() as u16 + 3;
         let popup = super::fixed_centered_rect(OUTER_WIDTH, outer_height, rect);
         f.render_widget(Clear, popup);
 
@@ -148,6 +147,16 @@ impl crate::components::Component for SortDialog {
             return;
         }
 
+        // Split body (rows) from a fixed 1-line footer. `Min(1)` collapses the
+        // body before the footer disappears, so the footer is never overlapped
+        // on a short terminal (mirrors help_dialog).
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        let body = chunks[0];
+        let footer_area = chunks[1];
+
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
         let fg_muted = theme.fg_muted.to_ratatui();
@@ -155,8 +164,8 @@ impl crate::components::Component for SortDialog {
         let bg_sel = theme.bg_selected.to_ratatui();
 
         for (i, &row) in self.rows.iter().enumerate() {
-            let y = inner.y + i as u16;
-            if y >= inner.y + inner.height {
+            let y = body.y + i as u16;
+            if y >= body.y + body.height {
                 break;
             }
             let (label, value) = self.row_label(row);
@@ -173,15 +182,14 @@ impl crate::components::Component for SortDialog {
             f.render_widget(
                 Paragraph::new(format!(" {marker} {label:<20}{value}")).style(style),
                 Rect {
-                    x: inner.x,
+                    x: body.x,
                     y,
-                    width: inner.width,
+                    width: body.width,
                     height: 1,
                 },
             );
         }
 
-        let footer_y = inner.y + inner.height.saturating_sub(1);
         let footer = if self.target == SortTarget::Sidebar {
             "  [↑↓] Move  [Space] Toggle  [s] Save default  [Enter/Esc] Close"
         } else {
@@ -189,12 +197,7 @@ impl crate::components::Component for SortDialog {
         };
         f.render_widget(
             Paragraph::new(footer).style(Style::default().fg(fg_muted).bg(bg)),
-            Rect {
-                x: inner.x,
-                y: footer_y,
-                width: inner.width,
-                height: 1,
-            },
+            footer_area,
         );
     }
 }
@@ -233,11 +236,13 @@ mod tests {
                 field,
                 order,
                 group_directories,
+                persist,
             } => {
                 assert_eq!(target, SortTarget::Sidebar);
                 assert_eq!(field, SortField::Title);
                 assert_eq!(order, SortOrder::Ascending);
                 assert!(!group_directories);
+                assert!(!persist, "a plain toggle is not a save");
             }
             other => panic!("expected SortChanged, got {other:?}"),
         }
@@ -272,10 +277,13 @@ mod tests {
         let mut d = sidebar_dialog();
         let (tx, mut rx) = unbounded_channel();
         d.handle_key(key(KeyCode::Char('s')), &tx);
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(AppEvent::SortSaveDefault { .. })
-        ));
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(AppEvent::SortChanged { persist: true, .. })
+            ),
+            "s on the sidebar emits a persisting SortChanged"
+        );
 
         let mut q = SortDialog::new(
             SortTarget::Query,

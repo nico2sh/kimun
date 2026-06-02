@@ -251,7 +251,7 @@ impl QueryPanel {
     }
 
     pub fn set_active_query(&mut self, q: String) {
-        self.list.set_query_text(q);
+        self.list.set_query(q);
         self.reset_expand();
     }
 
@@ -371,7 +371,7 @@ impl QueryPanel {
         };
         let asc = matches!(order, SortOrder::Ascending);
         let rewritten = with_order_directive(self.list.query(), order_field, asc);
-        self.list.set_query_text(rewritten);
+        self.list.set_query(rewritten);
         // A sort rewrites the query, so it is no longer the named saved search
         // (mirrors the manual-edit path in `handle_key`). The title falls back
         // to "Backlinks"/"Query" via the order-insensitive check in `render`.

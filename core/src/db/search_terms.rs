@@ -162,15 +162,14 @@ pub enum OrderField {
 }
 
 /// True if `token` is an order directive in any of its four forms:
-/// `or:<x>`, `-or:<x>`, `^<x>`, `-^<x>`.
+/// `or:<x>`, `-or:<x>`, `^<x>`, `-^<x>`. Allocation-free: strip an optional
+/// leading `-`, then the rest must start with `^` or `or:`.
 fn is_order_token(token: &str) -> bool {
-    let order_prefix = format!("{}:", ORDER_LETTER);
-    let desc_order_prefix = format!("-{}:", ORDER_LETTER);
-    let desc_order_char = format!("-{}", ORDER_CHAR);
-    token.starts_with(&desc_order_prefix)
-        || token.starts_with(&order_prefix)
-        || token.starts_with(&desc_order_char)
-        || token.starts_with(ORDER_CHAR)
+    let rest = token.strip_prefix('-').unwrap_or(token);
+    rest.starts_with(ORDER_CHAR)
+        || rest
+            .strip_prefix(ORDER_LETTER)
+            .is_some_and(|after| after.starts_with(':'))
 }
 
 /// Return `query` with any order directive (`or:`/`-or:`/`^`/`-^`, in any
