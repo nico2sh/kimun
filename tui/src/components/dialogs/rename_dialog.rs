@@ -137,7 +137,7 @@ impl RenameDialog {
                 EventState::Consumed
             }
             InputOutcome::Cancel => {
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Changed => {
@@ -346,7 +346,7 @@ mod tests {
         assert_eq!(dialog.input.value(), expected_filename);
     }
 
-    /// Verifies that pressing `Esc` sends `AppEvent::CloseDialog` and returns
+    /// Verifies that pressing `Esc` sends `AppEvent::CloseOverlay` and returns
     /// `EventState::Consumed`, without touching the vault.
     #[test]
     fn esc_sends_close_dialog() {
@@ -371,8 +371,8 @@ mod tests {
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::CloseDialog");
-            assert!(matches!(event, AppEvent::CloseDialog));
+            let event = rx.try_recv().expect("expected AppEvent::CloseOverlay");
+            assert!(matches!(event, AppEvent::CloseOverlay));
         });
     }
 }

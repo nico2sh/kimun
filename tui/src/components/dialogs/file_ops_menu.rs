@@ -60,7 +60,7 @@ impl FileOpsMenuDialog {
                 EventState::Consumed
             }
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
             _ => EventState::Consumed, // swallow unknown keys while menu is open
@@ -188,8 +188,8 @@ mod tests {
             let state = dialog.handle_key(key, &tx);
 
             assert_eq!(state, EventState::Consumed);
-            let event = rx.try_recv().expect("expected AppEvent::CloseDialog");
-            assert!(matches!(event, AppEvent::CloseDialog));
+            let event = rx.try_recv().expect("expected AppEvent::CloseOverlay");
+            assert!(matches!(event, AppEvent::CloseOverlay));
         });
     }
 

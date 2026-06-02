@@ -1,7 +1,6 @@
 pub mod autocomplete;
 pub mod autosave_timer;
 pub mod backlinks_panel;
-pub mod dialog_manager;
 pub mod dialogs;
 pub mod event_state;
 pub mod events;
@@ -9,6 +8,7 @@ pub mod file_list;
 pub mod footer_bar;
 pub mod indexing;
 pub mod note_browser;
+pub mod overlay;
 pub mod query_vars;
 pub mod saved_searches_modal;
 pub mod search_list;

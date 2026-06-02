@@ -39,11 +39,11 @@ impl SaveSearchDialog {
                     query: self.query.clone(),
                 })
                 .ok();
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Cancel => {
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Changed | InputOutcome::Consumed => EventState::Consumed,

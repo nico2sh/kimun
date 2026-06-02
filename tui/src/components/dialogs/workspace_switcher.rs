@@ -68,11 +68,11 @@ impl WorkspaceSwitcherModal {
                 {
                     tx.send(AppEvent::WorkspaceSwitched(name.clone())).ok();
                 }
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
             _ => EventState::NotConsumed,

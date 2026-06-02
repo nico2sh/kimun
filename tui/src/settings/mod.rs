@@ -197,11 +197,13 @@ fn default_keybindings() -> KeyBindings {
     kb.batch_add()
         .add(KeyStrike::F4, ActionShortcuts::SwitchWorkspace);
 
-    // Ctrl+Shift+S — save the current query to saved searches.
+    // Ctrl+D — save the current query to saved searches. Ctrl-only by design:
+    // Ctrl+Shift is unreliable on some terminals, Ctrl+S is taken by
+    // Strikethrough, and Ctrl+{A,C,X,Z} are claimed by the editor. Ctrl+D is
+    // the only free, terminal-safe Ctrl combo.
     kb.batch_add()
         .with_ctrl()
-        .with_shift()
-        .add(KeyStrike::KeyS, ActionShortcuts::SaveCurrentQuery);
+        .add(KeyStrike::KeyD, ActionShortcuts::SaveCurrentQuery);
 
     kb
 }
