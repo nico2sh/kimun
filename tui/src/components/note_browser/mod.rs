@@ -9,11 +9,11 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::file_list::FileListEntry;
+use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::search_list::{
     KeyReaction, RowSource, SearchList, SearchMouse, VaultSuggestions,
 };
@@ -486,9 +486,7 @@ mod tests {
             "expected OpenPath, got {events:?}"
         );
         assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, AppEvent::CloseOverlay)),
+            !events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)),
             "select must not emit CloseOverlay; editor's OpenPath handler closes the overlay, got {events:?}"
         );
     }
