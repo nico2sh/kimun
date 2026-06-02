@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use kimun_core::NoteVault;
 use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
-use kimun_core::{NoteVault, VaultBrowseOptionsBuilder};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -341,21 +341,10 @@ impl EditorScreen {
     }
 
     pub async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
-        let (options, rx) = VaultBrowseOptionsBuilder::new(&dir)
-            .recursive(false)
-            .validation(kimun_core::NotesValidation::Full)
-            .build();
-
-        let vault = self.vault.clone();
-        let tx2 = tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = vault.browse_vault(options).await {
-                tracing::error!("browse_vault failed: {e}");
-            }
-            tx2.send(AppEvent::Redraw).ok();
-        });
-
-        self.sidebar.start_loading(rx, dir);
+        // The sidebar hosts a streamed `SearchList`; (re)building its engine for
+        // `dir` runs `browse_vault` inside the source and emits rows as they
+        // arrive (with a redraw on each).
+        self.sidebar.navigate(dir, tx);
     }
 
     async fn try_save(&mut self) {
@@ -538,7 +527,7 @@ impl EditorScreen {
         self.backlinks_visible = true;
         // The virtual backlinks entry's name should not override the
         // default "Backlinks" title — but the panel's title logic already
-        // shows "Backlinks" whenever the active query is `>{note}`, so it's
+        // shows "Backlinks" whenever the active query is `<{note}`, so it's
         // safe to always pass the name through.
         self.backlinks_panel
             .apply_query(query, Some(name), tx.clone());
@@ -1121,10 +1110,6 @@ impl AppScreen for EditorScreen {
                 self.on_entry_op(from, tx).await;
                 None
             }
-            AppEvent::BacklinksLoaded(entries) => {
-                self.backlinks_panel.on_loaded(entries);
-                None
-            }
             AppEvent::SaveSearchConfirmed { name, query } => {
                 let vault = self.vault.clone();
                 tokio::spawn(async move {
@@ -1202,12 +1187,12 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         screen.apply_saved_search(
-            ">{note}".to_string(),
+            "<{note}".to_string(),
             "Backlinks (current note)".to_string(),
             &tx,
         );
         assert!(screen.backlinks_visible);
-        assert_eq!(screen.backlinks_panel.active_query(), ">{note}");
+        assert_eq!(screen.backlinks_panel.active_query(), "<{note}");
         assert!(matches!(screen.focus, Focus::Backlinks));
     }
 

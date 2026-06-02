@@ -5,8 +5,9 @@ use kimun_core::NoteVault;
 use kimun_core::nfs::{NoteEntryData, VaultPath};
 use kimun_core::note::NoteContentData;
 
-use super::{NoteBrowserProvider, format_journal_date};
+use super::format_journal_date;
 use crate::components::file_list::FileListEntry;
+use crate::components::search_list::{Emit, RowSource};
 
 pub struct SearchNotesProvider {
     vault: Arc<NoteVault>,
@@ -39,9 +40,9 @@ impl SearchNotesProvider {
 }
 
 #[async_trait]
-impl NoteBrowserProvider for SearchNotesProvider {
-    async fn load(&self, query: &str) -> Vec<FileListEntry> {
-        if query.is_empty() {
+impl RowSource<FileListEntry> for SearchNotesProvider {
+    async fn load(&self, query: &str, emit: Emit<FileListEntry>) {
+        let entries: Vec<FileListEntry> = if query.is_empty() {
             // Build a lookup map from all indexed notes so we can resolve each
             // last_path to its full metadata in O(1).
             let all_notes = self.vault.get_all_notes().await.unwrap_or_default();
@@ -64,6 +65,7 @@ impl NoteBrowserProvider for SearchNotesProvider {
                 .into_iter()
                 .map(|(entry, content)| self.to_entry(entry, content))
                 .collect()
-        }
+        };
+        emit.replace(entries);
     }
 }

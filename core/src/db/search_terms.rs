@@ -20,6 +20,8 @@ enum ElementType {
     ExcludedLabel,
     Links,
     ExcludedLinks,
+    ForwardLinks,
+    ExcludedForwardLinks,
 }
 
 struct QueryTermExtractor {
@@ -32,18 +34,20 @@ struct QueryTermExtractor {
 // Excluded variants must come before their positive counterparts so longer prefixes match first.
 type PrefixEntry = (&'static str, &'static str, fn() -> ElementType);
 
-fn prefix_table() -> [PrefixEntry; 10] {
+fn prefix_table() -> [PrefixEntry; 12] {
     [
-        ("-in:", "-<", || ElementType::ExcludedIn),
-        ("-at:", "-@", || ElementType::ExcludedAt),
+        ("-name:", "-=", || ElementType::ExcludedAt),
+        ("-lk:", "-<", || ElementType::ExcludedLinks),
+        ("-fwd:", "->", || ElementType::ExcludedForwardLinks),
+        ("-in:", "-@", || ElementType::ExcludedIn),
         ("-pt:", "-/", || ElementType::ExcludedPath),
         ("-lb:", "-#", || ElementType::ExcludedLabel),
-        ("-lk:", "->", || ElementType::ExcludedLinks),
-        ("in:", "<", || ElementType::In),
-        ("at:", "@", || ElementType::At),
+        ("name:", "=", || ElementType::At),
+        ("lk:", "<", || ElementType::Links),
+        ("fwd:", ">", || ElementType::ForwardLinks),
+        ("in:", "@", || ElementType::In),
         ("pt:", "/", || ElementType::Path),
         ("lb:", "#", || ElementType::Label),
-        ("lk:", ">", || ElementType::Links),
     ]
 }
 
@@ -158,12 +162,14 @@ pub struct SearchTerms {
     pub path: Vec<String>,
     pub labels: Vec<String>,
     pub links: Vec<String>,
+    pub forward_links: Vec<String>,
     pub excluded_terms: Vec<String>,
     pub excluded_breadcrumb: Vec<String>,
     pub excluded_filename: Vec<String>,
     pub excluded_path: Vec<String>,
     pub excluded_labels: Vec<String>,
     pub excluded_links: Vec<String>,
+    pub excluded_forward_links: Vec<String>,
 }
 
 /// Maximum byte length of a query string accepted by [`SearchTerms::from_query_string`].
@@ -191,12 +197,14 @@ impl SearchTerms {
         let mut path = vec![];
         let mut labels = vec![];
         let mut links = vec![];
+        let mut forward_links = vec![];
         let mut excluded_terms = vec![];
         let mut excluded_breadcrumb = vec![];
         let mut excluded_filename = vec![];
         let mut excluded_path = vec![];
         let mut excluded_labels = vec![];
         let mut excluded_links = vec![];
+        let mut excluded_forward_links = vec![];
         while !query.is_empty() {
             let qp = QueryTermExtractor::extract_and_consume(query);
             query = qp.remainder;
@@ -269,6 +277,16 @@ impl SearchTerms {
                         excluded_links.push(qp.term);
                     }
                 }
+                ElementType::ForwardLinks => {
+                    if !qp.term.is_empty() {
+                        forward_links.push(qp.term);
+                    }
+                }
+                ElementType::ExcludedForwardLinks => {
+                    if !qp.term.is_empty() {
+                        excluded_forward_links.push(qp.term);
+                    }
+                }
             }
         }
 
@@ -276,6 +294,8 @@ impl SearchTerms {
         dedup_preserving_order(&mut excluded_labels);
         dedup_preserving_order(&mut links);
         dedup_preserving_order(&mut excluded_links);
+        dedup_preserving_order(&mut forward_links);
+        dedup_preserving_order(&mut excluded_forward_links);
 
         Self {
             breadcrumb,
@@ -285,12 +305,14 @@ impl SearchTerms {
             path,
             labels,
             links,
+            forward_links,
             excluded_terms,
             excluded_breadcrumb,
             excluded_filename,
             excluded_path,
             excluded_labels,
             excluded_links,
+            excluded_forward_links,
         }
     }
 }
@@ -328,7 +350,7 @@ mod tests {
 
     #[test]
     fn search_in() {
-        let query = "<title in:othertitle";
+        let query = "@title in:othertitle";
         let search_terms = SearchTerms::from_query_string(query);
         println!("{:?}", &search_terms);
 
@@ -346,7 +368,7 @@ mod tests {
 
     #[test]
     fn search_at() {
-        let query = "@file at:directory";
+        let query = "=file name:directory";
         let search_terms = SearchTerms::from_query_string(query);
         println!("{:?}", &search_terms);
 
@@ -364,7 +386,7 @@ mod tests {
 
     #[test]
     fn search_at_quoted() {
-        let query = "@'file name' at:\"directory path\"";
+        let query = "='file name' name:\"directory path\"";
         let search_terms = SearchTerms::from_query_string(query);
         println!("{:?}", &search_terms);
 
@@ -382,7 +404,7 @@ mod tests {
 
     #[test]
     fn search_at_quoted_not_closed() {
-        let query = "@'file name' at:\"directory path";
+        let query = "='file name' name:\"directory path";
         let search_terms = SearchTerms::from_query_string(query);
         println!("{:?}", &search_terms);
 
@@ -401,7 +423,7 @@ mod tests {
 
     #[test]
     fn search_combined() {
-        let query = "searchterm    @file otherterm at:directory in:title <text      \"some text\" /basedirectory";
+        let query = "searchterm    =file otherterm name:directory in:title @text      \"some text\" /basedirectory";
         let search_terms = SearchTerms::from_query_string(query);
         println!("{:?}", &search_terms);
 
@@ -440,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_compound_exclusion_prefixes() {
-        let search_terms = SearchTerms::from_query_string("-<draft -in:private -@temp -/secret");
+        let search_terms = SearchTerms::from_query_string("-@draft -in:private -=temp -/secret");
         assert!(search_terms.terms.is_empty());
         assert!(search_terms.breadcrumb.is_empty());
         assert_eq!(search_terms.excluded_breadcrumb, vec!["draft", "private"]);
@@ -450,7 +472,8 @@ mod tests {
 
     #[test]
     fn search_links_short() {
-        let s = SearchTerms::from_query_string(">projects");
+        // `<` / `lk:` → backlinks (notes linking *to* target).
+        let s = SearchTerms::from_query_string("<projects");
         assert_eq!(s.links, vec!["projects".to_string()]);
         assert!(s.terms.is_empty());
     }
@@ -463,13 +486,13 @@ mod tests {
 
     #[test]
     fn search_links_with_extension_and_path() {
-        let s = SearchTerms::from_query_string(">work/projects.md");
+        let s = SearchTerms::from_query_string("<work/projects.md");
         assert_eq!(s.links, vec!["work/projects.md".to_string()]);
     }
 
     #[test]
     fn search_links_excluded_short() {
-        let s = SearchTerms::from_query_string("->draft");
+        let s = SearchTerms::from_query_string("-<draft");
         assert_eq!(s.excluded_links, vec!["draft".to_string()]);
     }
 
@@ -481,15 +504,60 @@ mod tests {
 
     #[test]
     fn search_links_mixed_with_term() {
-        let s = SearchTerms::from_query_string("report >spec");
+        let s = SearchTerms::from_query_string("report <spec");
         assert_eq!(s.terms, vec!["report".to_string()]);
         assert_eq!(s.links, vec!["spec".to_string()]);
     }
 
     #[test]
     fn search_links_quoted() {
-        let s = SearchTerms::from_query_string(">\"my note\"");
+        let s = SearchTerms::from_query_string("<\"my note\"");
         assert_eq!(s.links, vec!["my note".to_string()]);
+    }
+
+    #[test]
+    fn search_forward_links_short() {
+        // `>` / `fwd:` → forward links (notes target links *to*).
+        let s = SearchTerms::from_query_string(">spec");
+        assert_eq!(s.forward_links, vec!["spec".to_string()]);
+        assert!(s.terms.is_empty());
+        assert!(s.links.is_empty());
+    }
+
+    #[test]
+    fn search_forward_links_long() {
+        let s = SearchTerms::from_query_string("fwd:spec");
+        assert_eq!(s.forward_links, vec!["spec".to_string()]);
+    }
+
+    #[test]
+    fn search_forward_links_excluded_short() {
+        let s = SearchTerms::from_query_string("->draft");
+        assert_eq!(s.excluded_forward_links, vec!["draft".to_string()]);
+        assert!(s.excluded_links.is_empty());
+    }
+
+    #[test]
+    fn search_forward_links_excluded_long() {
+        let s = SearchTerms::from_query_string("-fwd:draft");
+        assert_eq!(s.excluded_forward_links, vec!["draft".to_string()]);
+    }
+
+    #[test]
+    fn search_backlinks_filename_section_chars() {
+        // Confirm the remapped chars land in the right fields.
+        assert_eq!(
+            SearchTerms::from_query_string("<spec").links,
+            vec!["spec".to_string()]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("=file").filename,
+            vec!["file".to_string()]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("@title").breadcrumb,
+            vec!["title".to_string()]
+        );
     }
 
     #[test]
@@ -558,6 +626,54 @@ mod tests {
     }
 
     #[test]
+    fn exclusion_short_forms_parse_to_excluded_fields() {
+        // Locks the `prefix_table` ordering invariant (excluded-before-positive,
+        // longer-before-prefix): each excluded short form must land in its own
+        // field. A mis-ordered insert would mis-parse one of these.
+        assert_eq!(
+            SearchTerms::from_query_string("-=foo").excluded_filename,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("-<foo").excluded_links,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("->foo").excluded_forward_links,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("-@foo").excluded_breadcrumb,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("-/foo").excluded_path,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("-#foo").excluded_labels,
+            vec!["foo"]
+        );
+    }
+
+    #[test]
+    fn positive_short_forms_parse_to_fields() {
+        // The positive counterparts of the exclusion short forms.
+        assert_eq!(SearchTerms::from_query_string("=foo").filename, vec!["foo"]);
+        assert_eq!(SearchTerms::from_query_string("<foo").links, vec!["foo"]);
+        assert_eq!(
+            SearchTerms::from_query_string(">foo").forward_links,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("@foo").breadcrumb,
+            vec!["foo"]
+        );
+        assert_eq!(SearchTerms::from_query_string("/foo").path, vec!["foo"]);
+        assert_eq!(SearchTerms::from_query_string("#foo").labels, vec!["foo"]);
+    }
+
+    #[test]
     fn from_query_string_caps_input_length() {
         let huge = "#a ".repeat(20_000); // 60 KB
         let s = SearchTerms::from_query_string(huge);
@@ -569,8 +685,8 @@ mod tests {
     fn bare_prefix_terms_are_dropped() {
         // None of these bare prefixes should produce a term.
         for q in &[
-            "<", "-", "-<", "in:", "at:", "pt:", "/", "@", "-/", "-@", "#", "-#", "lb:", "-lb:",
-            ">", "->", "lk:", "-lk:",
+            "=", "<", ">", "@", "/", "#", "-", "-=", "-<", "->", "-@", "-/", "-#", "name:", "lk:",
+            "fwd:", "in:", "pt:", "lb:", "-name:", "-lk:", "-fwd:", "-in:", "-pt:", "-lb:",
         ] {
             let s = SearchTerms::from_query_string(*q);
             assert!(s.terms.is_empty(), "{:?} produced terms: {:?}", q, s.terms);
@@ -629,6 +745,18 @@ mod tests {
                 "{:?} produced excluded_links: {:?}",
                 q,
                 s.excluded_links
+            );
+            assert!(
+                s.forward_links.is_empty(),
+                "{:?} produced forward_links: {:?}",
+                q,
+                s.forward_links
+            );
+            assert!(
+                s.excluded_forward_links.is_empty(),
+                "{:?} produced excluded_forward_links: {:?}",
+                q,
+                s.excluded_forward_links
             );
         }
     }
