@@ -10,6 +10,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
+use kimun_core::{with_order_directive, OrderBy, OrderField};
+
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
@@ -97,7 +99,6 @@ impl SearchRow for BacklinkEntry {
 struct BacklinkSource {
     vault: Arc<NoteVault>,
     current_note: Arc<Mutex<VaultPath>>,
-    sort: Arc<Mutex<(SortField, SortOrder)>>,
 }
 
 #[async_trait]
@@ -114,25 +115,9 @@ impl RowSource<BacklinkEntry> for BacklinkSource {
             return;
         }
         let q = resolve_query(query, Some(&note));
-        let mut entries = load_query(&self.vault, &q).await;
-        let (field, order) = *self.sort.lock().unwrap();
-        sort_entries(&mut entries, field, order);
+        let entries = load_query(&self.vault, &q).await;
         emit.replace(entries);
     }
-}
-
-/// Sort backlink entries in place by the given field and order.
-fn sort_entries(entries: &mut [BacklinkEntry], field: SortField, order: SortOrder) {
-    entries.sort_by(|a, b| {
-        let cmp = match field {
-            SortField::Name => a.filename.to_lowercase().cmp(&b.filename.to_lowercase()),
-            SortField::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
-        };
-        match order {
-            SortOrder::Ascending => cmp,
-            SortOrder::Descending => cmp.reverse(),
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------
@@ -160,9 +145,6 @@ pub struct QueryPanel {
     /// Name of the saved search currently applied (drives the title); `None`
     /// for the default / a manually-edited query.
     saved_search_name: Option<String>,
-    /// Shared sort field/order. `BacklinkSource::load` reads it to order
-    /// results; the panel mutates it on sort shortcuts then reloads.
-    sort: Arc<Mutex<(SortField, SortOrder)>>,
     /// Expand state of the currently-selected row. Reset to `Collapsed` on any
     /// navigation or query change.
     expand: ExpandState,
@@ -179,9 +161,7 @@ pub struct QueryPanel {
     /// loop once the app event channel is wired (the panel is built before the
     /// channel exists in some construction orders).
     redraw_tx: Arc<Mutex<Option<AppTx>>>,
-    /// Combos that the engine intercepts: sort cycle / reverse / follow-link.
-    sort_cycle_combos: Vec<KeyCombo>,
-    sort_reverse_combos: Vec<KeyCombo>,
+    /// Combos that the engine intercepts: follow-link.
     follow_link_combos: Vec<KeyCombo>,
 }
 
@@ -189,7 +169,6 @@ impl QueryPanel {
     pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings) -> Self {
         let icons = Icons::new(false);
         let current_note = Arc::new(Mutex::new(VaultPath::empty()));
-        let sort = Arc::new(Mutex::new((SortField::Name, SortOrder::Ascending)));
         // The redraw callback reads a shared slot that `set_note`/`handle_key`
         // fill once a `tx` is available (the panel is constructed before the
         // app event channel in some orders). Until then it is a no-op.
@@ -205,7 +184,6 @@ impl QueryPanel {
         let source = BacklinkSource {
             vault: vault.clone(),
             current_note: current_note.clone(),
-            sort: sort.clone(),
         };
         let combos = |action: &ActionShortcuts| -> Vec<KeyCombo> {
             key_bindings
@@ -214,13 +192,9 @@ impl QueryPanel {
                 .cloned()
                 .unwrap_or_default()
         };
-        let sort_cycle_combos = combos(&ActionShortcuts::CycleSortField);
-        let sort_reverse_combos = combos(&ActionShortcuts::SortReverseOrder);
         let follow_link_combos = combos(&ActionShortcuts::FollowLink);
 
         let mut intercept = Vec::new();
-        intercept.extend(sort_cycle_combos.iter().cloned());
-        intercept.extend(sort_reverse_combos.iter().cloned());
         intercept.extend(follow_link_combos.iter().cloned());
 
         let list = SearchList::builder(source, redraw)
@@ -239,15 +213,12 @@ impl QueryPanel {
             list,
             current_note,
             saved_search_name: None,
-            sort,
             expand: ExpandState::Collapsed,
             expand_path: None,
             content_scroll: 0,
             content_scroll_max: 0,
             key_bindings,
             redraw_tx,
-            sort_cycle_combos,
-            sort_reverse_combos,
             follow_link_combos,
         }
     }
@@ -342,23 +313,34 @@ impl QueryPanel {
         }
     }
 
-    /// Advance the sort field, then reload so the source re-orders the results.
-    fn cycle_sort(&mut self) {
-        {
-            let mut s = self.sort.lock().unwrap();
-            s.0 = s.0.cycle();
+    /// Current sort field/order, derived from the active query's order
+    /// directive. Defaults to (Name, Ascending) when the query has none.
+    pub fn current_order(&self) -> (SortField, SortOrder) {
+        let st = kimun_core::SearchTerms::from_query_string(self.list.query());
+        match st.order_by.first() {
+            Some(OrderBy::Title { asc }) => (
+                SortField::Title,
+                if *asc { SortOrder::Ascending } else { SortOrder::Descending },
+            ),
+            Some(OrderBy::FileName { asc }) => (
+                SortField::Name,
+                if *asc { SortOrder::Ascending } else { SortOrder::Descending },
+            ),
+            None => (SortField::Name, SortOrder::Ascending),
         }
-        self.list.reload();
-        self.reset_expand();
     }
 
-    /// Toggle the sort order, then reload so the source re-orders the results.
-    fn reverse_sort(&mut self) {
-        {
-            let mut s = self.sort.lock().unwrap();
-            s.1 = s.1.toggle();
-        }
-        self.list.reload();
+    /// Apply a sort selection from the sort dialog: rewrite the query's order
+    /// directive (the query string is the single source of truth) and reload.
+    pub fn apply_sort(&mut self, field: SortField, order: SortOrder, tx: &AppTx) {
+        self.ensure_redraw_tx(tx);
+        let order_field = match field {
+            SortField::Name => OrderField::FileName,
+            SortField::Title => OrderField::Title,
+        };
+        let asc = matches!(order, SortOrder::Ascending);
+        let rewritten = with_order_directive(self.list.query(), order_field, asc);
+        self.list.set_query(rewritten);
         self.reset_expand();
     }
 
@@ -378,14 +360,6 @@ impl QueryPanel {
         // open autocomplete popup can accept on Enter; only when the popup is
         // closed does the engine return `Submit`, which toggles expand below.
         match self.list.handle_key(key) {
-            KeyReaction::Intercepted(c) if self.sort_cycle_combos.contains(&c) => {
-                self.cycle_sort();
-                EventState::Consumed
-            }
-            KeyReaction::Intercepted(c) if self.sort_reverse_combos.contains(&c) => {
-                self.reverse_sort();
-                EventState::Consumed
-            }
             KeyReaction::Intercepted(c) if self.follow_link_combos.contains(&c) => {
                 if let Some(path) = self.selected_path().cloned() {
                     tx.send(AppEvent::OpenPath(path)).ok();
@@ -454,7 +428,7 @@ impl QueryPanel {
             (ActionShortcuts::FollowLink, "open note"),
             (ActionShortcuts::SaveCurrentQuery, "save query"),
             (ActionShortcuts::OpenSavedSearches, "searches"),
-            (ActionShortcuts::CycleSortField, "sort"),
+            (ActionShortcuts::OpenSortDialog, "sort"),
         ]
         .iter()
         .filter_map(|(action, label)| {
@@ -476,7 +450,7 @@ impl QueryPanel {
         let bg = theme.bg_panel.to_ratatui();
 
         let count = self.list.visible_rows().len();
-        let (sort_field, sort_order) = *self.sort.lock().unwrap();
+        let (sort_field, sort_order) = self.current_order();
         let sort_indicator = format!("{}{}", sort_field.label(), sort_order.label());
         let title = if self.list.query() == DEFAULT_QUERY {
             format!("Backlinks ({}) {}", count, sort_indicator)
@@ -1006,6 +980,32 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_rewrites_query_order_directive() {
+        let vault = crate::test_support::temp_vault("qp-sort").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("widget".to_string());
+
+        panel.apply_sort(SortField::Title, SortOrder::Ascending, &tx);
+        assert_eq!(panel.active_query(), "widget or:title");
+
+        panel.apply_sort(SortField::Name, SortOrder::Descending, &tx);
+        assert_eq!(panel.active_query(), "widget -or:file");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn current_order_reads_query_directive() {
+        let vault = crate::test_support::temp_vault("qp-order").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        panel.set_active_query("widget -or:title".to_string());
+        assert_eq!(panel.current_order(), (SortField::Title, SortOrder::Descending));
+        panel.set_active_query("widget".to_string());
+        assert_eq!(panel.current_order(), (SortField::Name, SortOrder::Ascending));
     }
 
     /// A static query (no `{note}`) must survive navigation: `set_note` leaves
