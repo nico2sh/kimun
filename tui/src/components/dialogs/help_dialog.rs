@@ -112,7 +112,7 @@ impl HelpDialog {
     ) -> EventState {
         match key.code {
             KeyCode::Esc => {
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
             }
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),

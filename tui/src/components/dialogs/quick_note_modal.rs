@@ -31,7 +31,7 @@ impl QuickNoteModal {
         // Enter — possibly with Shift to open the new note after creating it.
         if let KeyCode::Enter = key.code {
             if self.input.value().trim().is_empty() {
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
             } else {
                 self.submit(tx, key.modifiers.contains(KeyModifiers::SHIFT));
             }
@@ -39,7 +39,7 @@ impl QuickNoteModal {
         }
         match self.input.handle_key(&key) {
             InputOutcome::Cancel => {
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Changed => {
@@ -61,7 +61,7 @@ impl QuickNoteModal {
                     if open_after {
                         tx_clone.send(AppEvent::EntryCreated(details.path)).ok();
                     } else {
-                        tx_clone.send(AppEvent::CloseDialog).ok();
+                        tx_clone.send(AppEvent::CloseOverlay).ok();
                     }
                 }
                 Err(e) => {
