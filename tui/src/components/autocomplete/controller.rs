@@ -303,6 +303,15 @@ impl AutocompleteController {
         // move at the same revision reuses it. Normal prose keystrokes
         // (no opener at the caret) never pay the scan at all.
         //
+        // The leading-`?` SavedSearch trigger is enabled only in the
+        // search-query box (`mode == SearchQuery`); the editor leaves it off
+        // so a note opening with `?` can't shadow `#`/`[[`. Deriving it from
+        // the mode here keeps the controller the single authority on the gate.
+        let opts = TriggerOptions {
+            allow_saved_search: matches!(self.mode, AutocompleteMode::SearchQuery),
+            ..self.trigger_opts
+        };
+
         // `cache_key == None` opts the host out (search-box modal): join
         // locally, use a throwaway lazy memo, and never touch the cache.
         let trigger = match cache_key {
@@ -317,7 +326,7 @@ impl AutocompleteController {
                     text,
                     zones: zones_slot,
                 };
-                detect_trigger_with_oracle(text, cursor, self.trigger_opts, &mut oracle)
+                detect_trigger_with_oracle(text, cursor, opts, &mut oracle)
             }
             None => {
                 let text = snap.lines.join("\n");
@@ -326,7 +335,7 @@ impl AutocompleteController {
                     text: &text,
                     zones: &mut zones,
                 };
-                detect_trigger_with_oracle(&text, cursor, self.trigger_opts, &mut oracle)
+                detect_trigger_with_oracle(&text, cursor, opts, &mut oracle)
             }
         };
 
@@ -340,6 +349,10 @@ impl AutocompleteController {
             }
             (AutocompleteMode::SearchQuery, TriggerKind::Hashtag | TriggerKind::LinkFilter) => true,
             (AutocompleteMode::SearchQuery, TriggerKind::Wikilink) => false,
+            // SavedSearch detection is already gated by mode above (only
+            // `SearchQuery` sets `allow_saved_search`), so reaching here in any
+            // other mode is impossible; accept it wherever it was detected.
+            (_, TriggerKind::SavedSearch) => true,
         });
 
         let Some(trigger) = trigger else {
@@ -481,6 +494,15 @@ impl AutocompleteController {
                         secondary: item.secondary,
                     })
                     .collect(),
+                TriggerKind::SavedSearch => suggestions
+                    .saved_searches_by_prefix(&query, limit)
+                    .await
+                    .into_iter()
+                    .map(|item| Suggestion {
+                        display: item.display,
+                        secondary: item.secondary,
+                    })
+                    .collect(),
             };
             let _ = tx.send(QueryResult {
                 generation: req_gen,
@@ -550,6 +572,7 @@ impl AutocompleteController {
                     range: new_range,
                     new_text,
                     new_cursor_byte,
+                    saved_search_name: None,
                 })
             }
             TriggerKind::Hashtag | TriggerKind::LinkFilter => {
@@ -558,6 +581,20 @@ impl AutocompleteController {
                     range,
                     new_text: suggestion.display,
                     new_cursor_byte,
+                    saved_search_name: None,
+                })
+            }
+            // SavedSearch: expand the WHOLE field to the stored query (carried
+            // in `secondary`) and report the name so the host pins the
+            // breadcrumb. See `adr/0006`.
+            TriggerKind::SavedSearch => {
+                let new_text = suggestion.secondary.unwrap_or_default();
+                let new_cursor_byte = new_text.len();
+                Some(AcceptAction {
+                    range: 0..buffer.len(),
+                    new_text,
+                    new_cursor_byte,
+                    saved_search_name: Some(suggestion.display),
                 })
             }
         }
@@ -645,6 +682,9 @@ pub struct AcceptAction {
     pub range: Range<usize>,
     pub new_text: String,
     pub new_cursor_byte: usize,
+    /// `Some(name)` when a SavedSearch suggestion was accepted — the host
+    /// pins it as the saved-search breadcrumb. `None` for all other kinds.
+    pub saved_search_name: Option<String>,
 }
 
 #[cfg(test)]
@@ -800,6 +840,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn saved_search_popup_loads_matching_searches() {
+        let (_tmp, vault) = new_vault_with(&[], &[]).await;
+        vault
+            .save_search("todo-week", "#todo ^modified")
+            .await
+            .unwrap();
+        vault.save_search("journal", "in:journal").await.unwrap();
+        let mut c = make_controller(vault, AutocompleteMode::SearchQuery);
+        let host = FakeHost::new("?to", 3);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        assert!(c.is_open());
+        let st = c.state().unwrap();
+        assert_eq!(st.kind, TriggerKind::SavedSearch);
+        let names: Vec<&str> = st.items.iter().map(|s| s.display.as_str()).collect();
+        assert!(names.contains(&"todo-week"), "got {names:?}");
+        assert!(!names.contains(&"journal"), "got {names:?}");
+        // `secondary` carries the stored query — the popup preview AND the
+        // text inserted on accept (see `adr/0006`).
+        let todo = st.items.iter().find(|s| s.display == "todo-week").unwrap();
+        assert_eq!(todo.secondary.as_deref(), Some("#todo ^modified"));
+    }
+
+    #[tokio::test]
+    async fn saved_search_trigger_gated_to_search_query_mode() {
+        let (_tmp, vault) = new_vault_with(&[], &[]).await;
+
+        // SearchQuery mode honors a leading `?`.
+        let mut c = make_controller(vault.clone(), AutocompleteMode::SearchQuery);
+        let host = FakeHost::new("?to", 3);
+        c.sync(&host);
+        assert_eq!(c.state().map(|s| s.kind), Some(TriggerKind::SavedSearch));
+
+        // Editor modes (`Both`, `HashtagOnly`) never open a SavedSearch popup.
+        for mode in [AutocompleteMode::Both, AutocompleteMode::HashtagOnly] {
+            let mut c = make_controller(vault.clone(), mode);
+            let host = FakeHost::new("?to", 3);
+            c.sync(&host);
+            assert!(
+                c.state().is_none(),
+                "mode {mode:?} must not open a SavedSearch popup"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn refresh_if_open_closes_on_kind_change() {
         // Popup is open for Hashtag; cursor-only move (refresh_if_open)
         // into a Wikilink context must NOT replace the popup with a
@@ -940,6 +1026,30 @@ mod tests {
         assert_eq!(host.buffer, "see [[meeting]]");
         assert_eq!(host.cursor, host.buffer.len());
         assert!(!c.is_open());
+    }
+
+    #[tokio::test]
+    async fn accepting_saved_search_expands_whole_field_and_reports_name() {
+        let (_tmp, vault) = new_vault_with(&[], &[]).await;
+        vault
+            .save_search("todo-week", "#todo ^modified")
+            .await
+            .unwrap();
+        let mut c = make_controller(vault, AutocompleteMode::SearchQuery);
+        let mut host = FakeHost::new("?to", 3);
+        c.sync(&host);
+        drain_results(&mut c).await;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let outcome = c.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &host);
+        let HandleKeyOutcome::Accepted(action) = outcome else {
+            panic!("expected Accepted, got {outcome:?}");
+        };
+        // The accepted name flows up so the host can pin the breadcrumb.
+        assert_eq!(action.saved_search_name.as_deref(), Some("todo-week"));
+        host.apply(&action);
+        // The WHOLE field is replaced with the stored query (not just `?to`).
+        assert_eq!(host.buffer, "#todo ^modified");
+        assert_eq!(host.cursor, host.buffer.len());
     }
 
     #[tokio::test]

@@ -116,6 +116,14 @@ impl SuggestionItem {
 pub trait SuggestionSource: Send + Sync + 'static {
     async fn notes_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem>;
     async fn tags_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem>;
+
+    /// Saved searches whose name matches `prefix` (case-insensitive). Each
+    /// item's `display` is the name and `secondary` the stored query — the
+    /// popup preview AND the text inserted on accept (see `adr/0006`).
+    /// Defaults to empty so non-search-box suggestion sources opt out.
+    async fn saved_searches_by_prefix(&self, _prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
+        Vec::new()
+    }
 }
 
 /// Production adapter over the vault. Formats the secondary line (note path,
@@ -149,6 +157,24 @@ impl SuggestionSource for VaultSuggestions {
                     .map(|t| SuggestionItem {
                         display: t.label,
                         secondary: Some(format!("{}×", t.usage_count)),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    async fn saved_searches_by_prefix(&self, prefix: &str, limit: usize) -> Vec<SuggestionItem> {
+        // Prefix matching + casing live in core (`NoteVault`), like the
+        // notes/tags suggestion sources. Here we only adapt to `SuggestionItem`:
+        // the name is the popup row, the stored query is the muted preview AND
+        // the text inserted on accept (see `adr/0006`).
+        self.vault
+            .suggest_saved_searches_by_prefix(prefix, limit)
+            .await
+            .map(|v| {
+                v.into_iter()
+                    .map(|s| SuggestionItem {
+                        display: s.name,
+                        secondary: Some(s.query),
                     })
                     .collect()
             })

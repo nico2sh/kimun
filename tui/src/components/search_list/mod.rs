@@ -86,6 +86,11 @@ pub struct SearchList<R: SearchRow> {
     /// rows before applying it — required for streamed (`Push`) sources, which
     /// would otherwise append onto a superseded load's rows.
     applied_generation: u64,
+    /// Set when a SavedSearch suggestion was just accepted: the search's name,
+    /// for the host to pin as the saved-search breadcrumb. Read once via
+    /// [`take_accepted_saved_search`](Self::take_accepted_saved_search). See
+    /// `adr/0006`.
+    accepted_saved_search: Option<String>,
 }
 
 /// Mouse interaction result from [`SearchList::handle_mouse`].
@@ -135,6 +140,9 @@ impl<R: SearchRow> SearchList<R> {
                 AutocompleteController::new(suggestions, mode).with_trigger_opts(TriggerOptions {
                     disambiguate_header: false,
                     apply_exclusion_zone: false,
+                    // The controller derives `allow_saved_search` from its mode
+                    // at detect time, so this seed value is not load-bearing.
+                    ..TriggerOptions::default()
                 });
             if let Some(d) = debounce {
                 ac = ac.with_debounce(d);
@@ -157,6 +165,7 @@ impl<R: SearchRow> SearchList<R> {
             icons: b.icons,
             list_rect: Rect::default(),
             applied_generation: 0,
+            accepted_saved_search: None,
         }
     }
 
@@ -257,6 +266,13 @@ impl<R: SearchRow> SearchList<R> {
         &self.query
     }
 
+    /// Take the name of a just-accepted saved search, if any. The host calls
+    /// this after a `Consumed` key to learn whether to pin (or refresh) the
+    /// saved-search breadcrumb. Returns `None` once read. See `adr/0006`.
+    pub fn take_accepted_saved_search(&mut self) -> Option<String> {
+        self.accepted_saved_search.take()
+    }
+
     /// The visible text in the query input widget. Test-only: lets callers
     /// assert the input bar reflects a programmatic query change.
     #[cfg(test)]
@@ -345,6 +361,11 @@ impl<R: SearchRow> SearchList<R> {
                             &action.new_text,
                             action.new_cursor_byte,
                         );
+                        // Stash any accepted SavedSearch name for the host's
+                        // breadcrumb (`None` for every other kind). The host
+                        // reads it on this same `Consumed`, so a plain assign
+                        // never clobbers an unread value. See `adr/0006`.
+                        self.accepted_saved_search = action.saved_search_name;
                         self.sync_query_from_input();
                         return KeyReaction::Consumed;
                     }
@@ -886,6 +907,60 @@ mod tests {
         }
         let _ = list.handle_key(&key(KeyCode::Tab));
         assert_eq!(list.query(), "#projects");
+    }
+
+    // Accepting a SavedSearch suggestion expands the whole field to the
+    // stored query AND exposes the accepted name (for the breadcrumb) via
+    // `take_accepted_saved_search`. See `adr/0006`.
+    #[tokio::test]
+    async fn accepting_saved_search_expands_query_and_exposes_name() {
+        struct Mem;
+        #[async_trait::async_trait]
+        impl crate::components::search_list::SuggestionSource for Mem {
+            async fn notes_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![]
+            }
+            async fn tags_by_prefix(&self, _p: &str, _n: usize) -> Vec<SuggestionItem> {
+                vec![]
+            }
+            async fn saved_searches_by_prefix(&self, p: &str, _n: usize) -> Vec<SuggestionItem> {
+                if "todo-week".starts_with(p) {
+                    vec![SuggestionItem {
+                        display: "todo-week".into(),
+                        secondary: Some("#todo ^modified".into()),
+                    }]
+                } else {
+                    vec![]
+                }
+            }
+        }
+        let src = VecSource {
+            rows: vec![],
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw())
+            .autocomplete(
+                std::sync::Arc::new(Mem),
+                crate::components::autocomplete::AutocompleteMode::SearchQuery,
+            )
+            .debounce(std::time::Duration::ZERO)
+            .build();
+        for c in ['?', 't', 'o'] {
+            let _ = list.handle_key(&key(KeyCode::Char(c)));
+        }
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            list.poll();
+        }
+        let _ = list.handle_key(&key(KeyCode::Tab));
+        // Whole field expanded to the stored query.
+        assert_eq!(list.query(), "#todo ^modified");
+        // The accepted name is exposed once, then cleared.
+        assert_eq!(
+            list.take_accepted_saved_search().as_deref(),
+            Some("todo-week")
+        );
+        assert_eq!(list.take_accepted_saved_search(), None);
     }
 
     // Regression: Enter (not just Tab) must accept an open autocomplete popup,
