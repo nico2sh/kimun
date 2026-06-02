@@ -135,6 +135,8 @@ pub struct AppSettings {
     pub journal_sort_field: SortFieldSetting,
     #[serde(default = "default_journal_sort_order")]
     pub journal_sort_order: SortOrderSetting,
+    #[serde(default)]
+    pub group_directories: bool,
     /// Custom config file path. `None` means use the default location.
     /// Not serialized — it's a runtime-only override.
     #[serde(skip)]
@@ -178,9 +180,8 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
         .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
-        .add(KeyStrike::KeyN, ActionShortcuts::CycleSortField)
+        .add(KeyStrike::KeyN, ActionShortcuts::OpenSortDialog)
         .add(KeyStrike::KeyG, ActionShortcuts::FollowLink)
-        .add(KeyStrike::KeyR, ActionShortcuts::SortReverseOrder)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
         .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)
@@ -266,6 +267,7 @@ impl Default for AppSettings {
             default_sort_order: default_sort_order(),
             journal_sort_field: default_journal_sort_field(),
             journal_sort_order: default_journal_sort_order(),
+            group_directories: false,
             config_file: None,
         }
     }
@@ -1034,5 +1036,26 @@ created = "2026-01-01T00:00:00Z"
         // No resolved_path needed for already-absolute paths
         assert!(entry.resolved_path.is_none());
         assert_eq!(*entry.effective_path(), PathBuf::from("/absolute/notes"));
+    }
+}
+
+#[cfg(test)]
+mod sort_settings_tests {
+    use super::*;
+
+    #[test]
+    fn group_directories_defaults_off() {
+        let s = AppSettings::default();
+        assert!(!s.group_directories);
+    }
+
+    #[test]
+    fn open_sort_dialog_is_bound_by_default() {
+        let s = AppSettings::default();
+        let map = s.key_bindings.to_hashmap();
+        assert!(
+            map.contains_key(&ActionShortcuts::OpenSortDialog),
+            "OpenSortDialog must have a default binding"
+        );
     }
 }

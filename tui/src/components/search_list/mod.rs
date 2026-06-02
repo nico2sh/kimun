@@ -256,14 +256,44 @@ impl<R: SearchRow> SearchList<R> {
     pub fn query(&self) -> &str {
         &self.query
     }
+
+    /// The visible text in the query input widget. Test-only: lets callers
+    /// assert the input bar reflects a programmatic query change.
+    #[cfg(test)]
+    pub(crate) fn input_value(&self) -> &str {
+        self.input.value()
+    }
     pub fn is_loading(&self) -> bool {
         self.loader.loading
     }
 
-    /// Set the query and (for `reload_on_query` sources) start a fresh load.
-    /// The generation guard in `LoadEngine` drops any in-flight stale results.
+    /// Set the query programmatically: updates the visible input widget (cursor
+    /// to end) AND the query string, then starts a load (for `reload_on_query`
+    /// sources) or recomputes the display. This is the setter every external
+    /// caller wants — a saved search applied, a sort directive rewritten — so
+    /// the input bar always reflects the query. The interactive keystroke path
+    /// uses [`sync_query_from_input`](Self::sync_query_from_input) instead,
+    /// because the input widget already holds the typed text (and its cursor
+    /// must not jump back to the end on every keystroke).
     pub fn set_query(&mut self, q: impl Into<String>) {
-        self.query = q.into();
+        let q = q.into();
+        self.input.set_value(q.clone());
+        self.query = q;
+        self.requery();
+    }
+
+    /// Pull the query string FROM the input widget without touching the widget
+    /// (so the cursor stays put), then reload/recompute. The keystroke and
+    /// autocomplete-accept paths use this after they have already mutated the
+    /// input in place.
+    fn sync_query_from_input(&mut self) {
+        self.query = self.input.value().to_string();
+        self.requery();
+    }
+
+    /// Start a fresh load for `reload_on_query` sources, else recompute the
+    /// local display. The generation guard in `LoadEngine` drops stale results.
+    fn requery(&mut self) {
         if self.source.reload_on_query() {
             self.loader.start(self.source.clone(), self.query.clone());
         } else {
@@ -315,7 +345,7 @@ impl<R: SearchRow> SearchList<R> {
                             &action.new_text,
                             action.new_cursor_byte,
                         );
-                        self.set_query(self.input.value().to_string());
+                        self.sync_query_from_input();
                         return KeyReaction::Consumed;
                     }
                     HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
@@ -370,7 +400,7 @@ impl<R: SearchRow> SearchList<R> {
         }
         match outcome {
             InputOutcome::Changed => {
-                self.set_query(self.input.value().to_string());
+                self.sync_query_from_input();
                 KeyReaction::Consumed
             }
             InputOutcome::Consumed => KeyReaction::Consumed,

@@ -7,6 +7,15 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use kimun_core::{NoteVault, nfs::VaultPath};
 
+use crate::components::file_list::{SortField, SortOrder};
+
+/// Which panel a sort selection applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortTarget {
+    Sidebar,
+    Query,
+}
+
 /// All events that flow through the system — both input events (from crossterm)
 /// and app-level messages sent by components / screens to the main loop.
 #[derive(Debug, Clone)]
@@ -124,6 +133,18 @@ pub enum AppEvent {
         query: String,
         name: String,
     },
+
+    /// Sort selection changed in the sort dialog — apply live to `target`.
+    /// When `persist` is set (sidebar's "save as default"), also write the
+    /// choice to settings. `group_directories` is sidebar-only (the query panel
+    /// ignores it).
+    SortChanged {
+        target: SortTarget,
+        field: SortField,
+        order: SortOrder,
+        group_directories: bool,
+        persist: bool,
+    },
 }
 
 impl AppEvent {
@@ -185,5 +206,24 @@ mod tests {
             AppEvent::DialogError(_) => {}
             _ => {}
         }
+    }
+
+    #[test]
+    fn sort_events_construct() {
+        use crate::components::file_list::{SortField, SortOrder};
+        let _ = AppEvent::SortChanged {
+            target: SortTarget::Sidebar,
+            field: SortField::Name,
+            order: SortOrder::Ascending,
+            group_directories: true,
+            persist: false,
+        };
+        let _ = AppEvent::SortChanged {
+            target: SortTarget::Query,
+            field: SortField::Title,
+            order: SortOrder::Descending,
+            group_directories: false,
+            persist: true,
+        };
     }
 }

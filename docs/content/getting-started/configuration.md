@@ -43,6 +43,7 @@ Why separate files instead of keeping everything inside the workspace directory?
 | `default_sort_order` | string | `"ascending"` | Sort direction for the note browser. One of `"ascending"`, `"descending"`. |
 | `journal_sort_field` | string | `"name"` | Sort field for the journal view. One of `"name"`, `"title"`. |
 | `journal_sort_order` | string | `"descending"` | Sort direction for the journal view. One of `"ascending"`, `"descending"`. Descending shows newest first. |
+| `group_directories` | boolean | `false` | When `true`, the sidebar lists directories first (clustered above notes), each group sorted by the chosen field/order. Set live from the sort dialog. |
 
 ## `[global]` Section
 
@@ -187,8 +188,7 @@ Use these action names exactly as shown.
 
 **Sorting**
 
-- `CycleSortField` — Cycle the sort field (`name` → `title` → `name` → …)
-- `SortReverseOrder` — Toggle sort direction (ascending ↔ descending)
+- `OpenSortDialog` — Open the sort dialog for the focused panel (sidebar or query panel): choose sort field (name/title), direction, and — for the sidebar — whether to group directories first. (The legacy action names `CycleSortField` and `SortReverseOrder` still parse and map to this action.)
 
 **Text editing** (only fire while the editor has focus)
 

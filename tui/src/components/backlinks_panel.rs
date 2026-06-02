@@ -10,6 +10,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
+use kimun_core::{OrderBy, OrderField, with_order_directive};
+
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
@@ -92,12 +94,11 @@ impl SearchRow for BacklinkEntry {
 /// (e.g. `<{note}`, so the input shows the template); this source resolves
 /// `{note}` against the shared current note at load time, preserving the exact
 /// "input shows the template, results are backlinks of the current note" UX.
-/// The shared sort handle lets the source order results by the panel's active
-/// sort field/order (the engine itself uses `SourceOrder`).
+/// Result ordering comes from the query string's order directive, applied by
+/// the vault DB — the source no longer sorts in memory.
 struct BacklinkSource {
     vault: Arc<NoteVault>,
     current_note: Arc<Mutex<VaultPath>>,
-    sort: Arc<Mutex<(SortField, SortOrder)>>,
 }
 
 #[async_trait]
@@ -115,24 +116,20 @@ impl RowSource<BacklinkEntry> for BacklinkSource {
         }
         let q = resolve_query(query, Some(&note));
         let mut entries = load_query(&self.vault, &q).await;
-        let (field, order) = *self.sort.lock().unwrap();
-        sort_entries(&mut entries, field, order);
+        // The DB orders results only when the query carries an `or:` directive
+        // (core applies the sort iff `order_by` is non-empty). Keep that
+        // directive as the source of truth, but fall back to a stable
+        // Name-ascending order when the query has none — otherwise default
+        // backlinks come back in arbitrary DB scan order, and the sort dialog's
+        // reported default (Name/Ascending) would not match the displayed list.
+        if kimun_core::SearchTerms::from_query_string(query)
+            .order_by
+            .is_empty()
+        {
+            entries.sort_by_key(|e| e.filename.to_lowercase());
+        }
         emit.replace(entries);
     }
-}
-
-/// Sort backlink entries in place by the given field and order.
-fn sort_entries(entries: &mut [BacklinkEntry], field: SortField, order: SortOrder) {
-    entries.sort_by(|a, b| {
-        let cmp = match field {
-            SortField::Name => a.filename.to_lowercase().cmp(&b.filename.to_lowercase()),
-            SortField::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
-        };
-        match order {
-            SortOrder::Ascending => cmp,
-            SortOrder::Descending => cmp.reverse(),
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------
@@ -160,9 +157,6 @@ pub struct QueryPanel {
     /// Name of the saved search currently applied (drives the title); `None`
     /// for the default / a manually-edited query.
     saved_search_name: Option<String>,
-    /// Shared sort field/order. `BacklinkSource::load` reads it to order
-    /// results; the panel mutates it on sort shortcuts then reloads.
-    sort: Arc<Mutex<(SortField, SortOrder)>>,
     /// Expand state of the currently-selected row. Reset to `Collapsed` on any
     /// navigation or query change.
     expand: ExpandState,
@@ -179,17 +173,20 @@ pub struct QueryPanel {
     /// loop once the app event channel is wired (the panel is built before the
     /// channel exists in some construction orders).
     redraw_tx: Arc<Mutex<Option<AppTx>>>,
-    /// Combos that the engine intercepts: sort cycle / reverse / follow-link.
-    sort_cycle_combos: Vec<KeyCombo>,
-    sort_reverse_combos: Vec<KeyCombo>,
+    /// Combos that the engine intercepts: follow-link.
     follow_link_combos: Vec<KeyCombo>,
+    /// Memoised sort field/order parsed from the query's order directive, plus
+    /// the query string it was parsed from. `render` reparses only when the
+    /// query changes, so the per-frame title indicator avoids a full query
+    /// parse every frame.
+    order_cache: (SortField, SortOrder),
+    order_cache_query: String,
 }
 
 impl QueryPanel {
     pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings) -> Self {
         let icons = Icons::new(false);
         let current_note = Arc::new(Mutex::new(VaultPath::empty()));
-        let sort = Arc::new(Mutex::new((SortField::Name, SortOrder::Ascending)));
         // The redraw callback reads a shared slot that `set_note`/`handle_key`
         // fill once a `tx` is available (the panel is constructed before the
         // app event channel in some orders). Until then it is a no-op.
@@ -205,7 +202,6 @@ impl QueryPanel {
         let source = BacklinkSource {
             vault: vault.clone(),
             current_note: current_note.clone(),
-            sort: sort.clone(),
         };
         let combos = |action: &ActionShortcuts| -> Vec<KeyCombo> {
             key_bindings
@@ -214,13 +210,9 @@ impl QueryPanel {
                 .cloned()
                 .unwrap_or_default()
         };
-        let sort_cycle_combos = combos(&ActionShortcuts::CycleSortField);
-        let sort_reverse_combos = combos(&ActionShortcuts::SortReverseOrder);
         let follow_link_combos = combos(&ActionShortcuts::FollowLink);
 
         let mut intercept = Vec::new();
-        intercept.extend(sort_cycle_combos.iter().cloned());
-        intercept.extend(sort_reverse_combos.iter().cloned());
         intercept.extend(follow_link_combos.iter().cloned());
 
         let list = SearchList::builder(source, redraw)
@@ -239,16 +231,16 @@ impl QueryPanel {
             list,
             current_note,
             saved_search_name: None,
-            sort,
             expand: ExpandState::Collapsed,
             expand_path: None,
             content_scroll: 0,
             content_scroll_max: 0,
             key_bindings,
             redraw_tx,
-            sort_cycle_combos,
-            sort_reverse_combos,
             follow_link_combos,
+            // DEFAULT_QUERY carries no order directive → (Name, Ascending).
+            order_cache: (SortField::Name, SortOrder::Ascending),
+            order_cache_query: String::new(),
         }
     }
 
@@ -342,23 +334,48 @@ impl QueryPanel {
         }
     }
 
-    /// Advance the sort field, then reload so the source re-orders the results.
-    fn cycle_sort(&mut self) {
-        {
-            let mut s = self.sort.lock().unwrap();
-            s.0 = s.0.cycle();
+    /// Current sort field/order, derived from the active query's order
+    /// directive. Defaults to (Name, Ascending) when the query has none.
+    /// Parses the query each call — cheap for the rare callers (dialog open).
+    /// The per-frame render path uses the memoised `order_cache` instead.
+    pub fn current_order(&self) -> (SortField, SortOrder) {
+        let st = kimun_core::SearchTerms::from_query_string(self.list.query());
+        match st.order_by.first() {
+            Some(OrderBy::Title { asc }) => (
+                SortField::Title,
+                if *asc {
+                    SortOrder::Ascending
+                } else {
+                    SortOrder::Descending
+                },
+            ),
+            Some(OrderBy::FileName { asc }) => (
+                SortField::Name,
+                if *asc {
+                    SortOrder::Ascending
+                } else {
+                    SortOrder::Descending
+                },
+            ),
+            None => (SortField::Name, SortOrder::Ascending),
         }
-        self.list.reload();
-        self.reset_expand();
     }
 
-    /// Toggle the sort order, then reload so the source re-orders the results.
-    fn reverse_sort(&mut self) {
-        {
-            let mut s = self.sort.lock().unwrap();
-            s.1 = s.1.toggle();
-        }
-        self.list.reload();
+    /// Apply a sort selection from the sort dialog: rewrite the query's order
+    /// directive (the query string is the single source of truth) and reload.
+    pub fn apply_sort(&mut self, field: SortField, order: SortOrder, tx: &AppTx) {
+        self.ensure_redraw_tx(tx);
+        let order_field = match field {
+            SortField::Name => OrderField::FileName,
+            SortField::Title => OrderField::Title,
+        };
+        let asc = matches!(order, SortOrder::Ascending);
+        let rewritten = with_order_directive(self.list.query(), order_field, asc);
+        self.list.set_query(rewritten);
+        // A sort rewrites the query, so it is no longer the named saved search
+        // (mirrors the manual-edit path in `handle_key`). The title falls back
+        // to "Backlinks"/"Query" via the order-insensitive check in `render`.
+        self.saved_search_name = None;
         self.reset_expand();
     }
 
@@ -378,14 +395,6 @@ impl QueryPanel {
         // open autocomplete popup can accept on Enter; only when the popup is
         // closed does the engine return `Submit`, which toggles expand below.
         match self.list.handle_key(key) {
-            KeyReaction::Intercepted(c) if self.sort_cycle_combos.contains(&c) => {
-                self.cycle_sort();
-                EventState::Consumed
-            }
-            KeyReaction::Intercepted(c) if self.sort_reverse_combos.contains(&c) => {
-                self.reverse_sort();
-                EventState::Consumed
-            }
             KeyReaction::Intercepted(c) if self.follow_link_combos.contains(&c) => {
                 if let Some(path) = self.selected_path().cloned() {
                     tx.send(AppEvent::OpenPath(path)).ok();
@@ -454,7 +463,7 @@ impl QueryPanel {
             (ActionShortcuts::FollowLink, "open note"),
             (ActionShortcuts::SaveCurrentQuery, "save query"),
             (ActionShortcuts::OpenSavedSearches, "searches"),
-            (ActionShortcuts::CycleSortField, "sort"),
+            (ActionShortcuts::OpenSortDialog, "sort"),
         ]
         .iter()
         .filter_map(|(action, label)| {
@@ -476,9 +485,18 @@ impl QueryPanel {
         let bg = theme.bg_panel.to_ratatui();
 
         let count = self.list.visible_rows().len();
-        let (sort_field, sort_order) = *self.sort.lock().unwrap();
+        // Reparse the order only when the query changed (memoised) — render runs
+        // every frame and `from_query_string` is a full allocating parse.
+        if self.list.query() != self.order_cache_query {
+            self.order_cache = self.current_order();
+            self.order_cache_query = self.list.query().to_string();
+        }
+        let (sort_field, sort_order) = self.order_cache;
         let sort_indicator = format!("{}{}", sort_field.label(), sort_order.label());
-        let title = if self.list.query() == DEFAULT_QUERY {
+        // Compare ignoring the order directive so that sorting the default
+        // backlinks query (`<{note} or:title`) still reads as "Backlinks".
+        let base_query = kimun_core::strip_order_directive(self.list.query());
+        let title = if base_query == DEFAULT_QUERY {
             format!("Backlinks ({}) {}", count, sort_indicator)
         } else if let Some(name) = &self.saved_search_name {
             format!("{} ({}) {}", name, count, sort_indicator)
@@ -1006,6 +1024,110 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_rewrites_query_order_directive() {
+        let vault = crate::test_support::temp_vault("qp-sort").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("widget".to_string());
+
+        panel.apply_sort(SortField::Title, SortOrder::Ascending, &tx);
+        assert_eq!(panel.active_query(), "widget or:title");
+
+        panel.apply_sort(SortField::Name, SortOrder::Descending, &tx);
+        assert_eq!(panel.active_query(), "widget -or:file");
+    }
+
+    /// Regression: a directive-less query must still return a stable
+    /// Name-ascending order (the DB only sorts when an `or:` directive is
+    /// present). Without the fallback, results came back in arbitrary DB order.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn directiveless_query_is_name_ascending() {
+        let vault = crate::test_support::temp_vault("qp-defaultorder").await;
+        vault.validate_and_init().await.unwrap();
+        // Create in non-alphabetical order; all share the term "widget".
+        for name in ["/charlie.md", "/alpha.md", "/bravo.md"] {
+            vault
+                .create_note(&VaultPath::note_path_from(name), "widget")
+                .await
+                .unwrap();
+        }
+        let mut panel = make_panel(vault);
+        panel.set_active_query("widget".to_string()); // no order directive
+        settle(&mut panel).await;
+
+        let names: Vec<String> = panel
+            .list
+            .visible_rows()
+            .iter()
+            .map(|e| e.filename.clone())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "directive-less query must be name-ascending");
+    }
+
+    /// Regression: applying a sort rewrites the query, so the panel is no longer
+    /// the named saved search — the stale name must be dropped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_clears_saved_search_name() {
+        let vault = crate::test_support::temp_vault("qp-name").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("#todo".to_string());
+        panel.set_saved_search_name(Some("todo".to_string()));
+
+        panel.apply_sort(SortField::Title, SortOrder::Ascending, &tx);
+        assert!(
+            panel.saved_search_name.is_none(),
+            "sorting a saved search must clear its name"
+        );
+    }
+
+    /// Regression: a programmatic sort change must update the VISIBLE input bar,
+    /// not just the internal query string. (Previously `set_query` left the
+    /// input widget stale, so the bar didn't show the `or:` directive.)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_updates_visible_input_bar() {
+        let vault = crate::test_support::temp_vault("qp-bar").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("widget".to_string());
+        assert_eq!(
+            panel.list.input_value(),
+            "widget",
+            "set_active_query syncs the bar"
+        );
+
+        panel.apply_sort(SortField::Title, SortOrder::Ascending, &tx);
+        assert_eq!(panel.active_query(), "widget or:title");
+        assert_eq!(
+            panel.list.input_value(),
+            "widget or:title",
+            "the input bar must reflect the rewritten query"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn current_order_reads_query_directive() {
+        let vault = crate::test_support::temp_vault("qp-order").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        panel.set_active_query("widget -or:title".to_string());
+        assert_eq!(
+            panel.current_order(),
+            (SortField::Title, SortOrder::Descending)
+        );
+        panel.set_active_query("widget".to_string());
+        assert_eq!(
+            panel.current_order(),
+            (SortField::Name, SortOrder::Ascending)
+        );
     }
 
     /// A static query (no `{note}`) must survive navigation: `set_note` leaves
