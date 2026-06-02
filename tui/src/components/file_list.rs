@@ -141,18 +141,6 @@ impl FileListEntry {
         }
     }
 
-    pub fn search_str(&self) -> Option<String> {
-        match self {
-            Self::Up { .. } => None,
-            Self::Note {
-                title, filename, ..
-            } => Some(format!("{} {}", title, filename)),
-            Self::Directory { name, .. } => Some(name.clone()),
-            Self::Attachment { filename, .. } => Some(filename.clone()),
-            Self::CreateNote { filename, .. } => Some(filename.clone()),
-        }
-    }
-
     /// Sort key for the given field.
     pub(crate) fn sort_key(&self, field: SortField) -> String {
         match self {
@@ -245,8 +233,8 @@ impl crate::components::search_list::SearchRow for FileListEntry {
     fn match_text(&self) -> Option<&str> {
         match self {
             Self::Note { filename, .. } | Self::CreateNote { filename, .. } => Some(filename),
-            // Directories participate in the fuzzy filter (matched on their name,
-            // the same text the old `search_str` arm used). `Up` stays exempt.
+            // Directories participate in the fuzzy filter (matched on their
+            // name). `Up` stays exempt.
             Self::Directory { name, .. } => Some(name),
             _ => None,
         }

@@ -284,7 +284,7 @@ impl Component for SavedSearchesModal {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, _focused: bool) {
-        let popup_rect = centered_rect(60, 60, area);
+        let popup_rect = crate::components::centered_rect(60, 60, area);
 
         // Clear the area behind the modal so the editor doesn't bleed through.
         f.render_widget(Clear, popup_rect);
@@ -324,9 +324,9 @@ impl Component for SavedSearchesModal {
         let list_inner = list_block.inner(rows[1]);
         f.render_widget(list_block, rows[1]);
         self.list.render(f, list_inner, theme, false);
-        // Hand the engine the block's OUTER rect so mouse hit-testing accounts
-        // for the leading border row.
-        self.list.set_list_rect(rows[1]);
+        // The engine hit-tests `row - rect.y` (row 0 = first item); the list
+        // renders into the block's inner area, so record that same rect.
+        self.list.set_list_rect(list_inner);
 
         // ── Hint bar ──────────────────────────────────────────────────────────
         f.render_widget(
@@ -343,21 +343,6 @@ impl Component for SavedSearchesModal {
             ("Del".to_string(), "delete".to_string()),
             ("Esc".to_string(), "close".to_string()),
         ]
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Layout helper
-// ---------------------------------------------------------------------------
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_height = area.height * percent_y / 100;
-    let popup_width = area.width * percent_x / 100;
-    Rect {
-        x: area.x + (area.width.saturating_sub(popup_width)) / 2,
-        y: area.y + (area.height.saturating_sub(popup_height)) / 2,
-        width: popup_width,
-        height: popup_height,
     }
 }
 

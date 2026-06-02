@@ -161,7 +161,6 @@ impl AutocompleteController {
 
     /// Override the per-refinement debounce window. Tests pass
     /// `Duration::ZERO` so query results land promptly inside `drain_results`.
-    #[cfg(test)]
     pub fn with_debounce(mut self, debounce: Duration) -> Self {
         self.debounce = debounce;
         self

@@ -273,7 +273,7 @@ impl Component for NoteBrowserModal {
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, _focused: bool) {
         self.poll_preview();
 
-        let popup_rect = centered_rect(80, 75, area);
+        let popup_rect = crate::components::centered_rect(80, 75, area);
 
         // Clear the area behind the modal so the editor doesn't bleed through.
         f.render_widget(Clear, popup_rect);
@@ -311,10 +311,9 @@ impl Component for NoteBrowserModal {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(rows[1]);
 
-        // The engine records the rect it draws into for mouse hit-testing,
-        // and hit-tests as `row - rect.y - 1` (a leading border row). Draw the
-        // list inside a bordered block and hand the engine the BLOCK's outer
-        // rect so that subtraction lands on the right item.
+        // The engine hit-tests a click as `row - rect.y` against the recorded
+        // rect, where row 0 is the first item. The list renders into the block's
+        // INNER area, so record that same inner rect.
         let list_block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme.border_style(false))
@@ -322,9 +321,7 @@ impl Component for NoteBrowserModal {
         let list_inner = list_block.inner(columns[0]);
         f.render_widget(list_block, columns[0]);
         self.list.render(f, list_inner, theme, false);
-        // Override the rect the engine recorded so the border row is accounted
-        // for during mouse hit-testing.
-        self.list.set_list_rect(columns[0]);
+        self.list.set_list_rect(list_inner);
 
         // Authoritative preview trigger: `list.render` just polled, which is
         // where an async server-side reload lands and may auto-select a new
@@ -368,21 +365,6 @@ impl Component for NoteBrowserModal {
             ("Enter".to_string(), "open".to_string()),
             ("Esc".to_string(), "close".to_string()),
         ]
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Layout helper
-// ---------------------------------------------------------------------------
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_height = area.height * percent_y / 100;
-    let popup_width = area.width * percent_x / 100;
-    Rect {
-        x: area.x + (area.width.saturating_sub(popup_width)) / 2,
-        y: area.y + (area.height.saturating_sub(popup_height)) / 2,
-        width: popup_width,
-        height: popup_height,
     }
 }
 
@@ -437,33 +419,6 @@ mod tests {
             settings.icons(),
             tx,
         )
-    }
-
-    #[test]
-    fn centered_rect_is_centered() {
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 100,
-            height: 40,
-        };
-        let r = centered_rect(80, 75, area);
-        assert_eq!(r.width, 80);
-        assert_eq!(r.height, 30);
-        assert_eq!(r.x, 10); // (100 - 80) / 2
-        assert_eq!(r.y, 5); // (40 - 30) / 2
-    }
-
-    #[test]
-    fn centered_rect_does_not_underflow() {
-        // Very small area — must not panic.
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 5,
-            height: 5,
-        };
-        let _ = centered_rect(80, 75, area);
     }
 
     #[tokio::test]
