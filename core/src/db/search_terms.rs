@@ -153,6 +153,51 @@ impl OrderBy {
     }
 }
 
+/// The field a query can be ordered by. The asc/desc choice is carried
+/// separately by callers; this names only the column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderField {
+    Title,
+    FileName,
+}
+
+/// True if `token` is an order directive in any of its four forms:
+/// `or:<x>`, `-or:<x>`, `^<x>`, `-^<x>`.
+fn is_order_token(token: &str) -> bool {
+    let order_prefix = format!("{}:", ORDER_LETTER);
+    let desc_order_prefix = format!("-{}:", ORDER_LETTER);
+    let desc_order_char = format!("-{}", ORDER_CHAR);
+    token.starts_with(&desc_order_prefix)
+        || token.starts_with(&order_prefix)
+        || token.starts_with(&desc_order_char)
+        || token.starts_with(ORDER_CHAR)
+}
+
+/// Return `query` with its order directive replaced by `field`/`asc`.
+///
+/// Any existing order directive (`or:`/`-or:`/`^`/`-^`, in any position) is
+/// stripped, then the canonical `or:<field>` (ascending) / `-or:<field>`
+/// (descending) directive is appended. Other tokens are preserved in order
+/// (whitespace is normalised to single spaces). The DSL knowledge lives here in
+/// core so the TUI never hardcodes the directive syntax.
+pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String {
+    let kept: Vec<&str> = query
+        .split_whitespace()
+        .filter(|t| !is_order_token(t))
+        .collect();
+    let field_term = match field {
+        OrderField::Title => "title",
+        OrderField::FileName => "file",
+    };
+    let prefix = if asc { ORDER_LETTER } else { "-or" }; // "or" / "-or"
+    let directive = format!("{}:{}", prefix, field_term);
+    if kept.is_empty() {
+        directive
+    } else {
+        format!("{} {}", kept.join(" "), directive)
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct SearchTerms {
     pub terms: Vec<String>,
@@ -679,6 +724,55 @@ mod tests {
         let s = SearchTerms::from_query_string(huge);
         // The cap is 8 KB; after dedup, labels has at most 1 entry.
         assert!(s.labels.len() <= 1);
+    }
+
+    #[test]
+    fn with_order_inserts_into_plain_query() {
+        use super::{with_order_directive, OrderField};
+        assert_eq!(
+            with_order_directive("hello world", OrderField::Title, true),
+            "hello world or:title"
+        );
+        assert_eq!(
+            with_order_directive("hello", OrderField::FileName, false),
+            "hello -or:file"
+        );
+    }
+
+    #[test]
+    fn with_order_replaces_existing_directive() {
+        use super::{with_order_directive, OrderField};
+        assert_eq!(
+            with_order_directive("foo or:title bar", OrderField::FileName, true),
+            "foo bar or:file"
+        );
+        assert_eq!(
+            with_order_directive("-or:file foo", OrderField::Title, true),
+            "foo or:title"
+        );
+        assert_eq!(
+            with_order_directive("foo ^title", OrderField::Title, false),
+            "foo -or:title"
+        );
+        assert_eq!(
+            with_order_directive("-^file foo", OrderField::FileName, true),
+            "foo or:file"
+        );
+    }
+
+    #[test]
+    fn with_order_empty_query_yields_bare_directive() {
+        use super::{with_order_directive, OrderField};
+        assert_eq!(with_order_directive("", OrderField::Title, true), "or:title");
+    }
+
+    #[test]
+    fn with_order_roundtrips_through_parser() {
+        use super::{with_order_directive, OrderField, OrderBy, SearchTerms};
+        let q = with_order_directive("note text", OrderField::Title, false);
+        let st = SearchTerms::from_query_string(&q);
+        assert!(matches!(st.order_by.first(), Some(OrderBy::Title { asc: false })));
+        assert!(st.terms.iter().any(|t| t == "note"));
     }
 
     #[test]
