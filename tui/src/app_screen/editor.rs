@@ -1039,13 +1039,13 @@ impl AppScreen for EditorScreen {
                             }
                             s.group_directories = group_directories;
                         }
+                        let snapshot = self.settings.read().unwrap().clone();
+                        tokio::spawn(async move {
+                            snapshot.save_to_disk().ok();
+                        });
                     }
                     SortTarget::Query => self.backlinks_panel.apply_sort(field, order, tx),
                 }
-                let snapshot = self.settings.read().unwrap().clone();
-                tokio::spawn(async move {
-                    snapshot.save_to_disk().ok();
-                });
                 None
             }
             AppEvent::Autosave => {
@@ -1436,5 +1436,31 @@ mod sort_routing_tests {
         assert_eq!(s.default_sort_field, crate::settings::SortFieldSetting::Title);
         assert_eq!(s.default_sort_order, crate::settings::SortOrderSetting::Descending);
         assert!(s.group_directories);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sort_save_default_journal_dir_writes_journal_settings() {
+        let (mut screen, tx, _rx) = make_editor().await;
+        // Point the sidebar at the journal directory (current_dir set synchronously).
+        let journal = screen.vault.journal_path().clone();
+        screen.sidebar.navigate(journal, &tx);
+
+        screen
+            .handle_app_message(
+                AppEvent::SortSaveDefault {
+                    target: SortTarget::Sidebar,
+                    field: SortField::Title,
+                    order: SortOrder::Ascending,
+                    group_directories: false,
+                },
+                &tx,
+            )
+            .await;
+
+        let s = screen.settings.read().unwrap();
+        assert_eq!(s.journal_sort_field, crate::settings::SortFieldSetting::Title);
+        assert_eq!(s.journal_sort_order, crate::settings::SortOrderSetting::Ascending);
+        // Default (non-journal) settings must be untouched from their defaults.
+        assert_eq!(s.default_sort_field, crate::settings::SortFieldSetting::Name);
     }
 }
