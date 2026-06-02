@@ -59,4 +59,10 @@ pub trait Overlay: Send {
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
         vec![]
     }
+    /// The query string this overlay holds, if it is query-backed (the note
+    /// browser). Used by the editor's save-current-query action to source the
+    /// query from the active overlay. Defaults to `None` for non-query overlays.
+    fn query(&self) -> Option<&str> {
+        None
+    }
 }
