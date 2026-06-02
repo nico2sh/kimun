@@ -105,6 +105,14 @@ impl RowSource<BacklinkEntry> for BacklinkSource {
     async fn load(&self, query: &str, emit: Emit<BacklinkEntry>) {
         // Clone the note out of the lock, then drop the guard before awaiting.
         let note = self.current_note.lock().unwrap().clone();
+        // Skip the search when the query contains a variable but no note is
+        // open yet (startup state). Running `load_query(vault, "<")` against an
+        // empty note is a wasted DB round-trip that returns nothing; once
+        // `set_note` provides a real note the normal reload fires.
+        if query_has_variables(query) && note.is_root_or_empty() {
+            emit.replace(Vec::new());
+            return;
+        }
         let q = resolve_query(query, Some(&note));
         let mut entries = load_query(&self.vault, &q).await;
         let (field, order) = *self.sort.lock().unwrap();

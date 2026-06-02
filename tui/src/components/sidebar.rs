@@ -83,12 +83,17 @@ impl RowSource<FileListEntry> for DirListingSource {
             entries
         });
 
-        if let Ok(entries) = drain.await {
-            for entry in entries {
-                emit.push(entry);
+        match drain.await {
+            Ok(entries) => {
+                for entry in entries {
+                    emit.push(entry);
+                }
             }
+            Err(e) => tracing::warn!("sidebar directory listing drain failed: {e}"),
         }
-        let _ = browse.await;
+        if let Err(e) = browse.await {
+            tracing::warn!("sidebar browse_vault task failed: {e}");
+        }
         emit.done();
     }
 
