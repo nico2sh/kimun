@@ -626,6 +626,54 @@ mod tests {
     }
 
     #[test]
+    fn exclusion_short_forms_parse_to_excluded_fields() {
+        // Locks the `prefix_table` ordering invariant (excluded-before-positive,
+        // longer-before-prefix): each excluded short form must land in its own
+        // field. A mis-ordered insert would mis-parse one of these.
+        assert_eq!(
+            SearchTerms::from_query_string("-=foo").excluded_filename,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("-<foo").excluded_links,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("->foo").excluded_forward_links,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("-@foo").excluded_breadcrumb,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("-/foo").excluded_path,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("-#foo").excluded_labels,
+            vec!["foo"]
+        );
+    }
+
+    #[test]
+    fn positive_short_forms_parse_to_fields() {
+        // The positive counterparts of the exclusion short forms.
+        assert_eq!(SearchTerms::from_query_string("=foo").filename, vec!["foo"]);
+        assert_eq!(SearchTerms::from_query_string("<foo").links, vec!["foo"]);
+        assert_eq!(
+            SearchTerms::from_query_string(">foo").forward_links,
+            vec!["foo"]
+        );
+        assert_eq!(
+            SearchTerms::from_query_string("@foo").breadcrumb,
+            vec!["foo"]
+        );
+        assert_eq!(SearchTerms::from_query_string("/foo").path, vec!["foo"]);
+        assert_eq!(SearchTerms::from_query_string("#foo").labels, vec!["foo"]);
+    }
+
+    #[test]
     fn from_query_string_caps_input_length() {
         let huge = "#a ".repeat(20_000); // 60 KB
         let s = SearchTerms::from_query_string(huge);

@@ -637,10 +637,26 @@ fn add_labels_query(
 /// stored-form invariant: link destinations are lowercased, carry the note
 /// extension, and are either a bare relative name or a relative/absolute path.
 /// Returns `None` for an empty target.
-fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) -> Option<String> {
+/// Normalized pieces of a link-filter target, shared by [`link_subquery`]
+/// (backlinks) and [`forward_link_subquery`] (forward links). Only the SQL
+/// column names differ between the two; the normalization is identical.
+struct LinkTarget {
+    /// Lowercased, extension-applied note name/path used as the bound param.
+    name: String,
+    /// `true` when the target contains a path separator (anchor to full path).
+    is_path_qualified: bool,
+    /// `true` when the target contains a `*` wildcard (use `LIKE`).
+    has_wildcard: bool,
+}
+
+/// Normalize a link-filter target: trim/lowercase, strip a leading separator,
+/// detect path-qualified / wildcard, and apply the note extension. Returns
+/// `None` for an empty target.
+///
+/// A leading separator only signals "absolute"; both stored forms are matched
+/// anyway, so it is stripped before normalizing.
+fn normalize_link_target(target: &str) -> Option<LinkTarget> {
     let lowered = target.trim().to_lowercase();
-    // A leading separator only signals "absolute"; both stored forms are
-    // matched anyway, so strip it before normalizing.
     let stripped = lowered.strip_prefix(PATH_SEPARATOR).unwrap_or(&lowered);
     if stripped.is_empty() {
         return None;
@@ -648,6 +664,19 @@ fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) ->
     let is_path_qualified = stripped.contains(PATH_SEPARATOR);
     let has_wildcard = stripped.contains('*');
     let name = with_note_extension(stripped);
+    Some(LinkTarget {
+        name,
+        is_path_qualified,
+        has_wildcard,
+    })
+}
+
+fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) -> Option<String> {
+    let LinkTarget {
+        name,
+        is_path_qualified,
+        has_wildcard,
+    } = normalize_link_target(target)?;
 
     let body = if has_wildcard {
         // Escape LIKE metacharacters in the literal, then turn user `*` into
@@ -724,14 +753,11 @@ fn forward_link_subquery(
     var_num: &mut usize,
     params: &mut Vec<String>,
 ) -> Option<String> {
-    let lowered = target.trim().to_lowercase();
-    let stripped = lowered.strip_prefix(PATH_SEPARATOR).unwrap_or(&lowered);
-    if stripped.is_empty() {
-        return None;
-    }
-    let is_path_qualified = stripped.contains(PATH_SEPARATOR);
-    let has_wildcard = stripped.contains('*');
-    let name = with_note_extension(stripped);
+    let LinkTarget {
+        name,
+        is_path_qualified,
+        has_wildcard,
+    } = normalize_link_target(target)?;
 
     let src_match = if has_wildcard {
         let pattern = escape_like_pattern(&name).replace('*', "%");
