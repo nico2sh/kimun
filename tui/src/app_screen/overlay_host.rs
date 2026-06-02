@@ -10,70 +10,24 @@ use ratatui::layout::Rect;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::settings::themes::Theme;
 
-/// Identifies which overlay is active — used for toggle, focus label, and hints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayKind {
-    NoteBrowser,
-    SavedSearches,
-    Dialog,
-}
-
-impl OverlayKind {
-    /// Footer label for this overlay kind.
-    pub fn label(&self) -> &'static str {
-        match self {
-            OverlayKind::NoteBrowser => "NOTE BROWSER",
-            OverlayKind::SavedSearches => "SAVED SEARCHES",
-            OverlayKind::Dialog => "DIALOG",
-        }
-    }
-}
-
-/// Outcome of routing an `AppEvent` to the active overlay. Overlays never
-/// request their own dismissal here: dialogs close by emitting the
-/// `AppEvent::CloseOverlay` event, which the editor handles separately.
-#[derive(Debug)]
-pub enum OverlayMsg {
-    /// The overlay did not recognise the message.
-    NotConsumed,
-    /// The overlay handled the message and stays open.
-    Consumed,
-}
-
-// `Send`: an `OverlayHost` lives in `EditorScreen`, whose `#[async_trait]`
-// `AppScreen` methods desugar to `Send` futures — so the boxed overlay must be `Send`.
-pub trait Overlay: Send {
-    fn kind(&self) -> OverlayKind;
-    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState;
-    fn handle_app_message(
-        &mut self,
-        _msg: &AppEvent,
-        _vault: &Arc<NoteVault>,
-        _tx: &AppTx,
-    ) -> OverlayMsg {
-        OverlayMsg::NotConsumed
-    }
-    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme);
-    fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        vec![]
-    }
-}
-
-#[derive(Default)]
-pub struct OverlayHost {
+pub struct OverlayHost<F> {
     active: Option<Box<dyn Overlay>>,
-    /// Opener panel focus token, saved when an overlay first opens and
-    /// returned to the caller on close. Mirrors the old `DialogManager`
-    /// chained-open guard: a second `open` while one is active does NOT
-    /// overwrite the saved token.
-    saved_focus: Option<u8>,
+    /// Opener panel focus, saved when an overlay first opens and returned to
+    /// the caller on close. Mirrors the old `DialogManager` chained-open
+    /// guard: a second `open` while one is active does NOT overwrite the
+    /// saved focus.
+    saved_focus: Option<F>,
 }
 
-impl OverlayHost {
+impl<F> OverlayHost<F> {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            active: None,
+            saved_focus: None,
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -88,15 +42,15 @@ impl OverlayHost {
     /// active, so a chained open preserves the original opener focus.
     /// Replacing an already-open overlay is allowed; the previous overlay is
     /// dropped and the saved opener focus is preserved.
-    pub fn open(&mut self, overlay: Box<dyn Overlay>, panel_token: u8) {
+    pub fn open(&mut self, overlay: Box<dyn Overlay>, panel_token: F) {
         if self.saved_focus.is_none() {
             self.saved_focus = Some(panel_token);
         }
         self.active = Some(overlay);
     }
 
-    /// Close the active overlay; return the saved opener token to restore.
-    pub fn close(&mut self) -> Option<u8> {
+    /// Close the active overlay; return the saved opener focus to restore.
+    pub fn close(&mut self) -> Option<F> {
         self.active = None;
         self.saved_focus.take()
     }
@@ -136,6 +90,12 @@ impl OverlayHost {
     }
 }
 
+impl<F> Default for OverlayHost<F> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,14 +114,14 @@ mod tests {
 
     #[test]
     fn new_is_closed() {
-        let host = OverlayHost::new();
+        let host: OverlayHost<u8> = OverlayHost::new();
         assert!(!host.is_open());
         assert_eq!(host.active_kind(), None);
     }
 
     #[test]
     fn open_saves_focus_and_close_restores_it() {
-        let mut host = OverlayHost::new();
+        let mut host: OverlayHost<u8> = OverlayHost::new();
         host.open(Box::new(FakeOverlay(OverlayKind::NoteBrowser)), 1);
         assert!(host.is_open());
         assert_eq!(host.active_kind(), Some(OverlayKind::NoteBrowser));
@@ -171,7 +131,7 @@ mod tests {
 
     #[test]
     fn chained_open_preserves_first_focus_token() {
-        let mut host = OverlayHost::new();
+        let mut host: OverlayHost<u8> = OverlayHost::new();
         host.open(Box::new(FakeOverlay(OverlayKind::NoteBrowser)), 1);
         host.open(Box::new(FakeOverlay(OverlayKind::Dialog)), 99);
         assert_eq!(host.active_kind(), Some(OverlayKind::Dialog));
@@ -180,7 +140,7 @@ mod tests {
 
     #[test]
     fn close_when_empty_returns_none() {
-        let mut host = OverlayHost::new();
+        let mut host: OverlayHost<u8> = OverlayHost::new();
         assert_eq!(host.close(), None);
     }
 }

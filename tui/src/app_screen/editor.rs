@@ -10,8 +10,9 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::{AppScreen, ScreenKind};
-use crate::app_screen::overlay_host::{OverlayHost, OverlayKind, OverlayMsg};
+use crate::app_screen::overlay_host::OverlayHost;
 use crate::components::Component;
+use crate::components::overlay::{OverlayKind, OverlayMsg};
 use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::backlinks_panel::QueryPanel;
 use crate::components::dialogs::ActiveDialog;
@@ -60,7 +61,7 @@ pub struct EditorScreen {
     sidebar_visible: bool,
     footer: FooterBar,
     autosave: AutosaveTimer,
-    overlays: OverlayHost,
+    overlays: OverlayHost<Focus>,
     backlinks_panel: QueryPanel,
     backlinks_visible: bool,
     /// Handle to the most recently spawned background autosave task.
@@ -242,7 +243,7 @@ impl EditorScreen {
             Ok(results) if results.is_empty() => {
                 self.overlays.open(
                     Box::new(ActiveDialog::create_note(path, self.vault.clone())),
-                    self.panel_focus_token(),
+                    self.opener_focus(),
                 );
                 self.set_focus(Focus::Overlay);
             }
@@ -263,7 +264,7 @@ impl EditorScreen {
                     tx.clone(),
                 );
                 drop(s);
-                self.overlays.open(Box::new(modal), self.panel_focus_token());
+                self.overlays.open(Box::new(modal), self.opener_focus());
                 self.set_focus(Focus::Overlay);
             }
             Err(e) => {
@@ -308,7 +309,7 @@ impl EditorScreen {
                 if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
                     self.overlays.open(
                         Box::new(ActiveDialog::create_note(self.path.clone(), self.vault.clone())),
-                        self.panel_focus_token(),
+                        self.opener_focus(),
                     );
                     self.set_focus(Focus::Overlay);
                 } else {
@@ -413,32 +414,19 @@ impl EditorScreen {
         });
     }
 
-    /// Panel focus token saved by `OverlayHost` so close restores the opener.
-    /// Only the three panel focuses are representable; `Focus::Overlay` maps to
-    /// `Editor` defensively (an overlay never opens from another overlay).
-    fn panel_focus_token(&self) -> u8 {
+    /// The panel focus to restore when the active overlay closes. An overlay
+    /// is only ever opened from a panel, so Overlay maps to Editor defensively.
+    fn opener_focus(&self) -> Focus {
         match self.focus {
-            Focus::Sidebar => 0,
-            Focus::Backlinks => 4,
-            Focus::Editor | Focus::Overlay => 1,
-        }
-    }
-
-    fn focus_from_token(idx: u8) -> Focus {
-        match idx {
-            0 => Focus::Sidebar,
-            4 => Focus::Backlinks,
-            _ => Focus::Editor,
+            Focus::Sidebar => Focus::Sidebar,
+            Focus::Backlinks => Focus::Backlinks,
+            Focus::Editor | Focus::Overlay => Focus::Editor,
         }
     }
 
     /// Close the active overlay (if any) and restore the opener panel focus.
     fn restore_focus(&mut self) {
-        let restored = self
-            .overlays
-            .close()
-            .map(Self::focus_from_token)
-            .unwrap_or(Focus::Editor);
+        let restored = self.overlays.close().unwrap_or(Focus::Editor);
         self.set_focus(restored);
     }
 
@@ -630,7 +618,7 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.overlays.open(Box::new(modal), self.panel_focus_token());
+                        self.overlays.open(Box::new(modal), self.opener_focus());
                         self.set_focus(Focus::Overlay);
                     }
                     return EventState::Consumed;
@@ -651,7 +639,7 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.overlays.open(Box::new(modal), self.panel_focus_token());
+                        self.overlays.open(Box::new(modal), self.opener_focus());
                         self.set_focus(Focus::Overlay);
                     }
                     return EventState::Consumed;
@@ -689,7 +677,7 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.overlays.open(Box::new(modal), self.panel_focus_token());
+                        self.overlays.open(Box::new(modal), self.opener_focus());
                         self.set_focus(Focus::Overlay);
                     }
                     return EventState::Consumed;
@@ -699,7 +687,7 @@ impl AppScreen for EditorScreen {
                     if !self.overlays.is_open() && !query.trim().is_empty() {
                         self.overlays.open(
                             Box::new(ActiveDialog::save_search(query)),
-                            self.panel_focus_token(),
+                            self.opener_focus(),
                         );
                         self.set_focus(Focus::Overlay);
                     }
@@ -710,7 +698,7 @@ impl AppScreen for EditorScreen {
                         let s = self.settings.read().unwrap();
                         let dialog = ActiveDialog::workspace_switcher(&s);
                         drop(s);
-                        self.overlays.open(Box::new(dialog), self.panel_focus_token());
+                        self.overlays.open(Box::new(dialog), self.opener_focus());
                         self.set_focus(Focus::Overlay);
                     }
                     return EventState::Consumed;
@@ -719,7 +707,7 @@ impl AppScreen for EditorScreen {
                     if !self.overlays.is_open() {
                         self.overlays.open(
                             Box::new(ActiveDialog::quick_note(self.vault.clone())),
-                            self.panel_focus_token(),
+                            self.opener_focus(),
                         );
                         self.set_focus(Focus::Overlay);
                     }
@@ -745,7 +733,7 @@ impl AppScreen for EditorScreen {
                             let s = self.settings.read().unwrap();
                             let dialog = ActiveDialog::help(&s.key_bindings);
                             drop(s);
-                            self.overlays.open(Box::new(dialog), self.panel_focus_token());
+                            self.overlays.open(Box::new(dialog), self.opener_focus());
                             self.set_focus(Focus::Overlay);
                         }
                         // All F-keys (including F1 when a dialog is already open) are consumed
@@ -930,7 +918,7 @@ impl AppScreen for EditorScreen {
             AppEvent::ShowFileOpsMenu(path) => {
                 self.overlays.open(
                     Box::new(ActiveDialog::file_ops_menu(path)),
-                    self.panel_focus_token(),
+                    self.opener_focus(),
                 );
                 self.set_focus(Focus::Overlay);
                 None
@@ -938,7 +926,7 @@ impl AppScreen for EditorScreen {
             AppEvent::ShowDeleteDialog(path) => {
                 self.overlays.open(
                     Box::new(ActiveDialog::delete(path, self.vault.clone())),
-                    self.panel_focus_token(),
+                    self.opener_focus(),
                 );
                 self.set_focus(Focus::Overlay);
                 None
@@ -946,7 +934,7 @@ impl AppScreen for EditorScreen {
             AppEvent::ShowRenameDialog(path) => {
                 self.overlays.open(
                     Box::new(ActiveDialog::rename(path, self.vault.clone())),
-                    self.panel_focus_token(),
+                    self.opener_focus(),
                 );
                 self.set_focus(Focus::Overlay);
                 None
@@ -954,7 +942,7 @@ impl AppScreen for EditorScreen {
             AppEvent::ShowMoveDialog(path) => {
                 self.overlays.open(
                     Box::new(ActiveDialog::move_to(path, self.vault.clone(), tx)),
-                    self.panel_focus_token(),
+                    self.opener_focus(),
                 );
                 self.set_focus(Focus::Overlay);
                 None
@@ -1048,7 +1036,7 @@ impl AppScreen for EditorScreen {
                     initial,
                 );
                 drop(s);
-                self.overlays.open(Box::new(modal), self.panel_focus_token());
+                self.overlays.open(Box::new(modal), self.opener_focus());
                 self.set_focus(Focus::Overlay);
                 None
             }
@@ -1224,7 +1212,7 @@ mod tests {
             drop(s);
             screen
                 .overlays
-                .open(Box::new(modal), screen.panel_focus_token());
+                .open(Box::new(modal), screen.opener_focus());
         }
         screen.set_focus(Focus::Overlay);
         assert_eq!(

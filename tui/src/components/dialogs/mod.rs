@@ -16,7 +16,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
-use crate::app_screen::overlay_host::{Overlay, OverlayKind, OverlayMsg};
+use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
