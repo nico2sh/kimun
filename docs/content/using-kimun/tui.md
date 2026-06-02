@@ -82,8 +82,14 @@ Focus moves directionally through the visible panels. If the target panel is hid
 
 ### Sorting
 
-- **`Ctrl+N`** — Cycle sort field (filename → title → filename → …)
-- **`Ctrl+R`** — Reverse the sort order
+- **`Ctrl+N`** — Open the sort dialog for the focused panel
+
+The sort dialog presents the options as a small menu: move between rows with **↑/↓**, change a value with **Space** (or **←/→**), and press **Enter** or **Esc** to close. Changes apply live as you toggle them.
+
+- **Sort by** — Name or Title
+- **Order** — Ascending or Descending
+- **Group directories** (sidebar only) — when On, directories cluster at the top of the list, above the notes
+- Press **`s`** (sidebar only) to save the current selection as the default for the active view (the journal view keeps its own default)
 
 ### Quick Note
 
@@ -97,7 +103,7 @@ Press `Ctrl+E` to toggle the query panel on the right side of the editor. It run
 - **Up/Down** — navigate the result list
 - **Enter** — expand the selected note to show the paragraph around the match. Press Enter again for the full note, a third time to collapse.
 - **Ctrl+G** — open the selected note in the editor
-- **Ctrl+N / Ctrl+R** — sort by name or title, toggle sort order
+- **Ctrl+N** — open the sort dialog (sort by name/title, ascending/descending); the choice is written into the panel's query as an `or:` directive
 - **Ctrl+D** — save the current query as a named [saved search](#saved-searches)
 - **Esc** — return focus to the editor
 
@@ -226,8 +232,7 @@ Default bindings (all configurable via the [Configuration Reference](@/getting-s
 | Strikethrough | `Ctrl+S` |
 | Focus right (Sidebar → Editor → Query panel) | `Ctrl+L` |
 | Focus left (Query panel → Editor → Sidebar) | `Ctrl+H` |
-| Cycle sort field (name/title) | `Ctrl+N` |
-| Reverse sort order | `Ctrl+R` |
+| Open sort dialog (field/order, group directories) | `Ctrl+N` |
 | Follow link under cursor | `Ctrl+G` |
 | File operations (rename/move/delete) | `F2` |
 
