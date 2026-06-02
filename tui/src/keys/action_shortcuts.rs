@@ -391,7 +391,10 @@ mod tests {
 
     #[test]
     fn open_sort_dialog_roundtrip_and_legacy_alias() {
-        assert_eq!(ActionShortcuts::OpenSortDialog.to_string(), "OpenSortDialog");
+        assert_eq!(
+            ActionShortcuts::OpenSortDialog.to_string(),
+            "OpenSortDialog"
+        );
         assert_eq!(
             ActionShortcuts::try_from("OpenSortDialog".to_string()),
             Ok(ActionShortcuts::OpenSortDialog)

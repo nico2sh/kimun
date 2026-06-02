@@ -30,17 +30,19 @@ pub struct SortDialog {
 }
 
 impl SortDialog {
-    pub fn new(
-        target: SortTarget,
-        field: SortField,
-        order: SortOrder,
-        group_dirs: bool,
-    ) -> Self {
+    pub fn new(target: SortTarget, field: SortField, order: SortOrder, group_dirs: bool) -> Self {
         let mut rows = vec![Row::Field, Row::Order];
         if target == SortTarget::Sidebar {
             rows.push(Row::GroupDirs);
         }
-        Self { target, field, order, group_dirs, rows, selected: 0 }
+        Self {
+            target,
+            field,
+            order,
+            group_dirs,
+            rows,
+            selected: 0,
+        }
     }
 
     #[cfg(test)]
@@ -160,14 +162,22 @@ impl crate::components::Component for SortDialog {
             let (label, value) = self.row_label(row);
             let selected = i == self.selected;
             let style = if selected {
-                Style::default().fg(fg_sel).bg(bg_sel).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(fg_sel)
+                    .bg(bg_sel)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(fg).bg(bg)
             };
             let marker = if selected { ">" } else { " " };
             f.render_widget(
                 Paragraph::new(format!(" {marker} {label:<20}{value}")).style(style),
-                Rect { x: inner.x, y, width: inner.width, height: 1 },
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
             );
         }
 
@@ -179,7 +189,12 @@ impl crate::components::Component for SortDialog {
         };
         f.render_widget(
             Paragraph::new(footer).style(Style::default().fg(fg_muted).bg(bg)),
-            Rect { x: inner.x, y: footer_y, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y: footer_y,
+                width: inner.width,
+                height: 1,
+            },
         );
     }
 }
@@ -197,7 +212,12 @@ mod tests {
     }
 
     fn sidebar_dialog() -> SortDialog {
-        SortDialog::new(SortTarget::Sidebar, SortField::Name, SortOrder::Ascending, false)
+        SortDialog::new(
+            SortTarget::Sidebar,
+            SortField::Name,
+            SortOrder::Ascending,
+            false,
+        )
     }
 
     #[test]
@@ -208,7 +228,12 @@ mod tests {
         assert_eq!(d.field, SortField::Title);
         let evt = rx.try_recv().expect("a SortChanged event");
         match evt {
-            AppEvent::SortChanged { target, field, order, group_directories } => {
+            AppEvent::SortChanged {
+                target,
+                field,
+                order,
+                group_directories,
+            } => {
                 assert_eq!(target, SortTarget::Sidebar);
                 assert_eq!(field, SortField::Title);
                 assert_eq!(order, SortOrder::Ascending);
@@ -233,7 +258,12 @@ mod tests {
     fn group_row_present_only_for_sidebar() {
         let sidebar = sidebar_dialog();
         assert_eq!(sidebar.row_count(), 3);
-        let query = SortDialog::new(SortTarget::Query, SortField::Name, SortOrder::Ascending, false);
+        let query = SortDialog::new(
+            SortTarget::Query,
+            SortField::Name,
+            SortOrder::Ascending,
+            false,
+        );
         assert_eq!(query.row_count(), 2);
     }
 
@@ -242,9 +272,17 @@ mod tests {
         let mut d = sidebar_dialog();
         let (tx, mut rx) = unbounded_channel();
         d.handle_key(key(KeyCode::Char('s')), &tx);
-        assert!(matches!(rx.try_recv(), Ok(AppEvent::SortSaveDefault { .. })));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::SortSaveDefault { .. })
+        ));
 
-        let mut q = SortDialog::new(SortTarget::Query, SortField::Name, SortOrder::Ascending, false);
+        let mut q = SortDialog::new(
+            SortTarget::Query,
+            SortField::Name,
+            SortOrder::Ascending,
+            false,
+        );
         let (tx2, mut rx2) = unbounded_channel();
         q.handle_key(key(KeyCode::Char('s')), &tx2);
         assert!(rx2.try_recv().is_err(), "query target has no save-default");

@@ -648,7 +648,11 @@ mod tests {
         sidebar.apply_sort(SortField::Name, SortOrder::Descending, false);
         poll_to_idle(&mut sidebar).await;
         let after = note_names(&sidebar);
-        assert_eq!(after, before.iter().rev().cloned().collect::<Vec<_>>(), "descending order should reverse the listing");
+        assert_eq!(
+            after,
+            before.iter().rev().cloned().collect::<Vec<_>>(),
+            "descending order should reverse the listing"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -707,7 +711,11 @@ mod tests {
         assert_eq!(row_kinds(&sidebar), vec!["note", "dir"]);
         sidebar.apply_sort(SortField::Name, SortOrder::Ascending, true);
         poll_to_idle(&mut sidebar).await;
-        assert_eq!(row_kinds(&sidebar), vec!["dir", "note"], "grouping must cluster directories first");
+        assert_eq!(
+            row_kinds(&sidebar),
+            vec!["dir", "note"],
+            "grouping must cluster directories first"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -717,7 +725,10 @@ mod tests {
         navigate_to_root(&mut sidebar, &tx).await;
         sidebar.apply_sort(SortField::Title, SortOrder::Descending, false);
         poll_to_idle(&mut sidebar).await;
-        assert_eq!(sidebar.current_sort(), (SortField::Title, SortOrder::Descending));
+        assert_eq!(
+            sidebar.current_sort(),
+            (SortField::Title, SortOrder::Descending)
+        );
         assert!(!sidebar.group_dirs());
     }
 }
