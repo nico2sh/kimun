@@ -173,18 +173,25 @@ fn is_order_token(token: &str) -> bool {
         || token.starts_with(ORDER_CHAR)
 }
 
-/// Return `query` with its order directive replaced by `field`/`asc`.
-///
-/// Any existing order directive (`or:`/`-or:`/`^`/`-^`, in any position) is
-/// stripped, then the canonical `or:<field>` (ascending) / `-or:<field>`
-/// (descending) directive is appended. Other tokens are preserved in order
-/// (whitespace is normalised to single spaces). The DSL knowledge lives here in
-/// core so the TUI never hardcodes the directive syntax.
-pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String {
-    let kept: Vec<&str> = query
+/// Return `query` with any order directive (`or:`/`-or:`/`^`/`-^`, in any
+/// position) removed. Other tokens keep their order; whitespace is normalised
+/// to single spaces. The DSL knowledge lives here in core so the TUI never
+/// hardcodes the directive syntax.
+pub fn strip_order_directive(query: &str) -> String {
+    query
         .split_whitespace()
         .filter(|t| !is_order_token(t))
-        .collect();
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Return `query` with its order directive replaced by `field`/`asc`.
+///
+/// Any existing order directive is stripped (see [`strip_order_directive`]),
+/// then the canonical `or:<field>` (ascending) / `-or:<field>` (descending)
+/// directive is appended.
+pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String {
+    let base = strip_order_directive(query);
     let field_term = match field {
         OrderField::Title => "title",
         OrderField::FileName => "file",
@@ -194,10 +201,10 @@ pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String
     } else {
         format!("-{}:{}", ORDER_LETTER, field_term)
     };
-    if kept.is_empty() {
+    if base.is_empty() {
         directive
     } else {
-        format!("{} {}", kept.join(" "), directive)
+        format!("{} {}", base, directive)
     }
 }
 
@@ -761,6 +768,15 @@ mod tests {
             with_order_directive("-^file foo", OrderField::FileName, true),
             "foo or:file"
         );
+    }
+
+    #[test]
+    fn strip_order_removes_directive_keeps_rest() {
+        use super::strip_order_directive;
+        assert_eq!(strip_order_directive("foo or:title bar"), "foo bar");
+        assert_eq!(strip_order_directive("-^file <{note}"), "<{note}");
+        assert_eq!(strip_order_directive("<{note}"), "<{note}");
+        assert_eq!(strip_order_directive("or:title"), "");
     }
 
     #[test]

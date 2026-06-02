@@ -1021,10 +1021,15 @@ impl AppScreen for EditorScreen {
             } => {
                 match target {
                     SortTarget::Sidebar => {
-                        self.sidebar.apply_sort(field, order, group_directories);
+                        // Update the sidebar's in-session per-context default AND
+                        // apply live. `is_current_journal()` is the single source
+                        // of truth for which context this save targets — reused
+                        // for the on-disk settings write below.
+                        let is_journal = self.sidebar.is_current_journal();
+                        self.sidebar.save_default(field, order, group_directories);
                         {
                             let mut s = self.settings.write().unwrap();
-                            if self.sidebar.current_dir() == self.vault.journal_path() {
+                            if is_journal {
                                 s.journal_sort_field =
                                     crate::settings::SortFieldSetting::from(field);
                                 s.journal_sort_order =
