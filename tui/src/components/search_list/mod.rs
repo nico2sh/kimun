@@ -105,6 +105,7 @@ pub struct SearchListBuilder<R: SearchRow> {
     autocomplete: Option<(Arc<dyn SuggestionSource>, AutocompleteMode)>,
     intercept: Vec<KeyCombo>,
     icons: Icons,
+    debounce: Option<std::time::Duration>,
 }
 
 impl<R: SearchRow> SearchList<R> {
@@ -120,6 +121,7 @@ impl<R: SearchRow> SearchList<R> {
             autocomplete: None,
             intercept: Vec::new(),
             icons: Icons::new(false),
+            debounce: None,
         }
     }
 
@@ -127,15 +129,16 @@ impl<R: SearchRow> SearchList<R> {
         let mut loader = LoadEngine::new(b.redraw.clone());
         loader.start(b.source.clone(), b.initial_query.clone());
         let input = SingleLineInput::with_value(&b.initial_query);
+        let debounce = b.debounce;
         let autocomplete = b.autocomplete.map(|(suggestions, mode)| {
-            #[allow(unused_mut)]
             let mut ac =
                 AutocompleteController::new(suggestions, mode).with_trigger_opts(TriggerOptions {
                     disambiguate_header: false,
                     apply_exclusion_zone: false,
                 });
-            #[cfg(test)]
-            let mut ac = ac.with_debounce(std::time::Duration::ZERO);
+            if let Some(d) = debounce {
+                ac = ac.with_debounce(d);
+            }
             ac.set_redraw_callback(b.redraw.clone());
             ac
         });
@@ -407,10 +410,12 @@ impl<R: SearchRow> SearchList<R> {
         let _ = focused;
     }
 
-    /// Override the rect used for mouse hit-testing. Hosts that draw the list
-    /// inside their own bordered block render into the block's inner area but
-    /// must record the block's OUTER rect, because [`handle_mouse`] hit-tests
-    /// as `row - rect.y - 1` (assuming the first row of `rect` is a border).
+    /// Override the rect used for mouse hit-testing. The recorded rect must be
+    /// the area where list ITEMS actually render — row 0 is the first item, NOT
+    /// a block border. Hosts that draw the list inside a bordered block pass the
+    /// block's INNER rect; borderless hosts pass the list area directly. The
+    /// recorded rect and the rendered-items rect MUST be identical, so
+    /// [`handle_mouse`] maps a click at `row` to visual offset `row - rect.y`.
     ///
     /// [`handle_mouse`]: Self::handle_mouse
     pub fn set_list_rect(&mut self, rect: Rect) {
@@ -446,8 +451,8 @@ impl<R: SearchRow> SearchList<R> {
             return SearchMouse::None;
         }
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) if m.row > r.y => {
-                let target_visual = m.row - r.y - 1; // 0-based visual offset into the list body
+            MouseEventKind::Down(MouseButton::Left) if m.row >= r.y => {
+                let target_visual = m.row - r.y; // 0-based visual offset; row 0 = first item
                 let mut acc: u16 = 0;
                 let mut hit: Option<usize> = None;
                 // Walk the VISIBLE sequence (leading row at position 0, then the
@@ -556,6 +561,12 @@ impl<R: SearchRow> SearchListBuilder<R> {
         self.icons = icons;
         self
     }
+    /// Override the autocomplete controller's debounce. Tests use
+    /// `Duration::ZERO` to get suggestions without waiting on the debounce timer.
+    pub fn debounce(mut self, d: std::time::Duration) -> Self {
+        self.debounce = Some(d);
+        self
+    }
     pub fn build(self) -> SearchList<R> {
         SearchList::new(self)
     }
@@ -619,7 +630,8 @@ mod tests {
 
     #[tokio::test]
     async fn mouse_maps_visual_row_to_display_index_by_height() {
-        // Row 0 occupies 3 visual rows, row 1 occupies 1. List rect at y=0 (border row 0).
+        // Row 0 occupies 3 visual rows, row 1 occupies 1. The recorded list rect
+        // is the rendered-items area: row 0 == the FIRST item (no border row).
         let src = TallSource(vec![
             TallRow {
                 name: "a".into(),
@@ -632,19 +644,19 @@ mod tests {
         ]);
         let mut list = SearchList::builder(src, noop_redraw()).build();
         list.poll_until_idle().await;
-        // Force the recorded list rect (render not run in test): list area starts after a border at y=0.
+        // Force the recorded list rect (render not run in test): items start at y=0.
         list.set_list_rect(ratatui::layout::Rect {
             x: 0,
             y: 0,
             width: 20,
             height: 10,
         });
-        // A left-click at row 4 = border(0) + 3 rows of "a" (1..=3) -> row 4 is the FIRST row of "b".
-        let m = mouse_down_at(2, 4);
+        // "a" occupies rows 0..=2; row 3 is the FIRST row of "b".
+        let m = mouse_down_at(2, 3);
         assert!(matches!(list.handle_mouse(&m), SearchMouse::Selected(1)));
         assert_eq!(list.selected_row().unwrap().name, "b");
-        // A click at row 2 = within "a" (rows 1..=3) -> display index 0.
-        let m = mouse_down_at(2, 2);
+        // A click at row 1 = within "a" (rows 0..=2) -> display index 0.
+        let m = mouse_down_at(2, 1);
         list.handle_mouse(&m);
         assert_eq!(list.selected_row().unwrap().name, "a");
     }
@@ -833,6 +845,7 @@ mod tests {
                 std::sync::Arc::new(Mem),
                 crate::components::autocomplete::AutocompleteMode::SearchQuery,
             )
+            .debounce(std::time::Duration::ZERO)
             .build();
         for c in ['#', 'p', 'r', 'o'] {
             let _ = list.handle_key(&key(KeyCode::Char(c)));
@@ -884,6 +897,7 @@ mod tests {
                 std::sync::Arc::new(Mem),
                 crate::components::autocomplete::AutocompleteMode::SearchQuery,
             )
+            .debounce(std::time::Duration::ZERO)
             .build();
         for c in ['#', 'p', 'r', 'o'] {
             let _ = list.handle_key(&key(KeyCode::Char(c)));

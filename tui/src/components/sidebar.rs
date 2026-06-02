@@ -133,7 +133,6 @@ pub struct SidebarComponent {
     sort_cycle_combos: Vec<KeyCombo>,
     sort_reverse_combos: Vec<KeyCombo>,
     rendered_rect: Rect,
-    list_rect: Rect,
 }
 
 impl SidebarComponent {
@@ -167,7 +166,6 @@ impl SidebarComponent {
             sort_cycle_combos,
             sort_reverse_combos,
             rendered_rect: Rect::default(),
-            list_rect: Rect::default(),
         }
     }
 
@@ -357,7 +355,6 @@ impl Component for SidebarComponent {
                 Constraint::Min(0),
             ])
             .split(rect);
-        self.list_rect = rows[2];
 
         let border_style = theme.border_style(focused);
 
@@ -395,9 +392,10 @@ impl Component for SidebarComponent {
         if let Some(list) = &mut self.list {
             list.render_query(f, search_inner, theme, focused);
             list.render(f, list_inner, theme, focused);
-            // Record the OUTER list rect for mouse hit-testing (the engine
-            // hit-tests as `row - rect.y - 1`, expecting row 0 to be a border).
-            list.set_list_rect(rows[2]);
+            // Record the rendered-items rect (the block's inner area) for mouse
+            // hit-testing: the engine maps a click to `row - rect.y`, row 0 being
+            // the first item.
+            list.set_list_rect(list_inner);
         }
     }
 }
@@ -522,7 +520,8 @@ mod tests {
             width: 30,
             height: 20,
         };
-        // The engine records the outer list rect; clicks hit-test as row - y - 1.
+        // The engine records the rendered-items rect; clicks hit-test as
+        // `row - rect.y`, so row 0 (y=9) is the first item.
         if let Some(list) = &mut sidebar.list {
             list.set_list_rect(Rect {
                 x: 0,
@@ -531,20 +530,14 @@ mod tests {
                 height: 14,
             });
         }
-        sidebar.list_rect = Rect {
-            x: 0,
-            y: 9,
-            width: 30,
-            height: 14,
-        };
 
-        // First click: in list area, on the first row (list_rect.y + 1).
-        sidebar.handle_input(&mouse_down_at(5, 10), &tx);
+        // First click: in the list area, on the first row (rect.y).
+        sidebar.handle_input(&mouse_down_at(5, 9), &tx);
         // Drain the FocusSidebar event from the first click.
         let _ = rx.try_recv();
 
         // Second click on the same row activates the entry.
-        sidebar.handle_input(&mouse_down_at(5, 10), &tx);
+        sidebar.handle_input(&mouse_down_at(5, 9), &tx);
         let mut events = Vec::new();
         while let Ok(evt) = rx.try_recv() {
             events.push(evt);
