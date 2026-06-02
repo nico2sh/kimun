@@ -607,8 +607,11 @@ impl AppScreen for EditorScreen {
                         self.restore_focus();
                     } else if !self.overlays.is_open() {
                         let s = self.settings.read().unwrap();
-                        let provider =
-                            SearchNotesProvider::new(self.vault.clone(), s.current_last_paths());
+                        let provider = SearchNotesProvider::new(
+                            self.vault.clone(),
+                            s.current_last_paths(),
+                            Some(self.path.clone()),
+                        );
                         let modal = NoteBrowserModal::new(
                             "Note Browser",
                             provider,
@@ -1037,7 +1040,11 @@ impl AppScreen for EditorScreen {
             AppEvent::FollowLabel(name) => {
                 let initial = format!("#{name}");
                 let s = self.settings.read().unwrap();
-                let provider = SearchNotesProvider::new(self.vault.clone(), s.current_last_paths());
+                let provider = SearchNotesProvider::new(
+                    self.vault.clone(),
+                    s.current_last_paths(),
+                    Some(self.path.clone()),
+                );
                 let modal = NoteBrowserModal::with_initial_query(
                     "Note Browser",
                     provider,
@@ -1275,7 +1282,8 @@ mod tests {
         // Open a note browser carrying a query, as if the user typed "#todo".
         {
             let s = settings.read().unwrap();
-            let provider = SearchNotesProvider::new(vault.clone(), s.current_last_paths());
+            let provider =
+                SearchNotesProvider::new(vault.clone(), s.current_last_paths(), None);
             let modal = NoteBrowserModal::with_initial_query(
                 "Note Browser",
                 provider,
