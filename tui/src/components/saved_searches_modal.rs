@@ -21,7 +21,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph};
 
-use crate::app_screen::overlay_host::{Overlay, OverlayKind};
+use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::search_list::{

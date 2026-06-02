@@ -1,5 +1,4 @@
 // Library entry-point exposing modules needed by integration tests.
-pub mod app_screen;
 pub mod cli;
 pub mod components;
 pub mod keys;
