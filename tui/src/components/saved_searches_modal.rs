@@ -21,9 +21,9 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph};
 
-use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::overlay::{Overlay, OverlayKind};
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
 };
@@ -535,9 +535,7 @@ mod tests {
             "expected SavedSearchSelected, got {events:?}"
         );
         assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, AppEvent::CloseOverlay)),
+            !events.iter().any(|e| matches!(e, AppEvent::CloseOverlay)),
             "select must not emit CloseOverlay; editor's SavedSearchSelected handler closes the overlay, got {events:?}"
         );
     }

@@ -9,10 +9,9 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app_screen::{AppScreen, ScreenKind};
 use crate::app_screen::overlay_host::OverlayHost;
+use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
-use crate::components::overlay::{OverlayKind, OverlayMsg};
 use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::backlinks_panel::QueryPanel;
 use crate::components::dialogs::ActiveDialog;
@@ -22,6 +21,7 @@ use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::NoteBrowserModal;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
+use crate::components::overlay::{OverlayKind, OverlayMsg};
 use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
@@ -308,7 +308,10 @@ impl EditorScreen {
             Err(e) => {
                 if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
                     self.overlays.open(
-                        Box::new(ActiveDialog::create_note(self.path.clone(), self.vault.clone())),
+                        Box::new(ActiveDialog::create_note(
+                            self.path.clone(),
+                            self.vault.clone(),
+                        )),
                         self.opener_focus(),
                     );
                     self.set_focus(Focus::Overlay);
@@ -1192,11 +1195,12 @@ mod tests {
                 &tx,
             )
             .await;
-        screen
-            .handle_app_message(AppEvent::CloseOverlay, &tx)
-            .await;
+        screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
 
-        assert!(matches!(screen.focus, Focus::Backlinks), "focus should remain on the Query panel after select + close");
+        assert!(
+            matches!(screen.focus, Focus::Backlinks),
+            "focus should remain on the Query panel after select + close"
+        );
         assert!(!screen.overlays.is_open(), "overlay should be closed");
     }
 
@@ -1229,9 +1233,7 @@ mod tests {
                 tx.clone(),
             );
             drop(s);
-            screen
-                .overlays
-                .open(Box::new(modal), screen.opener_focus());
+            screen.overlays.open(Box::new(modal), screen.opener_focus());
         }
         screen.set_focus(Focus::Overlay);
         assert_eq!(
@@ -1282,8 +1284,7 @@ mod tests {
         // Open a note browser carrying a query, as if the user typed "#todo".
         {
             let s = settings.read().unwrap();
-            let provider =
-                SearchNotesProvider::new(vault.clone(), s.current_last_paths(), None);
+            let provider = SearchNotesProvider::new(vault.clone(), s.current_last_paths(), None);
             let modal = NoteBrowserModal::with_initial_query(
                 "Note Browser",
                 provider,

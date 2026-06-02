@@ -16,10 +16,10 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
-use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -123,7 +123,12 @@ impl Overlay for ActiveDialog {
         <Self as Component>::handle_input(self, event, tx)
     }
 
-    fn handle_app_message(&mut self, msg: &AppEvent, _vault: &Arc<NoteVault>, tx: &AppTx) -> OverlayMsg {
+    fn handle_app_message(
+        &mut self,
+        msg: &AppEvent,
+        _vault: &Arc<NoteVault>,
+        tx: &AppTx,
+    ) -> OverlayMsg {
         match msg {
             AppEvent::RenameValidation { available } => {
                 if let ActiveDialog::Rename(d) = self {
