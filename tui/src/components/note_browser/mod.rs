@@ -1,24 +1,22 @@
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-use async_trait::async_trait;
 use chrono::NaiveDate;
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::components::Component;
-use crate::components::autocomplete::{
-    self, AutocompleteController, AutocompleteHost, AutocompleteMode, HandleKeyOutcome,
-    TriggerOptions,
-};
+use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
-use crate::components::file_list::{FileListComponent, FileListEntry};
-use crate::components::single_line_input::{InputOutcome, SingleLineInput};
+use crate::components::file_list::FileListEntry;
+use crate::components::search_list::{
+    KeyReaction, RowSource, SearchList, SearchMouse, VaultSuggestions,
+};
 use crate::keys::KeyBindings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -28,88 +26,32 @@ pub mod link_results_provider;
 pub mod search_provider;
 
 // ---------------------------------------------------------------------------
-// NoteBrowserProvider trait
-// ---------------------------------------------------------------------------
-
-#[async_trait]
-pub trait NoteBrowserProvider: Send + Sync {
-    /// Called on every query change. Empty string = initial/empty state (recent notes).
-    async fn load(&self, query: &str) -> Vec<FileListEntry>;
-
-    /// Whether to prepend a "Create: <query>" entry when query is non-empty.
-    /// Defaults to false. Used by future FileFinderProvider.
-    fn allows_create(&self) -> bool {
-        false
-    }
-}
-
-// ---------------------------------------------------------------------------
 // NoteBrowserModal
 // ---------------------------------------------------------------------------
 
+/// The Ctrl+K note browser. It hosts a [`SearchList`] engine (query input +
+/// async-loaded result list + hashtag autocomplete) and adds the two things
+/// unique to the browser: a live preview pane for the selected note and the
+/// open-on-enter glue that emits [`AppEvent::OpenPath`].
 pub struct NoteBrowserModal {
     title: String,
-    search_query: SingleLineInput,
-    provider: Arc<dyn NoteBrowserProvider>,
-    file_list: FileListComponent,
-    list_rect: Rect,
-    preview_text: String,
+    list: SearchList<FileListEntry>,
     vault: Arc<NoteVault>,
     tx: AppTx,
-    // List async loading
-    load_task: Option<tokio::task::JoinHandle<()>>,
-    load_rx: Option<Receiver<Vec<FileListEntry>>>,
+    preview_text: String,
     // Preview async loading
     preview_task: Option<tokio::task::JoinHandle<()>>,
     preview_rx: Option<Receiver<String>>,
-    // Hashtag autocomplete for the search input.
-    autocomplete: AutocompleteController,
-}
-
-/// Snapshot of the search input that satisfies `AutocompleteHost`.
-/// Owned so the controller's borrow doesn't overlap with the search
-/// input's `&mut` borrow during key handling and replacement. Holds
-/// a single-row `Vec<String>` because `EditorSnapshot` borrows a
-/// slice of lines — the search-box buffer is the one row.
-struct SearchBoxHostSnapshot {
-    lines: Vec<String>,
-    /// Cursor as `(row, char_col)` — row is always 0 for the
-    /// single-line search box; char_col derived from the byte
-    /// cursor returned by the input widget.
-    cursor: (usize, usize),
-    caret_pos: Option<(u16, u16)>,
-}
-
-impl AutocompleteHost for SearchBoxHostSnapshot {
-    fn buffer_snapshot(&self) -> crate::components::text_editor::snapshot::EditorSnapshot<'_> {
-        use std::num::NonZeroU64;
-        // content_revision unused (cache_key returns None); supply a
-        // placeholder so the field stays NonZeroU64.
-        let dummy = NonZeroU64::new(1).unwrap();
-        crate::components::text_editor::snapshot::EditorSnapshot::borrowed(
-            &self.lines,
-            self.cursor,
-            dummy,
-        )
-    }
-    fn cache_key(&self) -> Option<std::num::NonZeroU64> {
-        // `None` opts out of the controller's per-buffer cache. The
-        // search-box buffer is single-line and short, so the rebuild
-        // cost per keystroke is negligible — opting out keeps the
-        // modal free of per-keystroke revision bookkeeping.
-        None
-    }
-    fn screen_anchor_for(&self, _byte_offset: usize) -> Option<(u16, u16)> {
-        // Anchor at the caret — same liberty as the editor host. The
-        // popup sits adjacent to the typed text either way.
-        self.caret_pos
-    }
+    /// Path the preview pane is currently showing (or loading). Compared at
+    /// render time against the engine's selected row so an async server-side
+    /// reload that auto-selects a different row still refreshes the preview.
+    preview_path: Option<VaultPath>,
 }
 
 impl NoteBrowserModal {
     pub fn new(
         title: impl Into<String>,
-        provider: impl NoteBrowserProvider + 'static,
+        provider: impl RowSource<FileListEntry>,
         vault: Arc<NoteVault>,
         key_bindings: KeyBindings,
         icons: Icons,
@@ -126,93 +68,62 @@ impl NoteBrowserModal {
         )
     }
 
-    fn new_with_query(
+    /// Construct the modal with a pre-filled search query.
+    ///
+    /// Behaves exactly like [`new`](Self::new) except the search input is
+    /// pre-populated with `query` (cursor placed at the end) and the initial
+    /// load is triggered for that query string.
+    pub fn with_initial_query<S: Into<String>>(
         title: impl Into<String>,
-        provider: impl NoteBrowserProvider + 'static,
+        provider: impl RowSource<FileListEntry>,
         vault: Arc<NoteVault>,
         key_bindings: KeyBindings,
         icons: Icons,
         tx: AppTx,
+        query: S,
+    ) -> Self {
+        Self::new_with_query(
+            title,
+            provider,
+            vault,
+            key_bindings,
+            icons,
+            tx,
+            query.into(),
+        )
+    }
+
+    fn new_with_query(
+        title: impl Into<String>,
+        provider: impl RowSource<FileListEntry>,
+        vault: Arc<NoteVault>,
+        _key_bindings: KeyBindings,
+        icons: Icons,
+        tx: AppTx,
         initial_query: String,
     ) -> Self {
-        let file_list = FileListComponent::new(key_bindings, icons);
-        // Search box is plain text, not Markdown — disable the
-        // column-0 header disambiguation (no headers to confuse with)
-        // and disable the exclusion-zone check (literal `` ` `` /
-        // brackets in a query shouldn't suppress hashtag triggers).
-        let mut autocomplete =
-            AutocompleteController::new(vault.clone(), AutocompleteMode::SearchQuery)
-                .with_trigger_opts(TriggerOptions {
-                    disambiguate_header: false,
-                    apply_exclusion_zone: false,
-                });
-        autocomplete.set_redraw_callback(redraw_callback(tx.clone()));
+        let list = SearchList::builder(provider, redraw_callback(tx.clone()))
+            .initial_query(initial_query)
+            .icons(icons)
+            .autocomplete(
+                Arc::new(VaultSuggestions {
+                    vault: vault.clone(),
+                }),
+                AutocompleteMode::SearchQuery,
+            )
+            .build();
         let mut modal = Self {
             title: title.into(),
-            search_query: SingleLineInput::new(),
-            provider: Arc::new(provider),
-            file_list,
-            list_rect: Rect::default(),
-            preview_text: String::new(),
+            list,
             vault,
-            tx: tx.clone(),
-            load_task: None,
-            load_rx: None,
+            tx,
+            preview_text: String::new(),
             preview_task: None,
             preview_rx: None,
-            autocomplete,
+            preview_path: None,
         };
-        if !initial_query.is_empty() {
-            modal.search_query.set_value(initial_query);
-        }
-        modal.schedule_load(tx);
+        modal.refresh_preview(None);
         modal
-    }
-
-    // ── Async list loading ─────────────────────────────────────────────────
-
-    fn schedule_load(&mut self, tx: AppTx) {
-        if let Some(handle) = self.load_task.take() {
-            handle.abort();
-        }
-        let query = self.search_query.value().to_string();
-        let provider = Arc::clone(&self.provider);
-        let (result_tx, result_rx) = std::sync::mpsc::channel();
-        self.load_rx = Some(result_rx);
-
-        let handle = tokio::spawn(async move {
-            let entries = provider.load(&query).await;
-            result_tx.send(entries).ok();
-            tx.send(AppEvent::Redraw).ok();
-        });
-        self.load_task = Some(handle);
-    }
-
-    fn poll_load(&mut self) {
-        let Some(rx) = &self.load_rx else { return };
-        match rx.try_recv() {
-            Ok(entries) => {
-                self.file_list.clear();
-                let mut create_entry: Option<FileListEntry> = None;
-                for entry in entries {
-                    if matches!(entry, FileListEntry::CreateNote { .. }) {
-                        create_entry = Some(entry);
-                    } else {
-                        self.file_list.push_entry(entry);
-                    }
-                }
-                if let Some(entry) = create_entry {
-                    self.file_list.prepend_create_entry(entry);
-                }
-                self.load_rx = None;
-                self.load_task = None;
-                self.refresh_preview();
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.load_rx = None;
-            }
-        }
     }
 
     // ── Async preview loading ──────────────────────────────────────────────
@@ -249,8 +160,52 @@ impl NoteBrowserModal {
         }
     }
 
-    fn open_selected_entry(&self, tx: &AppTx) {
-        let Some(entry) = self.file_list.selected_entry() else {
+    /// Called after selection changes to kick off a preview load for the
+    /// highlighted note, or clear the preview if a non-note entry is selected.
+    fn refresh_preview(&mut self, selected: Option<&FileListEntry>) {
+        let maybe_path = selected.and_then(|e| match e {
+            FileListEntry::Note { path, .. } => Some(path.clone()),
+            _ => None,
+        });
+        if let Some(path) = maybe_path {
+            self.schedule_preview(path);
+        } else {
+            self.preview_text.clear();
+            if let Some(h) = self.preview_task.take() {
+                h.abort();
+            }
+        }
+    }
+
+    /// The note path the engine currently has selected, if the selected row is
+    /// a note (non-note rows yield `None`).
+    fn selected_note_path(&self) -> Option<VaultPath> {
+        self.list.selected_row().and_then(|e| match e {
+            FileListEntry::Note { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+    }
+
+    /// Refresh the preview for whatever the engine currently has selected.
+    fn refresh_preview_from_list(&mut self) {
+        let path = self.selected_note_path();
+        self.preview_path = path.clone();
+        match path {
+            Some(path) => self.schedule_preview(path),
+            None => {
+                self.preview_text.clear();
+                if let Some(h) = self.preview_task.take() {
+                    h.abort();
+                }
+            }
+        }
+    }
+
+    /// Open the engine's selected row: create-then-open for a `CreateNote`,
+    /// or open directly for an existing `Note`. Emits the close event so the
+    /// modal dismisses afterwards.
+    fn open_selected(&self, tx: &AppTx) {
+        let Some(entry) = self.list.selected_row() else {
             return;
         };
         if let FileListEntry::CreateNote { path, .. } = entry {
@@ -269,77 +224,12 @@ impl NoteBrowserModal {
         tx.send(AppEvent::CloseNoteBrowser).ok();
     }
 
-    /// Construct the modal with a pre-filled search query.
-    ///
-    /// Behaves exactly like [`new`](Self::new) except the search input is
-    /// pre-populated with `query` (cursor placed at the end) and an initial
-    /// load is triggered for that query string.  Only a single `schedule_load`
-    /// call is made — the query is pre-filled before the task is spawned so
-    /// there is no empty-load race.
-    pub fn with_initial_query<S: Into<String>>(
-        title: impl Into<String>,
-        provider: impl NoteBrowserProvider + 'static,
-        vault: Arc<NoteVault>,
-        key_bindings: KeyBindings,
-        icons: Icons,
-        tx: AppTx,
-        query: S,
-    ) -> Self {
-        Self::new_with_query(
-            title,
-            provider,
-            vault,
-            key_bindings,
-            icons,
-            tx,
-            query.into(),
-        )
-    }
-
     // ── Test-only accessors ────────────────────────────────────────────────
 
     /// Returns the current search input text. Test-only.
     #[cfg(test)]
     pub(super) fn query_text(&self) -> &str {
-        self.search_query.value()
-    }
-
-    /// Returns the cursor position as a char count (not bytes). Test-only.
-    #[cfg(test)]
-    pub(super) fn cursor_char_count(&self) -> usize {
-        self.search_query.cursor_char_offset()
-    }
-
-    /// Called after selection changes to kick off a preview load for the
-    /// highlighted note, or clear the preview if a non-note entry is selected.
-    fn refresh_preview(&mut self) {
-        let maybe_path = self.file_list.selected_entry().and_then(|e| match e {
-            FileListEntry::Note { path, .. } => Some(path.clone()),
-            _ => None,
-        });
-        if let Some(path) = maybe_path {
-            self.schedule_preview(path);
-        } else {
-            self.preview_text.clear();
-            if let Some(h) = self.preview_task.take() {
-                h.abort();
-            }
-        }
-    }
-
-    // ── Autocomplete ──────────────────────────────────────────────────────
-
-    fn autocomplete_snapshot(&self) -> SearchBoxHostSnapshot {
-        // The search box is a single line — wrap it as a 1-row buffer.
-        // Convert the byte cursor to char column for `EditorSnapshot`.
-        let value = self.search_query.value().to_string();
-        let cursor_byte = self.search_query.cursor_byte();
-        let col = value[..cursor_byte.min(value.len())].chars().count();
-        SearchBoxHostSnapshot {
-            lines: vec![value],
-            cursor: (0, col),
-            caret_pos: self.search_query.last_caret_pos(),
-        }
+        self.list.query()
     }
 }
 
@@ -349,140 +239,41 @@ impl NoteBrowserModal {
 
 impl Component for NoteBrowserModal {
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-
-        if let InputEvent::Mouse(mouse) = event {
-            // Any mouse interaction inside the modal takes focus away
-            // from the search input — close the popup so it doesn't
-            // paint stale at the old caret coords. Done before the
-            // bounds check so clicks on the preview pane or border
-            // still dismiss the popup.
-            self.autocomplete.close();
-            let r = self.list_rect;
-            if !r.contains(Position {
-                x: mouse.column,
-                y: mouse.row,
-            }) {
-                return EventState::NotConsumed;
-            }
-            match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) => {
-                    if mouse.row > r.y {
-                        let rel_row = mouse.row - r.y - 1;
-                        let prev = self.file_list.selected_display_idx();
-                        if let Some(idx) = self.file_list.select_at_visual_row(rel_row) {
-                            if prev == Some(idx) {
-                                self.open_selected_entry(tx);
-                            } else {
-                                self.refresh_preview();
-                            }
-                        }
-                    }
+        match event {
+            InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
+                SearchMouse::Activated(_) => {
+                    self.open_selected(tx);
                     EventState::Consumed
                 }
-                MouseEventKind::ScrollUp => {
-                    self.file_list.scroll_up();
+                SearchMouse::Selected(_) | SearchMouse::Scrolled => {
+                    self.refresh_preview_from_list();
                     EventState::Consumed
                 }
-                MouseEventKind::ScrollDown => {
-                    self.file_list.scroll_down();
+                SearchMouse::None => EventState::NotConsumed,
+            },
+            InputEvent::Key(key) => match self.list.handle_key(key) {
+                KeyReaction::Submit => {
+                    self.open_selected(tx);
                     EventState::Consumed
                 }
-                _ => EventState::Consumed,
-            }
-        } else {
-            let InputEvent::Key(key) = event else {
-                return EventState::NotConsumed;
-            };
-
-            // Autocomplete popup gets first crack: Up/Down/Tab/Enter/Esc
-            // navigate or accept the suggestion list instead of bubbling
-            // to the modal's own list-nav handling. Falls through when
-            // closed or when the popup doesn't recognise the key.
-            if self.autocomplete.is_open() {
-                let snapshot = self.autocomplete_snapshot();
-                match self.autocomplete.handle_key(*key, &snapshot) {
-                    HandleKeyOutcome::Accepted(action) => {
-                        self.search_query.replace_range_bytes(
-                            action.range.clone(),
-                            &action.new_text,
-                            action.new_cursor_byte,
-                        );
-                        // Reschedule the load so search results reflect
-                        // the accepted suggestion, mirroring what would
-                        // happen if the user had typed the text manually.
-                        self.schedule_load(tx.clone());
-                        return EventState::Consumed;
-                    }
-                    HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
-                        return EventState::Consumed;
-                    }
-                    HandleKeyOutcome::NotHandled => {}
-                }
-            }
-
-            // List nav handled directly; everything else forwards to the input.
-            match key.code {
-                KeyCode::Up => {
-                    self.file_list.select_prev();
-                    self.refresh_preview();
-                    return EventState::Consumed;
-                }
-                KeyCode::Down => {
-                    self.file_list.select_next();
-                    self.refresh_preview();
-                    return EventState::Consumed;
-                }
-                _ => {}
-            }
-            // Drop Ctrl/Alt-modified chars so combos don't leak as text.
-            if let KeyCode::Char(_) = key.code {
-                let non_shift = key.modifiers - KeyModifiers::SHIFT;
-                if !non_shift.is_empty() {
-                    return EventState::Consumed;
-                }
-            }
-            let outcome = self.search_query.handle_key(key);
-            // Edits feed the popup (may open / refresh / close it).
-            // Cursor-only navigation (`Consumed`) refreshes an OPEN
-            // popup so it tracks the cursor or closes when the cursor
-            // leaves the trigger range — but it never auto-opens the
-            // popup just because the cursor passed over a hashtag.
-            // Cancel / Submit are exit paths; the popup never survives
-            // them.
-            let snapshot = self.autocomplete_snapshot();
-            match outcome {
-                InputOutcome::Changed => self.autocomplete.sync(&snapshot),
-                InputOutcome::Consumed => self.autocomplete.refresh_if_open(&snapshot),
-                InputOutcome::Cancel | InputOutcome::Submit => {
-                    self.autocomplete.close();
-                }
-                InputOutcome::NotConsumed => {}
-            }
-            match outcome {
-                InputOutcome::Cancel => {
+                KeyReaction::Cancel => {
                     tx.send(AppEvent::CloseNoteBrowser).ok();
                     EventState::Consumed
                 }
-                InputOutcome::Submit => {
-                    self.open_selected_entry(tx);
+                KeyReaction::Consumed => {
+                    self.refresh_preview_from_list();
                     EventState::Consumed
                 }
-                InputOutcome::Changed => {
-                    self.schedule_load(tx.clone());
-                    EventState::Consumed
-                }
-                InputOutcome::Consumed => EventState::Consumed,
-                InputOutcome::NotConsumed => EventState::NotConsumed,
-            }
+                KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
+            },
+            _ => EventState::NotConsumed,
         }
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, _focused: bool) {
-        self.poll_load();
         self.poll_preview();
 
-        let popup_rect = centered_rect(80, 75, area);
+        let popup_rect = crate::components::centered_rect(80, 75, area);
 
         // Clear the area behind the modal so the editor doesn't bleed through.
         f.render_widget(Clear, popup_rect);
@@ -512,15 +303,7 @@ impl Component for NoteBrowserModal {
             .style(theme.panel_style());
         let search_inner = search_block.inner(rows[0]);
         f.render_widget(search_block, rows[0]);
-        self.search_query.render(
-            f,
-            search_inner,
-            Style::default()
-                .fg(theme.fg.to_ratatui())
-                .bg(theme.bg_panel.to_ratatui()),
-            0,
-            true,
-        );
+        self.list.render_query(f, search_inner, theme, true);
 
         // ── List + Preview ────────────────────────────────────────────────
         let columns = Layout::default()
@@ -528,8 +311,25 @@ impl Component for NoteBrowserModal {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(rows[1]);
 
-        self.list_rect = columns[0];
-        self.file_list.render(f, columns[0], theme, false);
+        // The engine hit-tests a click as `row - rect.y` against the recorded
+        // rect, where row 0 is the first item. The list renders into the block's
+        // INNER area, so record that same inner rect.
+        let list_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme.border_style(false))
+            .style(theme.panel_style());
+        let list_inner = list_block.inner(columns[0]);
+        f.render_widget(list_block, columns[0]);
+        self.list.render(f, list_inner, theme, false);
+        self.list.set_list_rect(list_inner);
+
+        // Authoritative preview trigger: `list.render` just polled, which is
+        // where an async server-side reload lands and may auto-select a new
+        // row 0. If the selected note path differs from what the preview is
+        // showing, refresh. Guarded by the path diff so there's no redraw loop.
+        if self.selected_note_path() != self.preview_path {
+            self.refresh_preview_from_list();
+        }
 
         let preview_block = Block::default()
             .title(" Preview ")
@@ -555,18 +355,8 @@ impl Component for NoteBrowserModal {
         );
 
         // ── Autocomplete popup ───────────────────────────────────────────
-        // Drain async results, re-anchor on the search input's freshly
-        // rendered caret position, and clamp the popup to `popup_rect`
-        // (the modal's bounds) so it never spills past the modal's
-        // border into the cleared backdrop.
-        self.autocomplete.poll_results();
-        let live_anchor = self.search_query.last_caret_pos();
-        if let (Some(state), Some(anchor)) = (self.autocomplete.state_mut(), live_anchor) {
-            state.anchor = anchor;
-        }
-        if let Some(state) = self.autocomplete.state() {
-            autocomplete::render(f, state, popup_rect, theme);
-        }
+        // Clamp to the modal's bounds so it never spills past the border.
+        self.list.render_autocomplete(f, popup_rect, theme);
     }
 
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
@@ -575,21 +365,6 @@ impl Component for NoteBrowserModal {
             ("Enter".to_string(), "open".to_string()),
             ("Esc".to_string(), "close".to_string()),
         ]
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Layout helper
-// ---------------------------------------------------------------------------
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_height = area.height * percent_y / 100;
-    let popup_width = area.width * percent_x / 100;
-    Rect {
-        x: area.x + (area.width.saturating_sub(popup_width)) / 2,
-        y: area.y + (area.height.saturating_sub(popup_height)) / 2,
-        width: popup_width,
-        height: popup_height,
     }
 }
 
@@ -608,99 +383,43 @@ pub(super) fn format_journal_date(date: NaiveDate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::search_list::{Emit, RowSource};
     use crate::settings::AppSettings;
-    use crate::test_support::{mouse_down_at, temp_vault};
+    use crate::test_support::temp_vault;
+    use async_trait::async_trait;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc::unbounded_channel;
 
-    struct EmptyProvider;
+    /// A one-shot source that yields a single existing note so submit has
+    /// something to open.
+    struct OneNoteSource {
+        path: VaultPath,
+    }
 
     #[async_trait]
-    impl NoteBrowserProvider for EmptyProvider {
-        async fn load(&self, _query: &str) -> Vec<FileListEntry> {
-            Vec::new()
+    impl RowSource<FileListEntry> for OneNoteSource {
+        async fn load(&self, _query: &str, emit: Emit<FileListEntry>) {
+            emit.replace(vec![FileListEntry::Note {
+                path: self.path.clone(),
+                title: "Note".to_string(),
+                filename: self.path.to_string(),
+                journal_date: None,
+            }]);
         }
     }
 
-    async fn make_modal() -> NoteBrowserModal {
+    async fn make_modal_with(source: impl RowSource<FileListEntry>, tx: AppTx) -> NoteBrowserModal {
         let vault = temp_vault("modal").await;
         let settings = AppSettings::default();
-        let (tx, _rx) = unbounded_channel();
         NoteBrowserModal::new(
             "test",
-            EmptyProvider,
+            source,
             vault,
             settings.key_bindings.clone(),
             settings.icons(),
             tx,
         )
     }
-
-    /// The modal's mouse handler scopes by `list_rect` (set during render),
-    /// not by any rect carried by `FileListComponent`.  Clicks outside that
-    /// rect must not be consumed.
-    #[tokio::test]
-    async fn modal_mouse_down_outside_list_rect_is_not_consumed() {
-        let mut modal = make_modal().await;
-        modal.list_rect = Rect {
-            x: 10,
-            y: 10,
-            width: 20,
-            height: 10,
-        };
-        let (tx, _rx) = unbounded_channel();
-
-        // Click well outside the list rect.
-        let result = modal.handle_input(&mouse_down_at(0, 0), &tx);
-        assert_eq!(result, EventState::NotConsumed);
-    }
-
-    /// Mirrors the bounds-check used by `SidebarComponent`: a click on the
-    /// modal's list_rect.y row is on the block border and must not panic, and
-    /// must not select anything (the guard `mouse.row > r.y` skips it).
-    #[tokio::test]
-    async fn modal_mouse_down_on_list_border_does_not_panic() {
-        let mut modal = make_modal().await;
-        modal.list_rect = Rect {
-            x: 10,
-            y: 10,
-            width: 20,
-            height: 10,
-        };
-        let (tx, _rx) = unbounded_channel();
-        // Click the very top row of the list rect (the block border).
-        let result = modal.handle_input(&mouse_down_at(15, 10), &tx);
-        assert_eq!(result, EventState::Consumed);
-        assert!(modal.file_list.selected_display_idx().is_none());
-    }
-
-    #[test]
-    fn centered_rect_is_centered() {
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 100,
-            height: 40,
-        };
-        let r = centered_rect(80, 75, area);
-        assert_eq!(r.width, 80);
-        assert_eq!(r.height, 30);
-        assert_eq!(r.x, 10); // (100 - 80) / 2
-        assert_eq!(r.y, 5); // (40 - 30) / 2
-    }
-
-    #[test]
-    fn centered_rect_does_not_underflow() {
-        // Very small area — must not panic.
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 5,
-            height: 5,
-        };
-        let _ = centered_rect(80, 75, area);
-    }
-
-    // ── initial-query tests ───────────────────────────────────────────────
 
     #[tokio::test]
     async fn modal_constructed_with_initial_query_prefills_input() {
@@ -709,7 +428,9 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let modal = NoteBrowserModal::with_initial_query(
             "test",
-            EmptyProvider,
+            OneNoteSource {
+                path: VaultPath::note_path_from("/a.md"),
+            },
             vault,
             settings.key_bindings.clone(),
             settings.icons(),
@@ -717,96 +438,80 @@ mod tests {
             "#important",
         );
         assert_eq!(modal.query_text(), "#important");
-        assert_eq!(modal.cursor_char_count(), "#important".chars().count());
     }
 
+    /// Pressing Enter on a selected note emits OpenPath + CloseNoteBrowser.
     #[tokio::test]
-    async fn modal_new_has_empty_query() {
-        let modal = make_modal().await;
-        assert_eq!(modal.query_text(), "");
-        assert_eq!(modal.cursor_char_count(), 0);
-    }
+    async fn submit_opens_selected_note() {
+        let (tx, mut rx) = unbounded_channel();
+        let path = VaultPath::note_path_from("/a.md");
+        let mut modal = make_modal_with(OneNoteSource { path: path.clone() }, tx.clone()).await;
+        // Let the one-shot load deliver its row and the engine select it.
+        modal.list.poll_until_idle().await;
 
-    /// End-to-end: the modal's hashtag autocomplete plumbing accepts a
-    /// suggestion via Tab and writes the chosen tag into the search input.
-    /// Uses a real vault containing a known tag so the controller's
-    /// query path is exercised too.
-    #[tokio::test]
-    async fn search_box_autocomplete_accept_inserts_tag() {
-        use kimun_core::nfs::VaultPath;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-        let vault = temp_vault("search_autocomplete").await;
-        vault.validate_and_init().await.unwrap();
-        vault
-            .create_note(&VaultPath::note_path_from("/a.md"), "body #projects")
-            .await
-            .unwrap();
-        let settings = AppSettings::default();
-        let (tx, _rx) = unbounded_channel();
-        let mut modal = NoteBrowserModal::new(
-            "test",
-            EmptyProvider,
-            vault,
-            settings.key_bindings.clone(),
-            settings.icons(),
-            tx,
-        );
-
-        // Type `#pro` into the search box.
-        let (tx2, _rx2) = unbounded_channel();
-        for ch in ['#', 'p', 'r', 'o'] {
-            modal.handle_input(
-                &InputEvent::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
-                &tx2,
-            );
-        }
-        // Prime the caret cache for the controller's anchor lookup so the
-        // popup is allowed to open.
-        modal
-            .search_query
-            .set_last_caret_pos_for_tests(Some((0, 0)));
-        let snapshot = modal.autocomplete_snapshot();
-        modal.autocomplete.sync(&snapshot);
-        // Allow the spawned query task to complete and drain results.
-        tokio::task::yield_now().await;
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        modal.autocomplete.poll_results();
-
-        assert!(modal.autocomplete.is_open(), "popup should be open");
-
-        // Tab accepts; the chosen tag should replace `pro`.
         modal.handle_input(
-            &InputEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-            &tx2,
+            &InputEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &tx,
         );
-        assert_eq!(modal.search_query.value(), "#projects");
+
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AppEvent::OpenPath(p) if *p == path)),
+            "expected OpenPath, got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AppEvent::CloseNoteBrowser)),
+            "expected CloseNoteBrowser, got {events:?}"
+        );
     }
 
-    /// `with_initial_query` must call `schedule_load` exactly once, with the
-    /// query already pre-filled.  Verified indirectly: the visible state after
-    /// construction must match the supplied query and the cursor must sit at
-    /// the end — just as if a single properly-initialised load were scheduled.
+    /// Selecting a note row updates the tracked `preview_path`; this is the
+    /// state the render-time diff compares against to detect stale previews
+    /// after an async reload.
     #[tokio::test]
-    async fn with_initial_query_does_not_double_schedule() {
-        let vault = temp_vault("modal_iq_once").await;
-        let settings = AppSettings::default();
+    async fn refresh_preview_tracks_selected_path() {
         let (tx, _rx) = unbounded_channel();
-        let modal = NoteBrowserModal::with_initial_query(
-            "test",
-            EmptyProvider,
-            vault,
-            settings.key_bindings.clone(),
-            settings.icons(),
-            tx,
-            "#important",
+        let path = VaultPath::note_path_from("/a.md");
+        let mut modal = make_modal_with(OneNoteSource { path: path.clone() }, tx.clone()).await;
+        modal.list.poll_until_idle().await;
+        assert_eq!(modal.preview_path, None, "no path tracked before refresh");
+
+        modal.refresh_preview_from_list();
+        assert_eq!(
+            modal.preview_path,
+            Some(path),
+            "preview_path should track the selected note"
         );
-        assert_eq!(modal.query_text(), "#important");
-        assert_eq!(modal.cursor_char_count(), "#important".chars().count());
-        // A load task must have been spawned (Some), confirming schedule_load
-        // was called.  If it were called twice the second abort() would race;
-        // that scenario is ruled out by code inspection: new_with_query is the
-        // only call site for schedule_load during construction.
-        assert!(modal.load_task.is_some());
+    }
+
+    /// Pressing Esc closes the modal.
+    #[tokio::test]
+    async fn esc_closes_modal() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut modal = make_modal_with(
+            OneNoteSource {
+                path: VaultPath::note_path_from("/a.md"),
+            },
+            tx.clone(),
+        )
+        .await;
+        modal.handle_input(
+            &InputEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &tx,
+        );
+        let mut sent = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AppEvent::CloseNoteBrowser) {
+                sent = true;
+            }
+        }
+        assert!(sent, "expected CloseNoteBrowser on Esc");
     }
 }

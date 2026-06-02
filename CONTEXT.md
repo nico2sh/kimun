@@ -40,11 +40,14 @@ The background rectangle the editor paints behind a code block (fenced or indent
 A note→note reference inside a note's body — either a `[[wikilink]]` or a markdown link resolving to a vault note. Attachments, images, and external URLs are *not* note links. Only note links participate in the **link filter**.
 
 **Link filter**:
-The search operator that selects notes by the note links they contain. "Notes that link to X" means notes whose body contains a note link **to** X — i.e. X's backlinks, not X's outgoing links. The target is matched by note name (extension optional, case-insensitive, `*` wildcards), across any folder unless a path is given to disambiguate.
-_Avoid_: backlink search (correct, but ambiguous about direction when read quickly)
+A search operator that selects notes by the note links between them, in one of two directions (see ADR-0005 for the full operator alphabet). The arrow points **relative to the named note**:
+- **Backlinks** — `<X` / `lk:X` — notes whose body contains a note link **to** X (links pointing *into* X).
+- **Forward links** — `>X` / `fwd:X` — the notes that **X links to** (links pointing *out* of X).
+The target is matched by note name (extension optional, case-insensitive, `*` wildcards), across any folder unless a path is given to disambiguate.
+_Avoid_: backlink search (names only one direction), `>`/`@` (the pre-ADR-0005 chars).
 
 **Query variable**:
-A `{name}` placeholder inside a query that the TUI resolves to a runtime value before handing a plain query string to core. Core's query language has no notion of these — substitution happens entirely in the presentation layer. The first variable is `{note}`, the **clean name** of the note currently open in the editor; a bare `>` typed in the query panel is sugar that expands to `>{note}`. Backlinks of the current note are therefore just the query `>{note}`.
+A `{name}` placeholder inside a query that the TUI resolves to a runtime value before handing a plain query string to core. Core's query language has no notion of these — substitution happens entirely in the presentation layer. The first variable is `{note}`, the **clean name** of the note currently open in the editor; a bare `<` typed in the query panel is sugar that expands to `<{note}`. Backlinks of the current note are therefore just the query `<{note}`.
 _Avoid_: macro, token (too generic), current-note placeholder (only describes one variable)
 
 **Saved search**:
@@ -52,11 +55,27 @@ A named query persisted in the vault under `.kimun/`, so it travels with the not
 _Avoid_: bookmark, smart folder, filter (too generic)
 
 **Saved Searches modal**:
-A global picker, opened by a single key binding, listing the vault's **saved searches** for keyboard selection (arrows/enter plus numeric quick-select 1–9). Picking one runs it in the **Query panel**. Distinct from the Ctrl+K **note browser**, which finds individual notes rather than choosing a query.
-_Avoid_: search list, query menu
+A global picker, opened by a single key binding, listing the vault's **saved searches** for keyboard selection (arrows/enter plus numeric quick-select 1–9). Picking one runs it in the **Query panel**. Distinct from the Ctrl+K **note browser**, which finds individual notes rather than choosing a query. It is one **SearchList** surface, not to be confused with the module itself.
+_Avoid_: query menu
+
+### TUI search surfaces
+
+**SearchList**:
+The one module behind every query-input-over-an-async-loaded-list surface in the TUI — the **note browser**, the **Query panel**, the **Saved Searches modal**, and the directory sidebar. It owns the query input, keyboard navigation, the async-load lifecycle, the autocomplete host, and selection; it emits nothing on its own — callers read the selected row and decide the action. Rich presentation (the Query panel's expand/preview, the note browser's preview pane) composes on top rather than living inside it.
+_Avoid_: list widget, search box (each names only a part)
+
+**Row source**:
+The seam that supplies a **SearchList** with the rows for a query. Vault-backed in the app (search, backlinks, saved searches, directory listing), in-memory in tests — so a SearchList is exercised without a real vault. Streaming and one-shot delivery are the same source, not different seams.
+_Avoid_: provider (too generic), repository
+
+**Search row**:
+What a single row must tell its **SearchList** to be listed, filtered, navigated, and drawn — the only thing that varies with the row's type (a note, a saved search, a directory entry). Anything richer is read back by the caller from the selected row.
+
+**Suggestion source**:
+The seam that supplies the query input's autocomplete with candidates (note names for `>`, tag labels for `#`), kept separate from the **row source** and from the vault so the autocomplete host is testable in isolation.
 
 **Query panel**:
-The right-hand panel of the editor. Shows the list of notes matching an active query, with the same expandable list/preview affordances as the rest of the app. Backlinks are not a distinct feature here — they are the default query `>{note}`, so a freshly opened panel shows the current note's backlinks. The panel title reflects the active query (reads "Backlinks" when the query is `>{note}`).
+The right-hand panel of the editor. Shows the list of notes matching an active query, with the same expandable list/preview affordances as the rest of the app. Backlinks are not a distinct feature here — they are the default query `<{note}`, so a freshly opened panel shows the current note's backlinks. The panel title reflects the active query (reads "Backlinks" when the query is `<{note}`).
 _Avoid_: backlinks panel (now only the default state), search panel (collides with Ctrl+K and the left-sidebar search box)
 
 ### Note editing

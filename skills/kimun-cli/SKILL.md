@@ -140,44 +140,47 @@ Free text is case-insensitive, diacritics-ignored. Multiple terms = AND.
 kimu*          # starts with "kimu"
 *report        # ends with "report"
 *meeting*      # contains "meeting" anywhere
-@task*         # filename starts with "task"
-@*2024*        # filename contains "2024"
+=task*         # note name starts with "task"
+=*2024*        # note name contains "2024"
 ```
 
 | Operator | Long form | Matches |
 |----------|-----------|---------|
-| `@term` | `at:term` | filename contains term |
-| `<term` | `in:term` | Markdown section heading contains term |
+| `=term` | `name:term` | note name contains term |
+| `@term` | `in:term` | Markdown section heading contains term |
 | `/term` | `pt:term` | note path (directory) contains term |
 | `#label` | `lb:label` | note carries that hashtag label (from `#label` in body) |
-| `>note` | `lk:note` | notes that link to `note` (its backlinks) |
+| `<note` | `lk:note` | notes that link **to** `note` (its backlinks) |
+| `>note` | `fwd:note` | notes that `note` links **to** (its forward links) |
 | `-term` | | exclude notes containing term |
 
 **Hashtag labels** — any `#name` token in a note body (letters/digits/underscore) is indexed as a label and is case-insensitive. Hashtags inside frontmatter, code spans, fenced blocks, HTML, link bodies, and wikilinks are NOT indexed. Multiple `#` filters AND together.
 
-**Link filter** — `>note` (or `lk:note`) matches notes that link to `note`. Matched by note name (`.md` optional, case-insensitive); a bare name matches a linked note in any folder, `>dir/note` disambiguates, and `*` wildcards work (`>proj*`). Only links to other notes count, not attachments or URLs.
+**Link filters** — `<note` (or `lk:note`) matches notes that link **to** `note` (its backlinks); `>note` (or `fwd:note`) matches the notes that `note` links **to** (its forward links). Both match by note name (`.md` optional, case-insensitive); a bare name matches in any folder, `<dir/note` / `>dir/note` disambiguates, and `*` wildcards work (`<proj*`). Only links to other notes count, not attachments or URLs.
 
 **Exclusion composes with all operators — `-` leads, then the operator:**
 
 ```
 -cancelled           # exclude notes containing "cancelled"
--@temp               # exclude notes with "temp" in filename
--<draft              # exclude notes with "draft" in any section title
+-=temp               # exclude notes with "temp" in the name
+-@draft              # exclude notes with "draft" in any section title
 -/private            # exclude notes under a "private/" path
 -#archived           # exclude notes carrying #archived label
-->draft              # exclude notes that link to "draft"
+-<draft              # exclude notes that link to "draft"
+->draft              # exclude notes that "draft" links to
 ```
 
 **Combining filters** (all terms are ANDed):
 
 ```
 meeting -cancelled           # "meeting" but not "cancelled"
-@tasks <work report          # file "tasks", has "Work" section, contains "report"
-@2024 -<draft                # files from 2024, no "draft" section title
-/journal <tasks -done        # in journal/, "tasks" section, excluding "done"
-<personal kimun              # "kimun" under a "Personal" section
->spec #urgent                # links to "spec" and labelled "urgent"
->kimun ->draft               # links to "kimun" but not to "draft"
+=tasks @work report          # name "tasks", has "Work" section, contains "report"
+=2024 -@draft                # names from 2024, no "draft" section title
+/journal @tasks -done        # in journal/, "tasks" section, excluding "done"
+@personal kimun              # "kimun" under a "Personal" section
+<spec #urgent                # links to "spec" and labelled "urgent"
+<kimun -<draft               # links to "kimun" but not to "draft"
+>kimun #urgent               # "kimun" links to these, and labelled "urgent"
 #important -#archived        # notes carrying #important but not #archived
 meeting #important           # "meeting" in notes also carrying #important
 ```

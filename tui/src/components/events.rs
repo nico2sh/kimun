@@ -109,10 +109,6 @@ pub enum AppEvent {
         available: bool,
     },
 
-    // ── Backlinks panel messages ────────────────────────────────────────────
-    /// Backlinks for the current note have been loaded.
-    BacklinksLoaded(Vec<crate::components::backlinks_panel::BacklinkEntry>),
-
     // ── Workspace messages ──────────────────────────────────────────────
     /// User switched to a different workspace. Carries the workspace name.
     /// Handled by main.rs to rebuild the vault and navigate to StartScreen.

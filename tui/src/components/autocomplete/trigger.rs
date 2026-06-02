@@ -23,6 +23,10 @@ pub struct TriggerContext {
     /// Byte offset of `replace_range.start`, kept as a separate field so the
     /// host can map it to a screen anchor without re-parsing.
     pub anchor_col: usize,
+    /// For a `LinkFilter` trigger, the operator char that opened it (`<`,
+    /// `>`, or `=`) so the popup can render the correct sigil. `None` for
+    /// `Wikilink` and `Hashtag` triggers, which have fixed sigils.
+    pub opener: Option<char>,
 }
 
 /// Per-call knobs for `detect_trigger_with`.
@@ -211,8 +215,14 @@ pub fn detect_trigger_with_oracle(
         }
 
         if link_filter_possible && link_filter_pos.is_none() {
-            if c == '>' {
+            if is_link_filter_opener(c) {
                 link_filter_pos = Some(prev);
+                // Opener found: the link-filter state is resolved, so stop
+                // scanning for it. The loop continues only if another state
+                // machine (wikilink/hashtag) is still live — mirroring how
+                // `wikilink_possible` / `hash_possible` stop driving the loop
+                // once their openers/stoppers are hit.
+                link_filter_possible = false;
             } else if !is_link_filter_target_char(c) {
                 link_filter_possible = false;
             }
@@ -247,6 +257,7 @@ pub fn detect_trigger_with_oracle(
             query,
             replace_range: inner_start..cursor,
             anchor_col: inner_start,
+            opener: None,
         });
     }
 
@@ -329,20 +340,24 @@ pub fn detect_trigger_with_oracle(
             query,
             replace_range: inner_start..cursor,
             anchor_col: inner_start,
+            opener: None,
         });
     }
 
-    // LinkFilter trigger: `>target` or `->target`.
-    // The `>` must be at a token start — i.e. preceded by nothing,
+    // LinkFilter trigger: a note-name operator (`<`, `>`, `=`) followed by
+    // a target, optionally in its exclusion form (`-<`, `->`, `-=`). All
+    // three operators take a note-name argument (backlinks / forward links
+    // / note name — ADR-0005 alphabet) and share the same suggestion list.
+    // The opener must be at a token start — i.e. preceded by nothing,
     // whitespace, or a `-` that is itself at string-start or preceded by
-    // whitespace (the exclusion form `->name`).
+    // whitespace (the exclusion form).
     if let Some(gt) = link_filter_pos {
-        let inner_start = gt + 1; // byte just after `>`
+        let inner_start = gt + 1; // byte just after the opener
         if inner_start > cursor {
             return None;
         }
 
-        // Token-start guard: what sits immediately before `>`?
+        // Token-start guard: what sits immediately before the opener?
         let token_start = if gt == 0 {
             true // `>` at string start
         } else {
@@ -371,20 +386,33 @@ pub fn detect_trigger_with_oracle(
             return None;
         }
 
+        // The opener char sits at byte `gt`; capture it so the popup can
+        // render the matching sigil (`<`, `>`, or `=`).
+        let opener = text[gt..inner_start].chars().next();
+
         let query = text[inner_start..cursor].to_string();
         return Some(TriggerContext {
             kind: TriggerKind::LinkFilter,
             query,
             replace_range: inner_start..cursor,
             anchor_col: inner_start,
+            opener,
         });
     }
 
     None
 }
 
+/// Returns `true` for the note-name operators that open a link-filter
+/// trigger: `<` (backlinks), `>` (forward links), `=` (note name) — the
+/// ADR-0005 alphabet operators that take a note-name argument. `@`
+/// (section), `#` (label) and `/` (path) are intentionally excluded.
+fn is_link_filter_opener(c: char) -> bool {
+    matches!(c, '<' | '>' | '=')
+}
+
 /// Returns `true` for characters that may appear in a link-filter target
-/// prefix (everything between `>` and the cursor). Mirrors the valid
+/// prefix (everything between the opener and the cursor). Mirrors the valid
 /// characters for note names / paths: letters, digits, `_`, `-`, `.`, `/`,
 /// `*`, `{`, `}`. Spaces are intentionally excluded because they are
 /// query-token separators — the scan stops at a space, so a `>` preceded
@@ -847,6 +875,63 @@ mod tests {
         // A `>` that is not at a token boundary (e.g. inside a word) must NOT
         // trigger. Here `a>b` — the `>` is preceded by a non-space word char.
         let t = detect_trigger("a>b", 3);
+        assert!(t.is_none() || t.unwrap().kind != TriggerKind::LinkFilter);
+    }
+
+    #[test]
+    fn detects_backlink_filter_trigger() {
+        let t = detect_trigger("<pro", 4).expect("should detect");
+        assert_eq!(t.kind, TriggerKind::LinkFilter);
+        assert_eq!(t.query, "pro");
+        assert_eq!(t.opener, Some('<'));
+    }
+
+    #[test]
+    fn detects_forward_link_filter_trigger() {
+        let t = detect_trigger(">pro", 4).expect("should detect");
+        assert_eq!(t.kind, TriggerKind::LinkFilter);
+        assert_eq!(t.query, "pro");
+        assert_eq!(t.opener, Some('>'));
+    }
+
+    #[test]
+    fn detects_note_name_filter_trigger() {
+        let t = detect_trigger("=pro", 4).expect("should detect");
+        assert_eq!(t.kind, TriggerKind::LinkFilter);
+        assert_eq!(t.query, "pro");
+        assert_eq!(t.opener, Some('='));
+    }
+
+    #[test]
+    fn excluded_link_filter_captures_inner_opener() {
+        // The exclusion form `-<` / `->` / `-=` must capture the operator
+        // char (not the `-`) so the popup renders the right sigil.
+        for (q, op) in [("-<dra", '<'), ("->dra", '>'), ("-=dra", '=')] {
+            let t = detect_trigger(q, q.len()).expect("should detect");
+            assert_eq!(t.kind, TriggerKind::LinkFilter, "{q}");
+            assert_eq!(t.opener, Some(op), "{q}");
+        }
+    }
+
+    #[test]
+    fn wikilink_and_hashtag_have_no_opener() {
+        assert_eq!(ctx("[[foo", 5).unwrap().opener, None);
+        assert_eq!(ctx("a #foo", 6).unwrap().opener, None);
+    }
+
+    #[test]
+    fn detects_excluded_forms() {
+        for q in ["-<dra", "->dra", "-=dra"] {
+            let t = detect_trigger(q, q.len()).expect("should detect");
+            assert_eq!(t.kind, TriggerKind::LinkFilter, "{q}");
+            assert_eq!(t.query, "dra", "{q}");
+        }
+    }
+
+    #[test]
+    fn link_filter_new_openers_only_at_token_start() {
+        // not at a token boundary -> no LinkFilter trigger
+        let t = detect_trigger("a<b", 3);
         assert!(t.is_none() || t.unwrap().kind != TriggerKind::LinkFilter);
     }
 }

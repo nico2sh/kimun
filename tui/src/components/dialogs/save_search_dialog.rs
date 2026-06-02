@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn submit_emits_save_event_with_typed_name() {
-        let mut d = SaveSearchDialog::new(">{note}".to_string());
+        let mut d = SaveSearchDialog::new("<{note}".to_string());
         let (tx, mut rx) = unbounded_channel();
         for ch in ['l', 'i', 'n', 'k', 's'] {
             d.handle_input(&key(KeyCode::Char(ch)), &tx);
@@ -137,7 +137,7 @@ mod tests {
         }
         let (name, query) = found.expect("SaveSearchConfirmed emitted");
         assert_eq!(name, "links");
-        assert_eq!(query, ">{note}");
+        assert_eq!(query, "<{note}");
     }
 
     #[test]

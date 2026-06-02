@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use kimun_core::nfs::NoteEntryData;
 use kimun_core::note::NoteContentData;
 
-use super::NoteBrowserProvider;
 use crate::components::file_list::FileListEntry;
+use crate::components::search_list::{Emit, RowSource};
 
 /// A provider pre-populated with a fixed list of notes, used when following a
 /// link that resolves to several candidates.  The query is ignored.
@@ -35,13 +35,15 @@ impl LinkResultsProvider {
 }
 
 #[async_trait]
-impl NoteBrowserProvider for LinkResultsProvider {
-    async fn load(&self, query: &str) -> Vec<FileListEntry> {
+impl RowSource<FileListEntry> for LinkResultsProvider {
+    async fn load(&self, query: &str, emit: Emit<FileListEntry>) {
         if query.is_empty() {
-            return self.entries.clone();
+            emit.replace(self.entries.clone());
+            return;
         }
         let q = query.to_lowercase();
-        self.entries
+        let entries: Vec<FileListEntry> = self
+            .entries
             .iter()
             .filter(|e| match e {
                 FileListEntry::Note {
@@ -57,6 +59,7 @@ impl NoteBrowserProvider for LinkResultsProvider {
                 _ => false,
             })
             .cloned()
-            .collect()
+            .collect();
+        emit.replace(entries);
     }
 }
