@@ -968,7 +968,14 @@ impl AppScreen for EditorScreen {
                 return None;
             }
             AppEvent::CloseOverlay => {
-                self.restore_focus();
+                // Only restore if an overlay is still open. A preceding
+                // domain event (SavedSearchSelected, OpenPath) may have
+                // already closed the overlay and set the correct focus
+                // (e.g. SavedSearchSelected focuses the Query panel); a
+                // second unconditional restore would clobber it back to Editor.
+                if self.overlays.is_open() {
+                    self.restore_focus();
+                }
                 return None;
             }
             _ => {}
@@ -1177,4 +1184,34 @@ mod tests {
     // logic now lives in `SingleSlotTask::await_with_timeout` and is
     // covered by `single_slot_task_timeout_returns_none_keeps_handle`
     // in `crate::util::single_slot_task`.
+
+    #[tokio::test]
+    async fn saved_search_selected_then_close_overlay_keeps_backlinks_focus() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut screen = EditorScreen::new(vault, VaultPath::root(), settings);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        // Replay the exact sequence the saved-searches modal emits on select.
+        screen
+            .handle_app_message(
+                AppEvent::SavedSearchSelected {
+                    query: "<{note}".to_string(),
+                    name: "Backlinks (current note)".to_string(),
+                },
+                &tx,
+            )
+            .await;
+        screen
+            .handle_app_message(AppEvent::CloseOverlay, &tx)
+            .await;
+
+        assert!(matches!(screen.focus, Focus::Backlinks), "focus should remain on the Query panel after select + close");
+        assert!(!screen.overlays.is_open(), "overlay should be closed");
+    }
 }
