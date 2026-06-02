@@ -231,6 +231,28 @@ impl SidebarComponent {
         }
     }
 
+    /// `true` when the active directory is the journal (so its sort default is
+    /// the journal one). Lets the caller persist to the matching settings.
+    pub fn is_current_journal(&self) -> bool {
+        &self.current_dir == self.vault.journal_path()
+    }
+
+    /// Save the dialog's selection as the in-session default for the active
+    /// context (journal vs. normal), then apply it live. Without this, the
+    /// cached per-context defaults that `sort_for`/`navigate` read stay at their
+    /// construction-time values, so a saved default would have no effect until
+    /// restart. The caller is responsible for persisting to the settings file.
+    pub fn save_default(&mut self, field: SortField, order: SortOrder, group_dirs: bool) {
+        if self.is_current_journal() {
+            self.journal_sort_field = field;
+            self.journal_sort_order = order;
+        } else {
+            self.default_sort_field = field;
+            self.default_sort_order = order;
+        }
+        self.apply_sort(field, order, group_dirs);
+    }
+
     /// Number of note rows currently visible (excludes Up / dirs / create).
     fn note_count(&self) -> usize {
         match &self.list {
@@ -730,5 +752,29 @@ mod tests {
             (SortField::Title, SortOrder::Descending)
         );
         assert!(!sidebar.group_dirs());
+    }
+
+    /// Regression: saving a default must survive navigation. `save_default`
+    /// updates the cached per-context default that `sort_for`/`navigate` read;
+    /// without it, navigating re-derives the construction-time default and the
+    /// saved choice is silently lost.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_default_survives_navigation() {
+        let mut sidebar = sidebar_with_notes("sidebar-savedef", &["alpha", "bravo"]).await;
+        let (tx, _rx) = unbounded_channel();
+        navigate_to_root(&mut sidebar, &tx).await;
+
+        sidebar.save_default(SortField::Title, SortOrder::Descending, false);
+        poll_to_idle(&mut sidebar).await;
+
+        // Re-navigate (root is non-journal) — sort_for must now yield the saved
+        // default, not the constructor-time (Name, Ascending).
+        sidebar.navigate(VaultPath::root(), &tx);
+        poll_to_idle(&mut sidebar).await;
+        assert_eq!(
+            sidebar.current_sort(),
+            (SortField::Title, SortOrder::Descending),
+            "saved default must persist across navigation"
+        );
     }
 }

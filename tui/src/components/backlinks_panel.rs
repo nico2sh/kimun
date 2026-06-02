@@ -115,7 +115,19 @@ impl RowSource<BacklinkEntry> for BacklinkSource {
             return;
         }
         let q = resolve_query(query, Some(&note));
-        let entries = load_query(&self.vault, &q).await;
+        let mut entries = load_query(&self.vault, &q).await;
+        // The DB orders results only when the query carries an `or:` directive
+        // (core applies the sort iff `order_by` is non-empty). Keep that
+        // directive as the source of truth, but fall back to a stable
+        // Name-ascending order when the query has none — otherwise default
+        // backlinks come back in arbitrary DB scan order, and the sort dialog's
+        // reported default (Name/Ascending) would not match the displayed list.
+        if kimun_core::SearchTerms::from_query_string(query)
+            .order_by
+            .is_empty()
+        {
+            entries.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()));
+        }
         emit.replace(entries);
     }
 }
@@ -163,6 +175,12 @@ pub struct QueryPanel {
     redraw_tx: Arc<Mutex<Option<AppTx>>>,
     /// Combos that the engine intercepts: follow-link.
     follow_link_combos: Vec<KeyCombo>,
+    /// Memoised sort field/order parsed from the query's order directive, plus
+    /// the query string it was parsed from. `render` reparses only when the
+    /// query changes, so the per-frame title indicator avoids a full query
+    /// parse every frame.
+    order_cache: (SortField, SortOrder),
+    order_cache_query: String,
 }
 
 impl QueryPanel {
@@ -220,6 +238,9 @@ impl QueryPanel {
             key_bindings,
             redraw_tx,
             follow_link_combos,
+            // DEFAULT_QUERY carries no order directive → (Name, Ascending).
+            order_cache: (SortField::Name, SortOrder::Ascending),
+            order_cache_query: String::new(),
         }
     }
 
@@ -315,6 +336,8 @@ impl QueryPanel {
 
     /// Current sort field/order, derived from the active query's order
     /// directive. Defaults to (Name, Ascending) when the query has none.
+    /// Parses the query each call — cheap for the rare callers (dialog open).
+    /// The per-frame render path uses the memoised `order_cache` instead.
     pub fn current_order(&self) -> (SortField, SortOrder) {
         let st = kimun_core::SearchTerms::from_query_string(self.list.query());
         match st.order_by.first() {
@@ -349,6 +372,10 @@ impl QueryPanel {
         let asc = matches!(order, SortOrder::Ascending);
         let rewritten = with_order_directive(self.list.query(), order_field, asc);
         self.list.set_query_text(rewritten);
+        // A sort rewrites the query, so it is no longer the named saved search
+        // (mirrors the manual-edit path in `handle_key`). The title falls back
+        // to "Backlinks"/"Query" via the order-insensitive check in `render`.
+        self.saved_search_name = None;
         self.reset_expand();
     }
 
@@ -458,9 +485,18 @@ impl QueryPanel {
         let bg = theme.bg_panel.to_ratatui();
 
         let count = self.list.visible_rows().len();
-        let (sort_field, sort_order) = self.current_order();
+        // Reparse the order only when the query changed (memoised) — render runs
+        // every frame and `from_query_string` is a full allocating parse.
+        if self.list.query() != self.order_cache_query {
+            self.order_cache = self.current_order();
+            self.order_cache_query = self.list.query().to_string();
+        }
+        let (sort_field, sort_order) = self.order_cache;
         let sort_indicator = format!("{}{}", sort_field.label(), sort_order.label());
-        let title = if self.list.query() == DEFAULT_QUERY {
+        // Compare ignoring the order directive so that sorting the default
+        // backlinks query (`<{note} or:title`) still reads as "Backlinks".
+        let base_query = kimun_core::strip_order_directive(self.list.query());
+        let title = if base_query == DEFAULT_QUERY {
             format!("Backlinks ({}) {}", count, sort_indicator)
         } else if let Some(name) = &self.saved_search_name {
             format!("{} ({}) {}", name, count, sort_indicator)
@@ -1003,6 +1039,53 @@ mod tests {
 
         panel.apply_sort(SortField::Name, SortOrder::Descending, &tx);
         assert_eq!(panel.active_query(), "widget -or:file");
+    }
+
+    /// Regression: a directive-less query must still return a stable
+    /// Name-ascending order (the DB only sorts when an `or:` directive is
+    /// present). Without the fallback, results came back in arbitrary DB order.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn directiveless_query_is_name_ascending() {
+        let vault = crate::test_support::temp_vault("qp-defaultorder").await;
+        vault.validate_and_init().await.unwrap();
+        // Create in non-alphabetical order; all share the term "widget".
+        for name in ["/charlie.md", "/alpha.md", "/bravo.md"] {
+            vault
+                .create_note(&VaultPath::note_path_from(name), "widget")
+                .await
+                .unwrap();
+        }
+        let mut panel = make_panel(vault);
+        panel.set_active_query("widget".to_string()); // no order directive
+        settle(&mut panel).await;
+
+        let names: Vec<String> = panel
+            .list
+            .visible_rows()
+            .iter()
+            .map(|e| e.filename.clone())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "directive-less query must be name-ascending");
+    }
+
+    /// Regression: applying a sort rewrites the query, so the panel is no longer
+    /// the named saved search — the stale name must be dropped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_sort_clears_saved_search_name() {
+        let vault = crate::test_support::temp_vault("qp-name").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("#todo".to_string());
+        panel.set_saved_search_name(Some("todo".to_string()));
+
+        panel.apply_sort(SortField::Title, SortOrder::Ascending, &tx);
+        assert!(
+            panel.saved_search_name.is_none(),
+            "sorting a saved search must clear its name"
+        );
     }
 
     /// Regression: a programmatic sort change must update the VISIBLE input bar,
