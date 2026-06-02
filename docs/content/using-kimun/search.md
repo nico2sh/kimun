@@ -223,6 +223,26 @@ screen* =notes                     → starts with "screen", in name "notes"
 @personal report -completed        → "report" under "Personal", excluding "completed"
 ```
 
+## Query variables
+
+Some queries contain a `{name}` placeholder that the TUI fills in at run time, before the query reaches the search engine. The first (and currently only) variable is `{note}`:
+
+- `{note}` resolves to the **clean name** of the note open in the editor (its filename without the extension).
+- In the [query panel](@/using-kimun/tui.md#query-panel), a bare `<` is shorthand for `<{note}` — the backlinks of the current note.
+
+With `spec.md` open, `<{note}` runs as `<spec` (the notes that link to `spec`). When no note is open, `{note}` resolves to an empty string.
+
+Variables are resolved wherever the query runs — both the query panel and the `Ctrl+K` search modal substitute `{note}` against the open note. Because [saved searches](#saved-searches) store the *template* (the unresolved `{note}`), a saved `<{note}` re-targets to whatever note is open each time you run it.
+
+## Saved searches
+
+A saved search stores a query under a name so you can re-run it without retyping — common filters, project views, or backlink queries. Saved searches live with the workspace and are managed from the TUI:
+
+- **Save** the current query with `Ctrl+D` — from the [query panel](@/using-kimun/tui.md#query-panel) or the `Ctrl+K` search modal — then give it a name.
+- **Open** the Saved Searches picker with `F3` to run a saved search (`Enter`), quick-select with `1`–`9`, or remove one with `Delete`.
+
+Running a saved search loads its results in the query panel. See [Saved Searches](@/using-kimun/tui.md#saved-searches) in the TUI guide for the full workflow.
+
 ## Operator precedence
 
 There is no OR operator. All terms are ANDed together. Each term must match for a note to appear in results.
