@@ -21,7 +21,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph};
 
 use crate::app_screen::overlay_host::{Overlay, OverlayKind};
-use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::search_list::{
@@ -230,10 +229,14 @@ impl SavedSearchesModal {
 }
 
 // ---------------------------------------------------------------------------
-// Component impl
+// Overlay impl
 // ---------------------------------------------------------------------------
 
-impl Component for SavedSearchesModal {
+impl Overlay for SavedSearchesModal {
+    fn kind(&self) -> OverlayKind {
+        OverlayKind::SavedSearches
+    }
+
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
             InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
@@ -284,7 +287,7 @@ impl Component for SavedSearchesModal {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, _focused: bool) {
+    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         let popup_rect = crate::components::centered_rect(60, 60, area);
 
         // Clear the area behind the modal so the editor doesn't bleed through.
@@ -344,28 +347,6 @@ impl Component for SavedSearchesModal {
             ("Del".to_string(), "delete".to_string()),
             ("Esc".to_string(), "close".to_string()),
         ]
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Overlay impl
-// ---------------------------------------------------------------------------
-
-impl Overlay for SavedSearchesModal {
-    fn kind(&self) -> OverlayKind {
-        OverlayKind::SavedSearches
-    }
-
-    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        <Self as Component>::handle_input(self, event, tx)
-    }
-
-    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
-        <Self as Component>::render(self, f, area, theme, true);
-    }
-
-    fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        <Self as Component>::hint_shortcuts(self)
     }
 }
 
@@ -472,7 +453,7 @@ mod tests {
         poll_engine_idle(&mut modal).await;
 
         // Select the first USER row (skip the pinned virtual backlinks row).
-        Component::handle_input(
+        Overlay::handle_input(
             &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
             &tx,
@@ -486,7 +467,7 @@ mod tests {
             .clone();
 
         // Delete: this sets pending_delete and reloads (delete-then-list, ordered).
-        Component::handle_input(
+        Overlay::handle_input(
             &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
             &tx,
@@ -535,7 +516,7 @@ mod tests {
         );
         modal.list.poll_until_idle().await;
 
-        Component::handle_input(
+        Overlay::handle_input(
             &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &tx,

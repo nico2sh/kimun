@@ -10,7 +10,6 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app_screen::overlay_host::{Overlay, OverlayKind};
-use crate::components::Component;
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
@@ -235,10 +234,14 @@ impl NoteBrowserModal {
 }
 
 // ---------------------------------------------------------------------------
-// Component impl
+// Overlay impl
 // ---------------------------------------------------------------------------
 
-impl Component for NoteBrowserModal {
+impl Overlay for NoteBrowserModal {
+    fn kind(&self) -> OverlayKind {
+        OverlayKind::NoteBrowser
+    }
+
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
             InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
@@ -271,7 +274,7 @@ impl Component for NoteBrowserModal {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, _focused: bool) {
+    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         self.poll_preview();
 
         let popup_rect = crate::components::centered_rect(80, 75, area);
@@ -370,28 +373,6 @@ impl Component for NoteBrowserModal {
 }
 
 // ---------------------------------------------------------------------------
-// Overlay impl
-// ---------------------------------------------------------------------------
-
-impl Overlay for NoteBrowserModal {
-    fn kind(&self) -> OverlayKind {
-        OverlayKind::NoteBrowser
-    }
-
-    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        <Self as Component>::handle_input(self, event, tx)
-    }
-
-    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
-        <Self as Component>::render(self, f, area, theme, true);
-    }
-
-    fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        <Self as Component>::hint_shortcuts(self)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
@@ -472,7 +453,7 @@ mod tests {
         // Let the one-shot load deliver its row and the engine select it.
         modal.list.poll_until_idle().await;
 
-        Component::handle_input(
+        Overlay::handle_input(
             &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &tx,
@@ -526,7 +507,7 @@ mod tests {
             tx.clone(),
         )
         .await;
-        Component::handle_input(
+        Overlay::handle_input(
             &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             &tx,
