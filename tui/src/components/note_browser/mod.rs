@@ -9,6 +9,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+use crate::app_screen::overlay_host::{Overlay, OverlayKind};
 use crate::components::Component;
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
@@ -215,13 +216,13 @@ impl NoteBrowserModal {
             tokio::spawn(async move {
                 vault.load_or_create_note(&path, None).await.ok();
                 tx.send(AppEvent::OpenPath(path)).ok();
-                tx.send(AppEvent::CloseNoteBrowser).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
             });
             return;
         }
         let path = entry.path().clone();
         tx.send(AppEvent::OpenPath(path)).ok();
-        tx.send(AppEvent::CloseNoteBrowser).ok();
+        tx.send(AppEvent::CloseOverlay).ok();
     }
 
     // ── Test-only accessors ────────────────────────────────────────────────
@@ -257,7 +258,7 @@ impl Component for NoteBrowserModal {
                     EventState::Consumed
                 }
                 KeyReaction::Cancel => {
-                    tx.send(AppEvent::CloseNoteBrowser).ok();
+                    tx.send(AppEvent::CloseOverlay).ok();
                     EventState::Consumed
                 }
                 KeyReaction::Consumed => {
@@ -369,6 +370,28 @@ impl Component for NoteBrowserModal {
 }
 
 // ---------------------------------------------------------------------------
+// Overlay impl
+// ---------------------------------------------------------------------------
+
+impl Overlay for NoteBrowserModal {
+    fn kind(&self) -> OverlayKind {
+        OverlayKind::NoteBrowser
+    }
+
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        <Self as Component>::handle_input(self, event, tx)
+    }
+
+    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
+        <Self as Component>::render(self, f, area, theme, true);
+    }
+
+    fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        <Self as Component>::hint_shortcuts(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
@@ -440,7 +463,7 @@ mod tests {
         assert_eq!(modal.query_text(), "#important");
     }
 
-    /// Pressing Enter on a selected note emits OpenPath + CloseNoteBrowser.
+    /// Pressing Enter on a selected note emits OpenPath + CloseOverlay.
     #[tokio::test]
     async fn submit_opens_selected_note() {
         let (tx, mut rx) = unbounded_channel();
@@ -449,7 +472,8 @@ mod tests {
         // Let the one-shot load deliver its row and the engine select it.
         modal.list.poll_until_idle().await;
 
-        modal.handle_input(
+        Component::handle_input(
+            &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &tx,
         );
@@ -467,8 +491,8 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::CloseNoteBrowser)),
-            "expected CloseNoteBrowser, got {events:?}"
+                .any(|e| matches!(e, AppEvent::CloseOverlay)),
+            "expected CloseOverlay, got {events:?}"
         );
     }
 
@@ -502,16 +526,17 @@ mod tests {
             tx.clone(),
         )
         .await;
-        modal.handle_input(
+        Component::handle_input(
+            &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             &tx,
         );
         let mut sent = false;
         while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AppEvent::CloseNoteBrowser) {
+            if matches!(ev, AppEvent::CloseOverlay) {
                 sent = true;
             }
         }
-        assert!(sent, "expected CloseNoteBrowser on Esc");
+        assert!(sent, "expected CloseOverlay on Esc");
     }
 }
