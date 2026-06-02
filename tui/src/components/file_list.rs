@@ -12,13 +12,13 @@ use crate::settings::{SortFieldSetting, SortOrderSetting};
 // Sort options
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SortField {
     Name,
     Title,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SortOrder {
     Ascending,
     Descending,
@@ -38,6 +38,24 @@ impl From<SortOrderSetting> for SortOrder {
         match s {
             SortOrderSetting::Ascending => Self::Ascending,
             SortOrderSetting::Descending => Self::Descending,
+        }
+    }
+}
+
+impl From<SortField> for SortFieldSetting {
+    fn from(s: SortField) -> Self {
+        match s {
+            SortField::Name => Self::Name,
+            SortField::Title => Self::Title,
+        }
+    }
+}
+
+impl From<SortOrder> for SortOrderSetting {
+    fn from(s: SortOrder) -> Self {
+        match s {
+            SortOrder::Ascending => Self::Ascending,
+            SortOrder::Descending => Self::Descending,
         }
     }
 }
@@ -261,5 +279,32 @@ mod tests {
             parent: VaultPath::root(),
         };
         assert_eq!(SearchRow::match_text(&up), None);
+    }
+
+    #[test]
+    fn sort_field_setting_roundtrip() {
+        use crate::settings::SortFieldSetting;
+        assert_eq!(
+            SortFieldSetting::from(SortField::Name),
+            SortFieldSetting::Name
+        );
+        assert_eq!(
+            SortFieldSetting::from(SortField::Title),
+            SortFieldSetting::Title
+        );
+        assert_eq!(SortField::from(SortFieldSetting::Title), SortField::Title);
+    }
+
+    #[test]
+    fn sort_order_setting_roundtrip() {
+        use crate::settings::SortOrderSetting;
+        assert_eq!(
+            SortOrderSetting::from(SortOrder::Ascending),
+            SortOrderSetting::Ascending
+        );
+        assert_eq!(
+            SortOrderSetting::from(SortOrder::Descending),
+            SortOrderSetting::Descending
+        );
     }
 }

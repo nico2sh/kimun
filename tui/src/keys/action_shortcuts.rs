@@ -37,8 +37,7 @@ pub enum ActionShortcuts {
     ToggleSidebar,
     FocusEditor,
     FocusSidebar,
-    CycleSortField,
-    SortReverseOrder,
+    OpenSortDialog,
     // File operations
     FileOperations,
     // Editor link navigation
@@ -62,8 +61,7 @@ impl ActionShortcuts {
             ActionShortcuts::ToggleSidebar
             | ActionShortcuts::FocusSidebar
             | ActionShortcuts::FocusEditor
-            | ActionShortcuts::CycleSortField
-            | ActionShortcuts::SortReverseOrder
+            | ActionShortcuts::OpenSortDialog
             | ActionShortcuts::ToggleQueryPanel
             | ActionShortcuts::OpenSavedSearches
             | ActionShortcuts::SaveCurrentQuery
@@ -96,8 +94,7 @@ impl ActionShortcuts {
             ActionShortcuts::ToggleSidebar => "Toggle sidebar".into(),
             ActionShortcuts::FocusEditor => "Focus right".into(),
             ActionShortcuts::FocusSidebar => "Focus left".into(),
-            ActionShortcuts::CycleSortField => "Cycle sort field".into(),
-            ActionShortcuts::SortReverseOrder => "Reverse sort order".into(),
+            ActionShortcuts::OpenSortDialog => "Sort options".into(),
             ActionShortcuts::FileOperations => "File operations".into(),
             ActionShortcuts::FollowLink => "Follow link".into(),
             ActionShortcuts::QuickNote => "Quick note".into(),
@@ -133,8 +130,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::ToggleSidebar => "ToggleSidebar".to_string(),
             ActionShortcuts::FocusEditor => "FocusEditor".to_string(),
             ActionShortcuts::FocusSidebar => "FocusSidebar".to_string(),
-            ActionShortcuts::CycleSortField => "CycleSortField".to_string(),
-            ActionShortcuts::SortReverseOrder => "SortReverseOrder".to_string(),
+            ActionShortcuts::OpenSortDialog => "OpenSortDialog".to_string(),
             ActionShortcuts::FileOperations => "FileOperations".to_string(),
             ActionShortcuts::FollowLink => "FollowLink".to_string(),
             ActionShortcuts::QuickNote => "QuickNote".to_string(),
@@ -162,8 +158,9 @@ impl TryFrom<String> for ActionShortcuts {
             "ToggleSidebar" => ActionShortcuts::ToggleSidebar,
             "FocusEditor" => ActionShortcuts::FocusEditor,
             "FocusSidebar" => ActionShortcuts::FocusSidebar,
-            "CycleSortField" => ActionShortcuts::CycleSortField,
-            "SortReverseOrder" => ActionShortcuts::SortReverseOrder,
+            "OpenSortDialog" => ActionShortcuts::OpenSortDialog,
+            "CycleSortField" => ActionShortcuts::OpenSortDialog,
+            "SortReverseOrder" => ActionShortcuts::OpenSortDialog,
             "FileOperations" => ActionShortcuts::FileOperations,
             "FollowLink" => ActionShortcuts::FollowLink,
             "QuickNote" => ActionShortcuts::QuickNote,
@@ -228,11 +225,7 @@ mod tests {
             ShortcutCategory::Navigation
         );
         assert_eq!(
-            ActionShortcuts::CycleSortField.category(),
-            ShortcutCategory::Navigation
-        );
-        assert_eq!(
-            ActionShortcuts::SortReverseOrder.category(),
+            ActionShortcuts::OpenSortDialog.category(),
             ShortcutCategory::Navigation
         );
         assert_eq!(
@@ -312,11 +305,7 @@ mod tests {
         assert_eq!(ActionShortcuts::ToggleSidebar.label(), "Toggle sidebar");
         assert_eq!(ActionShortcuts::FocusEditor.label(), "Focus right");
         assert_eq!(ActionShortcuts::FocusSidebar.label(), "Focus left");
-        assert_eq!(ActionShortcuts::CycleSortField.label(), "Cycle sort field");
-        assert_eq!(
-            ActionShortcuts::SortReverseOrder.label(),
-            "Reverse sort order"
-        );
+        assert_eq!(ActionShortcuts::OpenSortDialog.label(), "Sort options");
         assert_eq!(ActionShortcuts::FileOperations.label(), "File operations");
         assert_eq!(ActionShortcuts::FollowLink.label(), "Follow link");
         assert_eq!(ActionShortcuts::QuickNote.label(), "Quick note");
@@ -397,6 +386,26 @@ mod tests {
         assert_eq!(
             ActionShortcuts::try_from("SaveCurrentQuery".to_string()),
             Ok(ActionShortcuts::SaveCurrentQuery)
+        );
+    }
+
+    #[test]
+    fn open_sort_dialog_roundtrip_and_legacy_alias() {
+        assert_eq!(
+            ActionShortcuts::OpenSortDialog.to_string(),
+            "OpenSortDialog"
+        );
+        assert_eq!(
+            ActionShortcuts::try_from("OpenSortDialog".to_string()),
+            Ok(ActionShortcuts::OpenSortDialog)
+        );
+        assert_eq!(
+            ActionShortcuts::try_from("CycleSortField".to_string()),
+            Ok(ActionShortcuts::OpenSortDialog)
+        );
+        assert_eq!(
+            ActionShortcuts::try_from("SortReverseOrder".to_string()),
+            Ok(ActionShortcuts::OpenSortDialog)
         );
     }
 }

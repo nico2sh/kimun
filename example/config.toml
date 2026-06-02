@@ -32,6 +32,7 @@ default_sort_field = "name"
 default_sort_order = "ascending"
 journal_sort_field = "name"
 journal_sort_order = "descending"
+group_directories = false
 
 [global]
 current_workspace = "work"
@@ -59,8 +60,7 @@ TextEditor-Strikethrough = ["ctrl&S"]
 ToggleSidebar = ["ctrl&T"]
 FocusEditor = ["ctrl&L"]
 FocusSidebar = ["ctrl&H"]
-CycleSortField = ["ctrl&N"]
-SortReverseOrder = ["ctrl&R"]
+OpenSortDialog = ["ctrl&R"]
 FileOperations = ["F2"]
 FollowLink = ["ctrl&G"]
 QuickNote = ["ctrl&W"]
