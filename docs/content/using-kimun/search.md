@@ -5,7 +5,7 @@ weight = 12
 
 # Search
 
-Kimün provides powerful search capabilities to find notes by content, filename, section, and path. Search indexes all Markdown files in your workspace and supports structured queries with operators and filters.
+Kimün provides powerful search capabilities to find notes by content, note name, section, path, and links. Search indexes all Markdown files in your workspace and supports structured queries with operators and filters.
 
 ## Opening search
 
@@ -43,31 +43,33 @@ task report      → must contain both "task" AND "report"
 
 ## Operators
 
-Operators allow you to filter by filename, section, or path. Each operator has both a short form (symbol) and a long form (colon-prefixed).
+Operators allow you to filter by note name, section, path, or links. Each operator has both a short form (symbol) and a long form (colon-prefixed).
 
-### `@` or `at:` — filename filter
+### `=` or `name:` — note name filter
 
-Filter notes by their filename (basename only, not full path):
+Filter notes by their name (basename only, not full path):
 
 ```
-@tasks           → notes whose filename contains "tasks"
-at:tasks         → same (long form)
-@project         → notes with "project" in the filename
-at:notes         → notes with "notes" in the filename
+=tasks           → notes whose name contains "tasks"
+name:tasks       → same (long form)
+=project         → notes with "project" in the name
+name:notes       → notes with "notes" in the name
 ```
 
-### `<` or `in:` — section filter
+### `@` or `in:` — section filter
 
 Filter notes by Markdown sections (defined by `#`, `##`, `###`, etc.). The search term must appear within that section:
 
 ```
-<personal        → content under a "Personal" heading
+@personal        → content under a "Personal" heading
 in:personal      → same (long form)
-<work            → content under a "Work" heading
+@work            → content under a "Work" heading
 in:meeting       → content under a "Meeting" heading
 ```
 
 Section names are matched case-insensitively against heading text. A note matches if any of its sections contain the search term.
+
+> **Wildcards on `@` are prefix-only.** The section filter is full-text indexed, so `*` works only at the **end** of a term (`@meet*` matches "meeting", "meetup") and matches whole words. Unlike `=`, `<`, `>`, and `/` — which support `*` anywhere (`*report`, `ta*sk`) — the section filter does **not** support leading or mid-term `*`.
 
 ### `/` or `pt:` — path filter
 
@@ -82,32 +84,44 @@ pt:docs          → same (long form)
 
 Paths are matched as prefixes, so `/docs` matches both `/docs/readme.md` and `/docs/guides/tutorial.md`.
 
-### `>` or `lk:` — link filter
+### `<` or `lk:` — backlink filter
 
 Filter to notes that **link to** a given note (its backlinks). A note matches when its body contains a note link — a `[[wikilink]]` or a Markdown link to a vault note — pointing at the target:
 
 ```
->projects        → notes that link to the note "projects"
+<projects        → notes that link to the note "projects"
 lk:projects      → same (long form)
->projects.md     → same (the .md extension is optional)
+<projects.md     → same (the .md extension is optional)
 ```
 
-The target is matched by note name, case-insensitively. The match is by **note identity**, not substring: `>projects` matches links to `projects` but not to `projects-archive`.
+The target is matched by note name, case-insensitively. The match is by **note identity**, not substring: `<projects` matches links to `projects` but not to `projects-archive`.
 
 A bare name matches a linked note in **any** folder. Add a path to disambiguate notes that share a name:
 
 ```
->projects        → links to any note named "projects" (e.g. work/projects, personal/projects)
->work/projects   → links to work/projects only
+<projects        → links to any note named "projects" (e.g. work/projects, personal/projects)
+<work/projects   → links to work/projects only
 ```
 
 Wildcards work here too:
 
 ```
->proj*           → notes linking to any note whose name starts with "proj"
+<proj*           → notes linking to any note whose name starts with "proj"
 ```
 
 Only links to other notes count — links to attachments, images, and external URLs are ignored.
+
+### `>` or `fwd:` — forward link filter
+
+Filter to the notes that a given note **links to** (its forward links). A note matches when the target note's body contains a link pointing at it:
+
+```
+>projects        → notes that the note "projects" links to
+fwd:projects     → same (long form)
+>projects.md     → same (the .md extension is optional)
+```
+
+Like the backlink filter, the target is matched by note name (case-insensitive), a bare name matches any folder, a path disambiguates, and `*` wildcards are allowed.
 
 ## Labels
 
@@ -159,8 +173,8 @@ lb:finance lb:review → notes with both "finance" AND "review" labels
 Label filters mix freely with free-text search and other operators:
 
 ```
-#finance report @2024           → labelled "finance", contains "report", filename has "2024"
-#project -#archived <work       → labelled "project", not "archived", under a "Work" section
+#finance report =2024           → labelled "finance", contains "report", name has "2024"
+#project -#archived @work        → labelled "project", not "archived", under a "Work" section
 ```
 
 An unknown label (one that has never appeared in any note) returns zero results, not an error.
@@ -171,14 +185,15 @@ Use the `-` prefix to exclude terms from search results. The `-` always leads, t
 
 ```
 -cancelled           → exclude notes containing "cancelled"
--<draft              → exclude notes with "draft" in any section title
--@temp               → exclude notes with "temp" in the filename
+-@draft              → exclude notes with "draft" in any section title
+-=temp               → exclude notes with "temp" in the name
 -/private            → exclude notes under a "private/" directory
 -#draft              → exclude notes labelled "draft"
-->draft              → exclude notes that link to "draft"
+-<draft              → exclude notes that link to "draft"
+->draft              → exclude notes that "draft" links to
 ```
 
-Long forms work the same way: `-in:draft`, `-at:temp`, `-pt:private`, `-lb:draft`, `-lk:draft`.
+Long forms work the same way: `-in:draft`, `-name:temp`, `-pt:private`, `-lb:draft`, `-lk:draft`, `-fwd:draft`.
 
 ### Exclusion-only searches
 
@@ -186,8 +201,8 @@ You can search using only exclusions to find all notes except those matching the
 
 ```
 -cancelled           → all notes EXCEPT those containing "cancelled"
--<draft              → all notes EXCEPT those with "draft" in section titles
--@temp               → all notes EXCEPT those with "temp" in the filename
+-@draft              → all notes EXCEPT those with "draft" in section titles
+-=temp               → all notes EXCEPT those with "temp" in the name
 -/archive            → all notes EXCEPT those under an "archive/" directory
 ```
 
@@ -198,14 +213,14 @@ All operators compose freely in a single query. Space between terms = AND.
 Each term (with or without an operator prefix) must match for a note to appear:
 
 ```
-@tasks <work report                → file "tasks", has "Work" section, contains "report"
-<personal kimun                    → "kimun" under a "Personal" section
-@thoughts kimun                    → file "thoughts" containing "kimun"
+=tasks @work report                → name "tasks", has "Work" section, contains "report"
+@personal kimun                    → "kimun" under a "Personal" section
+=thoughts kimun                    → name "thoughts" containing "kimun"
 meeting -cancelled                 → "meeting" but not "cancelled"
-@2024 -<draft                      → files from 2024 without "draft" in section titles
-/journal -<temp report             → in journal/, not titled "temp", containing "report"
-screen* @notes                     → starts with "screen", in file "notes"
-<personal report -completed        → "report" under "Personal", excluding "completed"
+=2024 -@draft                      → names from 2024 without "draft" in section titles
+/journal -@temp report             → in journal/, not titled "temp", containing "report"
+screen* =notes                     → starts with "screen", in name "notes"
+@personal report -completed        → "report" under "Personal", excluding "completed"
 ```
 
 ## Operator precedence
@@ -239,30 +254,32 @@ The simple but great note taking app!
 | Search | Returns | Reason |
 |---|---|---|
 | `kimun` | projects.md, tasks.md | both contain "kimun" |
-| `<personal kimun` | projects.md, tasks.md | "kimun" under a Personal heading in both |
-| `<personal report` | tasks.md | "report" only under Personal in tasks.md |
-| `@tasks <work` | tasks.md | file "tasks", has Work section |
+| `@personal kimun` | projects.md, tasks.md | "kimun" under a Personal heading in both |
+| `@personal report` | tasks.md | "report" only under Personal in tasks.md |
+| `=tasks @work` | tasks.md | name "tasks", has Work section |
 | `screen*` | any note with "screenshot", "screens", etc. | wildcard matches "screen" prefix |
 | `meeting -cancelled` | notes with "meeting" but not "cancelled" | exclusion removes matching notes |
-| `@2024 -<draft` | files from 2024 without "draft" in section titles | combined exclusion |
+| `=2024 -@draft` | names from 2024 without "draft" in section titles | combined exclusion |
 | `-cancelled` | all notes except those with "cancelled" | exclusion-only search |
-| `/journal -<temp` | notes in journal/ without "temp" in section titles | path + section exclusion |
-| `@tasks <work report` | tasks.md | file "tasks", "Work" section, contains "report" |
-| `-@archive -<draft` | all notes except those in archive/, excluding "draft" titles | combined exclusions |
+| `/journal -@temp` | notes in journal/ without "temp" in section titles | path + section exclusion |
+| `=tasks @work report` | tasks.md | name "tasks", "Work" section, contains "report" |
+| `-=archive -@draft` | all notes except those named archive/, excluding "draft" titles | combined exclusions |
 | `#finance` | notes labelled "finance" | label filter |
 | `lb:review` | notes labelled "review" | label filter (long form) |
 | `#finance #q2` | notes with both "finance" and "q2" labels | combined label filters |
 | `#project -#draft` | notes labelled "project" but not "draft" | label inclusion + exclusion |
-| `>kimun` | notes that link to the note "kimun" | link filter (backlinks) |
-| `lk:kimun #project` | notes linking to "kimun" and labelled "project" | link + label |
-| `>spec ->draft` | notes linking to "spec" but not to "draft" | link inclusion + exclusion |
+| `<kimun` | notes that link to the note "kimun" | backlink filter |
+| `lk:kimun #project` | notes linking to "kimun" and labelled "project" | backlink + label |
+| `<spec -<draft` | notes linking to "spec" but not to "draft" | backlink inclusion + exclusion |
+| `>kimun` | notes that the note "kimun" links to | forward link filter |
+| `fwd:spec #project` | notes that "spec" links to and labelled "project" | forward link + label |
 
 ## Edge cases
 
 - **Exclusion-only searches** return all notes except those matching the exclusion criteria
-- **Wildcards with operators**: `@task* <work` matches files starting with "task" that have a "Work" section
-- **Operator prefixes are case-insensitive**: `<Personal` and `<personal` are equivalent, `@Tasks` and `@tasks` are equivalent
-- **Multiple operators of same type**: `<work <personal` is AND — both sections must exist
+- **Wildcards with operators**: `=task* @work` matches notes named starting with "task" that have a "Work" section
+- **Operator prefixes are case-insensitive**: `@Personal` and `@personal` are equivalent, `=Tasks` and `=tasks` are equivalent
+- **Multiple operators of same type**: `@work @personal` is AND — both sections must exist
 - **Empty results**: If no notes match, the search returns an empty list
 - **Unknown labels**: `#nonexistent` returns zero results, not an error
 - **Hashtags in code**: `` `#tag` `` and hashtags inside fenced code blocks are not treated as labels

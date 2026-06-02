@@ -3,7 +3,6 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kimun_core::NoteVault;
 use kimun_core::note::ExclusionZones;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -11,6 +10,7 @@ use super::host::AutocompleteHost;
 use super::popup::{PopupAction, PopupOutcome, handle_key as popup_handle_key};
 use super::state::{AutocompleteState, DEFAULT_MAX_VISIBLE_ROWS, Suggestion};
 use super::trigger::{TriggerKind, TriggerOptions, ZoneOracle, detect_trigger_with_oracle};
+use crate::components::search_list::SuggestionSource;
 #[cfg(test)]
 use crate::components::text_editor::snapshot::EditorSnapshot;
 use crate::util::single_slot_task::SingleSlotTask;
@@ -43,6 +43,8 @@ const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(80);
 pub enum AutocompleteMode {
     Both,
     HashtagOnly,
+    /// Search-query box: hashtags (labels) + note-name operators (`<`, `>`, `=`).
+    SearchQuery,
 }
 
 /// Owns the popup lifecycle and the (debounced via generation tokens)
@@ -50,7 +52,7 @@ pub enum AutocompleteMode {
 /// controller decides whether to open, refresh, or close the popup.
 pub struct AutocompleteController {
     state: Option<AutocompleteState>,
-    vault: Arc<NoteVault>,
+    suggestions: Arc<dyn SuggestionSource>,
     mode: AutocompleteMode,
     /// Trigger-detection options passed to `detect_trigger_with` on every
     /// `sync`. The editor leaves header disambiguation on; the search box
@@ -130,11 +132,11 @@ impl ZoneOracle for LazyZoneOracle<'_> {
 }
 
 impl AutocompleteController {
-    pub fn new(vault: Arc<NoteVault>, mode: AutocompleteMode) -> Self {
+    pub fn new(suggestions: Arc<dyn SuggestionSource>, mode: AutocompleteMode) -> Self {
         let (result_tx, result_rx) = unbounded_channel();
         Self {
             state: None,
-            vault,
+            suggestions,
             mode,
             trigger_opts: TriggerOptions::default(),
             generation: 0,
@@ -159,7 +161,6 @@ impl AutocompleteController {
 
     /// Override the per-refinement debounce window. Tests pass
     /// `Duration::ZERO` so query results land promptly inside `drain_results`.
-    #[cfg(test)]
     pub fn with_debounce(mut self, debounce: Duration) -> Self {
         self.debounce = debounce;
         self
@@ -331,9 +332,14 @@ impl AutocompleteController {
 
         // Filter by mode before deciding anything else.
         let trigger = trigger.filter(|t| match (self.mode, t.kind) {
-            (AutocompleteMode::Both, _) => true,
+            (AutocompleteMode::Both, TriggerKind::Wikilink | TriggerKind::Hashtag) => true,
+            (AutocompleteMode::Both, TriggerKind::LinkFilter) => false,
             (AutocompleteMode::HashtagOnly, TriggerKind::Hashtag) => true,
-            (AutocompleteMode::HashtagOnly, TriggerKind::Wikilink) => false,
+            (AutocompleteMode::HashtagOnly, TriggerKind::Wikilink | TriggerKind::LinkFilter) => {
+                false
+            }
+            (AutocompleteMode::SearchQuery, TriggerKind::Hashtag | TriggerKind::LinkFilter) => true,
+            (AutocompleteMode::SearchQuery, TriggerKind::Wikilink) => false,
         });
 
         let Some(trigger) = trigger else {
@@ -378,6 +384,7 @@ impl AutocompleteController {
 
         if let Some(state) = self.state.as_mut() {
             state.kind = trigger.kind;
+            state.opener = trigger.opener;
             state.query = trigger.query.clone();
             state.replace_range = trigger.replace_range.clone();
             state.anchor = anchor;
@@ -410,16 +417,31 @@ impl AutocompleteController {
         }
     }
 
+    /// Build link-filter suggestions: the `{note}` variable when it matches the
+    /// prefix, followed by note names. Pure + async so it can be unit-tested.
+    pub(super) async fn link_filter_suggestions(
+        s: &dyn SuggestionSource,
+        prefix: &str,
+    ) -> Vec<crate::components::search_list::SuggestionItem> {
+        use crate::components::search_list::SuggestionItem;
+        let mut out = Vec::new();
+        if prefix.is_empty() || "note".starts_with(&prefix.to_lowercase()) {
+            out.push(SuggestionItem::plain("{note}"));
+        }
+        out.extend(s.notes_by_prefix(prefix, 20).await);
+        out
+    }
+
     fn fire_query(&mut self, kind: TriggerKind, query: String, instant: bool) {
         // `SingleSlotTask::spawn` aborts the previous in-flight task —
         // its result would be discarded on receive (generation
         // mismatch) but the SQLite hit would still happen and the
-        // vault `Arc` would stay alive until the task drained.
+        // suggestions `Arc` would stay alive until the task drained.
         self.generation = self.generation.wrapping_add(1);
         let req_gen = self.generation;
         let tx = self.result_tx.clone();
         let redraw = self.redraw_cb.clone();
-        let vault = self.vault.clone();
+        let suggestions = self.suggestions.clone();
         let limit = self.fetch_limit;
         let debounce = if instant {
             Duration::ZERO
@@ -428,45 +450,37 @@ impl AutocompleteController {
         };
         self.in_flight.spawn(async move {
             // Aborted by the next `fire_query` before this sleep completes
-            // for a burst of typing — the SQLite hit below never runs.
+            // for a burst of typing — the source hit below never runs.
             if !debounce.is_zero() {
                 tokio::time::sleep(debounce).await;
             }
             let items: Vec<Suggestion> = match kind {
-                TriggerKind::Wikilink => match vault.suggest_notes_by_prefix(&query, limit).await {
-                    Ok(notes) => notes
-                        .into_iter()
-                        .map(|n| Suggestion {
-                            display: n.name,
-                            secondary: Some(n.path.to_string()),
-                        })
-                        .collect(),
-                    Err(e) => {
-                        log::warn!(
-                            "autocomplete: suggest_notes_by_prefix({:?}) failed: {}",
-                            query,
-                            e
-                        );
-                        Vec::new()
-                    }
-                },
-                TriggerKind::Hashtag => match vault.suggest_tags_by_prefix(&query, limit).await {
-                    Ok(tags) => tags
-                        .into_iter()
-                        .map(|t| Suggestion {
-                            display: t.label,
-                            secondary: Some(format!("{}×", t.usage_count)),
-                        })
-                        .collect(),
-                    Err(e) => {
-                        log::warn!(
-                            "autocomplete: suggest_tags_by_prefix({:?}) failed: {}",
-                            query,
-                            e
-                        );
-                        Vec::new()
-                    }
-                },
+                TriggerKind::Wikilink => suggestions
+                    .notes_by_prefix(&query, limit)
+                    .await
+                    .into_iter()
+                    .map(|item| Suggestion {
+                        display: item.display,
+                        secondary: item.secondary,
+                    })
+                    .collect(),
+                TriggerKind::LinkFilter => Self::link_filter_suggestions(&*suggestions, &query)
+                    .await
+                    .into_iter()
+                    .map(|item| Suggestion {
+                        display: item.display,
+                        secondary: item.secondary,
+                    })
+                    .collect(),
+                TriggerKind::Hashtag => suggestions
+                    .tags_by_prefix(&query, limit)
+                    .await
+                    .into_iter()
+                    .map(|item| Suggestion {
+                        display: item.display,
+                        secondary: item.secondary,
+                    })
+                    .collect(),
             };
             let _ = tx.send(QueryResult {
                 generation: req_gen,
@@ -538,7 +552,7 @@ impl AutocompleteController {
                     new_cursor_byte,
                 })
             }
-            TriggerKind::Hashtag => {
+            TriggerKind::Hashtag | TriggerKind::LinkFilter => {
                 let new_cursor_byte = range.start.saturating_add(suggestion.display.len());
                 Some(AcceptAction {
                     range,
@@ -748,7 +762,9 @@ mod tests {
     /// Builds a controller with debounce disabled so tests don't pay the
     /// 80ms refinement window before each query reaches the in-memory DB.
     fn make_controller(vault: Arc<NoteVault>, mode: AutocompleteMode) -> AutocompleteController {
-        AutocompleteController::new(vault, mode).with_debounce(Duration::ZERO)
+        use crate::components::search_list::VaultSuggestions;
+        AutocompleteController::new(Arc::new(VaultSuggestions { vault }), mode)
+            .with_debounce(Duration::ZERO)
     }
 
     // ---- Lifecycle ----
@@ -1169,6 +1185,46 @@ mod tests {
         assert!(
             c.cached_text.is_none(),
             "close() must drop cached_text so the buffer clone doesn't outlive the popup"
+        );
+    }
+
+    #[tokio::test]
+    async fn link_filter_suggestions_include_note_var_and_names() {
+        use crate::components::search_list::{SuggestionItem, SuggestionSource};
+        struct MemSuggestions;
+        #[async_trait::async_trait]
+        impl SuggestionSource for MemSuggestions {
+            async fn notes_by_prefix(&self, prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
+                let all = vec![SuggestionItem::plain("projects")];
+                all.into_iter()
+                    .filter(|x| x.display.starts_with(prefix))
+                    .collect()
+            }
+            async fn tags_by_prefix(&self, _prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
+                Vec::new()
+            }
+        }
+        let mem = MemSuggestions;
+        // Empty prefix → {note} offered and notes with empty prefix match.
+        let s = AutocompleteController::link_filter_suggestions(&mem, "").await;
+        assert!(
+            s.iter().any(|x| x.display == "{note}"),
+            "{{note}} must appear for empty prefix"
+        );
+        assert!(
+            s.iter().any(|x| x.display == "projects"),
+            "projects must appear for empty prefix"
+        );
+        // Prefix "pro" → note name surfaced, {note} absent.
+        let s = AutocompleteController::link_filter_suggestions(&mem, "pro").await;
+        assert!(
+            s.iter().any(|x| x.display == "projects"),
+            "projects must appear for prefix 'pro'"
+        );
+        // "pro" does not start "note" so {note} should not appear
+        assert!(
+            !s.iter().any(|x| x.display == "{note}"),
+            "{{note}} must not appear for prefix 'pro'"
         );
     }
 

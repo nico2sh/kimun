@@ -179,11 +179,17 @@ pub fn render(frame: &mut Frame, state: &AutocompleteState, screen: Rect, theme:
 
 fn visible_title(state: &AutocompleteState) -> String {
     let sigil = match state.kind {
-        super::TriggerKind::Wikilink => "[[",
-        super::TriggerKind::Hashtag => "#",
+        super::TriggerKind::Wikilink => "[[".to_string(),
+        super::TriggerKind::Hashtag => "#".to_string(),
+        // `LinkFilter` fires for `<`, `>`, and `=`; render the operator the
+        // user actually typed rather than a hardcoded one.
+        super::TriggerKind::LinkFilter => state
+            .opener
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| ">".to_string()),
     };
     if state.query.is_empty() {
-        sigil.to_string()
+        sigil
     } else {
         format!("{}{}", sigil, state.query)
     }
@@ -418,6 +424,41 @@ mod tests {
         draw(&st, Rect::new(0, 0, 40, 10));
         // No assertion on cell content; this just exercises the flip path
         // without panicking.
+    }
+
+    // ---- visible_title sigil ----
+
+    #[test]
+    fn title_uses_link_filter_opener_char() {
+        // LinkFilter fires for `<`, `>`, and `=`; the title must reflect the
+        // operator the user actually typed, not a hardcoded `>`.
+        for opener in ['<', '>', '='] {
+            let mut st = AutocompleteState::new(TriggerKind::LinkFilter, (0, 0));
+            st.opener = Some(opener);
+            st.query = "work".to_string();
+            assert_eq!(visible_title(&st), format!("{opener}work"));
+
+            st.query.clear();
+            assert_eq!(visible_title(&st), opener.to_string());
+        }
+    }
+
+    #[test]
+    fn title_falls_back_when_link_filter_opener_missing() {
+        let mut st = AutocompleteState::new(TriggerKind::LinkFilter, (0, 0));
+        st.opener = None;
+        assert_eq!(visible_title(&st), ">");
+    }
+
+    #[test]
+    fn title_uses_fixed_sigils_for_hashtag_and_wikilink() {
+        let mut st = AutocompleteState::new(TriggerKind::Hashtag, (0, 0));
+        st.query = "tag".to_string();
+        assert_eq!(visible_title(&st), "#tag");
+
+        let mut st = AutocompleteState::new(TriggerKind::Wikilink, (0, 0));
+        st.query = "note".to_string();
+        assert_eq!(visible_title(&st), "[[note");
     }
 
     #[test]

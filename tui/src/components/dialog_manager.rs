@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use crate::components::Component;
 use crate::components::dialogs::{
     ActiveDialog, CreateNoteDialog, DeleteConfirmDialog, FileOpsMenuDialog, HelpDialog, MoveDialog,
-    QuickNoteModal, RenameDialog, ValidationState, WorkspaceSwitcherModal,
+    QuickNoteModal, RenameDialog, SaveSearchDialog, ValidationState, WorkspaceSwitcherModal,
 };
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
@@ -200,6 +200,15 @@ impl DialogManager {
     pub fn open_create_note(&mut self, path: VaultPath, vault: Arc<NoteVault>, current_focus: u8) {
         self.open(
             ActiveDialog::CreateNote(CreateNoteDialog::new(path, vault)),
+            current_focus,
+        );
+    }
+
+    /// Convenience: open the save-search name dialog (used by the
+    /// `SaveCurrentQuery` action in the editor screen).
+    pub fn open_save_search(&mut self, query: String, current_focus: u8) {
+        self.open(
+            ActiveDialog::SaveSearch(SaveSearchDialog::new(query)),
             current_focus,
         );
     }

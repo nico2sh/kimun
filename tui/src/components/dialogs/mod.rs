@@ -5,6 +5,7 @@ pub use help_dialog::HelpDialog;
 pub use move_dialog::MoveDialog;
 pub use quick_note_modal::QuickNoteModal;
 pub use rename_dialog::RenameDialog;
+pub use save_search_dialog::SaveSearchDialog;
 pub use workspace_switcher::WorkspaceSwitcherModal;
 
 use ratatui::Frame;
@@ -41,6 +42,7 @@ pub mod help_dialog;
 pub mod move_dialog;
 pub mod quick_note_modal;
 pub mod rename_dialog;
+pub mod save_search_dialog;
 pub mod workspace_switcher;
 
 pub enum ActiveDialog {
@@ -52,6 +54,7 @@ pub enum ActiveDialog {
     Help(HelpDialog),
     QuickNote(QuickNoteModal),
     WorkspaceSwitcher(WorkspaceSwitcherModal),
+    SaveSearch(SaveSearchDialog),
 }
 
 impl ActiveDialog {
@@ -65,6 +68,7 @@ impl ActiveDialog {
             ActiveDialog::Help(_) => {}
             ActiveDialog::QuickNote(d) => d.error = Some(msg),
             ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
+            ActiveDialog::SaveSearch(_) => {}        // no error state
         }
     }
 }
@@ -83,6 +87,7 @@ impl Component for ActiveDialog {
             ActiveDialog::Help(d) => d.handle_key(*key, tx),
             ActiveDialog::QuickNote(d) => d.handle_key(*key, tx),
             ActiveDialog::WorkspaceSwitcher(d) => d.handle_key(*key, tx),
+            ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
         }
     }
 
@@ -96,6 +101,7 @@ impl Component for ActiveDialog {
             ActiveDialog::Help(d) => d.render(f, rect, theme, focused),
             ActiveDialog::QuickNote(d) => d.render(f, rect, theme, focused),
             ActiveDialog::WorkspaceSwitcher(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::SaveSearch(d) => d.render(f, rect, theme, focused),
         }
     }
 }
@@ -165,21 +171,6 @@ pub(super) fn render_confirm_hint(
 // ---------------------------------------------------------------------------
 // Layout helper
 // ---------------------------------------------------------------------------
-
-pub(super) fn centered_rect(
-    percent_x: u16,
-    percent_y: u16,
-    area: ratatui::layout::Rect,
-) -> ratatui::layout::Rect {
-    let popup_height = (area.height as u32 * percent_y as u32 / 100) as u16;
-    let popup_width = (area.width as u32 * percent_x as u32 / 100) as u16;
-    ratatui::layout::Rect {
-        x: area.x + (area.width.saturating_sub(popup_width)) / 2,
-        y: area.y + (area.height.saturating_sub(popup_height)) / 2,
-        width: popup_width,
-        height: popup_height,
-    }
-}
 
 /// Centre a dialog of exactly `width` × `height` characters.
 pub(super) fn fixed_centered_rect(

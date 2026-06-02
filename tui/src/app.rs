@@ -24,8 +24,8 @@ pub struct App {
     /// when the screen identity changes mid-batch — without this, queued
     /// events from the OLD screen instance can be routed to a fresh
     /// screen of the same `ScreenKind` (e.g. EditorScreen(A) → follow-link
-    /// → EditorScreen(B)) and leak A's BacklinksLoaded / InsertAtCursor /
-    /// dialog-result payloads into B.
+    /// → EditorScreen(B)) and leak A's InsertAtCursor / dialog-result
+    /// payloads into B.
     pub screen_generation: u64,
 }
 

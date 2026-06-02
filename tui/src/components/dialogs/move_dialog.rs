@@ -302,7 +302,7 @@ impl MoveDialog {
 
 impl Component for MoveDialog {
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, _focused: bool) {
-        let popup_area = super::centered_rect(50, 60, rect);
+        let popup_area = crate::components::centered_rect(50, 60, rect);
 
         // Backdrop: clear whatever is rendered behind the popup.
         f.render_widget(Clear, popup_area);

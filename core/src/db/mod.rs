@@ -1,5 +1,5 @@
 // mod async_db;
-mod search_terms;
+pub(crate) mod search_terms;
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -69,6 +69,9 @@ use super::{
     VaultPath,
 };
 
+// 0.10: Added `links(source)` and `notes(noteName)` indexes so the forward-link
+//       filter `>`/`fwd:` and bare-name source resolution are index-served
+//       instead of full scans. Bump forces a clean reindex.
 // 0.8: Tightened hashtag word-boundary rule — `##tag`, `#tag#more`, and
 //      similar adjacent-`#` patterns are no longer treated as labels. Bump
 //      forces a clean reindex so the `labels` table drops the stale rows
@@ -85,7 +88,7 @@ use super::{
 //      of each link destination) so the `>`/`lk:` link filter matches notes
 //      by name with an indexed lookup instead of a leading-`%` scan. Bump
 //      forces a clean reindex so the column is populated for existing vaults.
-const VERSION: &str = "0.9";
+const VERSION: &str = "0.10";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
 #[derive(Debug, Clone)]
@@ -276,11 +279,30 @@ async fn create_tables(pool: &SqlitePool) -> Result<(), DBError> {
     .execute(&mut *tx)
     .await?;
 
-    // Backs the `>`/`lk:` link filter's name-anywhere match (folder-independent
+    // Backs the `<`/`lk:` backlink filter's name-anywhere match (folder-independent
     // bare filename), so it never has to scan with a leading-`%` LIKE.
     sqlx::query(
         "CREATE INDEX links_by_dest_name
             ON links(dest_name)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Backs the `>`/`fwd:` forward-link filter, which filters/joins on
+    // `links.source`, so it never has to full-scan the links table.
+    sqlx::query(
+        "CREATE INDEX links_by_source
+            ON links(source)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Backs bare-name source resolution (the `>`/`fwd:` filter joins links
+    // back to `notes.noteName`), so the join is index-served instead of a
+    // full scan.
+    sqlx::query(
+        "CREATE INDEX notes_by_name
+            ON notes(noteName)",
     )
     .execute(&mut *tx)
     .await?;
@@ -390,6 +412,7 @@ fn build_search_sql_query_inner(search_terms: &SearchTerms) -> (String, Vec<Stri
     add_path_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_labels_query(search_terms, &mut var_num, &mut params, &mut queries);
     add_links_query(search_terms, &mut var_num, &mut params, &mut queries);
+    add_forward_links_query(search_terms, &mut var_num, &mut params, &mut queries);
 
     if queries.is_empty() {
         debug!("No query provided");
@@ -490,11 +513,20 @@ fn add_filename_query(
     if let Some(final_where) = build_like_conditions(
         &s.filename,
         &s.excluded_filename,
-        |n| format!("notes.noteName LIKE ('%' || ?{} || '%') ESCAPE '\\'", n),
-        |n| format!("notes.noteName NOT LIKE ('%' || ?{} || '%') ESCAPE '\\'", n),
+        |n| format!("notes.noteName LIKE ?{} ESCAPE '\\'", n),
+        |n| format!("notes.noteName NOT LIKE ?{} ESCAPE '\\'", n),
         var_num,
         params,
-        |t: &String| escape_like_pattern(t),
+        |t: &String| {
+            if t.contains('*') {
+                // Explicit wildcard: extension-aware whole-name match, * → %.
+                // Escape first (so literal % / _ stay escaped), then * → %.
+                escape_like_pattern(&with_note_extension(t)).replace('*', "%")
+            } else {
+                // Substring match (unchanged behaviour).
+                format!("%{}%", escape_like_pattern(t))
+            }
+        },
     ) {
         queries.push(format!("{} WHERE {}", search_base_sql(), final_where));
     }
@@ -614,10 +646,26 @@ fn add_labels_query(
 /// stored-form invariant: link destinations are lowercased, carry the note
 /// extension, and are either a bare relative name or a relative/absolute path.
 /// Returns `None` for an empty target.
-fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) -> Option<String> {
+/// Normalized pieces of a link-filter target, shared by [`link_subquery`]
+/// (backlinks) and [`forward_link_subquery`] (forward links). Only the SQL
+/// column names differ between the two; the normalization is identical.
+struct LinkTarget {
+    /// Lowercased, extension-applied note name/path used as the bound param.
+    name: String,
+    /// `true` when the target contains a path separator (anchor to full path).
+    is_path_qualified: bool,
+    /// `true` when the target contains a `*` wildcard (use `LIKE`).
+    has_wildcard: bool,
+}
+
+/// Normalize a link-filter target: trim/lowercase, strip a leading separator,
+/// detect path-qualified / wildcard, and apply the note extension. Returns
+/// `None` for an empty target.
+///
+/// A leading separator only signals "absolute"; both stored forms are matched
+/// anyway, so it is stripped before normalizing.
+fn normalize_link_target(target: &str) -> Option<LinkTarget> {
     let lowered = target.trim().to_lowercase();
-    // A leading separator only signals "absolute"; both stored forms are
-    // matched anyway, so strip it before normalizing.
     let stripped = lowered.strip_prefix(PATH_SEPARATOR).unwrap_or(&lowered);
     if stripped.is_empty() {
         return None;
@@ -625,6 +673,19 @@ fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) ->
     let is_path_qualified = stripped.contains(PATH_SEPARATOR);
     let has_wildcard = stripped.contains('*');
     let name = with_note_extension(stripped);
+    Some(LinkTarget {
+        name,
+        is_path_qualified,
+        has_wildcard,
+    })
+}
+
+fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) -> Option<String> {
+    let LinkTarget {
+        name,
+        is_path_qualified,
+        has_wildcard,
+    } = normalize_link_target(target)?;
 
     let body = if has_wildcard {
         // Escape LIKE metacharacters in the literal, then turn user `*` into
@@ -660,8 +721,8 @@ fn link_subquery(target: &str, var_num: &mut usize, params: &mut Vec<String>) ->
     Some(format!("SELECT source FROM links WHERE {body}"))
 }
 
-/// Link filter (`>` / `lk:`). Each positive target is its own INTERSECT branch
-/// (AND semantics, like labels); exclusions are bundled into a single
+/// Backlinks filter (`<` / `lk:`). Each positive target is its own INTERSECT
+/// branch (AND semantics, like labels); exclusions are bundled into a single
 /// notes-only SELECT chaining `NOT IN`.
 fn add_links_query(
     s: &SearchTerms,
@@ -676,6 +737,88 @@ fn add_links_query(
         params,
         queries,
         link_subquery,
+    );
+}
+
+/// Builds the subquery of NOTE PATHS that are link *destinations* of the
+/// note(s) named `target` — i.e. the forward-links of `target` (`>` / `fwd:`).
+///
+/// Where [`link_subquery`] selects the *sources* of links pointing at a name,
+/// this selects the *destinations* of links emitted by the note(s) matching the
+/// name. The destination column is heterogeneous (a bare relative name, or a
+/// relative/absolute path), so resolving it back to a concrete note path is
+/// done by joining `notes n2` and matching on all stored forms:
+///   - `l.dest_name = n2.noteName` (folder-independent bare basename, both
+///     carry the `.md` extension), or
+///   - `l.destination = n2.path` (relative stored form), or
+///   - `l.destination = '/' || n2.path` (absolute stored form).
+///
+/// The *source* note is matched by name exactly as [`link_subquery`] matches a
+/// target: bare name → indexed equality on `src.noteName` (the lowercased
+/// basename, `.md`-suffixed); path-qualified → equality on `src.path` (relative
+/// or absolute); wildcards → `LIKE`. Returns `None` for an empty target.
+fn forward_link_subquery(
+    target: &str,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+) -> Option<String> {
+    let LinkTarget {
+        name,
+        is_path_qualified,
+        has_wildcard,
+    } = normalize_link_target(target)?;
+
+    let src_match = if has_wildcard {
+        let pattern = escape_like_pattern(&name).replace('*', "%");
+        params.push(pattern);
+        let body = if is_path_qualified {
+            format!(
+                "src.path LIKE ?{n} ESCAPE '\\' OR src.path LIKE ('/' || ?{n}) ESCAPE '\\'",
+                n = var_num
+            )
+        } else {
+            format!("src.noteName LIKE ?{n} ESCAPE '\\'", n = var_num)
+        };
+        *var_num += 1;
+        body
+    } else if is_path_qualified {
+        params.push(name);
+        let body = format!("src.path = ?{n} OR src.path = ('/' || ?{n})", n = var_num);
+        *var_num += 1;
+        body
+    } else {
+        params.push(name);
+        let body = format!("src.noteName = ?{n}", n = var_num);
+        *var_num += 1;
+        body
+    };
+
+    Some(format!(
+        "SELECT n2.path FROM notes n2 \
+         JOIN links l ON (l.dest_name = n2.noteName \
+                          OR l.destination = n2.path \
+                          OR l.destination = ('/' || n2.path)) \
+         JOIN notes src ON src.path = l.source \
+         WHERE {src_match}"
+    ))
+}
+
+/// Forward-links filter (`>` / `fwd:`). Mirrors [`add_links_query`] but over
+/// `forward_links`/`excluded_forward_links` with [`forward_link_subquery`], so
+/// forward-link branches INTERSECT/compose like every other membership filter.
+fn add_forward_links_query(
+    s: &SearchTerms,
+    var_num: &mut usize,
+    params: &mut Vec<String>,
+    queries: &mut Vec<String>,
+) {
+    add_membership_query(
+        &s.forward_links,
+        &s.excluded_forward_links,
+        var_num,
+        params,
+        queries,
+        forward_link_subquery,
     );
 }
 
@@ -694,23 +837,35 @@ fn path_term_conditions(
         if term.is_empty() {
             continue;
         }
-        let (cond, value) = match term.strip_suffix(PATH_SEPARATOR) {
-            Some(absolute) => {
-                let op = if positive { "=" } else { "!=" };
-                (
-                    format!("notes.basePath {} ('/' || ?{})", op, var_num),
-                    absolute.to_string(),
-                )
-            }
-            None => {
-                let op = if positive { "LIKE" } else { "NOT LIKE" };
-                (
-                    format!(
-                        "notes.basePath {} ('/' || ?{} || '%') ESCAPE '\\'",
-                        op, var_num
-                    ),
-                    escape_like_pattern(term),
-                )
+        let (cond, value) = if term.contains('*') {
+            // Explicit wildcard: anchor at the leading separator, translate the
+            // user's `*` into the SQL `%` wildcard (escape first so any literal
+            // `%`/`_` stays literal). No auto-appended `%` — the `*` placement
+            // fully controls matching (e.g. `/work*` = prefix, `/wo*k` = infix).
+            let op = if positive { "LIKE" } else { "NOT LIKE" };
+            (
+                format!("notes.basePath {} ('/' || ?{}) ESCAPE '\\'", op, var_num),
+                escape_like_pattern(term).replace('*', "%"),
+            )
+        } else {
+            match term.strip_suffix(PATH_SEPARATOR) {
+                Some(absolute) => {
+                    let op = if positive { "=" } else { "!=" };
+                    (
+                        format!("notes.basePath {} ('/' || ?{})", op, var_num),
+                        absolute.to_string(),
+                    )
+                }
+                None => {
+                    let op = if positive { "LIKE" } else { "NOT LIKE" };
+                    (
+                        format!(
+                            "notes.basePath {} ('/' || ?{} || '%') ESCAPE '\\'",
+                            op, var_num
+                        ),
+                        escape_like_pattern(term),
+                    )
+                }
             }
         };
         out.push(cond);
@@ -1642,7 +1797,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_breadcrumb_only() {
-        let (sql, params) = build_search_sql_query("<heading");
+        let (sql, params) = build_search_sql_query("@heading");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
@@ -1664,7 +1819,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_multiple_breadcrumbs() {
-        let (sql, params) = build_search_sql_query("<heading1 in:heading2");
+        let (sql, params) = build_search_sql_query("@heading1 in:heading2");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1"
@@ -1675,43 +1830,43 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_path_only() {
-        let (sql, params) = build_search_sql_query("@filename");
+        let (sql, params) = build_search_sql_query("=filename");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\'"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?1 ESCAPE '\\'"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "filename");
+        assert_eq!(params[0], "%filename%");
     }
 
     #[test]
     fn test_search_terms_query_path_with_at() {
-        let (sql, params) = build_search_sql_query("at:directory");
+        let (sql, params) = build_search_sql_query("name:directory");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\'"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?1 ESCAPE '\\'"
         );
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], "directory");
+        assert_eq!(params[0], "%directory%");
     }
 
     #[test]
     fn test_search_terms_query_multiple_paths() {
-        let (sql, params) = build_search_sql_query("@file1 at:file2");
-        // Same-type operators AND together (consistent with #, >, <, and the
+        let (sql, params) = build_search_sql_query("=file1 name:file2");
+        // Same-type operators AND together (consistent with #, <, >, and the
         // documented "all terms are ANDed" precedence).
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?1 || '%') ESCAPE '\\' AND notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?1 ESCAPE '\\' AND notes.noteName LIKE ?2 ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
-        assert_eq!(params[0], "file1");
-        assert_eq!(params[1], "file2");
+        assert_eq!(params[0], "%file1%");
+        assert_eq!(params[1], "%file2%");
     }
 
     #[test]
     fn test_search_terms_query_terms_and_breadcrumb() {
-        let (sql, params) = build_search_sql_query("keyword <section");
+        let (sql, params) = build_search_sql_query("keyword @section");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
@@ -1723,39 +1878,39 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_terms_and_path() {
-        let (sql, params) = build_search_sql_query("keyword @file");
+        let (sql, params) = build_search_sql_query("keyword =file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?2 ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "\"keyword\"");
-        assert_eq!(params[1], "file");
+        assert_eq!(params[1], "%file%");
     }
 
     #[test]
     fn test_search_terms_query_breadcrumb_and_path() {
-        let (sql, params) = build_search_sql_query("<heading @file");
+        let (sql, params) = build_search_sql_query("@heading =file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?2 || '%') ESCAPE '\\'"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?2 ESCAPE '\\'"
         );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "\"heading\"");
-        assert_eq!(params[1], "file");
+        assert_eq!(params[1], "%file%");
     }
 
     #[test]
     fn test_search_terms_query_all_combined() {
-        let (sql, params) = build_search_sql_query("keyword <heading @file");
+        let (sql, params) = build_search_sql_query("keyword @heading =file");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ESCAPE '\\'"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?3 ESCAPE '\\'"
         );
         assert_eq!(params.len(), 3);
         assert_eq!(params[0], "\"keyword\"");
         assert_eq!(params[1], "\"heading\"");
-        assert_eq!(params[2], "file");
+        assert_eq!(params[2], "%file%");
     }
 
     #[test]
@@ -1837,15 +1992,15 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_complex_with_order() {
-        let (sql, params) = build_search_sql_query("keyword <section @file ^title");
+        let (sql, params) = build_search_sql_query("keyword @section =file ^title");
         assert_eq!(
             sql,
-            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ('%' || ?3 || '%') ESCAPE '\\'"
+            "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notes.noteName LIKE ?3 ESCAPE '\\'"
         );
         assert_eq!(params.len(), 3);
         assert_eq!(params[0], "\"keyword\"");
         assert_eq!(params[1], "\"section\"");
-        assert_eq!(params[2], "file");
+        assert_eq!(params[2], "%file%");
     }
 
     #[test]
@@ -1868,7 +2023,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_whitespace_handling() {
-        let (sql, params) = build_search_sql_query("  keyword   <section  ");
+        let (sql, params) = build_search_sql_query("  keyword   @section  ");
         assert_eq!(
             sql,
             "SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent MATCH ?1 INTERSECT SELECT DISTINCT notes.path as path, title, size, modified, hash, noteName FROM notesContent JOIN notes ON notesContent.path = notes.path WHERE notesContent.breadcrumb MATCH ?2"
@@ -1914,7 +2069,7 @@ mod tests {
 
     #[test]
     fn test_breadcrumb_exclusion_sql_generation() {
-        let (sql, params) = build_search_sql_query("<project -<draft");
+        let (sql, params) = build_search_sql_query("@project -@draft");
 
         // Positive breadcrumb is a column-scoped MATCH; the exclusion is a
         // robust NOT IN subquery (not the old, broken inline `breadcrumb: -term`).
@@ -1930,22 +2085,23 @@ mod tests {
 
     #[test]
     fn test_like_exclusion_sql_generation() {
-        let (sql, params) = build_search_sql_query("@2024 -@draft");
+        let (sql, params) = build_search_sql_query("=2024 -=draft");
 
         // Should generate filename query with positive and negative conditions
         assert!(sql.contains("notes.noteName LIKE"));
         assert!(sql.contains("notes.noteName NOT LIKE"));
-        assert!(params.contains(&"2024".to_string()));
-        assert!(params.contains(&"draft".to_string()));
+        assert!(params.contains(&"%2024%".to_string()));
+        assert!(params.contains(&"%draft%".to_string()));
     }
 
     #[test]
     fn test_exclusion_only_like_query() {
-        let (sql, params) = build_search_sql_query("-@draft -@temp");
+        let (sql, params) = build_search_sql_query("-=draft -=temp");
 
         // Exclusion-only should still generate valid WHERE clause
         assert!(sql.contains("notes.noteName NOT LIKE"));
-        assert!(!sql.contains("notes.noteName LIKE ('%'")); // No positive conditions
+        // The new format embeds % in the param, not in the SQL template
+        assert!(!sql.contains("NOT LIKE ('%'"));
         assert_eq!(params.len(), 2);
     }
 
@@ -2160,13 +2316,13 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_links_only() {
-        let (sql, params) = build_search_sql_query(">projects");
+        let (sql, params) = build_search_sql_query("<projects");
         assert_eq!(params, vec!["projects.md".to_string()]);
         assert!(
             sql.contains("FROM notes")
                 && sql.contains("SELECT source FROM links")
                 && sql.contains("notes.path IN"),
-            "links query should select sources from links: {}",
+            "backlinks query should select sources from links: {}",
             sql
         );
         // Bare name (no wildcard) matches the indexed dest_name column with
@@ -2186,7 +2342,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_links_path_qualified() {
-        let (sql, params) = build_search_sql_query(">work/projects");
+        let (sql, params) = build_search_sql_query("<work/projects");
         assert_eq!(params, vec!["work/projects.md".to_string()]);
         // Path-qualified anchors to the full path (relative or absolute) via
         // indexed equality on `destination`, not the bare-name column.
@@ -2200,7 +2356,7 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_links_wildcard() {
-        let (sql, params) = build_search_sql_query(">proj*");
+        let (sql, params) = build_search_sql_query("<proj*");
         assert_eq!(params, vec!["proj%.md".to_string()]);
         // Wildcard bare name uses a prefix LIKE on the indexed dest_name column.
         assert!(
@@ -2212,41 +2368,41 @@ mod tests {
 
     #[test]
     fn test_search_terms_query_links_extension_optional() {
-        let (_sql, params) = build_search_sql_query(">projects.md");
+        let (_sql, params) = build_search_sql_query("<projects.md");
         assert_eq!(params, vec!["projects.md".to_string()]);
     }
 
     #[test]
     fn test_search_terms_query_excluded_links() {
-        let (sql, params) = build_search_sql_query("->draft");
+        let (sql, params) = build_search_sql_query("-<draft");
         assert_eq!(params, vec!["draft.md".to_string()]);
         assert!(
             sql.contains("notes.path NOT IN (SELECT source FROM links"),
-            "excluded links should use NOT IN: {}",
+            "excluded backlinks should use NOT IN: {}",
             sql
         );
     }
 
     #[test]
     fn test_search_terms_query_two_links_intersect() {
-        let (sql, params) = build_search_sql_query(">a >b");
+        let (sql, params) = build_search_sql_query("<a <b");
         assert_eq!(params.len(), 2);
         assert!(
             sql.contains("INTERSECT"),
-            "two links should INTERSECT: {}",
+            "two backlinks should INTERSECT: {}",
             sql
         );
     }
 
     #[test]
     fn test_search_terms_query_links_combined_with_operators() {
-        // Free-text term + link + label all compose via INTERSECT.
-        let (sql, params) = build_search_sql_query("meeting >spec #urgent");
+        // Free-text term + backlink + label all compose via INTERSECT.
+        let (sql, params) = build_search_sql_query("meeting <spec #urgent");
         assert_eq!(sql.matches("INTERSECT").count(), 2);
         assert!(sql.contains("notesContent MATCH"));
         assert!(sql.contains("SELECT source FROM links"));
         assert!(sql.contains("FROM labels WHERE name"));
-        // Params follow the fan-out order: content term, label, then link.
+        // Params follow the fan-out order: content term, label, then backlink.
         assert_eq!(
             params,
             vec![
@@ -2302,36 +2458,36 @@ mod tests {
             p
         };
 
-        // link + free-text term.
-        let r = super::search_terms(db.pool(), ">spec meeting")
+        // backlink + free-text term.
+        let r = super::search_terms(db.pool(), "<spec meeting")
             .await
             .unwrap();
         assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
 
-        // link + label.
-        let r = super::search_terms(db.pool(), ">spec #urgent")
+        // backlink + label.
+        let r = super::search_terms(db.pool(), "<spec #urgent")
             .await
             .unwrap();
         assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
 
-        // link + excluded label.
-        let r = super::search_terms(db.pool(), ">spec -#urgent")
+        // backlink + excluded label.
+        let r = super::search_terms(db.pool(), "<spec -#urgent")
             .await
             .unwrap();
         assert_eq!(paths(&r), vec!["/b.md".to_string()]);
 
-        // link + path filter.
-        let r = super::search_terms(db.pool(), ">spec /work").await.unwrap();
+        // backlink + path filter.
+        let r = super::search_terms(db.pool(), "<spec /work").await.unwrap();
         assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
 
-        // link + section (breadcrumb) filter.
-        let r = super::search_terms(db.pool(), ">spec <tasks")
+        // backlink + section (breadcrumb) filter.
+        let r = super::search_terms(db.pool(), "<spec @tasks")
             .await
             .unwrap();
         assert_eq!(paths(&r), vec!["/work/a.md".to_string()]);
 
-        // link + filename filter.
-        let r = super::search_terms(db.pool(), ">spec @b").await.unwrap();
+        // backlink + filename filter.
+        let r = super::search_terms(db.pool(), "<spec =b").await.unwrap();
         assert_eq!(paths(&r), vec!["/b.md".to_string()]);
 
         // label without link still matches the non-linking note.
@@ -2373,8 +2529,8 @@ mod tests {
         super::insert_notes(&mut tx, &entries).await.unwrap();
         tx.commit().await.unwrap();
 
-        // @report @2024 must match ONLY the file containing both, not either.
-        let r = super::search_terms(db.pool(), "@report @2024")
+        // =report =2024 must match ONLY the file containing both, not either.
+        let r = super::search_terms(db.pool(), "=report =2024")
             .await
             .unwrap();
         let paths: Vec<String> = r.iter().map(|(e, _)| e.path.to_string()).collect();
@@ -2411,12 +2567,12 @@ mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        let r = super::search_terms(db.pool(), ">renamed").await.unwrap();
+        let r = super::search_terms(db.pool(), "<renamed").await.unwrap();
         let paths: Vec<String> = r.iter().map(|(e, _)| e.path.to_string()).collect();
         assert_eq!(paths, vec!["/a.md".to_string()]);
 
         // The old name no longer matches.
-        let r = super::search_terms(db.pool(), ">target").await.unwrap();
+        let r = super::search_terms(db.pool(), "<target").await.unwrap();
         assert!(r.is_empty());
 
         db.close().await.unwrap();
@@ -2467,15 +2623,15 @@ mod tests {
             p
         };
 
-        // Notes that link to "projects".
-        let r = super::search_terms(db.pool(), ">projects").await.unwrap();
+        // Notes that link to "projects" (backlinks).
+        let r = super::search_terms(db.pool(), "<projects").await.unwrap();
         assert_eq!(
             paths(&r),
             vec!["/b.md".to_string(), "/index.md".to_string()]
         );
 
         // Extension optional.
-        let r = super::search_terms(db.pool(), ">projects.md")
+        let r = super::search_terms(db.pool(), "<projects.md")
             .await
             .unwrap();
         assert_eq!(
@@ -2484,28 +2640,109 @@ mod tests {
         );
 
         // Bare name matches a note in a subfolder (name-anywhere).
-        let r = super::search_terms(db.pool(), ">spec").await.unwrap();
+        let r = super::search_terms(db.pool(), "<spec").await.unwrap();
         assert_eq!(paths(&r), vec!["/index.md".to_string()]);
 
         // Path-qualified match.
-        let r = super::search_terms(db.pool(), ">work/spec").await.unwrap();
+        let r = super::search_terms(db.pool(), "<work/spec").await.unwrap();
         assert_eq!(paths(&r), vec!["/index.md".to_string()]);
 
         // Wildcard.
-        let r = super::search_terms(db.pool(), ">proj*").await.unwrap();
+        let r = super::search_terms(db.pool(), "<proj*").await.unwrap();
         assert_eq!(
             paths(&r),
             vec!["/b.md".to_string(), "/index.md".to_string()]
         );
 
         // Exclusion: all notes that do NOT link to projects (index and b both link it).
-        let r = super::search_terms(db.pool(), "->projects").await.unwrap();
+        let r = super::search_terms(db.pool(), "-<projects").await.unwrap();
         assert_eq!(paths(&r), vec!["/c.md".to_string()]);
 
         // Unknown target → no results.
-        let r = super::search_terms(db.pool(), ">nonexistent")
+        let r = super::search_terms(db.pool(), "<nonexistent")
             .await
             .unwrap();
+        assert!(r.is_empty());
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_by_forward_link_returns_targets() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        // A links to B and C; B and C link nowhere; D links to A.
+        let entries: Vec<(NoteEntryData, String)> = vec![
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/a.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "see [[b]] and [[c]]".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/b.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "b body".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/c.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "c body".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/d.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "points to [[a]]".to_string(),
+            ),
+        ];
+
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
+            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+            p.sort();
+            p
+        };
+
+        // Forward links of A: the notes A links *to* (B and C).
+        let r = super::search_terms(db.pool(), ">a").await.unwrap();
+        assert_eq!(paths(&r), vec!["/b.md".to_string(), "/c.md".to_string()]);
+
+        // Long form.
+        let r = super::search_terms(db.pool(), "fwd:a").await.unwrap();
+        assert_eq!(paths(&r), vec!["/b.md".to_string(), "/c.md".to_string()]);
+
+        // Backlinks of B: the notes that link *to* B (A).
+        let r = super::search_terms(db.pool(), "<b").await.unwrap();
+        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
+
+        // Forward links of D: A.
+        let r = super::search_terms(db.pool(), ">d").await.unwrap();
+        assert_eq!(paths(&r), vec!["/a.md".to_string()]);
+
+        // Exclusion: notes that are NOT forward links of A (everything but B and C).
+        let r = super::search_terms(db.pool(), "->a").await.unwrap();
+        assert_eq!(paths(&r), vec!["/a.md".to_string(), "/d.md".to_string()]);
+
+        // A note with no outgoing links has no forward links.
+        let r = super::search_terms(db.pool(), ">b").await.unwrap();
         assert!(r.is_empty());
 
         db.close().await.unwrap();
@@ -2548,7 +2785,7 @@ mod tests {
         };
 
         // content AND breadcrumb (both must hold).
-        let r = super::search_terms(db.pool(), "meeting <work")
+        let r = super::search_terms(db.pool(), "meeting @work")
             .await
             .unwrap();
         assert_eq!(paths(&r), vec!["/a.md".to_string()]);
@@ -2566,13 +2803,13 @@ mod tests {
         assert_eq!(paths(&r), vec!["/b.md".to_string()]);
 
         // breadcrumb positive + content exclusion.
-        let r = super::search_terms(db.pool(), "<work -budget")
+        let r = super::search_terms(db.pool(), "@work -budget")
             .await
             .unwrap();
         assert_eq!(paths(&r), vec!["/a.md".to_string()]);
 
         // breadcrumb positive + breadcrumb exclusion.
-        let r = super::search_terms(db.pool(), "<work -<personal")
+        let r = super::search_terms(db.pool(), "@work -@personal")
             .await
             .unwrap();
         assert_eq!(paths(&r), vec!["/a.md".to_string(), "/c.md".to_string()]);
@@ -2582,7 +2819,7 @@ mod tests {
         assert_eq!(paths(&r), vec!["/c.md".to_string()]);
 
         // pure breadcrumb exclusion.
-        let r = super::search_terms(db.pool(), "-<work").await.unwrap();
+        let r = super::search_terms(db.pool(), "-@work").await.unwrap();
         assert_eq!(paths(&r), vec!["/b.md".to_string()]);
 
         db.close().await.unwrap();
@@ -2866,6 +3103,200 @@ mod tests {
         assert_eq!(super::escape_like_pattern("/normal/"), "/normal/");
     }
 
+    /// Verify that `escape_like_pattern` leaves `*` and `.` untouched — a
+    /// prerequisite for the escape-then-replace order in the wildcard branch.
+    #[test]
+    fn escape_like_pattern_leaves_star_and_dot_untouched() {
+        assert_eq!(super::escape_like_pattern("task*"), "task*");
+        assert_eq!(super::escape_like_pattern("task*.md"), "task*.md");
+        assert_eq!(super::escape_like_pattern("*report.md"), "*report.md");
+    }
+
+    /// SQL-shape unit test: confirm the bound parameter produced for `=task*`
+    /// is `task%.md` and for plain `=task` is `%task%`.
+    #[test]
+    fn filename_wildcard_produces_correct_pattern_param() {
+        // Wildcard term: =task*  → param should be "task%.md"
+        let (_, params) = build_search_sql_query("=task*");
+        assert_eq!(
+            params,
+            vec!["task%.md".to_string()],
+            "=task* must produce bound param 'task%.md'"
+        );
+
+        // Non-wildcard term: =task  → param should be "%task%"
+        let (_, params) = build_search_sql_query("=task");
+        assert_eq!(
+            params,
+            vec!["%task%".to_string()],
+            "=task must produce bound param '%task%'"
+        );
+
+        // Suffix wildcard: =*report → param should be "%report.md"
+        let (_, params) = build_search_sql_query("=*report");
+        assert_eq!(
+            params,
+            vec!["%report.md".to_string()],
+            "=*report must produce bound param '%report.md'"
+        );
+
+        // Mid wildcard: =ta*sk → param should be "ta%sk.md"
+        let (_, params) = build_search_sql_query("=ta*sk");
+        assert_eq!(
+            params,
+            vec!["ta%sk.md".to_string()],
+            "=ta*sk must produce bound param 'ta%sk.md'"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_by_filename_wildcard() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let entries: Vec<(NoteEntryData, String)> = vec![
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/task.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "x".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/tasks.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "y".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/weekly-report.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "z".to_string(),
+            ),
+            (
+                NoteEntryData {
+                    path: VaultPath::note_path_from("/other.md"),
+                    size: 10,
+                    modified_secs: 0,
+                },
+                "w".to_string(),
+            ),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
+            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+            p.sort();
+            p
+        };
+
+        // Substring (non-wildcard): =task → task.md and tasks.md
+        let r = super::search_terms(db.pool(), "=task").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/task.md".to_string(), "/tasks.md".to_string()],
+            "=task must match task.md and tasks.md as substrings"
+        );
+
+        // Prefix wildcard: =task* → task.md and tasks.md, NOT weekly-report.md
+        let r = super::search_terms(db.pool(), "=task*").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/task.md".to_string(), "/tasks.md".to_string()],
+            "=task* must match task.md and tasks.md, not weekly-report.md"
+        );
+
+        // Suffix wildcard: =*report → weekly-report.md only
+        let r = super::search_terms(db.pool(), "=*report").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/weekly-report.md".to_string()],
+            "=*report must match only weekly-report.md"
+        );
+
+        // Exclusion with wildcard: -=task* → other.md and weekly-report.md
+        let r = super::search_terms(db.pool(), "-=task*").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/other.md".to_string(), "/weekly-report.md".to_string()],
+            "-=task* must exclude task.md and tasks.md"
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_by_path_wildcard() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let mk = |p: &str| NoteEntryData {
+            path: VaultPath::note_path_from(p),
+            size: 10,
+            modified_secs: 0,
+        };
+        let entries: Vec<(NoteEntryData, String)> = vec![
+            (mk("/work/a.md"), "a".to_string()),
+            (mk("/work/sub/b.md"), "b".to_string()),
+            (mk("/personal/c.md"), "c".to_string()),
+            (mk("/d.md"), "d".to_string()),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
+            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+            p.sort();
+            p
+        };
+
+        // Prefix (non-wildcard) is unchanged: /work matches the folder + subfolders.
+        let r = super::search_terms(db.pool(), "/work").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/work/a.md".to_string(), "/work/sub/b.md".to_string()],
+        );
+
+        // Wildcard prefix: /wo* behaves like the prefix form.
+        let r = super::search_terms(db.pool(), "/wo*").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/work/a.md".to_string(), "/work/sub/b.md".to_string()],
+        );
+
+        // Suffix wildcard on the folder path: /*sub → only notes whose folder ends in "sub".
+        let r = super::search_terms(db.pool(), "/*sub").await.unwrap();
+        assert_eq!(paths(&r), vec!["/work/sub/b.md".to_string()]);
+
+        // Subfolder wildcard: /work/* → only notes strictly under /work/.
+        let r = super::search_terms(db.pool(), "/work/*").await.unwrap();
+        assert_eq!(paths(&r), vec!["/work/sub/b.md".to_string()]);
+
+        // Excluded wildcard: -/wo* drops everything under /work.
+        let r = super::search_terms(db.pool(), "-/wo*").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/d.md".to_string(), "/personal/c.md".to_string()],
+        );
+
+        db.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn delete_directory_no_trailing_slash_does_not_match_sibling_prefix() {
         use crate::nfs::{NoteEntryData, VaultPath};
@@ -2989,7 +3420,7 @@ mod tests {
         super::insert_notes(&mut tx, &entries).await.unwrap();
         tx.commit().await.unwrap();
 
-        let results = super::search_terms(db.pool(), "@my_note").await.unwrap();
+        let results = super::search_terms(db.pool(), "=my_note").await.unwrap();
         let paths: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
         assert_eq!(
             paths,
@@ -3026,10 +3457,14 @@ mod tests {
             "title:value",
             "a^b",
             "<",
+            ">",
+            "=",
+            "@",
             "-",
             "-<",
+            "->",
             "in:",
-            "at:",
+            "name:",
         ] {
             let res = super::search_terms(db.pool(), q).await;
             assert!(
@@ -3062,7 +3497,7 @@ mod tests {
             .unwrap();
         tx.commit().await.unwrap();
 
-        for q in &[">(heading", ">*", "in:title:"] {
+        for q in &["@(heading", "@*", "in:title:", ">(heading", ">*"] {
             let res = super::search_terms(db.pool(), q).await;
             assert!(
                 res.is_ok(),
