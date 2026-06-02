@@ -94,8 +94,8 @@ impl SearchRow for BacklinkEntry {
 /// (e.g. `<{note}`, so the input shows the template); this source resolves
 /// `{note}` against the shared current note at load time, preserving the exact
 /// "input shows the template, results are backlinks of the current note" UX.
-/// The shared sort handle lets the source order results by the panel's active
-/// sort field/order (the engine itself uses `SourceOrder`).
+/// Result ordering comes from the query string's order directive, applied by
+/// the vault DB — the source no longer sorts in memory.
 struct BacklinkSource {
     vault: Arc<NoteVault>,
     current_note: Arc<Mutex<VaultPath>>,
