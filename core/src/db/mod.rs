@@ -837,23 +837,35 @@ fn path_term_conditions(
         if term.is_empty() {
             continue;
         }
-        let (cond, value) = match term.strip_suffix(PATH_SEPARATOR) {
-            Some(absolute) => {
-                let op = if positive { "=" } else { "!=" };
-                (
-                    format!("notes.basePath {} ('/' || ?{})", op, var_num),
-                    absolute.to_string(),
-                )
-            }
-            None => {
-                let op = if positive { "LIKE" } else { "NOT LIKE" };
-                (
-                    format!(
-                        "notes.basePath {} ('/' || ?{} || '%') ESCAPE '\\'",
-                        op, var_num
-                    ),
-                    escape_like_pattern(term),
-                )
+        let (cond, value) = if term.contains('*') {
+            // Explicit wildcard: anchor at the leading separator, translate the
+            // user's `*` into the SQL `%` wildcard (escape first so any literal
+            // `%`/`_` stays literal). No auto-appended `%` — the `*` placement
+            // fully controls matching (e.g. `/work*` = prefix, `/wo*k` = infix).
+            let op = if positive { "LIKE" } else { "NOT LIKE" };
+            (
+                format!("notes.basePath {} ('/' || ?{}) ESCAPE '\\'", op, var_num),
+                escape_like_pattern(term).replace('*', "%"),
+            )
+        } else {
+            match term.strip_suffix(PATH_SEPARATOR) {
+                Some(absolute) => {
+                    let op = if positive { "=" } else { "!=" };
+                    (
+                        format!("notes.basePath {} ('/' || ?{})", op, var_num),
+                        absolute.to_string(),
+                    )
+                }
+                None => {
+                    let op = if positive { "LIKE" } else { "NOT LIKE" };
+                    (
+                        format!(
+                            "notes.basePath {} ('/' || ?{} || '%') ESCAPE '\\'",
+                            op, var_num
+                        ),
+                        escape_like_pattern(term),
+                    )
+                }
             }
         };
         out.push(cond);
@@ -3219,6 +3231,67 @@ mod tests {
             paths(&r),
             vec!["/other.md".to_string(), "/weekly-report.md".to_string()],
             "-=task* must exclude task.md and tasks.md"
+        );
+
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_by_path_wildcard() {
+        use crate::nfs::{NoteEntryData, VaultPath};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+        let db = super::VaultDB::new(&db_path).await.unwrap();
+        super::create_tables(db.pool()).await.unwrap();
+
+        let mk = |p: &str| NoteEntryData {
+            path: VaultPath::note_path_from(p),
+            size: 10,
+            modified_secs: 0,
+        };
+        let entries: Vec<(NoteEntryData, String)> = vec![
+            (mk("/work/a.md"), "a".to_string()),
+            (mk("/work/sub/b.md"), "b".to_string()),
+            (mk("/personal/c.md"), "c".to_string()),
+            (mk("/d.md"), "d".to_string()),
+        ];
+        let mut tx = db.pool().begin().await.unwrap();
+        super::insert_notes(&mut tx, &entries).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let paths = |results: &[(NoteEntryData, NoteContentData)]| {
+            let mut p: Vec<String> = results.iter().map(|(e, _)| e.path.to_string()).collect();
+            p.sort();
+            p
+        };
+
+        // Prefix (non-wildcard) is unchanged: /work matches the folder + subfolders.
+        let r = super::search_terms(db.pool(), "/work").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/work/a.md".to_string(), "/work/sub/b.md".to_string()],
+        );
+
+        // Wildcard prefix: /wo* behaves like the prefix form.
+        let r = super::search_terms(db.pool(), "/wo*").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/work/a.md".to_string(), "/work/sub/b.md".to_string()],
+        );
+
+        // Suffix wildcard on the folder path: /*sub → only notes whose folder ends in "sub".
+        let r = super::search_terms(db.pool(), "/*sub").await.unwrap();
+        assert_eq!(paths(&r), vec!["/work/sub/b.md".to_string()]);
+
+        // Subfolder wildcard: /work/* → only notes strictly under /work/.
+        let r = super::search_terms(db.pool(), "/work/*").await.unwrap();
+        assert_eq!(paths(&r), vec!["/work/sub/b.md".to_string()]);
+
+        // Excluded wildcard: -/wo* drops everything under /work.
+        let r = super::search_terms(db.pool(), "-/wo*").await.unwrap();
+        assert_eq!(
+            paths(&r),
+            vec!["/d.md".to_string(), "/personal/c.md".to_string()],
         );
 
         db.close().await.unwrap();
