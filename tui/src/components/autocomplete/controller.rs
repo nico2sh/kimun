@@ -385,6 +385,7 @@ impl AutocompleteController {
 
         if let Some(state) = self.state.as_mut() {
             state.kind = trigger.kind;
+            state.opener = trigger.opener;
             state.query = trigger.query.clone();
             state.replace_range = trigger.replace_range.clone();
             state.anchor = anchor;

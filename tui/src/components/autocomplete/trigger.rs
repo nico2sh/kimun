@@ -23,6 +23,10 @@ pub struct TriggerContext {
     /// Byte offset of `replace_range.start`, kept as a separate field so the
     /// host can map it to a screen anchor without re-parsing.
     pub anchor_col: usize,
+    /// For a `LinkFilter` trigger, the operator char that opened it (`<`,
+    /// `>`, or `=`) so the popup can render the correct sigil. `None` for
+    /// `Wikilink` and `Hashtag` triggers, which have fixed sigils.
+    pub opener: Option<char>,
 }
 
 /// Per-call knobs for `detect_trigger_with`.
@@ -247,6 +251,7 @@ pub fn detect_trigger_with_oracle(
             query,
             replace_range: inner_start..cursor,
             anchor_col: inner_start,
+            opener: None,
         });
     }
 
@@ -329,6 +334,7 @@ pub fn detect_trigger_with_oracle(
             query,
             replace_range: inner_start..cursor,
             anchor_col: inner_start,
+            opener: None,
         });
     }
 
@@ -374,12 +380,17 @@ pub fn detect_trigger_with_oracle(
             return None;
         }
 
+        // The opener char sits at byte `gt`; capture it so the popup can
+        // render the matching sigil (`<`, `>`, or `=`).
+        let opener = text[gt..inner_start].chars().next();
+
         let query = text[inner_start..cursor].to_string();
         return Some(TriggerContext {
             kind: TriggerKind::LinkFilter,
             query,
             replace_range: inner_start..cursor,
             anchor_col: inner_start,
+            opener,
         });
     }
 
@@ -866,6 +877,7 @@ mod tests {
         let t = detect_trigger("<pro", 4).expect("should detect");
         assert_eq!(t.kind, TriggerKind::LinkFilter);
         assert_eq!(t.query, "pro");
+        assert_eq!(t.opener, Some('<'));
     }
 
     #[test]
@@ -873,6 +885,7 @@ mod tests {
         let t = detect_trigger(">pro", 4).expect("should detect");
         assert_eq!(t.kind, TriggerKind::LinkFilter);
         assert_eq!(t.query, "pro");
+        assert_eq!(t.opener, Some('>'));
     }
 
     #[test]
@@ -880,6 +893,24 @@ mod tests {
         let t = detect_trigger("=pro", 4).expect("should detect");
         assert_eq!(t.kind, TriggerKind::LinkFilter);
         assert_eq!(t.query, "pro");
+        assert_eq!(t.opener, Some('='));
+    }
+
+    #[test]
+    fn excluded_link_filter_captures_inner_opener() {
+        // The exclusion form `-<` / `->` / `-=` must capture the operator
+        // char (not the `-`) so the popup renders the right sigil.
+        for (q, op) in [("-<dra", '<'), ("->dra", '>'), ("-=dra", '=')] {
+            let t = detect_trigger(q, q.len()).expect("should detect");
+            assert_eq!(t.kind, TriggerKind::LinkFilter, "{q}");
+            assert_eq!(t.opener, Some(op), "{q}");
+        }
+    }
+
+    #[test]
+    fn wikilink_and_hashtag_have_no_opener() {
+        assert_eq!(ctx("[[foo", 5).unwrap().opener, None);
+        assert_eq!(ctx("a #foo", 6).unwrap().opener, None);
     }
 
     #[test]
