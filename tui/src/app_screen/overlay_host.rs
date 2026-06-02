@@ -20,6 +20,17 @@ pub enum OverlayKind {
     Dialog,
 }
 
+impl OverlayKind {
+    /// Footer label for this overlay kind.
+    pub fn label(&self) -> &'static str {
+        match self {
+            OverlayKind::NoteBrowser => "NOTE BROWSER",
+            OverlayKind::SavedSearches => "SAVED SEARCHES",
+            OverlayKind::Dialog => "DIALOG",
+        }
+    }
+}
+
 /// Outcome of routing an `AppEvent` to the active overlay. Overlays never
 /// request their own dismissal here: dialogs close by emitting the
 /// `AppEvent::CloseOverlay` event, which the editor handles separately.

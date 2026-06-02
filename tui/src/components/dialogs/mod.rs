@@ -77,8 +77,6 @@ impl ActiveDialog {
     }
 
     // Constructors for the dialogs opened by EditorScreen via OverlayHost.
-    // The Menu/Delete/Rename/Move variants are still built inline at their
-    // (Show*-event) open sites and don't need a constructor here.
     pub fn help(key_bindings: &crate::keys::KeyBindings) -> Self {
         ActiveDialog::Help(HelpDialog::new(key_bindings))
     }
@@ -97,6 +95,22 @@ impl ActiveDialog {
 
     pub fn save_search(query: String) -> Self {
         ActiveDialog::SaveSearch(SaveSearchDialog::new(query))
+    }
+
+    pub fn file_ops_menu(path: kimun_core::nfs::VaultPath) -> Self {
+        ActiveDialog::Menu(FileOpsMenuDialog::new(path))
+    }
+
+    pub fn delete(path: kimun_core::nfs::VaultPath, vault: Arc<NoteVault>) -> Self {
+        ActiveDialog::Delete(DeleteConfirmDialog::new(path, vault))
+    }
+
+    pub fn rename(path: kimun_core::nfs::VaultPath, vault: Arc<NoteVault>) -> Self {
+        ActiveDialog::Rename(RenameDialog::new(path, vault))
+    }
+
+    pub fn move_to(path: kimun_core::nfs::VaultPath, vault: Arc<NoteVault>, tx: &AppTx) -> Self {
+        ActiveDialog::Move(MoveDialog::new(path, vault, tx))
     }
 }
 
