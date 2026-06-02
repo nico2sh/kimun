@@ -217,6 +217,12 @@ pub fn detect_trigger_with_oracle(
         if link_filter_possible && link_filter_pos.is_none() {
             if is_link_filter_opener(c) {
                 link_filter_pos = Some(prev);
+                // Opener found: the link-filter state is resolved, so stop
+                // scanning for it. The loop continues only if another state
+                // machine (wikilink/hashtag) is still live — mirroring how
+                // `wikilink_possible` / `hash_possible` stop driving the loop
+                // once their openers/stoppers are hit.
+                link_filter_possible = false;
             } else if !is_link_filter_target_char(c) {
                 link_filter_possible = false;
             }

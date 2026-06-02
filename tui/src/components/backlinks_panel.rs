@@ -873,11 +873,13 @@ fn highlight_needles(
     spans
 }
 
-/// Needles to highlight for a query: its free-text terms + link targets.
+/// Needles to highlight for a query: its free-text terms + link targets
+/// (both backlink and forward-link targets).
 fn query_needles(query: &str) -> Vec<String> {
     let st = kimun_core::SearchTerms::from_query_string(query);
     let mut needles = st.terms.clone();
     needles.extend(st.links.clone());
+    needles.extend(st.forward_links.clone());
     needles
 }
 
@@ -948,6 +950,14 @@ mod tests {
     fn query_needles_extracts_terms_and_links() {
         let n = query_needles("widget <spec");
         assert!(n.iter().any(|x| x == "widget"));
+        assert!(n.iter().any(|x| x == "spec"));
+    }
+
+    #[test]
+    fn query_needles_extracts_forward_links() {
+        // A forward-link query (`>target`) must contribute its target as a
+        // highlight needle, just like a backlink query (`<target`).
+        let n = query_needles(">spec");
         assert!(n.iter().any(|x| x == "spec"));
     }
 
