@@ -282,7 +282,7 @@ impl MoveDialog {
                 EventState::Consumed
             }
             InputOutcome::Cancel => {
-                tx.send(AppEvent::CloseDialog).ok();
+                tx.send(AppEvent::CloseOverlay).ok();
                 EventState::Consumed
             }
             InputOutcome::Changed => {
@@ -471,7 +471,7 @@ mod tests {
         }
     }
 
-    /// Pressing `Esc` must send `AppEvent::CloseDialog` and return
+    /// Pressing `Esc` must send `AppEvent::CloseOverlay` and return
     /// `EventState::Consumed`, without requiring a real vault.
     #[test]
     fn esc_sends_close_dialog() {
@@ -500,12 +500,12 @@ mod tests {
             // may have sent events before or after the Esc key was processed.
             let mut found = false;
             while let Ok(event) = rx.try_recv() {
-                if matches!(event, AppEvent::CloseDialog) {
+                if matches!(event, AppEvent::CloseOverlay) {
                     found = true;
                     break;
                 }
             }
-            assert!(found, "expected AppEvent::CloseDialog in channel");
+            assert!(found, "expected AppEvent::CloseOverlay in channel");
         });
     }
 

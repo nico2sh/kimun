@@ -8,14 +8,18 @@ pub use rename_dialog::RenameDialog;
 pub use save_search_dialog::SaveSearchDialog;
 pub use workspace_switcher::WorkspaceSwitcherModal;
 
+use std::sync::Arc;
+
+use kimun_core::NoteVault;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
+use crate::app_screen::overlay_host::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
 // ---------------------------------------------------------------------------
@@ -70,6 +74,100 @@ impl ActiveDialog {
             ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
             ActiveDialog::SaveSearch(_) => {}        // no error state
         }
+    }
+
+    // Constructors for the dialogs opened by EditorScreen via OverlayHost.
+    // The Menu/Delete/Rename/Move variants are still built inline at their
+    // (Show*-event) open sites and don't need a constructor here.
+    pub fn help(key_bindings: &crate::keys::KeyBindings) -> Self {
+        ActiveDialog::Help(HelpDialog::new(key_bindings))
+    }
+
+    pub fn quick_note(vault: Arc<NoteVault>) -> Self {
+        ActiveDialog::QuickNote(QuickNoteModal::new(vault))
+    }
+
+    pub fn workspace_switcher(settings: &crate::settings::AppSettings) -> Self {
+        ActiveDialog::WorkspaceSwitcher(WorkspaceSwitcherModal::new(settings))
+    }
+
+    pub fn create_note(path: kimun_core::nfs::VaultPath, vault: Arc<NoteVault>) -> Self {
+        ActiveDialog::CreateNote(CreateNoteDialog::new(path, vault))
+    }
+
+    pub fn save_search(query: String) -> Self {
+        ActiveDialog::SaveSearch(SaveSearchDialog::new(query))
+    }
+}
+
+impl Overlay for ActiveDialog {
+    fn kind(&self) -> OverlayKind {
+        OverlayKind::Dialog
+    }
+
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        <Self as Component>::handle_input(self, event, tx)
+    }
+
+    fn handle_app_message(&mut self, msg: &AppEvent, _vault: &Arc<NoteVault>, tx: &AppTx) -> OverlayMsg {
+        match msg {
+            AppEvent::RenameValidation { available } => {
+                if let ActiveDialog::Rename(d) = self {
+                    d.validation_state = if *available {
+                        ValidationState::Available
+                    } else {
+                        ValidationState::Taken
+                    };
+                    d.validation_task = None;
+                }
+                OverlayMsg::Consumed
+            }
+            AppEvent::MoveDirectoriesLoaded(paths) => {
+                if let ActiveDialog::Move(d) = self {
+                    d.all_dirs = paths.clone();
+                    d.filtered = None;
+                    d.load_task = None;
+                    if d.list_state.selected().is_none() && !d.results().is_empty() {
+                        d.list_state.select(Some(0));
+                    }
+                    d.spawn_validation(tx);
+                }
+                OverlayMsg::Consumed
+            }
+            AppEvent::MoveFilterResults(paths) => {
+                if let ActiveDialog::Move(d) = self {
+                    d.filter_task = None;
+                    d.filtered = Some(paths.clone());
+                    if !d.results().is_empty() {
+                        d.list_state.select(Some(0));
+                    } else {
+                        d.list_state.select(None);
+                    }
+                    d.spawn_validation(tx);
+                }
+                OverlayMsg::Consumed
+            }
+            AppEvent::MoveDestValidation { available } => {
+                if let ActiveDialog::Move(d) = self {
+                    d.dest_validation = if *available {
+                        ValidationState::Available
+                    } else {
+                        ValidationState::Taken
+                    };
+                    d.validation_task = None;
+                }
+                OverlayMsg::Consumed
+            }
+            AppEvent::DialogError(text) => {
+                self.set_error(text.clone());
+                OverlayMsg::Consumed
+            }
+            _ => OverlayMsg::NotConsumed,
+        }
+    }
+
+    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
+        <Self as Component>::render(self, f, area, theme, true);
     }
 }
 
