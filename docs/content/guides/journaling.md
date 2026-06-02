@@ -93,8 +93,8 @@ kimun search "/journal standup"     # Only in journal/, containing "standup"
 ### Find entries from a specific period
 
 ```sh
-kimun search "@2024-01"             # Files with "2024-01" in filename (January 2024)
-kimun search "@2024"                # All journal entries from 2024
+kimun search "=2024-01"             # Notes with "2024-01" in the name (January 2024)
+kimun search "=2024"                # All journal entries from 2024
 ```
 
 ## Quick notes and the inbox
@@ -106,12 +106,12 @@ Later, you can triage inbox notes and move relevant ones into the journal. If yo
 ### Search within sections
 
 ```sh
-kimun search "/journal <tasks"      # Journal entries with a "Tasks" section
-kimun search "/journal <tasks -done" # Tasks sections without "done"
+kimun search "/journal @tasks"      # Journal entries with a "Tasks" section
+kimun search "/journal @tasks -done" # Tasks sections without "done"
 ```
 
 ## Tips
 
 - Use consistent heading names across entries (e.g. always `## Tasks`) to make section search effective
-- The `*` wildcard helps with partial dates: `@2024-0*` matches Jan–Sep 2024
+- The `*` wildcard helps with partial dates: `=2024-0*` matches Jan–Sep 2024
 - Combine with JSON output for automation: `kimun search "/journal" --format json | jq '.notes[] | {date: .journal_date, title: .title}'`

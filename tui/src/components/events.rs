@@ -109,14 +109,24 @@ pub enum AppEvent {
         available: bool,
     },
 
-    // ── Backlinks panel messages ────────────────────────────────────────────
-    /// Backlinks for the current note have been loaded.
-    BacklinksLoaded(Vec<crate::components::backlinks_panel::BacklinkEntry>),
-
     // ── Workspace messages ──────────────────────────────────────────────
     /// User switched to a different workspace. Carries the workspace name.
     /// Handled by main.rs to rebuild the vault and navigate to StartScreen.
     WorkspaceSwitched(String),
+
+    /// Persist a saved search (emitted by the save-search dialog on submit).
+    SaveSearchConfirmed {
+        name: String,
+        query: String,
+    },
+
+    /// A saved search was chosen in the Saved Searches modal.
+    SavedSearchSelected {
+        query: String,
+        name: String,
+    },
+    /// Close the Saved Searches modal (Esc / after select).
+    CloseSavedSearches,
 }
 
 impl AppEvent {

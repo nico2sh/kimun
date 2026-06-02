@@ -3,7 +3,9 @@ pub mod error;
 pub mod nfs;
 pub mod note;
 pub mod utilities;
+pub use db::search_terms::SearchTerms;
 pub use db::{DBStatus, NoteSuggestion, TagSuggestion};
+pub use nfs::saved_searches::SavedSearch;
 pub use utilities::{app_log_dir, ensure_dir_exists};
 
 use std::{
@@ -25,6 +27,7 @@ use nfs::{visitor::NoteListVisitorBuilder, NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
 use utilities::path_to_string;
 
+use crate::nfs::saved_searches;
 use crate::nfs::DirectoryEntryData;
 
 pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
@@ -611,6 +614,45 @@ impl NoteVault {
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         Ok(db::get_backlinks(self.vault_db.pool(), path).await?)
+    }
+
+    /// List the vault's saved searches (see `SavedSearch`). Empty if none.
+    pub async fn list_saved_searches(&self) -> Result<Vec<SavedSearch>, VaultError> {
+        Ok(saved_searches::read_saved_searches(self.workspace_path()).await?)
+    }
+
+    /// Insert or replace a saved search by name (case-insensitive match,
+    /// preserving the existing position on overwrite). Appends if new.
+    pub async fn save_search(&self, name: &str, query: &str) -> Result<(), VaultError> {
+        let mut all = saved_searches::read_saved_searches(self.workspace_path()).await?;
+        let entry = SavedSearch {
+            name: name.to_string(),
+            query: query.to_string(),
+        };
+        match all.iter_mut().find(|s| s.name.eq_ignore_ascii_case(name)) {
+            Some(existing) => *existing = entry,
+            None => all.push(entry),
+        }
+        saved_searches::write_saved_searches(self.workspace_path(), &all).await?;
+        Ok(())
+    }
+
+    /// Delete a saved search by name (case-insensitive). No-op if absent.
+    pub async fn delete_saved_search(&self, name: &str) -> Result<(), VaultError> {
+        let mut all = saved_searches::read_saved_searches(self.workspace_path()).await?;
+        all.retain(|s| !s.name.eq_ignore_ascii_case(name));
+        saved_searches::write_saved_searches(self.workspace_path(), &all).await?;
+        Ok(())
+    }
+
+    /// Rename a saved search, preserving its position and query. No-op if absent.
+    pub async fn rename_saved_search(&self, old: &str, new: &str) -> Result<(), VaultError> {
+        let mut all = saved_searches::read_saved_searches(self.workspace_path()).await?;
+        if let Some(existing) = all.iter_mut().find(|s| s.name.eq_ignore_ascii_case(old)) {
+            existing.name = new.to_string();
+        }
+        saved_searches::write_saved_searches(self.workspace_path(), &all).await?;
+        Ok(())
     }
 
     pub async fn create_note<S: AsRef<str>>(
@@ -2876,5 +2918,56 @@ mod modify_backup_tests {
         for l in lines {
             assert!(text.contains(l), "missing {l} in {text:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod saved_search_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn make_vault(dir: &std::path::Path) -> NoteVault {
+        NoteVault::new(VaultConfig::new(dir)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn saved_search_crud() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+
+        assert!(vault.list_saved_searches().await.unwrap().is_empty());
+
+        vault.save_search("todo", "#todo").await.unwrap();
+        vault.save_search("links", ">{note}").await.unwrap();
+        let all = vault.list_saved_searches().await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Upsert by case-insensitive name: overwrites, no duplicate.
+        vault.save_search("Todo", "#todo #urgent").await.unwrap();
+        let all = vault.list_saved_searches().await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(
+            all.iter()
+                .find(|s| s.name.eq_ignore_ascii_case("todo"))
+                .unwrap()
+                .query,
+            "#todo #urgent"
+        );
+
+        vault
+            .rename_saved_search("links", "backlinks")
+            .await
+            .unwrap();
+        assert!(vault
+            .list_saved_searches()
+            .await
+            .unwrap()
+            .iter()
+            .any(|s| s.name == "backlinks"));
+
+        vault.delete_saved_search("todo").await.unwrap();
+        let all = vault.list_saved_searches().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "backlinks");
     }
 }
