@@ -126,7 +126,7 @@ impl RowSource<BacklinkEntry> for BacklinkSource {
             .order_by
             .is_empty()
         {
-            entries.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()));
+            entries.sort_by_key(|e| e.filename.to_lowercase());
         }
         emit.replace(entries);
     }
