@@ -20,15 +20,15 @@ pub enum OverlayKind {
     Dialog,
 }
 
-/// Outcome of routing an `AppEvent` to the active overlay.
+/// Outcome of routing an `AppEvent` to the active overlay. Overlays never
+/// request their own dismissal here: dialogs close by emitting the
+/// `AppEvent::CloseOverlay` event, which the editor handles separately.
 #[derive(Debug)]
 pub enum OverlayMsg {
     /// The overlay did not recognise the message.
     NotConsumed,
     /// The overlay handled the message and stays open.
     Consumed,
-    /// The overlay handled the message and requests dismissal.
-    Close,
 }
 
 // `Send`: an `OverlayHost` lives in `EditorScreen`, whose `#[async_trait]`

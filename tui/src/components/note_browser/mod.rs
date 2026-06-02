@@ -202,8 +202,9 @@ impl NoteBrowserModal {
     }
 
     /// Open the engine's selected row: create-then-open for a `CreateNote`,
-    /// or open directly for an existing `Note`. Emits the close event so the
-    /// modal dismisses afterwards.
+    /// or open directly for an existing `Note`. Emits only `OpenPath`; the
+    /// editor's `OpenPath` handler closes this overlay (restoring focus to the
+    /// editor), so no separate `CloseOverlay` is sent.
     fn open_selected(&self, tx: &AppTx) {
         let Some(entry) = self.list.selected_row() else {
             return;
@@ -215,13 +216,11 @@ impl NoteBrowserModal {
             tokio::spawn(async move {
                 vault.load_or_create_note(&path, None).await.ok();
                 tx.send(AppEvent::OpenPath(path)).ok();
-                tx.send(AppEvent::CloseOverlay).ok();
             });
             return;
         }
         let path = entry.path().clone();
         tx.send(AppEvent::OpenPath(path)).ok();
-        tx.send(AppEvent::CloseOverlay).ok();
     }
 
     // ── Test-only accessors ────────────────────────────────────────────────
@@ -444,7 +443,9 @@ mod tests {
         assert_eq!(modal.query_text(), "#important");
     }
 
-    /// Pressing Enter on a selected note emits OpenPath + CloseOverlay.
+    /// Pressing Enter on a selected note emits OpenPath only. The editor's
+    /// OpenPath handler closes the overlay, so the modal does NOT also emit
+    /// CloseOverlay (that would be redundant).
     #[tokio::test]
     async fn submit_opens_selected_note() {
         let (tx, mut rx) = unbounded_channel();
@@ -470,10 +471,10 @@ mod tests {
             "expected OpenPath, got {events:?}"
         );
         assert!(
-            events
+            !events
                 .iter()
                 .any(|e| matches!(e, AppEvent::CloseOverlay)),
-            "expected CloseOverlay, got {events:?}"
+            "select must not emit CloseOverlay; editor's OpenPath handler closes the overlay, got {events:?}"
         );
     }
 

@@ -4,7 +4,8 @@
 //! virtual "Backlinks (current note)" entry at the top. Typing filters by name
 //! and by a leading 1–9 quick-select index (an exact index match ranks first).
 //! Enter emits [`AppEvent::SavedSearchSelected`] (the editor runs the query in
-//! the panel) and closes; Esc closes; Delete removes the selected user entry.
+//! the panel and closes this overlay itself); Esc emits
+//! [`AppEvent::CloseOverlay`]; Delete removes the selected user entry.
 //!
 //! Hosts a [`SearchList`] engine: the vault load is a load-once
 //! [`RowSource`] (`reload_on_query == false`), name/index ranking is the
@@ -247,7 +248,6 @@ impl Overlay for SavedSearchesModal {
                             name: item.name.clone(),
                         })
                         .ok();
-                        tx.send(AppEvent::CloseOverlay).ok();
                     }
                     EventState::Consumed
                 }
@@ -272,7 +272,6 @@ impl Overlay for SavedSearchesModal {
                             name: item.name.clone(),
                         })
                         .ok();
-                        tx.send(AppEvent::CloseOverlay).ok();
                     }
                     EventState::Consumed
                 }
@@ -495,8 +494,11 @@ mod tests {
         );
     }
 
+    /// Pressing Enter emits SavedSearchSelected only. The editor's handler for
+    /// that event closes the overlay itself (focusing the Query panel), so the
+    /// modal does NOT also emit CloseOverlay (that would be redundant).
     #[tokio::test]
-    async fn enter_emits_selected_and_close() {
+    async fn enter_emits_selected_not_close() {
         let vault = temp_vault("saved_searches_modal").await;
         vault
             .save_search("todo", "#todo")
@@ -533,10 +535,10 @@ mod tests {
             "expected SavedSearchSelected, got {events:?}"
         );
         assert!(
-            events
+            !events
                 .iter()
                 .any(|e| matches!(e, AppEvent::CloseOverlay)),
-            "expected CloseOverlay, got {events:?}"
+            "select must not emit CloseOverlay; editor's SavedSearchSelected handler closes the overlay, got {events:?}"
         );
     }
 }

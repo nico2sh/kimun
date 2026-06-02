@@ -696,7 +696,7 @@ impl AppScreen for EditorScreen {
                 }
                 Some(ActionShortcuts::SaveCurrentQuery) => {
                     let query = self.backlinks_panel.active_query().to_string();
-                    if !query.trim().is_empty() {
+                    if !self.overlays.is_open() && !query.trim().is_empty() {
                         self.overlays.open(
                             Box::new(ActiveDialog::save_search(query)),
                             self.panel_focus_token(),
@@ -706,19 +706,23 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SwitchWorkspace) => {
-                    let s = self.settings.read().unwrap();
-                    let dialog = ActiveDialog::workspace_switcher(&s);
-                    drop(s);
-                    self.overlays.open(Box::new(dialog), self.panel_focus_token());
-                    self.set_focus(Focus::Overlay);
+                    if !self.overlays.is_open() {
+                        let s = self.settings.read().unwrap();
+                        let dialog = ActiveDialog::workspace_switcher(&s);
+                        drop(s);
+                        self.overlays.open(Box::new(dialog), self.panel_focus_token());
+                        self.set_focus(Focus::Overlay);
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::QuickNote) => {
-                    self.overlays.open(
-                        Box::new(ActiveDialog::quick_note(self.vault.clone())),
-                        self.panel_focus_token(),
-                    );
-                    self.set_focus(Focus::Overlay);
+                    if !self.overlays.is_open() {
+                        self.overlays.open(
+                            Box::new(ActiveDialog::quick_note(self.vault.clone())),
+                            self.panel_focus_token(),
+                        );
+                        self.set_focus(Focus::Overlay);
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FindInBuffer) if matches!(self.focus, Focus::Editor) => {
@@ -968,11 +972,11 @@ impl AppScreen for EditorScreen {
                 return None;
             }
             AppEvent::CloseOverlay => {
-                // Only restore if an overlay is still open. A preceding
-                // domain event (SavedSearchSelected, OpenPath) may have
-                // already closed the overlay and set the correct focus
-                // (e.g. SavedSearchSelected focuses the Query panel); a
-                // second unconditional restore would clobber it back to Editor.
+                // Dismiss-to-opener. Guarded by is_open() on purpose: a
+                // selection that wants a specific post-close focus
+                // (OpenPath -> editor, SavedSearchSelected -> Query panel)
+                // closes the overlay itself first, so a later/!dialog
+                // CloseOverlay must not re-restore and clobber that focus.
                 if self.overlays.is_open() {
                     self.restore_focus();
                 }
@@ -984,10 +988,6 @@ impl AppScreen for EditorScreen {
         // Route validation / async-result messages to the active overlay.
         match self.overlays.handle_app_message(&msg, &self.vault, tx) {
             OverlayMsg::Consumed => return None,
-            OverlayMsg::Close => {
-                self.restore_focus();
-                return None;
-            }
             OverlayMsg::NotConsumed => {}
         }
 
@@ -1213,5 +1213,70 @@ mod tests {
 
         assert!(matches!(screen.focus, Focus::Backlinks), "focus should remain on the Query panel after select + close");
         assert!(!screen.overlays.is_open(), "overlay should be closed");
+    }
+
+    /// Capture-all guard: while an overlay is open, an opener action
+    /// (QuickNote) must NOT replace it. Drives a real QuickNote keypress
+    /// through `handle_input` so the guard in the action arm is exercised
+    /// end-to-end.
+    #[tokio::test]
+    async fn opener_action_does_not_replace_open_overlay() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Force a SavedSearches overlay open and focus it, as if the user had
+        // opened it via its action.
+        {
+            let s = settings.read().unwrap();
+            let modal = SavedSearchesModal::new(
+                vault.clone(),
+                s.key_bindings.clone(),
+                s.icons(),
+                tx.clone(),
+            );
+            drop(s);
+            screen
+                .overlays
+                .open(Box::new(modal), screen.panel_focus_token());
+        }
+        screen.set_focus(Focus::Overlay);
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::SavedSearches),
+            "precondition: SavedSearches overlay is active"
+        );
+
+        // The QuickNote action key (Ctrl+W by default). Assert the binding
+        // resolves to QuickNote so this test fails loudly if the default
+        // rebinds, rather than silently exercising the wrong path.
+        let quick_note_event = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        {
+            let s = settings.read().unwrap();
+            let combo = key_event_to_combo(&quick_note_event).expect("Ctrl+W maps to a combo");
+            assert_eq!(
+                s.key_bindings.get_action(&combo),
+                Some(ActionShortcuts::QuickNote),
+                "test assumes Ctrl+W is bound to QuickNote"
+            );
+        }
+
+        screen.handle_input(&InputEvent::Key(quick_note_event), &tx);
+
+        // The guard must have suppressed the open: the SavedSearches overlay
+        // is still active, NOT replaced by the QuickNote dialog.
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::SavedSearches),
+            "open overlay must not be replaced by a QuickNote opener action"
+        );
     }
 }
