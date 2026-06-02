@@ -1006,21 +1006,10 @@ impl AppScreen for EditorScreen {
                 field,
                 order,
                 group_directories,
+                persist,
             } => {
                 match target {
-                    SortTarget::Sidebar => self.sidebar.apply_sort(field, order, group_directories),
-                    SortTarget::Query => self.backlinks_panel.apply_sort(field, order, tx),
-                }
-                None
-            }
-            AppEvent::SortSaveDefault {
-                target,
-                field,
-                order,
-                group_directories,
-            } => {
-                match target {
-                    SortTarget::Sidebar => {
+                    SortTarget::Sidebar if persist => {
                         // Update the sidebar's in-session per-context default AND
                         // apply live. `is_current_journal()` is the single source
                         // of truth for which context this save targets — reused
@@ -1047,6 +1036,9 @@ impl AppScreen for EditorScreen {
                             snapshot.save_to_disk().ok();
                         });
                     }
+                    SortTarget::Sidebar => self.sidebar.apply_sort(field, order, group_directories),
+                    // The query panel has no persisted default (the order lives
+                    // in the query string); `persist` is always false here.
                     SortTarget::Query => self.backlinks_panel.apply_sort(field, order, tx),
                 }
                 None
@@ -1430,11 +1422,12 @@ mod sort_routing_tests {
         let (mut screen, tx, _rx) = make_editor().await;
         screen
             .handle_app_message(
-                AppEvent::SortSaveDefault {
+                AppEvent::SortChanged {
                     target: SortTarget::Sidebar,
                     field: SortField::Title,
                     order: SortOrder::Descending,
                     group_directories: true,
+                    persist: true,
                 },
                 &tx,
             )
@@ -1460,11 +1453,12 @@ mod sort_routing_tests {
 
         screen
             .handle_app_message(
-                AppEvent::SortSaveDefault {
+                AppEvent::SortChanged {
                     target: SortTarget::Sidebar,
                     field: SortField::Title,
                     order: SortOrder::Ascending,
                     group_directories: false,
+                    persist: true,
                 },
                 &tx,
             )
@@ -1484,5 +1478,34 @@ mod sort_routing_tests {
             s.default_sort_field,
             crate::settings::SortFieldSetting::Name
         );
+    }
+
+    /// A non-persisting SortChanged (a plain dialog toggle) applies live but
+    /// must NOT write settings.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sort_changed_without_persist_leaves_settings() {
+        let (mut screen, tx, _rx) = make_editor().await;
+        screen
+            .handle_app_message(
+                AppEvent::SortChanged {
+                    target: SortTarget::Sidebar,
+                    field: SortField::Title,
+                    order: SortOrder::Descending,
+                    group_directories: true,
+                    persist: false,
+                },
+                &tx,
+            )
+            .await;
+        let s = screen.settings.read().unwrap();
+        assert_eq!(
+            s.default_sort_field,
+            crate::settings::SortFieldSetting::Name
+        );
+        assert_eq!(
+            s.default_sort_order,
+            crate::settings::SortOrderSetting::Ascending
+        );
+        assert!(!s.group_directories);
     }
 }

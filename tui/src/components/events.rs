@@ -135,19 +135,15 @@ pub enum AppEvent {
     },
 
     /// Sort selection changed in the sort dialog — apply live to `target`.
+    /// When `persist` is set (sidebar's "save as default"), also write the
+    /// choice to settings. `group_directories` is sidebar-only (the query panel
+    /// ignores it).
     SortChanged {
         target: SortTarget,
         field: SortField,
         order: SortOrder,
-        /// Sidebar only; ignored by the query panel.
         group_directories: bool,
-    },
-    /// Persist the current sort selection as the default for `target`.
-    SortSaveDefault {
-        target: SortTarget,
-        field: SortField,
-        order: SortOrder,
-        group_directories: bool,
+        persist: bool,
     },
 }
 
@@ -220,12 +216,14 @@ mod tests {
             field: SortField::Name,
             order: SortOrder::Ascending,
             group_directories: true,
+            persist: false,
         };
-        let _ = AppEvent::SortSaveDefault {
+        let _ = AppEvent::SortChanged {
             target: SortTarget::Query,
             field: SortField::Title,
             order: SortOrder::Descending,
             group_directories: false,
+            persist: true,
         };
     }
 }

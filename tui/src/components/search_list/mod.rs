@@ -267,26 +267,38 @@ impl<R: SearchRow> SearchList<R> {
         self.loader.loading
     }
 
-    /// Set the query and (for `reload_on_query` sources) start a fresh load.
-    /// The generation guard in `LoadEngine` drops any in-flight stale results.
+    /// Set the query programmatically: updates the visible input widget (cursor
+    /// to end) AND the query string, then starts a load (for `reload_on_query`
+    /// sources) or recomputes the display. This is the setter every external
+    /// caller wants — a saved search applied, a sort directive rewritten — so
+    /// the input bar always reflects the query. The interactive keystroke path
+    /// uses [`sync_query_from_input`](Self::sync_query_from_input) instead,
+    /// because the input widget already holds the typed text (and its cursor
+    /// must not jump back to the end on every keystroke).
     pub fn set_query(&mut self, q: impl Into<String>) {
-        self.query = q.into();
+        let q = q.into();
+        self.input.set_value(q.clone());
+        self.query = q;
+        self.requery();
+    }
+
+    /// Pull the query string FROM the input widget without touching the widget
+    /// (so the cursor stays put), then reload/recompute. The keystroke and
+    /// autocomplete-accept paths use this after they have already mutated the
+    /// input in place.
+    fn sync_query_from_input(&mut self) {
+        self.query = self.input.value().to_string();
+        self.requery();
+    }
+
+    /// Start a fresh load for `reload_on_query` sources, else recompute the
+    /// local display. The generation guard in `LoadEngine` drops stale results.
+    fn requery(&mut self) {
         if self.source.reload_on_query() {
             self.loader.start(self.source.clone(), self.query.clone());
         } else {
             self.recompute_display();
         }
-    }
-
-    /// Set the query AND the visible input text (cursor to end), then run
-    /// `set_query`. For PROGRAMMATIC query changes — a saved search applied, a
-    /// sort directive rewritten — so the input bar reflects the new query. The
-    /// interactive keystroke path keeps using `set_query` directly, since the
-    /// input widget already holds the typed text (and its cursor must not jump).
-    pub fn set_query_text(&mut self, q: impl Into<String>) {
-        let q = q.into();
-        self.input.set_value(q.clone());
-        self.set_query(q);
     }
 
     /// Re-run the source load for the current query (e.g. after a mutation).
@@ -333,7 +345,7 @@ impl<R: SearchRow> SearchList<R> {
                             &action.new_text,
                             action.new_cursor_byte,
                         );
-                        self.set_query(self.input.value().to_string());
+                        self.sync_query_from_input();
                         return KeyReaction::Consumed;
                     }
                     HandleKeyOutcome::Dismissed | HandleKeyOutcome::Consumed => {
@@ -388,7 +400,7 @@ impl<R: SearchRow> SearchList<R> {
         }
         match outcome {
             InputOutcome::Changed => {
-                self.set_query(self.input.value().to_string());
+                self.sync_query_from_input();
                 KeyReaction::Consumed
             }
             InputOutcome::Consumed => KeyReaction::Consumed,
