@@ -6,6 +6,7 @@ pub use move_dialog::MoveDialog;
 pub use quick_note_modal::QuickNoteModal;
 pub use rename_dialog::RenameDialog;
 pub use save_search_dialog::SaveSearchDialog;
+pub use sort_dialog::SortDialog;
 pub use workspace_switcher::WorkspaceSwitcherModal;
 
 use std::sync::Arc;
@@ -47,6 +48,7 @@ pub mod move_dialog;
 pub mod quick_note_modal;
 pub mod rename_dialog;
 pub mod save_search_dialog;
+pub mod sort_dialog;
 pub mod workspace_switcher;
 
 pub enum ActiveDialog {
