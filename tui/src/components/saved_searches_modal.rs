@@ -20,6 +20,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph};
 
+use crate::app_screen::overlay_host::{Overlay, OverlayKind};
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
@@ -243,7 +244,7 @@ impl Component for SavedSearchesModal {
                             name: item.name.clone(),
                         })
                         .ok();
-                        tx.send(AppEvent::CloseSavedSearches).ok();
+                        tx.send(AppEvent::CloseOverlay).ok();
                     }
                     EventState::Consumed
                 }
@@ -268,12 +269,12 @@ impl Component for SavedSearchesModal {
                             name: item.name.clone(),
                         })
                         .ok();
-                        tx.send(AppEvent::CloseSavedSearches).ok();
+                        tx.send(AppEvent::CloseOverlay).ok();
                     }
                     EventState::Consumed
                 }
                 KeyReaction::Cancel => {
-                    tx.send(AppEvent::CloseSavedSearches).ok();
+                    tx.send(AppEvent::CloseOverlay).ok();
                     EventState::Consumed
                 }
                 KeyReaction::Consumed => EventState::Consumed,
@@ -343,6 +344,28 @@ impl Component for SavedSearchesModal {
             ("Del".to_string(), "delete".to_string()),
             ("Esc".to_string(), "close".to_string()),
         ]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Overlay impl
+// ---------------------------------------------------------------------------
+
+impl Overlay for SavedSearchesModal {
+    fn kind(&self) -> OverlayKind {
+        OverlayKind::SavedSearches
+    }
+
+    fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        <Self as Component>::handle_input(self, event, tx)
+    }
+
+    fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
+        <Self as Component>::render(self, f, area, theme, true);
+    }
+
+    fn hint_shortcuts(&self) -> Vec<(String, String)> {
+        <Self as Component>::hint_shortcuts(self)
     }
 }
 
@@ -449,7 +472,8 @@ mod tests {
         poll_engine_idle(&mut modal).await;
 
         // Select the first USER row (skip the pinned virtual backlinks row).
-        modal.handle_input(
+        Component::handle_input(
+            &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
             &tx,
         );
@@ -462,7 +486,8 @@ mod tests {
             .clone();
 
         // Delete: this sets pending_delete and reloads (delete-then-list, ordered).
-        modal.handle_input(
+        Component::handle_input(
+            &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
             &tx,
         );
@@ -510,7 +535,8 @@ mod tests {
         );
         modal.list.poll_until_idle().await;
 
-        modal.handle_input(
+        Component::handle_input(
+            &mut modal,
             &InputEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             &tx,
         );
@@ -528,8 +554,8 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::CloseSavedSearches)),
-            "expected CloseSavedSearches, got {events:?}"
+                .any(|e| matches!(e, AppEvent::CloseOverlay)),
+            "expected CloseOverlay, got {events:?}"
         );
     }
 }
