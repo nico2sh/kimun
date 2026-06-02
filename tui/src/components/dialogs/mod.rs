@@ -19,7 +19,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent, SortTarget};
+use crate::components::file_list::{SortField, SortOrder};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::settings::themes::Theme;
 
@@ -61,6 +62,7 @@ pub enum ActiveDialog {
     QuickNote(QuickNoteModal),
     WorkspaceSwitcher(WorkspaceSwitcherModal),
     SaveSearch(SaveSearchDialog),
+    Sort(SortDialog),
 }
 
 impl ActiveDialog {
@@ -75,6 +77,7 @@ impl ActiveDialog {
             ActiveDialog::QuickNote(d) => d.error = Some(msg),
             ActiveDialog::WorkspaceSwitcher(_) => {} // no error state
             ActiveDialog::SaveSearch(_) => {}        // no error state
+            ActiveDialog::Sort(_) => {}              // no error state
         }
     }
 
@@ -97,6 +100,15 @@ impl ActiveDialog {
 
     pub fn save_search(query: String) -> Self {
         ActiveDialog::SaveSearch(SaveSearchDialog::new(query))
+    }
+
+    pub fn sort(
+        target: SortTarget,
+        field: SortField,
+        order: SortOrder,
+        group_directories: bool,
+    ) -> Self {
+        ActiveDialog::Sort(SortDialog::new(target, field, order, group_directories))
     }
 
     pub fn file_ops_menu(path: kimun_core::nfs::VaultPath) -> Self {
@@ -207,6 +219,7 @@ impl Component for ActiveDialog {
             ActiveDialog::QuickNote(d) => d.handle_key(*key, tx),
             ActiveDialog::WorkspaceSwitcher(d) => d.handle_key(*key, tx),
             ActiveDialog::SaveSearch(d) => d.handle_input(event, tx),
+            ActiveDialog::Sort(d) => d.handle_input(event, tx),
         }
     }
 
@@ -221,6 +234,7 @@ impl Component for ActiveDialog {
             ActiveDialog::QuickNote(d) => d.render(f, rect, theme, focused),
             ActiveDialog::WorkspaceSwitcher(d) => d.render(f, rect, theme, focused),
             ActiveDialog::SaveSearch(d) => d.render(f, rect, theme, focused),
+            ActiveDialog::Sort(d) => d.render(f, rect, theme, focused),
         }
     }
 }
@@ -316,5 +330,17 @@ mod tests {
     fn active_dialog_help_variant_compiles() {
         let dialog = HelpDialog::new(&KeyBindings::empty());
         let _active: ActiveDialog = ActiveDialog::Help(dialog);
+    }
+
+    #[test]
+    fn active_dialog_sort_variant_compiles() {
+        use crate::components::events::SortTarget;
+        use crate::components::file_list::{SortField, SortOrder};
+        let _active: ActiveDialog = ActiveDialog::sort(
+            SortTarget::Sidebar,
+            SortField::Name,
+            SortOrder::Ascending,
+            false,
+        );
     }
 }
