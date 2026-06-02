@@ -16,7 +16,7 @@ use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::backlinks_panel::QueryPanel;
 use crate::components::dialogs::ActiveDialog;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent};
+use crate::components::events::{AppEvent, AppTx, InputEvent, ScreenEvent, SortTarget};
 use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::NoteBrowserModal;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
@@ -688,6 +688,31 @@ impl AppScreen for EditorScreen {
                     }
                     return EventState::Consumed;
                 }
+                Some(ActionShortcuts::OpenSortDialog) => {
+                    if !self.overlays.is_open() {
+                        let target = match self.focus {
+                            Focus::Backlinks => Some(SortTarget::Query),
+                            Focus::Sidebar => Some(SortTarget::Sidebar),
+                            _ if self.sidebar_visible => Some(SortTarget::Sidebar),
+                            _ => None,
+                        };
+                        if let Some(target) = target {
+                            let dialog = match target {
+                                SortTarget::Sidebar => {
+                                    let (f, o) = self.sidebar.current_sort();
+                                    ActiveDialog::sort(target, f, o, self.sidebar.group_dirs())
+                                }
+                                SortTarget::Query => {
+                                    let (f, o) = self.backlinks_panel.current_order();
+                                    ActiveDialog::sort(target, f, o, false)
+                                }
+                            };
+                            self.overlays.open(Box::new(dialog), self.opener_focus());
+                            self.set_focus(Focus::Overlay);
+                        }
+                    }
+                    return EventState::Consumed;
+                }
                 Some(ActionShortcuts::SaveCurrentQuery) => {
                     // Source the query from the active note browser if one is
                     // open (Ctrl+K modal), otherwise from the Query panel. Any
@@ -974,6 +999,53 @@ impl AppScreen for EditorScreen {
                 if self.overlays.is_open() {
                     self.restore_focus();
                 }
+                None
+            }
+            AppEvent::SortChanged {
+                target,
+                field,
+                order,
+                group_directories,
+            } => {
+                match target {
+                    SortTarget::Sidebar => {
+                        self.sidebar.apply_sort(field, order, group_directories)
+                    }
+                    SortTarget::Query => self.backlinks_panel.apply_sort(field, order, tx),
+                }
+                None
+            }
+            AppEvent::SortSaveDefault {
+                target,
+                field,
+                order,
+                group_directories,
+            } => {
+                match target {
+                    SortTarget::Sidebar => {
+                        self.sidebar.apply_sort(field, order, group_directories);
+                        {
+                            let mut s = self.settings.write().unwrap();
+                            if self.sidebar.current_dir() == self.vault.journal_path() {
+                                s.journal_sort_field =
+                                    crate::settings::SortFieldSetting::from(field);
+                                s.journal_sort_order =
+                                    crate::settings::SortOrderSetting::from(order);
+                            } else {
+                                s.default_sort_field =
+                                    crate::settings::SortFieldSetting::from(field);
+                                s.default_sort_order =
+                                    crate::settings::SortOrderSetting::from(order);
+                            }
+                            s.group_directories = group_directories;
+                        }
+                    }
+                    SortTarget::Query => self.backlinks_panel.apply_sort(field, order, tx),
+                }
+                let snapshot = self.settings.read().unwrap().clone();
+                tokio::spawn(async move {
+                    snapshot.save_to_disk().ok();
+                });
                 None
             }
             AppEvent::Autosave => {
@@ -1325,5 +1397,44 @@ mod tests {
             Some(OverlayKind::Dialog),
             "saving from the note browser opens the save-search dialog"
         );
+    }
+}
+
+#[cfg(test)]
+mod sort_routing_tests {
+    use super::*;
+    use crate::app_screen::AppScreen;
+    use crate::components::events::SortTarget;
+    use crate::components::file_list::{SortField, SortOrder};
+
+    async fn make_editor() -> (EditorScreen, AppTx, tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
+        let vault = crate::test_support::temp_vault("editor-sort").await;
+        vault.validate_and_init().await.unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let screen = EditorScreen::new(vault, VaultPath::root(), settings);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (screen, tx, rx)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sort_save_default_persists_to_settings() {
+        let (mut screen, tx, _rx) = make_editor().await;
+        screen
+            .handle_app_message(
+                AppEvent::SortSaveDefault {
+                    target: SortTarget::Sidebar,
+                    field: SortField::Title,
+                    order: SortOrder::Descending,
+                    group_directories: true,
+                },
+                &tx,
+            )
+            .await;
+        let s = screen.settings.read().unwrap();
+        assert_eq!(s.default_sort_field, crate::settings::SortFieldSetting::Title);
+        assert_eq!(s.default_sort_order, crate::settings::SortOrderSetting::Descending);
+        assert!(s.group_directories);
     }
 }
