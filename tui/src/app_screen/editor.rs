@@ -1008,9 +1008,7 @@ impl AppScreen for EditorScreen {
                 group_directories,
             } => {
                 match target {
-                    SortTarget::Sidebar => {
-                        self.sidebar.apply_sort(field, order, group_directories)
-                    }
+                    SortTarget::Sidebar => self.sidebar.apply_sort(field, order, group_directories),
                     SortTarget::Query => self.backlinks_panel.apply_sort(field, order, tx),
                 }
                 None
@@ -1407,7 +1405,11 @@ mod sort_routing_tests {
     use crate::components::events::SortTarget;
     use crate::components::file_list::{SortField, SortOrder};
 
-    async fn make_editor() -> (EditorScreen, AppTx, tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
+    async fn make_editor() -> (
+        EditorScreen,
+        AppTx,
+        tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    ) {
         let vault = crate::test_support::temp_vault("editor-sort").await;
         vault.validate_and_init().await.unwrap();
         let settings = std::sync::Arc::new(std::sync::RwLock::new(
@@ -1433,8 +1435,14 @@ mod sort_routing_tests {
             )
             .await;
         let s = screen.settings.read().unwrap();
-        assert_eq!(s.default_sort_field, crate::settings::SortFieldSetting::Title);
-        assert_eq!(s.default_sort_order, crate::settings::SortOrderSetting::Descending);
+        assert_eq!(
+            s.default_sort_field,
+            crate::settings::SortFieldSetting::Title
+        );
+        assert_eq!(
+            s.default_sort_order,
+            crate::settings::SortOrderSetting::Descending
+        );
         assert!(s.group_directories);
     }
 
@@ -1458,9 +1466,18 @@ mod sort_routing_tests {
             .await;
 
         let s = screen.settings.read().unwrap();
-        assert_eq!(s.journal_sort_field, crate::settings::SortFieldSetting::Title);
-        assert_eq!(s.journal_sort_order, crate::settings::SortOrderSetting::Ascending);
+        assert_eq!(
+            s.journal_sort_field,
+            crate::settings::SortFieldSetting::Title
+        );
+        assert_eq!(
+            s.journal_sort_order,
+            crate::settings::SortOrderSetting::Ascending
+        );
         // Default (non-journal) settings must be untouched from their defaults.
-        assert_eq!(s.default_sort_field, crate::settings::SortFieldSetting::Name);
+        assert_eq!(
+            s.default_sort_field,
+            crate::settings::SortFieldSetting::Name
+        );
     }
 }

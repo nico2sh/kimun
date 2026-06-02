@@ -3,7 +3,7 @@ pub mod error;
 pub mod nfs;
 pub mod note;
 pub mod utilities;
-pub use db::search_terms::{OrderBy, OrderField, SearchTerms, with_order_directive};
+pub use db::search_terms::{with_order_directive, OrderBy, OrderField, SearchTerms};
 pub use db::{DBStatus, NoteSuggestion, TagSuggestion};
 pub use nfs::saved_searches::SavedSearch;
 pub use utilities::{app_log_dir, ensure_dir_exists};

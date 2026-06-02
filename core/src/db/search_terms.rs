@@ -766,15 +766,21 @@ mod tests {
     #[test]
     fn with_order_empty_query_yields_bare_directive() {
         use super::{with_order_directive, OrderField};
-        assert_eq!(with_order_directive("", OrderField::Title, true), "or:title");
+        assert_eq!(
+            with_order_directive("", OrderField::Title, true),
+            "or:title"
+        );
     }
 
     #[test]
     fn with_order_roundtrips_through_parser() {
-        use super::{with_order_directive, OrderField, OrderBy, SearchTerms};
+        use super::{with_order_directive, OrderBy, OrderField, SearchTerms};
         let q = with_order_directive("note text", OrderField::Title, false);
         let st = SearchTerms::from_query_string(&q);
-        assert!(matches!(st.order_by.first(), Some(OrderBy::Title { asc: false })));
+        assert!(matches!(
+            st.order_by.first(),
+            Some(OrderBy::Title { asc: false })
+        ));
         assert!(st.terms.iter().any(|t| t == "note"));
     }
 

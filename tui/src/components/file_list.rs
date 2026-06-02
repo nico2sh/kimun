@@ -284,15 +284,27 @@ mod tests {
     #[test]
     fn sort_field_setting_roundtrip() {
         use crate::settings::SortFieldSetting;
-        assert_eq!(SortFieldSetting::from(SortField::Name), SortFieldSetting::Name);
-        assert_eq!(SortFieldSetting::from(SortField::Title), SortFieldSetting::Title);
+        assert_eq!(
+            SortFieldSetting::from(SortField::Name),
+            SortFieldSetting::Name
+        );
+        assert_eq!(
+            SortFieldSetting::from(SortField::Title),
+            SortFieldSetting::Title
+        );
         assert_eq!(SortField::from(SortFieldSetting::Title), SortField::Title);
     }
 
     #[test]
     fn sort_order_setting_roundtrip() {
         use crate::settings::SortOrderSetting;
-        assert_eq!(SortOrderSetting::from(SortOrder::Ascending), SortOrderSetting::Ascending);
-        assert_eq!(SortOrderSetting::from(SortOrder::Descending), SortOrderSetting::Descending);
+        assert_eq!(
+            SortOrderSetting::from(SortOrder::Ascending),
+            SortOrderSetting::Ascending
+        );
+        assert_eq!(
+            SortOrderSetting::from(SortOrder::Descending),
+            SortOrderSetting::Descending
+        );
     }
 }

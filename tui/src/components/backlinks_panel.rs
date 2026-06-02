@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
-use kimun_core::{with_order_directive, OrderBy, OrderField};
+use kimun_core::{OrderBy, OrderField, with_order_directive};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
@@ -320,11 +320,19 @@ impl QueryPanel {
         match st.order_by.first() {
             Some(OrderBy::Title { asc }) => (
                 SortField::Title,
-                if *asc { SortOrder::Ascending } else { SortOrder::Descending },
+                if *asc {
+                    SortOrder::Ascending
+                } else {
+                    SortOrder::Descending
+                },
             ),
             Some(OrderBy::FileName { asc }) => (
                 SortField::Name,
-                if *asc { SortOrder::Ascending } else { SortOrder::Descending },
+                if *asc {
+                    SortOrder::Ascending
+                } else {
+                    SortOrder::Descending
+                },
             ),
             None => (SortField::Name, SortOrder::Ascending),
         }
@@ -1003,9 +1011,15 @@ mod tests {
         vault.validate_and_init().await.unwrap();
         let mut panel = make_panel(vault);
         panel.set_active_query("widget -or:title".to_string());
-        assert_eq!(panel.current_order(), (SortField::Title, SortOrder::Descending));
+        assert_eq!(
+            panel.current_order(),
+            (SortField::Title, SortOrder::Descending)
+        );
         panel.set_active_query("widget".to_string());
-        assert_eq!(panel.current_order(), (SortField::Name, SortOrder::Ascending));
+        assert_eq!(
+            panel.current_order(),
+            (SortField::Name, SortOrder::Ascending)
+        );
     }
 
     /// A static query (no `{note}`) must survive navigation: `set_note` leaves
