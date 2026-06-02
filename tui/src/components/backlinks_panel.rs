@@ -452,6 +452,8 @@ impl QueryPanel {
         [
             (ActionShortcuts::FocusSidebar, "\u{2190} editor"),
             (ActionShortcuts::FollowLink, "open note"),
+            (ActionShortcuts::SaveCurrentQuery, "save query"),
+            (ActionShortcuts::OpenSavedSearches, "searches"),
             (ActionShortcuts::CycleSortField, "sort"),
         ]
         .iter()

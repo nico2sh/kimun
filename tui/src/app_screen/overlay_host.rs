@@ -38,6 +38,11 @@ impl<F> OverlayHost<F> {
         self.active.as_ref().map(|o| o.kind())
     }
 
+    /// The active overlay's query string, if it is query-backed (note browser).
+    pub fn active_query(&self) -> Option<&str> {
+        self.active.as_ref().and_then(|o| o.query())
+    }
+
     /// Open `overlay`. Saves `panel_token` only if no overlay is currently
     /// active, so a chained open preserves the original opener focus.
     /// Replacing an already-open overlay is allowed; the previous overlay is

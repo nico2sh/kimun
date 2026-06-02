@@ -683,8 +683,20 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SaveCurrentQuery) => {
-                    let query = self.backlinks_panel.active_query().to_string();
-                    if !self.overlays.is_open() && !query.trim().is_empty() {
+                    // Source the query from the active note browser if one is
+                    // open (Ctrl+K modal), otherwise from the Query panel. Any
+                    // other overlay being open suppresses the action.
+                    let query = match self.overlays.active_kind() {
+                        Some(OverlayKind::NoteBrowser) => {
+                            self.overlays.active_query().unwrap_or_default().to_string()
+                        }
+                        None => self.backlinks_panel.active_query().to_string(),
+                        Some(_) => String::new(),
+                    };
+                    if !query.trim().is_empty() {
+                        // Opening the save dialog replaces the note browser (if
+                        // any); the chained-open guard preserves the original
+                        // opener focus.
                         self.overlays.open(
                             Box::new(ActiveDialog::save_search(query)),
                             self.opener_focus(),
@@ -1243,6 +1255,66 @@ mod tests {
             screen.overlays.active_kind(),
             Some(OverlayKind::SavedSearches),
             "open overlay must not be replaced by a QuickNote opener action"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_query_from_note_browser_opens_save_dialog() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Open a note browser carrying a query, as if the user typed "#todo".
+        {
+            let s = settings.read().unwrap();
+            let provider = SearchNotesProvider::new(vault.clone(), s.current_last_paths());
+            let modal = NoteBrowserModal::with_initial_query(
+                "Note Browser",
+                provider,
+                vault.clone(),
+                s.key_bindings.clone(),
+                s.icons(),
+                tx.clone(),
+                "#todo",
+            );
+            drop(s);
+            screen.overlays.open(Box::new(modal), screen.opener_focus());
+        }
+        screen.set_focus(Focus::Overlay);
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::NoteBrowser),
+            "precondition: note browser is active with a query"
+        );
+        assert_eq!(screen.overlays.active_query(), Some("#todo"));
+
+        // Ctrl+D (SaveCurrentQuery) while the note browser is active should
+        // replace it with the save-search dialog, sourcing the browser's query.
+        let save_event = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        {
+            let s = settings.read().unwrap();
+            let combo = key_event_to_combo(&save_event).expect("Ctrl+D maps to a combo");
+            assert_eq!(
+                s.key_bindings.get_action(&combo),
+                Some(ActionShortcuts::SaveCurrentQuery),
+                "test assumes Ctrl+D is bound to SaveCurrentQuery"
+            );
+        }
+
+        screen.handle_input(&InputEvent::Key(save_event), &tx);
+
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::Dialog),
+            "saving from the note browser opens the save-search dialog"
         );
     }
 }
