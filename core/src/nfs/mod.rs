@@ -938,6 +938,22 @@ impl VaultPath {
         self.flatten().get_relative_to(&parent)
     }
 
+    /// Resolve `self` as a link target written inside `note_path`.
+    ///
+    /// Inverse of [`relative_link_from_note`]: markdown links resolve against
+    /// the *directory* containing the note, so a `../work/anton.md` target in
+    /// `/journal/today.md` resolves to `/work/anton.md` (flattened, absolute).
+    /// Absolute targets are returned flattened as-is. A bare filename with no
+    /// directory part (e.g. `anton.md`) is returned unchanged so callers can
+    /// fall back to a vault-wide name lookup (wiki-style links).
+    pub fn resolve_link_in_note(&self, note_path: &VaultPath) -> VaultPath {
+        if self.is_note_file() {
+            return self.clone();
+        }
+        let (parent, _) = note_path.flatten().get_parent_path();
+        parent.append(self).flatten().absolute()
+    }
+
     pub fn get_relative_to(&self, reference_path: &VaultPath) -> VaultPath {
         let mut slices = vec![];
         let ref_slices = reference_path.slices.clone();
@@ -1459,6 +1475,47 @@ mod tests {
         assert_eq!(
             "assets/img.png",
             asset.relative_link_from_note(&note).to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_link_in_note_walks_up_and_lowercases() {
+        let note = VaultPath::new("/journal/2026-03-01.md");
+        let target = VaultPath::note_path_from("../Work/People/anton.md");
+        assert_eq!(
+            "/work/people/anton.md",
+            target.resolve_link_in_note(&note).to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_link_in_note_keeps_bare_name_for_name_lookup() {
+        let note = VaultPath::new("/journal/2026-03-01.md");
+        let target = VaultPath::note_path_from("anton.md");
+        // Bare name unchanged (relative, single slice) so open_or_search does a
+        // vault-wide name lookup rather than a directory-scoped path match.
+        let resolved = target.resolve_link_in_note(&note);
+        assert_eq!("anton.md", resolved.to_string());
+        assert!(resolved.is_note_file());
+    }
+
+    #[test]
+    fn resolve_link_in_note_absolute_target_unchanged() {
+        let note = VaultPath::new("/journal/2026-03-01.md");
+        let target = VaultPath::note_path_from("/work/people/anton.md");
+        assert_eq!(
+            "/work/people/anton.md",
+            target.resolve_link_in_note(&note).to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_link_in_note_sibling_subdir() {
+        let note = VaultPath::new("/journal/2026-03-01.md");
+        let target = VaultPath::note_path_from("attachments/notes.md");
+        assert_eq!(
+            "/journal/attachments/notes.md",
+            target.resolve_link_in_note(&note).to_string()
         );
     }
 

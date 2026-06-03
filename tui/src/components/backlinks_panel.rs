@@ -159,8 +159,9 @@ pub struct QueryPanel {
     /// its own sticky/clear/edited state machine; this panel only forwards
     /// query events to it. See [`SavedSearchBreadcrumb`] and `adr/0006`.
     saved_search: SavedSearchBreadcrumb,
-    /// Expand state of the currently-selected row. Reset to `Collapsed` on any
-    /// navigation or query change.
+    /// Expand state of the currently-selected row. `Context` sticks across
+    /// navigation (re-anchored on the new row); `Full` and query changes reset
+    /// to `Collapsed`.
     expand: ExpandState,
     /// The path the `expand` state belongs to, used to detect selection changes
     /// (the engine owns the list, so we re-anchor expand on the selected row).
@@ -323,12 +324,16 @@ impl QueryPanel {
         self.content_scroll_max = 0;
     }
 
-    /// Re-anchor the expand state on the currently-selected row. If selection
-    /// has moved to a different row, collapse it.
+    /// Re-anchor the expand state on the currently-selected row. The Context
+    /// (half-height) preview sticks across selection moves: it stays open and
+    /// re-anchors on the new row, so Down/Up browse previews in place. Full
+    /// collapses, and a vanished selection always collapses.
     fn sync_expand_anchor(&mut self) {
         let sel = self.list.selected_row().map(|e| e.path.clone());
         if sel != self.expand_path {
-            self.expand = ExpandState::Collapsed;
+            if self.expand != ExpandState::Context || sel.is_none() {
+                self.expand = ExpandState::Collapsed;
+            }
             self.expand_path = sel;
             self.content_scroll = 0;
         }

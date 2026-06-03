@@ -227,7 +227,11 @@ impl EditorScreen {
         // Strip any `#fragment` suffix before resolving (e.g. `notes/design.md#goals`
         // should resolve to `notes/design.md`, not `notes/design.md#goals.md`).
         let target_clean = target.split('#').next().unwrap_or(&target).trim_end();
-        let path = kimun_core::nfs::VaultPath::note_path_from(target_clean);
+        // Resolve the (possibly relative, e.g. `../work/anton.md`) target
+        // against this note's directory so the existence lookup uses the same
+        // absolute path the note is stored under. Bare names stay name-lookups.
+        let path = kimun_core::nfs::VaultPath::note_path_from(target_clean)
+            .resolve_link_in_note(&self.path);
         match self.vault.open_or_search(&path).await {
             Ok(results) if results.is_empty() => {
                 self.present_overlay(Box::new(ActiveDialog::create_note(
