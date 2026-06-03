@@ -121,7 +121,7 @@ impl Display for NoteContentData {
 /// Uses ASCII Unit Separator (U+001F) so heading text containing visible
 /// punctuation — including `>`, `/`, `|`, `:` — round-trips correctly through
 /// `breadcrumb_parts()` / `breadcrumb_last()`. Not the `>` used as the search
-/// query operator in `db::search_terms`.
+/// query operator in `index::search_terms`.
 pub const BREADCRUMB_SEP: &str = "\x1f";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

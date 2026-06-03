@@ -628,18 +628,6 @@ pub(crate) fn ensure_dir(dir: &Path) -> Result<(), FSError> {
     std::fs::create_dir_all(dir).map_err(FSError::ReadFileError)
 }
 
-/// Remove a file or directory at the given OS path. Used by `NoteVault::force_rebuild`
-/// to delete the database file before recreating it.
-pub(crate) fn remove_path(path: &Path) -> Result<(), FSError> {
-    let md = std::fs::metadata(path).map_err(FSError::ReadFileError)?;
-    if md.is_dir() {
-        std::fs::remove_dir_all(path).map_err(FSError::ReadFileError)?;
-    } else {
-        std::fs::remove_file(path).map_err(FSError::ReadFileError)?;
-    }
-    Ok(())
-}
-
 /// Returns true if anything (file or directory) exists at the resolved
 /// disk path for `path`. Cheaper than `load_note` when the contents are
 /// not needed.

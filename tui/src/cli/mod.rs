@@ -72,14 +72,13 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             )
             .await?;
             vault.set_inbox_path(kimun_core::nfs::VaultPath::new(&inbox_path));
-            match vault.validate().await? {
-                kimun_core::DBStatus::Ready => {
-                    commands::note_ops::run(subcommand, &vault, &quick_note_path, &workspace_name)
-                        .await
-                }
-                status => Err(eyre!(
-                    "Workspace index is not ready ({status}).\nRun `kimun workspace reindex` to initialise it."
-                )),
+            if vault.index_ready() {
+                commands::note_ops::run(subcommand, &vault, &quick_note_path, &workspace_name)
+                    .await
+            } else {
+                Err(eyre!(
+                    "Workspace index is not ready.\nRun `kimun workspace reindex` to initialise it."
+                ))
             }
         }
         CliCommand::Search { query, format } => {

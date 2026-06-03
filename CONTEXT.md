@@ -104,6 +104,20 @@ _Avoid_: popup, modal (names only some), dialog (names only one kind).
 The single-slot owner of the active **Overlay**; saves the opener panel's focus on open and returns it on close. The transient-surface counterpart to the **PanelSet**.
 _Avoid_: dialog manager (the superseded name), overlay stack (it is single-slot).
 
+### Indexing
+
+**NoteIndex**:
+The one core module owning the searchable index of the vault — search, suggestions, backlinks, and the index's own lifecycle (schema versioning, self-heal on open). Its interface speaks in notes, queries, and **note links**; SQLite, sqlx, transactions, and schema migrations are implementation and never cross the interface. Atomicity is carried by composite operations (apply an **IndexDiff**; rename a note together with its rewritten backlinks) rather than by exposing transactions.
+_Avoid_: db, VaultDB, database (they name the implementation, not the role)
+
+**Index self-heal**:
+On open, the **NoteIndex** silently recreates its schema when the stored index is missing, outdated, or invalid — leaving a valid but empty index that the next sync pass fills. Callers get a single readiness probe (`index_ready`): false when the index was just healed (or never filled), so fast paths like the CLI `note` command can refuse to run against an empty index. There is no public status enum.
+_Avoid_: DBStatus (the superseded public enum), force rebuild (the deleted file-deletion variant)
+
+**IndexDiff**:
+The batch of note changes — to add, to modify, to delete — that a vault sync walk produces and `NoteIndex::apply` consumes in one atomic operation. Owned by the **NoteIndex** interface: it is the currency crossing that seam, not a walker by-product.
+_Avoid_: NoteListResults (the superseded visitor type), results
+
 ### Note editing
 
 **Automated edit**:
