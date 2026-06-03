@@ -2,7 +2,7 @@
   <img src="assets/logo.png" alt="Kimün Logo" width="60" height="60" />
 
   <h1>Kimün</h1>
-  <p><strong>Simple note-taking. Powerful search. AI-ready.**</p>
+  <p><strong>Simple note-taking. Powerful search. AI-ready.</strong></p>
 
   <p>
     <a href="https://nico2sh.github.io/kimun/"><img src="https://img.shields.io/badge/docs-github%20pages-brightgreen?style=flat-square" alt="Documentation"></a>
