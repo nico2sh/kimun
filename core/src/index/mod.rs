@@ -91,7 +91,7 @@ use super::{
 const VERSION: &str = "0.10";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
-/// The diff a vault sync walk produces and [`NoteIndex::apply`] consumes in
+/// The diff a vault sync walk produces and `NoteIndex::apply` consumes in
 /// one atomic operation — the currency crossing the index's interface.
 /// The order of `to_add` and `to_modify` is non-deterministic: they are
 /// populated by parallel walker threads and entries land in the order each
