@@ -1,187 +1,160 @@
-# Kimün
+<div align="center">
+  <img src="assets/logo.png" alt="Kimün Logo" width="120" height="120" />
 
-[![Crates.io](https://img.shields.io/crates/v/kimun-notes)](https://crates.io/crates/kimun-notes)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Docs](https://img.shields.io/badge/docs-nico2sh.github.io%2Fkimun-blue)](https://nico2sh.github.io/kimun/)
+  <h1>Kimün</h1>
+  <p><strong>Simple note-taking. Powerful search. AI-ready.**</p>
 
-[![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
+  <p>
+    <a href="https://nico2sh.github.io/kimun/"><img src="https://img.shields.io/badge/docs-github%20pages-brightgreen?style=flat-square" alt="Documentation"></a>
+    <a href="https://github.com/nico2sh/kimun/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
+    <a href="https://crates.io/crates/kimun_core"><img src="https://img.shields.io/crates/v/kimun_core?style=flat-square&color=orange" alt="Crates.io"></a>
+    <a href="https://github.com/nico2sh/kimun/stargazers"><img src="https://img.shields.io/github/stars/nico2sh/kimun?style=flat-square&label=stars" alt="Stars"></a>
+  </p>
 
-<p align="center">
-  <img src="docs/static/img/kimun.png" alt="Kimün logo" width="128"/>
-</p>
-
-
-A terminal-based notes app focused on simplicity and powerful search.
-
-It doesn't try to do everything; there are already more powerful tools for more complex workflows and knowledge management. Kimün aims to be simple and give you the tools to integrate with your own workflow. You can even combine it with other note taking apps that support local notes.
-
-Features:
-* Local Markdown files indexed for fast search
-* Simple Markdown syntax highlighting
-* Powerful but simple search syntax to browse your notes
-* Telescope-like search and note navigation with previews
-* Wikilink and Markdown links note navigation with keyboard shortcuts
-* Multiple workspaces, so you keep your notes in separate contexts
-* Backlink support with previews
-* Skills and MCP Server for integrating with your favorite LLM
-* Embedded Neovim mode in the editor, so you can use your search and replace commands and move with HJKL
-* FAST
-
-And more: **Check the [docs](https://nico2sh.github.io/kimun/) for more on what you can do with Kimün.**
-
-Notes are plain Markdown files stored in a directory you own. Kimün indexes them into a local SQLite database for fast full-text and structured search.
-
-If you are already using another markdown, local-first, note-taking app, you should feel right at home and be able to use Kimün just like your existing app (QownNotes, Obsidian, Logseq, etc.) or alongside with it, only that in this case, it is on your terminal emulator.
-
-## Interactive and cli tool
-
-**TUI** — an interactive terminal interface for writing, browsing, and organizing notes. Navigate your vault, search across notes, follow wiki links, and manage files without leaving the terminal.
-
-**CLI** — a scriptable interface for automation and integration. Pipe output, capture command results into notes, log to your journal from cron jobs, or build custom workflows with `jq` and shell scripts:
-
-```sh
-# Quick capture from anywhere
-kimun note journal "Fixed the auth bug, deploying at 17:00"
-
-# Pipe command output into a note
-./run-tests.sh | tail -5 | kimun note append "logs/test-log"
-
-# Search and process results
-kimun search "todo" --format json | jq '.notes[] | {title, path}'
-```
-
-The CLI can be used with AI tools and agents. An AI assistant can create, append, and search notes on your behalf — logging findings, organizing research, or updating your journal as part of an automated workflow. You can use the skill located under the [skills](skills/) directory, or create your own (in that case, create a pull request here and share yours!)
-
-> Note: There is a fair amount of AI-assisted code (using Claude) with manual reviews, although most of the core was written with my human hands. Initially AI was used for tedious refactors, data structures I'm too lazy to code myself, but also to help me building the foundations of more complex stuff, especially on the UI side. Anyway, I guess the lesson is, use AI as a tool, not as a replacement.
-> 
-> Oh, and about the app logo: maybe is not the most beautiful one, but I did it myself with Inkscape! (it's a `k`! that looks like an open book! get it?) Pay artists or do it yourself, but don't take away the fun creative things from people.
-
-![Kimün demo](media/demo.gif)
-
-![Kimün screenshot](media/screenshot.png)
-
-## Quick Start
-
-Kimün is a terminal UI for browsing and editing your Markdown notes with a powerful search engine. Use the TUI to write and organize notes, or the CLI for automation and scripting. Everything is stored as plain `.md` files — no lock-in.
-
-**Homebrew (macOS and Linux):**
-
-```sh
-brew tap nico2sh/kimun
-brew install kimun
-```
-
-**Cargo:**
-
-```sh
-cargo install kimun-notes
-```
-
-## Try It
-
-The `example/` directory contains two sample workspaces (personal and work) with interconnected notes, journal entries, inbox items, and wikilinks — ready to explore.
-
-```sh
-# Clone and run from source
-git clone https://github.com/nico2sh/kimun.git
-cd kimun
-cargo run -- --config example/config.toml
-```
-
-The first launch initializes the search index. After that, you can:
-
-- **Browse notes** in the sidebar, follow `[[wikilinks]]` with `Ctrl+G`
-- **Search** with `Ctrl+K`
-- **Quick note** with `Ctrl+W` — captures a thought to the inbox
-- **Backlinks panel** with `Ctrl+E` — see what links to the current note
-- **Switch workspace** with `F4` — toggle between personal and work
-- **Open settings** with `Ctrl+P` — workspace management, themes, key bindings
-
-The example config uses relative paths (`personal/`, `work/`), resolved against the config file's directory.
-
-## AI Skills
-
-The `skills/` directory contains ready-made skills for AI coding assistants, so they can use the Kimün CLI on your behalf — capturing notes, appending to your journal, searching your vault, and more.
-
-### Claude Code
-
-```sh
-# Copy the skill to your Claude skills directory
-cp -r skills/kimun-cli ~/.claude/skills
-```
-
-Claude Code will pick it up automatically. In any session, Claude can now create and append notes, log to your journal, and search your vault using the CLI.
-
-### Other AI tools (Codex, Gemini CLI, etc.)
-
-Copy `skills/kimun-cli/SKILL.md` to wherever your tool loads skills from, following that tool's skill installation instructions.
-
-## MCP Server
-
-For richer AI integration, `kimun mcp` runs as a [Model Context Protocol](https://modelcontextprotocol.io) server. MCP gives the AI direct access to your vault through structured tools and prompt templates — no shell commands needed.
-
-```sh
-# Claude Code (one-time setup)
-claude mcp add kimun -- kimun mcp
-```
-
-**Tools** let the AI create, read, search, and reorganise notes. **Prompt templates** load vault content and ask the model to reason over it — reviewing your day, scanning a week of journal entries, finding unlinked related notes, or brainstorming ideas grounded in what you've already written.
-
-See the [MCP Server docs](docs/content/getting-started/mcp-server.md) for the full tool and prompt reference, and setup instructions for Claude Desktop and other clients.
+  🗣️ <em><strong>Kimün</strong> (Mapudungun): Knowledge, learning, or wisdom.</em>
+</div>
 
 ---
 
-## Documentation
+<div align="center">
+  <img src="assets/demo.gif" alt="Kimün TUI Interface Demo" width="100%" />
+</div>
 
-Full documentation is available in [`docs/`](docs/content):
+---
 
-- [Getting Started](docs/content/getting-started/)
-- [Using Kimün](docs/content/using-kimun/)
-- [Guides](docs/content/guides/)
+**Kimün** is a lightweight, blazing-fast, terminal-based notes application focused on ultimate simplicity and robust search. 
 
-To browse the docs locally with search:
+It doesn't try to be a bloated, all-in-one life-management suite. Instead, it serves as a minimalist local-first vault that seamlessly weaves into your existing developer terminal environment. Because your notes are stored as plain Markdown files, it plays beautifully alongside tools like Obsidian, Logseq, or QOwnNotes—giving you an ultra-fast TUI/CLI alternative right in your shell.
 
-```sh
-# Install Zola: https://www.getzola.org/documentation/getting-started/installation/
-zola serve docs/
+---
+
+## 📖 Documentation
+
+Ready to dive deeper? Check out our official documentation site for complete user guides, advanced setup steps, and integration tips:
+
+👉 **[Read the Full Documentation Here](https://nico2sh.github.io/kimun/)**
+
+---
+
+## ✨ Key Features & Benefits
+
+* ⚡ **Blazing Fast Search:** Local Markdown files are automatically indexed into a local SQLite database for instantaneous full-text, structured, and fuzzy search.
+* 🗺️ **Zettelkasten-Ready Linkages:** Seamlessly navigate your knowledge base using `[[wikilinks]]` and standard Markdown links with intuitive keyboard shortcuts. Includes backlink support with interactive previews!
+* 🧠 **AI & MCP Native:** Equipped with a dedicated **Model Context Protocol (MCP) Server** and LLM tools. Let your local or cloud AI models (like Claude Code) scan your notes, run daily reviews, update journals, or synthesize concepts directly.
+* 🤖 **Dual Interface Layout:** * **TUI (Terminal User Interface):** An elegant, interactive pane for capturing thoughts, browsing workspaces, and previewing files.
+  * **CLI (Command Line Interface):** Fully scriptable. Pipe outputs, log entries via cron jobs, and manipulate entries using `jq` and shell tools.
+* 🗂️ **Contextual Workspaces:** Effortlessly separate your notes into distinct contexts (e.g., `Personal` vs `Work`) using multiple independent vaults.
+* 🟢 **Embedded Neovim Mode:** Power users rejoice! Utilize standard `HJKL` navigation, native motions, and search-and-replace routines without breaking context.
+
+---
+
+### 📸 TUI Snapshot
+<div align="center">
+  <img src="assets/screenshot.png" alt="Kimün Notes Preview and Search Panel Screenshot" width="100%" />
+</div>
+
+---
+
+## 🚀 Quick Start
+
+### Installation
+
+#### Homebrew (macOS & Linux)
+```bash
+brew tap nico2sh/kimun
+brew install kimun
+
 ```
 
-## Roadmap
+#### Cargo (Rust Ecosystem)
 
-- [ ] Command palette
-- [X] Backlinks panel
-- [X] Inline tags and search by tag (`#important`)
-- [X] Resolve relative paths on links and images
-- [X] Paste images into notes
-- [X] Auto-continue list formatting on Enter
-- [X] Quick add note
-- [X] Multiple workspaces
-- [X] Search under Markdown sections
-- [X] File management (create, rename, move, delete notes and directories)
-- [X] Autosave
-- [X] Wikilinks in preview
-- [X] Navigate notes via links in preview
-- [X] Embed neoVim as an option (currently experimental)
+```bash
+cargo install kimun-notes
 
-# Contributing
-
-Contributions are welcome! This project uses [Conventional Commits](https://www.conventionalcommits.org/) to automate versioning and changelog generation.
-
-If you want to automate enforcing the Conventional Commits, after cloning enable the included git hook:
-
-```sh
-git config core.hooksPath .githooks
 ```
 
-This will reject commit messages that don't follow the format. Common types:
+### Try It Out!
 
-| Type | When to use |
-|---|---|
-| `feat:` | New feature (minor version bump) |
-| `fix:` | Bug fix (patch bump) |
-| `feat!:` | Breaking change (major bump) |
-| `chore:`, `docs:`, `ci:` | No release triggered |
+Explore Kimün immediately using the pre-configured environments located inside the `example/` directory. It comes loaded with interconnected personal and work notes, journals, and incoming inboxes:
 
-# Credits
-Built with [Ratatui](https://github.com/ratatui/ratatui) (and [ratatui-textarea](https://github.com/ratatui/ratatui-textarea)), [Nucleo](https://docs.rs/nucleo/latest/nucleo/) for fuzzy searching, [Ignore](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) for fast file read, [nvim-rs](https://github.com/killthemule/nvim-rs) for Neovim integration.
-Inspired by [Obsidian](https://obsidian.md/), [Logseq](https://logseq.com/) and [QownNotes](https://www.qownnotes.org/).
+```bash
+# Launch Kimün in the sample workspace
+kimun --vault ./example
+
+```
+
+---
+
+## ⌨️ TUI Keyboard Shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl + K | Global fuzzy search (Telescope-like) |
+| Ctrl + G | Follow `[[wikilink]]` under cursor |
+| Ctrl + E | Open Backlinks panel with live preview |
+| Ctrl + W | Quick Note — immediately capture thoughts to your inbox |
+| F4 | Switch Workspaces (e.g., Toggle Personal / Work) |
+
+---
+
+## 🤖 Automating with CLI & AI (MCP)
+
+### The Power of the CLI
+
+Because Kimün is fundamentally a CLI tool, you can easily pipeline your notes into automation workflows:
+
+```bash
+# Quick log to your daily journal from a shell workflow
+echo "Finished deploy script successfully" | kimun journal append
+
+# Search your notes structurally
+kimun search "refactoring" --json | jq '.[].path'
+
+```
+
+### Model Context Protocol (MCP) & LLMs
+
+Kimün bridges local notes with next-generation AI assistants. Using its native **MCP Server**, AI agents (such as **Claude Code**) can natively view, update, query, and synthesize your thoughts.
+
+* **Scan & Synthesize:** Ask an LLM to read a week's worth of journal logs and pull out action items.
+* **Brainstorm:** Ground an agent's reasoning inside your existing knowledge vault to avoid hallucinations.
+* **Auto-organize:** Let AI tools suggest unlinked but highly relevant notes.
+
+*(Want to check out or share prompts? See the available definitions in the `/skills` directory!)*
+
+---
+
+## 🗺️ Roadmap & Ecosystem
+
+We are actively building the ultimate developer-first writing interface. Here is what is on the horizon:
+
+* [ ] Universal Command Palette
+* [ ] Inline tags & specialized hashtag filtering (`#important`)
+* [ ] Native asset handling (pasting images directly into notes)
+* [ ] Automatic Markdown list auto-continuation on Enter
+* [ ] Enhanced nested section searching
+
+---
+
+## 🤝 Contributing
+
+We love open-source contributions! Whether you want to submit a bug fix, optimize the SQLite indexing, polish the text layout engine, or share an LLM Prompt template/Skill, you are welcome here.
+
+1. Fork the repository.
+2. Create your feature branch (`git checkout -b feature/amazing-idea`).
+3. Commit your changes (`git commit -m 'Add amazing feature'`).
+4. Push to the branch (`git push origin feature/amazing-idea`).
+5. Open a Pull Request.
+
+---
+
+## 🏆 Credits & Inspirations
+
+Kimün stands on the shoulders of giants in the terminal and note-taking ecosystem:
+
+* **UI/UX Foundations:** Built with [Ratatui](https://github.com/ratatui/ratatui) & `ratatui-textarea`.
+* **Search Mechanics:** Powered by [Nucleo](https://www.google.com/search?q=https://github.com/0x0ac/nucleo) for ultra-fast fuzzy matching, and `ignore` for rapid directory walking.
+* **Editor Integration:** Leverages `nvim-rs` for Neovim synchronization workflows.
+* **Philosophical Inspiration:** Heavily inspired by Obsidian, Logseq, and QOwnNotes.
+
+---
