@@ -74,15 +74,13 @@ impl AppScreen for StartScreen {
         EventState::NotConsumed
     }
 
-    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
+    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
         if let AppEvent::IndexingDone(_) = &msg {
             self.overlay = None;
             let paths = self.settings.read().unwrap().current_last_paths();
             let path = paths.first().map_or_else(VaultPath::root, |p| p.to_owned());
             tx.send(AppEvent::OpenPath(path)).ok();
-            return None;
         }
-        Some(msg)
     }
 
     fn render(&mut self, f: &mut ratatui::Frame) {
@@ -167,13 +165,9 @@ mod tests {
             work: tokio::spawn(async {}),
             ticker: tokio::spawn(async {}),
         });
-        let result = screen
+        screen
             .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(1))), &tx)
             .await;
-        assert!(
-            result.is_none(),
-            "IndexingDone should be consumed (return None)"
-        );
         assert!(screen.overlay.is_none(), "overlay should be cleared");
         let msg = rx.try_recv().expect("expected OpenPath message");
         assert!(
@@ -190,13 +184,9 @@ mod tests {
             work: tokio::spawn(async {}),
             ticker: tokio::spawn(async {}),
         });
-        let result = screen
+        screen
             .handle_app_message(AppEvent::IndexingDone(Err("fail".to_string())), &tx)
             .await;
-        assert!(
-            result.is_none(),
-            "IndexingDone should be consumed (return None)"
-        );
         assert!(
             screen.overlay.is_none(),
             "overlay should be cleared on error"

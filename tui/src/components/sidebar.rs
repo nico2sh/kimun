@@ -149,6 +149,18 @@ pub struct SidebarComponent {
 }
 
 impl SidebarComponent {
+    /// Build a sidebar from the application settings, pulling its key bindings
+    /// and icons from `settings`. The shared constructor for the screens that
+    /// host a sidebar (Editor and Browse), so the kb/icons wiring lives once.
+    pub fn from_settings(vault: Arc<NoteVault>, settings: &AppSettings) -> Self {
+        Self::new(
+            settings.key_bindings.clone(),
+            vault,
+            settings.icons(),
+            settings,
+        )
+    }
+
     pub fn new(
         key_bindings: KeyBindings,
         vault: Arc<NoteVault>,

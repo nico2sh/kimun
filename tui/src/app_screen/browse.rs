@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, Paragraph};
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::events::{AppTx, InputEvent};
 use crate::components::sidebar::SidebarComponent;
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
@@ -25,10 +25,8 @@ pub struct BrowseScreen {
 impl BrowseScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
         let s = settings.read().unwrap();
-        let kb = s.key_bindings.clone();
         let theme = s.get_theme();
-        let icons = s.icons();
-        let sidebar = SidebarComponent::new(kb, vault, icons, &s);
+        let sidebar = SidebarComponent::from_settings(vault, &s);
         drop(s);
         Self {
             sidebar,
@@ -93,15 +91,14 @@ impl AppScreen for BrowseScreen {
         );
     }
 
-    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
-        if let AppEvent::OpenPath(path) = &msg
-            && !path.is_note()
-        {
-            let dir = path.clone();
-            self.navigate_sidebar(dir, tx).await;
+    async fn try_open_path(&mut self, path: VaultPath, tx: &AppTx) -> Option<VaultPath> {
+        if !path.is_note() {
+            self.navigate_sidebar(path, tx).await;
             return None;
         }
-        Some(msg)
+        // Notes are not handled by Browse — bubble up so the main loop opens
+        // the editor for them.
+        Some(path)
     }
 }
 
@@ -146,40 +143,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_app_message_open_path_dir_is_consumed() {
+    async fn try_open_path_dir_is_consumed() {
         let vault = make_vault().await;
         let settings = make_settings_with_defaults();
         let (tx, _rx) = unbounded_channel();
         let dir = VaultPath::new("subdir");
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        let result = screen
-            .handle_app_message(AppEvent::OpenPath(dir.clone()), &tx)
-            .await;
-        assert!(result.is_none(), "OpenPath(dir) should be consumed");
+        let result = screen.try_open_path(dir.clone(), &tx).await;
+        assert!(result.is_none(), "dir path should be consumed");
         assert_eq!(screen.path, dir, "path should be updated");
     }
 
     #[tokio::test]
-    async fn handle_app_message_open_path_note_is_forwarded() {
+    async fn try_open_path_note_is_forwarded() {
         let vault = make_vault().await;
         let settings = make_settings_with_defaults();
         let (tx, _rx) = unbounded_channel();
         let note = VaultPath::note_path_from("test.md");
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        let result = screen
-            .handle_app_message(AppEvent::OpenPath(note.clone()), &tx)
-            .await;
-        assert!(result.is_some(), "OpenPath(note) should be forwarded");
-        assert!(matches!(result.unwrap(), AppEvent::OpenPath(_)));
-    }
-
-    #[tokio::test]
-    async fn handle_app_message_unrelated_is_forwarded() {
-        let vault = make_vault().await;
-        let settings = make_settings_with_defaults();
-        let (tx, _rx) = unbounded_channel();
-        let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        let result = screen.handle_app_message(AppEvent::FocusEditor, &tx).await;
-        assert!(result.is_some(), "FocusEditor should be forwarded");
+        let result = screen.try_open_path(note.clone(), &tx).await;
+        assert_eq!(
+            result,
+            Some(note),
+            "note path should bubble up unchanged for the editor"
+        );
     }
 }
