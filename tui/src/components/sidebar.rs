@@ -145,11 +145,12 @@ pub struct SidebarComponent {
     /// the sort dialog mutates it via `apply_sort`, then the listing reloads.
     group_dirs: Arc<Mutex<bool>>,
     rendered_rect: Rect,
+    key_bindings: KeyBindings,
 }
 
 impl SidebarComponent {
     pub fn new(
-        _key_bindings: KeyBindings,
+        key_bindings: KeyBindings,
         vault: Arc<NoteVault>,
         icons: Icons,
         settings: &AppSettings,
@@ -168,6 +169,7 @@ impl SidebarComponent {
             sort: Arc::new(Mutex::new((default_sort_field, default_sort_order))),
             group_dirs: Arc::new(Mutex::new(settings.group_directories)),
             rendered_rect: Rect::default(),
+            key_bindings,
         }
     }
 
@@ -349,7 +351,19 @@ impl Component for SidebarComponent {
     }
 
     fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        Vec::new()
+        use crate::keys::action_shortcuts::ActionShortcuts;
+
+        [
+            (ActionShortcuts::FocusEditor, "editor \u{2192}"),
+            (ActionShortcuts::OpenSortDialog, "sort"),
+        ]
+        .iter()
+        .filter_map(|(action, label)| {
+            self.key_bindings
+                .first_combo_for(action)
+                .map(|k| (k, label.to_string()))
+        })
+        .collect()
     }
 
     fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
