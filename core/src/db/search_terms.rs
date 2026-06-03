@@ -172,6 +172,20 @@ fn is_order_token(token: &str) -> bool {
             .is_some_and(|after| after.starts_with(':'))
 }
 
+/// Wrap `term` in the search DSL's quote characters when it contains
+/// whitespace, so a multi-word value (e.g. a note name with spaces) is
+/// parsed as a single token instead of being split across terms. Values
+/// without whitespace are returned unchanged. Note names can never contain
+/// `"` (invalid on Windows/macOS/Linux filesystems alike), so no escaping
+/// is needed.
+pub fn quote_query_term(term: &str) -> String {
+    if term.chars().any(char::is_whitespace) {
+        format!("\"{term}\"")
+    } else {
+        term.to_string()
+    }
+}
+
 /// Return `query` with any order directive (`or:`/`-or:`/`^`/`-^`, in any
 /// position) removed. Other tokens keep their order; whitespace is normalised
 /// to single spaces. The DSL knowledge lives here in core so the TUI never
@@ -767,6 +781,16 @@ mod tests {
             with_order_directive("-^file foo", OrderField::FileName, true),
             "foo or:file"
         );
+    }
+
+    #[test]
+    fn quote_query_term_wraps_only_when_whitespace() {
+        use super::quote_query_term;
+        assert_eq!(quote_query_term("spec"), "spec");
+        assert_eq!(quote_query_term("my note"), "\"my note\"");
+        // Round-trips through the parser as a single link target.
+        let s = SearchTerms::from_query_string(format!("<{}", quote_query_term("my note")));
+        assert_eq!(s.links, vec!["my note".to_string()]);
     }
 
     #[test]
