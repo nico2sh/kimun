@@ -407,21 +407,26 @@ impl EditorScreen {
     }
 
     /// Present `overlay`, recording the currently focused panel as its opener so
-    /// `restore_focus` can return there on close. The single way the editor
+    /// `dismiss_overlay` can return there on close. The single way the editor
     /// opens an overlay — the focus contract lives here, not at each call site.
     fn present_overlay(&mut self, overlay: Box<dyn Overlay>) {
         let opener = self.opener_focus();
         self.overlays.open(overlay, opener);
     }
 
-    /// Close the active overlay (if any) and restore the opener panel focus.
-    fn restore_focus(&mut self) {
-        let restored = self.overlays.close().unwrap_or(PanelKind::Editor);
-        self.panels.focus(restored);
+    /// Close the active overlay and restore focus to the panel that opened it.
+    /// The close-side mirror of `present_overlay`. `OverlayHost::close` returns
+    /// `None` when nothing is open, so this is a no-op then — which is also why
+    /// a selection that closed the overlay itself (and chose its own focus) is
+    /// not re-restored by a trailing `CloseOverlay`.
+    fn dismiss_overlay(&mut self) {
+        if let Some(opener) = self.overlays.close() {
+            self.panels.focus(opener);
+        }
     }
 
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
-        self.restore_focus();
+        self.dismiss_overlay();
         if from == self.path {
             self.autosave.stop();
             self.try_save().await;
@@ -606,7 +611,7 @@ impl AppScreen for EditorScreen {
                 }
                 Some(ActionShortcuts::SearchNotes) => {
                     if self.overlays.active_kind() == Some(OverlayKind::NoteBrowser) {
-                        self.restore_focus();
+                        self.dismiss_overlay();
                     } else if !self.overlays.is_open() {
                         let s = self.settings.read().unwrap();
                         let provider = SearchNotesProvider::new(
@@ -629,7 +634,7 @@ impl AppScreen for EditorScreen {
                 }
                 Some(ActionShortcuts::OpenNote) => {
                     if self.overlays.active_kind() == Some(OverlayKind::NoteBrowser) {
-                        self.restore_focus();
+                        self.dismiss_overlay();
                     } else if !self.overlays.is_open() {
                         let current_dir = self.path.get_parent_path().0;
                         let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
@@ -670,7 +675,7 @@ impl AppScreen for EditorScreen {
                 }
                 Some(ActionShortcuts::OpenSavedSearches) => {
                     if self.overlays.active_kind() == Some(OverlayKind::SavedSearches) {
-                        self.restore_focus();
+                        self.dismiss_overlay();
                     } else if !self.overlays.is_open() {
                         let s = self.settings.read().unwrap();
                         let modal = SavedSearchesModal::new(
@@ -931,9 +936,7 @@ impl AppScreen for EditorScreen {
                 // (OpenPath -> editor, SavedSearchSelected -> Query panel)
                 // closes the overlay itself first, so a later/!dialog
                 // CloseOverlay must not re-restore and clobber that focus.
-                if self.overlays.is_open() {
-                    self.restore_focus();
-                }
+                self.dismiss_overlay();
                 None
             }
             AppEvent::SortChanged {
@@ -1008,9 +1011,7 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::OpenPath(path) => {
-                if self.overlays.is_open() {
-                    self.restore_focus();
-                }
+                self.dismiss_overlay();
                 if path.is_note() {
                     self.open_path(path, tx).await;
                     self.focus_editor();
@@ -1030,9 +1031,7 @@ impl AppScreen for EditorScreen {
             AppEvent::OpenJournal => {
                 // Dismiss any open overlay so the journal note isn't loaded
                 // behind it (mirrors OpenPath / EntryCreated).
-                if self.overlays.is_open() {
-                    self.restore_focus();
-                }
+                self.dismiss_overlay();
                 if let Ok((details, _)) = self.vault.journal_entry().await {
                     let path = details.path;
                     self.open_path(path.clone(), tx).await;
@@ -1045,6 +1044,9 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::SavedSearchSelected { query, name } => {
+                // Deliberate non-restoring close: the selection lands in the
+                // Query panel (set by apply_saved_search), not back on the
+                // overlay's opener — so close the overlay without dismiss_overlay.
                 self.overlays.close();
                 self.apply_saved_search(query, name, tx);
                 None
@@ -1075,7 +1077,7 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::EntryCreated(path) => {
-                self.restore_focus();
+                self.dismiss_overlay();
                 self.open_path(path.clone(), tx).await;
                 self.focus_editor();
                 let note_parent = path.get_parent_path().0;
