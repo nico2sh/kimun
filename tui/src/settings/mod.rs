@@ -180,7 +180,7 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
         .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
-        .add(KeyStrike::KeyN, ActionShortcuts::OpenSortDialog)
+        .add(KeyStrike::KeyR, ActionShortcuts::OpenSortDialog)
         .add(KeyStrike::KeyG, ActionShortcuts::FollowLink)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
