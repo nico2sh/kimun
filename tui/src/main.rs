@@ -254,10 +254,7 @@ async fn rebuild_vault(
         // no-vault start screen either way, but the reason must reach the
         // log instead of looking like an unconfigured workspace.
         Err(e) => {
-            tracing::error!(
-                "could not open vault at {}: {e}",
-                workspace.display()
-            );
+            tracing::error!("could not open vault at {}: {e}", workspace.display());
             None
         }
     }
