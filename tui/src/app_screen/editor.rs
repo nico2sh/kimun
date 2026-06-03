@@ -22,7 +22,7 @@ use crate::components::footer_bar::FooterBar;
 use crate::components::note_browser::NoteBrowserModal;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
-use crate::components::overlay::{OverlayKind, OverlayMsg};
+use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::PanelKind;
 use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
@@ -230,10 +230,10 @@ impl EditorScreen {
         let path = kimun_core::nfs::VaultPath::note_path_from(target_clean);
         match self.vault.open_or_search(&path).await {
             Ok(results) if results.is_empty() => {
-                self.overlays.open(
-                    Box::new(ActiveDialog::create_note(path, self.vault.clone())),
-                    self.opener_focus(),
-                );
+                self.present_overlay(Box::new(ActiveDialog::create_note(
+                    path,
+                    self.vault.clone(),
+                )));
             }
             Ok(mut results) if results.len() == 1 => {
                 let (entry, _) = results.remove(0);
@@ -252,7 +252,7 @@ impl EditorScreen {
                     tx.clone(),
                 );
                 drop(s);
-                self.overlays.open(Box::new(modal), self.opener_focus());
+                self.present_overlay(Box::new(modal));
             }
             Err(e) => {
                 self.footer.flash(format!("Link error: {e}"), tx);
@@ -294,13 +294,10 @@ impl EditorScreen {
             }
             Err(e) => {
                 if matches!(e, VaultError::FSError(FSError::VaultPathNotFound { .. })) {
-                    self.overlays.open(
-                        Box::new(ActiveDialog::create_note(
-                            self.path.clone(),
-                            self.vault.clone(),
-                        )),
-                        self.opener_focus(),
-                    );
+                    self.present_overlay(Box::new(ActiveDialog::create_note(
+                        self.path.clone(),
+                        self.vault.clone(),
+                    )));
                 } else {
                     tracing::error!("Failed to read note {}: {e}", self.path);
                     let parent = self.path.get_parent_path().0;
@@ -407,6 +404,14 @@ impl EditorScreen {
     /// panel that was focused when the overlay opened.
     fn opener_focus(&self) -> PanelKind {
         self.panels.focused()
+    }
+
+    /// Present `overlay`, recording the currently focused panel as its opener so
+    /// `restore_focus` can return there on close. The single way the editor
+    /// opens an overlay — the focus contract lives here, not at each call site.
+    fn present_overlay(&mut self, overlay: Box<dyn Overlay>) {
+        let opener = self.opener_focus();
+        self.overlays.open(overlay, opener);
     }
 
     /// Close the active overlay (if any) and restore the opener panel focus.
@@ -618,7 +623,8 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.overlays.open(Box::new(modal), self.opener_focus());                    }
+                        self.present_overlay(Box::new(modal));
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::OpenNote) => {
@@ -637,7 +643,8 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.overlays.open(Box::new(modal), self.opener_focus());                    }
+                        self.present_overlay(Box::new(modal));
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FileOperations) if self.editor_active() => {
@@ -673,7 +680,8 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.overlays.open(Box::new(modal), self.opener_focus());                    }
+                        self.present_overlay(Box::new(modal));
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::OpenSortDialog) => {
@@ -702,7 +710,7 @@ impl AppScreen for EditorScreen {
                                     ActiveDialog::sort(target, f, o, false)
                                 }
                             };
-                            self.overlays.open(Box::new(dialog), self.opener_focus());
+                            self.present_overlay(Box::new(dialog));
                         }
                     }
                     return EventState::Consumed;
@@ -722,10 +730,8 @@ impl AppScreen for EditorScreen {
                         // Opening the save dialog replaces the note browser (if
                         // any); the chained-open guard preserves the original
                         // opener focus.
-                        self.overlays.open(
-                            Box::new(ActiveDialog::save_search(query)),
-                            self.opener_focus(),
-                        );                    }
+                        self.present_overlay(Box::new(ActiveDialog::save_search(query)));
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SwitchWorkspace) => {
@@ -733,15 +739,16 @@ impl AppScreen for EditorScreen {
                         let s = self.settings.read().unwrap();
                         let dialog = ActiveDialog::workspace_switcher(&s);
                         drop(s);
-                        self.overlays.open(Box::new(dialog), self.opener_focus());                    }
+                        self.present_overlay(Box::new(dialog));
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::QuickNote) => {
                     if !self.overlays.is_open() {
-                        self.overlays.open(
-                            Box::new(ActiveDialog::quick_note(self.vault.clone())),
-                            self.opener_focus(),
-                        );                    }
+                        self.present_overlay(Box::new(ActiveDialog::quick_note(
+                            self.vault.clone(),
+                        )));
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FindInBuffer) if self.editor_active() => {
@@ -764,7 +771,7 @@ impl AppScreen for EditorScreen {
                             let s = self.settings.read().unwrap();
                             let dialog = ActiveDialog::help(&s.key_bindings);
                             drop(s);
-                            self.overlays.open(Box::new(dialog), self.opener_focus());
+                            self.present_overlay(Box::new(dialog));
                         }
                         // All F-keys (including F1 when a dialog is already open) are consumed
                         // and never forwarded to the embedded editor.
@@ -872,7 +879,8 @@ impl AppScreen for EditorScreen {
 
         // The panels lay themselves out (in config order) and render. No panel
         // shows its focused highlight while an overlay sits over them.
-        self.panels.render(f, rows[1], theme, !self.overlays.is_open());
+        self.panels
+            .render(f, rows[1], theme, !self.overlays.is_open());
 
         // Footer reflects the overlay if one is open, otherwise the focused panel.
         let (focus_label, hints) = if let Some(kind) = self.overlays.active_kind() {
@@ -898,28 +906,24 @@ impl AppScreen for EditorScreen {
 
         match msg {
             AppEvent::ShowFileOpsMenu(path) => {
-                self.overlays.open(
-                    Box::new(ActiveDialog::file_ops_menu(path)),
-                    self.opener_focus(),
-                );                None
+                self.present_overlay(Box::new(ActiveDialog::file_ops_menu(path)));
+                None
             }
             AppEvent::ShowDeleteDialog(path) => {
-                self.overlays.open(
-                    Box::new(ActiveDialog::delete(path, self.vault.clone())),
-                    self.opener_focus(),
-                );                None
+                self.present_overlay(Box::new(ActiveDialog::delete(path, self.vault.clone())));
+                None
             }
             AppEvent::ShowRenameDialog(path) => {
-                self.overlays.open(
-                    Box::new(ActiveDialog::rename(path, self.vault.clone())),
-                    self.opener_focus(),
-                );                None
+                self.present_overlay(Box::new(ActiveDialog::rename(path, self.vault.clone())));
+                None
             }
             AppEvent::ShowMoveDialog(path) => {
-                self.overlays.open(
-                    Box::new(ActiveDialog::move_to(path, self.vault.clone(), tx)),
-                    self.opener_focus(),
-                );                None
+                self.present_overlay(Box::new(ActiveDialog::move_to(
+                    path,
+                    self.vault.clone(),
+                    tx,
+                )));
+                None
             }
             AppEvent::CloseOverlay => {
                 // Dismiss-to-opener. Guarded by is_open() on purpose: a
@@ -969,10 +973,11 @@ impl AppScreen for EditorScreen {
                             snapshot.save_to_disk().ok();
                         });
                     }
-                    SortTarget::Sidebar => self
-                        .panels
-                        .sidebar_mut()
-                        .apply_sort(field, order, group_directories),
+                    SortTarget::Sidebar => {
+                        self.panels
+                            .sidebar_mut()
+                            .apply_sort(field, order, group_directories)
+                    }
                     // The query panel has no persisted default (the order lives
                     // in the query string); `persist` is always false here.
                     SortTarget::Query => self.panels.query_mut().apply_sort(field, order, tx),
@@ -1023,6 +1028,11 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::OpenJournal => {
+                // Dismiss any open overlay so the journal note isn't loaded
+                // behind it (mirrors OpenPath / EntryCreated).
+                if self.overlays.is_open() {
+                    self.restore_focus();
+                }
                 if let Ok((details, _)) = self.vault.journal_entry().await {
                     let path = details.path;
                     self.open_path(path.clone(), tx).await;
@@ -1061,7 +1071,8 @@ impl AppScreen for EditorScreen {
                     initial,
                 );
                 drop(s);
-                self.overlays.open(Box::new(modal), self.opener_focus());                None
+                self.present_overlay(Box::new(modal));
+                None
             }
             AppEvent::EntryCreated(path) => {
                 self.restore_focus();
@@ -1281,8 +1292,12 @@ mod tests {
         // Open a SavedSearches overlay (Query panel starts hidden).
         {
             let s = settings.read().unwrap();
-            let modal =
-                SavedSearchesModal::new(vault.clone(), s.key_bindings.clone(), s.icons(), tx.clone());
+            let modal = SavedSearchesModal::new(
+                vault.clone(),
+                s.key_bindings.clone(),
+                s.icons(),
+                tx.clone(),
+            );
             drop(s);
             screen.overlays.open(Box::new(modal), screen.opener_focus());
         }
@@ -1309,6 +1324,40 @@ mod tests {
             screen.overlays.active_kind(),
             Some(OverlayKind::SavedSearches),
             "overlay stays active"
+        );
+    }
+
+    /// Opening the journal while an overlay is up dismisses the overlay, so the
+    /// journal note isn't loaded behind it (regression for the OpenJournal arm,
+    /// which used to skip the restore that OpenPath/EntryCreated do).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_journal_dismisses_open_overlay() {
+        let vault = crate::test_support::temp_vault("editor-journal").await;
+        vault.validate_and_init().await.unwrap();
+        let settings = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::settings::AppSettings::default(),
+        ));
+        let mut screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        {
+            let s = settings.read().unwrap();
+            let modal = SavedSearchesModal::new(
+                vault.clone(),
+                s.key_bindings.clone(),
+                s.icons(),
+                tx.clone(),
+            );
+            drop(s);
+            screen.present_overlay(Box::new(modal));
+        }
+        assert!(screen.overlays.is_open(), "precondition: overlay open");
+
+        screen.handle_app_message(AppEvent::OpenJournal, &tx).await;
+
+        assert!(
+            !screen.overlays.is_open(),
+            "OpenJournal must dismiss the overlay before loading the note"
         );
     }
 
