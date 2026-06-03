@@ -623,6 +623,25 @@ impl NoteVault {
         Ok(saved_searches::read_saved_searches(self.workspace_path()).await?)
     }
 
+    /// Saved searches whose name starts with `prefix` (case-insensitive,
+    /// ASCII folding to match [`save_search`]/[`delete_saved_search`]), in
+    /// stored order, capped at `limit`. Feeds the `?`-prefix autocomplete in
+    /// the query input — mirrors [`suggest_notes_by_prefix`] /
+    /// [`suggest_tags_by_prefix`] so prefix matching stays in core. Saved
+    /// searches are file-backed (not indexed), so this reads the small TOML
+    /// file; it is the single place to add caching if it ever gets hot.
+    pub async fn suggest_saved_searches_by_prefix(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<SavedSearch>, VaultError> {
+        let prefix = prefix.to_ascii_lowercase();
+        let mut matches = saved_searches::read_saved_searches(self.workspace_path()).await?;
+        matches.retain(|s| s.name.to_ascii_lowercase().starts_with(&prefix));
+        matches.truncate(limit);
+        Ok(matches)
+    }
+
     /// Insert or replace a saved search by name (case-insensitive match,
     /// preserving the existing position on overwrite). Appends if new.
     pub async fn save_search(&self, name: &str, query: &str) -> Result<(), VaultError> {
@@ -2971,5 +2990,49 @@ mod saved_search_tests {
         let all = vault.list_saved_searches().await.unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "backlinks");
+    }
+
+    #[tokio::test]
+    async fn suggest_by_prefix_filters_case_insensitively_and_caps() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.save_search("Today", "#today").await.unwrap();
+        vault.save_search("todo-week", "#todo").await.unwrap();
+        vault.save_search("journal", "in:journal").await.unwrap();
+
+        // Case-insensitive prefix match; "journal" excluded.
+        let hits = vault
+            .suggest_saved_searches_by_prefix("TO", 9)
+            .await
+            .unwrap();
+        let names: Vec<&str> = hits.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Today", "todo-week"]);
+
+        // Empty prefix lists all (in stored order).
+        assert_eq!(
+            vault
+                .suggest_saved_searches_by_prefix("", 9)
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+
+        // Limit caps the result.
+        assert_eq!(
+            vault
+                .suggest_saved_searches_by_prefix("", 2)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // No match → empty.
+        assert!(vault
+            .suggest_saved_searches_by_prefix("zzz", 9)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

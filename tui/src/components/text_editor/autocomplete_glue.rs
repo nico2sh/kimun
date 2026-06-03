@@ -188,6 +188,7 @@ mod tests {
             range: 6..8,
             new_text: "meeting]]".to_string(),
             new_cursor_byte: 15,
+            saved_search_name: None,
         };
         apply_accept_to_textarea(&mut ta, &action);
         let result: String = ta.lines().join("\n");
@@ -209,6 +210,7 @@ mod tests {
             range: 6..8,
             new_text: "meeting]]".to_string(),
             new_cursor_byte: 15,
+            saved_search_name: None,
         };
         apply_accept_to_textarea(&mut ta, &action);
         assert_eq!(ta.yank_text(), "previously yanked text");
@@ -223,6 +225,7 @@ mod tests {
             range: 12..14, // bytes 12..14 in the joined "alpha\nsee [[me"
             new_text: "meeting]]".to_string(),
             new_cursor_byte: 21,
+            saved_search_name: None,
         };
         apply_accept_to_textarea(&mut ta, &action);
         let result: String = ta.lines().join("\n");

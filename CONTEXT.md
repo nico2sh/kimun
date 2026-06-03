@@ -58,6 +58,14 @@ _Avoid_: bookmark, smart folder, filter (too generic)
 A global picker, opened by a single key binding, listing the vault's **saved searches** for keyboard selection (arrows/enter plus numeric quick-select 1–9). Picking one runs it in the **Query panel**. Distinct from the Ctrl+K **note browser**, which finds individual notes rather than choosing a query. It is one **SearchList** surface, not to be confused with the module itself.
 _Avoid_: query menu
 
+**Saved-search expansion**:
+The inline alternative to the **Saved Searches modal**: a leading `?` typed in a query input (the **Query panel** and the **note browser**) opens an autocomplete over **saved search** names; accepting one replaces the whole field with that search's stored query — verbatim, query variables intact — so it is then editable like any query. `?` is a presentation-layer sigil only; core's query language never sees it (same boundary as the **query variable**; see `adr/0006`). The expansion pins a **saved-search breadcrumb**.
+_Avoid_: saved-search operator (it is not a core query operator), saved-search reference (we expand, not reference).
+
+**Saved-search breadcrumb**:
+The name label a **saved-search expansion** pins on the query input's top border, recording which saved search the current query came from. Sticky provenance: it survives edits to the expanded query (gaining an "edited" marker once the text diverges from the stored query) and clears only when the field is emptied or another saved search is expanded.
+_Avoid_: title (the Query panel already has a query-reflective title; the breadcrumb is a distinct provenance tag).
+
 ### TUI search surfaces
 
 **SearchList**:
@@ -76,7 +84,7 @@ The seam that supplies the query input's autocomplete with candidates (note name
 
 **Query panel**:
 The right-hand panel of the editor. Shows the list of notes matching an active query, with the same expandable list/preview affordances as the rest of the app. Backlinks are not a distinct feature here — they are the default query `<{note}`, so a freshly opened panel shows the current note's backlinks. The panel title reflects the active query (reads "Backlinks" when the query is `<{note}`).
-_Avoid_: backlinks panel (now only the default state), search panel (collides with Ctrl+K and the left-sidebar search box)
+_Avoid_: backlinks panel (now only the default state), search panel / search sidebar (collide with Ctrl+K and the left-sidebar search box)
 
 ### Note editing
 
