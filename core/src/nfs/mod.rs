@@ -918,7 +918,7 @@ impl VaultPath {
     /// not the note file itself. Linking from `/notes/journal/today.md` to
     /// `/assets/img.png` therefore produces `../../assets/img.png` (two `..`s
     /// — for `journal/` and `notes/`), not three. This wraps
-    /// [`get_relative_to`] using the note's parent path so callers get the
+    /// [`Self::get_relative_to`] using the note's parent path so callers get the
     /// markdown-correct result.
     pub fn relative_link_from_note(&self, note_path: &VaultPath) -> VaultPath {
         let (parent, _) = note_path.flatten().get_parent_path();
@@ -927,7 +927,7 @@ impl VaultPath {
 
     /// Resolve `self` as a link target written inside `note_path`.
     ///
-    /// Inverse of [`relative_link_from_note`]: markdown links resolve against
+    /// Inverse of [`Self::relative_link_from_note`]: markdown links resolve against
     /// the *directory* containing the note, so a `../work/anton.md` target in
     /// `/journal/today.md` resolves to `/work/anton.md` (flattened, absolute).
     /// Absolute targets are returned flattened as-is. A bare filename with no

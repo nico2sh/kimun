@@ -573,10 +573,10 @@ impl NoteVault {
     }
 
     /// Saved searches whose name starts with `prefix` (case-insensitive,
-    /// ASCII folding to match [`save_search`]/[`delete_saved_search`]), in
+    /// ASCII folding to match [`Self::save_search`]/[`Self::delete_saved_search`]), in
     /// stored order, capped at `limit`. Feeds the `?`-prefix autocomplete in
-    /// the query input — mirrors [`suggest_notes_by_prefix`] /
-    /// [`suggest_tags_by_prefix`] so prefix matching stays in core. Saved
+    /// the query input — mirrors [`Self::suggest_notes_by_prefix`] /
+    /// [`Self::suggest_tags_by_prefix`] so prefix matching stays in core. Saved
     /// searches are file-backed (not indexed), so this reads the small TOML
     /// file; it is the single place to add caching if it ever gets hot.
     pub async fn suggest_saved_searches_by_prefix(
@@ -747,13 +747,13 @@ impl NoteVault {
     }
 
     /// Builds a candidate path for a new attachment under
-    /// [`default_attachments_path`], using `prefix` and `ext` plus the current
+    /// [`Self::default_attachments_path`], using `prefix` and `ext` plus the current
     /// unix-nanosecond timestamp for uniqueness. Nanoseconds (rather than
     /// millis) make same-instant collisions vanishingly unlikely for
     /// human-driven actions like clipboard paste.
     ///
     /// Does not check for collisions; callers that need stronger uniqueness
-    /// guarantees should retry with [`exists`] or use a different strategy.
+    /// guarantees should retry with [`Self::exists`] or use a different strategy.
     pub fn generate_attachment_path(&self, prefix: &str, ext: &str) -> VaultPath {
         let ts = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -870,7 +870,7 @@ impl NoteVault {
     }
 
     /// Replaces occurrences of `pattern` with `replacement` in the note at
-    /// `path`, writing the result. See [`compute_replacement`] for the matching
+    /// `path`, writing the result. See `compute_replacement` for the matching
     /// rules (literal vs `regex`, unique-unless-`all`, capture references).
     /// Returns the number of replacements made.
     pub async fn replace_in_note(
@@ -893,7 +893,7 @@ impl NoteVault {
         Ok(count)
     }
 
-    /// Dry-run of [`replace_in_note`]: computes what the note would contain after
+    /// Dry-run of [`Self::replace_in_note`]: computes what the note would contain after
     /// the replacement **without writing** (and without taking the write lock —
     /// the result is advisory). Returns the same errors the real replace would
     /// (not found / not unique / invalid regex).
