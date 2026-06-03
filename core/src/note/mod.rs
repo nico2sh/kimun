@@ -25,8 +25,11 @@ pub mod scan {
     /// label name (without leading `#`).
     #[derive(Debug, Clone, Copy)]
     pub struct LabelMatch<'a> {
+        /// Byte offset of the leading `#` (inclusive).
         pub byte_start: usize,
+        /// Byte offset just past the last label character (exclusive).
         pub byte_end: usize,
+        /// The label name without the leading `#`.
         pub name: &'a str,
     }
 
@@ -56,9 +59,19 @@ pub fn extract_labels(text: &str) -> Vec<String> {
     seen.into_iter().collect()
 }
 
+/// A note's vault path paired with its raw, unprocessed text.
+///
+/// This is the entry point for whole-note content extraction: title, hash,
+/// heading chunks, and links are all derived on demand from [`raw_text`] via
+/// the methods below — nothing is precomputed or cached here. The struct
+/// performs no I/O; the caller is responsible for loading the text.
+///
+/// [`raw_text`]: Self::raw_text
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NoteDetails {
+    /// Vault-internal path of the note, flattened on construction.
     pub path: VaultPath,
+    /// The note's verbatim Markdown source, including any frontmatter.
     pub raw_text: String,
 }
 
@@ -73,6 +86,12 @@ impl Display for NoteDetails {
 /// text as `&str` and must not clone it; the `get_*` methods are the same
 /// operations over this note's owned text.
 impl NoteDetails {
+    /// Builds a [`NoteDetails`] from a vault path and the note's raw text.
+    ///
+    /// The path is flattened (`.`/`..` segments resolved) on the way in; the
+    /// text is copied into the owned [`raw_text`] field unchanged.
+    ///
+    /// [`raw_text`]: Self::raw_text
     pub fn new<S: AsRef<str>>(note_path: &VaultPath, text: S) -> Self {
         Self {
             path: note_path.flatten(),
@@ -107,18 +126,27 @@ impl NoteDetails {
         content_extractor::get_chunks_and_links(path, text)
     }
 
+    /// Title of this note (first non-empty line of the body, frontmatter
+    /// skipped).
     pub fn get_title(&self) -> String {
         Self::get_title_from_text(&self.raw_text)
     }
 
+    /// Indexable content data (title + content hash) of this note.
     pub fn get_content_data(&self) -> NoteContentData {
         Self::content_data_of(&self.raw_text)
     }
 
+    /// Heading-chunked content of this note, one [`ContentChunk`] per
+    /// heading section.
     pub fn get_content_chunks(&self) -> Vec<ContentChunk> {
         Self::content_chunks_of(&self.raw_text)
     }
 
+    /// Heading chunks plus every link (note links, attachments, images,
+    /// URLs, hashtags) of this note, resolved against its own [`path`].
+    ///
+    /// [`path`]: Self::path
     pub fn get_chunks_and_links(&self) -> (Vec<ContentChunk>, Vec<NoteLink>) {
         Self::chunks_and_links_of(&self.path, &self.raw_text)
     }
@@ -131,9 +159,18 @@ impl NoteDetails {
     }
 }
 
+/// A note's rendered Markdown together with the links extracted from it.
+///
+/// The text is the result of the link-rewriting pipeline (wikilinks turned
+/// into standard Markdown links, hashtags into anchor links), so it is ready
+/// to hand to a Markdown renderer while [`links`] drives navigation.
+///
+/// [`links`]: Self::links
 #[derive(Clone, Debug, PartialEq)]
 pub struct MarkdownNote {
+    /// The rewritten Markdown source.
     pub text: String,
+    /// Every link discovered in the note, in document order.
     pub links: Vec<NoteLink>,
 }
 
@@ -144,11 +181,16 @@ pub struct MarkdownNote {
 /// (like the DB) for search and access.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct NoteContentData {
+    /// The note's title (first non-empty body line, frontmatter skipped).
     pub title: String,
+    /// XxHash64 digest of the note's full text, used to detect content
+    /// changes cheaply during indexing.
     pub hash: u64,
 }
 
 impl NoteContentData {
+    /// Builds a [`NoteContentData`] from a precomputed title and content
+    /// hash.
     pub fn new(title: String, hash: u64) -> Self {
         Self { title, hash }
     }
@@ -169,13 +211,27 @@ impl Display for NoteContentData {
 /// query operator in `index::search_terms`.
 pub const BREADCRUMB_SEP: &str = "\x1f";
 
+/// A single heading section of a note: the text under one heading, tagged
+/// with the heading hierarchy that leads to it.
+///
+/// Chunks are the unit of full-text search. The [`breadcrumb`] flattens the
+/// nested heading path into one string (joined with [`BREADCRUMB_SEP`]); use
+/// [`breadcrumb_parts`] / [`breadcrumb_last`] to read it back as segments.
+///
+/// [`breadcrumb`]: Self::breadcrumb
+/// [`breadcrumb_parts`]: Self::breadcrumb_parts
+/// [`breadcrumb_last`]: Self::breadcrumb_last
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentChunk {
+    /// Heading hierarchy leading to this chunk, from outermost to innermost,
+    /// joined with [`BREADCRUMB_SEP`]. Empty when the chunk has no heading.
     pub breadcrumb: String,
+    /// The chunk's body text (the content under its innermost heading).
     pub text: String,
 }
 
 impl ContentChunk {
+    /// Raw breadcrumb string, with segments joined by [`BREADCRUMB_SEP`].
     pub fn get_breadcrumb(&self) -> &str {
         &self.breadcrumb
     }
@@ -196,34 +252,46 @@ impl ContentChunk {
             .find(|s| !s.is_empty())
     }
 
+    /// The chunk's body text.
     pub fn get_text(&self) -> &str {
         &self.text
     }
 }
 
+/// Classification of a link found in a note.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkType {
+    /// A link to another note in the vault, by its resolved path.
     Note(VaultPath),
+    /// A link to a non-note vault file (e.g. a PDF), by its resolved path.
     Attachment(VaultPath),
     /// Image link with its resolved path.
     /// For vault images: absolute OS path (e.g. `/home/user/vault/images/photo.png`).
     /// For external images: the original URL.
     Image(String),
+    /// An external link to a remote `http`/`https` URL.
     Url,
+    /// A `#hashtag` label.
     Hashtag,
 }
 
+/// A link extracted from a note: its [`LinkType`] classification, the display
+/// text, and the original (uncleaned) link target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteLink {
+    /// What kind of link this is, with any resolved target.
     pub ltype: LinkType,
+    /// The link's display text (alt text for images, tag name for hashtags).
     pub text: String,
-    // This is the link as it comes from the note, without any cleanup
-    // so it may contain invalid characters and uppercases
-    // in the case of note links, which are cleanup when converting to path
+    /// The link target exactly as written in the note, without any cleanup:
+    /// it may contain invalid characters or uppercase letters (for note
+    /// links these are normalized only when converting to a [`VaultPath`]).
     pub raw_link: String,
 }
 
 impl NoteLink {
+    /// Builds a vault link, classifying it as [`LinkType::Note`] when `path`
+    /// points at a note and [`LinkType::Attachment`] otherwise.
     pub fn vault_path<S: AsRef<str>>(path: &VaultPath, text: S) -> Self {
         let ltype = if path.is_note() {
             LinkType::Note(path.to_owned())
@@ -236,6 +304,8 @@ impl NoteLink {
             raw_link: path.to_string(),
         }
     }
+    /// Builds a [`LinkType::Note`] link to `path` with the given display
+    /// `text`.
     pub fn note<S: AsRef<str>>(path: &VaultPath, text: S) -> Self {
         Self {
             ltype: LinkType::Note(path.to_owned()),
@@ -243,6 +313,8 @@ impl NoteLink {
             raw_link: path.to_string(),
         }
     }
+    /// Builds a [`LinkType::Url`] link to a remote `url` with the given
+    /// display `text`.
     pub fn url<S: AsRef<str>, T: AsRef<str>>(url: S, text: T) -> Self {
         Self {
             ltype: LinkType::Url,
@@ -250,6 +322,18 @@ impl NoteLink {
             raw_link: url.as_ref().to_string(),
         }
     }
+    /// Builds a [`LinkType::Hashtag`] link from a bare tag name (no leading
+    /// `#`). The display text is the tag name and `raw_link` is the tag with
+    /// a `#` prefix restored.
+    ///
+    /// ```
+    /// use kimun_core::note::{LinkType, NoteLink};
+    ///
+    /// let link = NoteLink::hashtag("rust");
+    /// assert_eq!(link.ltype, LinkType::Hashtag);
+    /// assert_eq!(link.text, "rust");
+    /// assert_eq!(link.raw_link, "#rust");
+    /// ```
     pub fn hashtag<S: AsRef<str>>(tag: S) -> Self {
         let tag_text = tag.as_ref().to_string();
         Self {

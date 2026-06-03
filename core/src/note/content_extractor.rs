@@ -75,9 +75,17 @@ pub enum LinkSpanKind {
 /// for [`LinkSpanKind::Markdown`].
 #[derive(Debug, Clone)]
 pub struct LinkSpan {
+    /// Char-index offset of the token's first character (inclusive),
+    /// including the opening delimiter (`[[`, or `[`/`!`).
     pub start: usize,
+    /// Char-index offset just past the token's last character (exclusive),
+    /// including the closing delimiter (`]]` or `)`).
     pub end: usize,
+    /// Which inline-link syntax this span matched.
     pub kind: LinkSpanKind,
+    /// The link destination: the wiki page name (before any `|` separator)
+    /// for [`LinkSpanKind::WikiLink`], or the URL/path for the markdown and
+    /// image kinds.
     pub target: String,
 }
 

@@ -97,8 +97,13 @@ pub(crate) const DB_FILE: &str = "kimun.sqlite";
 /// populated by parallel walker threads and entries land in the order each
 /// thread completes its file read.
 pub struct IndexDiff {
+    /// Notes present in the vault but absent from the index, each paired with
+    /// its full text content for FTS insertion.
     pub to_add: Vec<(NoteEntryData, String)>,
+    /// Notes present in both the vault and the index whose content has
+    /// changed, each paired with its current text content.
     pub to_modify: Vec<(NoteEntryData, String)>,
+    /// Notes present in the index but no longer on disk, to be removed.
     pub to_delete: Vec<VaultPath>,
 }
 
@@ -1083,7 +1088,11 @@ async fn list_labels(pool: &SqlitePool) -> Result<Vec<String>, DBError> {
 /// name, but the wikilink target inserted on accept is `name`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteSuggestion {
+    /// The note's filename without extension — the exact text a wikilink
+    /// targets, since wikilinks are stored by name rather than by full path.
     pub name: String,
+    /// The note's full vault path, so the UI can disambiguate when several
+    /// notes share a `name`. The link inserted on accept is still `name`.
     pub path: VaultPath,
 }
 
@@ -1091,7 +1100,10 @@ pub struct NoteSuggestion {
 /// per-query via `COUNT(*) GROUP BY name` over the `labels` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagSuggestion {
+    /// The label text (lowercased, as stored in the `labels` table).
     pub label: String,
+    /// How many notes carry this label, computed per-query via
+    /// `COUNT(*) GROUP BY name`, so the UI can rank common tags first.
     pub usage_count: u32,
 }
 
