@@ -534,24 +534,23 @@ impl NoteVault {
         // Since this function is intended to return content ready to be rendered
         // We need the full path of the image links, so any markdown processor can find the image,
         // the full path can only be resolved from here as we have the vault path
-        let (md_text, image_links) =
-            note::process_image_links(&md_text, |alt_text, raw_path| {
-                let resolved = if note::scan::is_remote_url(raw_path) {
-                    raw_path.to_string()
+        let (md_text, image_links) = note::process_image_links(&md_text, |alt_text, raw_path| {
+            let resolved = if note::scan::is_remote_url(raw_path) {
+                raw_path.to_string()
+            } else {
+                let image_vault_path = if raw_path.starts_with('/') {
+                    VaultPath::new(raw_path)
                 } else {
-                    let image_vault_path = if raw_path.starts_with('/') {
-                        VaultPath::new(raw_path)
-                    } else {
-                        note_parent.append(&VaultPath::new(raw_path)).flatten()
-                    };
-                    image_vault_path
-                        .to_pathbuf(self.workspace_path())
-                        .display()
-                        .to_string()
+                    note_parent.append(&VaultPath::new(raw_path)).flatten()
                 };
-                let link = note::NoteLink::image(&resolved, alt_text, raw_path);
-                (resolved, link)
-            });
+                image_vault_path
+                    .to_pathbuf(self.workspace_path())
+                    .display()
+                    .to_string()
+            };
+            let link = note::NoteLink::image(&resolved, alt_text, raw_path);
+            (resolved, link)
+        });
         links.extend(image_links);
         Ok(note::MarkdownNote {
             text: md_text,
@@ -795,9 +794,7 @@ impl NoteVault {
         self.backup_if_enabled(&path).await?;
 
         // Delete in the index first so it never points at a missing file.
-        self.index
-            .delete_notes(std::slice::from_ref(&path))
-            .await?;
+        self.index.delete_notes(std::slice::from_ref(&path)).await?;
 
         nfs::delete_note(self.workspace_path(), &path).await?;
 
@@ -963,9 +960,7 @@ impl NoteVault {
         // One atomic index operation: rename the source rows + update each
         // victim's chunks/links. If this fails, FS is consistent with the
         // rename but the index is stale — next sync pass corrects.
-        self.index
-            .rename_note(&from, &to, &notes_with_text)
-            .await?;
+        self.index.rename_note(&from, &to, &notes_with_text).await?;
 
         Ok(())
     }

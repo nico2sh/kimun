@@ -70,10 +70,7 @@ impl App {
                     // (e.g. cache probe error) instead of silently starting
                     // as if no workspace were configured.
                     Err(e) => {
-                        tracing::error!(
-                            "could not open vault at {}: {e}",
-                            workspace.display()
-                        );
+                        tracing::error!("could not open vault at {}: {e}", workspace.display());
                         None
                     }
                 }
