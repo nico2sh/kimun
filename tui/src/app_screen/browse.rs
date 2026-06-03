@@ -25,10 +25,8 @@ pub struct BrowseScreen {
 impl BrowseScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
         let s = settings.read().unwrap();
-        let kb = s.key_bindings.clone();
         let theme = s.get_theme();
-        let icons = s.icons();
-        let sidebar = SidebarComponent::new(kb, vault, icons, &s);
+        let sidebar = SidebarComponent::from_settings(vault, &s);
         drop(s);
         Self {
             sidebar,
