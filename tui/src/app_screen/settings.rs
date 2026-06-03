@@ -694,7 +694,7 @@ impl AppScreen for SettingsScreen {
         }
     }
 
-    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
+    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
         match msg {
             AppEvent::OpenFileBrowser => {
                 let starting_dir = self
@@ -705,7 +705,6 @@ impl AppScreen for SettingsScreen {
                     .or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
                     .unwrap_or_else(|| PathBuf::from("/"));
                 self.overlay = Overlay::FileBrowser(FileBrowserState::load(starting_dir));
-                None
             }
             AppEvent::TriggerFastReindex => {
                 // Fast reindex starts immediately (no confirmation overlay) — it is a
@@ -715,7 +714,7 @@ impl AppScreen for SettingsScreen {
                     drop(s);
                     tx.send(AppEvent::IndexingDone(Err("No workspace set".to_string())))
                         .ok();
-                    return None;
+                    return;
                 };
                 let workspace_name = s
                     .workspace_config
@@ -742,13 +741,11 @@ impl AppScreen for SettingsScreen {
                     tx2.send(AppEvent::IndexingDone(result)).ok();
                 });
                 self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
-                None
             }
             AppEvent::TriggerFullReindex => {
                 self.overlay = Overlay::ConfirmFullReindex {
                     focused_button: ConfirmButton::Cancel,
                 };
-                None
             }
             AppEvent::IndexingDone(result) => {
                 match result {
@@ -769,9 +766,8 @@ impl AppScreen for SettingsScreen {
                             Overlay::IndexingProgress(IndexingProgressState::Failed(msg));
                     }
                 }
-                None
             }
-            other => Some(other),
+            _ => {}
         }
     }
 
