@@ -10,6 +10,7 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app_screen::overlay_host::OverlayHost;
+use crate::app_screen::panel_set::PanelSet;
 use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::Component;
 use crate::components::autosave_timer::AutosaveTimer;
@@ -22,6 +23,7 @@ use crate::components::note_browser::NoteBrowserModal;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
 use crate::components::overlay::{OverlayKind, OverlayMsg};
+use crate::components::panel::PanelKind;
 use crate::components::saved_searches_modal::SavedSearchesModal;
 use crate::components::sidebar::SidebarComponent;
 use crate::components::text_editor::TextEditorComponent;
@@ -41,29 +43,21 @@ use crate::util::single_slot_task::SingleSlotTask;
 /// observability of `abort()` on a syscall in progress.
 const SAVE_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Focus {
-    Sidebar,
-    Editor,
-    Overlay,
-    Backlinks,
-}
-
 pub struct EditorScreen {
     vault: Arc<NoteVault>,
     settings: SharedSettings,
     icons: Icons,
     theme: Theme,
-    editor: TextEditorComponent,
-    sidebar: SidebarComponent,
+    /// The persistent panels (sidebar, editor, Query panel) plus their order,
+    /// visibility, and focus. The host reaches a specific panel through the
+    /// typed accessors (`panels.editor_mut()`, …) for panel-specific calls.
+    panels: PanelSet,
     path: VaultPath,
-    focus: Focus,
-    sidebar_visible: bool,
     footer: FooterBar,
     autosave: AutosaveTimer,
-    overlays: OverlayHost<Focus>,
-    backlinks_panel: QueryPanel,
-    backlinks_visible: bool,
+    /// The active overlay, if any. An open overlay intercepts input ahead of
+    /// the panels; closing it restores focus to the panel that opened it.
+    overlays: OverlayHost<PanelKind>,
     /// Handle to the most recently spawned background autosave task.
     /// `is_in_flight()` is the source of truth for "is a save still in
     /// flight"; both successful completion AND panic flip it to false
@@ -104,17 +98,12 @@ impl EditorScreen {
             settings,
             icons,
             theme,
-            editor,
-            sidebar,
+            panels: PanelSet::from_panels(sidebar, editor, backlinks_panel),
             vault,
             path,
-            focus: Focus::Editor,
-            sidebar_visible: true,
             footer,
             autosave: AutosaveTimer::new(),
             overlays: OverlayHost::new(),
-            backlinks_panel,
-            backlinks_visible: false,
             autosave_task: SingleSlotTask::empty(),
         }
     }
@@ -147,7 +136,7 @@ impl EditorScreen {
     /// `false` if the clipboard contained no image, so the caller can fall
     /// through to a regular text paste.
     fn try_paste_image(&mut self, tx: &AppTx) -> bool {
-        let img = match self.editor.take_clipboard_image() {
+        let img = match self.panels.editor_mut().take_clipboard_image() {
             Some(i) if !i.rgba.is_empty() && i.width > 0 && i.height > 0 => i,
             _ => return false,
         };
@@ -245,7 +234,6 @@ impl EditorScreen {
                     Box::new(ActiveDialog::create_note(path, self.vault.clone())),
                     self.opener_focus(),
                 );
-                self.set_focus(Focus::Overlay);
             }
             Ok(mut results) if results.len() == 1 => {
                 let (entry, _) = results.remove(0);
@@ -265,7 +253,6 @@ impl EditorScreen {
                 );
                 drop(s);
                 self.overlays.open(Box::new(modal), self.opener_focus());
-                self.set_focus(Focus::Overlay);
             }
             Err(e) => {
                 self.footer.flash(format!("Link error: {e}"), tx);
@@ -298,11 +285,11 @@ impl EditorScreen {
         self.path = path.clone();
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
-                self.editor.set_text(content);
-                self.editor.set_redraw_tx(tx);
+                self.panels.editor_mut().set_text(content);
+                self.panels.editor_mut().set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
-                if self.backlinks_visible {
-                    self.backlinks_panel.set_note(path.clone(), tx.clone());
+                if self.panels.is_visible(PanelKind::Query) {
+                    self.panels.query_mut().set_note(path.clone(), tx.clone());
                 }
             }
             Err(e) => {
@@ -314,7 +301,6 @@ impl EditorScreen {
                         )),
                         self.opener_focus(),
                     );
-                    self.set_focus(Focus::Overlay);
                 } else {
                     tracing::error!("Failed to read note {}: {e}", self.path);
                     let parent = self.path.get_parent_path().0;
@@ -331,7 +317,7 @@ impl EditorScreen {
         // Load the sidebar on first open only; refreshes happen via explicit
         // create/rename/delete/move events, not on every note open.
         let note_parent = path.get_parent_path().0;
-        if self.sidebar.is_empty() {
+        if self.panels.sidebar().is_empty() {
             self.navigate_sidebar(note_parent, tx).await;
         }
 
@@ -344,7 +330,7 @@ impl EditorScreen {
         // The sidebar hosts a streamed `SearchList`; (re)building its engine for
         // `dir` runs `browse_vault` inside the source and emits rows as they
         // arrive (with a redraw on each).
-        self.sidebar.navigate(dir, tx);
+        self.panels.sidebar_mut().navigate(dir, tx);
     }
 
     async fn try_save(&mut self) {
@@ -374,14 +360,14 @@ impl EditorScreen {
                 }
             }
         }
-        if self.editor.is_dirty() {
-            let text = self.editor.get_text();
+        if self.panels.editor().is_dirty() {
+            let text = self.panels.editor().get_text();
             // Same cap on our own save so quit cannot hang on a stuck
             // disk. A timeout returns Err(_); we skip mark_saved so the
             // editor stays dirty for any subsequent retry.
             let save = self.vault.save_note(&self.path, &text);
             if matches!(tokio::time::timeout(SAVE_TIMEOUT, save).await, Ok(Ok(_))) {
-                self.editor.mark_saved(text);
+                self.panels.editor_mut().mark_saved(text);
             }
         }
     }
@@ -400,11 +386,11 @@ impl EditorScreen {
         if self.autosave_task.is_in_flight() {
             return;
         }
-        if !self.editor.is_dirty() {
+        if !self.panels.editor().is_dirty() {
             return;
         }
-        let text = self.editor.get_text();
-        let revision = self.editor.content_revision();
+        let text = self.panels.editor().get_text();
+        let revision = self.panels.editor().content_revision();
         let vault = self.vault.clone();
         let path = self.path.clone();
         let tx = tx.clone();
@@ -417,20 +403,16 @@ impl EditorScreen {
         });
     }
 
-    /// The panel focus to restore when the active overlay closes. An overlay
-    /// is only ever opened from a panel, so Overlay maps to Editor defensively.
-    fn opener_focus(&self) -> Focus {
-        match self.focus {
-            Focus::Sidebar => Focus::Sidebar,
-            Focus::Backlinks => Focus::Backlinks,
-            Focus::Editor | Focus::Overlay => Focus::Editor,
-        }
+    /// The panel to restore focus to when the active overlay closes — the
+    /// panel that was focused when the overlay opened.
+    fn opener_focus(&self) -> PanelKind {
+        self.panels.focused()
     }
 
     /// Close the active overlay (if any) and restore the opener panel focus.
     fn restore_focus(&mut self) {
-        let restored = self.overlays.close().unwrap_or(Focus::Editor);
-        self.set_focus(restored);
+        let restored = self.overlays.close().unwrap_or(PanelKind::Editor);
+        self.panels.focus(restored);
     }
 
     async fn on_entry_op(&mut self, from: VaultPath, tx: &AppTx) {
@@ -444,84 +426,91 @@ impl EditorScreen {
                 parent,
             )))
             .ok();
-        } else if from.get_parent_path().0.is_like(self.sidebar.current_dir()) {
-            let dir = self.sidebar.current_dir().clone();
+        } else if from
+            .get_parent_path()
+            .0
+            .is_like(self.panels.sidebar().current_dir())
+        {
+            let dir = self.panels.sidebar().current_dir().clone();
             self.navigate_sidebar(dir, tx).await;
         }
     }
 }
 
 impl EditorScreen {
-    /// Single entry point for changing focus. Any transition AWAY from
-    /// `Focus::Editor` closes the autocomplete popup so it doesn't
-    /// linger over the editor while another component owns key input.
-    fn set_focus(&mut self, focus: Focus) {
-        if !matches!(focus, Focus::Editor) {
-            self.editor.close_autocomplete();
-        }
-        self.focus = focus;
+    /// The editor owns key input: it is focused and no overlay sits over it.
+    /// Editor-only shortcuts (file ops, follow-link, find, text styling) and
+    /// the paste intercept gate on this.
+    fn editor_active(&self) -> bool {
+        self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()
     }
 
     pub fn focus_editor(&mut self) {
-        self.set_focus(Focus::Editor);
+        self.panels.focus(PanelKind::Editor);
     }
 
     pub fn focus_sidebar(&mut self) {
-        self.sidebar_visible = true;
-        self.set_focus(Focus::Sidebar);
+        self.panels.show(PanelKind::Sidebar);
+        self.panels.focus(PanelKind::Sidebar);
     }
 
-    /// Move focus one step to the left: Backlinks → Editor → Sidebar.
-    /// Opens the sidebar if moving left from the editor and it's hidden.
-    fn focus_left(&mut self) {
-        match self.focus {
-            Focus::Backlinks => self.focus_editor(),
-            Focus::Editor => self.focus_sidebar(),
-            _ => {}
+    /// Move focus to `kind`, revealing it first. Revealing the Query panel
+    /// loads it for the current note (the heavy side effect that keeps the
+    /// reveal in the host rather than in `PanelSet`).
+    fn move_focus_to(&mut self, kind: PanelKind, tx: &AppTx) {
+        let newly_shown = !self.panels.is_visible(kind);
+        self.panels.show(kind);
+        if kind == PanelKind::Query && newly_shown {
+            self.panels
+                .query_mut()
+                .set_note(self.path.clone(), tx.clone());
+        }
+        self.panels.focus(kind);
+    }
+
+    /// Move focus one panel left in the current order (revealing it).
+    fn focus_left(&mut self, tx: &AppTx) {
+        if let Some(kind) = self.panels.prev_kind() {
+            self.move_focus_to(kind, tx);
         }
     }
 
-    /// Move focus one step to the right: Sidebar → Editor → Backlinks.
-    /// Opens and loads backlinks if moving right from the editor and the panel is hidden.
+    /// Move focus one panel right in the current order (revealing it).
     fn focus_right(&mut self, tx: &AppTx) {
-        match self.focus {
-            Focus::Sidebar => self.focus_editor(),
-            Focus::Editor => {
-                if !self.backlinks_visible {
-                    self.backlinks_visible = true;
-                    self.backlinks_panel.set_note(self.path.clone(), tx.clone());
-                }
-                self.set_focus(Focus::Backlinks);
-            }
-            _ => {}
+        if let Some(kind) = self.panels.next_kind() {
+            self.move_focus_to(kind, tx);
         }
     }
 
     fn toggle_sidebar(&mut self) {
-        self.sidebar_visible = !self.sidebar_visible;
-        if !self.sidebar_visible {
-            self.focus_editor();
+        if self.panels.is_visible(PanelKind::Sidebar) {
+            self.panels.hide(PanelKind::Sidebar);
+        } else {
+            self.panels.show(PanelKind::Sidebar);
         }
     }
 
     fn apply_saved_search(&mut self, query: String, name: String, tx: &AppTx) {
-        self.backlinks_visible = true;
+        self.panels.show(PanelKind::Query);
         // The virtual backlinks entry's name should not override the
         // default "Backlinks" title — but the panel's title logic already
         // shows "Backlinks" whenever the active query is `<{note}`, so it's
         // safe to always pass the name through.
-        self.backlinks_panel
+        self.panels
+            .query_mut()
             .apply_query(query, Some(name), tx.clone());
-        self.set_focus(Focus::Backlinks);
+        self.panels.focus(PanelKind::Query);
     }
 
     fn toggle_backlinks(&mut self, tx: &AppTx) {
-        self.backlinks_visible = !self.backlinks_visible;
-        if self.backlinks_visible {
-            self.backlinks_panel.set_note(self.path.clone(), tx.clone());
-            self.set_focus(Focus::Backlinks);
-        } else if matches!(self.focus, Focus::Backlinks) {
-            self.focus_editor();
+        if self.panels.is_visible(PanelKind::Query) {
+            self.panels.hide(PanelKind::Query);
+        } else {
+            self.panels.show(PanelKind::Query);
+            self.panels
+                .query_mut()
+                .set_note(self.path.clone(), tx.clone());
+            self.panels.focus(PanelKind::Query);
         }
     }
 }
@@ -541,17 +530,17 @@ impl AppScreen for EditorScreen {
         // terminal-paste shortcuts on every platform. Try image first; if the
         // clipboard does not hold an image, fall back to the pasted text. The
         // payload string may be empty (e.g. clipboard contains image only).
-        if matches!(self.focus, Focus::Editor)
+        if self.editor_active()
             && let InputEvent::Paste(text) = event
         {
             if !self.try_paste_image(tx) && !text.is_empty() {
-                self.editor.paste_text(text, tx);
+                self.panels.editor_mut().paste_text(text, tx);
             }
             return EventState::Consumed;
         }
         // Intercept Ctrl+V to handle image paste before the editor consumes it
         // for a regular text paste. Falls through if the clipboard is not an image.
-        if matches!(self.focus, Focus::Editor)
+        if self.editor_active()
             && let InputEvent::Key(key) = event
             && key.modifiers == ratatui::crossterm::event::KeyModifiers::CONTROL
             && key.code == ratatui::crossterm::event::KeyCode::Char('v')
@@ -594,11 +583,16 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FocusSidebar) => {
-                    self.focus_left();
+                    // No-op while an overlay owns input, but still consume the key.
+                    if !self.overlays.is_open() {
+                        self.focus_left(tx);
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FocusEditor) => {
-                    self.focus_right(tx);
+                    if !self.overlays.is_open() {
+                        self.focus_right(tx);
+                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::NewJournal) => {
@@ -624,9 +618,7 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.overlays.open(Box::new(modal), self.opener_focus());
-                        self.set_focus(Focus::Overlay);
-                    }
+                        self.overlays.open(Box::new(modal), self.opener_focus());                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::OpenNote) => {
@@ -645,18 +637,16 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.overlays.open(Box::new(modal), self.opener_focus());
-                        self.set_focus(Focus::Overlay);
-                    }
+                        self.overlays.open(Box::new(modal), self.opener_focus());                    }
                     return EventState::Consumed;
                 }
-                Some(ActionShortcuts::FileOperations) if matches!(self.focus, Focus::Editor) => {
+                Some(ActionShortcuts::FileOperations) if self.editor_active() => {
                     tx.send(AppEvent::ShowFileOpsMenu(self.path.clone())).ok();
                     return EventState::Consumed;
                 }
-                Some(ActionShortcuts::FollowLink) if matches!(self.focus, Focus::Editor) => {
+                Some(ActionShortcuts::FollowLink) if self.editor_active() => {
                     use crate::components::text_editor::LinkTarget;
-                    match self.editor.link_at_cursor() {
+                    match self.panels.editor_mut().link_at_cursor() {
                         Some(LinkTarget::Note(target)) => {
                             tx.send(AppEvent::FollowLink(target)).ok();
                         }
@@ -683,32 +673,36 @@ impl AppScreen for EditorScreen {
                             tx.clone(),
                         );
                         drop(s);
-                        self.overlays.open(Box::new(modal), self.opener_focus());
-                        self.set_focus(Focus::Overlay);
-                    }
+                        self.overlays.open(Box::new(modal), self.opener_focus());                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::OpenSortDialog) => {
                     if !self.overlays.is_open() {
-                        let target = match self.focus {
-                            Focus::Backlinks => Some(SortTarget::Query),
-                            Focus::Sidebar => Some(SortTarget::Sidebar),
-                            _ if self.sidebar_visible => Some(SortTarget::Sidebar),
+                        let target = match self.panels.focused() {
+                            PanelKind::Query => Some(SortTarget::Query),
+                            PanelKind::Sidebar => Some(SortTarget::Sidebar),
+                            _ if self.panels.is_visible(PanelKind::Sidebar) => {
+                                Some(SortTarget::Sidebar)
+                            }
                             _ => None,
                         };
                         if let Some(target) = target {
                             let dialog = match target {
                                 SortTarget::Sidebar => {
-                                    let (f, o) = self.sidebar.current_sort();
-                                    ActiveDialog::sort(target, f, o, self.sidebar.group_dirs())
+                                    let (f, o) = self.panels.sidebar().current_sort();
+                                    ActiveDialog::sort(
+                                        target,
+                                        f,
+                                        o,
+                                        self.panels.sidebar().group_dirs(),
+                                    )
                                 }
                                 SortTarget::Query => {
-                                    let (f, o) = self.backlinks_panel.current_order();
+                                    let (f, o) = self.panels.query().current_order();
                                     ActiveDialog::sort(target, f, o, false)
                                 }
                             };
                             self.overlays.open(Box::new(dialog), self.opener_focus());
-                            self.set_focus(Focus::Overlay);
                         }
                     }
                     return EventState::Consumed;
@@ -721,7 +715,7 @@ impl AppScreen for EditorScreen {
                         Some(OverlayKind::NoteBrowser) => {
                             self.overlays.active_query().unwrap_or_default().to_string()
                         }
-                        None => self.backlinks_panel.active_query().to_string(),
+                        None => self.panels.query().active_query().to_string(),
                         Some(_) => String::new(),
                     };
                     if !query.trim().is_empty() {
@@ -731,9 +725,7 @@ impl AppScreen for EditorScreen {
                         self.overlays.open(
                             Box::new(ActiveDialog::save_search(query)),
                             self.opener_focus(),
-                        );
-                        self.set_focus(Focus::Overlay);
-                    }
+                        );                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SwitchWorkspace) => {
@@ -741,9 +733,7 @@ impl AppScreen for EditorScreen {
                         let s = self.settings.read().unwrap();
                         let dialog = ActiveDialog::workspace_switcher(&s);
                         drop(s);
-                        self.overlays.open(Box::new(dialog), self.opener_focus());
-                        self.set_focus(Focus::Overlay);
-                    }
+                        self.overlays.open(Box::new(dialog), self.opener_focus());                    }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::QuickNote) => {
@@ -751,19 +741,17 @@ impl AppScreen for EditorScreen {
                         self.overlays.open(
                             Box::new(ActiveDialog::quick_note(self.vault.clone())),
                             self.opener_focus(),
-                        );
-                        self.set_focus(Focus::Overlay);
-                    }
+                        );                    }
                     return EventState::Consumed;
                 }
-                Some(ActionShortcuts::FindInBuffer) if matches!(self.focus, Focus::Editor) => {
-                    self.editor.open_or_advance_search();
+                Some(ActionShortcuts::FindInBuffer) if self.editor_active() => {
+                    self.panels.editor_mut().open_or_advance_search();
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::Text(
                     action @ (TextAction::Bold | TextAction::Italic | TextAction::Strikethrough),
-                )) if matches!(self.focus, Focus::Editor) => {
-                    self.editor.apply_text_action(action);
+                )) if self.editor_active() => {
+                    self.panels.editor_mut().apply_text_action(action);
                     return EventState::Consumed;
                 }
                 _ => {
@@ -777,7 +765,6 @@ impl AppScreen for EditorScreen {
                             let dialog = ActiveDialog::help(&s.key_bindings);
                             drop(s);
                             self.overlays.open(Box::new(dialog), self.opener_focus());
-                            self.set_focus(Focus::Overlay);
                         }
                         // All F-keys (including F1 when a dialog is already open) are consumed
                         // and never forwarded to the embedded editor.
@@ -787,44 +774,48 @@ impl AppScreen for EditorScreen {
             }
         }
 
-        if matches!(event, InputEvent::Mouse(_)) {
-            // An open overlay captures all mouse events.
-            if self.overlays.is_open() {
-                return self.overlays.handle_input(event, tx);
-            }
-            if self.sidebar_visible && self.sidebar.handle_input(event, tx).is_consumed() {
-                return EventState::Consumed;
-            }
-            // Query panel consumes mouse events in its focus to prevent
-            // clicks falling through to the editor.
-            if matches!(self.focus, Focus::Backlinks) {
-                return EventState::Consumed;
-            }
-            return self.editor.handle_input(event, tx);
+        // An open overlay intercepts all remaining input ahead of the panels.
+        if self.overlays.is_open() {
+            return self.overlays.handle_input(event, tx);
         }
 
-        match self.focus {
-            Focus::Sidebar => self.sidebar.handle_input(event, tx),
-            Focus::Editor => self.editor.handle_input(event, tx),
-            Focus::Overlay => self.overlays.handle_input(event, tx),
-            Focus::Backlinks => {
-                if let InputEvent::Key(key) = event {
-                    // Give the panel first crack (its autocomplete popup may
-                    // consume Esc to close itself). If the panel doesn't
-                    // consume it, Esc returns focus to the editor.
-                    let state = self.backlinks_panel.handle_key(key, tx);
-                    if state == EventState::NotConsumed
-                        && key.code == ratatui::crossterm::event::KeyCode::Esc
-                    {
-                        self.focus_editor();
-                        return EventState::Consumed;
-                    }
-                    state
-                } else {
-                    EventState::NotConsumed
-                }
+        if matches!(event, InputEvent::Mouse(_)) {
+            // The sidebar gets first crack at clicks even when another panel is
+            // focused (it consumes only clicks landing in its own area).
+            if self.panels.is_visible(PanelKind::Sidebar)
+                && self
+                    .panels
+                    .sidebar_mut()
+                    .handle_input(event, tx)
+                    .is_consumed()
+            {
+                return EventState::Consumed;
             }
+            // The Query panel swallows mouse events while focused so clicks
+            // don't fall through to the editor.
+            if self.panels.focused() == PanelKind::Query {
+                return EventState::Consumed;
+            }
+            return self.panels.editor_mut().handle_input(event, tx);
         }
+
+        // Keyboard → the focused panel. The Query panel gets first crack (its
+        // autocomplete popup may consume Esc); on an unhandled Esc it yields
+        // focus back to the editor.
+        if self.panels.focused() == PanelKind::Query
+            && let InputEvent::Key(key) = event
+        {
+            let state = self.panels.handle_input(event, tx);
+            if state == EventState::NotConsumed
+                && key.code == ratatui::crossterm::event::KeyCode::Esc
+            {
+                self.focus_editor();
+                return EventState::Consumed;
+            }
+            return state;
+        }
+
+        self.panels.handle_input(event, tx)
     }
 
     fn render(&mut self, f: &mut ratatui::Frame) {
@@ -879,67 +870,15 @@ impl AppScreen for EditorScreen {
             header_cols[1],
         );
 
-        let mut constraints = Vec::new();
-        if self.sidebar_visible {
-            constraints.push(Constraint::Length(30));
-        }
-        constraints.push(Constraint::Min(0));
-        if self.backlinks_visible {
-            constraints.push(Constraint::Length(40));
-        }
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(constraints)
-            .split(rows[1]);
+        // The panels lay themselves out (in config order) and render. No panel
+        // shows its focused highlight while an overlay sits over them.
+        self.panels.render(f, rows[1], theme, !self.overlays.is_open());
 
-        let editor_focused = matches!(self.focus, Focus::Editor);
-        let sidebar_focused = matches!(self.focus, Focus::Sidebar);
-        let backlinks_focused = matches!(self.focus, Focus::Backlinks);
-
-        let mut col_idx = 0;
-        if self.sidebar_visible {
-            self.sidebar
-                .render(f, columns[col_idx], theme, sidebar_focused);
-            col_idx += 1;
-        }
-        let editor_area = columns[col_idx];
-        col_idx += 1;
-
-        let editor_border_style = theme.border_style(editor_focused);
-        let editor_title = if self.editor.is_dirty() {
-            "Editor [+]"
+        // Footer reflects the overlay if one is open, otherwise the focused panel.
+        let (focus_label, hints) = if let Some(kind) = self.overlays.active_kind() {
+            (kind.label(), self.overlays.hint_shortcuts())
         } else {
-            "Editor"
-        };
-        let editor_block = Block::default()
-            .title(editor_title)
-            .borders(Borders::ALL)
-            .border_style(editor_border_style)
-            .style(theme.base_style());
-        let editor_inner = editor_block.inner(editor_area);
-        f.render_widget(editor_block, editor_area);
-        self.editor.render(f, editor_inner, theme, editor_focused);
-
-        if self.backlinks_visible {
-            self.backlinks_panel
-                .render(f, columns[col_idx], theme, backlinks_focused);
-        }
-
-        let focus_label = match self.focus {
-            Focus::Editor => "EDITOR",
-            Focus::Sidebar => "SIDEBAR",
-            Focus::Backlinks => "BACKLINKS",
-            Focus::Overlay => self
-                .overlays
-                .active_kind()
-                .map(|k| k.label())
-                .unwrap_or("EDITOR"),
-        };
-        let hints = match self.focus {
-            Focus::Editor => self.editor.hint_shortcuts(),
-            Focus::Sidebar => self.sidebar.hint_shortcuts(),
-            Focus::Backlinks => self.backlinks_panel.hint_shortcuts(),
-            Focus::Overlay => self.overlays.hint_shortcuts(),
+            (self.panels.focused_label(), self.panels.focused_hints())
         };
         self.footer
             .render(f, rows[2], theme, focus_label, &hints, &self.icons);
@@ -962,33 +901,25 @@ impl AppScreen for EditorScreen {
                 self.overlays.open(
                     Box::new(ActiveDialog::file_ops_menu(path)),
                     self.opener_focus(),
-                );
-                self.set_focus(Focus::Overlay);
-                None
+                );                None
             }
             AppEvent::ShowDeleteDialog(path) => {
                 self.overlays.open(
                     Box::new(ActiveDialog::delete(path, self.vault.clone())),
                     self.opener_focus(),
-                );
-                self.set_focus(Focus::Overlay);
-                None
+                );                None
             }
             AppEvent::ShowRenameDialog(path) => {
                 self.overlays.open(
                     Box::new(ActiveDialog::rename(path, self.vault.clone())),
                     self.opener_focus(),
-                );
-                self.set_focus(Focus::Overlay);
-                None
+                );                None
             }
             AppEvent::ShowMoveDialog(path) => {
                 self.overlays.open(
                     Box::new(ActiveDialog::move_to(path, self.vault.clone(), tx)),
                     self.opener_focus(),
-                );
-                self.set_focus(Focus::Overlay);
-                None
+                );                None
             }
             AppEvent::CloseOverlay => {
                 // Dismiss-to-opener. Guarded by is_open() on purpose: a
@@ -1014,8 +945,10 @@ impl AppScreen for EditorScreen {
                         // apply live. `is_current_journal()` is the single source
                         // of truth for which context this save targets — reused
                         // for the on-disk settings write below.
-                        let is_journal = self.sidebar.is_current_journal();
-                        self.sidebar.save_default(field, order, group_directories);
+                        let is_journal = self.panels.sidebar().is_current_journal();
+                        self.panels
+                            .sidebar_mut()
+                            .save_default(field, order, group_directories);
                         {
                             let mut s = self.settings.write().unwrap();
                             if is_journal {
@@ -1036,10 +969,13 @@ impl AppScreen for EditorScreen {
                             snapshot.save_to_disk().ok();
                         });
                     }
-                    SortTarget::Sidebar => self.sidebar.apply_sort(field, order, group_directories),
+                    SortTarget::Sidebar => self
+                        .panels
+                        .sidebar_mut()
+                        .apply_sort(field, order, group_directories),
                     // The query panel has no persisted default (the order lives
                     // in the query string); `persist` is always false here.
-                    SortTarget::Query => self.backlinks_panel.apply_sort(field, order, tx),
+                    SortTarget::Query => self.panels.query_mut().apply_sort(field, order, tx),
                 }
                 None
             }
@@ -1054,7 +990,7 @@ impl AppScreen for EditorScreen {
                 if path == self.path
                     && let Some(rev) = saved_revision
                 {
-                    self.editor.mark_saved_at_revision(rev);
+                    self.panels.editor_mut().mark_saved_at_revision(rev);
                 }
                 // `SingleSlotTask::is_in_flight()` flips to false the
                 // moment the spawned future returns (success or panic),
@@ -1091,8 +1027,8 @@ impl AppScreen for EditorScreen {
                     let path = details.path;
                     self.open_path(path.clone(), tx).await;
                     let note_parent = path.get_parent_path().0;
-                    if note_parent.is_like(self.sidebar.current_dir()) {
-                        let dir = self.sidebar.current_dir().clone();
+                    if note_parent.is_like(self.panels.sidebar().current_dir()) {
+                        let dir = self.panels.sidebar().current_dir().clone();
                         self.navigate_sidebar(dir, tx).await;
                     }
                 }
@@ -1125,17 +1061,15 @@ impl AppScreen for EditorScreen {
                     initial,
                 );
                 drop(s);
-                self.overlays.open(Box::new(modal), self.opener_focus());
-                self.set_focus(Focus::Overlay);
-                None
+                self.overlays.open(Box::new(modal), self.opener_focus());                None
             }
             AppEvent::EntryCreated(path) => {
                 self.restore_focus();
                 self.open_path(path.clone(), tx).await;
                 self.focus_editor();
                 let note_parent = path.get_parent_path().0;
-                if note_parent.is_like(self.sidebar.current_dir()) {
-                    let dir = self.sidebar.current_dir().clone();
+                if note_parent.is_like(self.panels.sidebar().current_dir()) {
+                    let dir = self.panels.sidebar().current_dir().clone();
                     self.navigate_sidebar(dir, tx).await;
                 }
                 None
@@ -1162,8 +1096,8 @@ impl AppScreen for EditorScreen {
                 None
             }
             AppEvent::InsertAtCursor(text) => {
-                if matches!(self.focus, Focus::Editor) {
-                    self.editor.insert_at_cursor(&text, tx);
+                if self.panels.focused() == PanelKind::Editor {
+                    self.panels.editor_mut().insert_at_cursor(&text, tx);
                 }
                 None
             }
@@ -1180,18 +1114,12 @@ impl AppScreen for EditorScreen {
 mod tests {
     use super::*;
 
-    /// Compile-time test: the collapsed `Focus` enum and `OverlayKind` are
-    /// usable from this module.
+    /// Compile-time test: `PanelKind` and `OverlayKind` are usable here.
     #[test]
-    fn focus_overlay_variant_and_overlay_kind_compile() {
-        let focus = Focus::Overlay;
-        let label = match focus {
-            Focus::Editor => "EDITOR",
-            Focus::Sidebar => "SIDEBAR",
-            Focus::Backlinks => "BACKLINKS",
-            Focus::Overlay => "OVERLAY",
-        };
-        assert_eq!(label, "OVERLAY");
+    fn panel_kind_labels_and_overlay_kind_compile() {
+        assert_eq!(PanelKind::Editor.label(), "EDITOR");
+        assert_eq!(PanelKind::Sidebar.label(), "SIDEBAR");
+        assert_eq!(PanelKind::Query.label(), "BACKLINKS");
         let _kind = OverlayKind::Dialog;
     }
 
@@ -1229,9 +1157,9 @@ mod tests {
             "Backlinks (current note)".to_string(),
             &tx,
         );
-        assert!(screen.backlinks_visible);
-        assert_eq!(screen.backlinks_panel.active_query(), "<{note}");
-        assert!(matches!(screen.focus, Focus::Backlinks));
+        assert!(screen.panels.is_visible(PanelKind::Query));
+        assert_eq!(screen.panels.query().active_query(), "<{note}");
+        assert_eq!(screen.panels.focused(), PanelKind::Query);
     }
 
     // The try_save timeout-abort regression tests (commits 55eb49ed +
@@ -1265,7 +1193,7 @@ mod tests {
         screen.handle_app_message(AppEvent::CloseOverlay, &tx).await;
 
         assert!(
-            matches!(screen.focus, Focus::Backlinks),
+            screen.panels.focused() == PanelKind::Query,
             "focus should remain on the Query panel after select + close"
         );
         assert!(!screen.overlays.is_open(), "overlay should be closed");
@@ -1302,7 +1230,6 @@ mod tests {
             drop(s);
             screen.overlays.open(Box::new(modal), screen.opener_focus());
         }
-        screen.set_focus(Focus::Overlay);
         assert_eq!(
             screen.overlays.active_kind(),
             Some(OverlayKind::SavedSearches),
@@ -1331,6 +1258,57 @@ mod tests {
             screen.overlays.active_kind(),
             Some(OverlayKind::SavedSearches),
             "open overlay must not be replaced by a QuickNote opener action"
+        );
+    }
+
+    /// Focus actions are inert while an overlay owns input: pressing
+    /// FocusEditor (Ctrl+L) with a dialog open must not reveal or move the
+    /// panels underneath, so closing the dialog leaves the layout unchanged.
+    #[tokio::test]
+    async fn focus_action_is_noop_while_overlay_open() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Open a SavedSearches overlay (Query panel starts hidden).
+        {
+            let s = settings.read().unwrap();
+            let modal =
+                SavedSearchesModal::new(vault.clone(), s.key_bindings.clone(), s.icons(), tx.clone());
+            drop(s);
+            screen.overlays.open(Box::new(modal), screen.opener_focus());
+        }
+        assert!(!screen.panels.is_visible(PanelKind::Query));
+
+        // Ctrl+L (FocusEditor / focus right) must be consumed but do nothing.
+        let focus_right = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        {
+            let s = settings.read().unwrap();
+            let combo = key_event_to_combo(&focus_right).expect("Ctrl+L maps to a combo");
+            assert_eq!(
+                s.key_bindings.get_action(&combo),
+                Some(ActionShortcuts::FocusEditor),
+                "test assumes Ctrl+L is bound to FocusEditor"
+            );
+        }
+        screen.handle_input(&InputEvent::Key(focus_right), &tx);
+
+        assert!(
+            !screen.panels.is_visible(PanelKind::Query),
+            "focus action must not reveal a panel while an overlay is open"
+        );
+        assert_eq!(
+            screen.overlays.active_kind(),
+            Some(OverlayKind::SavedSearches),
+            "overlay stays active"
         );
     }
 
@@ -1364,7 +1342,6 @@ mod tests {
             drop(s);
             screen.overlays.open(Box::new(modal), screen.opener_focus());
         }
-        screen.set_focus(Focus::Overlay);
         assert_eq!(
             screen.overlays.active_kind(),
             Some(OverlayKind::NoteBrowser),
@@ -1449,7 +1426,7 @@ mod sort_routing_tests {
         let (mut screen, tx, _rx) = make_editor().await;
         // Point the sidebar at the journal directory (current_dir set synchronously).
         let journal = screen.vault.journal_path().clone();
-        screen.sidebar.navigate(journal, &tx);
+        screen.panels.sidebar_mut().navigate(journal, &tx);
 
         screen
             .handle_app_message(
