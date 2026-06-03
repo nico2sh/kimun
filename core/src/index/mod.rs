@@ -2,6 +2,8 @@ pub(crate) mod search_terms;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use log::{debug, error};
@@ -109,10 +111,13 @@ pub struct IndexDiff {
 #[derive(Debug, Clone)]
 pub(crate) struct NoteIndex {
     pool: SqlitePool,
-    /// `true` when [`open`](Self::open) found a missing/outdated/invalid
-    /// schema and recreated it (self-heal), leaving a valid but *empty*
-    /// index. See ADR-0007.
-    healed: bool,
+    /// `true` while the index is valid but possibly *empty*: set when
+    /// [`open`](Self::open) recreated a missing/outdated/invalid schema
+    /// (self-heal, ADR-0007) or when [`recreate`](Self::recreate) dropped the
+    /// tables, cleared by [`mark_synced`](Self::mark_synced) once a vault
+    /// sync pass has filled the index. Shared across clones (like the pool)
+    /// so every handle agrees on readiness.
+    healed: Arc<AtomicBool>,
 }
 
 impl NoteIndex {
@@ -134,15 +139,13 @@ impl NoteIndex {
             .connect(&connection_string)
             .await?;
 
-        // A schema-version check that *errors* (rather than reporting stale)
-        // is treated as invalid too — e.g. a corrupted-but-present file —
-        // matching the pre-ADR-0007 behaviour where a failing validation fell
-        // through to a rebuild. Only a failing rebuild propagates.
-        let current = Self::schema_is_current(&pool).await.unwrap_or_else(|e| {
-            debug!("Index schema check failed ({e}) — treating as invalid");
-            false
-        });
-        let healed = if current {
+        // Only a *readable* schema that is missing or stale heals (the
+        // "no such table" case is mapped to `Ok(false)` inside the probe).
+        // A probe that errors — SQLITE_BUSY from a concurrent process,
+        // transient I/O — propagates and fails the open: silently dropping
+        // the tables of a healthy index on a transient error would destroy
+        // a valid cache.
+        let healed = if Self::schema_is_current(&pool).await? {
             false
         } else {
             debug!("Index schema missing/outdated/invalid — recreating");
@@ -150,14 +153,24 @@ impl NoteIndex {
             true
         };
 
-        Ok(Self { pool, healed })
+        Ok(Self {
+            pool,
+            healed: Arc::new(AtomicBool::new(healed)),
+        })
     }
 
-    /// `false` when [`open`](Self::open) just healed the schema (the index is
-    /// valid but empty until a sync pass fills it). Fast paths use this to
-    /// refuse to operate against an empty index without paying for a sync.
+    /// `false` when the schema was healed ([`open`](Self::open)) or dropped
+    /// ([`recreate`](Self::recreate)) and no sync pass has filled the index
+    /// since. Fast paths use this to refuse to operate against an empty
+    /// index without paying for a sync.
     pub(crate) fn ready(&self) -> bool {
-        !self.healed
+        !self.healed.load(Ordering::Acquire)
+    }
+
+    /// Records that a vault sync pass completed: the index now mirrors the
+    /// vault on disk, so [`ready`](Self::ready) reports `true` from here on.
+    pub(crate) fn mark_synced(&self) {
+        self.healed.store(false, Ordering::Release);
     }
 
     /// `true` when the stored schema version matches [`VERSION`].
@@ -183,9 +196,13 @@ impl NoteIndex {
     }
 
     /// Drops every table and recreates the schema, leaving the index valid
-    /// but empty. Callers are expected to run a full sync pass afterwards.
+    /// but empty — [`ready`](Self::ready) reports `false` until the full
+    /// sync pass that callers are expected to run afterwards
+    /// [`mark_synced`](Self::mark_synced)s.
     pub(crate) async fn recreate(&self) -> Result<(), DBError> {
-        init_db(&self.pool).await
+        init_db(&self.pool).await?;
+        self.healed.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Applies a sync diff — adds, modifications, deletions — in one atomic
@@ -242,11 +259,13 @@ impl NoteIndex {
         Ok(())
     }
 
+    /// Indexes one saved note and returns its computed content data (title
+    /// + hash), so callers never parse the note a second time.
     pub(crate) async fn save_note(
         &self,
         entry_data: &NoteEntryData,
         note_details: &NoteDetails,
-    ) -> Result<(), DBError> {
+    ) -> Result<NoteContentData, DBError> {
         save_note(&self.pool, entry_data, note_details).await
     }
 
@@ -1378,9 +1397,9 @@ async fn save_note(
     pool: &SqlitePool,
     entry_data: &NoteEntryData,
     note_details: &NoteDetails,
-) -> Result<(), DBError> {
-    // The caller already parsed `note_details`, so reuse it instead of paying
-    // for another `NoteDetails::new` clone of the raw text.
+) -> Result<NoteContentData, DBError> {
+    // Parse once and hand the computed content data back to the caller, so
+    // the full-text hash + title extraction is never done twice per save.
     let data = note_details.get_content_data();
     let (chunks, links) = note_details.get_chunks_and_links();
     let label_count = links
@@ -1388,12 +1407,12 @@ async fn save_note(
         .filter(|l| matches!(l.ltype, LinkType::Hashtag))
         .count();
     let mut batch = NoteBatch::with_capacity(1, chunks.len(), links.len(), label_count);
-    batch.push(entry_data, data, chunks, links);
+    batch.push(entry_data, data.clone(), chunks, links);
 
     let mut tx = pool.begin().await?;
     batch.flush(&mut tx).await?;
     tx.commit().await?;
-    Ok(())
+    Ok(data)
 }
 
 // SQLite default parameter limit is 999. Stay under for safety.
@@ -3710,6 +3729,12 @@ mod tests {
         let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         assert!(!vault.index_ready(), "healed index must not report ready");
         vault.validate_and_init().await.unwrap();
+        // The sync pass marks the index synced: the SAME instance now
+        // reports ready (regression: the old write-once flag kept lying).
+        assert!(
+            vault.index_ready(),
+            "synced index must report ready on the same instance"
+        );
 
         // Post-heal: no row carries the legacy separator; non-empty
         // breadcrumbs use `\x1f`.
@@ -3732,11 +3757,37 @@ mod tests {
             after
         );
 
+        // End-to-end: the public chunk accessor exposes sane breadcrumb
+        // leaves after the heal (storage-level separator checks alone would
+        // miss an accessor-level splitting bug).
+        let chunks = vault
+            .get_note_chunks(&crate::nfs::VaultPath::new("/note.md"))
+            .await
+            .unwrap();
+        let leaves: Vec<&str> = chunks
+            .values()
+            .flatten()
+            .filter_map(|c| c.breadcrumb_last())
+            .collect();
+        assert!(
+            leaves.iter().any(|l| *l == "Note" || *l == "Sub"),
+            "expected Note/Sub breadcrumb leaves, got: {:?}",
+            leaves
+        );
+
         // A second reopen with a current schema must report ready.
         vault.index.close().await;
         drop(vault);
         let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
         assert!(vault.index_ready(), "current schema must report ready");
+
+        // recreate_index drops the tables and runs a full sync; the probe
+        // must still report ready on the same instance afterwards.
+        vault.recreate_index().await.unwrap();
+        assert!(
+            vault.index_ready(),
+            "recreated-and-synced index must report ready"
+        );
     }
 
     /// `open` on a current-version schema must not heal: `ready` is `true`
