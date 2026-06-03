@@ -900,27 +900,24 @@ impl AppScreen for EditorScreen {
         self.overlays.render(f, f.area(), &self.theme);
     }
 
-    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) -> Option<AppEvent> {
+    async fn handle_app_message(&mut self, msg: AppEvent, tx: &AppTx) {
         // Route validation / async-result messages to the active overlay first,
         // so an open dialog still receives its events. Show*/CloseOverlay are
         // NotConsumed by overlays and fall through to the owned match below.
         match self.overlays.handle_app_message(&msg, &self.vault, tx) {
-            OverlayMsg::Consumed => return None,
+            OverlayMsg::Consumed => return,
             OverlayMsg::NotConsumed => {}
         }
 
         match msg {
             AppEvent::ShowFileOpsMenu(path) => {
                 self.present_overlay(Box::new(ActiveDialog::file_ops_menu(path)));
-                None
             }
             AppEvent::ShowDeleteDialog(path) => {
                 self.present_overlay(Box::new(ActiveDialog::delete(path, self.vault.clone())));
-                None
             }
             AppEvent::ShowRenameDialog(path) => {
                 self.present_overlay(Box::new(ActiveDialog::rename(path, self.vault.clone())));
-                None
             }
             AppEvent::ShowMoveDialog(path) => {
                 self.present_overlay(Box::new(ActiveDialog::move_to(
@@ -928,7 +925,6 @@ impl AppScreen for EditorScreen {
                     self.vault.clone(),
                     tx,
                 )));
-                None
             }
             AppEvent::CloseOverlay => {
                 // Dismiss-to-opener. Guarded by is_open() on purpose: a
@@ -937,7 +933,6 @@ impl AppScreen for EditorScreen {
                 // closes the overlay itself first, so a later/!dialog
                 // CloseOverlay must not re-restore and clobber that focus.
                 self.dismiss_overlay();
-                None
             }
             AppEvent::SortChanged {
                 target,
@@ -985,11 +980,9 @@ impl AppScreen for EditorScreen {
                     // in the query string); `persist` is always false here.
                     SortTarget::Query => self.panels.query_mut().apply_sort(field, order, tx),
                 }
-                None
             }
             AppEvent::Autosave => {
                 self.spawn_autosave(tx);
-                None
             }
             AppEvent::AutosaveCompleted {
                 path,
@@ -1008,25 +1001,12 @@ impl AppScreen for EditorScreen {
                 // stale completion arriving after `try_save` had
                 // already cleared and respawned could wipe the fresh
                 // handle.
-                None
-            }
-            AppEvent::OpenPath(path) => {
-                self.dismiss_overlay();
-                if path.is_note() {
-                    self.open_path(path, tx).await;
-                    self.focus_editor();
-                } else {
-                    self.navigate_sidebar(path, tx).await;
-                }
-                None
             }
             AppEvent::FocusEditor => {
                 self.focus_editor();
-                None
             }
             AppEvent::FocusSidebar => {
                 self.focus_sidebar();
-                None
             }
             AppEvent::OpenJournal => {
                 // Dismiss any open overlay so the journal note isn't loaded
@@ -1041,7 +1021,6 @@ impl AppScreen for EditorScreen {
                         self.navigate_sidebar(dir, tx).await;
                     }
                 }
-                None
             }
             AppEvent::SavedSearchSelected { query, name } => {
                 // Deliberate non-restoring close: the selection lands in the
@@ -1049,11 +1028,9 @@ impl AppScreen for EditorScreen {
                 // overlay's opener — so close the overlay without dismiss_overlay.
                 self.overlays.close();
                 self.apply_saved_search(query, name, tx);
-                None
             }
             AppEvent::FollowLink(target) => {
                 self.follow_link(target, tx).await;
-                None
             }
             AppEvent::FollowLabel(name) => {
                 let initial = format!("#{name}");
@@ -1074,7 +1051,6 @@ impl AppScreen for EditorScreen {
                 );
                 drop(s);
                 self.present_overlay(Box::new(modal));
-                None
             }
             AppEvent::EntryCreated(path) => {
                 self.dismiss_overlay();
@@ -1085,19 +1061,15 @@ impl AppScreen for EditorScreen {
                     let dir = self.panels.sidebar().current_dir().clone();
                     self.navigate_sidebar(dir, tx).await;
                 }
-                None
             }
             AppEvent::EntryDeleted(path) => {
                 self.on_entry_op(path, tx).await;
-                None
             }
             AppEvent::EntryRenamed { from, .. } => {
                 self.on_entry_op(from, tx).await;
-                None
             }
             AppEvent::EntryMoved { from, .. } => {
                 self.on_entry_op(from, tx).await;
-                None
             }
             AppEvent::SaveSearchConfirmed { name, query } => {
                 let vault = self.vault.clone();
@@ -1106,16 +1078,27 @@ impl AppScreen for EditorScreen {
                         tracing::warn!("failed to save search '{}': {}", name, e);
                     }
                 });
-                None
             }
             AppEvent::InsertAtCursor(text) => {
                 if self.panels.focused() == PanelKind::Editor {
                     self.panels.editor_mut().insert_at_cursor(&text, tx);
                 }
-                None
             }
-            other => Some(other),
+            _ => {}
         }
+    }
+
+    /// The editor handles every path itself: notes open in the buffer,
+    /// directories navigate the sidebar. Always consumes.
+    async fn try_open_path(&mut self, path: VaultPath, tx: &AppTx) -> Option<VaultPath> {
+        self.dismiss_overlay();
+        if path.is_note() {
+            self.open_path(path, tx).await;
+            self.focus_editor();
+        } else {
+            self.navigate_sidebar(path, tx).await;
+        }
+        None
     }
 
     async fn on_exit(&mut self, _tx: &AppTx) {
