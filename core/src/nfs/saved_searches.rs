@@ -13,7 +13,10 @@ use crate::error::FSError;
 /// variable such as `{note}`; resolution happens in the presentation layer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedSearch {
+    /// User-facing label shown in the saved-searches list.
     pub name: String,
+    /// The query string, stored verbatim including any unresolved TUI query
+    /// variable (e.g. `{note}`).
     pub query: String,
 }
 

@@ -19,6 +19,9 @@ use super::{error::FSError, DirectoryDetails, NoteDetails};
 
 use super::utilities::path_to_string;
 
+/// The vault-internal path separator. Always `/`, independent of the host OS:
+/// a [`VaultPath`] is logical and portable, and is only translated to native
+/// OS separators when resolved to a real on-disk location.
 pub const PATH_SEPARATOR: char = '/';
 const NOTE_EXTENSION: &str = ".md";
 
@@ -59,11 +62,16 @@ pub(crate) enum EntryData {
     Attachment,
 }
 
+/// Lightweight metadata for an indexed note: enough to detect changes without
+/// reading the note's contents. Produced from filesystem metadata as the vault
+/// is walked.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct NoteEntryData {
+    /// The note's vault path, stored flattened (no `.`/`..` components).
     pub path: VaultPath,
-    // File size, for fast check
+    /// File size in bytes. Cheap first-pass signal that a note changed.
     pub size: u64,
+    /// Last-modified time, in whole seconds since the Unix epoch.
     pub modified_secs: u64,
 }
 
@@ -105,11 +113,15 @@ impl NoteEntryData {
     }
 }
 
+/// Metadata for an indexed directory. A directory carries no content of its
+/// own, so its vault path is all that needs tracking.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DirectoryEntryData {
+    /// The directory's vault path.
     pub path: VaultPath,
 }
 impl DirectoryEntryData {
+    /// Builds the public [`DirectoryDetails`] view of this directory entry.
     pub fn get_details<P: AsRef<Path>>(&self) -> DirectoryDetails {
         DirectoryDetails {
             path: self.path.clone(),
@@ -647,6 +659,20 @@ pub(crate) async fn delete_directory<P: AsRef<Path>>(
     Ok(())
 }
 
+/// A logical, vault-internal path to a note or directory.
+///
+/// `VaultPath` is the core's single currency for everything inside a vault: it
+/// never refers to a location outside the workspace, and it is portable across
+/// Windows, macOS, and Linux. Components are sanitized and lowercased on
+/// construction (see [`VaultPath::new`]) so that only characters valid on all
+/// three filesystems survive and equality is effectively case-insensitive. The
+/// separator is always [`PATH_SEPARATOR`] (`/`); translation to native OS paths
+/// happens only at the filesystem boundary in `nfs`.
+///
+/// A path may be absolute (rooted at the vault root, rendered with a leading
+/// `/`) or relative, and may contain `.`/`..` components until [`flatten`]ed.
+///
+/// [`flatten`]: VaultPath::flatten
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VaultPath {
     absolute: bool,
@@ -752,6 +778,16 @@ impl VaultPath {
         }
     }
 
+    /// Returns `true` if `path` is already a clean vault path needing no
+    /// sanitization: every component is valid on all three target filesystems
+    /// and there are no doubled separators. Use this to validate caller-supplied
+    /// strings up front; [`VaultPath::new`] will instead silently repair them.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert!(VaultPath::is_valid("/projects/notes.md"));
+    /// assert!(!VaultPath::is_valid("bad?name"));
+    /// ```
     pub fn is_valid<S: AsRef<str>>(path: S) -> bool {
         // path can only start with one slash `/`
         if path
@@ -766,8 +802,17 @@ impl VaultPath {
             .any(|s| !VaultPathSlice::is_valid(s))
     }
 
-    // Creates a note file path, if the path ends with a separator
-    // it removes it before adding the extension
+    /// Builds a sanitized note path from `path`, ensuring it ends with the note
+    /// extension. A trailing separator is dropped before the extension is added,
+    /// so `notes/` becomes `notes.md`. Unlike [`with_note_extension`], the rest
+    /// of the string is sanitized through [`VaultPath::new`], so this is the
+    /// correct constructor for real note paths (not search patterns).
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert_eq!(VaultPath::note_path_from("projects/todo").to_string(), "projects/todo.md");
+    /// assert_eq!(VaultPath::note_path_from("readme.md").to_string(), "readme.md");
+    /// ```
     pub fn note_path_from<S: AsRef<str>>(path: S) -> Self {
         let path = path.as_ref();
         let path_clean = path.strip_suffix(PATH_SEPARATOR).unwrap_or(path);
@@ -779,6 +824,12 @@ impl VaultPath {
         VaultPath::new(p)
     }
 
+    /// The vault root: an absolute path with no components, rendered as `/`.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert_eq!(VaultPath::root().to_string(), "/");
+    /// ```
     pub fn root() -> Self {
         Self {
             absolute: true,
@@ -786,6 +837,13 @@ impl VaultPath {
         }
     }
 
+    /// The empty relative path: no components and not absolute, rendered as the
+    /// empty string. Distinct from [`root`](VaultPath::root), which is absolute.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert_eq!(VaultPath::empty().to_string(), "");
+    /// ```
     pub fn empty() -> Self {
         Self {
             absolute: false,
@@ -793,12 +851,16 @@ impl VaultPath {
         }
     }
 
+    /// Returns `true` when the path has no components, i.e. it is either the
+    /// vault root or the empty path.
     pub fn is_root_or_empty(&self) -> bool {
         self.slices.is_empty()
     }
 
-    // returns a NotePath that increases a prefix when
-    // conflicting the name
+    /// Returns a variant of this path with its final component's name
+    /// incremented to avoid a collision. A numeric `_N` suffix is added or bumped
+    /// (e.g. `note.md` → `note_0.md`, `note_0.md` → `note_1.md`), preserving the
+    /// note extension. Used to pick a fresh name when the desired one is taken.
     pub fn get_name_on_conflict(&self) -> VaultPath {
         let mut slices = self.slices.clone();
         match slices.pop() {
@@ -822,6 +884,17 @@ impl VaultPath {
         }
     }
 
+    /// Returns the final component's name with the note extension stripped — the
+    /// note's display title as derived from its filename. For directories (no
+    /// extension) this is just the directory name. Compare [`get_name`], which
+    /// keeps the extension.
+    ///
+    /// [`get_name`]: VaultPath::get_name
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert_eq!(VaultPath::new("/projects/todo.md").get_clean_name(), "todo");
+    /// ```
     pub fn get_clean_name(&self) -> String {
         let name = self.get_name();
         if let Some(name) = name.strip_suffix(NOTE_EXTENSION) {
@@ -862,6 +935,16 @@ impl VaultPath {
         format!("{}_{}", n, suffix_num)
     }
 
+    /// Returns the path's components as plain strings, after [`flatten`]ing
+    /// (so no `.`/`..` entries remain). Useful for walking the path level by
+    /// level.
+    ///
+    /// [`flatten`]: VaultPath::flatten
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert_eq!(VaultPath::new("/a/b/c.md").get_slices(), vec!["a", "b", "c.md"]);
+    /// ```
     pub fn get_slices(&self) -> Vec<String> {
         self.flatten()
             .slices
@@ -870,6 +953,14 @@ impl VaultPath {
             .collect()
     }
 
+    /// Joins this path onto `workspace_path` to produce the canonical on-disk
+    /// `PathBuf`, mapping `/` to native separators and [`flatten`]ing first.
+    ///
+    /// This is the *canonical* (lowercase) location only; it does not perform
+    /// case-insensitive resolution, so an existing file stored under a different
+    /// case will not be found. Use the `nfs` resolver for that.
+    ///
+    /// [`flatten`]: VaultPath::flatten
     pub fn to_pathbuf<P: AsRef<Path>>(&self, workspace_path: P) -> PathBuf {
         let mut path = workspace_path.as_ref().to_path_buf();
         for p in &self.flatten().slices {
@@ -941,6 +1032,23 @@ impl VaultPath {
         parent.append(self).flatten().absolute()
     }
 
+    /// Expresses this path relative to `reference_path`, walking up with `..`
+    /// for each component of the reference not shared with this path, then down
+    /// into this path's remaining components. The result is always relative.
+    ///
+    /// Note `reference_path` is treated as a directory: every one of its trailing
+    /// components becomes a `..`. To build a markdown link relative to a note
+    /// *file*, use [`relative_link_from_note`], which accounts for the note's own
+    /// filename.
+    ///
+    /// [`relative_link_from_note`]: VaultPath::relative_link_from_note
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// let from = VaultPath::new("/main/path/first");
+    /// let target = VaultPath::new("/main/second");
+    /// assert_eq!(target.get_relative_to(&from).to_string(), "../../second");
+    /// ```
     pub fn get_relative_to(&self, reference_path: &VaultPath) -> VaultPath {
         let mut slices = vec![];
         let ref_slices = reference_path.slices.clone();
@@ -968,6 +1076,10 @@ impl VaultPath {
         }
     }
 
+    /// Converts a real on-disk path back into an absolute vault path by
+    /// stripping the `workspace_path` prefix. Returns `FSError::InvalidPath` if
+    /// `full_path` does not live inside the workspace. Each OS component is run
+    /// through [`VaultPath::new`], so the result is sanitized and lowercased.
     pub fn from_path<P: AsRef<Path>, F: AsRef<Path>>(
         workspace_path: P,
         full_path: F,
@@ -996,7 +1108,16 @@ impl VaultPath {
         Ok(VaultPath::new(pl).absolute())
     }
 
-    // returns true if it's just a note file, no path relative to the vault
+    /// Returns `true` if this path is a *bare* note filename: a single,
+    /// relative component ending in the note extension, with no directory part
+    /// (e.g. `anton.md`). Such paths are the signal for a vault-wide, wiki-style
+    /// name lookup rather than a directory-scoped path match.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert!(VaultPath::new("anton.md").is_note_file());
+    /// assert!(!VaultPath::new("/work/anton.md").is_note_file());
+    /// ```
     pub fn is_note_file(&self) -> bool {
         match self.slices.last() {
             Some(path_slice) => path_slice.is_note() && self.slices.len() == 1 && !self.absolute,
@@ -1004,6 +1125,11 @@ impl VaultPath {
         }
     }
 
+    /// Returns `true` if this path points at a note, i.e. its final component
+    /// ends with the note extension. Unlike [`is_note_file`], the path may have
+    /// any number of directory components.
+    ///
+    /// [`is_note_file`]: VaultPath::is_note_file
     pub fn is_note(&self) -> bool {
         match self.slices.last() {
             Some(path_slice) => path_slice.is_note(),
@@ -1035,27 +1161,43 @@ impl VaultPath {
         }
     }
 
+    /// Returns `true` if this path is relative (not rooted at the vault root).
     pub fn is_relative(&self) -> bool {
         !self.absolute
     }
 
+    /// Returns `true` if this path is absolute (rooted at the vault root).
     pub fn is_absolute(&self) -> bool {
         self.absolute
     }
 
+    /// Marks this path absolute in place.
     pub fn to_absolute(&mut self) {
         self.absolute = true;
     }
 
+    /// Consumes the path and returns it marked absolute (builder-style sibling
+    /// of [`to_absolute`](VaultPath::to_absolute)).
     pub fn absolute(mut self) -> Self {
         self.absolute = true;
         self
     }
 
+    /// Marks this path relative in place.
     pub fn to_relative(&mut self) {
         self.absolute = false;
     }
 
+    /// Splits the path into its parent path and the final component's name.
+    /// The parent keeps this path's absoluteness; the name is the empty string
+    /// when the path has no components.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// let (parent, name) = VaultPath::new("/a/b/c.md").get_parent_path();
+    /// assert_eq!(parent.to_string(), "/a/b");
+    /// assert_eq!(name, "c.md");
+    /// ```
     pub fn get_parent_path(&self) -> (VaultPath, String) {
         let mut new_path = self.slices.clone();
         let current = new_path
@@ -1071,6 +1213,19 @@ impl VaultPath {
         )
     }
 
+    /// Appends `path` to this one. If `path` is absolute it wins outright and is
+    /// returned as-is; otherwise its components are concatenated onto this path,
+    /// keeping this path's absoluteness. The result is not flattened, so any
+    /// `..` in `path` survives until [`flatten`] is called.
+    ///
+    /// [`flatten`]: VaultPath::flatten
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// let base = VaultPath::new("/main/path");
+    /// let rel = VaultPath::new("sub/note.md");
+    /// assert_eq!(base.append(&rel).to_string(), "/main/path/sub/note.md");
+    /// ```
     pub fn append(&self, path: &VaultPath) -> VaultPath {
         if !path.is_relative() {
             // Absolute paths are absolute
@@ -1086,7 +1241,13 @@ impl VaultPath {
         }
     }
 
-    // Compares two paths, ignoring if they are absolute or not
+    /// Compares two paths by components only, ignoring whether each is absolute
+    /// or relative. So `/a/b` is "like" `a/b`.
+    ///
+    /// ```
+    /// use kimun_core::nfs::VaultPath;
+    /// assert!(VaultPath::new("/a/b").is_like(&VaultPath::new("a/b")));
+    /// ```
     pub fn is_like(&self, other: &VaultPath) -> bool {
         self.slices.eq(&other.slices)
     }

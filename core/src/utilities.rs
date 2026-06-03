@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+/// Converts an OS path to a `String`, losslessly when the path is valid UTF-8
+/// and lossily (replacing invalid sequences) otherwise, so it never fails.
 pub fn path_to_string<P: AsRef<Path>>(path: P) -> String {
     path.as_ref()
         .to_path_buf()
@@ -69,6 +71,9 @@ pub fn ensure_dir_exists(path: &Path) -> std::io::Result<std::path::PathBuf> {
     path.canonicalize()
 }
 
+/// Folds accented characters to their plain ASCII equivalents (e.g. `é` → `e`,
+/// `Æ` → `A`), dropping combining diacritical marks. Used to normalize names
+/// for case-insensitive, accent-insensitive matching.
 // taken from https://github.com/YesSeri/diacritics/
 // with modifications
 pub fn remove_diacritics(string: &str) -> String {

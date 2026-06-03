@@ -1,9 +1,53 @@
+//! Core of the Kimün note-taking app: all file operations, indexing, and
+//! note manipulation, with no presentation concerns.
+//!
+//! The public surface is the [`NoteVault`] facade. A vault is a directory of
+//! Markdown notes on disk; `NoteVault` owns the operations over it (create,
+//! read, write, rename, search, browse) and is cheap to clone.
+//!
+//! A few conventions shape this crate:
+//!
+//! - **`VaultPath` for vault-internal paths.** Everything addressed *inside*
+//!   the vault uses [`VaultPath`], a case-insensitive,
+//!   `/`-separated, OS-agnostic path. OS path types are reserved for
+//!   configuration values (the workspace root) and for converting back to a
+//!   real filesystem location when a caller needs one.
+//! - **The index is a cache.** Search, backlinks, suggestions, and listings
+//!   are served from a SQLite index that mirrors the notes on disk. It can be
+//!   rebuilt at any time from the files, which remain the source of truth.
+//! - **`nfs` owns the filesystem.** Every direct `std::fs`/`tokio::fs` call
+//!   lives in the [`nfs`] module; the rest of the crate goes through it.
+//!
+//! # Example
+//!
+//! Create a vault in a temporary directory, write a note, and read it back:
+//!
+//! ```no_run
+//! use kimun_core::{NoteVault, VaultConfig};
+//! use kimun_core::nfs::VaultPath;
+//!
+//! let dir = tempfile::tempdir().unwrap();
+//! let rt = tokio::runtime::Runtime::new().unwrap();
+//! rt.block_on(async {
+//!     let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+//!     let path = VaultPath::new("/hello.md");
+//!     vault.create_note(&path, "# Hello\n").await.unwrap();
+//!     let text = vault.get_note_text(&path).await.unwrap();
+//!     assert_eq!(text, "# Hello\n");
+//! });
+//! ```
+
+/// Error types returned across the crate's public API.
 pub mod error;
 pub(crate) mod index;
 pub(crate) mod link_rewrite;
+/// Filesystem layer: the only place that touches the OS filesystem directly,
+/// plus the [`VaultPath`] vault-internal path type.
 pub mod nfs;
+/// Note model: parsing Markdown into details, chunks, links, and tags.
 pub mod note;
 pub(crate) mod sync;
+/// Small standalone helpers (paths, log directory, diacritic folding).
 pub mod utilities;
 pub use index::search_terms::{
     quote_query_term, strip_order_directive, with_order_directive, OrderBy, OrderField, SearchTerms,
@@ -36,12 +80,19 @@ use utilities::path_to_string;
 use crate::nfs::saved_searches;
 use crate::nfs::DirectoryEntryData;
 
+/// Default directory for journal entries, one note per day.
 pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
+/// Default directory for quick-capture notes (see [`NoteVault::quick_note`]).
 pub const DEFAULT_INBOX_PATH: &str = "/inbox";
+/// Default directory for attachments (see
+/// [`NoteVault::default_attachments_path`]).
 pub const DEFAULT_ASSETS_PATH: &str = "/assets";
 
+/// Timing summary of an indexing pass.
 pub struct IndexReport {
+    /// When the pass started.
     pub start: SystemTime,
+    /// How long the pass took (zero until the pass finishes).
     pub duration: Duration,
 }
 
@@ -68,7 +119,10 @@ impl IndexReport {
 /// the cache lives at `<workspace_path>/kimun.sqlite` (legacy default).
 #[derive(Debug, Clone)]
 pub struct VaultConfig {
+    /// OS path to the vault's root directory.
     pub workspace_path: std::path::PathBuf,
+    /// Override for the SQLite cache location. When `None`, the cache lives at
+    /// `<workspace_path>/kimun.sqlite` (legacy default).
     pub db_path: Option<std::path::PathBuf>,
     /// When `true`, destructive automated edits (overwrite, replace, delete, and
     /// the backlink rewrites of rename/move) copy a note's previous content into
@@ -78,6 +132,8 @@ pub struct VaultConfig {
 }
 
 impl VaultConfig {
+    /// Builds a config for the vault rooted at `workspace_path`, with the
+    /// legacy default cache location and backups disabled.
     pub fn new(workspace_path: impl Into<std::path::PathBuf>) -> Self {
         Self {
             workspace_path: workspace_path.into(),
@@ -86,11 +142,15 @@ impl VaultConfig {
         }
     }
 
+    /// Overrides where the SQLite cache is stored, instead of the legacy
+    /// in-workspace default.
     pub fn with_db_path(mut self, db_path: impl Into<std::path::PathBuf>) -> Self {
         self.db_path = Some(db_path.into());
         self
     }
 
+    /// Enables or disables backing up note content before destructive edits
+    /// (see the [`backup`](Self::backup) field).
     pub fn with_backup(mut self, backup: bool) -> Self {
         self.backup = backup;
         self
@@ -102,10 +162,14 @@ impl VaultConfig {
 /// written to disk.
 #[derive(Debug, Clone)]
 pub struct ReplacePreview {
+    /// Number of matches that would be replaced.
     pub count: usize,
+    /// The note's content after the replacement.
     pub content: String,
 }
 
+/// Facade over a vault: a directory of Markdown notes plus its searchable
+/// index. Cheap to clone — clones share the index pool and per-note locks.
 #[derive(Debug, Clone)]
 pub struct NoteVault {
     /// Stored as `Arc<Path>` (not `Arc<PathBuf>`) because (a) it impls
@@ -268,14 +332,17 @@ impl NoteVault {
             .unwrap_or(false)
     }
 
+    /// Directory under which journal entries are created.
     pub fn journal_path(&self) -> &VaultPath {
         &self.journal_path
     }
 
+    /// Directory under which quick-capture notes are created.
     pub fn inbox_path(&self) -> &VaultPath {
         &self.inbox_path
     }
 
+    /// Overrides the inbox directory used by [`Self::quick_note`].
     pub fn set_inbox_path(&mut self, path: VaultPath) {
         self.inbox_path = path;
     }
@@ -315,6 +382,8 @@ impl NoteVault {
         }))
     }
 
+    /// Loads today's journal entry, creating it with a date heading if it does
+    /// not exist yet. Returns the note details and its content.
     pub async fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
         let (title, note_path) = self.get_todays_journal();
         let content = self
@@ -336,7 +405,8 @@ impl NoteVault {
         )
     }
 
-    // Returns a NaiveDate if the note path is a valid journal entry
+    /// Parses the date out of a journal note path, or `None` when `note_path`
+    /// is not a `YYYY-MM-DD` note directly under the journal directory.
     pub fn journal_date(&self, note_path: &VaultPath) -> Option<NaiveDate> {
         if !note_path.is_note() {
             return None;
@@ -369,24 +439,27 @@ impl NoteVault {
         }
     }
 
-    // Loads the note's content, returns the text
-    // If the file doesn't exist you will get a VaultError::FSError with a
-    // FSError::NotePathNotFound as the source, you can use that to
-    // lazy create a note, or use the load_or_create_note function instead
+    /// Loads the raw text of the note at `path`.
+    ///
+    /// When the file doesn't exist you get a [`VaultError::FSError`] wrapping
+    /// `FSError::NotePathNotFound`; you can branch on that to lazily create a
+    /// note, or use [`Self::load_or_create_note`] instead.
     pub async fn get_note_text(&self, path: &VaultPath) -> Result<String, VaultError> {
         let text = nfs::load_note(self.workspace_path(), path).await?;
         Ok(text)
     }
 
-    // Loads a note, returning its details that contain path, raw text and more
-    // If the file doesn't exist you will get a VaultError::FSError with a
-    // FSError::NotePathNotFound as the source, you can use that to
-    // lazy create a note, or use the load_or_create_note function instead
+    /// Loads a note as [`NoteDetails`], carrying its path, raw text, and parsed
+    /// metadata.
+    ///
+    /// Missing-file behaviour matches [`Self::get_note_text`].
     pub async fn load_note(&self, path: &VaultPath) -> Result<NoteDetails, VaultError> {
         let text = self.get_note_text(path).await?;
         Ok(NoteDetails::new(path, text))
     }
 
+    /// Returns the indexed content chunks for the note at `path`, keyed by the
+    /// note path they belong to.
     pub async fn get_note_chunks(
         &self,
         path: &VaultPath,
@@ -395,7 +468,8 @@ impl NoteVault {
         Ok(a)
     }
 
-    // Search notes using a search syntax
+    /// Searches notes using the vault's query syntax (see [`SearchTerms`]).
+    /// Returns each matching note's entry and content data.
     pub async fn search_notes<S: AsRef<str>>(
         &self,
         search_query: S,
@@ -460,15 +534,21 @@ impl NoteVault {
         Ok(notes)
     }
 
-    // Get all notes
+    /// Returns every note in the vault with its entry and content data.
     pub async fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         let a = self.index.get_all_notes().await?;
         Ok(a)
     }
+    /// Resolves a vault path to its real OS filesystem location under the
+    /// workspace root.
     pub fn path_to_pathbuf(&self, path: &VaultPath) -> PathBuf {
         path.to_pathbuf(self.workspace_path())
     }
 
+    /// Walks the vault per `options`, streaming each entry as a
+    /// [`SearchResult`] through the channel set up by
+    /// [`VaultBrowseOptionsBuilder::build`]. A recursive browse from the root
+    /// doubles as a full index sync.
     pub async fn browse_vault(&self, options: VaultBrowseOptions) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
@@ -625,6 +705,10 @@ impl NoteVault {
         Ok(())
     }
 
+    /// Creates a new note at `path` with `text`, failing with
+    /// [`VaultError::NoteExists`] if a note is already there. The create is
+    /// exclusive (atomic `O_EXCL`), so it never clobbers an existing file.
+    /// The new note is indexed before returning.
     pub async fn create_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
@@ -641,6 +725,8 @@ impl NoteVault {
         Ok((entry_data, content_data))
     }
 
+    /// Creates a directory at `path`, failing with
+    /// [`VaultError::DirectoryExists`] if one is already there.
     pub async fn create_directory(
         &self,
         path: &VaultPath,
@@ -717,6 +803,9 @@ impl NoteVault {
         Ok(())
     }
 
+    /// Writes `text` to the note at `path`, overwriting any existing content
+    /// (backing it up first when backups are enabled), and re-indexes the note.
+    /// Serialized per note via the per-note write lock.
     pub async fn save_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
@@ -787,6 +876,9 @@ impl NoteVault {
         }
     }
 
+    /// Deletes the note at `path` (backing it up first when backups are
+    /// enabled). The index row is removed before the file, so the index never
+    /// points at a missing file.
     pub async fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         path.ensure_note()?;
@@ -911,6 +1003,8 @@ impl NoteVault {
         Ok(ReplacePreview { count, content })
     }
 
+    /// Deletes the directory at `path` and its contents, removing the
+    /// corresponding index rows first.
     pub async fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         path.ensure_directory()?;
@@ -924,6 +1018,11 @@ impl NoteVault {
         Ok(())
     }
 
+    /// Renames the note `from` to `to`, rewriting links to it (wikilinks,
+    /// Markdown links, and the note's own self-links) in every backlinking note
+    /// so they keep pointing at the renamed note. Fails if `to` already exists.
+    /// Source, destination, and all link victims are locked for the whole
+    /// operation so a concurrent in-process write can't interleave.
     pub async fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
@@ -965,6 +1064,8 @@ impl NoteVault {
         Ok(())
     }
 
+    /// Renames the directory `from` to `to`, updating the index paths of all
+    /// notes beneath it. Fails if `to` already exists.
     pub async fn rename_directory(
         &self,
         from: &VaultPath,
@@ -993,30 +1094,39 @@ fn rename_dest_err(e: FSError) -> VaultError {
     }
 }
 
+/// A directory entry within the vault.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DirectoryDetails {
+    /// Path of the directory inside the vault.
     pub path: VaultPath,
 }
 
+/// A single entry produced by browsing the vault: a note, directory, or
+/// attachment, identified by its path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
+    /// Path of the entry inside the vault.
     pub path: VaultPath,
+    /// What kind of entry this is, plus any content data for notes.
     pub rtype: ResultType,
 }
 
 impl SearchResult {
+    /// Builds a note result carrying its content data.
     pub fn note(path: &VaultPath, content_data: &NoteContentData) -> Self {
         Self {
             path: path.to_owned(),
             rtype: ResultType::Note(content_data.to_owned()),
         }
     }
+    /// Builds a directory result.
     pub fn directory(path: &VaultPath) -> Self {
         Self {
             path: path.to_owned(),
             rtype: ResultType::Directory,
         }
     }
+    /// Builds an attachment result.
     pub fn attachment(path: &VaultPath) -> Self {
         Self {
             path: path.to_owned(),
@@ -1025,13 +1135,18 @@ impl SearchResult {
     }
 }
 
+/// Kind of a [`SearchResult`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResultType {
+    /// A note, with its parsed content data.
     Note(NoteContentData),
+    /// A directory.
     Directory,
+    /// An attachment (non-note file).
     Attachment,
 }
 
+/// Builder for [`VaultBrowseOptions`]; see [`NoteVault::browse_vault`].
 pub struct VaultBrowseOptionsBuilder {
     path: VaultPath,
     validation: NotesValidation,
@@ -1039,10 +1154,13 @@ pub struct VaultBrowseOptionsBuilder {
 }
 
 impl VaultBrowseOptionsBuilder {
+    /// Starts a builder rooted at `path`, with defaults otherwise.
     pub fn new(path: &VaultPath) -> Self {
         Self::default().path(path.clone())
     }
 
+    /// Finalizes the options and creates the channel browse results are sent
+    /// through; returns the options and the receiving end.
     pub fn build(self) -> (VaultBrowseOptions, Receiver<SearchResult>) {
         let (sender, receiver) = std::sync::mpsc::channel();
         (
@@ -1056,16 +1174,20 @@ impl VaultBrowseOptionsBuilder {
         )
     }
 
+    /// Sets the path to browse from.
     pub fn path(mut self, path: VaultPath) -> Self {
         self.path = path;
         self
     }
 
+    /// Sets whether the browse descends into subdirectories.
     pub fn recursive(mut self, recursive: bool) -> Self {
         self.recursive = recursive;
         self
     }
 
+    /// Sets how thoroughly each note is re-validated against the index during
+    /// the browse.
     pub fn validation(mut self, validation: NotesValidation) -> Self {
         self.validation = validation;
         self
@@ -1102,10 +1224,16 @@ impl Display for VaultBrowseOptions {
     }
 }
 
+/// How thoroughly a sync pass checks whether each note has changed before
+/// updating its index entry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NotesValidation {
+    /// Compares a content hash — detects any change, at the cost of reading
+    /// each file.
     Full,
+    /// Compares the file size — cheaper, but misses same-size edits.
     Fast,
+    /// Only checks whether the note exists.
     None,
 }
 
