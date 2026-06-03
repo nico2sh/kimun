@@ -7,6 +7,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.11.3...kimun-notes-v0.12.0) - 2026-06-03
+
+### Added
+
+- *(tui)* inline ?name saved-search expansion with sticky breadcrumb
+- *(tui)* open sort dialog and route sort events from editor
+- *(tui)* register ActiveDialog::Sort variant
+- *(tui)* add SortDialog overlay component
+- *(tui)* query panel sort via query rewrite; drop sort override
+- *(tui)* sidebar directory grouping + apply_sort via dialog
+- *(tui)* add SortTarget and sort dialog events
+- *(tui)* add group_directories setting; bind OpenSortDialog to Ctrl+N
+- *(tui)* replace sort field/order actions with OpenSortDialog
+- *(tui)* add reverse SortField/SortOrder setting conversions
+- *(tui)* save query from the Ctrl+K note browser; add save/searches hints
+- *(tui)* ActiveDialog impls Overlay; migrate dialog app-message handling; rename CloseDialog->CloseOverlay
+- *(tui)* add CloseOverlay event; modals impl Overlay and emit it
+- *(tui)* add OverlayHost + Overlay trait (single-slot, focus save/restore)
+- *(tui)* note-name autocomplete on </>/= operators (ADR-0005 alphabet)
+- *(core)* query operator alphabet (ADR-0005) + forward-links filter
+- *(tui)* SearchList .intercept + render/render_query/render_autocomplete + handle_mouse
+- *(tui)* autocomplete host inside SearchList (one canonical snapshot)
+- *(tui)* SuggestionSource port (SuggestionItem) — autocomplete decoupled from the vault
+- *(tui)* SearchList Filter enum (SourceOrder/Fuzzy/Rank) + display indices
+- *(tui)* SearchList keyboard nav + KeyReaction verdict
+- *(tui)* SearchList requery aborts the prior load (generation guard)
+- *(tui)* SearchList engine skeleton + generation-stamped one-shot load
+- *(tui)* SearchList seams — SearchRow, RowSource, Emit, Loaded
+- *(tui)* open saved searches modal; apply selection to query panel
+- *(tui)* saved searches modal — filter + numeric quick-select + virtual backlinks entry
+- *(tui)* SaveCurrentQuery opens save dialog; persist SaveSearchConfirmed via core
+- *(tui)* save-search name dialog
+- *(tui)* rename ToggleBacklinks->ToggleQueryPanel (+legacy alias); add OpenSavedSearches & SaveCurrentQuery actions
+- *(tui)* query panel — editable query line sourced from search_notes
+- expose SearchTerms; generalise context preview to query-needle highlighting
+- *(tui)* SearchQuery autocomplete mode — > suggests note names + {note}
+- *(tui)* LinkFilter (>/->) autocomplete trigger detection
+- *(tui)* {note} query-variable resolution
+- --preview / preview dry-run for note replace
+- regex support for note replace
+- *(mcp)* add overwrite_note/replace_in_note/delete_note tools
+- *(cli)* add note overwrite/replace/delete with backups
+- *(core)* add link query operator (>/lk:) and search optimizations
+- *(editor)* draw blockquote bar gutter, reveal raw '> ' on edit
+- *(editor)* compute blockquote gutter insets and feed them to wrap
+- *(editor)* per-row left inset in word wrap for the blockquote gutter
+- *(editor)* reveal blockquote marker in wrap mask only on cursor row
+- *(editor)* store blockquote depth + sigil end on ParsedLine
+- *(editor)* paint code_bg box behind fenced and indented blocks
+- *(editor)* cache per-row code-box width at the view layer
+- *(editor)* add code_block_ranges_from_kinds (fenced + indented)
+- *(theme)* add blockquote_bar and code_bg colors
+
+### Fixed
+
+- expand spaces on notes placeholder
+- cargo fmt
+- resolve relative path on note check
+- fmt
+- better event management
+- hints on the sidebar focus
+- *(tui)* use sort_by_key for directiveless query order (clippy)
+- *(tui)* correct sort defaults, query ordering, saved-search title, render cost
+- *(tui)* sync query input bar on programmatic query change
+- *(tui)* resolve {note} query variable in the Ctrl+K note browser
+- *(tui)* rebind SaveCurrentQuery to Ctrl+D (Ctrl-only; Ctrl+Shift unreliable on some terminals)
+- *(tui)* suppress overlay-openers under capture-all; drop redundant modal CloseOverlay; remove dead OverlayMsg::Close
+- *(tui)* keep Query-panel focus after saved-search select (guard CloseOverlay restore)
+- *(tui)* log sidebar listing failures; skip QueryPanel startup search on empty note
+- *(tui)* SearchList leading_row works for streamed sources, query-fresh and pinned
+- code-review low — forward-link highlight, dedup link normalization, trigger scan, prefix-table tests
+- code-review high+medium — stale CLI docs/skill alphabet, popup operator sigil, forward-link indexes
+- *(tui)* Enter accepts autocomplete in the query panel
+- *(tui)* saved-search delete ordering, note-browser preview refresh, sidebar dir filtering
+- *(tui)* restore interactive sort-cycling in the sidebar (CycleSortField/SortReverseOrder)
+- *(tui)* SearchList mouse hit-test honours visual_height; close popup on mouse
+- *(tui)* order saved-search delete before reload; drop stale dead_code allow
+- apply bold/italic to nested links and wikilinks
+- render wikilinks and inline formatting inside headers
+- close review holes — rename locking, atomic append, fail-closed backup, MCP polish
+- *(core)* atomic backups, once-daily purge, backups via shared vault
+- *(core)* back up rename/move backlink victims; harden index exclusion
+- *(editor)* a less-indented line ends the indented code block
+- *(editor)* exclude trailing blank line from indented code blocks
+- *(theme)* give the ANSI theme a visible code-block background
+- *(workspace)* deterministic config serialization order
+- *(editor)* blockquote selection/click + code-block tab alignment
+- *(editor)* draw blockquote bar on lazy-continuation lines
+- *(editor)* account for blockquote gutter in mouse click mapping
+- *(editor)* cursor no longer sticks on the blockquote '>' marker
+
+### Other
+
+- Merge pull request #115 from nico2sh/rel_paths
+- *(tui)* SidebarComponent::from_settings, shared by both screens
+- *(tui)* symmetric overlay dismissal (close-side of Candidate B)
+- *(tui)* centralize overlay presentation; fix OpenJournal overlay
+- *(tui)* deepen persistent panels behind a Panel seam
+- *(tui)* tidy sort dialog plumbing (review items 5-8)
+- cargo fmt
+- *(tui)* persist sort default only for sidebar; test journal branch
+- *(tui)* fix stale BacklinkSource doc comment after sort removal
+- cargo fmt
+- *(tui)* move Overlay trait to components; make OverlayHost generic over focus (store Focus, drop u8 token)
+- *(tui)* OverlayKind::label, ActiveDialog Show* constructors, fold Show*/CloseOverlay into owned match (drop path clones)
+- *(tui)* remove CloseNoteBrowser/CloseSavedSearches/CloseDialog; drop redundant Component impls
+- *(tui)* EditorScreen routes overlays through OverlayHost; collapse Focus enum; delete DialogManager
+- *(tui)* code-review cleanup — debounce builder knob, dedup centered_rect, drop dead search_str/list_rect, consistent mouse-rect contract
+- *(tui)* robust poll_until_idle for vault-backed loads (fix parallel-suite flake)
+- *(tui)* collision-free temp_vault nonce (atomic counter + pid)
+- *(tui)* sweep remaining refs to ADR-0005 alphabet (virtual entry, CLI/MCP help, docs)
+- rustfmt SearchList refactor
+- *(tui)* retire FileListComponent — list engine absorbed by SearchList
+- *(tui)* sidebar hosts SearchList (streamed source + Filter::Fuzzy)
+- *(tui)* Query panel hosts SearchList; expand/preview compose on top; drop BacklinksLoaded
+- *(tui)* saved searches modal hosts SearchList (Filter::Rank + leading_row)
+- *(tui)* note browser hosts SearchList; providers are RowSources
+- rustfmt across saved-searches feature files
+- *(tui)* regression tests for {note}-gated query-panel refresh on navigation
+- cargo fmt for note-modify/backup code
+- *(mcp)* cover overwrite/replace/delete tools
+- Merge pull request #100 from nico2sh/feat/editor-bq-code-styling
+- *(editor)* simplify tab-width, code-box rebuild, indented-blank trim
+- *(editor)* fenced code text uses fg, matching indented code
+- *(editor)* dedup + single-source the blockquote/code-block helpers
+- *(editor)* cargo fmt blockquote + code-box changes
+
 ## [0.11.3](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.11.2...kimun-notes-v0.11.3) - 2026-05-29
 
 ### Fixed
