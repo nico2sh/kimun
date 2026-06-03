@@ -9,6 +9,7 @@
     <a href="https://github.com/nico2sh/kimun/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
     <a href="https://crates.io/crates/kimun-notes"><img src="https://img.shields.io/crates/v/kimun-notes?style=flat-square&color=orange" alt="Crates.io"></a>
     <a href="https://github.com/nico2sh/kimun/stargazers"><img src="https://img.shields.io/github/stars/nico2sh/kimun?style=flat-square&label=stars" alt="Stars"></a>
+    <a href="https://ratatui.rs/"><img src="https://img.shields.io/badge/Built_With_Ratatui-000?logo=ratatui&logoColor=fff", alt="Built With Ratatui"></a>
   </p>
 
   🗣️ <em><strong>Kimün</strong> (Mapudungun): Knowledge, learning, or wisdom.</em>
