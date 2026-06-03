@@ -509,7 +509,7 @@ impl ParsedBuffer {
             //   F3: skip if the span overlaps InlineCode, Link, WikiLink, or Image
             if !line_in_code_block[row] {
                 let line_str = line.as_str();
-                for lm in kimun_core::note::label_matches(line_str) {
+                for lm in kimun_core::note::scan::label_matches(line_str) {
                     // Convert byte offsets to char offsets for Element storage.
                     let start_char = line_str[..lm.byte_start].chars().count();
                     let end_char =

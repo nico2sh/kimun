@@ -1443,11 +1443,10 @@ async fn upsert_notes_batched(
     let mut batch = NoteBatch::with_capacity(notes.len(), 0, 0, notes.len() * 4);
     for (entry_data, text) in notes {
         // Avoid `NoteDetails::new` — it would clone the raw text purely to be
-        // re-borrowed for each parse pass below. The free functions take the
-        // text by `AsRef<str>` and keep it borrowed.
-        let data = crate::note::content_extractor::get_content_data(text);
-        let (chunks, links) =
-            crate::note::content_extractor::get_chunks_and_links(&entry_data.path, text);
+        // re-borrowed for each parse pass below. The borrowed-text associated
+        // functions take the text by `AsRef<str>` and keep it borrowed.
+        let data = NoteDetails::content_data_of(text);
+        let (chunks, links) = NoteDetails::chunks_and_links_of(&entry_data.path, text);
         batch.push(entry_data, data, chunks, links);
     }
     batch.flush(tx).await

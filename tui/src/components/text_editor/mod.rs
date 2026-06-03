@@ -164,12 +164,12 @@ pub struct ClipboardImage {
 }
 
 /// Schemes the paste-over-selection flow recognises as "linkable" — broader
-/// than `core::is_remote_url` (http/https only) because users routinely paste
+/// than `core::note::scan::is_remote_url` (http/https only) because users routinely paste
 /// `mailto:` and FTP links and expect them wrapped as markdown links too.
 const LINKABLE_PASTE_SCHEMES: &[&str] = &["http", "https", "ftp", "ftps", "mailto"];
 
 fn linkable_url(s: &str) -> Option<&str> {
-    kimun_core::note::url_with_allowed_scheme(s, LINKABLE_PASTE_SCHEMES)
+    kimun_core::note::scan::url_with_allowed_scheme(s, LINKABLE_PASTE_SCHEMES)
 }
 
 /// If `clip` is a linkable URL and `selection` is non-empty, returns
@@ -766,7 +766,7 @@ impl TextEditorComponent {
 
         // F5: Check wiki-link / markdown-link spans first; Link wins over Label
         // even if a future edit accidentally lets a Label slip through a Link range.
-        if let Some(span) = kimun_core::note::link_char_spans(&line)
+        if let Some(span) = kimun_core::note::scan::link_char_spans(&line)
             .into_iter()
             .find(|s| s.start <= col && col < s.end)
         {

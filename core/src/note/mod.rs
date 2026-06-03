@@ -2,31 +2,42 @@ pub(crate) mod content_extractor;
 
 use std::fmt::Display;
 
-use content_extractor::{extract_title, get_content_data};
-pub use content_extractor::{
-    get_chunks_and_links, get_content_chunks, is_inside_code_link_or_frontmatter,
-    is_inside_exclusion_zone, is_remote_url, link_char_spans, link_target_filename,
-    target_looks_like_image, url_with_allowed_scheme, wikilink_char_spans, ExclusionZones,
-    LinkSpan, LinkSpanKind,
-};
+// Crate-internal whole-note operations (markdown pipeline, link rewriting).
+// The note module is the only door to the extractor: nothing outside `note/`
+// names `content_extractor` directly.
+pub(crate) use content_extractor::{process_image_links, replace_note_links};
 
 use crate::nfs::VaultPath;
 
-/// A label token detected in note text, with byte-offset range and the
-/// label name (without leading `#`).
-#[derive(Debug, Clone, Copy)]
-pub struct LabelMatch<'a> {
-    pub byte_start: usize,
-    pub byte_end: usize,
-    pub name: &'a str,
-}
+/// Scan helpers — live text analysis over editor buffer fragments: link and
+/// wikilink spans, exclusion zones (code/frontmatter/links), label tokens,
+/// URL classification. The presentation layer uses these to drive WYSIWYG
+/// behaviour on text that is *being edited*; whole-note extraction (title,
+/// chunks, links) goes through [`NoteDetails`] instead.
+pub mod scan {
+    pub use super::content_extractor::{
+        is_inside_code_link_or_frontmatter, is_inside_exclusion_zone, is_remote_url,
+        link_char_spans, link_target_filename, target_looks_like_image, url_with_allowed_scheme,
+        wikilink_char_spans, ExclusionZones, LinkSpan, LinkSpanKind,
+    };
 
-/// Yields every label token in `text` that satisfies the label rules:
-/// matches the label character set AND is preceded by a non-label character
-/// (or the start of input). Code-span / HTML / link-span exclusion is the
-/// caller's responsibility because those concerns are context-specific.
-pub fn label_matches(text: &str) -> impl Iterator<Item = LabelMatch<'_>> + '_ {
-    content_extractor::label_matches_inner(text)
+    /// A label token detected in note text, with byte-offset range and the
+    /// label name (without leading `#`).
+    #[derive(Debug, Clone, Copy)]
+    pub struct LabelMatch<'a> {
+        pub byte_start: usize,
+        pub byte_end: usize,
+        pub name: &'a str,
+    }
+
+    /// Yields every label token in `text` that satisfies the label rules:
+    /// matches the label character set AND is preceded by a non-label
+    /// character (or the start of input). Code-span / HTML / link-span
+    /// exclusion is the caller's responsibility because those concerns are
+    /// context-specific.
+    pub fn label_matches(text: &str) -> impl Iterator<Item = LabelMatch<'_>> + '_ {
+        super::content_extractor::label_matches_inner(text)
+    }
 }
 
 /// Returns the deduplicated lowercase label names extracted from `text`
@@ -57,6 +68,10 @@ impl Display for NoteDetails {
     }
 }
 
+/// The one door to whole-note extraction. The borrowed-text associated
+/// functions (`*_of`) exist for bulk paths (indexing) that hold many notes'
+/// text as `&str` and must not clone it; the `get_*` methods are the same
+/// operations over this note's owned text.
 impl NoteDetails {
     pub fn new<S: AsRef<str>>(note_path: &VaultPath, text: S) -> Self {
         Self {
@@ -65,8 +80,31 @@ impl NoteDetails {
         }
     }
 
+    /// Title of a note body, without constructing a `NoteDetails`.
     pub fn get_title_from_text<S: AsRef<str>>(text: S) -> String {
-        extract_title(text)
+        content_extractor::extract_title(text)
+    }
+
+    /// Indexable content data (title + hash) of a note body, without
+    /// constructing a `NoteDetails`.
+    pub fn content_data_of<S: AsRef<str>>(text: S) -> NoteContentData {
+        content_extractor::get_content_data(text)
+    }
+
+    /// Heading-chunked content of a note body, without constructing a
+    /// `NoteDetails`.
+    pub fn content_chunks_of<S: AsRef<str>>(text: S) -> Vec<ContentChunk> {
+        content_extractor::get_content_chunks(text)
+    }
+
+    /// Heading chunks plus every link (note links, attachments, images,
+    /// URLs, hashtags) of a note body at `path`, without constructing a
+    /// `NoteDetails`.
+    pub fn chunks_and_links_of<S: AsRef<str>>(
+        path: &VaultPath,
+        text: S,
+    ) -> (Vec<ContentChunk>, Vec<NoteLink>) {
+        content_extractor::get_chunks_and_links(path, text)
     }
 
     pub fn get_title(&self) -> String {
@@ -74,15 +112,22 @@ impl NoteDetails {
     }
 
     pub fn get_content_data(&self) -> NoteContentData {
-        get_content_data(&self.raw_text)
+        Self::content_data_of(&self.raw_text)
     }
 
     pub fn get_content_chunks(&self) -> Vec<ContentChunk> {
-        get_content_chunks(&self.raw_text)
+        Self::content_chunks_of(&self.raw_text)
     }
 
     pub fn get_chunks_and_links(&self) -> (Vec<ContentChunk>, Vec<NoteLink>) {
-        get_chunks_and_links(&self.path, &self.raw_text)
+        Self::chunks_and_links_of(&self.path, &self.raw_text)
+    }
+
+    /// Rendered Markdown of this note plus its extracted links: wikilinks
+    /// become standard Markdown links, note links resolve to vault-relative
+    /// absolute paths, hashtags become `[#tag](#tag)` links.
+    pub fn get_markdown_and_links(&self) -> (String, Vec<NoteLink>) {
+        content_extractor::get_markdown_and_links(&self.path, &self.raw_text)
     }
 }
 

@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kimun_core::note::ExclusionZones;
+use kimun_core::note::scan::ExclusionZones;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::host::AutocompleteHost;

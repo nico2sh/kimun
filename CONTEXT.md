@@ -118,6 +118,20 @@ _Avoid_: DBStatus (the superseded public enum), force rebuild (the deleted file-
 The batch of note changes — to add, to modify, to delete — that a vault sync walk produces and `NoteIndex::apply` consumes in one atomic operation. Owned by the **NoteIndex** interface: it is the currency crossing that seam, not a walker by-product.
 _Avoid_: NoteListResults (the superseded visitor type), results
 
+**VaultSync**:
+The one core module that brings the **NoteIndex** in step with the vault on disk. One call runs the whole pipeline — read the cached entries, walk the subtree in parallel, diff against the cache under a validation mode, apply the **IndexDiff**, optionally streaming discovered entries to the caller as they are found. The parallel walker, its thread-state plumbing, and the async/blocking bridge are implementation and never cross the interface.
+_Avoid_: visitor, walker, indexer (each names an internal part, not the module)
+
+### Note content
+
+**Note details**:
+The one public door to whole-note extraction — title, indexable content data, heading chunks, links, rendered markdown — as `NoteDetails`: methods over a loaded note's owned text, plus borrowed-text associated functions (`*_of`) for bulk paths (indexing) that must not clone. The markdown extractor behind it is internal to the note module and is never named outside it.
+_Avoid_: content extractor (the implementation, not the door)
+
+**Scan helpers**:
+The `note::scan` module — live text analysis over editor buffer fragments: link/wikilink spans, exclusion zones (code, frontmatter, links), label tokens, URL classification. The presentation layer drives WYSIWYG behaviour with these on text being edited; they take arbitrary text fragments, not notes. Whole-note extraction belongs to **Note details** instead.
+_Avoid_: span helpers / zone helpers (each names a part), parser utilities
+
 ### Note editing
 
 **Automated edit**:
