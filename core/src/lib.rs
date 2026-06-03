@@ -1,5 +1,6 @@
 pub mod error;
 pub(crate) mod index;
+pub(crate) mod link_rewrite;
 pub mod nfs;
 pub mod note;
 pub(crate) mod sync;
@@ -25,6 +26,7 @@ use std::{
 use chrono::{NaiveDate, Utc};
 use error::{FSError, VaultError};
 use index::NoteIndex;
+use link_rewrite::LinkRewrite;
 use log::debug;
 use nfs::{NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
@@ -37,12 +39,6 @@ use crate::nfs::DirectoryEntryData;
 pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
 pub const DEFAULT_INBOX_PATH: &str = "/inbox";
 pub const DEFAULT_ASSETS_PATH: &str = "/assets";
-
-/// Maximum number of concurrent FS read/write tasks during backlink rewriting.
-/// Caps file-descriptor pressure on hub-style notes with thousands of links.
-/// Sized well below typical soft `ulimit -n` (256 on macOS, 1024 on Linux)
-/// while still parallelizing enough to hide per-syscall latency.
-const BACKLINK_IO_CONCURRENCY: usize = 32;
 
 pub struct IndexReport {
     pub start: SystemTime,
@@ -925,164 +921,43 @@ impl NoteVault {
         let from = from.flatten();
         let to = to.flatten();
 
-        // Lock the source, the destination, and every backlink victim for the
-        // whole rename, so a concurrent in-process write to any of them can't
-        // interleave with the read → backup → rewrite below (lost update / stale
-        // backup). Locks are taken in a stable order to stay deadlock-free.
-        let victims: Vec<VaultPath> = self
-            .index
-            .get_backlinks(&from)
-            .await?
-            .into_iter()
-            .map(|(e, _)| e.path)
-            .filter(|p| *p != from)
-            .collect();
+        // Scout the linking notes, then lock the source, the destination, and
+        // every victim for the whole rename, so a concurrent in-process write
+        // to any of them can't interleave with the prepare → rename → commit
+        // below (lost update / stale backup). Locks are taken in a stable
+        // order to stay deadlock-free.
+        let scouted = LinkRewrite::new(&self.index, self.workspace_path(), self.backup)
+            .scout(&from, &to)
+            .await?;
         let _guards = self
             .lock_notes(
                 std::iter::once(&from)
                     .chain(std::iter::once(&to))
-                    .chain(victims.iter()),
+                    .chain(scouted.victims().iter()),
             )
             .await;
 
-        // 1. Read every backlink file (excluding the source itself), computing
-        //    rewritten contents in memory. No FS mutations yet — failure
-        //    here aborts cleanly.
-        let updates = self.read_backlink_rewrites(&from, &to).await?;
+        // Rewrite every victim's links in memory and back them up — no FS
+        // mutation yet, so a failure here aborts cleanly.
+        let prepared = scouted.prepare().await?;
 
-        // 1a. Back up the pre-rewrite content of every note this rename will
-        //     modify — the backlink victims, plus the source itself (its
-        //     self-links are rewritten at the new path). Done before any FS
-        //     mutation so a backup failure aborts cleanly (fail-closed). These
-        //     writes go through nfs directly (not NoteVault::save_note), so the
-        //     backup gate is applied explicitly here.
-        if self.backup {
-            for path in updates.iter().map(|(p, _)| p).chain(std::iter::once(&from)) {
-                nfs::backup_note(self.workspace_path(), path).await?;
-            }
-        }
-
-        // 2. Rename the source note on disk. If this fails, backlinks remain
-        //    untouched and the DB is unchanged — clean abort.
+        // Rename the source note on disk. If this fails, victims remain
+        // untouched and the index is unchanged — clean abort.
         nfs::rename_note(self.workspace_path(), &from, &to)
             .await
             .map_err(rename_dest_err)?;
 
-        // 3. Write the rewritten backlink files (concurrency-bounded). Returns
-        //    paired (NoteEntryData, String) tuples, consuming `updates` so the
-        //    text is not cloned again.
-        let mut notes_with_text = self.write_backlink_rewrites(updates).await?;
+        // Write the rewritten victims and the renamed note's self-links.
+        let notes_with_text = prepared.commit().await?;
 
-        // 3a. Rewrite self-links inside the renamed file at its new location
-        //     (the source was excluded from the backlinks list to avoid the
-        //     "create new file at old path" hazard).
-        if let Some(updated) = self.rewrite_self_links(&from, &to).await? {
-            notes_with_text.push(updated);
-        }
-
-        // 4. One atomic index operation: rename the source rows + update each
-        //    backlink's chunks/links. If this fails, FS is consistent with
-        //    the rename but the index is stale — next sync pass corrects.
+        // One atomic index operation: rename the source rows + update each
+        // victim's chunks/links. If this fails, FS is consistent with the
+        // rename but the index is stale — next sync pass corrects.
         self.index
             .rename_note(&from, &to, &notes_with_text)
             .await?;
 
         Ok(())
-    }
-
-    /// Reads the renamed source file at `to`, rewrites any links pointing to
-    /// `from` into `to`, and writes the file back. Returns the updated entry
-    /// for DB update, or `None` if no self-links existed.
-    async fn rewrite_self_links(
-        &self,
-        from: &VaultPath,
-        to: &VaultPath,
-    ) -> Result<Option<(NoteEntryData, String)>, VaultError> {
-        let text = nfs::load_note(self.workspace_path(), to).await?;
-        let (updated, changed) = note::replace_note_links(&text, from, to);
-        if !changed {
-            return Ok(None);
-        }
-        let entry = nfs::save_note(self.workspace_path(), to, &updated).await?;
-        Ok(Some((entry, updated)))
-    }
-
-    /// Loads every note that links to `from`, rewrites its links to `to`,
-    /// returns only the entries whose content actually changed. I/O is
-    /// concurrency-bounded so a hub note with thousands of backlinks won't
-    /// exhaust the OS file-descriptor limit.
-    async fn read_backlink_rewrites(
-        &self,
-        from: &VaultPath,
-        to: &VaultPath,
-    ) -> Result<Vec<(VaultPath, String)>, VaultError> {
-        // Drop the source itself if it backlinks to itself — those self-links
-        // are handled separately by `rewrite_self_links` after the FS rename,
-        // so the source's body isn't written to its old location here (which
-        // would resurrect a file at `from`).
-        let backlinks: Vec<_> = self
-            .index
-            .get_backlinks(from)
-            .await?
-            .into_iter()
-            .filter(|(e, _)| e.path != *from)
-            .collect();
-        if backlinks.is_empty() {
-            return Ok(Vec::new());
-        }
-        let workspace = self.workspace_path.clone();
-        let from = Arc::new(from.clone());
-        let to = Arc::new(to.clone());
-        let stream = futures_util::stream::iter(backlinks.into_iter().map(|(entry_data, _)| {
-            let workspace = workspace.clone();
-            let from = from.clone();
-            let to = to.clone();
-            async move {
-                let text = nfs::load_note(&workspace, &entry_data.path).await?;
-                let (updated, changed) =
-                    note::replace_note_links(&text, &from, &to);
-                Ok::<_, VaultError>(changed.then_some((entry_data.path, updated)))
-            }
-        }));
-        use futures_util::stream::StreamExt;
-        let mut stream = stream.buffered(BACKLINK_IO_CONCURRENCY);
-        let mut updates = Vec::new();
-        while let Some(item) = stream.next().await {
-            if let Some(entry) = item? {
-                updates.push(entry);
-            }
-        }
-        Ok(updates)
-    }
-
-    /// Writes the rewritten backlink files concurrency-bounded. Consumes
-    /// `updates` so each file's text is moved into its task without cloning,
-    /// then returns the paired `(NoteEntryData, String)` results in input
-    /// order ready for the index update.
-    async fn write_backlink_rewrites(
-        &self,
-        updates: Vec<(VaultPath, String)>,
-    ) -> Result<Vec<(NoteEntryData, String)>, VaultError> {
-        if updates.is_empty() {
-            return Ok(Vec::new());
-        }
-        let workspace = self.workspace_path.clone();
-        let mut futures = Vec::with_capacity(updates.len());
-        for (path, text) in updates {
-            let workspace = workspace.clone();
-            futures.push(async move {
-                let entry = nfs::save_note(&workspace, &path, &text).await?;
-                Ok::<_, VaultError>((entry, text))
-            });
-        }
-        use futures_util::stream::StreamExt;
-        let cap = futures.len();
-        let mut stream = futures_util::stream::iter(futures).buffered(BACKLINK_IO_CONCURRENCY);
-        let mut out = Vec::with_capacity(cap);
-        while let Some(item) = stream.next().await {
-            out.push(item?);
-        }
-        Ok(out)
     }
 
     pub async fn rename_directory(
