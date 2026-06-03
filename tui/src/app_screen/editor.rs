@@ -89,7 +89,7 @@ impl EditorScreen {
             first_key(&ActionShortcuts::ToggleQueryPanel),
         );
         let icons = s.icons();
-        let sidebar = SidebarComponent::new(kb.clone(), vault.clone(), icons.clone(), &s);
+        let sidebar = SidebarComponent::from_settings(vault.clone(), &s);
         let backlinks_panel = QueryPanel::new(vault.clone(), kb.clone());
         let mut editor = TextEditorComponent::new(kb, &s);
         editor.set_vault(vault.clone());
