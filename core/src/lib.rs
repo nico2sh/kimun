@@ -251,6 +251,10 @@ impl NoteVault {
         VaultSync::new(&self.index, self.workspace_path())
             .run(&VaultPath::root(), true, validation_mode, None)
             .await?;
+        // A whole-vault sync just completed: the index mirrors the disk, so
+        // the readiness probe reports true even when this instance healed or
+        // recreated the schema earlier.
+        self.index.mark_synced();
         index_report.finish();
         debug!("TIME: {}", index_report.duration.as_secs());
         Ok(index_report)
@@ -626,8 +630,7 @@ impl NoteVault {
                 other => VaultError::FSError(other),
             })?;
         let note_details = NoteDetails::new(path, text);
-        let content_data = note_details.get_content_data();
-        self.index.save_note(&entry_data, &note_details).await?;
+        let content_data = self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
     }
 
@@ -727,8 +730,7 @@ impl NoteVault {
         self.backup_if_enabled(path).await?;
         let entry_data = nfs::save_note(self.workspace_path(), path, &text).await?;
         let note_details = NoteDetails::new(path, text);
-        let content_data = note_details.get_content_data();
-        self.index.save_note(&entry_data, &note_details).await?;
+        let content_data = self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
     }
 

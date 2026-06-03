@@ -54,6 +54,8 @@ impl<'a> LinkRewrite<'a> {
     /// source itself is excluded — its self-links are rewritten at the new
     /// path during [`Prepared::commit`], never written back to `from` (which
     /// would resurrect a file at the old path).
+    ///
+    /// Paths are flattened internally, so callers may pass them as-is.
     pub(crate) async fn scout(
         self,
         from: &VaultPath,
@@ -108,25 +110,20 @@ impl<'a> Scouted<'a> {
             victims,
         } = self;
 
-        let mut updates: Vec<(VaultPath, String)> = Vec::new();
-        if !victims.is_empty() {
-            let workspace = base.workspace_path;
-            let stream = futures_util::stream::iter(victims.into_iter().map(|path| {
-                let from = &from;
-                let to = &to;
-                async move {
-                    let text = nfs::load_note(workspace, &path).await?;
-                    let (updated, changed) = note::replace_note_links(&text, from, to);
-                    Ok::<_, VaultError>(changed.then_some((path, updated)))
-                }
-            }));
-            let mut stream = stream.buffered(REWRITE_IO_CONCURRENCY);
-            while let Some(item) = stream.next().await {
-                if let Some(entry) = item? {
-                    updates.push(entry);
-                }
+        let workspace = base.workspace_path;
+        let updates: Vec<(VaultPath, String)> = run_bounded(victims.into_iter().map(|path| {
+            let from = &from;
+            let to = &to;
+            async move {
+                let text = nfs::load_note(workspace, &path).await?;
+                let (updated, changed) = note::replace_note_links(&text, from, to);
+                Ok(changed.then_some((path, updated)))
             }
-        }
+        }))
+        .await?
+        .into_iter()
+        .flatten()
+        .collect();
 
         // Back up the pre-rewrite content of every note this rename will
         // modify — the changed victims, plus the source itself. Done before
@@ -171,20 +168,11 @@ impl Prepared<'_> {
             updates,
         } = self;
 
-        let cap = updates.len();
-        let mut out = Vec::with_capacity(cap + 1);
-        if cap > 0 {
-            let stream = futures_util::stream::iter(updates.into_iter().map(|(path, text)| {
-                async move {
-                    let entry = nfs::save_note(workspace_path, &path, &text).await?;
-                    Ok::<_, VaultError>((entry, text))
-                }
-            }));
-            let mut stream = stream.buffered(REWRITE_IO_CONCURRENCY);
-            while let Some(item) = stream.next().await {
-                out.push(item?);
-            }
-        }
+        let mut out = run_bounded(updates.into_iter().map(|(path, text)| async move {
+            let entry = nfs::save_note(workspace_path, &path, &text).await?;
+            Ok((entry, text))
+        }))
+        .await?;
 
         // Self-links inside the renamed file, rewritten at its new location.
         let text = nfs::load_note(workspace_path, &to).await?;
@@ -196,4 +184,20 @@ impl Prepared<'_> {
 
         Ok(out)
     }
+}
+
+/// Drives `futs` with at most [`REWRITE_IO_CONCURRENCY`] in flight and
+/// collects the results, failing fast on the first error. The single
+/// bounded-I/O loop both [`Scouted::prepare`] (reads) and
+/// [`Prepared::commit`] (writes) drain through, so concurrency and
+/// error-propagation behaviour cannot drift between the two stages.
+async fn run_bounded<T>(
+    futs: impl Iterator<Item = impl std::future::Future<Output = Result<T, VaultError>>>,
+) -> Result<Vec<T>, VaultError> {
+    let mut stream = futures_util::stream::iter(futs).buffered(REWRITE_IO_CONCURRENCY);
+    let mut out = Vec::new();
+    while let Some(item) = stream.next().await {
+        out.push(item?);
+    }
+    Ok(out)
 }
