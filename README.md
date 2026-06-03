@@ -7,7 +7,7 @@
   <p>
     <a href="https://nico2sh.github.io/kimun/"><img src="https://img.shields.io/badge/docs-github%20pages-brightgreen?style=flat-square" alt="Documentation"></a>
     <a href="https://github.com/nico2sh/kimun/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
-    <a href="https://crates.io/crates/kimun_core"><img src="https://img.shields.io/crates/v/kimun_core?style=flat-square&color=orange" alt="Crates.io"></a>
+    <a href="https://crates.io/crates/kimun-notes"><img src="https://img.shields.io/crates/v/kimun-notes?style=flat-square&color=orange" alt="Crates.io"></a>
     <a href="https://github.com/nico2sh/kimun/stargazers"><img src="https://img.shields.io/github/stars/nico2sh/kimun?style=flat-square&label=stars" alt="Stars"></a>
   </p>
 
