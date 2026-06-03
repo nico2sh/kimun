@@ -36,7 +36,7 @@ Do you want to know more? ⭐️🚀 Check out our official documentation site f
 
 ---
 
-## ✨ Key Features & Benefits
+## ✨ Key Features
 
 * ⚡ **Blazing Fast Search:** Local Markdown files are automatically indexed into a local SQLite database for (_almost_) instantaneous full-text, structured, and fuzzy search.
 * 🗺️ **Zettelkasten-Ready Linkages:** Seamlessly navigate your knowledge base using `[[wikilinks]]` and standard Markdown links with intuitive keyboard shortcuts. Includes backlink support with interactive previews!
