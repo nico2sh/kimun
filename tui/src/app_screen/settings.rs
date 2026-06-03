@@ -747,26 +747,23 @@ impl AppScreen for SettingsScreen {
                     focused_button: ConfirmButton::Cancel,
                 };
             }
-            AppEvent::IndexingDone(result) => {
-                match result {
-                    Ok(duration) => {
-                        self.settings.write().unwrap().report_indexed();
-                        if self.pending_save_after_index {
-                            self.pending_save_after_index = false;
-                            self.settings.read().unwrap().save_to_disk().ok();
-                            tx.send(AppEvent::SettingsSaved).ok();
-                        } else {
-                            self.overlay =
-                                Overlay::IndexingProgress(IndexingProgressState::Done(duration));
-                        }
-                    }
-                    Err(msg) => {
+            AppEvent::IndexingDone(result) => match result {
+                Ok(duration) => {
+                    self.settings.write().unwrap().report_indexed();
+                    if self.pending_save_after_index {
                         self.pending_save_after_index = false;
+                        self.settings.read().unwrap().save_to_disk().ok();
+                        tx.send(AppEvent::SettingsSaved).ok();
+                    } else {
                         self.overlay =
-                            Overlay::IndexingProgress(IndexingProgressState::Failed(msg));
+                            Overlay::IndexingProgress(IndexingProgressState::Done(duration));
                     }
                 }
-            }
+                Err(msg) => {
+                    self.pending_save_after_index = false;
+                    self.overlay = Overlay::IndexingProgress(IndexingProgressState::Failed(msg));
+                }
+            },
             _ => {}
         }
     }

@@ -1079,10 +1079,8 @@ impl AppScreen for EditorScreen {
                     }
                 });
             }
-            AppEvent::InsertAtCursor(text) => {
-                if self.panels.focused() == PanelKind::Editor {
-                    self.panels.editor_mut().insert_at_cursor(&text, tx);
-                }
+            AppEvent::InsertAtCursor(text) if self.panels.focused() == PanelKind::Editor => {
+                self.panels.editor_mut().insert_at_cursor(&text, tx);
             }
             _ => {}
         }
