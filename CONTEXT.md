@@ -86,6 +86,24 @@ The seam that supplies the query input's autocomplete with candidates (note name
 The right-hand panel of the editor. Shows the list of notes matching an active query, with the same expandable list/preview affordances as the rest of the app. Backlinks are not a distinct feature here — they are the default query `<{note}`, so a freshly opened panel shows the current note's backlinks. The panel title reflects the active query (reads "Backlinks" when the query is `<{note}`).
 _Avoid_: backlinks panel (now only the default state), search panel / search sidebar (collide with Ctrl+K and the left-sidebar search box)
 
+### TUI surfaces
+
+**Panel**:
+A persistent surface in the editor screen's column layout — the **sidebar**, the editor, or the **Query panel** — exactly one focused at a time. Each panel self-declares its column width, so the **PanelSet** can lay panels out in any order. Distinct from an **Overlay**, which is transient and modal.
+_Avoid_: pane, view, widget, component (too generic).
+
+**PanelSet**:
+The config-ordered collection of the editor screen's **Panels**; owns the panel order (reorderable by config; default sidebar→editor→Query panel), which panel is focused, panel visibility, and focus cycling, and routes input and render to the focused panel. Focus cycles prev/next over the visible panels in their current order, so reordering needs no routing changes. The persistent-surface counterpart to the **OverlayHost**.
+_Avoid_: panel manager, layout, panel stack.
+
+**Overlay**:
+A transient, modal surface drawn on top of the **Panels** — the **note browser**, the **Saved Searches modal**, or a dialog. Captures all input while open; closing restores focus to the panel that opened it.
+_Avoid_: popup, modal (names only some), dialog (names only one kind).
+
+**OverlayHost**:
+The single-slot owner of the active **Overlay**; saves the opener panel's focus on open and returns it on close. The transient-surface counterpart to the **PanelSet**.
+_Avoid_: dialog manager (the superseded name), overlay stack (it is single-slot).
+
 ### Note editing
 
 **Automated edit**:

@@ -1,11 +1,14 @@
 pub mod browse;
 pub mod editor;
 pub mod overlay_host;
+pub mod panel_set;
 pub mod settings;
 pub mod start;
 
 use async_trait::async_trait;
 use ratatui::Frame;
+
+use kimun_core::nfs::VaultPath;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
@@ -30,11 +33,17 @@ pub trait AppScreen: Send {
 
     fn render(&mut self, f: &mut Frame);
 
-    /// Handle an application-level event. Return `None` if the screen consumed
-    /// the event, or `Some(event)` to pass it back to the main loop.
-    /// The default implementation forwards everything (screen doesn't handle it).
-    async fn handle_app_message(&mut self, msg: AppEvent, _tx: &AppTx) -> Option<AppEvent> {
-        Some(msg)
+    /// Handle an application-level event owned by this screen. Events the
+    /// screen does not recognize are silently ignored. The default
+    /// implementation handles nothing.
+    async fn handle_app_message(&mut self, _msg: AppEvent, _tx: &AppTx) {}
+
+    /// Try to open `path` within this screen (e.g. load a note into the
+    /// buffer, or navigate a sidebar). Return `Some(path)` if the screen
+    /// does not handle it, in which case the main loop switches to an
+    /// appropriate screen. Default: not handled.
+    async fn try_open_path(&mut self, path: VaultPath, _tx: &AppTx) -> Option<VaultPath> {
+        Some(path)
     }
 
     fn get_kind(&self) -> ScreenKind;
@@ -56,28 +65,6 @@ mod tests {
 
     fn shared_defaults() -> crate::settings::SharedSettings {
         Arc::new(RwLock::new(AppSettings::default()))
-    }
-
-    #[tokio::test]
-    async fn non_editor_screen_passes_focus_message_back() {
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let mut screen = SettingsScreen::new(shared_defaults());
-        let result = screen.handle_app_message(AppEvent::FocusSidebar, &tx).await;
-        assert!(
-            result.is_some(),
-            "SettingsScreen should not consume FocusSidebar"
-        );
-    }
-
-    #[tokio::test]
-    async fn non_editor_screen_passes_focus_editor_message_back() {
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let mut screen = SettingsScreen::new(shared_defaults());
-        let result = screen.handle_app_message(AppEvent::FocusEditor, &tx).await;
-        assert!(
-            result.is_some(),
-            "SettingsScreen should not consume FocusEditor"
-        );
     }
 
     #[tokio::test]

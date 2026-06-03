@@ -430,13 +430,11 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         AppEvent::OpenPath(path) => {
             // We either handle the new path within the current screen, or we switch to a new screen for this path
             let unhandled = if let Some(screen) = app.current_screen.as_mut() {
-                screen
-                    .handle_app_message(AppEvent::OpenPath(path), tx)
-                    .await
+                screen.try_open_path(path, tx).await
             } else {
-                Some(AppEvent::OpenPath(path))
+                Some(path)
             };
-            if let Some(AppEvent::OpenPath(path)) = unhandled {
+            if let Some(path) = unhandled {
                 if let Some(vault) = app.vault.clone() {
                     if path.is_note() {
                         tx.send(AppEvent::OpenScreen(ScreenEvent::OpenEditor(vault, path)))
