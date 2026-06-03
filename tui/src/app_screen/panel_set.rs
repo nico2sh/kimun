@@ -62,9 +62,7 @@ impl PanelOrder {
     /// The panel one step left of focus in the current order, or `None` if
     /// focus is already at the left end.
     pub fn prev_kind(&self) -> Option<PanelKind> {
-        self.focus
-            .checked_sub(1)
-            .map(|i| self.slots[i].kind)
+        self.focus.checked_sub(1).map(|i| self.slots[i].kind)
     }
 
     /// The panel one step right of focus in the current order, or `None` if
