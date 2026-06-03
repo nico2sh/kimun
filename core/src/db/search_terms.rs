@@ -789,7 +789,7 @@ mod tests {
         assert_eq!(quote_query_term("spec"), "spec");
         assert_eq!(quote_query_term("my note"), "\"my note\"");
         // Round-trips through the parser as a single link target.
-        let s = SearchTerms::from_query_string(&format!("<{}", quote_query_term("my note")));
+        let s = SearchTerms::from_query_string(format!("<{}", quote_query_term("my note")));
         assert_eq!(s.links, vec!["my note".to_string()]);
     }
 
