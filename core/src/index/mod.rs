@@ -164,13 +164,16 @@ impl NoteIndex {
     /// since. Fast paths use this to refuse to operate against an empty
     /// index without paying for a sync.
     pub(crate) fn ready(&self) -> bool {
-        !self.healed.load(Ordering::Acquire)
+        // Relaxed: the flag is advisory — it gates whether callers bother
+        // with a sync, it does not publish index contents (the SQLite pool
+        // provides the real synchronization). No happens-before is implied.
+        !self.healed.load(Ordering::Relaxed)
     }
 
     /// Records that a vault sync pass completed: the index now mirrors the
     /// vault on disk, so [`ready`](Self::ready) reports `true` from here on.
     pub(crate) fn mark_synced(&self) {
-        self.healed.store(false, Ordering::Release);
+        self.healed.store(false, Ordering::Relaxed);
     }
 
     /// `true` when the stored schema version matches [`VERSION`].
@@ -201,7 +204,7 @@ impl NoteIndex {
     /// [`mark_synced`](Self::mark_synced)s.
     pub(crate) async fn recreate(&self) -> Result<(), DBError> {
         init_db(&self.pool).await?;
-        self.healed.store(true, Ordering::Release);
+        self.healed.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -3816,5 +3819,31 @@ mod tests {
                 .unwrap();
         assert_eq!(marker.as_deref(), Some("kept"));
         second.close().await;
+    }
+
+    /// A recursive browse from the root is a whole-vault sync and must mark
+    /// the index synced — the readiness probe reports true afterwards even
+    /// though the schema was healed at open (regression for the
+    /// browse-only path that previously left the probe stuck on false).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn whole_vault_browse_marks_index_ready() {
+        use crate::{NoteVault, VaultBrowseOptionsBuilder, VaultConfig};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("note.md"), "# Note\nbody").unwrap();
+
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        assert!(!vault.index_ready(), "fresh index is healed, not ready");
+
+        let (options, rx) = VaultBrowseOptionsBuilder::new(&crate::nfs::VaultPath::root())
+            .recursive(true)
+            .build();
+        vault.browse_vault(options).await.unwrap();
+        drop(rx);
+
+        assert!(
+            vault.index_ready(),
+            "recursive root browse is a whole-vault sync — probe must report ready"
+        );
     }
 }
