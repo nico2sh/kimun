@@ -14,6 +14,7 @@ Kimün's terminal UI provides an intuitive interface for managing and editing yo
 The Browse screen displays a file tree navigator for your workspace directory. You can traverse through folders and files using arrow keys, open notes to edit them, and perform file operations like rename, move, and delete.
 
 **Key features:**
+
 - Navigate the note hierarchy with arrow keys
 - Press Enter to open a note in the Editor
 - Sort notes by name, title, or reverse the sort order
@@ -30,6 +31,7 @@ The Editor screen is a Markdown editor for writing and editing notes. It feature
 The preview pane is toggled with `Ctrl+Y` and shows a live preview of your note as you type.
 
 **Key features:**
+
 - Full Markdown syntax support
 - Text formatting shortcuts (bold, italic, strikethrough, headers)
 - Autosave functionality
@@ -52,6 +54,7 @@ All settings are stored in your config file (see [Configuration Reference](@/get
 Press `F4` to open the workspace switcher. It lists all configured workspaces with the current one marked. Use Up/Down to navigate and Enter to switch — the app transitions to the new workspace, validating and indexing it as needed.
 
 Workspace management (create, rename, delete) is available in the Settings screen (`Ctrl+P`) under the **Workspaces** section:
+
 - **n** — create a new workspace (enter a name, then browse for a directory)
 - **r** — rename the selected workspace
 - **d** — delete the selected workspace (cannot delete the current one)
@@ -82,7 +85,7 @@ Focus moves directionally through the visible panels. If the target panel is hid
 
 ### Sorting
 
-- **`Ctrl+N`** — Open the sort dialog for the focused panel
+- **`Ctrl+R`** — Open the sort dialog for the focused panel
 
 The sort dialog presents the options as a small menu: move between rows with **↑/↓**, change a value with **Space** (or **←/→**), and press **Enter** or **Esc** to close. Changes apply live as you toggle them.
 
@@ -103,7 +106,7 @@ Press `Ctrl+E` to toggle the query panel on the right side of the editor. It run
 - **Up/Down** — navigate the result list
 - **Enter** — expand the selected note to show the paragraph around the match. Press Enter again for the full note, a third time to collapse.
 - **Ctrl+G** — open the selected note in the editor
-- **Ctrl+N** — open the sort dialog (sort by name/title, ascending/descending); the choice is written into the panel's query as an `or:` directive
+- **Ctrl+R** — open the sort dialog (sort by name/title, ascending/descending); the choice is written into the panel's query as an `or:` directive
 - **Ctrl+D** — save the current query as a named [saved search](#saved-searches)
 - **Esc** — return focus to the editor
 
@@ -122,14 +125,14 @@ A small dialog asks for a name; press Enter to store it. The query is saved as a
 
 **Running and managing.** Press `F3` to open the Saved Searches picker:
 
-| Key | Action |
-|-----|--------|
-| Type | filter the list by name |
-| `1`–`9` | quick-select the n-th saved search |
-| `↑` / `↓` | move the selection |
-| `Enter` | run the selected search in the query panel |
-| `Delete` | remove the selected saved search |
-| `Esc` | close the picker |
+| Key             | Action                                     |
+| --------------- | ------------------------------------------ |
+| Type            | filter the list by name                    |
+| `1`–`9`    | quick-select the n-th saved search         |
+| `↑` / `↓` | move the selection                         |
+| `Enter`       | run the selected search in the query panel |
+| `Delete`      | remove the selected saved search           |
+| `Esc`         | close the picker                           |
 
 Running a saved search opens the query panel (if hidden) and loads its results there.
 
@@ -163,13 +166,13 @@ A `#` at the start of a line is *not* an autocomplete trigger by default — it 
 
 **Key bindings (while the popup is open):**
 
-| Key | Action |
-|-----|--------|
-| `↑` / `↓` | Move the highlighted suggestion |
-| `PageUp` / `PageDown` | Jump by a page |
-| `Home` / `End` | Jump to first / last suggestion |
-| `Tab` or `Enter` | Accept the highlighted suggestion |
-| `Esc` | Dismiss the popup without changing your text |
+| Key                       | Action                                       |
+| ------------------------- | -------------------------------------------- |
+| `↑` / `↓`           | Move the highlighted suggestion              |
+| `PageUp` / `PageDown` | Jump by a page                               |
+| `Home` / `End`        | Jump to first / last suggestion              |
+| `Tab` or `Enter`      | Accept the highlighted suggestion            |
+| `Esc`                   | Dismiss the popup without changing your text |
 
 For wikilinks, accepting a suggestion inserts the note name and automatically closes the `]]` brackets (or preserves them if they already exist), placing the cursor right after the closing brackets.
 
@@ -185,11 +188,11 @@ In the search box, the same hashtag autocomplete works after the exclusion prefi
 
 While the cursor is in the editor, format shortcuts wrap the current selection (or insert empty markers at the cursor when no selection is active):
 
-| Action | Default Binding | Effect |
-|--------|-----------------|--------|
-| Bold | `Ctrl+B` | wraps selection in `**…**` |
-| Italic | `Ctrl+I` | wraps selection in `*…*` |
-| Strikethrough | `Ctrl+S` | wraps selection in `~~…~~` |
+| Action        | Default Binding | Effect                        |
+| ------------- | --------------- | ----------------------------- |
+| Bold          | `Ctrl+B`      | wraps selection in `**…**` |
+| Italic        | `Ctrl+I`      | wraps selection in `*…*`   |
+| Strikethrough | `Ctrl+S`      | wraps selection in `~~…~~` |
 
 Examples:
 
@@ -214,29 +217,29 @@ The inserted image link renders as a placeholder (`[image_<…>.png]`) in the ed
 
 Default bindings (all configurable via the [Configuration Reference](@/getting-started/configuration.md)):
 
-| Action | Default Binding |
-|--------|-----------------|
-| Quit | `Ctrl+Q` |
-| Settings | `Ctrl+P` |
-| Search notes | `Ctrl+K` |
-| Open note (fuzzy finder) | `Ctrl+O` |
-| Toggle note browser | `Ctrl+F` |
-| Toggle preview | `Ctrl+Y` |
-| New journal entry | `Ctrl+J` |
-| Quick note | `Ctrl+W` |
-| Toggle query panel | `Ctrl+E` |
-| Save current query | `Ctrl+D` |
-| Open saved searches | `F3` |
-| Switch workspace | `F4` |
-| Toggle sidebar | `Ctrl+T` |
-| Bold | `Ctrl+B` |
-| Italic | `Ctrl+I` |
-| Strikethrough | `Ctrl+S` |
-| Focus right (Sidebar → Editor → Query panel) | `Ctrl+L` |
-| Focus left (Query panel → Editor → Sidebar) | `Ctrl+H` |
-| Open sort dialog (field/order, group directories) | `Ctrl+N` |
-| Follow link under cursor | `Ctrl+G` |
-| File operations (rename/move/delete) | `F2` |
+| Action                                            | Default Binding |
+| ------------------------------------------------- | --------------- |
+| Quit                                              | `Ctrl+Q`      |
+| Settings                                          | `Ctrl+P`      |
+| Search notes                                      | `Ctrl+K`      |
+| Open note (fuzzy finder)                          | `Ctrl+O`      |
+| Toggle note browser                               | `Ctrl+F`      |
+| Toggle preview                                    | `Ctrl+Y`      |
+| New journal entry                                 | `Ctrl+J`      |
+| Quick note                                        | `Ctrl+W`      |
+| Toggle query panel                                | `Ctrl+E`      |
+| Save current query                                | `Ctrl+D`      |
+| Open saved searches                               | `F3`          |
+| Switch workspace                                  | `F4`          |
+| Toggle sidebar                                    | `Ctrl+T`      |
+| Bold                                              | `Ctrl+B`      |
+| Italic                                            | `Ctrl+I`      |
+| Strikethrough                                     | `Ctrl+S`      |
+| Focus right (Sidebar → Editor → Query panel)    | `Ctrl+L`      |
+| Focus left (Query panel → Editor → Sidebar)     | `Ctrl+H`      |
+| Open sort dialog (field/order, group directories) | `Ctrl+N`      |
+| Follow link under cursor                          | `Ctrl+G`      |
+| File operations (rename/move/delete)              | `F2`          |
 
 ### Context-Sensitive Bindings
 
