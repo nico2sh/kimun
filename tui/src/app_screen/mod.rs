@@ -1,6 +1,7 @@
 pub mod browse;
 pub mod editor;
 pub mod overlay_host;
+pub mod panel_set;
 pub mod settings;
 pub mod start;
 

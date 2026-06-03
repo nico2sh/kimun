@@ -9,6 +9,7 @@ pub mod footer_bar;
 pub mod indexing;
 pub mod note_browser;
 pub mod overlay;
+pub mod panel;
 pub mod query_vars;
 pub mod saved_search_breadcrumb;
 pub mod saved_searches_modal;
