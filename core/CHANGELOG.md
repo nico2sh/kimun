@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.14](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.13...kimun_core-v0.2.14) - 2026-06-03
+
+### Added
+
+- *(core)* saved-search prefix suggestion lookup
+- *(tui)* query panel sort via query rewrite; drop sort override
+- *(core)* add with_order_directive query rewrite helper
+- *(core)* wildcard (*) support for the / path operator
+- *(core)* wildcard (*) support for the = / name: filename operator
+- *(core)* query operator alphabet (ADR-0005) + forward-links filter
+- expose SearchTerms; generalise context preview to query-needle highlighting
+- *(core)* NoteVault saved-search list/save/delete/rename API
+- *(core)* SavedSearch model + .kimun/saved-searches.toml read/write
+- *(core)* add FSError::SerializationError for saved-search (de)serialization
+- --preview / preview dry-run for note replace
+- regex support for note replace
+- *(mcp)* add overwrite_note/replace_in_note/delete_note tools
+- *(core)* note overwrite/replace/delete with automated-edit backups
+- *(core)* add link query operator (>/lk:) and search optimizations
+
+### Fixed
+
+- clippy
+- expand spaces on notes placeholder
+- resolve relative path on note check
+- *(tui)* correct sort defaults, query ordering, saved-search title, render cost
+- code-review low — forward-link highlight, dedup link normalization, trigger scan, prefix-table tests
+- code-review high+medium — stale CLI docs/skill alphabet, popup operator sigil, forward-link indexes
+- close review holes — rename locking, atomic append, fail-closed backup, MCP polish
+- *(core)* serialize per-note writes to prevent lost updates
+- *(core)* atomic backups, once-daily purge, backups via shared vault
+- *(core)* back up rename/move backlink victims; harden index exclusion
+
+### Other
+
+- *(tui)* tidy sort dialog plumbing (review items 5-8)
+- cargo fmt
+- *(core)* derive both order prefixes from ORDER_LETTER; test multi-directive strip
+- rustfmt across saved-searches feature files
+- cargo fmt for note-modify/backup code
+
 ### Added
 
 - *(core)* link query operator `>` / `lk:` (and exclusion `->` / `-lk:`) to filter notes by the notes they link to (backlinks); matches by note name with optional extension, path disambiguation, and `*` wildcards
