@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/logo.png" alt="Kimün Logo" width="60" height="60" />
+  <img src="assets/logo.png" alt="Kimün Logo" width="80" height="80" />
 
   <h1>Kimün</h1>
   <p><strong>Simple note-taking. Powerful search. AI-ready.</strong></p>
