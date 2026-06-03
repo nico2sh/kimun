@@ -121,6 +121,20 @@ Kimün bridges local notes with next-generation AI assistants. Using its native 
 * **Brainstorm:** Ground an agent's reasoning inside your existing knowledge vault to avoid hallucinations.
 * **Auto-organize:** Let AI tools suggest unlinked but highly relevant notes.
 
+Check the logs to learn how to set up the MCP server, here is an example for Claude Code integration:
+
+```bash
+# Claude Code (one-time setup)
+claude mcp add kimun -- kimun mcp
+```
+
+If instead, you are skills person (or both!), just copy the skills into your preferred agent harness tool:
+
+```bash
+# Copy the skill to your Claude skills directory
+cp -r skills/kimun-cli ~/.claude/skills
+```
+
 *(Want to check out or share prompts? See the available definitions in the `/skills` directory!)*
 
 ---
