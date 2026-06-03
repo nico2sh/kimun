@@ -243,6 +243,16 @@ A saved search stores a query under a name so you can re-run it without retyping
 
 Running a saved search loads its results in the query panel. See [Saved Searches](@/using-kimun/tui.md#saved-searches) in the TUI guide for the full workflow.
 
+### Running by name
+
+You can also run a saved search straight from the search field, without the picker. In the [query panel](@/using-kimun/tui.md#query-panel) or the `Ctrl+K` search modal, type `?` as the first character to autocomplete saved-search names:
+
+- Type `?` followed by part of a name (e.g. `?todo`) to filter the list; pick one with `Enter` or `Tab`. An empty `?` lists every saved search.
+- Accepting **expands the stored query into the field**, so you can tweak it before running like any other query.
+- The search-box border then shows the search's name as a breadcrumb (`‹ todo ›`). Edit the query and it gains an `‹ todo • edited ›` marker; clear the field to drop the breadcrumb. Changing only the [sort order](@/using-kimun/tui.md#query-panel) does *not* count as edited.
+
+Because the field holds the query *template*, any `{note}` variable stays intact and re-resolves each time you run it.
+
 ## Operator precedence
 
 There is no OR operator. All terms are ANDed together. Each term must match for a note to appear in results.

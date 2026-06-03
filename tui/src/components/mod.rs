@@ -10,6 +10,7 @@ pub mod indexing;
 pub mod note_browser;
 pub mod overlay;
 pub mod query_vars;
+pub mod saved_search_breadcrumb;
 pub mod saved_searches_modal;
 pub mod search_list;
 pub mod settings;

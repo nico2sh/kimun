@@ -133,6 +133,8 @@ A small dialog asks for a name; press Enter to store it. The query is saved as a
 
 Running a saved search opens the query panel (if hidden) and loads its results there.
 
+**Running by name from the search box.** Without opening the picker, type `?` as the first character in the query panel or `Ctrl+K` search box to autocomplete saved-search names (e.g. `?todo`; a bare `?` lists all). Accepting expands the stored query into the field — editable like any query — and shows the name on the search-box border as a breadcrumb (`‹ todo ›`, gaining `• edited` once you change the query, cleared when the field is emptied). See [Running by name](@/using-kimun/search.md#running-by-name).
+
 ### Following Links
 
 When the cursor is inside a link in the editor, **`Ctrl+G`** follows it:
