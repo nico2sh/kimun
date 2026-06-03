@@ -599,7 +599,7 @@ fn cleanup_hashtags_with_ranges(
 /// caller because those checks are context-specific.
 pub(crate) fn label_matches_inner(
     text: &str,
-) -> impl Iterator<Item = crate::note::LabelMatch<'_>> + '_ {
+) -> impl Iterator<Item = crate::note::scan::LabelMatch<'_>> + '_ {
     HASHTAG_RX.captures_iter(text).filter_map(move |caps| {
         let m = caps.get(0)?;
         let preceding_blocks_label = m.start() != 0
@@ -620,7 +620,7 @@ pub(crate) fn label_matches_inner(
             return None;
         }
         let name = caps.name("ht_text")?.as_str();
-        Some(crate::note::LabelMatch {
+        Some(crate::note::scan::LabelMatch {
             byte_start: m.start(),
             byte_end: m.end(),
             name,
@@ -2564,7 +2564,7 @@ ls -la ./test
 
     #[test]
     fn label_matches_skips_after_label_char() {
-        let v: Vec<&str> = crate::note::label_matches("foo#bar and #real")
+        let v: Vec<&str> = crate::note::scan::label_matches("foo#bar and #real")
             .map(|m| m.name)
             .collect();
         assert_eq!(v, vec!["real"]);
@@ -2572,7 +2572,7 @@ ls -la ./test
 
     #[test]
     fn label_matches_at_start() {
-        let v: Vec<&str> = crate::note::label_matches("#first and #second")
+        let v: Vec<&str> = crate::note::scan::label_matches("#first and #second")
             .map(|m| m.name)
             .collect();
         assert_eq!(v, vec!["first", "second"]);
@@ -2580,7 +2580,7 @@ ls -la ./test
 
     #[test]
     fn label_matches_skips_double_hash() {
-        let v: Vec<&str> = crate::note::label_matches("##tag and ##other")
+        let v: Vec<&str> = crate::note::scan::label_matches("##tag and ##other")
             .map(|m| m.name)
             .collect();
         assert!(v.is_empty(), "expected no labels, got {:?}", v);
@@ -2588,7 +2588,7 @@ ls -la ./test
 
     #[test]
     fn label_matches_skips_triple_hash() {
-        let v: Vec<&str> = crate::note::label_matches("###tag")
+        let v: Vec<&str> = crate::note::scan::label_matches("###tag")
             .map(|m| m.name)
             .collect();
         assert!(v.is_empty(), "expected no labels, got {:?}", v);
@@ -2598,7 +2598,7 @@ ls -la ./test
     fn label_matches_skips_adjacent_hash() {
         // `#tag#more` — `#` immediately follows the label, so neither side
         // is a real tag boundary; reject both.
-        let v: Vec<&str> = crate::note::label_matches("#tag#more")
+        let v: Vec<&str> = crate::note::scan::label_matches("#tag#more")
             .map(|m| m.name)
             .collect();
         assert!(v.is_empty(), "expected no labels, got {:?}", v);
@@ -2606,7 +2606,7 @@ ls -la ./test
 
     #[test]
     fn label_matches_after_space_then_hash() {
-        let v: Vec<&str> = crate::note::label_matches("# #tag")
+        let v: Vec<&str> = crate::note::scan::label_matches("# #tag")
             .map(|m| m.name)
             .collect();
         assert_eq!(v, vec!["tag"]);

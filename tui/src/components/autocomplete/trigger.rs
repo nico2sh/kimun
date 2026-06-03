@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use kimun_core::note::{
+use kimun_core::note::scan::{
     ExclusionZones, is_inside_code_link_or_frontmatter, is_inside_exclusion_zone,
 };
 
@@ -43,7 +43,7 @@ pub struct TriggerOptions {
     pub disambiguate_header: bool,
     /// When `true`, suppress hashtag triggers inside code spans,
     /// fenced blocks, frontmatter, link bodies, or closed wikilinks
-    /// (via `core::note::is_inside_exclusion_zone`). Editor uses
+    /// (via `core::note::scan::is_inside_exclusion_zone`). Editor uses
     /// `true`; the search box uses `false` because its input is plain
     /// text and the markdown parser would falsely classify literal
     /// backticks / brackets as code or link spans.
@@ -74,7 +74,7 @@ impl Default for TriggerOptions {
 /// wikilink target (`[[…|`) or an open hashtag word (`#…`). Returns `None`
 /// otherwise — including when the cursor is inside a code span, fenced
 /// block, frontmatter, or already-closed wikilink/markdown link (delegated
-/// to `kimun_core::note::content_extractor::is_inside_exclusion_zone`).
+/// to `kimun_core::note::scan::is_inside_exclusion_zone`).
 ///
 /// Disambiguation rules in play:
 /// - **Hashtag vs. Markdown header**: a `#` at the start of a line only
@@ -201,7 +201,7 @@ pub fn detect_trigger_with_oracle(
     //
     // - **hashtag**: only word chars `[A-Za-z0-9_]` may sit between the
     //   `#` and the cursor (matches the hashtag regex in
-    //   `core::note::content_extractor`). Any other char before we hit
+    //   `core::note::scan`). Any other char before we hit
     //   `#` makes a hashtag impossible.
     // - **wikilink**: any char except `]`, `\n`, `\r`, or a `|` already
     //   seen on the way back. A `]` closes a prior wikilink so we are not
@@ -313,7 +313,7 @@ pub fn detect_trigger_with_oracle(
             return None;
         }
 
-        // Word-boundary guard — mirrors `core::note::content_extractor::
+        // Word-boundary guard — mirrors `core::note::scan::
         // label_matches_inner`. The tag region runs from `#` through the
         // contiguous `[A-Za-z0-9_]+` word that follows it; reject if the
         // character on EITHER side of that region is alphanumeric, `_`, or

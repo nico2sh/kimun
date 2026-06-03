@@ -2,6 +2,7 @@ pub mod error;
 pub(crate) mod index;
 pub mod nfs;
 pub mod note;
+pub(crate) mod sync;
 pub mod utilities;
 pub use index::search_terms::{
     quote_query_term, strip_order_directive, with_order_directive, OrderBy, OrderField, SearchTerms,
@@ -22,11 +23,12 @@ use std::{
 };
 
 use chrono::{NaiveDate, Utc};
-use error::{DBError, FSError, VaultError};
+use error::{FSError, VaultError};
 use index::NoteIndex;
 use log::debug;
-use nfs::{visitor::NoteListVisitorBuilder, NoteEntryData, VaultPath};
+use nfs::{NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
+use sync::VaultSync;
 use utilities::path_to_string;
 
 use crate::nfs::saved_searches;
@@ -250,14 +252,9 @@ impl NoteVault {
         mut index_report: IndexReport,
         validation_mode: NotesValidation,
     ) -> Result<IndexReport, VaultError> {
-        let workspace_path = self.workspace_path.clone();
-        create_index_for(
-            &workspace_path,
-            &self.index,
-            &VaultPath::root(),
-            validation_mode,
-        )
-        .await?;
+        VaultSync::new(&self.index, self.workspace_path())
+            .run(&VaultPath::root(), true, validation_mode, None)
+            .await?;
         index_report.finish();
         debug!("TIME: {}", index_report.duration.as_secs());
         Ok(index_report)
@@ -476,24 +473,14 @@ impl NoteVault {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
 
-        let cached_notes = self
-            .index
-            .get_notes(&options.path, options.recursive)
+        VaultSync::new(&self.index, self.workspace_path())
+            .run(
+                &options.path,
+                options.recursive,
+                options.validation,
+                Some(options.sender.clone()),
+            )
             .await?;
-
-        let builder = NoteListVisitorBuilder::new(
-            self.workspace_path(),
-            options.validation,
-            cached_notes,
-            Some(options.sender.clone()),
-        );
-        let walker = nfs::get_file_walker(
-            self.workspace_path.clone(),
-            &options.path,
-            options.recursive,
-        );
-        let builder = run_walker_blocking(walker, builder).await?;
-        self.index.apply(builder.into_diff()).await?;
 
         let time = std::time::SystemTime::now()
             .duration_since(start)
@@ -535,14 +522,13 @@ impl NoteVault {
         } else {
             note.path.clone()
         };
-        let (md_text, mut links) =
-            note::content_extractor::get_markdown_and_links(&note.path, &note.raw_text);
+        let (md_text, mut links) = note.get_markdown_and_links();
         // Since this function is intended to return content ready to be rendered
         // We need the full path of the image links, so any markdown processor can find the image,
         // the full path can only be resolved from here as we have the vault path
         let (md_text, image_links) =
-            note::content_extractor::process_image_links(&md_text, |alt_text, raw_path| {
-                let resolved = if note::is_remote_url(raw_path) {
+            note::process_image_links(&md_text, |alt_text, raw_path| {
+                let resolved = if note::scan::is_remote_url(raw_path) {
                     raw_path.to_string()
                 } else {
                     let image_vault_path = if raw_path.starts_with('/') {
@@ -1013,7 +999,7 @@ impl NoteVault {
         to: &VaultPath,
     ) -> Result<Option<(NoteEntryData, String)>, VaultError> {
         let text = nfs::load_note(self.workspace_path(), to).await?;
-        let (updated, changed) = note::content_extractor::replace_note_links(&text, from, to);
+        let (updated, changed) = note::replace_note_links(&text, from, to);
         if !changed {
             return Ok(None);
         }
@@ -1054,7 +1040,7 @@ impl NoteVault {
             async move {
                 let text = nfs::load_note(&workspace, &entry_data.path).await?;
                 let (updated, changed) =
-                    note::content_extractor::replace_note_links(&text, &from, &to);
+                    note::replace_note_links(&text, &from, &to);
                 Ok::<_, VaultError>(changed.then_some((entry_data.path, updated)))
             }
         }));
@@ -1115,21 +1101,6 @@ impl NoteVault {
 
         Ok(())
     }
-}
-
-/// Runs the synchronous parallel walker on a blocking thread so the async
-/// runtime is not stalled while the entire vault subtree is enumerated.
-async fn run_walker_blocking(
-    walker: ignore::WalkParallel,
-    builder: NoteListVisitorBuilder,
-) -> Result<NoteListVisitorBuilder, VaultError> {
-    tokio::task::spawn_blocking(move || {
-        let mut builder = builder;
-        walker.visit(&mut builder);
-        builder
-    })
-    .await
-    .map_err(|e| VaultError::TaskJoin(format!("vault walker: {}", e)))
 }
 
 fn rename_dest_err(e: FSError) -> VaultError {
@@ -1270,32 +1241,6 @@ impl Display for NotesValidation {
             }
         )
     }
-}
-
-async fn create_index_for<P>(
-    workspace_path: P,
-    index: &NoteIndex,
-    path: &VaultPath,
-    validation_mode: NotesValidation,
-) -> Result<(), DBError>
-where
-    P: AsRef<Path> + Send,
-{
-    debug!("Indexing subtree at {}", path);
-    let workspace_path = workspace_path.as_ref();
-    let walker = nfs::get_file_walker(workspace_path, path, true);
-
-    let cached_notes = index.get_notes(path, true).await?;
-    let builder = NoteListVisitorBuilder::new(workspace_path, validation_mode, cached_notes, None);
-    let builder = run_walker_blocking(walker, builder)
-        .await
-        .map_err(|e| match e {
-            VaultError::DBError(e) => e,
-            other => DBError::Other(other.to_string()),
-        })?;
-    index.apply(builder.into_diff()).await?;
-
-    Ok(())
 }
 
 #[cfg(test)]

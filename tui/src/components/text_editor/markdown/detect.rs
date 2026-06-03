@@ -13,7 +13,7 @@ use super::{Element, ElementKind, ImagePlaceholder, string_display_width};
 /// span. Skips spans that fall entirely inside an existing element
 /// (e.g. `[[icon]]` inside a markdown link's display text).
 pub(super) fn detect_wikilinks(line: &str, content_vis: &mut [bool], elements: &mut Vec<Element>) {
-    for span in kimun_core::note::wikilink_char_spans(line) {
+    for span in kimun_core::note::scan::wikilink_char_spans(line) {
         // Skip spans nested inside a markdown link's display text (e.g.
         // `[[icon]]` in `[[[icon]]](url)`). Block-level elements such as
         // headings and blockquotes wrap their whole inline content, so they
@@ -51,7 +51,7 @@ pub(super) fn detect_image_placeholders(
     content_vis: &mut [bool],
     elements: &mut Vec<Element>,
 ) -> Vec<ImagePlaceholder> {
-    use kimun_core::note::{LinkSpanKind, link_char_spans, link_target_filename};
+    use kimun_core::note::scan::{LinkSpanKind, link_char_spans, link_target_filename};
 
     let mut out = Vec::new();
     for span in link_char_spans(line) {
