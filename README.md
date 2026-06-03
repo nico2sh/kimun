@@ -17,7 +17,7 @@
 ---
 
 <div align="center">
-  <img src="assets/demo.gif" alt="Kimün TUI Interface Demo" width="100%" />
+  <img src="assets/demo.gif" alt="Kimün TUI Interface Demo" width="60%" />
 </div>
 
 ---
@@ -50,7 +50,7 @@ Ready to dive deeper? Check out our official documentation site for complete use
 
 ### 📸 TUI Snapshot
 <div align="center">
-  <img src="assets/screenshot.png" alt="Kimün Notes Preview and Search Panel Screenshot" width="100%" />
+  <img src="assets/screenshot.png" alt="Kimün Notes Preview and Search Panel Screenshot" width="60%" />
 </div>
 
 ---
