@@ -1,12 +1,12 @@
-pub(crate) mod db;
 pub mod error;
+pub(crate) mod index;
 pub mod nfs;
 pub mod note;
 pub mod utilities;
-pub use db::search_terms::{
+pub use index::search_terms::{
     quote_query_term, strip_order_directive, with_order_directive, OrderBy, OrderField, SearchTerms,
 };
-pub use db::{DBStatus, NoteSuggestion, TagSuggestion};
+pub use index::{IndexDiff, NoteSuggestion, TagSuggestion};
 pub use nfs::saved_searches::SavedSearch;
 pub use utilities::{app_log_dir, ensure_dir_exists};
 
@@ -22,8 +22,8 @@ use std::{
 };
 
 use chrono::{NaiveDate, Utc};
-use db::VaultDB;
 use error::{DBError, FSError, VaultError};
+use index::NoteIndex;
 use log::debug;
 use nfs::{visitor::NoteListVisitorBuilder, NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
@@ -117,7 +117,9 @@ pub struct NoteVault {
     workspace_path: Arc<Path>,
     journal_path: VaultPath,
     inbox_path: VaultPath,
-    vault_db: VaultDB,
+    /// The vault's searchable note index. Crate-visible so the index module's
+    /// own tests can exercise vault-level flows against index internals.
+    pub(crate) index: NoteIndex,
     /// Whether destructive writes back up the previous content first. Mirrors
     /// [`VaultConfig::backup`]; see its docs.
     backup: bool,
@@ -139,7 +141,7 @@ impl PartialEq for NoteVault {
 
 impl NoteVault {
     /// Creates a new instance of the Note Vault.
-    /// Make sure you call `NoteVault::init_and_validate(&self)` to initialize the DB index if
+    /// Make sure you call `NoteVault::validate_and_init(&self)` to initialize the DB index if
     /// needed.
     pub async fn new(config: VaultConfig) -> Result<Self, VaultError> {
         debug!("Creating new vault Instance");
@@ -159,13 +161,13 @@ impl NoteVault {
 
         let db_path = config
             .db_path
-            .unwrap_or_else(|| workspace_path.join(crate::db::DB_FILE));
-        let vault_db = VaultDB::new(&db_path).await?;
+            .unwrap_or_else(|| workspace_path.join(crate::index::DB_FILE));
+        let index = NoteIndex::open(&db_path).await?;
         let note_vault = Self {
             workspace_path: Arc::from(workspace_path.as_path()),
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
-            vault_db,
+            index,
             backup,
             note_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         };
@@ -177,16 +179,13 @@ impl NoteVault {
         &self.workspace_path
     }
 
-    /// Test-only handle to the underlying SQLite pool. Used by migration
-    /// tests that need to mutate stored state directly to simulate older
-    /// schema versions.
-    #[cfg(test)]
-    pub(crate) fn db_pool(&self) -> &sqlx::SqlitePool {
-        self.vault_db.pool()
-    }
-
-    pub async fn validate(&self) -> Result<DBStatus, VaultError> {
-        self.vault_db.check_db().await.map_err(VaultError::DBError)
+    /// `false` when opening the vault self-healed the index schema (missing,
+    /// outdated, or invalid — see ADR-0007), meaning the index is valid but
+    /// empty until a sync pass ([`validate_and_init`](Self::validate_and_init))
+    /// fills it. Fast paths use this to refuse to operate against an empty
+    /// index without paying for a sync.
+    pub fn index_ready(&self) -> bool {
+        self.index.ready()
     }
 
     /// Walks the entire vault checking for case-insensitive name collisions.
@@ -201,68 +200,29 @@ impl NoteVault {
         }
         Ok(())
     }
-    /// On init and validate it verifies the DB index to make sure:
-    ///
-    /// 1. It exists
-    /// 2. It is valid.
-    /// 3. Its schema is updated
-    ///
-    /// Then does a quick scan of the workspace directory to update the index if there are new or
-    /// missing notes.
+    /// Brings the index in step with the vault on disk. Opening the vault
+    /// already self-healed the index schema (ADR-0007), so all that remains
+    /// is a sync pass: a quick existence scan when the index was already
+    /// current, or a full scan when it was just healed (and is thus empty).
     /// This can be slow on large vaults.
     pub async fn validate_and_init(&self) -> Result<IndexReport, VaultError> {
         self.fail_on_case_conflicts().await?;
-        debug!("Initializing DB and validating it");
-        let db_result = self.validate().await;
-        match db_result {
-            Ok(check_res) => {
-                match check_res {
-                    db::DBStatus::Ready => {
-                        // We only check if there are new notes
-                        self.index_notes(NotesValidation::None).await
-                    }
-                    db::DBStatus::Outdated => self.recreate_index().await,
-                    db::DBStatus::NotValid => self.recreate_index().await,
-                    db::DBStatus::FileNotFound => {
-                        // No need to validate, no data there
-                        self.recreate_index().await
-                    }
-                }
-            }
-            Err(e) => {
-                debug!("Error validating the DB, rebuilding it: {}", e);
-                self.recreate_index().await
-            }
+        if self.index.ready() {
+            // We only check if there are new notes
+            self.index_notes(NotesValidation::None).await
+        } else {
+            debug!("Index was healed on open — running a full sync");
+            self.index_notes(NotesValidation::Full).await
         }
     }
 
-    /// Deletes the db file and recreates the index.
-    /// On Windows, the pool must be closed before the file can be deleted,
-    /// so this method closes the pool first. After calling this method,
-    /// the NoteVault instance should be discarded and a new one created.
-    pub async fn force_rebuild(&self) -> Result<IndexReport, VaultError> {
-        let db_path = self.vault_db.get_db_path();
-        // Close the pool to release file handles before deleting.
-        // This is required on Windows where open handles prevent file deletion.
-        self.vault_db.close().await?;
-        // Delete the db file via the nfs module.
-        nfs::remove_path(&db_path)?;
-        // Note: the pool is closed at this point. The caller should create
-        // a new NoteVault instance if further DB operations are needed.
-        // recreate_index will reconnect via the pool's rwc mode which
-        // recreates the file.
-        self.recreate_index().await
-    }
-
-    /// Deletes all the cached data from the DB by destroying the tables
-    /// and recreates the index
-    /// This is similar to a force rebuild but instead of deleting the db file
-    /// it only deletes the tables.
+    /// Deletes all the cached data from the index by recreating its schema,
+    /// then rebuilds it with a full sync pass.
     pub async fn recreate_index(&self) -> Result<IndexReport, VaultError> {
         self.fail_on_case_conflicts().await?;
         let index_report = IndexReport::new();
-        debug!("Initializing DB from Vault request");
-        db::init_db(self.vault_db.pool()).await?;
+        debug!("Recreating index from Vault request");
+        self.index.recreate().await?;
         debug!("Tables created, creating index");
         self.int_index_notes(index_report, NotesValidation::Full)
             .await
@@ -293,7 +253,7 @@ impl NoteVault {
         let workspace_path = self.workspace_path.clone();
         create_index_for(
             &workspace_path,
-            self.vault_db.pool(),
+            &self.index,
             &VaultPath::root(),
             validation_mode,
         )
@@ -434,7 +394,7 @@ impl NoteVault {
         &self,
         path: &VaultPath,
     ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, VaultError> {
-        let a = db::get_notes_sections(self.vault_db.pool(), path, false).await?;
+        let a = self.index.get_notes_sections(path, false).await?;
         Ok(a)
     }
 
@@ -444,13 +404,13 @@ impl NoteVault {
         search_query: S,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         let search_query = search_query.as_ref();
-        let a = db::search_terms(self.vault_db.pool(), search_query).await?;
+        let a = self.index.search(search_query).await?;
         Ok(a)
     }
 
     /// Returns every distinct label persisted in the vault, lowercased.
     pub async fn list_labels(&self) -> Result<Vec<String>, VaultError> {
-        Ok(db::list_labels(self.vault_db.pool()).await?)
+        Ok(self.index.list_labels().await?)
     }
 
     /// Returns notes whose name (filename without extension) starts with
@@ -462,7 +422,7 @@ impl NoteVault {
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<NoteSuggestion>, VaultError> {
-        Ok(db::suggest_notes_by_prefix(self.vault_db.pool(), prefix, limit).await?)
+        Ok(self.index.suggest_notes_by_prefix(prefix, limit).await?)
     }
 
     /// Returns tag labels matching `prefix` (case-insensitive) paired with
@@ -473,13 +433,13 @@ impl NoteVault {
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<TagSuggestion>, VaultError> {
-        Ok(db::suggest_tags_by_prefix(self.vault_db.pool(), prefix, limit).await?)
+        Ok(self.index.suggest_tags_by_prefix(prefix, limit).await?)
     }
 
     /// Returns every distinct label in the vault paired with the number of
     /// notes carrying it. Labels are returned sorted alphabetically.
     pub async fn label_counts(&self) -> Result<Vec<(String, usize)>, VaultError> {
-        let rows = db::label_counts(self.vault_db.pool()).await?;
+        let rows = self.index.label_counts().await?;
         Ok(rows.into_iter().map(|(n, c)| (n, c as usize)).collect())
     }
 
@@ -489,7 +449,7 @@ impl NoteVault {
         &self,
         name: S,
     ) -> Result<Vec<VaultPath>, VaultError> {
-        Ok(db::notes_with_label(self.vault_db.pool(), name.as_ref()).await?)
+        Ok(self.index.notes_with_label(name.as_ref()).await?)
     }
 
     /// Get notes under the given path. When `recursive` is false, only direct
@@ -499,13 +459,13 @@ impl NoteVault {
         path: &VaultPath,
         recursive: bool,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        let notes = db::get_notes(self.vault_db.pool(), path, recursive).await?;
+        let notes = self.index.get_notes(path, recursive).await?;
         Ok(notes)
     }
 
     // Get all notes
     pub async fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        let a = db::get_all_notes(self.vault_db.pool()).await?;
+        let a = self.index.get_all_notes().await?;
         Ok(a)
     }
     pub fn path_to_pathbuf(&self, path: &VaultPath) -> PathBuf {
@@ -516,8 +476,10 @@ impl NoteVault {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
 
-        let cached_notes =
-            db::get_notes(self.vault_db.pool(), &options.path, options.recursive).await?;
+        let cached_notes = self
+            .index
+            .get_notes(&options.path, options.recursive)
+            .await?;
 
         let builder = NoteListVisitorBuilder::new(
             self.workspace_path(),
@@ -531,13 +493,7 @@ impl NoteVault {
             options.recursive,
         );
         let builder = run_walker_blocking(walker, builder).await?;
-        let results = builder.into_results();
-
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::insert_notes(&mut tx, &results.to_add).await?;
-        db::delete_notes(&mut tx, &results.to_delete).await?;
-        db::update_notes(&mut tx, &results.to_modify).await?;
-        tx.commit().await?;
+        self.index.apply(builder.into_diff()).await?;
 
         let time = std::time::SystemTime::now()
             .duration_since(start)
@@ -615,7 +571,7 @@ impl NoteVault {
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        Ok(db::get_backlinks(self.vault_db.pool(), path).await?)
+        Ok(self.index.get_backlinks(path).await?)
     }
 
     /// List the vault's saved searches (see `SavedSearch`). Empty if none.
@@ -689,7 +645,7 @@ impl NoteVault {
             })?;
         let note_details = NoteDetails::new(path, text);
         let content_data = note_details.get_content_data();
-        db::save_note(self.vault_db.pool(), &entry_data, &note_details).await?;
+        self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
     }
 
@@ -790,7 +746,7 @@ impl NoteVault {
         let entry_data = nfs::save_note(self.workspace_path(), path, &text).await?;
         let note_details = NoteDetails::new(path, text);
         let content_data = note_details.get_content_data();
-        db::save_note(self.vault_db.pool(), &entry_data, &note_details).await?;
+        self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
     }
 
@@ -834,9 +790,9 @@ impl NoteVault {
         debug!("PATH: {}", path);
         let (_parent, name) = path.get_parent_path();
         if path.is_note_file() {
-            Ok(db::search_note_by_name(self.vault_db.pool(), name).await?)
+            Ok(self.index.search_note_by_name(name).await?)
         } else {
-            Ok(db::search_note_by_path(self.vault_db.pool(), path).await?)
+            Ok(self.index.search_note_by_path(path).await?)
         }
     }
 
@@ -846,10 +802,10 @@ impl NoteVault {
         let _guard = self.lock_note(&path).await;
         self.backup_if_enabled(&path).await?;
 
-        // Delete in DB first so the index never points at a missing file.
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::delete_notes(&mut tx, std::slice::from_ref(&path)).await?;
-        tx.commit().await?;
+        // Delete in the index first so it never points at a missing file.
+        self.index
+            .delete_notes(std::slice::from_ref(&path))
+            .await?;
 
         nfs::delete_note(self.workspace_path(), &path).await?;
 
@@ -970,9 +926,9 @@ impl NoteVault {
         let path = path.flatten();
         path.ensure_directory()?;
 
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::delete_directories(&mut tx, std::slice::from_ref(&path)).await?;
-        tx.commit().await?;
+        self.index
+            .delete_directories(std::slice::from_ref(&path))
+            .await?;
 
         nfs::delete_directory(self.workspace_path(), &path).await?;
 
@@ -987,7 +943,9 @@ impl NoteVault {
         // whole rename, so a concurrent in-process write to any of them can't
         // interleave with the read → backup → rewrite below (lost update / stale
         // backup). Locks are taken in a stable order to stay deadlock-free.
-        let victims: Vec<VaultPath> = db::get_backlinks(self.vault_db.pool(), &from)
+        let victims: Vec<VaultPath> = self
+            .index
+            .get_backlinks(&from)
             .await?
             .into_iter()
             .map(|(e, _)| e.path)
@@ -1036,13 +994,12 @@ impl NoteVault {
             notes_with_text.push(updated);
         }
 
-        // 4. Single DB transaction: rename the source row + update each
-        //    backlink's chunks/links. If this commit fails, FS is consistent
-        //    with the rename but DB is stale — next index pass corrects.
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::rename_note(&mut tx, &from, &to).await?;
-        db::update_notes(&mut tx, &notes_with_text).await?;
-        tx.commit().await?;
+        // 4. One atomic index operation: rename the source rows + update each
+        //    backlink's chunks/links. If this fails, FS is consistent with
+        //    the rename but the index is stale — next sync pass corrects.
+        self.index
+            .rename_note(&from, &to, &notes_with_text)
+            .await?;
 
         Ok(())
     }
@@ -1077,7 +1034,9 @@ impl NoteVault {
         // are handled separately by `rewrite_self_links` after the FS rename,
         // so the source's body isn't written to its old location here (which
         // would resurrect a file at `from`).
-        let backlinks: Vec<_> = db::get_backlinks(self.vault_db.pool(), from)
+        let backlinks: Vec<_> = self
+            .index
+            .get_backlinks(from)
             .await?
             .into_iter()
             .filter(|(e, _)| e.path != *from)
@@ -1113,7 +1072,7 @@ impl NoteVault {
     /// Writes the rewritten backlink files concurrency-bounded. Consumes
     /// `updates` so each file's text is moved into its task without cloning,
     /// then returns the paired `(NoteEntryData, String)` results in input
-    /// order ready for `db::update_notes`.
+    /// order ready for the index update.
     async fn write_backlink_rewrites(
         &self,
         updates: Vec<(VaultPath, String)>,
@@ -1152,9 +1111,7 @@ impl NoteVault {
             .await
             .map_err(rename_dest_err)?;
 
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::rename_directory(&mut tx, &from, &to).await?;
-        tx.commit().await?;
+        self.index.rename_directory(&from, &to).await?;
 
         Ok(())
     }
@@ -1317,7 +1274,7 @@ impl Display for NotesValidation {
 
 async fn create_index_for<P>(
     workspace_path: P,
-    pool: &sqlx::SqlitePool,
+    index: &NoteIndex,
     path: &VaultPath,
     validation_mode: NotesValidation,
 ) -> Result<(), DBError>
@@ -1328,7 +1285,7 @@ where
     let workspace_path = workspace_path.as_ref();
     let walker = nfs::get_file_walker(workspace_path, path, true);
 
-    let cached_notes = db::get_notes(pool, path, true).await?;
+    let cached_notes = index.get_notes(path, true).await?;
     let builder = NoteListVisitorBuilder::new(workspace_path, validation_mode, cached_notes, None);
     let builder = run_walker_blocking(walker, builder)
         .await
@@ -1336,13 +1293,7 @@ where
             VaultError::DBError(e) => e,
             other => DBError::Other(other.to_string()),
         })?;
-    let results = builder.into_results();
-
-    let mut tx = pool.begin().await?;
-    db::delete_notes(&mut tx, &results.to_delete).await?;
-    db::insert_notes(&mut tx, &results.to_add).await?;
-    db::update_notes(&mut tx, &results.to_modify).await?;
-    tx.commit().await?;
+    index.apply(builder.into_diff()).await?;
 
     Ok(())
 }
@@ -2150,90 +2101,6 @@ mod tests {
             names.iter().any(|p| p.ends_with("/dir1/sub/c.md")),
             "{:?}",
             names
-        );
-    }
-
-    /// On a stored DB version older than the current `VERSION`, `check_db`
-    /// must report `Outdated` and `validate_and_init` must drop + rebuild the
-    /// index. After migration, stale `>`-separated breadcrumb rows are gone
-    /// and the new `\x1f` separator is in place.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn validate_and_init_migrates_outdated_db() {
-        use sqlx::Row;
-
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("note.md"), "# Note\n## Sub\nbody text").unwrap();
-
-        // Bring the DB up at the current version with one indexed note.
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
-        vault.validate_and_init().await.unwrap();
-        assert!(vault.validate().await.unwrap().is_ready());
-
-        // Force the schema backwards: stamp version `0.4` and rewrite stored
-        // breadcrumbs in the legacy `>`-joined form to simulate a vault
-        // upgraded across the separator change.
-        let pool = vault.db_pool();
-        sqlx::query("UPDATE appData SET value = '0.4' WHERE name = 'version'")
-            .execute(pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE notesContent SET breadcrumb = REPLACE(breadcrumb, x'1f', '>')")
-            .execute(pool)
-            .await
-            .unwrap();
-
-        // Sanity: the stale row really does contain `>`.
-        let stale: Vec<String> =
-            sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
-                .fetch_all(pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|r| r.try_get("breadcrumb").unwrap())
-                .collect();
-        assert!(
-            stale.iter().any(|b| b.contains('>')),
-            "expected legacy `>` separator in: {:?}",
-            stale
-        );
-
-        // Migration: validate flags Outdated, then validate_and_init rebuilds.
-        assert_eq!(vault.validate().await.unwrap(), DBStatus::Outdated);
-        vault.validate_and_init().await.unwrap();
-        assert!(vault.validate().await.unwrap().is_ready());
-
-        // Post-migration: no row carries the legacy separator; non-empty
-        // breadcrumbs use `\x1f`.
-        let pool = vault.db_pool();
-        let after: Vec<String> =
-            sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
-                .fetch_all(pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|r| r.try_get("breadcrumb").unwrap())
-                .collect();
-        assert!(
-            after.iter().all(|b| !b.contains('>')),
-            "stale `>` separator survived migration: {:?}",
-            after
-        );
-
-        // The note is still indexed and `get_note_chunks` exposes a sane
-        // `breadcrumb_last` (no `>` artifacts).
-        let chunks = vault
-            .get_note_chunks(&VaultPath::new("/note.md"))
-            .await
-            .unwrap();
-        let leaves: Vec<String> = chunks
-            .values()
-            .flatten()
-            .filter_map(|c| c.breadcrumb_last().map(|s| s.to_string()))
-            .collect();
-        assert!(
-            leaves.iter().any(|l| l == "Note" || l == "Sub"),
-            "expected Note/Sub leaves, got: {:?}",
-            leaves
         );
     }
 }

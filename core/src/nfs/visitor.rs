@@ -8,6 +8,7 @@ use ignore::{ParallelVisitor, ParallelVisitorBuilder};
 use log::{error, warn};
 
 use crate::{
+    index::IndexDiff,
     nfs::{EntryData, NoteEntryData, VaultEntry, VaultPath},
     note::NoteContentData,
     NotesValidation, SearchResult,
@@ -160,12 +161,12 @@ impl NoteListVisitorBuilder {
         }
     }
 
-    /// Consumes the builder and returns the accumulated diff. Must be called
-    /// after the parallel walker has finished — at that point all visitor
-    /// clones are dropped, so the inner `Arc<Mutex<...>>` are uniquely owned
-    /// and we can move the Vecs out without cloning.
-    pub fn into_results(self) -> VisitorResults {
-        VisitorResults {
+    /// Consumes the builder and returns the accumulated [`IndexDiff`]. Must be
+    /// called after the parallel walker has finished — at that point all
+    /// visitor clones are dropped, so the inner `Arc<Mutex<...>>` are uniquely
+    /// owned and we can move the Vecs out without cloning.
+    pub fn into_diff(self) -> IndexDiff {
+        IndexDiff {
             to_delete: take_arc_mutex(self.notes_to_delete).into_keys().collect(),
             to_add: take_arc_mutex(self.notes_to_add),
             to_modify: take_arc_mutex(self.notes_to_modify),
@@ -191,16 +192,6 @@ impl NoteListVisitorBuilder {
     pub fn get_notes_to_modify(&self) -> Vec<(NoteEntryData, String)> {
         self.notes_to_modify.lock().unwrap().clone()
     }
-}
-
-/// Diff produced by a `NoteListVisitorBuilder` after the parallel walker
-/// finishes. The order of `to_add` and `to_modify` is non-deterministic —
-/// they are populated by parallel worker threads and entries land in the
-/// order each thread completes its file read.
-pub struct VisitorResults {
-    pub to_delete: Vec<VaultPath>,
-    pub to_add: Vec<(NoteEntryData, String)>,
-    pub to_modify: Vec<(NoteEntryData, String)>,
 }
 
 fn take_arc_mutex<T: Default>(arc: Arc<Mutex<T>>) -> T {

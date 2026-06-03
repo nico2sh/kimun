@@ -1,9 +1,7 @@
-// mod async_db;
 pub(crate) mod search_terms;
 
 use std::collections::HashMap;
-use std::fmt::Display;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use log::{debug, error};
@@ -91,40 +89,39 @@ use super::{
 const VERSION: &str = "0.10";
 pub(crate) const DB_FILE: &str = "kimun.sqlite";
 
+/// The diff a vault sync walk produces and [`NoteIndex::apply`] consumes in
+/// one atomic operation — the currency crossing the index's interface.
+/// The order of `to_add` and `to_modify` is non-deterministic: they are
+/// populated by parallel walker threads and entries land in the order each
+/// thread completes its file read.
+pub struct IndexDiff {
+    pub to_add: Vec<(NoteEntryData, String)>,
+    pub to_modify: Vec<(NoteEntryData, String)>,
+    pub to_delete: Vec<VaultPath>,
+}
+
+/// The searchable index of the vault — search, suggestions, backlinks, and
+/// the index's own lifecycle. The interface speaks in notes, queries, and
+/// note links; SQLite, sqlx, transactions, and schema versioning are
+/// implementation and never cross it. Atomicity is carried by composite
+/// operations ([`apply`](Self::apply), [`rename_note`](Self::rename_note))
+/// rather than by exposing transactions.
 #[derive(Debug, Clone)]
-pub(super) struct VaultDB {
-    db_path: PathBuf,
+pub(crate) struct NoteIndex {
     pool: SqlitePool,
+    /// `true` when [`open`](Self::open) found a missing/outdated/invalid
+    /// schema and recreated it (self-heal), leaving a valid but *empty*
+    /// index. See ADR-0007.
+    healed: bool,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum DBStatus {
-    Ready,
-    Outdated,
-    NotValid,
-    #[allow(dead_code)]
-    FileNotFound,
-}
-
-impl DBStatus {
-    pub fn is_ready(&self) -> bool {
-        DBStatus::Ready.eq(self)
-    }
-}
-
-impl Display for DBStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DBStatus::Ready => write!(f, "DB is Ready"),
-            DBStatus::Outdated => write!(f, "DB is an old version, needs to be rebuilt"),
-            DBStatus::NotValid => write!(f, "DB file is not valid"),
-            DBStatus::FileNotFound => write!(f, "No DB file found"),
-        }
-    }
-}
-
-impl VaultDB {
-    pub(super) async fn new<P: AsRef<Path>>(db_path: P) -> Result<Self, DBError> {
+impl NoteIndex {
+    /// Opens the index at `db_path`, self-healing the schema: when the stored
+    /// index is missing, outdated, or invalid, the tables are silently
+    /// recreated, leaving a valid but empty index that the next sync pass
+    /// fills (ADR-0007). [`ready`](Self::ready) reports whether a heal
+    /// happened.
+    pub(crate) async fn open<P: AsRef<Path>>(db_path: P) -> Result<Self, DBError> {
         let db_path = db_path.as_ref().to_owned();
         if let Some(parent) = db_path.parent() {
             crate::nfs::ensure_dir(parent).map_err(|e| DBError::Other(e.to_string()))?;
@@ -137,58 +134,217 @@ impl VaultDB {
             .connect(&connection_string)
             .await?;
 
-        Ok(Self { db_path, pool })
+        // A schema-version check that *errors* (rather than reporting stale)
+        // is treated as invalid too — e.g. a corrupted-but-present file —
+        // matching the pre-ADR-0007 behaviour where a failing validation fell
+        // through to a rebuild. Only a failing rebuild propagates.
+        let current = Self::schema_is_current(&pool).await.unwrap_or_else(|e| {
+            debug!("Index schema check failed ({e}) — treating as invalid");
+            false
+        });
+        let healed = if current {
+            false
+        } else {
+            debug!("Index schema missing/outdated/invalid — recreating");
+            init_db(&pool).await?;
+            true
+        };
+
+        Ok(Self { pool, healed })
     }
 
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+    /// `false` when [`open`](Self::open) just healed the schema (the index is
+    /// valid but empty until a sync pass fills it). Fast paths use this to
+    /// refuse to operate against an empty index without paying for a sync.
+    pub(crate) fn ready(&self) -> bool {
+        !self.healed
     }
 
-    pub fn get_db_path(&self) -> PathBuf {
-        self.db_path.clone()
-    }
-
-    pub async fn check_db(&self) -> Result<DBStatus, DBError> {
-        debug!("Checking the DB");
-
+    /// `true` when the stored schema version matches [`VERSION`].
+    async fn schema_is_current(pool: &SqlitePool) -> Result<bool, DBError> {
         let version: Option<String> =
             sqlx::query_scalar("SELECT value FROM appData WHERE name = 'version'")
-                .fetch_optional(&self.pool)
+                .fetch_optional(pool)
                 .await
                 .or_else(|e| {
-                    // If the table doesn't exist, return FileNotFound
+                    // No appData table at all — fresh or foreign file.
                     if e.to_string().contains("no such table") {
                         return Ok(None);
                     }
                     Err(e)
                 })?;
-
         match version {
             Some(v) => {
                 debug!("DB Version: {}, current DB Version: {}", v, VERSION);
-                if v == VERSION {
-                    debug!("DB up to date");
-                    Ok(DBStatus::Ready)
-                } else {
-                    debug!("DB outdated");
-                    Ok(DBStatus::Outdated)
-                }
+                Ok(v == VERSION)
             }
-            None => {
-                debug!("DB not valid or not found");
-                Ok(DBStatus::NotValid)
-            }
+            None => Ok(false),
         }
     }
 
-    pub async fn close(&self) -> Result<(), DBError> {
-        self.pool.close().await;
+    /// Drops every table and recreates the schema, leaving the index valid
+    /// but empty. Callers are expected to run a full sync pass afterwards.
+    pub(crate) async fn recreate(&self) -> Result<(), DBError> {
+        init_db(&self.pool).await
+    }
+
+    /// Applies a sync diff — adds, modifications, deletions — in one atomic
+    /// operation.
+    pub(crate) async fn apply(&self, diff: IndexDiff) -> Result<(), DBError> {
+        let mut tx = self.pool.begin().await?;
+        delete_notes(&mut tx, &diff.to_delete).await?;
+        insert_notes(&mut tx, &diff.to_add).await?;
+        update_notes(&mut tx, &diff.to_modify).await?;
+        tx.commit().await?;
         Ok(())
+    }
+
+    /// Renames a note's index rows and updates the rewritten backlink
+    /// victims' chunks/links, atomically.
+    pub(crate) async fn rename_note(
+        &self,
+        from: &VaultPath,
+        to: &VaultPath,
+        rewritten: &[(NoteEntryData, String)],
+    ) -> Result<(), DBError> {
+        let mut tx = self.pool.begin().await?;
+        rename_note(&mut tx, from, to).await?;
+        update_notes(&mut tx, rewritten).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn rename_directory(
+        &self,
+        from: &VaultPath,
+        to: &VaultPath,
+    ) -> Result<(), DBError> {
+        let mut tx = self.pool.begin().await?;
+        rename_directory(&mut tx, from, to).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_notes(&self, paths: &[VaultPath]) -> Result<(), DBError> {
+        let mut tx = self.pool.begin().await?;
+        delete_notes(&mut tx, paths).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_directories(
+        &self,
+        directories: &[VaultPath],
+    ) -> Result<(), DBError> {
+        let mut tx = self.pool.begin().await?;
+        delete_directories(&mut tx, directories).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn save_note(
+        &self,
+        entry_data: &NoteEntryData,
+        note_details: &NoteDetails,
+    ) -> Result<(), DBError> {
+        save_note(&self.pool, entry_data, note_details).await
+    }
+
+    pub(crate) async fn search<S: AsRef<str>>(
+        &self,
+        search_query: S,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+        search_terms(&self.pool, search_query).await
+    }
+
+    pub(crate) async fn search_note_by_name<S: AsRef<str>>(
+        &self,
+        name: S,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+        search_note_by_name(&self.pool, name).await
+    }
+
+    pub(crate) async fn search_note_by_path(
+        &self,
+        path: &VaultPath,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+        search_note_by_path(&self.pool, path).await
+    }
+
+    pub(crate) async fn get_notes(
+        &self,
+        path: &VaultPath,
+        recursive: bool,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+        get_notes(&self.pool, path, recursive).await
+    }
+
+    pub(crate) async fn get_all_notes(
+        &self,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+        get_all_notes(&self.pool).await
+    }
+
+    pub(crate) async fn get_backlinks(
+        &self,
+        path: &VaultPath,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
+        get_backlinks(&self.pool, path).await
+    }
+
+    pub(crate) async fn get_notes_sections(
+        &self,
+        path: &VaultPath,
+        recursive: bool,
+    ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, DBError> {
+        get_notes_sections(&self.pool, path, recursive).await
+    }
+
+    pub(crate) async fn list_labels(&self) -> Result<Vec<String>, DBError> {
+        list_labels(&self.pool).await
+    }
+
+    pub(crate) async fn label_counts(&self) -> Result<Vec<(String, i64)>, DBError> {
+        label_counts(&self.pool).await
+    }
+
+    pub(crate) async fn notes_with_label(&self, name: &str) -> Result<Vec<VaultPath>, DBError> {
+        notes_with_label(&self.pool, name).await
+    }
+
+    pub(crate) async fn suggest_notes_by_prefix(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<NoteSuggestion>, DBError> {
+        suggest_notes_by_prefix(&self.pool, prefix, limit).await
+    }
+
+    pub(crate) async fn suggest_tags_by_prefix(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<TagSuggestion>, DBError> {
+        suggest_tags_by_prefix(&self.pool, prefix, limit).await
+    }
+}
+
+#[cfg(test)]
+impl NoteIndex {
+    /// Test-only pool accessor — index-internal tests exercise SQL and the
+    /// query builders directly through this internal seam.
+    fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    /// Test-only: release the pool's file handles promptly.
+    async fn close(&self) {
+        self.pool.close().await;
     }
 }
 
 /// Deletes all tables and recreates them
-pub async fn init_db(pool: &SqlitePool) -> Result<(), DBError> {
+async fn init_db(pool: &SqlitePool) -> Result<(), DBError> {
     debug!("Deleting DB");
     delete_db(pool).await?;
     debug!("Creating Tables");
@@ -881,7 +1037,7 @@ fn build_search_sql_query<S: AsRef<str>>(query: S) -> (String, Vec<String>) {
     build_search_sql_query_inner(&search_terms)
 }
 
-pub async fn get_all_notes(
+async fn get_all_notes(
     pool: &SqlitePool,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
     let query = format!("SELECT DISTINCT {} FROM notes", NOTE_COLUMNS);
@@ -889,7 +1045,7 @@ pub async fn get_all_notes(
     rows.iter().map(row_to_note_entry).collect()
 }
 
-pub async fn list_labels(pool: &SqlitePool) -> Result<Vec<String>, DBError> {
+async fn list_labels(pool: &SqlitePool) -> Result<Vec<String>, DBError> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT name FROM labels")
         .fetch_all(pool)
         .await?;
@@ -928,7 +1084,7 @@ pub struct TagSuggestion {
 /// (via `VaultPath::get_clean_name`) — i.e. the exact text a wikilink
 /// targets. Filenames in the index are already lowercased on insert
 /// (see `VaultPathSlice::new`), so callers get lowercase names back.
-pub async fn suggest_notes_by_prefix(
+async fn suggest_notes_by_prefix(
     pool: &SqlitePool,
     prefix: &str,
     limit: usize,
@@ -968,7 +1124,7 @@ pub async fn suggest_notes_by_prefix(
 /// The `labels` table is stored lowercased, so prefix matching is naturally
 /// case-insensitive once we lowercase the input. Ranking is `usage_count
 /// DESC, label ASC` so the most-used tags surface first.
-pub async fn suggest_tags_by_prefix(
+async fn suggest_tags_by_prefix(
     pool: &SqlitePool,
     prefix: &str,
     limit: usize,
@@ -994,7 +1150,7 @@ pub async fn suggest_tags_by_prefix(
         .collect())
 }
 
-pub async fn label_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, DBError> {
+async fn label_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, DBError> {
     let rows: Vec<(String, i64)> =
         sqlx::query_as("SELECT name, COUNT(*) as cnt FROM labels GROUP BY name ORDER BY name")
             .fetch_all(pool)
@@ -1002,7 +1158,7 @@ pub async fn label_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, DBErr
     Ok(rows)
 }
 
-pub async fn notes_with_label(pool: &SqlitePool, name: &str) -> Result<Vec<VaultPath>, DBError> {
+async fn notes_with_label(pool: &SqlitePool, name: &str) -> Result<Vec<VaultPath>, DBError> {
     let normalized = name.to_lowercase();
     let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM labels WHERE name = ?")
         .bind(&normalized)
@@ -1011,7 +1167,7 @@ pub async fn notes_with_label(pool: &SqlitePool, name: &str) -> Result<Vec<Vault
     Ok(rows.into_iter().map(|(p,)| VaultPath::new(p)).collect())
 }
 
-pub async fn search_terms<S: AsRef<str>>(
+async fn search_terms<S: AsRef<str>>(
     pool: &SqlitePool,
     search_query: S,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
@@ -1074,7 +1230,7 @@ pub async fn search_terms<S: AsRef<str>>(
     Ok(result)
 }
 
-pub async fn search_note_by_name<S: AsRef<str>>(
+async fn search_note_by_name<S: AsRef<str>>(
     pool: &SqlitePool,
     name: S,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
@@ -1085,7 +1241,7 @@ pub async fn search_note_by_name<S: AsRef<str>>(
     rows.iter().map(row_to_note_entry).collect()
 }
 
-pub async fn search_note_by_path(
+async fn search_note_by_path(
     pool: &SqlitePool,
     path: &VaultPath,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
@@ -1097,7 +1253,7 @@ pub async fn search_note_by_path(
     rows.iter().map(row_to_note_entry).collect()
 }
 
-pub async fn get_notes(
+async fn get_notes(
     pool: &SqlitePool,
     path: &VaultPath,
     recursive: bool,
@@ -1122,7 +1278,7 @@ pub async fn get_notes(
 /// (see [`link_subquery`]), which matches a name in *any* folder; keep the two
 /// in step on the stored-form invariant they share (lowercased, `.md`-suffixed
 /// destinations, bare-relative or relative/absolute path).
-pub async fn get_backlinks(
+async fn get_backlinks(
     pool: &SqlitePool,
     path: &VaultPath,
 ) -> Result<Vec<(NoteEntryData, NoteContentData)>, DBError> {
@@ -1143,7 +1299,7 @@ pub async fn get_backlinks(
     rows.iter().map(row_to_note_entry).collect()
 }
 
-pub async fn get_notes_sections(
+async fn get_notes_sections(
     pool: &SqlitePool,
     path: &VaultPath,
     recursive: bool,
@@ -1181,7 +1337,7 @@ pub async fn get_notes_sections(
     Ok(result)
 }
 
-pub async fn insert_notes(
+async fn insert_notes(
     tx: &mut Transaction<'_, Sqlite>,
     notes: &[(NoteEntryData, String)],
 ) -> Result<(), DBError> {
@@ -1192,7 +1348,7 @@ pub async fn insert_notes(
     upsert_notes_batched(tx, notes).await
 }
 
-pub async fn update_notes(
+async fn update_notes(
     tx: &mut Transaction<'_, Sqlite>,
     notes: &[(NoteEntryData, String)],
 ) -> Result<(), DBError> {
@@ -1203,7 +1359,7 @@ pub async fn update_notes(
     upsert_notes_batched(tx, notes).await
 }
 
-pub async fn delete_notes(
+async fn delete_notes(
     tx: &mut Transaction<'_, Sqlite>,
     paths: &[VaultPath],
 ) -> Result<(), DBError> {
@@ -1218,7 +1374,7 @@ pub async fn delete_notes(
     Ok(())
 }
 
-pub async fn save_note(
+async fn save_note(
     pool: &SqlitePool,
     entry_data: &NoteEntryData,
     note_details: &NoteDetails,
@@ -1579,7 +1735,7 @@ fn escape_like_pattern(s: &str) -> String {
     out
 }
 
-pub async fn rename_note(
+async fn rename_note(
     tx: &mut Transaction<'_, Sqlite>,
     from: &VaultPath,
     to: &VaultPath,
@@ -1631,7 +1787,7 @@ pub async fn rename_note(
     Ok(())
 }
 
-pub async fn rename_directory(
+async fn rename_directory(
     tx: &mut Transaction<'_, Sqlite>,
     from: &VaultPath,
     to: &VaultPath,
@@ -1698,7 +1854,7 @@ pub async fn rename_directory(
     Ok(())
 }
 
-pub async fn delete_directories(
+async fn delete_directories(
     tx: &mut Transaction<'_, Sqlite>,
     directories: &[VaultPath],
 ) -> Result<(), DBError> {
@@ -1753,17 +1909,18 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn vault_db_new_creates_parent_dir_for_db_path() {
+    async fn open_creates_parent_dir_for_db_path() {
         let tmp = tempfile::TempDir::new().unwrap();
         let nested = tmp.path().join("nested/dir/cache.kimuncache");
         // Parent dir does not exist yet.
         assert!(!nested.parent().unwrap().exists());
 
-        let db = super::VaultDB::new(&nested).await.unwrap();
-        assert_eq!(db.get_db_path(), nested);
+        let db = super::NoteIndex::open(&nested).await.unwrap();
         assert!(nested.parent().unwrap().exists());
         assert!(nested.exists());
-        db.close().await.unwrap();
+        // A fresh file has no schema — open must have healed it.
+        assert!(!db.ready());
+        db.close().await;
     }
 
     #[test]
@@ -2128,8 +2285,7 @@ mod tests {
     async fn labels_table_exists_after_create_tables() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&path).await.unwrap();
 
         let row: (i64,) = sqlx::query_as(
             "SELECT count(*) FROM sqlite_master \
@@ -2162,7 +2318,7 @@ mod tests {
         .unwrap();
         assert_eq!(idx_path.0, 1, "labels_by_path index should exist");
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2171,8 +2327,7 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let path = VaultPath::note_path_from("/n.md");
         let body = "Title\n\nbody with #foo and #Foo and #bar".to_string();
@@ -2202,7 +2357,7 @@ mod tests {
             "labels stored deduped + lowercased"
         );
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2211,8 +2366,7 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let path = VaultPath::note_path_from("/n.md");
         let body_v1 = "before #draft #keep".to_string();
@@ -2253,7 +2407,7 @@ mod tests {
             "reindex must drop labels no longer present"
         );
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2262,8 +2416,7 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let path = VaultPath::note_path_from("/n.md");
         let body = "x #drop".to_string();
@@ -2289,7 +2442,7 @@ mod tests {
             .unwrap();
         assert_eq!(count.0, 0);
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[test]
@@ -2418,8 +2571,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -2496,7 +2648,7 @@ mod tests {
             .unwrap();
         assert!(paths(&r).contains(&"/c.md".to_string()));
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2504,8 +2656,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -2536,7 +2687,7 @@ mod tests {
         let paths: Vec<String> = r.iter().map(|(e, _)| e.path.to_string()).collect();
         assert_eq!(paths, vec!["/report-2024.md".to_string()]);
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2544,8 +2695,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let entry = NoteEntryData {
             path: VaultPath::note_path_from("/a.md"),
@@ -2575,7 +2725,7 @@ mod tests {
         let r = super::search_terms(db.pool(), "<target").await.unwrap();
         assert!(r.is_empty());
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2583,8 +2733,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -2664,7 +2813,7 @@ mod tests {
             .unwrap();
         assert!(r.is_empty());
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2672,8 +2821,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         // A links to B and C; B and C link nowhere; D links to A.
         let entries: Vec<(NoteEntryData, String)> = vec![
@@ -2745,7 +2893,7 @@ mod tests {
         let r = super::search_terms(db.pool(), ">b").await.unwrap();
         assert!(r.is_empty());
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2753,8 +2901,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let mk = |p: &str, body: &str| {
             (
@@ -2822,7 +2969,7 @@ mod tests {
         let r = super::search_terms(db.pool(), "-@work").await.unwrap();
         assert_eq!(paths(&r), vec!["/b.md".to_string()]);
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2830,8 +2977,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -2877,7 +3023,7 @@ mod tests {
         let results = super::search_terms(db.pool(), "#nope").await.unwrap();
         assert!(results.is_empty());
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2888,8 +3034,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let entry = NoteEntryData {
             path: VaultPath::note_path_from("/a.md"),
@@ -2923,7 +3068,7 @@ mod tests {
             plan_text
         );
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2931,8 +3076,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let from = VaultPath::note_path_from("/old.md");
         let to = VaultPath::note_path_from("/new.md");
@@ -2966,7 +3110,7 @@ mod tests {
             vec!["foo".to_string()],
         );
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -2974,8 +3118,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let note_path = VaultPath::note_path_from("/old_dir/note.md");
         let entry = NoteEntryData {
@@ -3005,7 +3148,7 @@ mod tests {
             vec![("moved".to_string(), "/new_dir/note.md".to_string())],
         );
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -3013,8 +3156,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let note_path = VaultPath::note_path_from("/sub/note.md");
         let entry = NoteEntryData {
@@ -3037,7 +3179,7 @@ mod tests {
             .unwrap();
         assert_eq!(count.0, 0);
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -3045,8 +3187,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let target = VaultPath::note_path_from("/my_dir/a.md");
         let sibling = VaultPath::note_path_from("/myXdir/b.md");
@@ -3092,7 +3233,7 @@ mod tests {
             .unwrap();
         assert_eq!(sibling_label.0, 1, "sibling label preserved");
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[test]
@@ -3154,8 +3295,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let entries: Vec<(NoteEntryData, String)> = vec![
             (
@@ -3233,7 +3373,7 @@ mod tests {
             "-=task* must exclude task.md and tasks.md"
         );
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -3241,8 +3381,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let mk = |p: &str| NoteEntryData {
             path: VaultPath::note_path_from(p),
@@ -3294,7 +3433,7 @@ mod tests {
             vec!["/d.md".to_string(), "/personal/c.md".to_string()],
         );
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -3302,8 +3441,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let target = VaultPath::note_path_from("/notes/a.md");
         let sibling = VaultPath::note_path_from("/notes_archive/b.md");
@@ -3342,7 +3480,7 @@ mod tests {
             vec![sibling.to_string()],
             "sibling /notes_archive/ must not be deleted"
         );
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -3350,8 +3488,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let target = VaultPath::note_path_from("/my_notes/a.md");
         let sibling = VaultPath::note_path_from("/myXnotes/b.md");
@@ -3385,7 +3522,7 @@ mod tests {
             vec![target.to_string()],
             "underscore must be literal in path search"
         );
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -3393,8 +3530,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let target = VaultPath::note_path_from("/my_note.md");
         let sibling = VaultPath::note_path_from("/myXnote.md");
@@ -3427,7 +3563,7 @@ mod tests {
             vec![target.to_string()],
             "underscore must be literal in filename search"
         );
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -3435,8 +3571,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let entry = NoteEntryData {
             path: VaultPath::note_path_from("/a.md"),
@@ -3475,7 +3610,7 @@ mod tests {
             );
         }
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]
@@ -3483,8 +3618,7 @@ mod tests {
         use crate::nfs::{NoteEntryData, VaultPath};
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("kimun.sqlite");
-        let db = super::VaultDB::new(&db_path).await.unwrap();
-        super::create_tables(db.pool()).await.unwrap();
+        let db = super::NoteIndex::open(&db_path).await.unwrap();
 
         let entry = NoteEntryData {
             path: VaultPath::note_path_from("/a.md"),
@@ -3507,7 +3641,7 @@ mod tests {
             );
         }
 
-        db.close().await.unwrap();
+        db.close().await;
     }
 
     #[cfg(test)]
@@ -3520,5 +3654,117 @@ mod tests {
                 "NOTE_COLUMNS must equal 'path, ' + NOTE_COLUMNS_REST"
             );
         }
+    }
+
+    /// On a stored DB version older than the current `VERSION`, reopening the
+    /// vault must self-heal the schema (ADR-0007): the index comes back valid
+    /// but empty, `index_ready` reports `false`, and the next sync pass
+    /// (`validate_and_init`) refills it. After the heal, stale `>`-separated
+    /// breadcrumb rows are gone and the new `\x1f` separator is in place.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reopen_self_heals_outdated_schema() {
+        use crate::{NoteVault, VaultConfig};
+        use sqlx::Row;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("note.md"), "# Note\n## Sub\nbody text").unwrap();
+
+        // Bring the index up at the current version with one indexed note.
+        {
+            let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+            vault.validate_and_init().await.unwrap();
+            // A brand-new index is healed-on-open, hence not ready; reopening
+            // it below (current version) must report ready.
+
+            // Force the schema backwards: stamp version `0.4` and rewrite
+            // stored breadcrumbs in the legacy `>`-joined form to simulate a
+            // vault upgraded across the separator change.
+            let pool = vault.index.pool();
+            sqlx::query("UPDATE appData SET value = '0.4' WHERE name = 'version'")
+                .execute(pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE notesContent SET breadcrumb = REPLACE(breadcrumb, x'1f', '>')")
+                .execute(pool)
+                .await
+                .unwrap();
+
+            // Sanity: the stale row really does contain `>`.
+            let stale: Vec<String> =
+                sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
+                    .fetch_all(pool)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.try_get("breadcrumb").unwrap())
+                    .collect();
+            assert!(
+                stale.iter().any(|b| b.contains('>')),
+                "expected legacy `>` separator in: {:?}",
+                stale
+            );
+            vault.index.close().await;
+        }
+
+        // Reopen: the outdated schema is healed silently; the probe reports
+        // not-ready until a sync pass fills the empty index.
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        assert!(!vault.index_ready(), "healed index must not report ready");
+        vault.validate_and_init().await.unwrap();
+
+        // Post-heal: no row carries the legacy separator; non-empty
+        // breadcrumbs use `\x1f`.
+        let pool = vault.index.pool();
+        let after: Vec<String> =
+            sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
+                .fetch_all(pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|r| r.try_get("breadcrumb").unwrap())
+                .collect();
+        assert!(
+            !after.is_empty(),
+            "expected reindexed breadcrumb rows after heal"
+        );
+        assert!(
+            after.iter().all(|b| !b.contains('>')),
+            "stale `>` separator survived the heal: {:?}",
+            after
+        );
+
+        // A second reopen with a current schema must report ready.
+        vault.index.close().await;
+        drop(vault);
+        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+        assert!(vault.index_ready(), "current schema must report ready");
+    }
+
+    /// `open` on a current-version schema must not heal: `ready` is `true`
+    /// and existing rows survive.
+    #[tokio::test]
+    async fn open_preserves_current_schema() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("kimun.sqlite");
+
+        // First open heals the fresh file into a current schema.
+        let first = super::NoteIndex::open(&db_path).await.unwrap();
+        assert!(!first.ready());
+        sqlx::query("INSERT INTO appData (name, value) VALUES ('marker', 'kept')")
+            .execute(first.pool())
+            .await
+            .unwrap();
+        first.close().await;
+
+        // Second open sees a current schema: no heal, data intact.
+        let second = super::NoteIndex::open(&db_path).await.unwrap();
+        assert!(second.ready());
+        let marker: Option<String> =
+            sqlx::query_scalar("SELECT value FROM appData WHERE name = 'marker'")
+                .fetch_optional(second.pool())
+                .await
+                .unwrap();
+        assert_eq!(marker.as_deref(), Some("kept"));
+        second.close().await;
     }
 }
