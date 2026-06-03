@@ -482,6 +482,14 @@ impl NoteVault {
             )
             .await?;
 
+        // A recursive browse from the root is a whole-vault sync: the index
+        // now mirrors the disk, so the readiness probe must report true —
+        // same as int_index_notes. A partial-subtree browse must NOT mark
+        // synced (the rest of a healed index could still be empty).
+        if options.recursive && options.path.is_root_or_empty() {
+            self.index.mark_synced();
+        }
+
         let time = std::time::SystemTime::now()
             .duration_since(start)
             .expect("Something's wrong with the time");
