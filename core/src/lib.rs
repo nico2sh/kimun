@@ -4,7 +4,7 @@ pub mod nfs;
 pub mod note;
 pub mod utilities;
 pub use db::search_terms::{
-    strip_order_directive, with_order_directive, OrderBy, OrderField, SearchTerms,
+    quote_query_term, strip_order_directive, with_order_directive, OrderBy, OrderField, SearchTerms,
 };
 pub use db::{DBStatus, NoteSuggestion, TagSuggestion};
 pub use nfs::saved_searches::SavedSearch;
