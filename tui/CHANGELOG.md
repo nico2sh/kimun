@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.13.0...kimun-notes-v0.14.0) - 2026-06-04
+
+### Added
+
+- new themes
+- scrolling the preview, scrolls the content
+
+### Fixed
+
+- correctness
+- clicking on header collapses preview
+
+### Other
+
+- small restructure of themes definition
+
 ## [0.13.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.12.0...kimun-notes-v0.13.0) - 2026-06-04
 
 ### Added
