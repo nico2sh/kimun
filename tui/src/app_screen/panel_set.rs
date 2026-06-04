@@ -4,7 +4,8 @@
 //! `PanelSet` (below) composes it with the concrete panels.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::crossterm::event::MouseEventKind;
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::widgets::{Block, Borders};
 
 use crate::components::Component;
@@ -168,6 +169,26 @@ fn panel_column(kind: PanelKind) -> Constraint {
     }
 }
 
+/// Lay `visible` out left→right as one column per panel. Shared by `render`
+/// and mouse hit-testing so clicks are always tested against the same rects
+/// the panels were drawn into.
+fn layout_columns(visible: &[PanelKind], area: Rect) -> Vec<(PanelKind, Rect)> {
+    let constraints: Vec<Constraint> = visible.iter().map(|k| panel_column(*k)).collect();
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+    visible.iter().copied().zip(columns.iter().copied()).collect()
+}
+
+/// The panel whose column contains the given screen cell, if any.
+fn kind_at(columns: &[(PanelKind, Rect)], column: u16, row: u16) -> Option<PanelKind> {
+    columns
+        .iter()
+        .find(|(_, rect)| rect.contains(Position::new(column, row)))
+        .map(|(kind, _)| *kind)
+}
+
 /// The editor screen's persistent **Panels** — the sidebar, the editor, and
 /// the **Query panel** — plus the `PanelOrder` that decides their order,
 /// visibility, and which one is focused. Routes input and render to the
@@ -178,6 +199,10 @@ pub struct PanelSet {
     sidebar: SidebarComponent,
     editor: TextEditorComponent,
     query: QueryPanel,
+    /// The column each visible panel was drawn into on the last render —
+    /// the single source of truth for mouse hit-testing. Empty until the
+    /// first render.
+    column_rects: Vec<(PanelKind, Rect)>,
 }
 
 impl PanelSet {
@@ -191,6 +216,7 @@ impl PanelSet {
             sidebar,
             editor,
             query,
+            column_rects: Vec::new(),
         }
     }
 
@@ -285,6 +311,35 @@ impl PanelSet {
         }
     }
 
+    /// Route a mouse event by hit-testing the panel columns from the last
+    /// render. A button-down click focuses the panel under the cursor — the
+    /// one consistent click-to-focus rule for every panel — and the event is
+    /// then forwarded to that panel for its internal behavior (cursor
+    /// placement, list selection, scrolling). Events outside every column
+    /// (or before the first render) are not consumed.
+    pub fn handle_mouse(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        let InputEvent::Mouse(mouse) = event else {
+            return EventState::NotConsumed;
+        };
+        let Some(kind) = kind_at(&self.column_rects, mouse.column, mouse.row) else {
+            return EventState::NotConsumed;
+        };
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.focus(kind);
+        }
+        match kind {
+            PanelKind::Sidebar => {
+                self.sidebar.handle_input(event, tx);
+            }
+            PanelKind::Editor => {
+                self.editor.handle_input(event, tx);
+            }
+            // The Query panel has no internal mouse behavior (yet).
+            PanelKind::Query => {}
+        }
+        EventState::Consumed
+    }
+
     /// Lay the visible panels out left→right in their current order and render
     /// each. `show_focus` is false while an overlay is open, so no panel draws
     /// its focused highlight under the overlay.
@@ -293,16 +348,13 @@ impl PanelSet {
         if visible.is_empty() {
             return;
         }
-        let constraints: Vec<Constraint> = visible.iter().map(|k| panel_column(*k)).collect();
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(constraints)
-            .split(area);
+        let columns = layout_columns(&visible, area);
+        self.column_rects = columns.clone();
 
         let focused = self.order.focused();
-        for (i, kind) in visible.iter().enumerate() {
+        for (kind, rect) in &columns {
             let is_focused = show_focus && *kind == focused;
-            let rect = columns[i];
+            let rect = *rect;
             match kind {
                 PanelKind::Sidebar => self.sidebar.render(f, rect, theme, is_focused),
                 PanelKind::Query => self.query.render(f, rect, theme, is_focused),
@@ -331,6 +383,108 @@ impl PanelSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::AppSettings;
+    use crate::test_support::{mouse_down_at, temp_vault};
+    use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    async fn make_panel_set() -> PanelSet {
+        let vault = temp_vault("panelset").await;
+        vault.validate_and_init().await.unwrap();
+        let settings = AppSettings::default();
+        let sidebar = SidebarComponent::new(
+            settings.key_bindings.clone(),
+            vault.clone(),
+            settings.icons(),
+            &settings,
+        );
+        let editor = TextEditorComponent::new(settings.key_bindings.clone(), &settings);
+        let query = QueryPanel::new(vault, settings.key_bindings.clone());
+        PanelSet::from_panels(sidebar, editor, query)
+    }
+
+    /// Lay the visible panels out over a fixed area, as a render would.
+    fn lay_out(panels: &mut PanelSet) {
+        panels.column_rects =
+            layout_columns(&panels.order.visible_in_order(), Rect::new(0, 0, 120, 40));
+    }
+
+    fn scroll_at(col: u16, row: u16) -> InputEvent {
+        InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// A button-down click focuses the panel whose column it lands in — for
+    /// every panel, in any prior focus state.
+    #[tokio::test]
+    async fn click_focuses_panel_under_cursor() {
+        let mut panels = make_panel_set().await;
+        panels.show(PanelKind::Query);
+        lay_out(&mut panels);
+        let (tx, _rx) = unbounded_channel();
+
+        assert_eq!(panels.focused(), PanelKind::Editor);
+        // Sidebar (0..30) | Editor (30..80) | Query (80..120).
+        assert_eq!(
+            panels.handle_mouse(&mouse_down_at(90, 5), &tx),
+            EventState::Consumed
+        );
+        assert_eq!(panels.focused(), PanelKind::Query);
+        // Regression: a click on the editor must focus it even while the
+        // Query panel is focused.
+        assert_eq!(
+            panels.handle_mouse(&mouse_down_at(50, 5), &tx),
+            EventState::Consumed
+        );
+        assert_eq!(panels.focused(), PanelKind::Editor);
+        assert_eq!(
+            panels.handle_mouse(&mouse_down_at(5, 5), &tx),
+            EventState::Consumed
+        );
+        assert_eq!(panels.focused(), PanelKind::Sidebar);
+    }
+
+    /// Before the first render no rects exist, and clicks outside every
+    /// column must not move focus.
+    #[tokio::test]
+    async fn click_outside_panels_changes_nothing() {
+        let mut panels = make_panel_set().await;
+        let (tx, _rx) = unbounded_channel();
+
+        // No render yet → no rects → nothing to hit.
+        assert_eq!(
+            panels.handle_mouse(&mouse_down_at(10, 10), &tx),
+            EventState::NotConsumed
+        );
+        assert_eq!(panels.focused(), PanelKind::Editor);
+
+        lay_out(&mut panels);
+        // Query is hidden, so its default column (x ≥ 80) belongs to the
+        // editor; only cells outside the laid-out area miss.
+        assert_eq!(
+            panels.handle_mouse(&mouse_down_at(10, 50), &tx),
+            EventState::NotConsumed
+        );
+        assert_eq!(panels.focused(), PanelKind::Editor);
+    }
+
+    /// Scrolling routes to the panel under the cursor without stealing focus.
+    #[tokio::test]
+    async fn scroll_does_not_change_focus() {
+        let mut panels = make_panel_set().await;
+        lay_out(&mut panels);
+        let (tx, _rx) = unbounded_channel();
+
+        assert_eq!(
+            panels.handle_mouse(&scroll_at(5, 5), &tx),
+            EventState::Consumed
+        );
+        assert_eq!(panels.focused(), PanelKind::Editor);
+    }
 
     #[test]
     fn default_focus_is_editor() {
@@ -399,6 +553,46 @@ mod tests {
         // Visibility is preserved per kind across the reorder.
         assert!(order.is_visible(PanelKind::Sidebar));
         assert!(!order.is_visible(PanelKind::Query));
+    }
+
+    #[test]
+    fn layout_columns_splits_area_in_panel_order() {
+        let area = Rect::new(0, 0, 120, 40);
+        let visible = [PanelKind::Sidebar, PanelKind::Editor, PanelKind::Query];
+        let columns = layout_columns(&visible, area);
+
+        assert_eq!(columns.len(), 3);
+        // Order is preserved and widths follow panel_column: sidebar 30,
+        // Query 40, editor takes the rest.
+        assert_eq!(columns[0].0, PanelKind::Sidebar);
+        assert_eq!(columns[0].1.width, 30);
+        assert_eq!(columns[1].0, PanelKind::Editor);
+        assert_eq!(columns[1].1.width, 50);
+        assert_eq!(columns[2].0, PanelKind::Query);
+        assert_eq!(columns[2].1.width, 40);
+        // Columns tile the area left→right.
+        assert_eq!(columns[0].1.x, 0);
+        assert_eq!(columns[1].1.x, 30);
+        assert_eq!(columns[2].1.x, 80);
+    }
+
+    #[test]
+    fn kind_at_hit_tests_panel_columns() {
+        let area = Rect::new(0, 0, 120, 40);
+        let visible = [PanelKind::Sidebar, PanelKind::Editor, PanelKind::Query];
+        let columns = layout_columns(&visible, area);
+
+        assert_eq!(kind_at(&columns, 0, 0), Some(PanelKind::Sidebar));
+        assert_eq!(kind_at(&columns, 29, 10), Some(PanelKind::Sidebar));
+        assert_eq!(kind_at(&columns, 30, 10), Some(PanelKind::Editor));
+        assert_eq!(kind_at(&columns, 79, 39), Some(PanelKind::Editor));
+        assert_eq!(kind_at(&columns, 80, 0), Some(PanelKind::Query));
+        assert_eq!(kind_at(&columns, 119, 39), Some(PanelKind::Query));
+        // Outside the laid-out area.
+        assert_eq!(kind_at(&columns, 120, 10), None);
+        assert_eq!(kind_at(&columns, 10, 40), None);
+        // No columns yet (before the first render).
+        assert_eq!(kind_at(&[], 10, 10), None);
     }
 
     #[test]

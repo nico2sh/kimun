@@ -1683,11 +1683,7 @@ impl TextEditorComponent {
     }
 
     /// Handle a mouse event (Textarea backend only).
-    fn handle_mouse(
-        &mut self,
-        mouse: &ratatui::crossterm::event::MouseEvent,
-        tx: &AppTx,
-    ) -> EventState {
+    fn handle_mouse(&mut self, mouse: &ratatui::crossterm::event::MouseEvent) -> EventState {
         let BackendState::Textarea(_) = &self.backend else {
             return EventState::NotConsumed;
         };
@@ -1701,7 +1697,6 @@ impl TextEditorComponent {
         }
         // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
-            tx.send(AppEvent::FocusEditor).ok();
             self.copy_selection_to_clipboard();
             self.selection = if let BackendState::Textarea(ta) = &self.backend {
                 ta.selection_range()
@@ -1717,7 +1712,6 @@ impl TextEditorComponent {
         };
         match mouse.kind {
             MouseEventKind::Down(_) => {
-                tx.send(AppEvent::FocusEditor).ok();
                 ta.cancel_selection();
                 let (lrow, lcol) = self
                     .view
@@ -1808,7 +1802,7 @@ impl Component for TextEditorComponent {
             InputEvent::Mouse(mouse) => {
                 let text_rev_before = self.content_revision;
                 let cursor_before = self.textarea_cursor();
-                let result = self.handle_mouse(mouse, tx);
+                let result = self.handle_mouse(mouse);
                 let cursor_after = self.textarea_cursor();
                 // Mouse clicks typically only move the cursor — refresh
                 // (which may close the popup) but do not auto-open.
