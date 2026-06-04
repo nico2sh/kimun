@@ -72,6 +72,11 @@ pub struct SearchList<R: SearchRow> {
     /// Index into the VISIBLE sequence `[leading?] ++ display` of the selected
     /// item.
     selected: Option<usize>,
+    /// Viewport offset: visible position of the first row on screen. Owned
+    /// here (not by a per-frame `ListState`) so mouse-wheel scrolling can move
+    /// the viewport directly; `render` writes it back after ratatui clamps it
+    /// to keep the selection visible.
+    offset: usize,
     filter: Filter<R>,
     query: String,
     loader: LoadEngine<R>,
@@ -81,6 +86,12 @@ pub struct SearchList<R: SearchRow> {
     intercept: Vec<KeyCombo>,
     icons: Icons,
     list_rect: Rect,
+    /// The host panel's full bounds, for wheel hit-testing: scroll events
+    /// anywhere within it scroll the list — header, query box, preview —
+    /// while clicks still hit-test against `list_rect` only. Empty (the
+    /// default) falls back to `list_rect`, so hosts that never record it
+    /// keep scroll-over-the-list-only behavior.
+    panel_rect: Rect,
     /// Load generation whose rows are currently held. When a newer generation
     /// (a requery / reload) delivers its first event, `poll` clears the stale
     /// rows before applying it — required for streamed (`Push`) sources, which
@@ -155,6 +166,7 @@ impl<R: SearchRow> SearchList<R> {
             display: Vec::new(),
             leading: None,
             selected: None,
+            offset: 0,
             filter: b.filter,
             query: b.initial_query,
             loader,
@@ -163,6 +175,7 @@ impl<R: SearchRow> SearchList<R> {
             intercept: b.intercept,
             icons: b.icons,
             list_rect: Rect::default(),
+            panel_rect: Rect::default(),
             applied_generation: 0,
             accepted_saved_search: None,
         }
@@ -178,6 +191,7 @@ impl<R: SearchRow> SearchList<R> {
             if current_gen != self.applied_generation {
                 self.rows.clear();
                 self.selected = None;
+                self.offset = 0;
                 self.applied_generation = current_gen;
             }
         }
@@ -336,6 +350,61 @@ impl<R: SearchRow> SearchList<R> {
         self.selected = Some(self.selected.map_or(0, |i| i.saturating_sub(1)));
     }
 
+    /// Largest useful viewport offset: the first visible position from which
+    /// the rows through the end still fill the recorded list rect. Scrolling
+    /// past it would leave blank space below the last row, so
+    /// [`scroll_down`](Self::scroll_down) clamps to it.
+    fn max_scroll_offset(&self) -> usize {
+        let viewport = self.list_rect.height as usize;
+        let n = self.visible_len();
+        if viewport == 0 || n == 0 {
+            return 0;
+        }
+        let mut budget = viewport;
+        let mut first = n;
+        while first > 0 {
+            let h = self
+                .visible_row(first - 1)
+                .map(|r| r.visual_height() as usize)
+                .unwrap_or(1);
+            if h > budget {
+                break;
+            }
+            budget -= h;
+            first -= 1;
+        }
+        first.min(n - 1)
+    }
+
+    /// Scroll the viewport one row down, carrying the selection along so the
+    /// selected row keeps its on-screen position. No-op once the last row is
+    /// in view — the shared mouse-wheel behavior for every list surface.
+    pub fn scroll_down(&mut self) {
+        let n = self.visible_len();
+        if n == 0 || self.offset >= self.max_scroll_offset() {
+            return;
+        }
+        self.offset += 1;
+        self.selected = self.selected.map(|i| (i + 1).min(n - 1));
+    }
+
+    /// Scroll the viewport one row up, carrying the selection along so the
+    /// selected row keeps its on-screen position. No-op at the top.
+    pub fn scroll_up(&mut self) {
+        if self.offset == 0 {
+            return;
+        }
+        self.offset -= 1;
+        self.selected = self.selected.map(|i| i.saturating_sub(1));
+    }
+
+    /// The current viewport offset. Test-only: lets scroll tests assert the
+    /// viewport moved while the selection kept its screen position.
+    #[cfg(test)]
+    pub(crate) fn scroll_offset(&self) -> usize {
+        self.offset
+    }
+
     pub fn handle_key(&mut self, key: &KeyEvent) -> KeyReaction {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
@@ -451,11 +520,15 @@ impl<R: SearchRow> SearchList<R> {
                     .map(|r| r.to_list_item(theme, &self.icons, sel == Some(pos)))
             })
             .collect();
-        let mut state = ListState::default();
+        let mut state = ListState::default().with_offset(self.offset);
         state.select(self.selected);
         let list =
             List::new(items).highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
         f.render_stateful_widget(list, area, &mut state);
+        // Read the offset back: ratatui clamps it and keeps the selection in
+        // view (keyboard moves included), so the stored offset always matches
+        // what is actually on screen.
+        self.offset = state.offset();
         self.list_rect = area;
         let _ = focused;
     }
@@ -470,6 +543,14 @@ impl<R: SearchRow> SearchList<R> {
     /// [`handle_mouse`]: Self::handle_mouse
     pub fn set_list_rect(&mut self, rect: Rect) {
         self.list_rect = rect;
+    }
+
+    /// Record the host panel's full bounds so the wheel scrolls the list from
+    /// anywhere within the panel — header, query box, preview — not just over
+    /// the list items. Hosts call this each render with the same rect they
+    /// were drawn into. Never set = wheel hit-tests `list_rect` only.
+    pub fn set_panel_rect(&mut self, rect: Rect) {
+        self.panel_rect = rect;
     }
 
     pub fn render_autocomplete(&mut self, f: &mut Frame, clamp: Rect, theme: &Theme) {
@@ -493,11 +574,34 @@ impl<R: SearchRow> SearchList<R> {
         if let Some(ac) = &mut self.autocomplete {
             ac.close();
         }
-        let r = self.list_rect;
-        if !r.contains(Position {
+        let pos = Position {
             x: m.column,
             y: m.row,
-        }) {
+        };
+        // The wheel is hit-tested against the host's panel bounds (when
+        // recorded), so scrolling works from anywhere within the panel;
+        // clicks below keep hit-testing the list rect only.
+        if matches!(
+            m.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            let bounds = if self.panel_rect.is_empty() {
+                self.list_rect
+            } else {
+                self.panel_rect
+            };
+            if !bounds.contains(pos) {
+                return SearchMouse::None;
+            }
+            if m.kind == MouseEventKind::ScrollUp {
+                self.scroll_up();
+            } else {
+                self.scroll_down();
+            }
+            return SearchMouse::Scrolled;
+        }
+        let r = self.list_rect;
+        if !r.contains(pos) {
             return SearchMouse::None;
         }
         match m.kind {
@@ -506,8 +610,10 @@ impl<R: SearchRow> SearchList<R> {
                 let mut acc: u16 = 0;
                 let mut hit: Option<usize> = None;
                 // Walk the VISIBLE sequence (leading row at position 0, then the
-                // display rows) so visual offsets map to visible positions.
-                for pos in 0..self.visible_len() {
+                // display rows) starting at the viewport offset — screen row 0
+                // is the item at `offset`, not visible position 0 — so visual
+                // offsets map to the positions actually on screen.
+                for pos in self.offset..self.visible_len() {
                     let h = self
                         .visible_row(pos)
                         .map(|r| r.visual_height())
@@ -528,14 +634,6 @@ impl<R: SearchRow> SearchList<R> {
                     };
                 }
                 SearchMouse::None
-            }
-            MouseEventKind::ScrollUp => {
-                self.select_prev();
-                SearchMouse::Scrolled
-            }
-            MouseEventKind::ScrollDown => {
-                self.select_next();
-                SearchMouse::Scrolled
             }
             _ => SearchMouse::None,
         }
@@ -709,6 +807,147 @@ mod tests {
         let m = mouse_down_at(2, 1);
         list.handle_mouse(&m);
         assert_eq!(list.selected_row().unwrap().name, "a");
+    }
+
+    // Mouse-wheel scrolling moves the VIEWPORT, carrying the selection along
+    // so the selected row keeps its on-screen position (selected - offset is
+    // invariant) — unlike keyboard navigation, which moves the selection.
+    #[tokio::test]
+    async fn scroll_moves_viewport_and_keeps_selection_screen_position() {
+        let src = VecSource {
+            rows: (0..10).map(|i| TestRow::new(&format!("row{i}"))).collect(),
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        // Viewport shows 4 of the 10 rows.
+        list.set_list_rect(ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 4,
+        });
+        // Move the selection to screen row 2 first.
+        list.select_next();
+        list.select_next();
+        assert_eq!(list.selected_row().unwrap().name, "row2");
+
+        let scroll = |kind| ratatui::crossterm::event::MouseEvent {
+            kind,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        use ratatui::crossterm::event::MouseEventKind;
+
+        // Scroll down: viewport and selection move together.
+        assert_eq!(
+            list.handle_mouse(&scroll(MouseEventKind::ScrollDown)),
+            SearchMouse::Scrolled
+        );
+        assert_eq!(list.scroll_offset(), 1);
+        assert_eq!(list.selected_row().unwrap().name, "row3");
+
+        // Scroll back up: both return.
+        list.handle_mouse(&scroll(MouseEventKind::ScrollUp));
+        assert_eq!(list.scroll_offset(), 0);
+        assert_eq!(list.selected_row().unwrap().name, "row2");
+
+        // At the top, scrolling up is a no-op (selection does NOT move).
+        list.handle_mouse(&scroll(MouseEventKind::ScrollUp));
+        assert_eq!(list.scroll_offset(), 0);
+        assert_eq!(list.selected_row().unwrap().name, "row2");
+
+        // Scrolling down clamps once the last row is in view: 10 rows in a
+        // 4-row viewport → max offset 6.
+        for _ in 0..20 {
+            list.handle_mouse(&scroll(MouseEventKind::ScrollDown));
+        }
+        assert_eq!(list.scroll_offset(), 6);
+        assert_eq!(list.selected_row().unwrap().name, "row8");
+        // The selection kept its screen row through the clamped scroll.
+        // (row2 at offset 0 → screen row 2; row8 at offset 6 → screen row 2.)
+    }
+
+    // The wheel hit-tests the recorded PANEL rect: scrolling over the host's
+    // header/query box (outside the list rect) still scrolls the list. Without
+    // a panel rect it falls back to the list rect only.
+    #[tokio::test]
+    async fn scroll_hits_panel_rect_clicks_hit_list_rect() {
+        let src = VecSource {
+            rows: (0..10).map(|i| TestRow::new(&format!("row{i}"))).collect(),
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        // List items render at y 5..9; the panel spans y 0..20.
+        list.set_list_rect(ratatui::layout::Rect {
+            x: 0,
+            y: 5,
+            width: 20,
+            height: 4,
+        });
+        let scroll_at = |row| ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::ScrollDown,
+            column: 1,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        // No panel rect: a scroll over the header (y=1) misses.
+        assert_eq!(list.handle_mouse(&scroll_at(1)), SearchMouse::None);
+        assert_eq!(list.scroll_offset(), 0);
+        list.set_panel_rect(ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 20,
+        });
+        // With the panel rect, the same scroll-over-header scrolls the list.
+        assert_eq!(list.handle_mouse(&scroll_at(1)), SearchMouse::Scrolled);
+        assert_eq!(list.scroll_offset(), 1);
+        // Clicks still hit-test the LIST rect only: a click on the header
+        // (inside the panel, outside the list) selects nothing.
+        let before = list.selected_row().unwrap().name.clone();
+        assert_eq!(list.handle_mouse(&mouse_down_at(1, 1)), SearchMouse::None);
+        assert_eq!(list.selected_row().unwrap().name, before);
+    }
+
+    // Regression: the click hit-test must account for the viewport offset —
+    // after wheel scrolling, screen row 0 is the item at `offset`, not
+    // visible position 0.
+    #[tokio::test]
+    async fn click_after_scroll_selects_the_clicked_row() {
+        let src = VecSource {
+            rows: (0..10).map(|i| TestRow::new(&format!("row{i}"))).collect(),
+            reload: true,
+        };
+        let mut list = SearchList::builder(src, noop_redraw()).build();
+        list.poll_until_idle().await;
+        list.set_list_rect(ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 4,
+        });
+        let scroll_down = ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        for _ in 0..3 {
+            list.handle_mouse(&scroll_down);
+        }
+        assert_eq!(list.scroll_offset(), 3);
+        // Screen row 2 shows visible position offset + 2 = 5.
+        assert!(matches!(
+            list.handle_mouse(&mouse_down_at(2, 2)),
+            SearchMouse::Selected(5)
+        ));
+        assert_eq!(list.selected_row().unwrap().name, "row5");
+        // Screen row 0 shows the item at the offset itself.
+        list.handle_mouse(&mouse_down_at(2, 0));
+        assert_eq!(list.selected_row().unwrap().name, "row3");
     }
 
     #[tokio::test]
