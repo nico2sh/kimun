@@ -6,7 +6,7 @@ use chrono::NaiveDate;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, NotesValidation, ResultType, VaultBrowseOptionsBuilder};
 use ratatui::Frame;
-use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+use ratatui::crossterm::event::MouseEventKind;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -323,10 +323,8 @@ impl Component for SidebarComponent {
             if !self.rendered_rect.contains(pos) {
                 return EventState::NotConsumed;
             }
-            // Any click in the sidebar focuses it.
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                tx.send(AppEvent::FocusSidebar).ok();
-            }
+            // Click-to-focus is handled centrally by `PanelSet::handle_mouse`;
+            // only the sidebar's internal behavior lives here.
             if let Some(list) = &mut self.list {
                 match mouse.kind {
                     // Scroll anywhere within the sidebar bounds moves the list
@@ -473,10 +471,11 @@ mod tests {
         )
     }
 
-    /// Regression: clicking on the sidebar header (directory name + note count)
-    /// or the search box must focus the sidebar, not just clicks on the file list.
+    /// Clicks anywhere in the sidebar bounds — header, search box, list — are
+    /// consumed by the sidebar. (Click-to-focus itself is handled centrally by
+    /// `PanelSet::handle_mouse`, not here.)
     #[tokio::test]
-    async fn mouse_down_on_header_focuses_sidebar() {
+    async fn mouse_down_in_sidebar_bounds_is_consumed() {
         let mut sidebar = make_sidebar().await;
         sidebar.rendered_rect = Rect {
             x: 0,
@@ -484,31 +483,23 @@ mod tests {
             width: 30,
             height: 20,
         };
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, _rx) = unbounded_channel();
 
-        // Click inside the header (top-of-sidebar) area.
-        let result = sidebar.handle_input(&mouse_down_at(5, 4), &tx);
-        assert_eq!(result, EventState::Consumed);
-        let evt = rx.try_recv().expect("should send a focus event");
-        assert!(matches!(evt, AppEvent::FocusSidebar));
-    }
-
-    #[tokio::test]
-    async fn mouse_down_on_search_box_focuses_sidebar() {
-        let mut sidebar = make_sidebar().await;
-        sidebar.rendered_rect = Rect {
-            x: 0,
-            y: 3,
-            width: 30,
-            height: 20,
-        };
-        let (tx, mut rx) = unbounded_channel();
-
-        // Click inside the search-box area (rows 6..9 within the sidebar layout).
-        let result = sidebar.handle_input(&mouse_down_at(5, 7), &tx);
-        assert_eq!(result, EventState::Consumed);
-        let evt = rx.try_recv().expect("should send a focus event");
-        assert!(matches!(evt, AppEvent::FocusSidebar));
+        // Header (top-of-sidebar) area.
+        assert_eq!(
+            sidebar.handle_input(&mouse_down_at(5, 4), &tx),
+            EventState::Consumed
+        );
+        // Search-box area (rows 6..9 within the sidebar layout).
+        assert_eq!(
+            sidebar.handle_input(&mouse_down_at(5, 7), &tx),
+            EventState::Consumed
+        );
+        // Outside the sidebar bounds.
+        assert_eq!(
+            sidebar.handle_input(&mouse_down_at(40, 7), &tx),
+            EventState::NotConsumed
+        );
     }
 
     fn scroll_event_at(col: u16, row: u16, kind: MouseEventKind) -> InputEvent {
@@ -565,10 +556,8 @@ mod tests {
             });
         }
 
-        // First click: in the list area, on the first row (rect.y).
+        // First click: in the list area, on the first row (rect.y) — selects.
         sidebar.handle_input(&mouse_down_at(5, 9), &tx);
-        // Drain the FocusSidebar event from the first click.
-        let _ = rx.try_recv();
 
         // Second click on the same row activates the entry.
         sidebar.handle_input(&mouse_down_at(5, 9), &tx);
