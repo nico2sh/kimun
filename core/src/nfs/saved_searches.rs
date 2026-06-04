@@ -1,7 +1,7 @@
 //! Saved searches: named queries persisted in the vault under
-//! `.kimun/saved-searches.toml`, so they travel with the notes (see
-//! `adr/0004-saved-searches-stored-in-vault.md`). All filesystem access
-//! lives here per the project rule that fs ops belong in `nfs`.
+//! `.kimun/saved-searches.toml`, so they travel with the notes.
+//! All filesystem access lives here per the project rule that
+//! fs ops belong in `nfs`.
 
 use std::path::Path;
 

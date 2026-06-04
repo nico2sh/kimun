@@ -118,7 +118,7 @@ pub(crate) struct NoteIndex {
     pool: SqlitePool,
     /// `true` while the index is valid but possibly *empty*: set when
     /// [`open`](Self::open) recreated a missing/outdated/invalid schema
-    /// (self-heal, ADR-0007) or when [`recreate`](Self::recreate) dropped the
+    /// (self-heal) or when [`recreate`](Self::recreate) dropped the
     /// tables, cleared by [`mark_synced`](Self::mark_synced) once a vault
     /// sync pass has filled the index. Shared across clones (like the pool)
     /// so every handle agrees on readiness.
@@ -129,7 +129,7 @@ impl NoteIndex {
     /// Opens the index at `db_path`, self-healing the schema: when the stored
     /// index is missing, outdated, or invalid, the tables are silently
     /// recreated, leaving a valid but empty index that the next sync pass
-    /// fills (ADR-0007). [`ready`](Self::ready) reports whether a heal
+    /// fills. [`ready`](Self::ready) reports whether a heal
     /// happened.
     pub(crate) async fn open<P: AsRef<Path>>(db_path: P) -> Result<Self, DBError> {
         let db_path = db_path.as_ref().to_owned();
@@ -3690,7 +3690,7 @@ mod tests {
     }
 
     /// On a stored DB version older than the current `VERSION`, reopening the
-    /// vault must self-heal the schema (ADR-0007): the index comes back valid
+    /// vault must self-heal the schema: the index comes back valid
     /// but empty, `index_ready` reports `false`, and the next sync pass
     /// (`validate_and_init`) refills it. After the heal, stale `>`-separated
     /// breadcrumb rows are gone and the new `\x1f` separator is in place.
