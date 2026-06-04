@@ -98,8 +98,24 @@ impl ActiveDialog {
         ActiveDialog::CreateNote(CreateNoteDialog::new(path, vault))
     }
 
-    pub fn save_search(query: String) -> Self {
-        ActiveDialog::SaveSearch(SaveSearchDialog::new(query))
+    /// Open the save-search dialog. `provenance` is the saved-search name the
+    /// query came from (the breadcrumb), pre-filled as the default name. The
+    /// existing names load in the background and arrive via
+    /// [`AppEvent::SavedSearchNamesLoaded`] to drive the dialog's hint.
+    pub fn save_search(
+        query: String,
+        provenance: Option<String>,
+        vault: Arc<NoteVault>,
+        tx: &AppTx,
+    ) -> Self {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            if let Ok(searches) = vault.list_saved_searches().await {
+                let names = searches.into_iter().map(|s| s.name).collect();
+                tx.send(AppEvent::SavedSearchNamesLoaded(names)).ok();
+            }
+        });
+        ActiveDialog::SaveSearch(SaveSearchDialog::new(query, provenance))
     }
 
     pub fn sort(
@@ -188,6 +204,12 @@ impl Overlay for ActiveDialog {
                         ValidationState::Taken
                     };
                     d.validation_task = None;
+                }
+                OverlayMsg::Consumed
+            }
+            AppEvent::SavedSearchNamesLoaded(names) => {
+                if let ActiveDialog::SaveSearch(d) = self {
+                    d.set_existing_names(names.clone());
                 }
                 OverlayMsg::Consumed
             }

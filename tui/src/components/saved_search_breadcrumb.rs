@@ -1,9 +1,10 @@
 //! The saved-search breadcrumb shared by the Query panel and the Ctrl+K note
 //! browser: which saved search the current query came from, with a `• edited`
-//! marker once the live query diverges. Sticky provenance — it survives edits
-//! and sorts, and is dropped only when the query becomes blank (host-defined:
-//! an empty field, or the panel's default backlinks query) or another saved
-//! search is expanded.
+//! marker once the live query diverges (any text divergence counts, including
+//! the order directive — the stored query is saved verbatim). Sticky
+//! provenance — it survives edits, and is dropped only when the query becomes
+//! blank (host-defined: an empty field, or the panel's default backlinks
+//! query) or another saved search is expanded.
 //!
 //! Both hosts embed one of these and forward two events to it —
 //! [`on_query_consumed`](SavedSearchBreadcrumb::on_query_consumed) after a list
@@ -14,9 +15,8 @@
 /// Provenance for a query loaded from a saved search.
 struct Provenance {
     name: String,
-    /// The stored query with its order directive stripped, precomputed once so
-    /// the per-render edited check only has to strip the *live* query.
-    stored_stripped: String,
+    /// The stored query (trimmed), the form the edited check compares against.
+    stored: String,
 }
 
 #[derive(Default)]
@@ -33,7 +33,7 @@ impl SavedSearchBreadcrumb {
         self.pinned = match name {
             Some(name) if !stored_query.trim().is_empty() => Some(Provenance {
                 name,
-                stored_stripped: strip(stored_query),
+                stored: stored_query.trim().to_string(),
             }),
             _ => None,
         };
@@ -62,14 +62,21 @@ impl SavedSearchBreadcrumb {
         }
     }
 
+    /// The pinned saved-search name (provenance only, no edited marker), or
+    /// `None` when no saved search is active. Used to pre-fill the save-search
+    /// dialog with the name the query came from.
+    pub fn name(&self) -> Option<&str> {
+        self.pinned.as_ref().map(|p| p.name.as_str())
+    }
+
     /// The breadcrumb label for the searchbox border: the saved-search name,
     /// plus ` • edited` once `query` diverges from the stored query. The
-    /// comparison ignores the order directive (and incidentally inner
-    /// whitespace), so changing only the sort is not "edited". `None` when no
-    /// saved search is active.
+    /// stored query is saved verbatim, so any text divergence counts —
+    /// including the order directive (a sort change IS an edit). `None` when
+    /// no saved search is active.
     pub fn label(&self, query: &str) -> Option<String> {
         let p = self.pinned.as_ref()?;
-        Some(if strip(query) != p.stored_stripped {
+        Some(if query.trim() != p.stored {
             format!("{} • edited", p.name)
         } else {
             p.name.clone()
@@ -84,12 +91,6 @@ impl SavedSearchBreadcrumb {
             None => fallback.to_string(),
         }
     }
-}
-
-/// The query with its order directive removed — the canonical form the edited
-/// check compares against (so a sort change does not read as an edit).
-fn strip(query: &str) -> String {
-    kimun_core::strip_order_directive(query)
 }
 
 #[cfg(test)]
@@ -116,11 +117,21 @@ mod tests {
     }
 
     #[test]
-    fn order_directive_change_is_not_edited() {
+    fn order_directive_change_is_edited() {
+        // The stored query is saved verbatim, so any divergence counts as an
+        // edit — including the order directive (see CONTEXT.md).
         assert_eq!(
             pinned("#todo").label("#todo or:title").as_deref(),
-            Some("todo")
+            Some("todo • edited")
         );
+    }
+
+    #[test]
+    fn name_returns_pinned_provenance_without_edited_marker() {
+        let b = pinned("#todo");
+        assert_eq!(b.name(), Some("todo"));
+        let empty = SavedSearchBreadcrumb::default();
+        assert_eq!(empty.name(), None);
     }
 
     #[test]

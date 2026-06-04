@@ -503,6 +503,32 @@ impl EditorScreen {
         }
     }
 
+    /// The query the save-current-query action would save, with its
+    /// saved-search provenance (breadcrumb name) for the dialog's name
+    /// pre-fill. Sourced from the active note browser if one is open (Ctrl+K
+    /// modal), otherwise from the Query panel. `None` when there is nothing
+    /// to save: a blank query, or another overlay is open.
+    fn save_query_source(&self) -> Option<(String, Option<String>)> {
+        let (query, provenance) = match self.overlays.active_kind() {
+            Some(OverlayKind::NoteBrowser) => (
+                self.overlays.active_query().unwrap_or_default().to_string(),
+                self.overlays
+                    .active_saved_search_provenance()
+                    .map(str::to_string),
+            ),
+            None => (
+                self.panels.query().active_query().to_string(),
+                self.panels.query().saved_search_name().map(str::to_string),
+            ),
+            Some(_) => return None,
+        };
+        if query.trim().is_empty() {
+            None
+        } else {
+            Some((query, provenance))
+        }
+    }
+
     fn apply_saved_search(&mut self, query: String, name: String, tx: &AppTx) {
         self.panels.show(PanelKind::Query);
         // The virtual backlinks entry's name should not override the
@@ -724,21 +750,16 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SaveCurrentQuery) => {
-                    // Source the query from the active note browser if one is
-                    // open (Ctrl+K modal), otherwise from the Query panel. Any
-                    // other overlay being open suppresses the action.
-                    let query = match self.overlays.active_kind() {
-                        Some(OverlayKind::NoteBrowser) => {
-                            self.overlays.active_query().unwrap_or_default().to_string()
-                        }
-                        None => self.panels.query().active_query().to_string(),
-                        Some(_) => String::new(),
-                    };
-                    if !query.trim().is_empty() {
+                    if let Some((query, provenance)) = self.save_query_source() {
                         // Opening the save dialog replaces the note browser (if
                         // any); the chained-open guard preserves the original
                         // opener focus.
-                        self.present_overlay(Box::new(ActiveDialog::save_search(query)));
+                        self.present_overlay(Box::new(ActiveDialog::save_search(
+                            query,
+                            provenance,
+                            self.vault.clone(),
+                            tx,
+                        )));
                     }
                     return EventState::Consumed;
                 }
@@ -1059,6 +1080,16 @@ impl AppScreen for EditorScreen {
                 self.on_entry_op(from, tx).await;
             }
             AppEvent::SaveSearchConfirmed { name, query } => {
+                // Re-pin the panel breadcrumb when the panel's live query is
+                // what was just saved: the saved identity becomes the
+                // provenance (the edited marker drops on an update, the name
+                // switches on a save-as-new). A save sourced from the note
+                // browser carries a different query and leaves it alone.
+                if self.panels.query().active_query().trim() == query.trim() {
+                    self.panels
+                        .query_mut()
+                        .repin_saved_search(name.clone(), &query);
+                }
                 let vault = self.vault.clone();
                 tokio::spawn(async move {
                     if let Err(e) = vault.save_search(&name, &query).await {
@@ -1141,6 +1172,95 @@ mod tests {
         assert!(screen.panels.is_visible(PanelKind::Query));
         assert_eq!(screen.panels.query().active_query(), "<{note}");
         assert_eq!(screen.panels.focused(), PanelKind::Query);
+    }
+
+    #[tokio::test]
+    async fn save_search_confirmed_repins_panel_breadcrumb() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut screen = EditorScreen::new(vault, VaultPath::root(), settings);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.apply_saved_search("#todo".to_string(), "todo".to_string(), &tx);
+        screen
+            .panels
+            .query_mut()
+            .set_active_query("#todo and #urgent".to_string());
+
+        screen
+            .handle_app_message(
+                AppEvent::SaveSearchConfirmed {
+                    name: "urgent-todos".to_string(),
+                    query: "#todo and #urgent".to_string(),
+                },
+                &tx,
+            )
+            .await;
+
+        assert_eq!(
+            screen.panels.query().saved_search_breadcrumb().as_deref(),
+            Some("urgent-todos"),
+            "saving re-pins the panel breadcrumb to the saved identity"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_search_confirmed_for_other_query_does_not_repin() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut screen = EditorScreen::new(vault, VaultPath::root(), settings);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.apply_saved_search("#todo".to_string(), "todo".to_string(), &tx);
+
+        // A save sourced elsewhere (e.g. the note browser) — the panel's
+        // query differs, so its breadcrumb must not be touched.
+        screen
+            .handle_app_message(
+                AppEvent::SaveSearchConfirmed {
+                    name: "other".to_string(),
+                    query: "#something-else".to_string(),
+                },
+                &tx,
+            )
+            .await;
+
+        assert_eq!(
+            screen.panels.query().saved_search_breadcrumb().as_deref(),
+            Some("todo"),
+            "a save of a different query leaves the panel breadcrumb alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_query_source_carries_panel_provenance() {
+        use crate::settings::AppSettings;
+        use kimun_core::VaultConfig;
+        use std::sync::RwLock;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = Arc::new(NoteVault::new(VaultConfig::new(dir.path())).await.unwrap());
+        let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
+        let mut screen = EditorScreen::new(vault, VaultPath::root(), settings);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.apply_saved_search("#todo".to_string(), "todo".to_string(), &tx);
+
+        assert_eq!(
+            screen.save_query_source(),
+            Some(("#todo".to_string(), Some("todo".to_string()))),
+            "the save dialog opens pre-filled with the breadcrumb provenance"
+        );
     }
 
     // The try_save timeout-abort regression tests (commits 55eb49ed +

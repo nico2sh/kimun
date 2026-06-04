@@ -43,6 +43,14 @@ impl<F> OverlayHost<F> {
         self.active.as_ref().and_then(|o| o.query())
     }
 
+    /// The active overlay's saved-search provenance (its breadcrumb name), if
+    /// any. Pre-fills the save-search dialog's name field.
+    pub fn active_saved_search_provenance(&self) -> Option<&str> {
+        self.active
+            .as_ref()
+            .and_then(|o| o.saved_search_provenance())
+    }
+
     /// Open `overlay`. Saves `panel_token` only if no overlay is currently
     /// active, so a chained open preserves the original opener focus.
     /// Replacing an already-open overlay is allowed; the previous overlay is
