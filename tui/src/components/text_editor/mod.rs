@@ -153,6 +153,42 @@ fn selection_text(ta: &TextArea<'_>) -> Option<String> {
     })
 }
 
+/// Auto-surround pair for `c`: typing an opening pair character or a
+/// symmetric one while a selection is active wraps the selection instead of
+/// replacing it. Closing characters return `None` — they replace, like any
+/// other key. See CONTEXT.md "Auto-surround".
+fn surround_pair(c: char) -> Option<(&'static str, &'static str)> {
+    match c {
+        '(' => Some(("(", ")")),
+        '[' => Some(("[", "]")),
+        '{' => Some(("{", "}")),
+        '<' => Some(("<", ">")),
+        '"' => Some(("\"", "\"")),
+        '\'' => Some(("'", "'")),
+        '`' => Some(("`", "`")),
+        '*' => Some(("*", "*")),
+        '_' => Some(("_", "_")),
+        '~' => Some(("~", "~")),
+        _ => None,
+    }
+}
+
+/// Re-establishes the textarea selection over `start..end` (char-based data
+/// coordinates, as returned by `selection_range`). `Jump` clamps, so the
+/// saturating casts degrade gracefully on pathologically large buffers.
+fn set_selection(ta: &mut TextArea<'_>, start: (usize, usize), end: (usize, usize)) {
+    let jump = |(row, col): (usize, usize)| {
+        CursorMove::Jump(
+            u16::try_from(row).unwrap_or(u16::MAX),
+            u16::try_from(col).unwrap_or(u16::MAX),
+        )
+    };
+    ta.cancel_selection();
+    ta.move_cursor(jump(start));
+    ta.start_selection();
+    ta.move_cursor(jump(end));
+}
+
 /// Owned RGBA image data lifted from the system clipboard. Returned by
 /// [`TextEditorComponent::take_clipboard_image`] so the screen layer can
 /// encode + persist without holding the editor's clipboard borrow.
@@ -893,6 +929,33 @@ impl TextEditorComponent {
         })
     }
 
+    /// Wraps the active selection in `open`/`close` and re-selects the inner
+    /// text so wraps chain (see CONTEXT.md "Auto-surround"). Returns `false`
+    /// without touching the buffer when there is no (non-empty) selection or
+    /// on the Nvim backend. Callers on the key path don't reconcile the
+    /// autocomplete popup — `handle_input` re-syncs on any content bump.
+    fn wrap_selection(&mut self, open: &str, close: &str) -> bool {
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            return false;
+        };
+        let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
+            return false;
+        };
+        let Some(text) = selection_text(ta) else {
+            return false;
+        };
+        ta.insert_str(format!("{open}{text}{close}"));
+        // Reselect the inner text. The open marker shifts cols on the first
+        // selected line only; coordinates are char-based, matching
+        // `selection_range`.
+        let shift = open.chars().count();
+        let inner_end_col = if sr == er { ec + shift } else { ec };
+        set_selection(ta, (sr, sc + shift), (er, inner_end_col));
+        self.selection = ta.selection_range();
+        self.bump_content();
+        true
+    }
+
     /// Wrap a selection in (or insert at the cursor) markdown markers for
     /// Bold/Italic/Strikethrough. No-op for other actions and on the Nvim backend.
     pub fn apply_text_action(&mut self, action: TextAction) {
@@ -902,19 +965,15 @@ impl TextEditorComponent {
             TextAction::Strikethrough => "~~",
             _ => return,
         };
+        if self.wrap_selection(marker, marker) {
+            return;
+        }
         let BackendState::Textarea(ta) = &mut self.backend else {
             return;
         };
-        match selection_text(ta) {
-            Some(text) => {
-                ta.insert_str(format!("{marker}{text}{marker}"));
-            }
-            None => {
-                ta.insert_str(format!("{marker}{marker}"));
-                for _ in 0..marker.len() {
-                    ta.move_cursor(CursorMove::Back);
-                }
-            }
+        ta.insert_str(format!("{marker}{marker}"));
+        for _ in 0..marker.len() {
+            ta.move_cursor(CursorMove::Back);
         }
         self.selection = ta.selection_range();
         self.bump_content();
@@ -1092,12 +1151,7 @@ impl TextEditorComponent {
 
         match sel {
             Some(((ssr, ssc), (ser, sec))) => {
-                ta.cancel_selection();
-                let new_ssc = adj(ssr, ssc);
-                let new_sec = adj(ser, sec);
-                ta.move_cursor(CursorMove::Jump(ssr as u16, new_ssc as u16));
-                ta.start_selection();
-                ta.move_cursor(CursorMove::Jump(ser as u16, new_sec as u16));
+                set_selection(ta, (ssr, adj(ssr, ssc)), (ser, adj(ser, sec)));
             }
             None => {
                 let (cr, cc) = saved_cursor.expect("captured when sel is None");
@@ -1664,6 +1718,20 @@ impl TextEditorComponent {
             return EventState::Consumed;
         }
 
+        // Auto-surround: an opening/symmetric pair char typed over a selection
+        // wraps it instead of replacing it (see CONTEXT.md "Auto-surround").
+        // Shift is allowed (most opening chars are shifted keys); Ctrl/Alt
+        // chords fall through. The selection lands on the inner text so wraps
+        // chain: `[` `[` builds a wikilink — and `handle_input`'s post-key
+        // sync legitimately opens the wikilink popup on the chained wrap.
+        if let KeyCode::Char(c) = key.code
+            && (key.modifiers & !KeyModifiers::SHIFT).is_empty()
+            && let Some((open, close)) = surround_pair(c)
+            && self.wrap_selection(open, close)
+        {
+            return EventState::Consumed;
+        }
+
         let BackendState::Textarea(ta) = &mut self.backend else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
@@ -2180,6 +2248,164 @@ mod tests {
             lines[sr][sc..].to_string()
         };
         assert_eq!(selected, "hello ");
+    }
+
+    /// Selects the char-coordinate range `start..end` in the editor's textarea.
+    fn select_range(editor: &mut TextEditorComponent, start: (u16, u16), end: (u16, u16)) {
+        let ta = get_ta(editor);
+        ta.cancel_selection();
+        ta.move_cursor(CursorMove::Jump(start.0, start.1));
+        ta.start_selection();
+        ta.move_cursor(CursorMove::Jump(end.0, end.1));
+        assert!(ta.selection_range().is_some());
+    }
+
+    fn send_char(editor: &mut TextEditorComponent, c: char) {
+        let tx = dummy_tx();
+        let key = ratatui::crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let _ = editor.handle_input(&InputEvent::Key(key), &tx);
+    }
+
+    #[test]
+    fn surround_pair_maps_open_and_symmetric_chars() {
+        assert_eq!(surround_pair('('), Some(("(", ")")));
+        assert_eq!(surround_pair('['), Some(("[", "]")));
+        assert_eq!(surround_pair('{'), Some(("{", "}")));
+        assert_eq!(surround_pair('<'), Some(("<", ">")));
+        assert_eq!(surround_pair('"'), Some(("\"", "\"")));
+        assert_eq!(surround_pair('\''), Some(("'", "'")));
+        assert_eq!(surround_pair('`'), Some(("`", "`")));
+        assert_eq!(surround_pair('*'), Some(("*", "*")));
+        assert_eq!(surround_pair('_'), Some(("_", "_")));
+        assert_eq!(surround_pair('~'), Some(("~", "~")));
+        // Closing chars and plain chars never wrap.
+        assert_eq!(surround_pair(')'), None);
+        assert_eq!(surround_pair(']'), None);
+        assert_eq!(surround_pair('}'), None);
+        assert_eq!(surround_pair('>'), None);
+        assert_eq!(surround_pair('a'), None);
+    }
+
+    #[test]
+    fn typing_open_paren_with_selection_wraps_it() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5)); // "hello"
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "(hello) world");
+        assert!(editor.is_dirty(), "wrap must mark the buffer dirty");
+    }
+
+    #[test]
+    fn wrap_keeps_selection_on_inner_text() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5));
+        send_char(&mut editor, '(');
+        // Selection must cover "hello" inside the parens so wraps chain.
+        assert_eq!(editor.selection, Some(((0, 1), (0, 6))));
+    }
+
+    #[test]
+    fn chained_brackets_build_a_wikilink() {
+        let mut editor = make_editor();
+        editor.set_text("my note".to_string());
+        select_range(&mut editor, (0, 0), (0, 7));
+        send_char(&mut editor, '[');
+        send_char(&mut editor, '[');
+        assert_eq!(editor.get_text(), "[[my note]]");
+        assert_eq!(editor.selection, Some(((0, 2), (0, 9))));
+    }
+
+    #[test]
+    fn symmetric_chars_wrap_and_chain() {
+        let mut editor = make_editor();
+        editor.set_text("bold".to_string());
+        select_range(&mut editor, (0, 0), (0, 4));
+        send_char(&mut editor, '*');
+        assert_eq!(editor.get_text(), "*bold*");
+        send_char(&mut editor, '*');
+        assert_eq!(editor.get_text(), "**bold**");
+        assert_eq!(editor.selection, Some(((0, 2), (0, 6))));
+    }
+
+    #[test]
+    fn closing_char_replaces_selection() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5));
+        send_char(&mut editor, ')');
+        assert_eq!(editor.get_text(), ") world");
+    }
+
+    #[test]
+    fn open_char_without_selection_inserts_normally() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        let ta = get_ta(&mut editor);
+        ta.move_cursor(CursorMove::End);
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "hello(");
+    }
+
+    #[test]
+    fn wrap_spans_multiline_selection() {
+        let mut editor = make_editor();
+        editor.set_text("abc\ndef".to_string());
+        select_range(&mut editor, (0, 0), (1, 3));
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "(abc\ndef)");
+        // Inner selection: open char shifts only the first line.
+        assert_eq!(editor.selection, Some(((0, 1), (1, 3))));
+    }
+
+    #[test]
+    fn wrap_handles_multibyte_selection() {
+        let mut editor = make_editor();
+        editor.set_text("héllo🦀 x".to_string());
+        select_range(&mut editor, (0, 0), (0, 6)); // "héllo🦀" = 6 chars
+        send_char(&mut editor, '`');
+        assert_eq!(editor.get_text(), "`héllo🦀` x");
+        assert_eq!(editor.selection, Some(((0, 1), (0, 7))));
+    }
+
+    #[test]
+    fn wrap_with_reversed_selection_direction() {
+        // Selection made right-to-left must wrap the same way.
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 5), (0, 0));
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "(hello) world");
+        assert_eq!(editor.selection, Some(((0, 1), (0, 6))));
+    }
+
+    #[test]
+    fn text_action_keeps_selection_on_inner_text() {
+        // Bold/Italic/Strikethrough route through the same wrap mechanism as
+        // auto-surround: the inner text stays selected so wraps chain.
+        let mut editor = make_editor();
+        editor.set_text("bold word".to_string());
+        select_range(&mut editor, (0, 0), (0, 4));
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "**bold** word");
+        assert_eq!(editor.selection, Some(((0, 2), (0, 6))));
+    }
+
+    #[test]
+    fn wrap_undo_is_two_steps_back_to_original() {
+        // Documented trade-off: ratatui-textarea has no edit grouping, so a
+        // wrap is delete+insert = two history entries (same as bold/italic
+        // via apply_text_action). Two undos must restore the original text.
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5));
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "(hello) world");
+        let ta = get_ta(&mut editor);
+        ta.undo();
+        ta.undo();
+        assert_eq!(editor.get_text(), "hello world");
     }
 
     #[test]
