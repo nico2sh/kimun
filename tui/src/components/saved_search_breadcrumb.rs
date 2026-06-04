@@ -3,7 +3,7 @@
 //! marker once the live query diverges. Sticky provenance — it survives edits
 //! and sorts, and is dropped only when the query becomes blank (host-defined:
 //! an empty field, or the panel's default backlinks query) or another saved
-//! search is expanded. See `adr/0006`.
+//! search is expanded.
 //!
 //! Both hosts embed one of these and forward two events to it —
 //! [`on_query_consumed`](SavedSearchBreadcrumb::on_query_consumed) after a list

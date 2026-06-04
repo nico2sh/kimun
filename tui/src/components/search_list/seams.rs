@@ -119,7 +119,7 @@ pub trait SuggestionSource: Send + Sync + 'static {
 
     /// Saved searches whose name matches `prefix` (case-insensitive). Each
     /// item's `display` is the name and `secondary` the stored query — the
-    /// popup preview AND the text inserted on accept (see `adr/0006`).
+    /// popup preview AND the text inserted on accept.
     /// Defaults to empty so non-search-box suggestion sources opt out.
     async fn saved_searches_by_prefix(&self, _prefix: &str, _limit: usize) -> Vec<SuggestionItem> {
         Vec::new()
@@ -166,7 +166,7 @@ impl SuggestionSource for VaultSuggestions {
         // Prefix matching + casing live in core (`NoteVault`), like the
         // notes/tags suggestion sources. Here we only adapt to `SuggestionItem`:
         // the name is the popup row, the stored query is the muted preview AND
-        // the text inserted on accept (see `adr/0006`).
+        // the text inserted on accept.
         self.vault
             .suggest_saved_searches_by_prefix(prefix, limit)
             .await
