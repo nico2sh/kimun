@@ -40,7 +40,6 @@ pub enum AppEvent {
         saved_revision: Option<NonZeroU64>,
     },
     OpenPath(VaultPath),
-    FocusEditor,
     FocusSidebar,
     /// Sent by SettingsScreen when user confirms Save. The shared settings
     /// reference already contains the updated values.
