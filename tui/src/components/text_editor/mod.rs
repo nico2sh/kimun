@@ -157,15 +157,36 @@ fn selection_text(ta: &TextArea<'_>) -> Option<String> {
 /// symmetric one while a selection is active wraps the selection instead of
 /// replacing it. Closing characters return `None` — they replace, like any
 /// other key. See CONTEXT.md "Auto-surround".
-fn surround_pair(c: char) -> Option<(char, char)> {
+fn surround_pair(c: char) -> Option<(&'static str, &'static str)> {
     match c {
-        '(' => Some(('(', ')')),
-        '[' => Some(('[', ']')),
-        '{' => Some(('{', '}')),
-        '<' => Some(('<', '>')),
-        '"' | '\'' | '`' | '*' | '_' | '~' => Some((c, c)),
+        '(' => Some(("(", ")")),
+        '[' => Some(("[", "]")),
+        '{' => Some(("{", "}")),
+        '<' => Some(("<", ">")),
+        '"' => Some(("\"", "\"")),
+        '\'' => Some(("'", "'")),
+        '`' => Some(("`", "`")),
+        '*' => Some(("*", "*")),
+        '_' => Some(("_", "_")),
+        '~' => Some(("~", "~")),
         _ => None,
     }
+}
+
+/// Re-establishes the textarea selection over `start..end` (char-based data
+/// coordinates, as returned by `selection_range`). `Jump` clamps, so the
+/// saturating casts degrade gracefully on pathologically large buffers.
+fn set_selection(ta: &mut TextArea<'_>, start: (usize, usize), end: (usize, usize)) {
+    let jump = |(row, col): (usize, usize)| {
+        CursorMove::Jump(
+            u16::try_from(row).unwrap_or(u16::MAX),
+            u16::try_from(col).unwrap_or(u16::MAX),
+        )
+    };
+    ta.cancel_selection();
+    ta.move_cursor(jump(start));
+    ta.start_selection();
+    ta.move_cursor(jump(end));
 }
 
 /// Owned RGBA image data lifted from the system clipboard. Returned by
@@ -908,6 +929,33 @@ impl TextEditorComponent {
         })
     }
 
+    /// Wraps the active selection in `open`/`close` and re-selects the inner
+    /// text so wraps chain (see CONTEXT.md "Auto-surround"). Returns `false`
+    /// without touching the buffer when there is no (non-empty) selection or
+    /// on the Nvim backend. Callers on the key path don't reconcile the
+    /// autocomplete popup — `handle_input` re-syncs on any content bump.
+    fn wrap_selection(&mut self, open: &str, close: &str) -> bool {
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            return false;
+        };
+        let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
+            return false;
+        };
+        let Some(text) = selection_text(ta) else {
+            return false;
+        };
+        ta.insert_str(format!("{open}{text}{close}"));
+        // Reselect the inner text. The open marker shifts cols on the first
+        // selected line only; coordinates are char-based, matching
+        // `selection_range`.
+        let shift = open.chars().count();
+        let inner_end_col = if sr == er { ec + shift } else { ec };
+        set_selection(ta, (sr, sc + shift), (er, inner_end_col));
+        self.selection = ta.selection_range();
+        self.bump_content();
+        true
+    }
+
     /// Wrap a selection in (or insert at the cursor) markdown markers for
     /// Bold/Italic/Strikethrough. No-op for other actions and on the Nvim backend.
     pub fn apply_text_action(&mut self, action: TextAction) {
@@ -917,19 +965,15 @@ impl TextEditorComponent {
             TextAction::Strikethrough => "~~",
             _ => return,
         };
+        if self.wrap_selection(marker, marker) {
+            return;
+        }
         let BackendState::Textarea(ta) = &mut self.backend else {
             return;
         };
-        match selection_text(ta) {
-            Some(text) => {
-                ta.insert_str(format!("{marker}{text}{marker}"));
-            }
-            None => {
-                ta.insert_str(format!("{marker}{marker}"));
-                for _ in 0..marker.len() {
-                    ta.move_cursor(CursorMove::Back);
-                }
-            }
+        ta.insert_str(format!("{marker}{marker}"));
+        for _ in 0..marker.len() {
+            ta.move_cursor(CursorMove::Back);
         }
         self.selection = ta.selection_range();
         self.bump_content();
@@ -1107,12 +1151,7 @@ impl TextEditorComponent {
 
         match sel {
             Some(((ssr, ssc), (ser, sec))) => {
-                ta.cancel_selection();
-                let new_ssc = adj(ssr, ssc);
-                let new_sec = adj(ser, sec);
-                ta.move_cursor(CursorMove::Jump(ssr as u16, new_ssc as u16));
-                ta.start_selection();
-                ta.move_cursor(CursorMove::Jump(ser as u16, new_sec as u16));
+                set_selection(ta, (ssr, adj(ssr, ssc)), (ser, adj(ser, sec)));
             }
             None => {
                 let (cr, cc) = saved_cursor.expect("captured when sel is None");
@@ -1679,49 +1718,23 @@ impl TextEditorComponent {
             return EventState::Consumed;
         }
 
-        let BackendState::Textarea(ta) = &mut self.backend else {
-            unreachable!("handle_textarea_key called with non-Textarea backend")
-        };
-
         // Auto-surround: an opening/symmetric pair char typed over a selection
         // wraps it instead of replacing it (see CONTEXT.md "Auto-surround").
         // Shift is allowed (most opening chars are shifted keys); Ctrl/Alt
-        // chords fall through. The selection is re-established on the inner
-        // text afterwards so wraps chain: `[` `[` builds a wikilink.
+        // chords fall through. The selection lands on the inner text so wraps
+        // chain: `[` `[` builds a wikilink — and `handle_input`'s post-key
+        // sync legitimately opens the wikilink popup on the chained wrap.
         if let KeyCode::Char(c) = key.code
             && (key.modifiers & !KeyModifiers::SHIFT).is_empty()
             && let Some((open, close)) = surround_pair(c)
-            && let Some(text) = selection_text(ta)
+            && self.wrap_selection(open, close)
         {
-            let ((sr, sc), (er, ec)) = ta
-                .selection_range()
-                .expect("selection_text returned Some without a selection");
-            ta.insert_str(format!("{open}{text}{close}"));
-            // Reselect the inner text. The open char shifts cols on the first
-            // selected line only; coordinates are char-based, matching
-            // `selection_range`. Jump clamps, so the saturating casts degrade
-            // gracefully on pathologically large buffers.
-            let inner_end_col = if sr == er { ec + 1 } else { ec };
-            let jump = |row: usize, col: usize| {
-                CursorMove::Jump(
-                    u16::try_from(row).unwrap_or(u16::MAX),
-                    u16::try_from(col).unwrap_or(u16::MAX),
-                )
-            };
-            ta.cancel_selection();
-            ta.move_cursor(jump(sr, sc + 1));
-            ta.start_selection();
-            ta.move_cursor(jump(er, inner_end_col));
-            self.selection = ta.selection_range();
-            self.bump_content();
-            // Out-of-band buffer mutation — reconcile the autocomplete popup
-            // (see `paste_text`). A `[[` chain-wrap legitimately opens the
-            // wikilink popup.
-            self.bind_autocomplete_redraw(tx);
-            self.sync_autocomplete();
             return EventState::Consumed;
         }
 
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            unreachable!("handle_textarea_key called with non-Textarea backend")
+        };
         // `input_without_shortcuts` returns `false` for keys the textarea
         // ignores (F1-F12, KeyCode::Null, modifier-only releases, IME
         // composing events). Only bump `text_revision` when the buffer
@@ -2255,16 +2268,16 @@ mod tests {
 
     #[test]
     fn surround_pair_maps_open_and_symmetric_chars() {
-        assert_eq!(surround_pair('('), Some(('(', ')')));
-        assert_eq!(surround_pair('['), Some(('[', ']')));
-        assert_eq!(surround_pair('{'), Some(('{', '}')));
-        assert_eq!(surround_pair('<'), Some(('<', '>')));
-        assert_eq!(surround_pair('"'), Some(('"', '"')));
-        assert_eq!(surround_pair('\''), Some(('\'', '\'')));
-        assert_eq!(surround_pair('`'), Some(('`', '`')));
-        assert_eq!(surround_pair('*'), Some(('*', '*')));
-        assert_eq!(surround_pair('_'), Some(('_', '_')));
-        assert_eq!(surround_pair('~'), Some(('~', '~')));
+        assert_eq!(surround_pair('('), Some(("(", ")")));
+        assert_eq!(surround_pair('['), Some(("[", "]")));
+        assert_eq!(surround_pair('{'), Some(("{", "}")));
+        assert_eq!(surround_pair('<'), Some(("<", ">")));
+        assert_eq!(surround_pair('"'), Some(("\"", "\"")));
+        assert_eq!(surround_pair('\''), Some(("'", "'")));
+        assert_eq!(surround_pair('`'), Some(("`", "`")));
+        assert_eq!(surround_pair('*'), Some(("*", "*")));
+        assert_eq!(surround_pair('_'), Some(("_", "_")));
+        assert_eq!(surround_pair('~'), Some(("~", "~")));
         // Closing chars and plain chars never wrap.
         assert_eq!(surround_pair(')'), None);
         assert_eq!(surround_pair(']'), None);
@@ -2365,6 +2378,18 @@ mod tests {
         send_char(&mut editor, '(');
         assert_eq!(editor.get_text(), "(hello) world");
         assert_eq!(editor.selection, Some(((0, 1), (0, 6))));
+    }
+
+    #[test]
+    fn text_action_keeps_selection_on_inner_text() {
+        // Bold/Italic/Strikethrough route through the same wrap mechanism as
+        // auto-surround: the inner text stays selected so wraps chain.
+        let mut editor = make_editor();
+        editor.set_text("bold word".to_string());
+        select_range(&mut editor, (0, 0), (0, 4));
+        editor.apply_text_action(TextAction::Bold);
+        assert_eq!(editor.get_text(), "**bold** word");
+        assert_eq!(editor.selection, Some(((0, 2), (0, 6))));
     }
 
     #[test]
