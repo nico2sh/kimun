@@ -19,7 +19,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, SortTarget};
+use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, SortTarget};
 use crate::components::file_list::{SortField, SortOrder};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::settings::themes::Theme;
@@ -105,6 +105,7 @@ impl ActiveDialog {
     pub fn save_search(
         query: String,
         provenance: Option<String>,
+        source: SaveSource,
         vault: Arc<NoteVault>,
         tx: &AppTx,
     ) -> Self {
@@ -115,7 +116,7 @@ impl ActiveDialog {
                 tx.send(AppEvent::SavedSearchNamesLoaded(names)).ok();
             }
         });
-        ActiveDialog::SaveSearch(SaveSearchDialog::new(query, provenance))
+        ActiveDialog::SaveSearch(SaveSearchDialog::new(query, provenance, source))
     }
 
     pub fn sort(
