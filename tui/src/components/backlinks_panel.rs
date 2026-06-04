@@ -28,7 +28,7 @@ use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 /// The default query the panel runs: backlinks to the current note.
-/// Per ADR-0005, backlinks are `<` / `lk:` (`>` is now forward links).
+/// Backlinks are `<` / `lk:` (`>` is now forward links).
 const DEFAULT_QUERY: &str = "<{note}";
 
 // ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ pub struct QueryPanel {
     current_note: Arc<Mutex<VaultPath>>,
     /// The saved-search breadcrumb shown on the query searchbox border. Owns
     /// its own sticky/clear/edited state machine; this panel only forwards
-    /// query events to it. See [`SavedSearchBreadcrumb`] and `adr/0006`.
+    /// query events to it. See [`SavedSearchBreadcrumb`].
     saved_search: SavedSearchBreadcrumb,
     /// Expand state of the currently-selected row. `Context` sticks across
     /// navigation (re-anchored on the new row); `Full` and query changes reset
@@ -259,7 +259,7 @@ impl QueryPanel {
     }
 
     /// The breadcrumb label for the query searchbox border, or `None` when no
-    /// saved search is active. See `adr/0006`.
+    /// saved search is active.
     pub fn saved_search_breadcrumb(&self) -> Option<String> {
         self.saved_search.label(self.list.query())
     }
@@ -392,7 +392,7 @@ impl QueryPanel {
         self.list.set_query(rewritten);
         // A sort only rewrites the order directive — the breadcrumb stays
         // (and `saved_search_breadcrumb` ignores the directive, so it is not
-        // marked edited). See `adr/0006`.
+        // marked edited).
         self.reset_expand();
     }
 
@@ -421,7 +421,7 @@ impl QueryPanel {
             KeyReaction::Consumed => {
                 // Forward the query event to the breadcrumb: a `?name`
                 // expansion pins it, a blank query clears it, a manual edit
-                // keeps it (sticky). See `adr/0006`.
+                // keeps it (sticky).
                 let accepted = self.list.take_accepted_saved_search();
                 let blank = self.query_is_blank();
                 self.saved_search
@@ -536,7 +536,7 @@ impl QueryPanel {
             .constraints([Constraint::Length(3), Constraint::Min(0)])
             .split(outer_inner);
         // The saved-search breadcrumb (`‹ name ›` / `‹ name • edited ›`) titles
-        // the query searchbox when a saved search is active. See `adr/0006`.
+        // the query searchbox when a saved search is active.
         let search_title = self.saved_search.border_title(self.list.query(), " Query");
         let search_block = Block::default()
             .title(search_title)
@@ -1092,7 +1092,7 @@ mod tests {
     }
 
     /// Accepting a `?name` expansion through the panel pins the saved-search
-    /// breadcrumb to the accepted name and runs the stored query. See `adr/0006`.
+    /// breadcrumb to the accepted name and runs the stored query.
     #[tokio::test(flavor = "multi_thread")]
     async fn accepting_saved_search_pins_breadcrumb() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1123,8 +1123,7 @@ mod tests {
     }
 
     /// Editing the expanded query keeps the breadcrumb (sticky provenance) and
-    /// marks it `• edited` once the text diverges from the stored query. See
-    /// `adr/0006`.
+    /// marks it `• edited` once the text diverges from the stored query.
     #[tokio::test(flavor = "multi_thread")]
     async fn editing_expanded_query_keeps_breadcrumb_marked_edited() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1145,7 +1144,7 @@ mod tests {
     }
 
     /// Emptying the query field clears the breadcrumb entirely (one of the two
-    /// clear triggers, the other being a fresh expansion). See `adr/0006`.
+    /// clear triggers, the other being a fresh expansion).
     #[tokio::test(flavor = "multi_thread")]
     async fn emptying_field_clears_breadcrumb() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1175,7 +1174,7 @@ mod tests {
 
     /// Applying a sort rewrites the query's order directive but keeps the
     /// breadcrumb sticky — and NOT marked edited, because the edited check
-    /// ignores the order directive. See `adr/0006`.
+    /// ignores the order directive.
     #[tokio::test(flavor = "multi_thread")]
     async fn apply_sort_keeps_saved_search_breadcrumb() {
         let vault = crate::test_support::temp_vault("qp-sort-name").await;

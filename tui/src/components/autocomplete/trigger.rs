@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use kimun_core::note::{
+use kimun_core::note::scan::{
     ExclusionZones, is_inside_code_link_or_frontmatter, is_inside_exclusion_zone,
 };
 
@@ -10,7 +10,7 @@ pub enum TriggerKind {
     Hashtag,
     LinkFilter,
     /// A leading `?` in a query input: autocompletes saved-search names.
-    /// Accepting expands to the search's stored query (see `adr/0006`).
+    /// Accepting expands to the search's stored query.
     SavedSearch,
 }
 
@@ -43,7 +43,7 @@ pub struct TriggerOptions {
     pub disambiguate_header: bool,
     /// When `true`, suppress hashtag triggers inside code spans,
     /// fenced blocks, frontmatter, link bodies, or closed wikilinks
-    /// (via `core::note::is_inside_exclusion_zone`). Editor uses
+    /// (via `core::note::scan::is_inside_exclusion_zone`). Editor uses
     /// `true`; the search box uses `false` because its input is plain
     /// text and the markdown parser would falsely classify literal
     /// backticks / brackets as code or link spans.
@@ -53,7 +53,7 @@ pub struct TriggerOptions {
     /// `false` so a note that opens with `?` cannot shadow the `#`/`[[`
     /// triggers the backward scan would otherwise find. Gating here (rather
     /// than dropping the trigger after the fact) keeps detection the single
-    /// authority on whether `?` is special. See `adr/0006`.
+    /// authority on whether `?` is special.
     pub allow_saved_search: bool,
 }
 
@@ -74,7 +74,7 @@ impl Default for TriggerOptions {
 /// wikilink target (`[[…|`) or an open hashtag word (`#…`). Returns `None`
 /// otherwise — including when the cursor is inside a code span, fenced
 /// block, frontmatter, or already-closed wikilink/markdown link (delegated
-/// to `kimun_core::note::content_extractor::is_inside_exclusion_zone`).
+/// to `kimun_core::note::scan::is_inside_exclusion_zone`).
 ///
 /// Disambiguation rules in play:
 /// - **Hashtag vs. Markdown header**: a `#` at the start of a line only
@@ -170,7 +170,7 @@ pub fn detect_trigger_with_oracle(
     // owns the whole query. Checked before the backward scan because `?` is
     // not an opener for any other trigger. A saved-search name may contain
     // spaces, so the prefix runs from just after `?` to the cursor. Only the
-    // search-query box opts in (`allow_saved_search`); see `adr/0006`.
+    // search-query box opts in (`allow_saved_search`).
     if opts.allow_saved_search
         && let Some(q_pos) = text.find('?')
         && text[..q_pos].bytes().all(|b| b == b' ' || b == b'\t')
@@ -201,7 +201,7 @@ pub fn detect_trigger_with_oracle(
     //
     // - **hashtag**: only word chars `[A-Za-z0-9_]` may sit between the
     //   `#` and the cursor (matches the hashtag regex in
-    //   `core::note::content_extractor`). Any other char before we hit
+    //   `core::note::scan`). Any other char before we hit
     //   `#` makes a hashtag impossible.
     // - **wikilink**: any char except `]`, `\n`, `\r`, or a `|` already
     //   seen on the way back. A `]` closes a prior wikilink so we are not
@@ -313,7 +313,7 @@ pub fn detect_trigger_with_oracle(
             return None;
         }
 
-        // Word-boundary guard — mirrors `core::note::content_extractor::
+        // Word-boundary guard — mirrors `core::note::scan::
         // label_matches_inner`. The tag region runs from `#` through the
         // contiguous `[A-Za-z0-9_]+` word that follows it; reject if the
         // character on EITHER side of that region is alphanumeric, `_`, or
@@ -382,7 +382,7 @@ pub fn detect_trigger_with_oracle(
     // LinkFilter trigger: a note-name operator (`<`, `>`, `=`) followed by
     // a target, optionally in its exclusion form (`-<`, `->`, `-=`). All
     // three operators take a note-name argument (backlinks / forward links
-    // / note name — ADR-0005 alphabet) and share the same suggestion list.
+    // / note name) and share the same suggestion list.
     // The opener must be at a token start — i.e. preceded by nothing,
     // whitespace, or a `-` that is itself at string-start or preceded by
     // whitespace (the exclusion form).
@@ -440,7 +440,7 @@ pub fn detect_trigger_with_oracle(
 
 /// Returns `true` for the note-name operators that open a link-filter
 /// trigger: `<` (backlinks), `>` (forward links), `=` (note name) — the
-/// ADR-0005 alphabet operators that take a note-name argument. `@`
+/// alphabet operators that take a note-name argument. `@`
 /// (section), `#` (label) and `/` (path) are intentionally excluded.
 fn is_link_filter_opener(c: char) -> bool {
     matches!(c, '<' | '>' | '=')

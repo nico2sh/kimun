@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::{extract_labels, get_chunks_and_links, get_content_chunks, label_matches};
+use kimun_core::note::{extract_labels, scan::label_matches, NoteDetails};
 
 const SMALL: &str = include_str!("fixtures/small_note.md");
 const MEDIUM: &str = include_str!("fixtures/medium_note.md");
@@ -22,7 +22,7 @@ fn bench_get_chunks_and_links(c: &mut Criterion) {
     for (name, text) in fixtures() {
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(name), &text, |b, &text| {
-            b.iter(|| get_chunks_and_links(black_box(&path), black_box(text)));
+            b.iter(|| NoteDetails::chunks_and_links_of(black_box(&path), black_box(text)));
         });
     }
     group.finish();
@@ -33,7 +33,7 @@ fn bench_get_content_chunks(c: &mut Criterion) {
     for (name, text) in fixtures() {
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(name), &text, |b, &text| {
-            b.iter(|| get_content_chunks(black_box(text)));
+            b.iter(|| NoteDetails::content_chunks_of(black_box(text)));
         });
     }
     group.finish();
@@ -72,7 +72,7 @@ fn bench_large_synthetic(c: &mut Criterion) {
     let path = VaultPath::note_path_from("/bench.md");
     group.throughput(Throughput::Bytes(large.len() as u64));
     group.bench_function("medium_x200", |b| {
-        b.iter(|| get_chunks_and_links(black_box(&path), black_box(large.as_str())));
+        b.iter(|| NoteDetails::chunks_and_links_of(black_box(&path), black_box(large.as_str())));
     });
     group.finish();
 }

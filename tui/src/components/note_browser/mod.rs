@@ -52,7 +52,7 @@ pub struct NoteBrowserModal {
     key_bindings: KeyBindings,
     /// The saved-search breadcrumb shown on the search border. Owns its
     /// sticky/clear/edited state machine; the modal only forwards query events.
-    /// See [`SavedSearchBreadcrumb`] and `adr/0006`.
+    /// See [`SavedSearchBreadcrumb`].
     saved_search: SavedSearchBreadcrumb,
 }
 
@@ -234,7 +234,7 @@ impl NoteBrowserModal {
     }
 
     /// The saved-search breadcrumb label for the search border, or `None` when
-    /// no saved search is active. See `adr/0006`.
+    /// no saved search is active.
     #[cfg(test)]
     fn saved_search_breadcrumb(&self) -> Option<String> {
         self.saved_search.label(self.list.query())
@@ -287,7 +287,7 @@ impl Overlay for NoteBrowserModal {
                 KeyReaction::Consumed => {
                     // Forward the query event to the breadcrumb: a `?name`
                     // expansion pins it, an emptied field clears it, a manual
-                    // edit keeps it (sticky). See `adr/0006`.
+                    // edit keeps it (sticky).
                     let accepted = self.list.take_accepted_saved_search();
                     let blank = self.list.query().trim().is_empty();
                     self.saved_search
@@ -328,7 +328,7 @@ impl Overlay for NoteBrowserModal {
 
         // ── Search box ────────────────────────────────────────────────────
         // A saved-search breadcrumb (`‹ name ›` / `‹ name • edited ›`) titles
-        // the search box when a `?name` expansion is active. See `adr/0006`.
+        // the search box when a `?name` expansion is active.
         let search_title = self
             .saved_search
             .border_title(self.list.query(), " Search ");
@@ -561,7 +561,7 @@ mod tests {
     }
 
     /// Accepting a `?name` expansion in the Ctrl+K browser pins the saved-search
-    /// breadcrumb and runs the stored query. See `adr/0006`.
+    /// breadcrumb and runs the stored query.
     #[tokio::test(flavor = "multi_thread")]
     async fn accepting_saved_search_pins_breadcrumb() {
         let vault = temp_vault("modal-ss").await;

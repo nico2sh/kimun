@@ -33,7 +33,7 @@ pub fn extract_tags(content: &str) -> Vec<String> {
 }
 
 pub fn extract_links(content: &str) -> Vec<String> {
-    kimun_core::note::link_char_spans(content)
+    kimun_core::note::scan::link_char_spans(content)
         .into_iter()
         .map(|span| span.target)
         .collect()

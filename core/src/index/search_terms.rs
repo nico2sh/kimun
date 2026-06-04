@@ -134,10 +134,24 @@ impl QueryTermExtractor {
     }
 }
 
+/// A parsed `or:`/`^` order directive: the column to sort by together with
+/// its direction. Produced by the query parser when it encounters an order
+/// token; [`OrderField`] is the direction-free counterpart used by callers
+/// that carry the asc/desc choice separately.
 #[derive(Debug)]
 pub enum OrderBy {
-    Title { asc: bool },
-    FileName { asc: bool },
+    /// Sort by note title. `asc` is `true` for ascending, `false` for
+    /// descending.
+    Title {
+        /// `true` to sort ascending, `false` to sort descending.
+        asc: bool,
+    },
+    /// Sort by filename. `asc` is `true` for ascending, `false` for
+    /// descending.
+    FileName {
+        /// `true` to sort ascending, `false` to sort descending.
+        asc: bool,
+    },
 }
 
 impl OrderBy {
@@ -157,7 +171,9 @@ impl OrderBy {
 /// separately by callers; this names only the column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderField {
+    /// Order results by note title.
     Title,
+    /// Order results by filename.
     FileName,
 }
 
@@ -221,22 +237,58 @@ pub fn with_order_directive(query: &str, field: OrderField, asc: bool) -> String
     }
 }
 
+/// A search query string decomposed into the typed buckets the index turns
+/// into an FTS query. Each prefix in the DSL routes a token into one of these
+/// fields; bare tokens are full-text terms. This is the boundary the TUI
+/// builds (often via [`with_order_directive`] / [`quote_query_term`]) and the
+/// index consumes, so the DSL syntax lives entirely in core.
+///
+/// Prefix vocabulary (long form, then short form):
+/// - `in:` / `@` — breadcrumb (any path segment / parent directory)
+/// - `name:` / `=` — filename
+/// - `pt:` / `/` — full path
+/// - `lb:` / `#` — label (lowercased and deduplicated)
+/// - `lk:` / `<` — backlinks (notes linking *to* the target)
+/// - `fwd:` / `>` — forward links (notes the target links *to*)
+/// - `or:` / `^` — order directive (`or:title`, `^file`, …)
+///
+/// Any prefix may be negated by a leading `-` (`-#draft`, `-lk:spec`) to
+/// route the token into the matching `excluded_*` field. Values may be quoted
+/// with `"` or `'` to include whitespace (e.g. `="my note"`); an unterminated
+/// quote discards the token. Bare prefixes with no value are dropped.
 #[derive(Default, Debug)]
 pub struct SearchTerms {
+    /// Bare full-text terms (no prefix). Matched against note content.
     pub terms: Vec<String>,
+    /// `in:` / `@` values: matched against any path segment (breadcrumb).
     pub breadcrumb: Vec<String>,
+    /// `or:` / `^` order directives, in the order they appeared.
     pub order_by: Vec<OrderBy>,
+    /// `name:` / `=` values: matched against the filename.
     pub filename: Vec<String>,
+    /// `pt:` / `/` values: matched against the full vault path.
     pub path: Vec<String>,
+    /// `lb:` / `#` values: matched against labels. Lowercased and deduped.
     pub labels: Vec<String>,
+    /// `lk:` / `<` values: notes that link *to* the named target (backlinks).
+    /// Deduped, order preserved.
     pub links: Vec<String>,
+    /// `fwd:` / `>` values: notes the named target links *to* (forward
+    /// links). Deduped, order preserved.
     pub forward_links: Vec<String>,
+    /// Negated bare terms (`-term`): content that must *not* match.
     pub excluded_terms: Vec<String>,
+    /// Negated `in:` / `@` values (`-in:`, `-@`).
     pub excluded_breadcrumb: Vec<String>,
+    /// Negated `name:` / `=` values (`-name:`, `-=`).
     pub excluded_filename: Vec<String>,
+    /// Negated `pt:` / `/` values (`-pt:`, `-/`).
     pub excluded_path: Vec<String>,
+    /// Negated `lb:` / `#` values (`-lb:`, `-#`). Lowercased and deduped.
     pub excluded_labels: Vec<String>,
+    /// Negated `lk:` / `<` values (`-lk:`, `-<`). Deduped, order preserved.
     pub excluded_links: Vec<String>,
+    /// Negated `fwd:` / `>` values (`-fwd:`, `->`). Deduped, order preserved.
     pub excluded_forward_links: Vec<String>,
 }
 
@@ -246,6 +298,24 @@ pub struct SearchTerms {
 const MAX_QUERY_LEN: usize = 8 * 1024;
 
 impl SearchTerms {
+    /// Parse a raw query string into typed [`SearchTerms`] buckets.
+    ///
+    /// Tokens are consumed left to right: a recognised prefix (see the
+    /// [`SearchTerms`] docs) routes the value into its field, an optional
+    /// leading `-` negates it, and anything else becomes a bare full-text
+    /// term. Quoted values may span whitespace; empty values are dropped, and
+    /// labels and link targets are deduplicated with order preserved. Inputs
+    /// over `MAX_QUERY_LEN` are truncated on a char boundary.
+    ///
+    /// ```
+    /// use kimun_core::SearchTerms;
+    ///
+    /// let st = SearchTerms::from_query_string("meeting #urgent -#draft @work");
+    /// assert_eq!(st.terms, vec!["meeting"]);
+    /// assert_eq!(st.labels, vec!["urgent"]);
+    /// assert_eq!(st.excluded_labels, vec!["draft"]);
+    /// assert_eq!(st.breadcrumb, vec!["work"]);
+    /// ```
     pub fn from_query_string<S: AsRef<str>>(query: S) -> Self {
         let query_ref = query.as_ref();
         let query_ref = if query_ref.len() > MAX_QUERY_LEN {

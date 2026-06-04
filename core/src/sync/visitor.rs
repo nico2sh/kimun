@@ -8,6 +8,7 @@ use ignore::{ParallelVisitor, ParallelVisitorBuilder};
 use log::{error, warn};
 
 use crate::{
+    index::IndexDiff,
     nfs::{EntryData, NoteEntryData, VaultEntry, VaultPath},
     note::NoteContentData,
     NotesValidation, SearchResult,
@@ -27,10 +28,11 @@ impl NoteListVisitor {
         let result = match &entry.data {
             EntryData::Note(note_data) => match self.verify_cached_note(note_data, os_path) {
                 Some(content) => SearchResult::note(&note_data.path, &content),
-                // Read failed; the entry stays in `notes_to_delete` if it was
-                // already cached, or simply isn't indexed if it's new — both
-                // cases will be retried on the next index pass. Don't emit a
-                // misleading SearchResult to the UI.
+                // Read failed on a NEW (uncached) note; it simply isn't
+                // indexed this pass and is retried on the next one. (A read
+                // failure on a cached note returns `Some` with the cached
+                // content — its index row is kept.) Don't emit a misleading
+                // SearchResult to the UI.
                 None => return,
             },
             EntryData::Directory(directory_data) => SearchResult::directory(&directory_data.path),
@@ -79,15 +81,14 @@ impl NoteListVisitor {
                     }
                     Err(e) => {
                         warn!(
-                            "Could not read note {}: {}; reinstating cached entry",
+                            "Could not read note {}: {}; keeping its index entry",
                             data.path, e
                         );
-                        // Put the cached entry back into the delete map so it
-                        // doesn't get treated as "deleted from disk" at flush.
-                        self.notes_to_delete
-                            .lock()
-                            .unwrap()
-                            .insert(data.path.clone(), (cached_data, cached_details.clone()));
+                        // The entry stays REMOVED from `notes_to_delete` (the
+                        // residue of that map becomes `IndexDiff::to_delete`)
+                        // and is pushed to neither `to_add` nor `to_modify`,
+                        // so the cached index row survives untouched and is
+                        // re-checked on the next sync pass.
                         Some(cached_details)
                     }
                 }
@@ -160,12 +161,12 @@ impl NoteListVisitorBuilder {
         }
     }
 
-    /// Consumes the builder and returns the accumulated diff. Must be called
-    /// after the parallel walker has finished — at that point all visitor
-    /// clones are dropped, so the inner `Arc<Mutex<...>>` are uniquely owned
-    /// and we can move the Vecs out without cloning.
-    pub fn into_results(self) -> VisitorResults {
-        VisitorResults {
+    /// Consumes the builder and returns the accumulated [`IndexDiff`]. Must be
+    /// called after the parallel walker has finished — at that point all
+    /// visitor clones are dropped, so the inner `Arc<Mutex<...>>` are uniquely
+    /// owned and we can move the Vecs out without cloning.
+    pub fn into_diff(self) -> IndexDiff {
+        IndexDiff {
             to_delete: take_arc_mutex(self.notes_to_delete).into_keys().collect(),
             to_add: take_arc_mutex(self.notes_to_add),
             to_modify: take_arc_mutex(self.notes_to_modify),
@@ -191,16 +192,6 @@ impl NoteListVisitorBuilder {
     pub fn get_notes_to_modify(&self) -> Vec<(NoteEntryData, String)> {
         self.notes_to_modify.lock().unwrap().clone()
     }
-}
-
-/// Diff produced by a `NoteListVisitorBuilder` after the parallel walker
-/// finishes. The order of `to_add` and `to_modify` is non-deterministic —
-/// they are populated by parallel worker threads and entries land in the
-/// order each thread completes its file read.
-pub struct VisitorResults {
-    pub to_delete: Vec<VaultPath>,
-    pub to_add: Vec<(NoteEntryData, String)>,
-    pub to_modify: Vec<(NoteEntryData, String)>,
 }
 
 fn take_arc_mutex<T: Default>(arc: Arc<Mutex<T>>) -> T {
@@ -606,6 +597,62 @@ mod tests {
         assert_eq!(to_delete.len(), 1);
         assert!(to_delete[0].to_string().contains("ephemeral.md"));
 
+        assert!(builder.get_notes_to_add().is_empty());
+        assert!(builder.get_notes_to_modify().is_empty());
+    }
+
+    /// A cached note that is still on disk but momentarily unreadable must
+    /// NOT land in `to_delete` (regression: the old error branch re-inserted
+    /// it into the delete map, wiping a live note's index rows on a
+    /// transient read failure). It must not be added or modified either —
+    /// the cached index row survives untouched until the next pass.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_unreadable_cached_note_is_not_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        let note_path = VaultPath::new("locked.md");
+        save_note(workspace_path, &note_path, "# Locked\n\nStill here.")
+            .await
+            .unwrap();
+
+        // Capture the cached entry as a previous index pass would have.
+        let full_path = workspace_path.join("locked.md");
+        let entry = VaultEntry::from_path(workspace_path, &full_path)
+            .await
+            .unwrap();
+        let cached = match entry.data {
+            EntryData::Note(d) => {
+                let details = d.load_details(workspace_path, &d.path).await.unwrap();
+                vec![(d, details.get_content_data())]
+            }
+            _ => panic!("Expected note"),
+        };
+
+        // Make the file unreadable, then run a Full-validation scan (which
+        // must try to reload the content and hit the read error).
+        let mut perms = std::fs::metadata(&full_path).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&full_path, perms).unwrap();
+
+        let mut builder =
+            NoteListVisitorBuilder::new(workspace_path, NotesValidation::Full, cached, None);
+        let walker = crate::nfs::get_file_walker(workspace_path, &VaultPath::root(), true);
+        walker.visit(&mut builder);
+
+        // Restore permissions so TempDir cleanup works.
+        let mut perms = std::fs::metadata(&full_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&full_path, perms).unwrap();
+
+        // The note is still on disk: it must survive in the index.
+        assert!(
+            builder.get_notes_to_delete().is_empty(),
+            "transient read failure must not delete a live note from the index"
+        );
         assert!(builder.get_notes_to_add().is_empty());
         assert!(builder.get_notes_to_modify().is_empty());
     }

@@ -1,12 +1,58 @@
-pub(crate) mod db;
+//! Core of the Kimün note-taking app: all file operations, indexing, and
+//! note manipulation, with no presentation concerns.
+//!
+//! The public surface is the [`NoteVault`] facade. A vault is a directory of
+//! Markdown notes on disk; `NoteVault` owns the operations over it (create,
+//! read, write, rename, search, browse) and is cheap to clone.
+//!
+//! A few conventions shape this crate:
+//!
+//! - **`VaultPath` for vault-internal paths.** Everything addressed *inside*
+//!   the vault uses [`VaultPath`], a case-insensitive,
+//!   `/`-separated, OS-agnostic path. OS path types are reserved for
+//!   configuration values (the workspace root) and for converting back to a
+//!   real filesystem location when a caller needs one.
+//! - **The index is a cache.** Search, backlinks, suggestions, and listings
+//!   are served from a SQLite index that mirrors the notes on disk. It can be
+//!   rebuilt at any time from the files, which remain the source of truth.
+//! - **`nfs` owns the filesystem.** Every direct `std::fs`/`tokio::fs` call
+//!   lives in the [`nfs`] module; the rest of the crate goes through it.
+//!
+//! # Example
+//!
+//! Create a vault in a temporary directory, write a note, and read it back:
+//!
+//! ```no_run
+//! use kimun_core::{NoteVault, VaultConfig};
+//! use kimun_core::nfs::VaultPath;
+//!
+//! let dir = tempfile::tempdir().unwrap();
+//! let rt = tokio::runtime::Runtime::new().unwrap();
+//! rt.block_on(async {
+//!     let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
+//!     let path = VaultPath::new("/hello.md");
+//!     vault.create_note(&path, "# Hello\n").await.unwrap();
+//!     let text = vault.get_note_text(&path).await.unwrap();
+//!     assert_eq!(text, "# Hello\n");
+//! });
+//! ```
+
+/// Error types returned across the crate's public API.
 pub mod error;
+pub(crate) mod index;
+pub(crate) mod link_rewrite;
+/// Filesystem layer: the only place that touches the OS filesystem directly,
+/// plus the [`VaultPath`] vault-internal path type.
 pub mod nfs;
+/// Note model: parsing Markdown into details, chunks, links, and tags.
 pub mod note;
+pub(crate) mod sync;
+/// Small standalone helpers (paths, log directory, diacritic folding).
 pub mod utilities;
-pub use db::search_terms::{
+pub use index::search_terms::{
     quote_query_term, strip_order_directive, with_order_directive, OrderBy, OrderField, SearchTerms,
 };
-pub use db::{DBStatus, NoteSuggestion, TagSuggestion};
+pub use index::{IndexDiff, NoteSuggestion, TagSuggestion};
 pub use nfs::saved_searches::SavedSearch;
 pub use utilities::{app_log_dir, ensure_dir_exists};
 
@@ -22,28 +68,31 @@ use std::{
 };
 
 use chrono::{NaiveDate, Utc};
-use db::VaultDB;
-use error::{DBError, FSError, VaultError};
+use error::{FSError, VaultError};
+use index::NoteIndex;
+use link_rewrite::LinkRewrite;
 use log::debug;
-use nfs::{visitor::NoteListVisitorBuilder, NoteEntryData, VaultPath};
+use nfs::{NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
+use sync::VaultSync;
 use utilities::path_to_string;
 
 use crate::nfs::saved_searches;
 use crate::nfs::DirectoryEntryData;
 
+/// Default directory for journal entries, one note per day.
 pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
+/// Default directory for quick-capture notes (see [`NoteVault::quick_note`]).
 pub const DEFAULT_INBOX_PATH: &str = "/inbox";
+/// Default directory for attachments (see
+/// [`NoteVault::default_attachments_path`]).
 pub const DEFAULT_ASSETS_PATH: &str = "/assets";
 
-/// Maximum number of concurrent FS read/write tasks during backlink rewriting.
-/// Caps file-descriptor pressure on hub-style notes with thousands of links.
-/// Sized well below typical soft `ulimit -n` (256 on macOS, 1024 on Linux)
-/// while still parallelizing enough to hide per-syscall latency.
-const BACKLINK_IO_CONCURRENCY: usize = 32;
-
+/// Timing summary of an indexing pass.
 pub struct IndexReport {
+    /// When the pass started.
     pub start: SystemTime,
+    /// How long the pass took (zero until the pass finishes).
     pub duration: Duration,
 }
 
@@ -70,7 +119,10 @@ impl IndexReport {
 /// the cache lives at `<workspace_path>/kimun.sqlite` (legacy default).
 #[derive(Debug, Clone)]
 pub struct VaultConfig {
+    /// OS path to the vault's root directory.
     pub workspace_path: std::path::PathBuf,
+    /// Override for the SQLite cache location. When `None`, the cache lives at
+    /// `<workspace_path>/kimun.sqlite` (legacy default).
     pub db_path: Option<std::path::PathBuf>,
     /// When `true`, destructive automated edits (overwrite, replace, delete, and
     /// the backlink rewrites of rename/move) copy a note's previous content into
@@ -80,6 +132,8 @@ pub struct VaultConfig {
 }
 
 impl VaultConfig {
+    /// Builds a config for the vault rooted at `workspace_path`, with the
+    /// legacy default cache location and backups disabled.
     pub fn new(workspace_path: impl Into<std::path::PathBuf>) -> Self {
         Self {
             workspace_path: workspace_path.into(),
@@ -88,11 +142,15 @@ impl VaultConfig {
         }
     }
 
+    /// Overrides where the SQLite cache is stored, instead of the legacy
+    /// in-workspace default.
     pub fn with_db_path(mut self, db_path: impl Into<std::path::PathBuf>) -> Self {
         self.db_path = Some(db_path.into());
         self
     }
 
+    /// Enables or disables backing up note content before destructive edits
+    /// (see the [`backup`](Self::backup) field).
     pub fn with_backup(mut self, backup: bool) -> Self {
         self.backup = backup;
         self
@@ -104,10 +162,14 @@ impl VaultConfig {
 /// written to disk.
 #[derive(Debug, Clone)]
 pub struct ReplacePreview {
+    /// Number of matches that would be replaced.
     pub count: usize,
+    /// The note's content after the replacement.
     pub content: String,
 }
 
+/// Facade over a vault: a directory of Markdown notes plus its searchable
+/// index. Cheap to clone — clones share the index pool and per-note locks.
 #[derive(Debug, Clone)]
 pub struct NoteVault {
     /// Stored as `Arc<Path>` (not `Arc<PathBuf>`) because (a) it impls
@@ -117,7 +179,9 @@ pub struct NoteVault {
     workspace_path: Arc<Path>,
     journal_path: VaultPath,
     inbox_path: VaultPath,
-    vault_db: VaultDB,
+    /// The vault's searchable note index. Crate-visible so the index module's
+    /// own tests can exercise vault-level flows against index internals.
+    pub(crate) index: NoteIndex,
     /// Whether destructive writes back up the previous content first. Mirrors
     /// [`VaultConfig::backup`]; see its docs.
     backup: bool,
@@ -139,7 +203,7 @@ impl PartialEq for NoteVault {
 
 impl NoteVault {
     /// Creates a new instance of the Note Vault.
-    /// Make sure you call `NoteVault::init_and_validate(&self)` to initialize the DB index if
+    /// Make sure you call `NoteVault::validate_and_init(&self)` to initialize the DB index if
     /// needed.
     pub async fn new(config: VaultConfig) -> Result<Self, VaultError> {
         debug!("Creating new vault Instance");
@@ -159,13 +223,13 @@ impl NoteVault {
 
         let db_path = config
             .db_path
-            .unwrap_or_else(|| workspace_path.join(crate::db::DB_FILE));
-        let vault_db = VaultDB::new(&db_path).await?;
+            .unwrap_or_else(|| workspace_path.join(crate::index::DB_FILE));
+        let index = NoteIndex::open(&db_path).await?;
         let note_vault = Self {
             workspace_path: Arc::from(workspace_path.as_path()),
             journal_path: VaultPath::new(DEFAULT_JOURNAL_PATH),
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
-            vault_db,
+            index,
             backup,
             note_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         };
@@ -177,16 +241,13 @@ impl NoteVault {
         &self.workspace_path
     }
 
-    /// Test-only handle to the underlying SQLite pool. Used by migration
-    /// tests that need to mutate stored state directly to simulate older
-    /// schema versions.
-    #[cfg(test)]
-    pub(crate) fn db_pool(&self) -> &sqlx::SqlitePool {
-        self.vault_db.pool()
-    }
-
-    pub async fn validate(&self) -> Result<DBStatus, VaultError> {
-        self.vault_db.check_db().await.map_err(VaultError::DBError)
+    /// `false` when opening the vault self-healed the index schema (missing,
+    /// outdated, or invalid), meaning the index is valid but
+    /// empty until a sync pass ([`validate_and_init`](Self::validate_and_init))
+    /// fills it. Fast paths use this to refuse to operate against an empty
+    /// index without paying for a sync.
+    pub fn index_ready(&self) -> bool {
+        self.index.ready()
     }
 
     /// Walks the entire vault checking for case-insensitive name collisions.
@@ -201,68 +262,29 @@ impl NoteVault {
         }
         Ok(())
     }
-    /// On init and validate it verifies the DB index to make sure:
-    ///
-    /// 1. It exists
-    /// 2. It is valid.
-    /// 3. Its schema is updated
-    ///
-    /// Then does a quick scan of the workspace directory to update the index if there are new or
-    /// missing notes.
+    /// Brings the index in step with the vault on disk. Opening the vault
+    /// already self-healed the index schema, so all that remains
+    /// is a sync pass: a quick existence scan when the index was already
+    /// current, or a full scan when it was just healed (and is thus empty).
     /// This can be slow on large vaults.
     pub async fn validate_and_init(&self) -> Result<IndexReport, VaultError> {
         self.fail_on_case_conflicts().await?;
-        debug!("Initializing DB and validating it");
-        let db_result = self.validate().await;
-        match db_result {
-            Ok(check_res) => {
-                match check_res {
-                    db::DBStatus::Ready => {
-                        // We only check if there are new notes
-                        self.index_notes(NotesValidation::None).await
-                    }
-                    db::DBStatus::Outdated => self.recreate_index().await,
-                    db::DBStatus::NotValid => self.recreate_index().await,
-                    db::DBStatus::FileNotFound => {
-                        // No need to validate, no data there
-                        self.recreate_index().await
-                    }
-                }
-            }
-            Err(e) => {
-                debug!("Error validating the DB, rebuilding it: {}", e);
-                self.recreate_index().await
-            }
+        if self.index.ready() {
+            // We only check if there are new notes
+            self.index_notes(NotesValidation::None).await
+        } else {
+            debug!("Index was healed on open — running a full sync");
+            self.index_notes(NotesValidation::Full).await
         }
     }
 
-    /// Deletes the db file and recreates the index.
-    /// On Windows, the pool must be closed before the file can be deleted,
-    /// so this method closes the pool first. After calling this method,
-    /// the NoteVault instance should be discarded and a new one created.
-    pub async fn force_rebuild(&self) -> Result<IndexReport, VaultError> {
-        let db_path = self.vault_db.get_db_path();
-        // Close the pool to release file handles before deleting.
-        // This is required on Windows where open handles prevent file deletion.
-        self.vault_db.close().await?;
-        // Delete the db file via the nfs module.
-        nfs::remove_path(&db_path)?;
-        // Note: the pool is closed at this point. The caller should create
-        // a new NoteVault instance if further DB operations are needed.
-        // recreate_index will reconnect via the pool's rwc mode which
-        // recreates the file.
-        self.recreate_index().await
-    }
-
-    /// Deletes all the cached data from the DB by destroying the tables
-    /// and recreates the index
-    /// This is similar to a force rebuild but instead of deleting the db file
-    /// it only deletes the tables.
+    /// Deletes all the cached data from the index by recreating its schema,
+    /// then rebuilds it with a full sync pass.
     pub async fn recreate_index(&self) -> Result<IndexReport, VaultError> {
         self.fail_on_case_conflicts().await?;
         let index_report = IndexReport::new();
-        debug!("Initializing DB from Vault request");
-        db::init_db(self.vault_db.pool()).await?;
+        debug!("Recreating index from Vault request");
+        self.index.recreate().await?;
         debug!("Tables created, creating index");
         self.int_index_notes(index_report, NotesValidation::Full)
             .await
@@ -290,14 +312,13 @@ impl NoteVault {
         mut index_report: IndexReport,
         validation_mode: NotesValidation,
     ) -> Result<IndexReport, VaultError> {
-        let workspace_path = self.workspace_path.clone();
-        create_index_for(
-            &workspace_path,
-            self.vault_db.pool(),
-            &VaultPath::root(),
-            validation_mode,
-        )
-        .await?;
+        VaultSync::new(&self.index, self.workspace_path())
+            .run(&VaultPath::root(), true, validation_mode, None)
+            .await?;
+        // A whole-vault sync just completed: the index mirrors the disk, so
+        // the readiness probe reports true even when this instance healed or
+        // recreated the schema earlier.
+        self.index.mark_synced();
         index_report.finish();
         debug!("TIME: {}", index_report.duration.as_secs());
         Ok(index_report)
@@ -311,14 +332,17 @@ impl NoteVault {
             .unwrap_or(false)
     }
 
+    /// Directory under which journal entries are created.
     pub fn journal_path(&self) -> &VaultPath {
         &self.journal_path
     }
 
+    /// Directory under which quick-capture notes are created.
     pub fn inbox_path(&self) -> &VaultPath {
         &self.inbox_path
     }
 
+    /// Overrides the inbox directory used by [`Self::quick_note`].
     pub fn set_inbox_path(&mut self, path: VaultPath) {
         self.inbox_path = path;
     }
@@ -358,6 +382,8 @@ impl NoteVault {
         }))
     }
 
+    /// Loads today's journal entry, creating it with a date heading if it does
+    /// not exist yet. Returns the note details and its content.
     pub async fn journal_entry(&self) -> Result<(NoteDetails, String), VaultError> {
         let (title, note_path) = self.get_todays_journal();
         let content = self
@@ -379,7 +405,8 @@ impl NoteVault {
         )
     }
 
-    // Returns a NaiveDate if the note path is a valid journal entry
+    /// Parses the date out of a journal note path, or `None` when `note_path`
+    /// is not a `YYYY-MM-DD` note directly under the journal directory.
     pub fn journal_date(&self, note_path: &VaultPath) -> Option<NaiveDate> {
         if !note_path.is_note() {
             return None;
@@ -412,45 +439,49 @@ impl NoteVault {
         }
     }
 
-    // Loads the note's content, returns the text
-    // If the file doesn't exist you will get a VaultError::FSError with a
-    // FSError::NotePathNotFound as the source, you can use that to
-    // lazy create a note, or use the load_or_create_note function instead
+    /// Loads the raw text of the note at `path`.
+    ///
+    /// When the file doesn't exist you get a [`VaultError::FSError`] wrapping
+    /// `FSError::NotePathNotFound`; you can branch on that to lazily create a
+    /// note, or use [`Self::load_or_create_note`] instead.
     pub async fn get_note_text(&self, path: &VaultPath) -> Result<String, VaultError> {
         let text = nfs::load_note(self.workspace_path(), path).await?;
         Ok(text)
     }
 
-    // Loads a note, returning its details that contain path, raw text and more
-    // If the file doesn't exist you will get a VaultError::FSError with a
-    // FSError::NotePathNotFound as the source, you can use that to
-    // lazy create a note, or use the load_or_create_note function instead
+    /// Loads a note as [`NoteDetails`], carrying its path, raw text, and parsed
+    /// metadata.
+    ///
+    /// Missing-file behaviour matches [`Self::get_note_text`].
     pub async fn load_note(&self, path: &VaultPath) -> Result<NoteDetails, VaultError> {
         let text = self.get_note_text(path).await?;
         Ok(NoteDetails::new(path, text))
     }
 
+    /// Returns the indexed content chunks for the note at `path`, keyed by the
+    /// note path they belong to.
     pub async fn get_note_chunks(
         &self,
         path: &VaultPath,
     ) -> Result<HashMap<VaultPath, Vec<ContentChunk>>, VaultError> {
-        let a = db::get_notes_sections(self.vault_db.pool(), path, false).await?;
+        let a = self.index.get_notes_sections(path, false).await?;
         Ok(a)
     }
 
-    // Search notes using a search syntax
+    /// Searches notes using the vault's query syntax (see [`SearchTerms`]).
+    /// Returns each matching note's entry and content data.
     pub async fn search_notes<S: AsRef<str>>(
         &self,
         search_query: S,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
         let search_query = search_query.as_ref();
-        let a = db::search_terms(self.vault_db.pool(), search_query).await?;
+        let a = self.index.search(search_query).await?;
         Ok(a)
     }
 
     /// Returns every distinct label persisted in the vault, lowercased.
     pub async fn list_labels(&self) -> Result<Vec<String>, VaultError> {
-        Ok(db::list_labels(self.vault_db.pool()).await?)
+        Ok(self.index.list_labels().await?)
     }
 
     /// Returns notes whose name (filename without extension) starts with
@@ -462,7 +493,7 @@ impl NoteVault {
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<NoteSuggestion>, VaultError> {
-        Ok(db::suggest_notes_by_prefix(self.vault_db.pool(), prefix, limit).await?)
+        Ok(self.index.suggest_notes_by_prefix(prefix, limit).await?)
     }
 
     /// Returns tag labels matching `prefix` (case-insensitive) paired with
@@ -473,13 +504,13 @@ impl NoteVault {
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<TagSuggestion>, VaultError> {
-        Ok(db::suggest_tags_by_prefix(self.vault_db.pool(), prefix, limit).await?)
+        Ok(self.index.suggest_tags_by_prefix(prefix, limit).await?)
     }
 
     /// Returns every distinct label in the vault paired with the number of
     /// notes carrying it. Labels are returned sorted alphabetically.
     pub async fn label_counts(&self) -> Result<Vec<(String, usize)>, VaultError> {
-        let rows = db::label_counts(self.vault_db.pool()).await?;
+        let rows = self.index.label_counts().await?;
         Ok(rows.into_iter().map(|(n, c)| (n, c as usize)).collect())
     }
 
@@ -489,7 +520,7 @@ impl NoteVault {
         &self,
         name: S,
     ) -> Result<Vec<VaultPath>, VaultError> {
-        Ok(db::notes_with_label(self.vault_db.pool(), name.as_ref()).await?)
+        Ok(self.index.notes_with_label(name.as_ref()).await?)
     }
 
     /// Get notes under the given path. When `recursive` is false, only direct
@@ -499,45 +530,45 @@ impl NoteVault {
         path: &VaultPath,
         recursive: bool,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        let notes = db::get_notes(self.vault_db.pool(), path, recursive).await?;
+        let notes = self.index.get_notes(path, recursive).await?;
         Ok(notes)
     }
 
-    // Get all notes
+    /// Returns every note in the vault with its entry and content data.
     pub async fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        let a = db::get_all_notes(self.vault_db.pool()).await?;
+        let a = self.index.get_all_notes().await?;
         Ok(a)
     }
+    /// Resolves a vault path to its real OS filesystem location under the
+    /// workspace root.
     pub fn path_to_pathbuf(&self, path: &VaultPath) -> PathBuf {
         path.to_pathbuf(self.workspace_path())
     }
 
+    /// Walks the vault per `options`, streaming each entry as a
+    /// [`SearchResult`] through the channel set up by
+    /// [`VaultBrowseOptionsBuilder::build`]. A recursive browse from the root
+    /// doubles as a full index sync.
     pub async fn browse_vault(&self, options: VaultBrowseOptions) -> Result<(), VaultError> {
         let start = std::time::SystemTime::now();
         debug!("> Start fetching files with Options:\n{}", options);
 
-        let cached_notes =
-            db::get_notes(self.vault_db.pool(), &options.path, options.recursive).await?;
+        VaultSync::new(&self.index, self.workspace_path())
+            .run(
+                &options.path,
+                options.recursive,
+                options.validation,
+                Some(options.sender.clone()),
+            )
+            .await?;
 
-        let builder = NoteListVisitorBuilder::new(
-            self.workspace_path(),
-            options.validation,
-            cached_notes,
-            Some(options.sender.clone()),
-        );
-        let walker = nfs::get_file_walker(
-            self.workspace_path.clone(),
-            &options.path,
-            options.recursive,
-        );
-        let builder = run_walker_blocking(walker, builder).await?;
-        let results = builder.into_results();
-
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::insert_notes(&mut tx, &results.to_add).await?;
-        db::delete_notes(&mut tx, &results.to_delete).await?;
-        db::update_notes(&mut tx, &results.to_modify).await?;
-        tx.commit().await?;
+        // A recursive browse from the root is a whole-vault sync: the index
+        // now mirrors the disk, so the readiness probe must report true —
+        // same as int_index_notes. A partial-subtree browse must NOT mark
+        // synced (the rest of a healed index could still be empty).
+        if options.recursive && options.path.is_root_or_empty() {
+            self.index.mark_synced();
+        }
 
         let time = std::time::SystemTime::now()
             .duration_since(start)
@@ -579,29 +610,27 @@ impl NoteVault {
         } else {
             note.path.clone()
         };
-        let (md_text, mut links) =
-            note::content_extractor::get_markdown_and_links(&note.path, &note.raw_text);
+        let (md_text, mut links) = note.get_markdown_and_links();
         // Since this function is intended to return content ready to be rendered
         // We need the full path of the image links, so any markdown processor can find the image,
         // the full path can only be resolved from here as we have the vault path
-        let (md_text, image_links) =
-            note::content_extractor::process_image_links(&md_text, |alt_text, raw_path| {
-                let resolved = if note::is_remote_url(raw_path) {
-                    raw_path.to_string()
+        let (md_text, image_links) = note::process_image_links(&md_text, |alt_text, raw_path| {
+            let resolved = if note::scan::is_remote_url(raw_path) {
+                raw_path.to_string()
+            } else {
+                let image_vault_path = if raw_path.starts_with('/') {
+                    VaultPath::new(raw_path)
                 } else {
-                    let image_vault_path = if raw_path.starts_with('/') {
-                        VaultPath::new(raw_path)
-                    } else {
-                        note_parent.append(&VaultPath::new(raw_path)).flatten()
-                    };
-                    image_vault_path
-                        .to_pathbuf(self.workspace_path())
-                        .display()
-                        .to_string()
+                    note_parent.append(&VaultPath::new(raw_path)).flatten()
                 };
-                let link = note::NoteLink::image(&resolved, alt_text, raw_path);
-                (resolved, link)
-            });
+                image_vault_path
+                    .to_pathbuf(self.workspace_path())
+                    .display()
+                    .to_string()
+            };
+            let link = note::NoteLink::image(&resolved, alt_text, raw_path);
+            (resolved, link)
+        });
         links.extend(image_links);
         Ok(note::MarkdownNote {
             text: md_text,
@@ -615,7 +644,7 @@ impl NoteVault {
         &self,
         path: &VaultPath,
     ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        Ok(db::get_backlinks(self.vault_db.pool(), path).await?)
+        Ok(self.index.get_backlinks(path).await?)
     }
 
     /// List the vault's saved searches (see `SavedSearch`). Empty if none.
@@ -624,10 +653,10 @@ impl NoteVault {
     }
 
     /// Saved searches whose name starts with `prefix` (case-insensitive,
-    /// ASCII folding to match [`save_search`]/[`delete_saved_search`]), in
+    /// ASCII folding to match [`Self::save_search`]/[`Self::delete_saved_search`]), in
     /// stored order, capped at `limit`. Feeds the `?`-prefix autocomplete in
-    /// the query input — mirrors [`suggest_notes_by_prefix`] /
-    /// [`suggest_tags_by_prefix`] so prefix matching stays in core. Saved
+    /// the query input — mirrors [`Self::suggest_notes_by_prefix`] /
+    /// [`Self::suggest_tags_by_prefix`] so prefix matching stays in core. Saved
     /// searches are file-backed (not indexed), so this reads the small TOML
     /// file; it is the single place to add caching if it ever gets hot.
     pub async fn suggest_saved_searches_by_prefix(
@@ -676,6 +705,10 @@ impl NoteVault {
         Ok(())
     }
 
+    /// Creates a new note at `path` with `text`, failing with
+    /// [`VaultError::NoteExists`] if a note is already there. The create is
+    /// exclusive (atomic `O_EXCL`), so it never clobbers an existing file.
+    /// The new note is indexed before returning.
     pub async fn create_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
@@ -688,11 +721,12 @@ impl NoteVault {
                 other => VaultError::FSError(other),
             })?;
         let note_details = NoteDetails::new(path, text);
-        let content_data = note_details.get_content_data();
-        db::save_note(self.vault_db.pool(), &entry_data, &note_details).await?;
+        let content_data = self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
     }
 
+    /// Creates a directory at `path`, failing with
+    /// [`VaultError::DirectoryExists`] if one is already there.
     pub async fn create_directory(
         &self,
         path: &VaultPath,
@@ -769,6 +803,9 @@ impl NoteVault {
         Ok(())
     }
 
+    /// Writes `text` to the note at `path`, overwriting any existing content
+    /// (backing it up first when backups are enabled), and re-indexes the note.
+    /// Serialized per note via the per-note write lock.
     pub async fn save_note<S: AsRef<str>>(
         &self,
         path: &VaultPath,
@@ -789,8 +826,7 @@ impl NoteVault {
         self.backup_if_enabled(path).await?;
         let entry_data = nfs::save_note(self.workspace_path(), path, &text).await?;
         let note_details = NoteDetails::new(path, text);
-        let content_data = note_details.get_content_data();
-        db::save_note(self.vault_db.pool(), &entry_data, &note_details).await?;
+        let content_data = self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
     }
 
@@ -800,13 +836,13 @@ impl NoteVault {
     }
 
     /// Builds a candidate path for a new attachment under
-    /// [`default_attachments_path`], using `prefix` and `ext` plus the current
+    /// [`Self::default_attachments_path`], using `prefix` and `ext` plus the current
     /// unix-nanosecond timestamp for uniqueness. Nanoseconds (rather than
     /// millis) make same-instant collisions vanishingly unlikely for
     /// human-driven actions like clipboard paste.
     ///
     /// Does not check for collisions; callers that need stronger uniqueness
-    /// guarantees should retry with [`exists`] or use a different strategy.
+    /// guarantees should retry with [`Self::exists`] or use a different strategy.
     pub fn generate_attachment_path(&self, prefix: &str, ext: &str) -> VaultPath {
         let ts = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -834,22 +870,23 @@ impl NoteVault {
         debug!("PATH: {}", path);
         let (_parent, name) = path.get_parent_path();
         if path.is_note_file() {
-            Ok(db::search_note_by_name(self.vault_db.pool(), name).await?)
+            Ok(self.index.search_note_by_name(name).await?)
         } else {
-            Ok(db::search_note_by_path(self.vault_db.pool(), path).await?)
+            Ok(self.index.search_note_by_path(path).await?)
         }
     }
 
+    /// Deletes the note at `path` (backing it up first when backups are
+    /// enabled). The index row is removed before the file, so the index never
+    /// points at a missing file.
     pub async fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         path.ensure_note()?;
         let _guard = self.lock_note(&path).await;
         self.backup_if_enabled(&path).await?;
 
-        // Delete in DB first so the index never points at a missing file.
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::delete_notes(&mut tx, std::slice::from_ref(&path)).await?;
-        tx.commit().await?;
+        // Delete in the index first so it never points at a missing file.
+        self.index.delete_notes(std::slice::from_ref(&path)).await?;
 
         nfs::delete_note(self.workspace_path(), &path).await?;
 
@@ -925,7 +962,7 @@ impl NoteVault {
     }
 
     /// Replaces occurrences of `pattern` with `replacement` in the note at
-    /// `path`, writing the result. See [`compute_replacement`] for the matching
+    /// `path`, writing the result. See `compute_replacement` for the matching
     /// rules (literal vs `regex`, unique-unless-`all`, capture references).
     /// Returns the number of replacements made.
     pub async fn replace_in_note(
@@ -948,7 +985,7 @@ impl NoteVault {
         Ok(count)
     }
 
-    /// Dry-run of [`replace_in_note`]: computes what the note would contain after
+    /// Dry-run of [`Self::replace_in_note`]: computes what the note would contain after
     /// the replacement **without writing** (and without taking the write lock —
     /// the result is advisory). Returns the same errors the real replace would
     /// (not found / not unique / invalid regex).
@@ -966,180 +1003,69 @@ impl NoteVault {
         Ok(ReplacePreview { count, content })
     }
 
+    /// Deletes the directory at `path` and its contents, removing the
+    /// corresponding index rows first.
     pub async fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         path.ensure_directory()?;
 
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::delete_directories(&mut tx, std::slice::from_ref(&path)).await?;
-        tx.commit().await?;
+        self.index
+            .delete_directories(std::slice::from_ref(&path))
+            .await?;
 
         nfs::delete_directory(self.workspace_path(), &path).await?;
 
         Ok(())
     }
 
+    /// Renames the note `from` to `to`, rewriting links to it (wikilinks,
+    /// Markdown links, and the note's own self-links) in every backlinking note
+    /// so they keep pointing at the renamed note. Fails if `to` already exists.
+    /// Source, destination, and all link victims are locked for the whole
+    /// operation so a concurrent in-process write can't interleave.
     pub async fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
 
-        // Lock the source, the destination, and every backlink victim for the
-        // whole rename, so a concurrent in-process write to any of them can't
-        // interleave with the read → backup → rewrite below (lost update / stale
-        // backup). Locks are taken in a stable order to stay deadlock-free.
-        let victims: Vec<VaultPath> = db::get_backlinks(self.vault_db.pool(), &from)
-            .await?
-            .into_iter()
-            .map(|(e, _)| e.path)
-            .filter(|p| *p != from)
-            .collect();
+        // Scout the linking notes, then lock the source, the destination, and
+        // every victim for the whole rename, so a concurrent in-process write
+        // to any of them can't interleave with the prepare → rename → commit
+        // below (lost update / stale backup). Locks are taken in a stable
+        // order to stay deadlock-free.
+        let scouted = LinkRewrite::new(&self.index, self.workspace_path(), self.backup)
+            .scout(&from, &to)
+            .await?;
         let _guards = self
             .lock_notes(
                 std::iter::once(&from)
                     .chain(std::iter::once(&to))
-                    .chain(victims.iter()),
+                    .chain(scouted.victims().iter()),
             )
             .await;
 
-        // 1. Read every backlink file (excluding the source itself), computing
-        //    rewritten contents in memory. No FS mutations yet — failure
-        //    here aborts cleanly.
-        let updates = self.read_backlink_rewrites(&from, &to).await?;
+        // Rewrite every victim's links in memory and back them up — no FS
+        // mutation yet, so a failure here aborts cleanly.
+        let prepared = scouted.prepare().await?;
 
-        // 1a. Back up the pre-rewrite content of every note this rename will
-        //     modify — the backlink victims, plus the source itself (its
-        //     self-links are rewritten at the new path). Done before any FS
-        //     mutation so a backup failure aborts cleanly (fail-closed). These
-        //     writes go through nfs directly (not NoteVault::save_note), so the
-        //     backup gate is applied explicitly here.
-        if self.backup {
-            for path in updates.iter().map(|(p, _)| p).chain(std::iter::once(&from)) {
-                nfs::backup_note(self.workspace_path(), path).await?;
-            }
-        }
-
-        // 2. Rename the source note on disk. If this fails, backlinks remain
-        //    untouched and the DB is unchanged — clean abort.
+        // Rename the source note on disk. If this fails, victims remain
+        // untouched and the index is unchanged — clean abort.
         nfs::rename_note(self.workspace_path(), &from, &to)
             .await
             .map_err(rename_dest_err)?;
 
-        // 3. Write the rewritten backlink files (concurrency-bounded). Returns
-        //    paired (NoteEntryData, String) tuples, consuming `updates` so the
-        //    text is not cloned again.
-        let mut notes_with_text = self.write_backlink_rewrites(updates).await?;
+        // Write the rewritten victims and the renamed note's self-links.
+        let notes_with_text = prepared.commit().await?;
 
-        // 3a. Rewrite self-links inside the renamed file at its new location
-        //     (the source was excluded from the backlinks list to avoid the
-        //     "create new file at old path" hazard).
-        if let Some(updated) = self.rewrite_self_links(&from, &to).await? {
-            notes_with_text.push(updated);
-        }
-
-        // 4. Single DB transaction: rename the source row + update each
-        //    backlink's chunks/links. If this commit fails, FS is consistent
-        //    with the rename but DB is stale — next index pass corrects.
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::rename_note(&mut tx, &from, &to).await?;
-        db::update_notes(&mut tx, &notes_with_text).await?;
-        tx.commit().await?;
+        // One atomic index operation: rename the source rows + update each
+        // victim's chunks/links. If this fails, FS is consistent with the
+        // rename but the index is stale — next sync pass corrects.
+        self.index.rename_note(&from, &to, &notes_with_text).await?;
 
         Ok(())
     }
 
-    /// Reads the renamed source file at `to`, rewrites any links pointing to
-    /// `from` into `to`, and writes the file back. Returns the updated entry
-    /// for DB update, or `None` if no self-links existed.
-    async fn rewrite_self_links(
-        &self,
-        from: &VaultPath,
-        to: &VaultPath,
-    ) -> Result<Option<(NoteEntryData, String)>, VaultError> {
-        let text = nfs::load_note(self.workspace_path(), to).await?;
-        let (updated, changed) = note::content_extractor::replace_note_links(&text, from, to);
-        if !changed {
-            return Ok(None);
-        }
-        let entry = nfs::save_note(self.workspace_path(), to, &updated).await?;
-        Ok(Some((entry, updated)))
-    }
-
-    /// Loads every note that links to `from`, rewrites its links to `to`,
-    /// returns only the entries whose content actually changed. I/O is
-    /// concurrency-bounded so a hub note with thousands of backlinks won't
-    /// exhaust the OS file-descriptor limit.
-    async fn read_backlink_rewrites(
-        &self,
-        from: &VaultPath,
-        to: &VaultPath,
-    ) -> Result<Vec<(VaultPath, String)>, VaultError> {
-        // Drop the source itself if it backlinks to itself — those self-links
-        // are handled separately by `rewrite_self_links` after the FS rename,
-        // so the source's body isn't written to its old location here (which
-        // would resurrect a file at `from`).
-        let backlinks: Vec<_> = db::get_backlinks(self.vault_db.pool(), from)
-            .await?
-            .into_iter()
-            .filter(|(e, _)| e.path != *from)
-            .collect();
-        if backlinks.is_empty() {
-            return Ok(Vec::new());
-        }
-        let workspace = self.workspace_path.clone();
-        let from = Arc::new(from.clone());
-        let to = Arc::new(to.clone());
-        let stream = futures_util::stream::iter(backlinks.into_iter().map(|(entry_data, _)| {
-            let workspace = workspace.clone();
-            let from = from.clone();
-            let to = to.clone();
-            async move {
-                let text = nfs::load_note(&workspace, &entry_data.path).await?;
-                let (updated, changed) =
-                    note::content_extractor::replace_note_links(&text, &from, &to);
-                Ok::<_, VaultError>(changed.then_some((entry_data.path, updated)))
-            }
-        }));
-        use futures_util::stream::StreamExt;
-        let mut stream = stream.buffered(BACKLINK_IO_CONCURRENCY);
-        let mut updates = Vec::new();
-        while let Some(item) = stream.next().await {
-            if let Some(entry) = item? {
-                updates.push(entry);
-            }
-        }
-        Ok(updates)
-    }
-
-    /// Writes the rewritten backlink files concurrency-bounded. Consumes
-    /// `updates` so each file's text is moved into its task without cloning,
-    /// then returns the paired `(NoteEntryData, String)` results in input
-    /// order ready for `db::update_notes`.
-    async fn write_backlink_rewrites(
-        &self,
-        updates: Vec<(VaultPath, String)>,
-    ) -> Result<Vec<(NoteEntryData, String)>, VaultError> {
-        if updates.is_empty() {
-            return Ok(Vec::new());
-        }
-        let workspace = self.workspace_path.clone();
-        let mut futures = Vec::with_capacity(updates.len());
-        for (path, text) in updates {
-            let workspace = workspace.clone();
-            futures.push(async move {
-                let entry = nfs::save_note(&workspace, &path, &text).await?;
-                Ok::<_, VaultError>((entry, text))
-            });
-        }
-        use futures_util::stream::StreamExt;
-        let cap = futures.len();
-        let mut stream = futures_util::stream::iter(futures).buffered(BACKLINK_IO_CONCURRENCY);
-        let mut out = Vec::with_capacity(cap);
-        while let Some(item) = stream.next().await {
-            out.push(item?);
-        }
-        Ok(out)
-    }
-
+    /// Renames the directory `from` to `to`, updating the index paths of all
+    /// notes beneath it. Fails if `to` already exists.
     pub async fn rename_directory(
         &self,
         from: &VaultPath,
@@ -1152,27 +1078,10 @@ impl NoteVault {
             .await
             .map_err(rename_dest_err)?;
 
-        let mut tx = self.vault_db.pool().begin().await?;
-        db::rename_directory(&mut tx, &from, &to).await?;
-        tx.commit().await?;
+        self.index.rename_directory(&from, &to).await?;
 
         Ok(())
     }
-}
-
-/// Runs the synchronous parallel walker on a blocking thread so the async
-/// runtime is not stalled while the entire vault subtree is enumerated.
-async fn run_walker_blocking(
-    walker: ignore::WalkParallel,
-    builder: NoteListVisitorBuilder,
-) -> Result<NoteListVisitorBuilder, VaultError> {
-    tokio::task::spawn_blocking(move || {
-        let mut builder = builder;
-        walker.visit(&mut builder);
-        builder
-    })
-    .await
-    .map_err(|e| VaultError::TaskJoin(format!("vault walker: {}", e)))
 }
 
 fn rename_dest_err(e: FSError) -> VaultError {
@@ -1185,30 +1094,39 @@ fn rename_dest_err(e: FSError) -> VaultError {
     }
 }
 
+/// A directory entry within the vault.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DirectoryDetails {
+    /// Path of the directory inside the vault.
     pub path: VaultPath,
 }
 
+/// A single entry produced by browsing the vault: a note, directory, or
+/// attachment, identified by its path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
+    /// Path of the entry inside the vault.
     pub path: VaultPath,
+    /// What kind of entry this is, plus any content data for notes.
     pub rtype: ResultType,
 }
 
 impl SearchResult {
+    /// Builds a note result carrying its content data.
     pub fn note(path: &VaultPath, content_data: &NoteContentData) -> Self {
         Self {
             path: path.to_owned(),
             rtype: ResultType::Note(content_data.to_owned()),
         }
     }
+    /// Builds a directory result.
     pub fn directory(path: &VaultPath) -> Self {
         Self {
             path: path.to_owned(),
             rtype: ResultType::Directory,
         }
     }
+    /// Builds an attachment result.
     pub fn attachment(path: &VaultPath) -> Self {
         Self {
             path: path.to_owned(),
@@ -1217,13 +1135,18 @@ impl SearchResult {
     }
 }
 
+/// Kind of a [`SearchResult`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResultType {
+    /// A note, with its parsed content data.
     Note(NoteContentData),
+    /// A directory.
     Directory,
+    /// An attachment (non-note file).
     Attachment,
 }
 
+/// Builder for [`VaultBrowseOptions`]; see [`NoteVault::browse_vault`].
 pub struct VaultBrowseOptionsBuilder {
     path: VaultPath,
     validation: NotesValidation,
@@ -1231,10 +1154,13 @@ pub struct VaultBrowseOptionsBuilder {
 }
 
 impl VaultBrowseOptionsBuilder {
+    /// Starts a builder rooted at `path`, with defaults otherwise.
     pub fn new(path: &VaultPath) -> Self {
         Self::default().path(path.clone())
     }
 
+    /// Finalizes the options and creates the channel browse results are sent
+    /// through; returns the options and the receiving end.
     pub fn build(self) -> (VaultBrowseOptions, Receiver<SearchResult>) {
         let (sender, receiver) = std::sync::mpsc::channel();
         (
@@ -1248,16 +1174,20 @@ impl VaultBrowseOptionsBuilder {
         )
     }
 
+    /// Sets the path to browse from.
     pub fn path(mut self, path: VaultPath) -> Self {
         self.path = path;
         self
     }
 
+    /// Sets whether the browse descends into subdirectories.
     pub fn recursive(mut self, recursive: bool) -> Self {
         self.recursive = recursive;
         self
     }
 
+    /// Sets how thoroughly each note is re-validated against the index during
+    /// the browse.
     pub fn validation(mut self, validation: NotesValidation) -> Self {
         self.validation = validation;
         self
@@ -1294,10 +1224,16 @@ impl Display for VaultBrowseOptions {
     }
 }
 
+/// How thoroughly a sync pass checks whether each note has changed before
+/// updating its index entry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NotesValidation {
+    /// Compares a content hash — detects any change, at the cost of reading
+    /// each file.
     Full,
+    /// Compares the file size — cheaper, but misses same-size edits.
     Fast,
+    /// Only checks whether the note exists.
     None,
 }
 
@@ -1313,38 +1249,6 @@ impl Display for NotesValidation {
             }
         )
     }
-}
-
-async fn create_index_for<P>(
-    workspace_path: P,
-    pool: &sqlx::SqlitePool,
-    path: &VaultPath,
-    validation_mode: NotesValidation,
-) -> Result<(), DBError>
-where
-    P: AsRef<Path> + Send,
-{
-    debug!("Indexing subtree at {}", path);
-    let workspace_path = workspace_path.as_ref();
-    let walker = nfs::get_file_walker(workspace_path, path, true);
-
-    let cached_notes = db::get_notes(pool, path, true).await?;
-    let builder = NoteListVisitorBuilder::new(workspace_path, validation_mode, cached_notes, None);
-    let builder = run_walker_blocking(walker, builder)
-        .await
-        .map_err(|e| match e {
-            VaultError::DBError(e) => e,
-            other => DBError::Other(other.to_string()),
-        })?;
-    let results = builder.into_results();
-
-    let mut tx = pool.begin().await?;
-    db::delete_notes(&mut tx, &results.to_delete).await?;
-    db::insert_notes(&mut tx, &results.to_add).await?;
-    db::update_notes(&mut tx, &results.to_modify).await?;
-    tx.commit().await?;
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2150,90 +2054,6 @@ mod tests {
             names.iter().any(|p| p.ends_with("/dir1/sub/c.md")),
             "{:?}",
             names
-        );
-    }
-
-    /// On a stored DB version older than the current `VERSION`, `check_db`
-    /// must report `Outdated` and `validate_and_init` must drop + rebuild the
-    /// index. After migration, stale `>`-separated breadcrumb rows are gone
-    /// and the new `\x1f` separator is in place.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn validate_and_init_migrates_outdated_db() {
-        use sqlx::Row;
-
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("note.md"), "# Note\n## Sub\nbody text").unwrap();
-
-        // Bring the DB up at the current version with one indexed note.
-        let vault = NoteVault::new(VaultConfig::new(dir.path())).await.unwrap();
-        vault.validate_and_init().await.unwrap();
-        assert!(vault.validate().await.unwrap().is_ready());
-
-        // Force the schema backwards: stamp version `0.4` and rewrite stored
-        // breadcrumbs in the legacy `>`-joined form to simulate a vault
-        // upgraded across the separator change.
-        let pool = vault.db_pool();
-        sqlx::query("UPDATE appData SET value = '0.4' WHERE name = 'version'")
-            .execute(pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE notesContent SET breadcrumb = REPLACE(breadcrumb, x'1f', '>')")
-            .execute(pool)
-            .await
-            .unwrap();
-
-        // Sanity: the stale row really does contain `>`.
-        let stale: Vec<String> =
-            sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
-                .fetch_all(pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|r| r.try_get("breadcrumb").unwrap())
-                .collect();
-        assert!(
-            stale.iter().any(|b| b.contains('>')),
-            "expected legacy `>` separator in: {:?}",
-            stale
-        );
-
-        // Migration: validate flags Outdated, then validate_and_init rebuilds.
-        assert_eq!(vault.validate().await.unwrap(), DBStatus::Outdated);
-        vault.validate_and_init().await.unwrap();
-        assert!(vault.validate().await.unwrap().is_ready());
-
-        // Post-migration: no row carries the legacy separator; non-empty
-        // breadcrumbs use `\x1f`.
-        let pool = vault.db_pool();
-        let after: Vec<String> =
-            sqlx::query("SELECT breadcrumb FROM notesContent WHERE breadcrumb != ''")
-                .fetch_all(pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|r| r.try_get("breadcrumb").unwrap())
-                .collect();
-        assert!(
-            after.iter().all(|b| !b.contains('>')),
-            "stale `>` separator survived migration: {:?}",
-            after
-        );
-
-        // The note is still indexed and `get_note_chunks` exposes a sane
-        // `breadcrumb_last` (no `>` artifacts).
-        let chunks = vault
-            .get_note_chunks(&VaultPath::new("/note.md"))
-            .await
-            .unwrap();
-        let leaves: Vec<String> = chunks
-            .values()
-            .flatten()
-            .filter_map(|c| c.breadcrumb_last().map(|s| s.to_string()))
-            .collect();
-        assert!(
-            leaves.iter().any(|l| l == "Note" || l == "Sub"),
-            "expected Note/Sub leaves, got: {:?}",
-            leaves
         );
     }
 }

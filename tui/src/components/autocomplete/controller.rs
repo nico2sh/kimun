@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kimun_core::note::ExclusionZones;
+use kimun_core::note::scan::ExclusionZones;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::host::AutocompleteHost;
@@ -586,7 +586,7 @@ impl AutocompleteController {
             }
             // SavedSearch: expand the WHOLE field to the stored query (carried
             // in `secondary`) and report the name so the host pins the
-            // breadcrumb. See `adr/0006`.
+            // breadcrumb.
             TriggerKind::SavedSearch => {
                 let new_text = suggestion.secondary.unwrap_or_default();
                 let new_cursor_byte = new_text.len();
@@ -858,7 +858,7 @@ mod tests {
         assert!(names.contains(&"todo-week"), "got {names:?}");
         assert!(!names.contains(&"journal"), "got {names:?}");
         // `secondary` carries the stored query — the popup preview AND the
-        // text inserted on accept (see `adr/0006`).
+        // text inserted on accept.
         let todo = st.items.iter().find(|s| s.display == "todo-week").unwrap();
         assert_eq!(todo.secondary.as_deref(), Some("#todo ^modified"));
     }

@@ -201,7 +201,7 @@ impl EditorScreen {
 
     async fn follow_link(&mut self, target: String, tx: &AppTx) {
         // External URL — hand off to the OS browser/handler.
-        if kimun_core::note::is_remote_url(&target) {
+        if kimun_core::note::scan::is_remote_url(&target) {
             match open::that_detached(&target) {
                 Ok(()) => self.footer.flash(format!("Opening {target}"), tx),
                 Err(e) => self.footer.flash(format!("Cannot open URL: {e}"), tx),
@@ -212,7 +212,7 @@ impl EditorScreen {
         // Image attachment — resolve the (potentially relative) path against
         // the current note's directory, convert to an OS path, hand off to the
         // OS default handler. Images are not notes, so skip the note lookup.
-        if kimun_core::note::target_looks_like_image(&target) {
+        if kimun_core::note::scan::target_looks_like_image(&target) {
             let parent = self.path.get_parent_path().0;
             let resolved = parent.append(&VaultPath::new(target.trim()));
             let os_path = self.vault.path_to_pathbuf(&resolved);
