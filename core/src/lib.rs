@@ -53,7 +53,7 @@ pub use index::search_terms::{
     quote_query_term, strip_order_directive, with_order_directive, OrderBy, OrderField, SearchTerms,
 };
 pub use index::{IndexDiff, NoteSuggestion, TagSuggestion};
-pub use nfs::saved_searches::SavedSearch;
+pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
 pub use utilities::{app_log_dir, ensure_dir_exists};
 
 use std::{
@@ -679,7 +679,10 @@ impl NoteVault {
             name: name.to_string(),
             query: query.to_string(),
         };
-        match all.iter_mut().find(|s| s.name.eq_ignore_ascii_case(name)) {
+        match all
+            .iter_mut()
+            .find(|s| saved_search_name_matches(&s.name, name))
+        {
             Some(existing) => *existing = entry,
             None => all.push(entry),
         }
@@ -690,7 +693,7 @@ impl NoteVault {
     /// Delete a saved search by name (case-insensitive). No-op if absent.
     pub async fn delete_saved_search(&self, name: &str) -> Result<(), VaultError> {
         let mut all = saved_searches::read_saved_searches(self.workspace_path()).await?;
-        all.retain(|s| !s.name.eq_ignore_ascii_case(name));
+        all.retain(|s| !saved_search_name_matches(&s.name, name));
         saved_searches::write_saved_searches(self.workspace_path(), &all).await?;
         Ok(())
     }
@@ -698,7 +701,10 @@ impl NoteVault {
     /// Rename a saved search, preserving its position and query. No-op if absent.
     pub async fn rename_saved_search(&self, old: &str, new: &str) -> Result<(), VaultError> {
         let mut all = saved_searches::read_saved_searches(self.workspace_path()).await?;
-        if let Some(existing) = all.iter_mut().find(|s| s.name.eq_ignore_ascii_case(old)) {
+        if let Some(existing) = all
+            .iter_mut()
+            .find(|s| saved_search_name_matches(&s.name, old))
+        {
             existing.name = new.to_string();
         }
         saved_searches::write_saved_searches(self.workspace_path(), &all).await?;
