@@ -65,4 +65,10 @@ pub trait Overlay: Send {
     fn query(&self) -> Option<&str> {
         None
     }
+    /// The saved-search name this overlay's query came from (its breadcrumb
+    /// provenance), if any. Used to pre-fill the save-search dialog's name.
+    /// Defaults to `None` for overlays without a breadcrumb.
+    fn saved_search_provenance(&self) -> Option<&str> {
+        None
+    }
 }

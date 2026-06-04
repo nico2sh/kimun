@@ -115,6 +115,9 @@ pub enum AppEvent {
     MoveDestValidation {
         available: bool,
     },
+    /// Save-search dialog: existing saved-search names have loaded (drives
+    /// the update/overwrite/save-new hint).
+    SavedSearchNamesLoaded(Vec<String>),
 
     // ── Workspace messages ──────────────────────────────────────────────
     /// User switched to a different workspace. Carries the workspace name.

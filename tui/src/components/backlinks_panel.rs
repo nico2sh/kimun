@@ -264,6 +264,20 @@ impl QueryPanel {
         self.saved_search.label(self.list.query())
     }
 
+    /// The saved-search name the active query came from (breadcrumb
+    /// provenance, no edited marker), or `None`. Pre-fills the save-search
+    /// dialog's name field.
+    pub fn saved_search_name(&self) -> Option<&str> {
+        self.saved_search.name()
+    }
+
+    /// Re-pin the breadcrumb to a just-saved search: the saved identity is
+    /// the provenance from now on, so the edited marker drops on an update
+    /// and the name switches on a save-as-new.
+    pub fn repin_saved_search(&mut self, name: String, query: &str) {
+        self.saved_search.set(Some(name), query);
+    }
+
     /// `true` when the live query carries no saved-search provenance worth
     /// showing — an empty field, or the default backlinks query (which the
     /// panel title already renders as "Backlinks", so a breadcrumb there would
@@ -1172,11 +1186,11 @@ mod tests {
         assert_eq!(panel.saved_search_breadcrumb().as_deref(), Some("todo"));
     }
 
-    /// Applying a sort rewrites the query's order directive but keeps the
-    /// breadcrumb sticky — and NOT marked edited, because the edited check
-    /// ignores the order directive.
+    /// Applying a sort rewrites the query's order directive — the breadcrumb
+    /// stays sticky but gains the edited marker, because the stored query is
+    /// saved verbatim and any text divergence counts as an edit.
     #[tokio::test(flavor = "multi_thread")]
-    async fn apply_sort_keeps_saved_search_breadcrumb() {
+    async fn apply_sort_marks_saved_search_breadcrumb_edited() {
         let vault = crate::test_support::temp_vault("qp-sort-name").await;
         vault.validate_and_init().await.unwrap();
         let mut panel = make_panel(vault);
@@ -1187,8 +1201,32 @@ mod tests {
         assert_eq!(panel.active_query(), "#todo or:title");
         assert_eq!(
             panel.saved_search_breadcrumb().as_deref(),
-            Some("todo"),
-            "sorting keeps the unedited breadcrumb"
+            Some("todo • edited"),
+            "sorting diverges from the stored query, so the breadcrumb is edited"
+        );
+    }
+
+    /// Saving the live query re-pins the breadcrumb to the saved identity:
+    /// the edited marker drops, and a save-as-new switches the name.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repin_after_save_adopts_saved_identity() {
+        let vault = crate::test_support::temp_vault("qp-repin").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.apply_query("#todo".to_string(), Some("todo".to_string()), tx.clone());
+
+        panel.set_active_query("#todo and #urgent".to_string());
+        assert_eq!(
+            panel.saved_search_breadcrumb().as_deref(),
+            Some("todo • edited")
+        );
+
+        panel.repin_saved_search("urgent-todos".to_string(), "#todo and #urgent");
+        assert_eq!(
+            panel.saved_search_breadcrumb().as_deref(),
+            Some("urgent-todos"),
+            "after a save the saved identity is the provenance — no edited marker"
         );
     }
 
