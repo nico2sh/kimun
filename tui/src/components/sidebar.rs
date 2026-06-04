@@ -6,7 +6,6 @@ use chrono::NaiveDate;
 use kimun_core::nfs::VaultPath;
 use kimun_core::{NoteVault, NotesValidation, ResultType, VaultBrowseOptionsBuilder};
 use ratatui::Frame;
-use ratatui::crossterm::event::MouseEventKind;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -324,19 +323,14 @@ impl Component for SidebarComponent {
                 return EventState::NotConsumed;
             }
             // Click-to-focus is handled centrally by `PanelSet::handle_mouse`;
-            // only the sidebar's internal behavior lives here.
+            // only the sidebar's internal behavior lives here. The engine
+            // hit-tests the wheel against the recorded panel rect (the whole
+            // sidebar — header and search box included) and clicks against
+            // the list rect.
             if let Some(list) = &mut self.list {
-                match mouse.kind {
-                    // Scroll anywhere within the sidebar bounds moves the list
-                    // selection — even when the cursor is over the header or
-                    // search box (the engine only hit-tests scroll inside its
-                    // own list rect, so handle it here).
-                    MouseEventKind::ScrollUp => list.select_prev(),
-                    MouseEventKind::ScrollDown => list.select_next(),
-                    _ => match list.handle_mouse(mouse) {
-                        SearchMouse::Activated(_) => self.activate_selected_entry(tx),
-                        SearchMouse::Selected(_) | SearchMouse::Scrolled | SearchMouse::None => {}
-                    },
+                match list.handle_mouse(mouse) {
+                    SearchMouse::Activated(_) => self.activate_selected_entry(tx),
+                    SearchMouse::Selected(_) | SearchMouse::Scrolled | SearchMouse::None => {}
                 }
             }
             return EventState::Consumed;
@@ -426,8 +420,10 @@ impl Component for SidebarComponent {
             list.render(f, list_inner, theme, focused);
             // Record the rendered-items rect (the block's inner area) for mouse
             // hit-testing: the engine maps a click to `row - rect.y`, row 0 being
-            // the first item.
+            // the first item. The panel rect makes the wheel scroll from anywhere
+            // within the sidebar.
             list.set_list_rect(list_inner);
+            list.set_panel_rect(rect);
         }
     }
 }
@@ -574,7 +570,9 @@ mod tests {
     }
 
     /// Scroll wheel anywhere in the sidebar bounds scrolls the file list — even
-    /// when the cursor is over the header or search box.
+    /// when the cursor is over the header or search box. The viewport moves and
+    /// the selection is carried along (keeping its screen position), so with a
+    /// 1-row viewport the selected row changes on the first scroll.
     #[tokio::test(flavor = "multi_thread")]
     async fn scroll_down_in_sidebar_bounds_scrolls_list() {
         let mut sidebar = sidebar_with_notes("sidebar-scroll", &["alpha", "beta"]).await;
@@ -587,12 +585,21 @@ mod tests {
             width: 30,
             height: 20,
         };
+        // A 1-row viewport over 2 notes, so the list overflows and can scroll.
+        // The panel rect covers the whole sidebar, so the wheel works from the
+        // header/search box too.
         if let Some(list) = &mut sidebar.list {
             list.set_list_rect(Rect {
                 x: 0,
                 y: 9,
                 width: 30,
-                height: 14,
+                height: 1,
+            });
+            list.set_panel_rect(Rect {
+                x: 0,
+                y: 3,
+                width: 30,
+                height: 20,
             });
         }
 
@@ -612,7 +619,10 @@ mod tests {
             .unwrap()
             .selected_row()
             .map(|e| e.path().to_string());
-        assert_ne!(first, after, "scroll-from-header should move the selection");
+        assert_ne!(
+            first, after,
+            "scroll-from-header should scroll the list, carrying the selection"
+        );
     }
 
     #[tokio::test]
