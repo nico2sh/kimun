@@ -50,7 +50,8 @@ pub(crate) mod sync;
 /// Small standalone helpers (paths, log directory, diacritic folding).
 pub mod utilities;
 pub use index::search_terms::{
-    quote_query_term, strip_order_directive, with_order_directive, OrderBy, OrderField, SearchTerms,
+    expand_bare_note_prefixes, quote_query_term, strip_order_directive, with_order_directive,
+    OrderBy, OrderField, SearchTerms,
 };
 pub use index::{IndexDiff, NoteSuggestion, TagSuggestion};
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
