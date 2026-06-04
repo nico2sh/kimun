@@ -167,11 +167,8 @@ mod tests {
         // No note open, bare `<` typed: the sugar can't resolve, so the
         // browser shows the recent notes (here: "spec") rather than nothing.
         let (tx, _rx) = unbounded_channel();
-        let provider = SearchNotesProvider::new(
-            vault.clone(),
-            vec![VaultPath::note_path_from("spec")],
-            None,
-        );
+        let provider =
+            SearchNotesProvider::new(vault.clone(), vec![VaultPath::note_path_from("spec")], None);
         let mut list = SearchList::builder(provider, redraw_callback(tx))
             .initial_query("<")
             .build();
