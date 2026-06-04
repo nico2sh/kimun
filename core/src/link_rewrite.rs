@@ -37,7 +37,7 @@ pub(crate) struct LinkRewrite<'a> {
     index: &'a NoteIndex,
     workspace_path: &'a Path,
     /// Whether `prepare` takes a pre-change backup of every note about to be
-    /// rewritten (ADR-0002: rename's collateral rewrites are automated edits).
+    /// rewritten (rename's collateral rewrites are automated edits).
     backup: bool,
 }
 

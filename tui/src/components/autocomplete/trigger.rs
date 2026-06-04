@@ -10,7 +10,7 @@ pub enum TriggerKind {
     Hashtag,
     LinkFilter,
     /// A leading `?` in a query input: autocompletes saved-search names.
-    /// Accepting expands to the search's stored query (see `adr/0006`).
+    /// Accepting expands to the search's stored query.
     SavedSearch,
 }
 
@@ -53,7 +53,7 @@ pub struct TriggerOptions {
     /// `false` so a note that opens with `?` cannot shadow the `#`/`[[`
     /// triggers the backward scan would otherwise find. Gating here (rather
     /// than dropping the trigger after the fact) keeps detection the single
-    /// authority on whether `?` is special. See `adr/0006`.
+    /// authority on whether `?` is special.
     pub allow_saved_search: bool,
 }
 
@@ -170,7 +170,7 @@ pub fn detect_trigger_with_oracle(
     // owns the whole query. Checked before the backward scan because `?` is
     // not an opener for any other trigger. A saved-search name may contain
     // spaces, so the prefix runs from just after `?` to the cursor. Only the
-    // search-query box opts in (`allow_saved_search`); see `adr/0006`.
+    // search-query box opts in (`allow_saved_search`).
     if opts.allow_saved_search
         && let Some(q_pos) = text.find('?')
         && text[..q_pos].bytes().all(|b| b == b' ' || b == b'\t')
@@ -382,7 +382,7 @@ pub fn detect_trigger_with_oracle(
     // LinkFilter trigger: a note-name operator (`<`, `>`, `=`) followed by
     // a target, optionally in its exclusion form (`-<`, `->`, `-=`). All
     // three operators take a note-name argument (backlinks / forward links
-    // / note name — ADR-0005 alphabet) and share the same suggestion list.
+    // / note name) and share the same suggestion list.
     // The opener must be at a token start — i.e. preceded by nothing,
     // whitespace, or a `-` that is itself at string-start or preceded by
     // whitespace (the exclusion form).
@@ -440,7 +440,7 @@ pub fn detect_trigger_with_oracle(
 
 /// Returns `true` for the note-name operators that open a link-filter
 /// trigger: `<` (backlinks), `>` (forward links), `=` (note name) — the
-/// ADR-0005 alphabet operators that take a note-name argument. `@`
+/// alphabet operators that take a note-name argument. `@`
 /// (section), `#` (label) and `/` (path) are intentionally excluded.
 fn is_link_filter_opener(c: char) -> bool {
     matches!(c, '<' | '>' | '=')

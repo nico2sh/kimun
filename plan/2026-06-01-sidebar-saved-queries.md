@@ -78,9 +78,9 @@ Create `core/src/nfs/saved_searches.rs`:
 
 ```rust
 //! Saved searches: named queries persisted in the vault under
-//! `.kimun/saved-searches.toml`, so they travel with the notes (see
-//! `adr/0004-saved-searches-stored-in-vault.md`). All filesystem access
-//! lives here per the project rule that fs ops belong in `nfs`.
+//! `.kimun/saved-searches.toml`, so they travel with the notes.
+//! All filesystem access lives here per the project rule that 
+//! fs ops belong in `nfs`.
 
 use std::path::Path;
 
@@ -311,8 +311,8 @@ Create `tui/src/components/query_vars.rs`:
 
 ```rust
 //! Query variables: `{name}` placeholders the TUI resolves to runtime
-//! values before a query reaches core (see `CONTEXT.md` "Query variable"
-//! and `adr/0003`). Core's query language never sees these.
+//! values before a query reaches core.
+//! Core's query language never sees these.
 
 use kimun_core::nfs::VaultPath;
 
@@ -328,9 +328,8 @@ pub fn query_has_variables(template: &str) -> bool {
 
 /// Resolve all query variables in `template` against the open note,
 /// producing a plain query string for `vault.search_notes`. `{note}`
-/// becomes the note's clean name (matching how `>` targets are matched —
-/// see ADR 0001). When no note is open, `{note}` resolves to the empty
-/// string.
+/// becomes the note's clean name (matching how `>` targets are matched.
+/// When no note is open, `{note}` resolves to the empty string.
 pub fn resolve_query(template: &str, current_note: Option<&VaultPath>) -> String {
     let note_name = current_note
         .map(|p| p.get_clean_name())
