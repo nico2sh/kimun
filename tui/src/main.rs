@@ -248,7 +248,7 @@ async fn rebuild_vault(
             }
             Some(std::sync::Arc::new(v))
         }
-        // Don't swallow the cause: since the index self-heal (ADR-0007),
+        // Don't swallow the cause: since the index self-heal,
         // opening the vault can fail on a cache probe error (e.g. the cache
         // is locked by another kimun process). The app falls back to the
         // no-vault start screen either way, but the reason must reach the
