@@ -202,6 +202,83 @@ pub fn quote_query_term(term: &str) -> String {
     }
 }
 
+/// True if `el` is a note-targeting element: backlinks, forward links, or
+/// name match (including their excluded variants). These are the prefixes
+/// whose bare form (no target) callers may expand to a current-note target.
+fn is_note_element(el: &ElementType) -> bool {
+    matches!(
+        el,
+        ElementType::Links
+            | ElementType::ExcludedLinks
+            | ElementType::ForwardLinks
+            | ElementType::ExcludedForwardLinks
+            | ElementType::At
+            | ElementType::ExcludedAt
+    )
+}
+
+/// Return `query` with every bare note-targeting prefix — `<` / `>` / `=`,
+/// their long forms `lk:` / `fwd:` / `name:`, and the `-` exclusion variants —
+/// expanded to `<prefix><target>`. A prefix is bare when the whole token is
+/// exactly the prefix. Tokenization follows the parser's grammar: an unquoted
+/// token ends at an ASCII space (only — a tab or NBSP is part of the token,
+/// exactly as the parser reads it), a quote is honored only at a value start
+/// (the start of a token or right after a prefix), and a quoted value may
+/// span spaces. Everything else, including whitespace, is preserved verbatim,
+/// so the result is the same query with only the bare prefixes rewritten.
+///
+/// This lives in core so the TUI's input-layer sugar (a bare `<` standing for
+/// "backlinks of the current note") never re-implements the DSL's
+/// tokenization.
+pub fn expand_bare_note_prefixes(query: &str, target: &str) -> String {
+    let mut out = String::with_capacity(query.len());
+    let mut rest = query;
+    while !rest.is_empty() {
+        // Copy inter-token whitespace verbatim.
+        let token_start = match rest.find(|c: char| !c.is_whitespace()) {
+            Some(pos) => pos,
+            None => {
+                out.push_str(rest);
+                break;
+            }
+        };
+        out.push_str(&rest[..token_start]);
+        rest = &rest[token_start..];
+
+        // A prefix is only meaningful at the token start; the value may then
+        // be quoted (and span spaces) or run to the next ASCII space — the
+        // parser's separator (a tab or NBSP is part of the token).
+        let detected = detect_prefix(rest);
+        let prefix_len = detected
+            .as_ref()
+            .map_or(0, |(_, remaining)| rest.len() - remaining.len());
+        let value = &rest[prefix_len..];
+        let token_len = match value.chars().next() {
+            Some(quote @ ('"' | '\'')) => {
+                // Quoted value: token ends at the closing quote, or swallows
+                // the rest of the string when unterminated (as the parser does).
+                match value[quote.len_utf8()..].find(quote) {
+                    Some(pos) => prefix_len + quote.len_utf8() * 2 + pos,
+                    None => rest.len(),
+                }
+            }
+            _ => rest.find(' ').unwrap_or(rest.len()),
+        };
+        let token = &rest[..token_len];
+        out.push_str(token);
+        // Bare prefix: the whole token is the prefix itself.
+        if prefix_len == token_len {
+            if let Some((el, _)) = detected {
+                if is_note_element(&el) {
+                    out.push_str(target);
+                }
+            }
+        }
+        rest = &rest[token_len..];
+    }
+    out
+}
+
 /// Return `query` with any order directive (`or:`/`-or:`/`^`/`-^`, in any
 /// position) removed. Other tokens keep their order; whitespace is normalised
 /// to single spaces. The DSL knowledge lives here in core so the TUI never
@@ -462,7 +539,121 @@ fn dedup_preserving_order(v: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    use super::expand_bare_note_prefixes;
     use super::SearchTerms;
+
+    #[test]
+    fn expand_bare_short_note_prefixes() {
+        assert_eq!(expand_bare_note_prefixes("<", "{note}"), "<{note}");
+        assert_eq!(expand_bare_note_prefixes(">", "{note}"), ">{note}");
+        assert_eq!(expand_bare_note_prefixes("=", "{note}"), "={note}");
+        assert_eq!(
+            expand_bare_note_prefixes("#todo <", "{note}"),
+            "#todo <{note}"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes("< #todo", "{note}"),
+            "<{note} #todo"
+        );
+    }
+
+    #[test]
+    fn expand_bare_long_note_prefixes() {
+        assert_eq!(expand_bare_note_prefixes("lk:", "{note}"), "lk:{note}");
+        assert_eq!(expand_bare_note_prefixes("fwd:", "{note}"), "fwd:{note}");
+        assert_eq!(expand_bare_note_prefixes("name:", "{note}"), "name:{note}");
+    }
+
+    #[test]
+    fn expand_bare_excluded_note_prefixes() {
+        assert_eq!(expand_bare_note_prefixes("-<", "{note}"), "-<{note}");
+        assert_eq!(expand_bare_note_prefixes("->", "{note}"), "->{note}");
+        assert_eq!(expand_bare_note_prefixes("-=", "{note}"), "-={note}");
+        assert_eq!(expand_bare_note_prefixes("-lk:", "{note}"), "-lk:{note}");
+    }
+
+    #[test]
+    fn expand_leaves_prefixes_with_targets_untouched() {
+        assert_eq!(
+            expand_bare_note_prefixes("<projects", "{note}"),
+            "<projects"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes(">projects", "{note}"),
+            ">projects"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes("=projects", "{note}"),
+            "=projects"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes("lk:projects", "{note}"),
+            "lk:projects"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes("<\"my note\"", "{note}"),
+            "<\"my note\""
+        );
+    }
+
+    #[test]
+    fn expand_leaves_non_note_prefixes_untouched() {
+        assert_eq!(expand_bare_note_prefixes("@", "{note}"), "@");
+        assert_eq!(expand_bare_note_prefixes("#", "{note}"), "#");
+        assert_eq!(expand_bare_note_prefixes("/", "{note}"), "/");
+        assert_eq!(expand_bare_note_prefixes("in:", "{note}"), "in:");
+        assert_eq!(expand_bare_note_prefixes("term", "{note}"), "term");
+    }
+
+    #[test]
+    fn expand_ignores_operators_inside_quoted_terms() {
+        assert_eq!(
+            expand_bare_note_prefixes("\"a < b\"", "{note}"),
+            "\"a < b\""
+        );
+        assert_eq!(expand_bare_note_prefixes("'a = b'", "{note}"), "'a = b'");
+    }
+
+    #[test]
+    fn expand_treats_mid_token_quotes_as_literal() {
+        // An apostrophe inside a plain term is not a quote opener (matching the
+        // parser, which only honors quotes at a value start), so a bare
+        // operator after a contraction still expands.
+        assert_eq!(
+            expand_bare_note_prefixes("= don't <", "{note}"),
+            "={note} don't <{note}"
+        );
+    }
+
+    #[test]
+    fn expand_preserves_whitespace_verbatim() {
+        assert_eq!(
+            expand_bare_note_prefixes("  #todo   <  ", "{note}"),
+            "  #todo   <{note}  "
+        );
+    }
+
+    #[test]
+    fn expand_matches_parser_ascii_space_tokenization() {
+        // The parser splits unquoted values on the ASCII space only — a NBSP
+        // or tab is part of the token — so the expander must not treat one as
+        // a token boundary and clobber a user-supplied target.
+        assert_eq!(
+            expand_bare_note_prefixes("<\u{a0}foo", "{note}"),
+            "<\u{a0}foo"
+        );
+        assert_eq!(expand_bare_note_prefixes("a\t<", "{note}"), "a\t<");
+    }
+
+    #[test]
+    fn expand_with_unterminated_quote() {
+        // The first bare `<` expands; the unterminated quoted token swallows
+        // the rest of the string (matching the parser) and stays untouched.
+        assert_eq!(
+            expand_bare_note_prefixes("< \"my no", "{note}"),
+            "<{note} \"my no"
+        );
+    }
 
     #[test]
     fn search_terms() {

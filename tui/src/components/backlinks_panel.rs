@@ -16,7 +16,7 @@ use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
 use crate::components::file_list::{SortField, SortOrder};
-use crate::components::query_vars::{query_has_variables, resolve_query};
+use crate::components::query_vars::{query_has_variables, query_is_unresolvable, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
     Emit, KeyReaction, RowSource, SearchList, SearchRow, VaultSuggestions,
@@ -30,6 +30,21 @@ use crate::settings::themes::Theme;
 /// The default query the panel runs: backlinks to the current note.
 /// Backlinks are `<` / `lk:` (`>` is now forward links).
 const DEFAULT_QUERY: &str = "<{note}";
+/// The long-form spelling of [`DEFAULT_QUERY`] (`lk:` is the documented
+/// synonym of `<`), recognized so it also reads as the default.
+const DEFAULT_QUERY_LONG: &str = "lk:{note}";
+
+/// True when `query` is the default backlinks query in any spelling: the
+/// canonical `<{note}`, the bare `<` sugar, the long form `lk:` — with or
+/// without an order directive. Drives the "Backlinks" title and the
+/// breadcrumb's blank-query condition, so every synonym reads as the default.
+fn is_default_query(query: &str) -> bool {
+    let expanded = kimun_core::expand_bare_note_prefixes(
+        &kimun_core::strip_order_directive(query),
+        crate::components::query_vars::VAR_NOTE,
+    );
+    expanded == DEFAULT_QUERY || expanded == DEFAULT_QUERY_LONG
+}
 
 // ---------------------------------------------------------------------------
 // BacklinkEntry
@@ -107,11 +122,12 @@ impl RowSource<BacklinkEntry> for BacklinkSource {
     async fn load(&self, query: &str, emit: Emit<BacklinkEntry>) {
         // Clone the note out of the lock, then drop the guard before awaiting.
         let note = self.current_note.lock().unwrap().clone();
-        // Skip the search when the query contains a variable but no note is
-        // open yet (startup state). Running `load_query(vault, "<")` against an
-        // empty note is a wasted DB round-trip that returns nothing; once
-        // `set_note` provides a real note the normal reload fires.
-        if query_has_variables(query) && note.is_root_or_empty() {
+        // Skip the search when the query is purely note-dependent but no note
+        // is open yet (startup state). Running `load_query(vault, "<")`
+        // against an empty note is a wasted DB round-trip that returns
+        // nothing; once `set_note` provides a real note the normal reload
+        // fires. Mixed queries keep their concrete terms and still search.
+        if query_is_unresolvable(query, Some(&note)) {
             emit.replace(Vec::new());
             return;
         }
@@ -184,6 +200,17 @@ pub struct QueryPanel {
     /// parse every frame.
     order_cache: (SortField, SortOrder),
     order_cache_query: String,
+    /// Memoised `is_default_query` result for `order_cache_query` — the title
+    /// reads it every frame, and the helper allocates (strip + expand), so it
+    /// is refreshed in the same query-changed gate as `order_cache`.
+    is_default_cache: bool,
+    /// Memoised highlight needles derived from the resolved query, plus the
+    /// (query template, note) pair they were computed from. The expand/context
+    /// preview branches of `render` read needles every frame; recomputing them
+    /// means resolving the template and a full query parse, so they are cached
+    /// like `order_cache` and refreshed only when a key changes.
+    needles_cache: Vec<String>,
+    needles_cache_key: (String, VaultPath),
 }
 
 impl QueryPanel {
@@ -244,6 +271,13 @@ impl QueryPanel {
             // DEFAULT_QUERY carries no order directive → (Name, Ascending).
             order_cache: (SortField::Name, SortOrder::Ascending),
             order_cache_query: String::new(),
+            // The panel starts on DEFAULT_QUERY; the first render's
+            // query-changed gate recomputes this anyway.
+            is_default_cache: true,
+            needles_cache: Vec::new(),
+            // An impossible key (queries are never empty in practice, and the
+            // panel starts with DEFAULT_QUERY) so the first read computes.
+            needles_cache_key: (String::new(), VaultPath::empty()),
         }
     }
 
@@ -284,7 +318,7 @@ impl QueryPanel {
     /// contradict it). Drives the breadcrumb's clear condition.
     fn query_is_blank(&self) -> bool {
         let q = self.list.query();
-        q.trim().is_empty() || kimun_core::strip_order_directive(q) == DEFAULT_QUERY
+        q.trim().is_empty() || is_default_query(q)
     }
 
     /// Apply a query template (e.g. from a saved search) and run it. The engine
@@ -311,10 +345,17 @@ impl QueryPanel {
         }
     }
 
-    /// Resolve the active query template against the current note (the form the
-    /// source actually searches; used to derive highlight needles).
-    fn resolved_query(&self) -> String {
-        resolve_query(self.list.query(), Some(&self.current_note()))
+    /// The highlight needles for the active query, memoised on the
+    /// (query template, current note) pair — `render` reads these every frame
+    /// while a preview is open, and deriving them costs a template resolution
+    /// plus a full query parse.
+    fn cached_needles(&mut self) -> &[String] {
+        let note = self.current_note();
+        if self.needles_cache_key.0 != self.list.query() || self.needles_cache_key.1 != note {
+            self.needles_cache = query_needles(&resolve_query(self.list.query(), Some(&note)));
+            self.needles_cache_key = (self.list.query().to_string(), note);
+        }
+        &self.needles_cache
     }
 
     /// Returns true if the selected entry is in full-expand mode (content takes
@@ -521,16 +562,18 @@ impl QueryPanel {
         // every frame and `from_query_string` is a full allocating parse.
         if self.list.query() != self.order_cache_query {
             self.order_cache = self.current_order();
+            self.is_default_cache = is_default_query(self.list.query());
             self.order_cache_query = self.list.query().to_string();
         }
         let (sort_field, sort_order) = self.order_cache;
         let sort_indicator = format!("{}{}", sort_field.label(), sort_order.label());
-        // Compare ignoring the order directive so that sorting the default
-        // backlinks query (`<{note} or:title`) still reads as "Backlinks".
-        let base_query = kimun_core::strip_order_directive(self.list.query());
         // The saved-search name lives on the query searchbox border (the
         // breadcrumb below), not here, so the outer title stays generic.
-        let title = if base_query == DEFAULT_QUERY {
+        // `is_default_query` ignores the order directive and recognizes every
+        // spelling of the default (`<{note}`, bare `<`, `lk:`), so sorting or
+        // typing a synonym still reads as "Backlinks". Memoised above — the
+        // helper allocates and this runs every frame.
+        let title = if self.is_default_cache {
             format!("Backlinks ({}) {}", count, sort_indicator)
         } else {
             format!("Query ({}) {}", count, sort_indicator)
@@ -634,13 +677,13 @@ impl QueryPanel {
                 // Scrollable content.
                 let indent = 2usize;
                 let wrap_width = parts[2].width.saturating_sub(indent as u16 + 1) as usize;
-                let needles = query_needles(&self.resolved_query());
+                let needles = self.cached_needles();
 
                 let mut lines = Vec::new();
                 for line in text.lines() {
                     let wrapped = wrap_line(line, wrap_width);
                     for wline in wrapped {
-                        let spans = highlight_needles(&wline, &needles, fg_muted, bg, theme);
+                        let spans = highlight_needles(&wline, needles, fg_muted, bg, theme);
                         let mut indented =
                             vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                         indented.extend(spans);
@@ -707,7 +750,7 @@ impl QueryPanel {
             let text = entry.full_text.as_deref().unwrap_or(&entry.context);
             let indent = 2usize;
             let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
-            let needles = query_needles(&self.resolved_query());
+            let needles = self.cached_needles();
 
             let mut lines = Vec::new();
 
@@ -724,7 +767,7 @@ impl QueryPanel {
                     {
                         link_line = Some(lines.len());
                     }
-                    let spans = highlight_needles(&wline, &needles, fg_muted, bg, theme);
+                    let spans = highlight_needles(&wline, needles, fg_muted, bg, theme);
                     let mut indented =
                         vec![Span::styled(" ".repeat(indent), Style::default().bg(bg))];
                     indented.extend(spans);
@@ -1010,6 +1053,21 @@ mod tests {
     }
 
     #[test]
+    fn default_query_recognized_in_all_spellings() {
+        // Bare `<` and the long form are first-class synonyms of the default
+        // backlinks query: the panel title must read "Backlinks" and the
+        // breadcrumb clear condition must treat them as blank.
+        assert!(is_default_query(DEFAULT_QUERY));
+        assert!(is_default_query("<"));
+        assert!(is_default_query("lk:"));
+        assert!(is_default_query("< or:title"));
+        assert!(is_default_query("<{note} -or:file"));
+        assert!(!is_default_query("<projects"));
+        assert!(!is_default_query(">"));
+        assert!(!is_default_query(""));
+    }
+
+    #[test]
     fn query_needles_extracts_terms_and_links() {
         let n = query_needles("widget <spec");
         assert!(n.iter().any(|x| x == "widget"));
@@ -1044,6 +1102,29 @@ mod tests {
     fn make_panel(vault: Arc<NoteVault>) -> QueryPanel {
         let kb = crate::settings::AppSettings::default().key_bindings.clone();
         QueryPanel::new(vault, kb)
+    }
+
+    /// The memoised highlight needles must follow both cache keys: recompute
+    /// when the current note changes and when the query template changes.
+    #[tokio::test]
+    async fn cached_needles_track_query_and_note() {
+        let vault = crate::test_support::temp_vault("qp_needles").await;
+        vault.validate_and_init().await.unwrap();
+        let mut panel = make_panel(vault);
+
+        // Default query `<{note}` resolved against "spec".
+        *panel.current_note.lock().unwrap() = VaultPath::note_path_from("spec");
+        assert!(panel.cached_needles().iter().any(|n| n == "spec"));
+
+        // Note change invalidates.
+        *panel.current_note.lock().unwrap() = VaultPath::note_path_from("other");
+        assert!(panel.cached_needles().iter().any(|n| n == "other"));
+
+        // Query change invalidates.
+        panel.list.set_query("widget".to_string());
+        let needles = panel.cached_needles();
+        assert!(needles.iter().any(|n| n == "widget"));
+        assert!(!needles.iter().any(|n| n == "other"));
     }
 
     /// Drive the engine until its async load settles. Unlike the engine's
