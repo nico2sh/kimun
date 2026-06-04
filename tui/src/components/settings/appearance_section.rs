@@ -24,12 +24,19 @@ impl AppearanceSection {
     }
 
     pub fn selected_theme_name(&self) -> &str {
+        &self.selected_theme().name
+    }
+
+    /// The currently highlighted theme. Cheaper than resolving the name
+    /// through `AppSettings::get_theme()`, which rebuilds the whole theme
+    /// list (including custom-theme disk reads) on every call.
+    pub fn selected_theme(&self) -> &Theme {
         debug_assert!(
             !self.themes.is_empty(),
             "AppearanceSection requires at least one theme"
         );
         let idx = self.list_state.selected().unwrap_or(0);
-        &self.themes[idx].name
+        &self.themes[idx]
     }
 }
 
