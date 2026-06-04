@@ -262,6 +262,10 @@ impl Overlay for NoteBrowserModal {
         Some(self.list.query())
     }
 
+    fn saved_search_provenance(&self) -> Option<&str> {
+        self.saved_search.name()
+    }
+
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
         match event {
             InputEvent::Mouse(mouse) => match self.list.handle_mouse(mouse) {
@@ -604,5 +608,8 @@ mod tests {
             modal.saved_search_breadcrumb().as_deref(),
             Some("todo-week")
         );
+        // The overlay exposes the provenance so the save-search dialog can
+        // pre-fill its name field.
+        assert_eq!(Overlay::saved_search_provenance(&modal), Some("todo-week"));
     }
 }

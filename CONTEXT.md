@@ -63,7 +63,7 @@ The inline alternative to the **Saved Searches modal**: a leading `?` typed in a
 _Avoid_: saved-search operator (it is not a core query operator), saved-search reference (we expand, not reference).
 
 **Saved-search breadcrumb**:
-The name label a **saved-search expansion** pins on the query input's top border, recording which saved search the current query came from. Sticky provenance: it survives edits to the expanded query (gaining an "edited" marker once the text diverges from the stored query) and clears only when the field is emptied or another saved search is expanded.
+The name label a **saved-search expansion** pins on the query input's top border, recording which saved search the current query came from. Sticky provenance: it survives edits to the expanded query (gaining an "edited" marker once the text diverges from the stored query — any divergence counts, including the order directive, since the stored query is saved verbatim) and clears only when the field is emptied or another saved search is expanded. Saving the live query re-pins it to the saved search just written — the saved identity, not the original expansion, is the provenance from then on (so the "edited" marker drops on an update, and the name switches on a save-as-new).
 _Avoid_: title (the Query panel already has a query-reflective title; the breadcrumb is a distinct provenance tag).
 
 ### TUI search surfaces

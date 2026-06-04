@@ -16,6 +16,16 @@ pub enum SortTarget {
     Query,
 }
 
+/// The surface a save-current-query action sourced its query from. Carried
+/// through the save-search dialog so the editor knows whether the Query
+/// panel's breadcrumb should re-pin after the save — by identity, not by
+/// comparing query text (equal text from different surfaces must not collide).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveSource {
+    QueryPanel,
+    NoteBrowser,
+}
+
 /// All events that flow through the system — both input events (from crossterm)
 /// and app-level messages sent by components / screens to the main loop.
 #[derive(Debug, Clone)]
@@ -115,6 +125,9 @@ pub enum AppEvent {
     MoveDestValidation {
         available: bool,
     },
+    /// Save-search dialog: existing saved-search names have loaded (drives
+    /// the update/overwrite/save-new hint).
+    SavedSearchNamesLoaded(Vec<String>),
 
     // ── Workspace messages ──────────────────────────────────────────────
     /// User switched to a different workspace. Carries the workspace name.
@@ -122,9 +135,26 @@ pub enum AppEvent {
     WorkspaceSwitched(String),
 
     /// Persist a saved search (emitted by the save-search dialog on submit).
+    /// `source` is the surface the query was sourced from, decided when the
+    /// dialog opened — it drives whether the panel breadcrumb re-pins.
     SaveSearchConfirmed {
         name: String,
         query: String,
+        source: SaveSource,
+    },
+
+    /// A saved search was written to disk (success path of
+    /// `SaveSearchConfirmed`). The editor re-pins the panel breadcrumb here —
+    /// only once the write actually succeeded.
+    SavedSearchPersisted {
+        name: String,
+        query: String,
+        source: SaveSource,
+    },
+
+    /// The background saved-search write failed; surface it to the user.
+    SavedSearchSaveFailed {
+        name: String,
     },
 
     /// A saved search was chosen in the Saved Searches modal.
