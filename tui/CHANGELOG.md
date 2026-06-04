@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.12.0...kimun-notes-v0.13.0) - 2026-06-04
+
+### Added
+
+- autosurround with closing characters on selection
+
+### Fixed
+
+- fixes for autosurround
+- scrol anywhere in single place
+- fmt
+- code review
+- proper {} relacement
+- consistency
+- small fixes
+- saved search works
+- fmt
+- focus on panels
+- fmt and clippy
+- code review 2
+
+### Other
+
+- bare note operator expands to current open note
+- docs references in code
+- drop remaining ADR references from tui comments
+- NoteDetails revamp
+- refactor the db layer
+
 ## [0.12.0](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.11.3...kimun-notes-v0.12.0) - 2026-06-03
 
 ### Added
