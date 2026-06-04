@@ -153,6 +153,21 @@ fn selection_text(ta: &TextArea<'_>) -> Option<String> {
     })
 }
 
+/// Auto-surround pair for `c`: typing an opening pair character or a
+/// symmetric one while a selection is active wraps the selection instead of
+/// replacing it. Closing characters return `None` — they replace, like any
+/// other key. See CONTEXT.md "Auto-surround".
+fn surround_pair(c: char) -> Option<(char, char)> {
+    match c {
+        '(' => Some(('(', ')')),
+        '[' => Some(('[', ']')),
+        '{' => Some(('{', '}')),
+        '<' => Some(('<', '>')),
+        '"' | '\'' | '`' | '*' | '_' | '~' => Some((c, c)),
+        _ => None,
+    }
+}
+
 /// Owned RGBA image data lifted from the system clipboard. Returned by
 /// [`TextEditorComponent::take_clipboard_image`] so the screen layer can
 /// encode + persist without holding the editor's clipboard borrow.
@@ -1667,6 +1682,46 @@ impl TextEditorComponent {
         let BackendState::Textarea(ta) = &mut self.backend else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
+
+        // Auto-surround: an opening/symmetric pair char typed over a selection
+        // wraps it instead of replacing it (see CONTEXT.md "Auto-surround").
+        // Shift is allowed (most opening chars are shifted keys); Ctrl/Alt
+        // chords fall through. The selection is re-established on the inner
+        // text afterwards so wraps chain: `[` `[` builds a wikilink.
+        if let KeyCode::Char(c) = key.code
+            && (key.modifiers & !KeyModifiers::SHIFT).is_empty()
+            && let Some((open, close)) = surround_pair(c)
+            && let Some(text) = selection_text(ta)
+        {
+            let ((sr, sc), (er, ec)) = ta
+                .selection_range()
+                .expect("selection_text returned Some without a selection");
+            ta.insert_str(format!("{open}{text}{close}"));
+            // Reselect the inner text. The open char shifts cols on the first
+            // selected line only; coordinates are char-based, matching
+            // `selection_range`. Jump clamps, so the saturating casts degrade
+            // gracefully on pathologically large buffers.
+            let inner_end_col = if sr == er { ec + 1 } else { ec };
+            let jump = |row: usize, col: usize| {
+                CursorMove::Jump(
+                    u16::try_from(row).unwrap_or(u16::MAX),
+                    u16::try_from(col).unwrap_or(u16::MAX),
+                )
+            };
+            ta.cancel_selection();
+            ta.move_cursor(jump(sr, sc + 1));
+            ta.start_selection();
+            ta.move_cursor(jump(er, inner_end_col));
+            self.selection = ta.selection_range();
+            self.bump_content();
+            // Out-of-band buffer mutation — reconcile the autocomplete popup
+            // (see `paste_text`). A `[[` chain-wrap legitimately opens the
+            // wikilink popup.
+            self.bind_autocomplete_redraw(tx);
+            self.sync_autocomplete();
+            return EventState::Consumed;
+        }
+
         // `input_without_shortcuts` returns `false` for keys the textarea
         // ignores (F1-F12, KeyCode::Null, modifier-only releases, IME
         // composing events). Only bump `text_revision` when the buffer
@@ -2180,6 +2235,152 @@ mod tests {
             lines[sr][sc..].to_string()
         };
         assert_eq!(selected, "hello ");
+    }
+
+    /// Selects the char-coordinate range `start..end` in the editor's textarea.
+    fn select_range(editor: &mut TextEditorComponent, start: (u16, u16), end: (u16, u16)) {
+        let ta = get_ta(editor);
+        ta.cancel_selection();
+        ta.move_cursor(CursorMove::Jump(start.0, start.1));
+        ta.start_selection();
+        ta.move_cursor(CursorMove::Jump(end.0, end.1));
+        assert!(ta.selection_range().is_some());
+    }
+
+    fn send_char(editor: &mut TextEditorComponent, c: char) {
+        let tx = dummy_tx();
+        let key = ratatui::crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let _ = editor.handle_input(&InputEvent::Key(key), &tx);
+    }
+
+    #[test]
+    fn surround_pair_maps_open_and_symmetric_chars() {
+        assert_eq!(surround_pair('('), Some(('(', ')')));
+        assert_eq!(surround_pair('['), Some(('[', ']')));
+        assert_eq!(surround_pair('{'), Some(('{', '}')));
+        assert_eq!(surround_pair('<'), Some(('<', '>')));
+        assert_eq!(surround_pair('"'), Some(('"', '"')));
+        assert_eq!(surround_pair('\''), Some(('\'', '\'')));
+        assert_eq!(surround_pair('`'), Some(('`', '`')));
+        assert_eq!(surround_pair('*'), Some(('*', '*')));
+        assert_eq!(surround_pair('_'), Some(('_', '_')));
+        assert_eq!(surround_pair('~'), Some(('~', '~')));
+        // Closing chars and plain chars never wrap.
+        assert_eq!(surround_pair(')'), None);
+        assert_eq!(surround_pair(']'), None);
+        assert_eq!(surround_pair('}'), None);
+        assert_eq!(surround_pair('>'), None);
+        assert_eq!(surround_pair('a'), None);
+    }
+
+    #[test]
+    fn typing_open_paren_with_selection_wraps_it() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5)); // "hello"
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "(hello) world");
+        assert!(editor.is_dirty(), "wrap must mark the buffer dirty");
+    }
+
+    #[test]
+    fn wrap_keeps_selection_on_inner_text() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5));
+        send_char(&mut editor, '(');
+        // Selection must cover "hello" inside the parens so wraps chain.
+        assert_eq!(editor.selection, Some(((0, 1), (0, 6))));
+    }
+
+    #[test]
+    fn chained_brackets_build_a_wikilink() {
+        let mut editor = make_editor();
+        editor.set_text("my note".to_string());
+        select_range(&mut editor, (0, 0), (0, 7));
+        send_char(&mut editor, '[');
+        send_char(&mut editor, '[');
+        assert_eq!(editor.get_text(), "[[my note]]");
+        assert_eq!(editor.selection, Some(((0, 2), (0, 9))));
+    }
+
+    #[test]
+    fn symmetric_chars_wrap_and_chain() {
+        let mut editor = make_editor();
+        editor.set_text("bold".to_string());
+        select_range(&mut editor, (0, 0), (0, 4));
+        send_char(&mut editor, '*');
+        assert_eq!(editor.get_text(), "*bold*");
+        send_char(&mut editor, '*');
+        assert_eq!(editor.get_text(), "**bold**");
+        assert_eq!(editor.selection, Some(((0, 2), (0, 6))));
+    }
+
+    #[test]
+    fn closing_char_replaces_selection() {
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5));
+        send_char(&mut editor, ')');
+        assert_eq!(editor.get_text(), ") world");
+    }
+
+    #[test]
+    fn open_char_without_selection_inserts_normally() {
+        let mut editor = make_editor();
+        editor.set_text("hello".to_string());
+        let ta = get_ta(&mut editor);
+        ta.move_cursor(CursorMove::End);
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "hello(");
+    }
+
+    #[test]
+    fn wrap_spans_multiline_selection() {
+        let mut editor = make_editor();
+        editor.set_text("abc\ndef".to_string());
+        select_range(&mut editor, (0, 0), (1, 3));
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "(abc\ndef)");
+        // Inner selection: open char shifts only the first line.
+        assert_eq!(editor.selection, Some(((0, 1), (1, 3))));
+    }
+
+    #[test]
+    fn wrap_handles_multibyte_selection() {
+        let mut editor = make_editor();
+        editor.set_text("héllo🦀 x".to_string());
+        select_range(&mut editor, (0, 0), (0, 6)); // "héllo🦀" = 6 chars
+        send_char(&mut editor, '`');
+        assert_eq!(editor.get_text(), "`héllo🦀` x");
+        assert_eq!(editor.selection, Some(((0, 1), (0, 7))));
+    }
+
+    #[test]
+    fn wrap_with_reversed_selection_direction() {
+        // Selection made right-to-left must wrap the same way.
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 5), (0, 0));
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "(hello) world");
+        assert_eq!(editor.selection, Some(((0, 1), (0, 6))));
+    }
+
+    #[test]
+    fn wrap_undo_is_two_steps_back_to_original() {
+        // Documented trade-off: ratatui-textarea has no edit grouping, so a
+        // wrap is delete+insert = two history entries (same as bold/italic
+        // via apply_text_action). Two undos must restore the original text.
+        let mut editor = make_editor();
+        editor.set_text("hello world".to_string());
+        select_range(&mut editor, (0, 0), (0, 5));
+        send_char(&mut editor, '(');
+        assert_eq!(editor.get_text(), "(hello) world");
+        let ta = get_ta(&mut editor);
+        ta.undo();
+        ta.undo();
+        assert_eq!(editor.get_text(), "hello world");
     }
 
     #[test]
