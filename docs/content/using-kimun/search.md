@@ -228,7 +228,7 @@ screen* =notes                     → starts with "screen", in name "notes"
 Some queries contain a `{name}` placeholder that the TUI fills in at run time, before the query reaches the search engine. The first (and currently only) variable is `{note}`:
 
 - `{note}` resolves to the **clean name** of the note open in the editor (its filename without the extension).
-- In the [query panel](@/using-kimun/tui.md#query-panel), a bare `<` is shorthand for `<{note}` — the backlinks of the current note.
+- A bare note operator — `<`, `>` or `=` with no target — is shorthand for `<{note}`, `>{note}` or `={note}`: the backlinks of the current note, its forward links, or the note itself by name. Operators inside quoted terms are not expanded.
 
 With `spec.md` open, `<{note}` runs as `<spec` (the notes that link to `spec`). When no note is open, `{note}` resolves to an empty string.
 
