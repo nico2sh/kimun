@@ -25,7 +25,7 @@ impl Icons {
                 journal: "󰃭",
                 attachment: "",
                 info: "󰋽",
-                workspace: " ",
+                workspace: "⊙",
             }
         } else {
             Self {
