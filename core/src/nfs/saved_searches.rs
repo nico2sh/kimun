@@ -31,6 +31,14 @@ fn saved_searches_path(workspace_path: &Path) -> std::path::PathBuf {
     workspace_path.join(".kimun").join("saved-searches.toml")
 }
 
+/// The one name-match rule for saved searches: ASCII case-insensitive.
+/// Every comparison against a saved-search name — core's save/delete/rename
+/// upsert lookups and any UI preview of what a save will do — must go
+/// through this, so a future change to the rule happens in exactly one place.
+pub fn saved_search_name_matches(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
 /// Read all saved searches. Returns an empty list if the file does not
 /// exist yet (a fresh vault has none).
 pub async fn read_saved_searches(workspace_path: &Path) -> Result<Vec<SavedSearch>, FSError> {
@@ -67,6 +75,16 @@ pub async fn write_saved_searches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_match_is_ascii_case_insensitive() {
+        assert!(saved_search_name_matches("todo", "TODO"));
+        assert!(saved_search_name_matches("Todo", "toDo"));
+        assert!(!saved_search_name_matches("todo", "todos"));
+        // ASCII-only folding: accented characters compare byte-equal.
+        assert!(!saved_search_name_matches("naïve", "NAÏVE"));
+        assert!(saved_search_name_matches("Naïve", "naïve"));
+    }
 
     #[tokio::test]
     async fn read_missing_file_returns_empty() {
