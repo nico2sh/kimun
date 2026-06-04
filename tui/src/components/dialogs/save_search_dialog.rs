@@ -77,19 +77,21 @@ impl SaveSearchDialog {
         }
     }
 
-    /// What submitting right now would do. Name matching is ASCII
-    /// case-insensitive — the same rule core's `save_search` applies.
+    /// What submitting right now would do. Name matching delegates to core's
+    /// `saved_search_name_matches` — the same rule `save_search` applies on
+    /// write, so the hint can never disagree with the actual save outcome.
     pub fn hint(&self) -> SaveHint {
+        let matches = kimun_core::saved_search_name_matches;
         let effective = self.effective_name();
         if let Some(p) = &self.provenance
-            && p.eq_ignore_ascii_case(effective)
+            && matches(p, effective)
         {
             return SaveHint::Update(p.clone());
         }
         let Some(existing) = &self.existing else {
             return SaveHint::Pending;
         };
-        if let Some(name) = existing.iter().find(|n| n.eq_ignore_ascii_case(effective)) {
+        if let Some(name) = existing.iter().find(|n| matches(n, effective)) {
             return SaveHint::Overwrite(name.clone());
         }
         if self.name.value().trim().is_empty() {
@@ -173,22 +175,27 @@ impl SaveSearchDialog {
             .render(f, rows[3], Style::default().fg(fg).bg(bg), prefix_len, true);
 
         // Row 5: live hint — what Enter will do with the current name.
-        let (action, warn) = match self.hint() {
-            SaveHint::Update(name) => (format!("Update '{name}'"), false),
-            SaveHint::Overwrite(name) => (format!("Overwrite '{name}'"), true),
-            SaveHint::SaveNew => ("Save new".to_string(), false),
-            SaveHint::SaveNewAsQuery(query) => (format!("Save new: '{query}'"), false),
-            SaveHint::Pending => ("Save".to_string(), false),
+        // Pending renders dimmed (enter_active = false) until names load.
+        let (action, warn, pending) = match self.hint() {
+            SaveHint::Update(name) => (format!("Update '{name}'"), false, false),
+            SaveHint::Overwrite(name) => (format!("Overwrite '{name}'"), true, false),
+            SaveHint::SaveNew => ("Save new".to_string(), false, false),
+            SaveHint::SaveNewAsQuery(query) => (format!("Save new: '{query}'"), false, false),
+            SaveHint::Pending => ("Save".to_string(), false, true),
         };
-        let hint_fg = if warn {
+        let enter_fg = if warn {
             ratatui::style::Color::Yellow
         } else {
-            fg_muted
+            fg
         };
-        f.render_widget(
-            Paragraph::new(format!("  [Enter] {action}   [Esc] Cancel"))
-                .style(Style::default().fg(hint_fg).bg(bg)),
+        super::render_confirm_hint(
+            f,
             rows[5],
+            &format!("  [Enter] {action}"),
+            !pending,
+            enter_fg,
+            fg_muted,
+            bg,
         );
     }
 }
