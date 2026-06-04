@@ -539,16 +539,22 @@ fn dedup_preserving_order(v: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::SearchTerms;
     use super::expand_bare_note_prefixes;
+    use super::SearchTerms;
 
     #[test]
     fn expand_bare_short_note_prefixes() {
         assert_eq!(expand_bare_note_prefixes("<", "{note}"), "<{note}");
         assert_eq!(expand_bare_note_prefixes(">", "{note}"), ">{note}");
         assert_eq!(expand_bare_note_prefixes("=", "{note}"), "={note}");
-        assert_eq!(expand_bare_note_prefixes("#todo <", "{note}"), "#todo <{note}");
-        assert_eq!(expand_bare_note_prefixes("< #todo", "{note}"), "<{note} #todo");
+        assert_eq!(
+            expand_bare_note_prefixes("#todo <", "{note}"),
+            "#todo <{note}"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes("< #todo", "{note}"),
+            "<{note} #todo"
+        );
     }
 
     #[test]
@@ -568,10 +574,22 @@ mod tests {
 
     #[test]
     fn expand_leaves_prefixes_with_targets_untouched() {
-        assert_eq!(expand_bare_note_prefixes("<projects", "{note}"), "<projects");
-        assert_eq!(expand_bare_note_prefixes(">projects", "{note}"), ">projects");
-        assert_eq!(expand_bare_note_prefixes("=projects", "{note}"), "=projects");
-        assert_eq!(expand_bare_note_prefixes("lk:projects", "{note}"), "lk:projects");
+        assert_eq!(
+            expand_bare_note_prefixes("<projects", "{note}"),
+            "<projects"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes(">projects", "{note}"),
+            ">projects"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes("=projects", "{note}"),
+            "=projects"
+        );
+        assert_eq!(
+            expand_bare_note_prefixes("lk:projects", "{note}"),
+            "lk:projects"
+        );
         assert_eq!(
             expand_bare_note_prefixes("<\"my note\"", "{note}"),
             "<\"my note\""
