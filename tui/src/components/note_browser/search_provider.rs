@@ -7,7 +7,7 @@ use kimun_core::note::NoteContentData;
 
 use super::format_journal_date;
 use crate::components::file_list::FileListEntry;
-use crate::components::query_vars::{query_has_variables, resolve_query};
+use crate::components::query_vars::{query_is_unresolvable, resolve_query};
 use crate::components::search_list::{Emit, RowSource};
 
 pub struct SearchNotesProvider {
@@ -55,15 +55,12 @@ impl SearchNotesProvider {
 #[async_trait]
 impl RowSource<FileListEntry> for SearchNotesProvider {
     async fn load(&self, query: &str, emit: Emit<FileListEntry>) {
-        // A note-dependent query ({note} or bare-operator sugar) with no note
-        // to resolve against would reach core as a bare prefix and be dropped
-        // — a dead-end empty list. Treat it like an empty query instead, so
-        // the browser keeps showing the recent notes.
-        let unresolvable = query_has_variables(query)
-            && self
-                .current_note
-                .as_ref()
-                .is_none_or(|p| p.is_root_or_empty());
+        // A purely note-dependent query ({note} or bare-operator sugar) with
+        // no note to resolve against would reach core as a bare prefix and be
+        // dropped — a dead-end empty list. Treat it like an empty query
+        // instead, so the browser keeps showing the recent notes. Mixed
+        // queries keep their concrete terms and still search.
+        let unresolvable = query_is_unresolvable(query, self.current_note.as_ref());
         let entries: Vec<FileListEntry> = if query.is_empty() || unresolvable {
             // Build a lookup map from all indexed notes so we can resolve each
             // last_path to its full metadata in O(1).
@@ -182,6 +179,46 @@ mod tests {
         assert!(
             has_note_named(&list.visible_rows(), "spec"),
             "bare `<` with no open note must fall back to recent notes"
+        );
+    }
+
+    /// A mixed query — concrete terms plus unresolvable note sugar — must
+    /// still run the search (core drops the bare prefix), not silently
+    /// discard the user's terms for the recent-notes fallback.
+    #[tokio::test]
+    async fn mixed_query_with_unresolvable_sugar_still_searches() {
+        let vault = temp_vault("search_provider_mixed").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("gadget"), "widget stuff")
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("other"), "nothing here")
+            .await
+            .unwrap();
+
+        // No note open, query `widget <`: the `widget` term must still
+        // filter; "other" is the most recent note and must NOT appear (that
+        // would mean the recent-notes fallback swallowed the query).
+        let (tx, _rx) = unbounded_channel();
+        let provider = SearchNotesProvider::new(
+            vault.clone(),
+            vec![VaultPath::note_path_from("other")],
+            None,
+        );
+        let mut list = SearchList::builder(provider, redraw_callback(tx))
+            .initial_query("widget <")
+            .build();
+        list.poll_until_idle().await;
+        let rows = list.visible_rows();
+        assert!(
+            has_note_named(&rows, "gadget"),
+            "concrete term `widget` must still match"
+        );
+        assert!(
+            !has_note_named(&rows, "other"),
+            "mixed query must not fall back to recent notes"
         );
     }
 }
