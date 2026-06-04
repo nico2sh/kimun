@@ -242,7 +242,7 @@ impl NoteVault {
     }
 
     /// `false` when opening the vault self-healed the index schema (missing,
-    /// outdated, or invalid — see ADR-0007), meaning the index is valid but
+    /// outdated, or invalid), meaning the index is valid but
     /// empty until a sync pass ([`validate_and_init`](Self::validate_and_init))
     /// fills it. Fast paths use this to refuse to operate against an empty
     /// index without paying for a sync.
@@ -263,7 +263,7 @@ impl NoteVault {
         Ok(())
     }
     /// Brings the index in step with the vault on disk. Opening the vault
-    /// already self-healed the index schema (ADR-0007), so all that remains
+    /// already self-healed the index schema, so all that remains
     /// is a sync pass: a quick existence scan when the index was already
     /// current, or a full scan when it was just healed (and is thus empty).
     /// This can be slow on large vaults.
