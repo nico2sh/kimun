@@ -2,6 +2,9 @@ use ratatui::style::{Color, Style};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::Display;
 
+/// Built-in theme definitions (`Theme::gruvbox_dark()`, `Theme::nord()`, …).
+mod builtin;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ThemeColor {
     Rgb(u8, u8, u8),
@@ -283,184 +286,6 @@ impl Default for Theme {
 }
 
 impl Theme {
-    // ── Built-in themes ──────────────────────────────────────────────────────
-
-    pub fn gruvbox_dark() -> Self {
-        Theme {
-            name: "Gruvbox Dark".to_string(),
-            bg: ThemeColor::from_string("#282828").unwrap(),
-            bg_panel: ThemeColor::from_string("#32302f").unwrap(),
-            bg_selected: ThemeColor::from_string("#504945").unwrap(),
-            fg: ThemeColor::from_string("#ebdbb2").unwrap(),
-            fg_secondary: ThemeColor::from_string("#a89984").unwrap(),
-            fg_muted: ThemeColor::from_string("#7c6f64").unwrap(),
-            fg_selected: ThemeColor::from_string("#fbf1c7").unwrap(),
-            border: ThemeColor::from_string("#504945").unwrap(),
-            border_focused: ThemeColor::from_string("#fabd2f").unwrap(),
-            accent: ThemeColor::from_string("#fabd2f").unwrap(),
-            color_directory: ThemeColor::from_string("#83a598").unwrap(),
-            color_journal_date: ThemeColor::from_string("#8ec07c").unwrap(),
-            color_search_match: ThemeColor::from_string("#b8bb26").unwrap(),
-            color_tag: ThemeColor::from_string("#fe8019").unwrap(),
-            blockquote_bar: ThemeColor::from_string("#fabd2f").unwrap(),
-            code_bg: ThemeColor::from_string("#32302f").unwrap(),
-        }
-    }
-
-    pub fn gruvbox_light() -> Self {
-        Theme {
-            name: "Gruvbox Light".to_string(),
-            bg: ThemeColor::from_string("#fbf1c7").unwrap(),
-            bg_panel: ThemeColor::from_string("#f2e5bc").unwrap(),
-            bg_selected: ThemeColor::from_string("#ebdbb2").unwrap(),
-            fg: ThemeColor::from_string("#3c3836").unwrap(),
-            fg_secondary: ThemeColor::from_string("#7c6f64").unwrap(),
-            fg_muted: ThemeColor::from_string("#a89984").unwrap(),
-            fg_selected: ThemeColor::from_string("#282828").unwrap(),
-            border: ThemeColor::from_string("#d5c4a1").unwrap(),
-            border_focused: ThemeColor::from_string("#d79921").unwrap(),
-            accent: ThemeColor::from_string("#d79921").unwrap(),
-            color_directory: ThemeColor::from_string("#458588").unwrap(),
-            color_journal_date: ThemeColor::from_string("#689d6a").unwrap(),
-            color_search_match: ThemeColor::from_string("#98971a").unwrap(),
-            color_tag: ThemeColor::from_string("#af3a03").unwrap(),
-            blockquote_bar: ThemeColor::from_string("#d79921").unwrap(),
-            code_bg: ThemeColor::from_string("#f2e5bc").unwrap(),
-        }
-    }
-
-    pub fn catppuccin_mocha() -> Self {
-        Theme {
-            name: "Catppuccin Mocha".to_string(),
-            bg: ThemeColor::from_string("#1e1e2e").unwrap(),
-            bg_panel: ThemeColor::from_string("#181825").unwrap(),
-            bg_selected: ThemeColor::from_string("#313244").unwrap(),
-            fg: ThemeColor::from_string("#cdd6f4").unwrap(),
-            fg_secondary: ThemeColor::from_string("#a6adc8").unwrap(),
-            fg_muted: ThemeColor::from_string("#6c7086").unwrap(),
-            fg_selected: ThemeColor::from_string("#cdd6f4").unwrap(),
-            border: ThemeColor::from_string("#45475a").unwrap(),
-            border_focused: ThemeColor::from_string("#89b4fa").unwrap(),
-            accent: ThemeColor::from_string("#cba6f7").unwrap(),
-            color_directory: ThemeColor::from_string("#89dceb").unwrap(),
-            color_journal_date: ThemeColor::from_string("#94e2d5").unwrap(),
-            color_search_match: ThemeColor::from_string("#a6e3a1").unwrap(),
-            color_tag: ThemeColor::from_string("#fab387").unwrap(),
-            blockquote_bar: ThemeColor::from_string("#cba6f7").unwrap(),
-            code_bg: ThemeColor::from_string("#181825").unwrap(),
-        }
-    }
-
-    pub fn catppuccin_latte() -> Self {
-        Theme {
-            name: "Catppuccin Latte".to_string(),
-            bg: ThemeColor::from_string("#eff1f5").unwrap(),
-            bg_panel: ThemeColor::from_string("#e6e9ef").unwrap(),
-            bg_selected: ThemeColor::from_string("#ccd0da").unwrap(),
-            fg: ThemeColor::from_string("#4c4f69").unwrap(),
-            fg_secondary: ThemeColor::from_string("#6c6f85").unwrap(),
-            fg_muted: ThemeColor::from_string("#9ca0b0").unwrap(),
-            fg_selected: ThemeColor::from_string("#4c4f69").unwrap(),
-            border: ThemeColor::from_string("#ccd0da").unwrap(),
-            border_focused: ThemeColor::from_string("#1e66f5").unwrap(),
-            accent: ThemeColor::from_string("#8839ef").unwrap(),
-            color_directory: ThemeColor::from_string("#04a5e5").unwrap(),
-            color_journal_date: ThemeColor::from_string("#179299").unwrap(),
-            color_search_match: ThemeColor::from_string("#40a02b").unwrap(),
-            color_tag: ThemeColor::from_string("#fe640b").unwrap(),
-            blockquote_bar: ThemeColor::from_string("#8839ef").unwrap(),
-            code_bg: ThemeColor::from_string("#e6e9ef").unwrap(),
-        }
-    }
-
-    pub fn tokyo_night() -> Self {
-        Theme {
-            name: "Tokyo Night".to_string(),
-            bg: ThemeColor::from_string("#1a1b26").unwrap(),
-            bg_panel: ThemeColor::from_string("#16161e").unwrap(),
-            bg_selected: ThemeColor::from_string("#292e42").unwrap(),
-            fg: ThemeColor::from_string("#c0caf5").unwrap(),
-            fg_secondary: ThemeColor::from_string("#a9b1d6").unwrap(),
-            fg_muted: ThemeColor::from_string("#565f89").unwrap(),
-            fg_selected: ThemeColor::from_string("#c0caf5").unwrap(),
-            border: ThemeColor::from_string("#3b4261").unwrap(),
-            border_focused: ThemeColor::from_string("#7aa2f7").unwrap(),
-            accent: ThemeColor::from_string("#7aa2f7").unwrap(),
-            color_directory: ThemeColor::from_string("#7dcfff").unwrap(),
-            color_journal_date: ThemeColor::from_string("#73daca").unwrap(),
-            color_search_match: ThemeColor::from_string("#9ece6a").unwrap(),
-            color_tag: ThemeColor::from_string("#ff9e64").unwrap(),
-            blockquote_bar: ThemeColor::from_string("#7aa2f7").unwrap(),
-            code_bg: ThemeColor::from_string("#16161e").unwrap(),
-        }
-    }
-
-    pub fn tokyo_night_storm() -> Self {
-        Theme {
-            name: "Tokyo Night Storm".to_string(),
-            bg: ThemeColor::from_string("#24283b").unwrap(),
-            bg_panel: ThemeColor::from_string("#1f2335").unwrap(),
-            bg_selected: ThemeColor::from_string("#364a82").unwrap(),
-            fg: ThemeColor::from_string("#c0caf5").unwrap(),
-            fg_secondary: ThemeColor::from_string("#a9b1d6").unwrap(),
-            fg_muted: ThemeColor::from_string("#565f89").unwrap(),
-            fg_selected: ThemeColor::from_string("#c0caf5").unwrap(),
-            border: ThemeColor::from_string("#3b4261").unwrap(),
-            border_focused: ThemeColor::from_string("#7aa2f7").unwrap(),
-            accent: ThemeColor::from_string("#bb9af7").unwrap(),
-            color_directory: ThemeColor::from_string("#7dcfff").unwrap(),
-            color_journal_date: ThemeColor::from_string("#73daca").unwrap(),
-            color_search_match: ThemeColor::from_string("#9ece6a").unwrap(),
-            color_tag: ThemeColor::from_string("#ff9e64").unwrap(),
-            blockquote_bar: ThemeColor::from_string("#bb9af7").unwrap(),
-            code_bg: ThemeColor::from_string("#1f2335").unwrap(),
-        }
-    }
-
-    pub fn solarized_dark() -> Self {
-        Theme {
-            name: "Solarized Dark".to_string(),
-            bg: ThemeColor::from_string("#002b36").unwrap(),
-            bg_panel: ThemeColor::from_string("#073642").unwrap(),
-            bg_selected: ThemeColor::from_string("#586e75").unwrap(),
-            fg: ThemeColor::from_string("#839496").unwrap(),
-            fg_secondary: ThemeColor::from_string("#657b83").unwrap(),
-            fg_muted: ThemeColor::from_string("#586e75").unwrap(),
-            fg_selected: ThemeColor::from_string("#eee8d5").unwrap(),
-            border: ThemeColor::from_string("#073642").unwrap(),
-            border_focused: ThemeColor::from_string("#268bd2").unwrap(),
-            accent: ThemeColor::from_string("#268bd2").unwrap(),
-            color_directory: ThemeColor::from_string("#2aa198").unwrap(),
-            color_journal_date: ThemeColor::from_string("#859900").unwrap(),
-            color_search_match: ThemeColor::from_string("#b58900").unwrap(),
-            color_tag: ThemeColor::from_string("#cb4b16").unwrap(),
-            blockquote_bar: ThemeColor::from_string("#268bd2").unwrap(),
-            code_bg: ThemeColor::from_string("#073642").unwrap(),
-        }
-    }
-
-    pub fn solarized_light() -> Self {
-        Theme {
-            name: "Solarized Light".to_string(),
-            bg: ThemeColor::from_string("#fdf6e3").unwrap(),
-            bg_panel: ThemeColor::from_string("#eee8d5").unwrap(),
-            bg_selected: ThemeColor::from_string("#93a1a1").unwrap(),
-            fg: ThemeColor::from_string("#657b83").unwrap(),
-            fg_secondary: ThemeColor::from_string("#839496").unwrap(),
-            fg_muted: ThemeColor::from_string("#93a1a1").unwrap(),
-            fg_selected: ThemeColor::from_string("#073642").unwrap(),
-            border: ThemeColor::from_string("#eee8d5").unwrap(),
-            border_focused: ThemeColor::from_string("#268bd2").unwrap(),
-            accent: ThemeColor::from_string("#268bd2").unwrap(),
-            color_directory: ThemeColor::from_string("#2aa198").unwrap(),
-            color_journal_date: ThemeColor::from_string("#859900").unwrap(),
-            color_search_match: ThemeColor::from_string("#b58900").unwrap(),
-            color_tag: ThemeColor::from_string("#cb4b16").unwrap(),
-            blockquote_bar: ThemeColor::from_string("#268bd2").unwrap(),
-            code_bg: ThemeColor::from_string("#eee8d5").unwrap(),
-        }
-    }
-
     /// Returns the appropriate border style depending on focus state.
     pub fn border_style(&self, focused: bool) -> Style {
         if focused {
@@ -483,90 +308,12 @@ impl Theme {
             .fg(self.fg.to_ratatui())
             .bg(self.bg_panel.to_ratatui())
     }
-
-    pub fn nord() -> Self {
-        Theme {
-            name: "Nord".to_string(),
-            bg: ThemeColor::from_string("#2e3440").unwrap(),
-            bg_panel: ThemeColor::from_string("#3b4252").unwrap(),
-            bg_selected: ThemeColor::from_string("#434c5e").unwrap(),
-            fg: ThemeColor::from_string("#eceff4").unwrap(),
-            fg_secondary: ThemeColor::from_string("#d8dee9").unwrap(),
-            fg_muted: ThemeColor::from_string("#4c566a").unwrap(),
-            fg_selected: ThemeColor::from_string("#eceff4").unwrap(),
-            border: ThemeColor::from_string("#434c5e").unwrap(),
-            border_focused: ThemeColor::from_string("#81a1c1").unwrap(),
-            accent: ThemeColor::from_string("#88c0d0").unwrap(),
-            color_directory: ThemeColor::from_string("#81a1c1").unwrap(),
-            color_journal_date: ThemeColor::from_string("#8fbcbb").unwrap(),
-            color_search_match: ThemeColor::from_string("#a3be8c").unwrap(),
-            color_tag: ThemeColor::from_string("#d08770").unwrap(),
-            blockquote_bar: ThemeColor::from_string("#88c0d0").unwrap(),
-            code_bg: ThemeColor::from_string("#3b4252").unwrap(),
-        }
-    }
-
-    /// Uses the terminal's 16 ANSI colors so the theme adapts to whatever
-    /// palette the user has configured in their terminal emulator. Works for
-    /// both light and dark terminal palettes because backgrounds and primary
-    /// foregrounds use `Reset` (the terminal's defaults) and accents are
-    /// chromatic ANSI slots whose hue is stable across palettes.
-    pub fn ansi() -> Self {
-        Theme {
-            name: "ANSI".to_string(),
-            bg: ThemeColor::Reset,
-            bg_panel: ThemeColor::Reset,
-            bg_selected: ThemeColor::Ansi(4), // blue
-            fg: ThemeColor::Reset,
-            fg_secondary: ThemeColor::Ansi(7),        // white
-            fg_muted: ThemeColor::Ansi(8),            // bright black
-            fg_selected: ThemeColor::Ansi(15),        // bright white
-            border: ThemeColor::Ansi(8),              // bright black
-            border_focused: ThemeColor::Ansi(6),      // cyan
-            accent: ThemeColor::Ansi(6),              // cyan
-            color_directory: ThemeColor::Ansi(12),    // bright blue
-            color_journal_date: ThemeColor::Ansi(10), // bright green
-            color_search_match: ThemeColor::Ansi(11), // bright yellow
-            color_tag: ThemeColor::Ansi(3),           // yellow
-            blockquote_bar: ThemeColor::Ansi(6),      // cyan (accent)
-            // Bright-black (gray) — a subtle code-block box that stays visible
-            // on both light and dark terminal palettes. `Reset` would equal the
-            // editor background and render no box at all.
-            code_bg: ThemeColor::Ansi(8),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::style::Style;
-
-    #[test]
-    fn every_builtin_theme_has_a_visible_code_bg() {
-        // `Reset` equals the editor background, so a code block would render no
-        // box at all (the ANSI-theme regression). Every built-in must use a
-        // real color for `code_bg`.
-        for theme in [
-            Theme::gruvbox_dark(),
-            Theme::gruvbox_light(),
-            Theme::catppuccin_mocha(),
-            Theme::catppuccin_latte(),
-            Theme::tokyo_night(),
-            Theme::tokyo_night_storm(),
-            Theme::solarized_dark(),
-            Theme::solarized_light(),
-            Theme::nord(),
-            Theme::ansi(),
-        ] {
-            assert_ne!(
-                theme.code_bg,
-                ThemeColor::Reset,
-                "theme {:?} has code_bg = Reset → invisible code box",
-                theme.name
-            );
-        }
-    }
 
     #[test]
     fn test_border_style_focused() {
