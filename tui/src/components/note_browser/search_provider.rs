@@ -7,7 +7,7 @@ use kimun_core::note::NoteContentData;
 
 use super::format_journal_date;
 use crate::components::file_list::FileListEntry;
-use crate::components::query_vars::resolve_query;
+use crate::components::query_vars::{query_has_variables, resolve_query};
 use crate::components::search_list::{Emit, RowSource};
 
 pub struct SearchNotesProvider {
@@ -55,7 +55,16 @@ impl SearchNotesProvider {
 #[async_trait]
 impl RowSource<FileListEntry> for SearchNotesProvider {
     async fn load(&self, query: &str, emit: Emit<FileListEntry>) {
-        let entries: Vec<FileListEntry> = if query.is_empty() {
+        // A note-dependent query ({note} or bare-operator sugar) with no note
+        // to resolve against would reach core as a bare prefix and be dropped
+        // — a dead-end empty list. Treat it like an empty query instead, so
+        // the browser keeps showing the recent notes.
+        let unresolvable = query_has_variables(query)
+            && self
+                .current_note
+                .as_ref()
+                .is_none_or(|p| p.is_root_or_empty());
+        let entries: Vec<FileListEntry> = if query.is_empty() || unresolvable {
             // Build a lookup map from all indexed notes so we can resolve each
             // last_path to its full metadata in O(1).
             let all_notes = self.vault.get_all_notes().await.unwrap_or_default();
@@ -143,6 +152,36 @@ mod tests {
         assert!(
             !has_note_named(&list_none.visible_rows(), "spec"),
             "without an open note, {{note}} resolves to empty and must not match 'spec'"
+        );
+    }
+
+    /// A note-dependent query with no note to resolve against must fall back
+    /// to the recent-notes view (like an empty query) instead of running a
+    /// search that core drops — a dead-end empty list.
+    #[tokio::test]
+    async fn unresolvable_note_query_falls_back_to_recent_notes() {
+        let vault = temp_vault("search_provider_unresolvable").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("spec"), "hello")
+            .await
+            .unwrap();
+
+        // No note open, bare `<` typed: the sugar can't resolve, so the
+        // browser shows the recent notes (here: "spec") rather than nothing.
+        let (tx, _rx) = unbounded_channel();
+        let provider = SearchNotesProvider::new(
+            vault.clone(),
+            vec![VaultPath::note_path_from("spec")],
+            None,
+        );
+        let mut list = SearchList::builder(provider, redraw_callback(tx))
+            .initial_query("<")
+            .build();
+        list.poll_until_idle().await;
+        assert!(
+            has_note_named(&list.visible_rows(), "spec"),
+            "bare `<` with no open note must fall back to recent notes"
         );
     }
 }

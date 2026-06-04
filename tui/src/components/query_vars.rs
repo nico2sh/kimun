@@ -3,61 +3,19 @@
 //!). Core's query language never sees these.
 
 use kimun_core::nfs::VaultPath;
-use kimun_core::quote_query_term;
+use kimun_core::{expand_bare_note_prefixes, quote_query_term};
 
-/// The current-note variable. A bare note operator (`<`, `>`, `=`) typed in
-/// the query panel is sugar that expands to `<{note}` / `>{note}` / `={note}`
-/// via [`expand_note_sugar`] before resolution.
+/// The current-note variable. A bare note operator (`<`, `>`, `=`, their long
+/// forms and `-` exclusion variants) typed in the query panel is sugar for
+/// `<op>{note}`, expanded by core's [`expand_bare_note_prefixes`] before
+/// resolution so the DSL's tokenization is never re-implemented here.
 pub const VAR_NOTE: &str = "{note}";
-
-/// Note-related operators whose bare form (no target) is sugar for
-/// `<op>{note}`: backlinks, forward links, and name match.
-const NOTE_SUGAR_OPS: [&str; 3] = ["<", ">", "="];
-
-/// Expand bare note operators into their `{note}` form: a whitespace-delimited
-/// token that is exactly `<`, `>` or `=` (outside quotes) becomes `<{note}`,
-/// `>{note}` or `={note}`. Operators with an explicit target (`<projects`)
-/// and operators inside quoted terms are left untouched.
-fn expand_note_sugar(template: &str) -> String {
-    fn flush(token: &mut String, out: &mut String) {
-        out.push_str(token);
-        if NOTE_SUGAR_OPS.contains(&token.as_str()) {
-            out.push_str(VAR_NOTE);
-        }
-        token.clear();
-    }
-
-    let mut out = String::with_capacity(template.len() + VAR_NOTE.len());
-    let mut token = String::new();
-    let mut quote: Option<char> = None;
-    for c in template.chars() {
-        match quote {
-            Some(q) => {
-                token.push(c);
-                if c == q {
-                    quote = None;
-                }
-            }
-            None if c == '"' || c == '\'' => {
-                quote = Some(c);
-                token.push(c);
-            }
-            None if c.is_whitespace() => {
-                flush(&mut token, &mut out);
-                out.push(c);
-            }
-            None => token.push(c),
-        }
-    }
-    flush(&mut token, &mut out);
-    out
-}
 
 /// True if `template` contains any query variable (including the bare-operator
 /// sugar forms). The query panel uses this to decide whether to re-run on note
 /// navigation.
 pub fn query_has_variables(template: &str) -> bool {
-    expand_note_sugar(template).contains(VAR_NOTE)
+    expand_bare_note_prefixes(template, VAR_NOTE).contains(VAR_NOTE)
 }
 
 /// Resolve all query variables in `template` against the open note,
@@ -71,7 +29,7 @@ pub fn resolve_query(template: &str, current_note: Option<&VaultPath>) -> String
     let note_name = current_note
         .map(|p| quote_query_term(&p.get_clean_name()))
         .unwrap_or_default();
-    expand_note_sugar(template).replace(VAR_NOTE, &note_name)
+    expand_bare_note_prefixes(template, VAR_NOTE).replace(VAR_NOTE, &note_name)
 }
 
 #[cfg(test)]
@@ -114,6 +72,25 @@ mod tests {
         assert_eq!(resolve_query("=", Some(&p)), "=spec");
         assert_eq!(resolve_query("#todo <", Some(&p)), "#todo <spec");
         assert_eq!(resolve_query("< #todo", Some(&p)), "<spec #todo");
+    }
+
+    #[test]
+    fn bare_long_forms_and_exclusions_expand_too() {
+        let p = VaultPath::note_path_from("work/spec.md");
+        assert_eq!(resolve_query("lk:", Some(&p)), "lk:spec");
+        assert_eq!(resolve_query("fwd:", Some(&p)), "fwd:spec");
+        assert_eq!(resolve_query("name:", Some(&p)), "name:spec");
+        assert_eq!(resolve_query("-<", Some(&p)), "-<spec");
+    }
+
+    #[test]
+    fn apostrophe_in_term_does_not_suppress_expansion() {
+        // A mid-token apostrophe is a literal character (matching core's
+        // parser), not a quote opener, so sugar after a contraction still
+        // expands.
+        let p = VaultPath::note_path_from("work/spec.md");
+        assert_eq!(resolve_query("don't <", Some(&p)), "don't <spec");
+        assert_eq!(resolve_query("= don't <", Some(&p)), "=spec don't <spec");
     }
 
     #[test]
