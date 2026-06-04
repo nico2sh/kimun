@@ -277,6 +277,11 @@ impl Overlay for NoteBrowserModal {
                     self.refresh_preview_from_list();
                     EventState::Consumed
                 }
+                // No content sub-region is recorded by this host, so these
+                // are unreachable.
+                SearchMouse::ContentScrollUp | SearchMouse::ContentScrollDown => {
+                    EventState::Consumed
+                }
                 SearchMouse::None => EventState::NotConsumed,
             },
             InputEvent::Key(key) => match self.list.handle_key(key) {
