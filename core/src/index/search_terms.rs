@@ -220,10 +220,11 @@ fn is_note_element(el: &ElementType) -> bool {
 /// Return `query` with every bare note-targeting prefix — `<` / `>` / `=`,
 /// their long forms `lk:` / `fwd:` / `name:`, and the `-` exclusion variants —
 /// expanded to `<prefix><target>`. A prefix is bare when the whole token is
-/// exactly the prefix. Tokenization follows the parser's grammar: tokens are
-/// whitespace-separated, a quote is honored only at a value start (the start
-/// of a token or right after a prefix), and a quoted value may span
-/// whitespace. Everything else, including whitespace, is preserved verbatim,
+/// exactly the prefix. Tokenization follows the parser's grammar: an unquoted
+/// token ends at an ASCII space (only — a tab or NBSP is part of the token,
+/// exactly as the parser reads it), a quote is honored only at a value start
+/// (the start of a token or right after a prefix), and a quoted value may
+/// span spaces. Everything else, including whitespace, is preserved verbatim,
 /// so the result is the same query with only the bare prefixes rewritten.
 ///
 /// This lives in core so the TUI's input-layer sugar (a bare `<` standing for
@@ -245,8 +246,12 @@ pub fn expand_bare_note_prefixes(query: &str, target: &str) -> String {
         rest = &rest[token_start..];
 
         // A prefix is only meaningful at the token start; the value may then
-        // be quoted (and span whitespace) or run to the next whitespace.
-        let prefix_len = detect_prefix(rest).map_or(0, |(_, remaining)| rest.len() - remaining.len());
+        // be quoted (and span spaces) or run to the next ASCII space — the
+        // parser's separator (a tab or NBSP is part of the token).
+        let detected = detect_prefix(rest);
+        let prefix_len = detected
+            .as_ref()
+            .map_or(0, |(_, remaining)| rest.len() - remaining.len());
         let value = &rest[prefix_len..];
         let token_len = match value.chars().next() {
             Some(quote @ ('"' | '\'')) => {
@@ -257,14 +262,13 @@ pub fn expand_bare_note_prefixes(query: &str, target: &str) -> String {
                     None => rest.len(),
                 }
             }
-            _ => rest
-                .find(char::is_whitespace)
-                .unwrap_or(rest.len()),
+            _ => rest.find(' ').unwrap_or(rest.len()),
         };
         let token = &rest[..token_len];
         out.push_str(token);
-        if prefix_len > 0 && prefix_len == token.len() {
-            if let Some((el, _)) = detect_prefix(token) {
+        // Bare prefix: the whole token is the prefix itself.
+        if prefix_len == token_len {
+            if let Some((el, _)) = detected {
                 if is_note_element(&el) {
                     out.push_str(target);
                 }
@@ -609,6 +613,18 @@ mod tests {
             expand_bare_note_prefixes("  #todo   <  ", "{note}"),
             "  #todo   <{note}  "
         );
+    }
+
+    #[test]
+    fn expand_matches_parser_ascii_space_tokenization() {
+        // The parser splits unquoted values on the ASCII space only — a NBSP
+        // or tab is part of the token — so the expander must not treat one as
+        // a token boundary and clobber a user-supplied target.
+        assert_eq!(
+            expand_bare_note_prefixes("<\u{a0}foo", "{note}"),
+            "<\u{a0}foo"
+        );
+        assert_eq!(expand_bare_note_prefixes("a\t<", "{note}"), "a\t<");
     }
 
     #[test]
