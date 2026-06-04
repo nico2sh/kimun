@@ -285,6 +285,17 @@ impl AppSettings {
             Theme::solarized_dark(),
             Theme::solarized_light(),
             Theme::nord(),
+            Theme::dracula(),
+            Theme::alucard(),
+            Theme::one_dark(),
+            Theme::one_light(),
+            Theme::monokai(),
+            Theme::everforest_dark(),
+            Theme::everforest_light(),
+            Theme::rose_pine(),
+            Theme::rose_pine_dawn(),
+            Theme::kanagawa_wave(),
+            Theme::kanagawa_lotus(),
             Theme::ansi(),
         ];
         list.append(&mut Self::load_custom_themes());
