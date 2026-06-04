@@ -102,7 +102,7 @@ Press `Ctrl+W` to open the quick note dialog. Type a thought and press Enter to 
 
 Press `Ctrl+E` to toggle the query panel on the right side of the editor. It runs a [search query](@/using-kimun/search.md) and lists the matching notes beside your work. By default it shows the current note's **backlinks** — the notes that link to it — because its starting query is `<{note}` (see [Query variables](@/using-kimun/search.md#query-variables)). Edit the query and the panel becomes an always-available search next to the editor.
 
-- **Type** — edit the query; results update as you type. A bare `<` is shorthand for `<{note}` (backlinks of the current note).
+- **Type** — edit the query; results update as you type. A bare `<`, `>` or `=` is shorthand for `<{note}`, `>{note}` or `={note}` (backlinks, forward links, or name of the current note).
 - **Up/Down** — navigate the result list
 - **Enter** — expand the selected note to show the paragraph around the match. Press Enter again for the full note, a third time to collapse.
 - **Ctrl+G** — open the selected note in the editor
