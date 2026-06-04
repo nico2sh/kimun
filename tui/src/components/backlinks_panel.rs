@@ -31,6 +31,18 @@ use crate::settings::themes::Theme;
 /// Backlinks are `<` / `lk:` (`>` is now forward links).
 const DEFAULT_QUERY: &str = "<{note}";
 
+/// True when `query` is the default backlinks query in any spelling: the
+/// canonical `<{note}`, the bare `<` sugar, the long form `lk:` — with or
+/// without an order directive. Drives the "Backlinks" title and the
+/// breadcrumb's blank-query condition, so every synonym reads as the default.
+fn is_default_query(query: &str) -> bool {
+    let expanded = kimun_core::expand_bare_note_prefixes(
+        &kimun_core::strip_order_directive(query),
+        crate::components::query_vars::VAR_NOTE,
+    );
+    expanded == DEFAULT_QUERY || expanded == format!("lk:{}", crate::components::query_vars::VAR_NOTE)
+}
+
 // ---------------------------------------------------------------------------
 // BacklinkEntry
 // ---------------------------------------------------------------------------
@@ -284,7 +296,7 @@ impl QueryPanel {
     /// contradict it). Drives the breadcrumb's clear condition.
     fn query_is_blank(&self) -> bool {
         let q = self.list.query();
-        q.trim().is_empty() || kimun_core::strip_order_directive(q) == DEFAULT_QUERY
+        q.trim().is_empty() || is_default_query(q)
     }
 
     /// Apply a query template (e.g. from a saved search) and run it. The engine
@@ -525,12 +537,12 @@ impl QueryPanel {
         }
         let (sort_field, sort_order) = self.order_cache;
         let sort_indicator = format!("{}{}", sort_field.label(), sort_order.label());
-        // Compare ignoring the order directive so that sorting the default
-        // backlinks query (`<{note} or:title`) still reads as "Backlinks".
-        let base_query = kimun_core::strip_order_directive(self.list.query());
         // The saved-search name lives on the query searchbox border (the
         // breadcrumb below), not here, so the outer title stays generic.
-        let title = if base_query == DEFAULT_QUERY {
+        // `is_default_query` ignores the order directive and recognizes every
+        // spelling of the default (`<{note}`, bare `<`, `lk:`), so sorting or
+        // typing a synonym still reads as "Backlinks".
+        let title = if is_default_query(self.list.query()) {
             format!("Backlinks ({}) {}", count, sort_indicator)
         } else {
             format!("Query ({}) {}", count, sort_indicator)
@@ -1007,6 +1019,21 @@ mod tests {
                 .any(|s| s.content.contains("gadget")
                     && s.style.add_modifier.contains(Modifier::BOLD))
         );
+    }
+
+    #[test]
+    fn default_query_recognized_in_all_spellings() {
+        // Bare `<` and the long form are first-class synonyms of the default
+        // backlinks query: the panel title must read "Backlinks" and the
+        // breadcrumb clear condition must treat them as blank.
+        assert!(is_default_query(DEFAULT_QUERY));
+        assert!(is_default_query("<"));
+        assert!(is_default_query("lk:"));
+        assert!(is_default_query("< or:title"));
+        assert!(is_default_query("<{note} -or:file"));
+        assert!(!is_default_query("<projects"));
+        assert!(!is_default_query(">"));
+        assert!(!is_default_query(""));
     }
 
     #[test]
