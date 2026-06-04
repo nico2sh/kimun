@@ -330,6 +330,8 @@ impl Overlay for SavedSearchesModal {
         // The engine hit-tests `row - rect.y` (row 0 = first item); the list
         // renders into the block's inner area, so record that same rect.
         self.list.set_list_rect(list_inner);
+        // The whole popup is wheel-scrollable (filter box and hint bar included).
+        self.list.set_panel_rect(popup_rect);
 
         // ── Hint bar ──────────────────────────────────────────────────────────
         f.render_widget(

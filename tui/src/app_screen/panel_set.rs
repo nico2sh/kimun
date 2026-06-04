@@ -338,8 +338,9 @@ impl PanelSet {
             PanelKind::Editor => {
                 self.editor.handle_input(event, tx);
             }
-            // The Query panel has no internal mouse behavior (yet).
-            PanelKind::Query => {}
+            PanelKind::Query => {
+                self.query.handle_mouse(mouse, tx);
+            }
         }
         EventState::Consumed
     }

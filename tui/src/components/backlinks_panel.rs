@@ -19,7 +19,7 @@ use crate::components::file_list::{SortField, SortOrder};
 use crate::components::query_vars::{query_has_variables, query_is_unresolvable, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
-    Emit, KeyReaction, RowSource, SearchList, SearchRow, VaultSuggestions,
+    Emit, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow, VaultSuggestions,
 };
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ActionShortcuts;
@@ -497,6 +497,51 @@ impl QueryPanel {
         }
     }
 
+    /// Mouse behavior: the wheel scrolls — the result list (viewport moves,
+    /// selection keeps its screen position) or, in full-expand, the content —
+    /// anywhere within the panel; clicks select/activate list rows (a second
+    /// click on the selected row cycles its expand state, mirroring Enter).
+    pub fn handle_mouse(
+        &mut self,
+        mouse: &ratatui::crossterm::event::MouseEvent,
+        tx: &AppTx,
+    ) -> EventState {
+        use ratatui::crossterm::event::MouseEventKind;
+        self.ensure_redraw_tx(tx);
+        self.sync_expand_anchor();
+        match mouse.kind {
+            // Full-expand: the wheel scrolls the content view, not the list.
+            MouseEventKind::ScrollUp if self.is_full_expanded() => {
+                self.content_scroll = self.content_scroll.saturating_sub(1);
+                EventState::Consumed
+            }
+            MouseEventKind::ScrollDown if self.is_full_expanded() => {
+                // Increment freely; render() clamps to content_scroll_max.
+                self.content_scroll += 1;
+                EventState::Consumed
+            }
+            // In full-expand the list is not rendered (its recorded rect is
+            // stale, from the last non-full frame), so clicks must not reach
+            // the engine's hit-test — they would select/activate a phantom
+            // row under the content view.
+            _ if self.is_full_expanded() => EventState::Consumed,
+            // The engine hit-tests the wheel against the recorded panel rect
+            // (the whole panel — query box and preview included) and clicks
+            // against the list rect.
+            _ => match self.list.handle_mouse(mouse) {
+                SearchMouse::Activated(_) => {
+                    self.toggle_expand();
+                    EventState::Consumed
+                }
+                SearchMouse::Selected(_) | SearchMouse::Scrolled => {
+                    self.sync_expand_anchor();
+                    EventState::Consumed
+                }
+                SearchMouse::None => EventState::NotConsumed,
+            },
+        }
+    }
+
     fn scroll_content(&mut self, key: &KeyEvent) {
         match key.code {
             KeyCode::Up => {
@@ -552,6 +597,9 @@ impl QueryPanel {
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
         self.list.poll();
         self.sync_expand_anchor();
+        // The whole panel is wheel-scrollable (query box and preview included);
+        // recorded up front so it is fresh on every expand-state branch.
+        self.list.set_panel_rect(rect);
 
         let border_style = theme.border_style(focused);
         let fg_muted = theme.fg_muted.to_ratatui();
