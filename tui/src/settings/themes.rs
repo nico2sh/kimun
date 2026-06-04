@@ -506,6 +506,252 @@ impl Theme {
         }
     }
 
+    pub fn dracula() -> Self {
+        Theme {
+            name: "Dracula".to_string(),
+            bg: ThemeColor::from_string("#282a36").unwrap(),
+            bg_panel: ThemeColor::from_string("#21222c").unwrap(),
+            bg_selected: ThemeColor::from_string("#44475a").unwrap(),
+            fg: ThemeColor::from_string("#f8f8f2").unwrap(),
+            fg_secondary: ThemeColor::from_string("#bfbfbf").unwrap(),
+            fg_muted: ThemeColor::from_string("#6272a4").unwrap(),
+            fg_selected: ThemeColor::from_string("#f8f8f2").unwrap(),
+            border: ThemeColor::from_string("#44475a").unwrap(),
+            border_focused: ThemeColor::from_string("#bd93f9").unwrap(),
+            accent: ThemeColor::from_string("#bd93f9").unwrap(),
+            color_directory: ThemeColor::from_string("#8be9fd").unwrap(),
+            color_journal_date: ThemeColor::from_string("#50fa7b").unwrap(),
+            color_search_match: ThemeColor::from_string("#f1fa8c").unwrap(),
+            color_tag: ThemeColor::from_string("#ffb86c").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#bd93f9").unwrap(),
+            code_bg: ThemeColor::from_string("#21222c").unwrap(),
+        }
+    }
+
+    /// Alucard is Dracula's official light variant.
+    pub fn alucard() -> Self {
+        Theme {
+            name: "Alucard".to_string(),
+            bg: ThemeColor::from_string("#fffbeb").unwrap(),
+            bg_panel: ThemeColor::from_string("#f2eeda").unwrap(),
+            bg_selected: ThemeColor::from_string("#cfcfde").unwrap(),
+            fg: ThemeColor::from_string("#1f1f1f").unwrap(),
+            fg_secondary: ThemeColor::from_string("#6c664b").unwrap(),
+            fg_muted: ThemeColor::from_string("#a8a27f").unwrap(),
+            fg_selected: ThemeColor::from_string("#1f1f1f").unwrap(),
+            border: ThemeColor::from_string("#e2deca").unwrap(),
+            border_focused: ThemeColor::from_string("#644ac9").unwrap(),
+            accent: ThemeColor::from_string("#644ac9").unwrap(),
+            color_directory: ThemeColor::from_string("#036a96").unwrap(),
+            color_journal_date: ThemeColor::from_string("#14710a").unwrap(),
+            color_search_match: ThemeColor::from_string("#846e15").unwrap(),
+            color_tag: ThemeColor::from_string("#a34d14").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#644ac9").unwrap(),
+            code_bg: ThemeColor::from_string("#f2eeda").unwrap(),
+        }
+    }
+
+    pub fn one_dark() -> Self {
+        Theme {
+            name: "One Dark".to_string(),
+            bg: ThemeColor::from_string("#282c34").unwrap(),
+            bg_panel: ThemeColor::from_string("#21252b").unwrap(),
+            bg_selected: ThemeColor::from_string("#3e4451").unwrap(),
+            fg: ThemeColor::from_string("#abb2bf").unwrap(),
+            fg_secondary: ThemeColor::from_string("#828997").unwrap(),
+            fg_muted: ThemeColor::from_string("#5c6370").unwrap(),
+            fg_selected: ThemeColor::from_string("#abb2bf").unwrap(),
+            border: ThemeColor::from_string("#3e4451").unwrap(),
+            border_focused: ThemeColor::from_string("#61afef").unwrap(),
+            accent: ThemeColor::from_string("#61afef").unwrap(),
+            color_directory: ThemeColor::from_string("#56b6c2").unwrap(),
+            color_journal_date: ThemeColor::from_string("#98c379").unwrap(),
+            color_search_match: ThemeColor::from_string("#e5c07b").unwrap(),
+            color_tag: ThemeColor::from_string("#d19a66").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#61afef").unwrap(),
+            code_bg: ThemeColor::from_string("#21252b").unwrap(),
+        }
+    }
+
+    pub fn one_light() -> Self {
+        Theme {
+            name: "One Light".to_string(),
+            bg: ThemeColor::from_string("#fafafa").unwrap(),
+            bg_panel: ThemeColor::from_string("#f0f0f1").unwrap(),
+            bg_selected: ThemeColor::from_string("#e5e5e6").unwrap(),
+            fg: ThemeColor::from_string("#383a42").unwrap(),
+            fg_secondary: ThemeColor::from_string("#696c77").unwrap(),
+            fg_muted: ThemeColor::from_string("#a0a1a7").unwrap(),
+            fg_selected: ThemeColor::from_string("#383a42").unwrap(),
+            border: ThemeColor::from_string("#dbdbdc").unwrap(),
+            border_focused: ThemeColor::from_string("#4078f2").unwrap(),
+            accent: ThemeColor::from_string("#4078f2").unwrap(),
+            color_directory: ThemeColor::from_string("#0184bc").unwrap(),
+            color_journal_date: ThemeColor::from_string("#50a14f").unwrap(),
+            color_search_match: ThemeColor::from_string("#c18401").unwrap(),
+            color_tag: ThemeColor::from_string("#986801").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#4078f2").unwrap(),
+            code_bg: ThemeColor::from_string("#f0f0f1").unwrap(),
+        }
+    }
+
+    pub fn monokai() -> Self {
+        Theme {
+            name: "Monokai".to_string(),
+            bg: ThemeColor::from_string("#272822").unwrap(),
+            bg_panel: ThemeColor::from_string("#1e1f1c").unwrap(),
+            bg_selected: ThemeColor::from_string("#49483e").unwrap(),
+            fg: ThemeColor::from_string("#f8f8f2").unwrap(),
+            fg_secondary: ThemeColor::from_string("#a59f85").unwrap(),
+            fg_muted: ThemeColor::from_string("#75715e").unwrap(),
+            fg_selected: ThemeColor::from_string("#f8f8f2").unwrap(),
+            border: ThemeColor::from_string("#49483e").unwrap(),
+            border_focused: ThemeColor::from_string("#66d9ef").unwrap(),
+            accent: ThemeColor::from_string("#f92672").unwrap(),
+            color_directory: ThemeColor::from_string("#66d9ef").unwrap(),
+            color_journal_date: ThemeColor::from_string("#a6e22e").unwrap(),
+            color_search_match: ThemeColor::from_string("#e6db74").unwrap(),
+            color_tag: ThemeColor::from_string("#fd971f").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#f92672").unwrap(),
+            code_bg: ThemeColor::from_string("#1e1f1c").unwrap(),
+        }
+    }
+
+    pub fn everforest_dark() -> Self {
+        Theme {
+            name: "Everforest Dark".to_string(),
+            bg: ThemeColor::from_string("#2d353b").unwrap(),
+            bg_panel: ThemeColor::from_string("#232a2e").unwrap(),
+            bg_selected: ThemeColor::from_string("#475258").unwrap(),
+            fg: ThemeColor::from_string("#d3c6aa").unwrap(),
+            fg_secondary: ThemeColor::from_string("#9da9a0").unwrap(),
+            fg_muted: ThemeColor::from_string("#7a8478").unwrap(),
+            fg_selected: ThemeColor::from_string("#d3c6aa").unwrap(),
+            border: ThemeColor::from_string("#3d484d").unwrap(),
+            border_focused: ThemeColor::from_string("#a7c080").unwrap(),
+            accent: ThemeColor::from_string("#a7c080").unwrap(),
+            color_directory: ThemeColor::from_string("#7fbbb3").unwrap(),
+            color_journal_date: ThemeColor::from_string("#83c092").unwrap(),
+            color_search_match: ThemeColor::from_string("#dbbc7f").unwrap(),
+            color_tag: ThemeColor::from_string("#e69875").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#a7c080").unwrap(),
+            code_bg: ThemeColor::from_string("#232a2e").unwrap(),
+        }
+    }
+
+    pub fn everforest_light() -> Self {
+        Theme {
+            name: "Everforest Light".to_string(),
+            bg: ThemeColor::from_string("#fdf6e3").unwrap(),
+            bg_panel: ThemeColor::from_string("#f4f0d9").unwrap(),
+            bg_selected: ThemeColor::from_string("#e6e2cc").unwrap(),
+            fg: ThemeColor::from_string("#5c6a72").unwrap(),
+            fg_secondary: ThemeColor::from_string("#829181").unwrap(),
+            fg_muted: ThemeColor::from_string("#a6b0a0").unwrap(),
+            fg_selected: ThemeColor::from_string("#5c6a72").unwrap(),
+            border: ThemeColor::from_string("#e0dcc7").unwrap(),
+            border_focused: ThemeColor::from_string("#8da101").unwrap(),
+            accent: ThemeColor::from_string("#8da101").unwrap(),
+            color_directory: ThemeColor::from_string("#3a94c5").unwrap(),
+            color_journal_date: ThemeColor::from_string("#35a77c").unwrap(),
+            color_search_match: ThemeColor::from_string("#dfa000").unwrap(),
+            color_tag: ThemeColor::from_string("#f57d26").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#8da101").unwrap(),
+            code_bg: ThemeColor::from_string("#f4f0d9").unwrap(),
+        }
+    }
+
+    pub fn rose_pine() -> Self {
+        Theme {
+            name: "Rosé Pine".to_string(),
+            bg: ThemeColor::from_string("#191724").unwrap(),
+            bg_panel: ThemeColor::from_string("#1f1d2e").unwrap(),
+            bg_selected: ThemeColor::from_string("#403d52").unwrap(),
+            fg: ThemeColor::from_string("#e0def4").unwrap(),
+            fg_secondary: ThemeColor::from_string("#908caa").unwrap(),
+            fg_muted: ThemeColor::from_string("#6e6a86").unwrap(),
+            fg_selected: ThemeColor::from_string("#e0def4").unwrap(),
+            border: ThemeColor::from_string("#26233a").unwrap(),
+            border_focused: ThemeColor::from_string("#c4a7e7").unwrap(),
+            accent: ThemeColor::from_string("#c4a7e7").unwrap(),
+            color_directory: ThemeColor::from_string("#9ccfd8").unwrap(),
+            color_journal_date: ThemeColor::from_string("#31748f").unwrap(),
+            color_search_match: ThemeColor::from_string("#f6c177").unwrap(),
+            color_tag: ThemeColor::from_string("#ebbcba").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#c4a7e7").unwrap(),
+            code_bg: ThemeColor::from_string("#1f1d2e").unwrap(),
+        }
+    }
+
+    /// Dawn is Rosé Pine's light variant. Note `bg_panel` (surface) is
+    /// lighter than `bg` (base) — that is the official palette layering.
+    pub fn rose_pine_dawn() -> Self {
+        Theme {
+            name: "Rosé Pine Dawn".to_string(),
+            bg: ThemeColor::from_string("#faf4ed").unwrap(),
+            bg_panel: ThemeColor::from_string("#fffaf3").unwrap(),
+            bg_selected: ThemeColor::from_string("#dfdad9").unwrap(),
+            fg: ThemeColor::from_string("#575279").unwrap(),
+            fg_secondary: ThemeColor::from_string("#797593").unwrap(),
+            fg_muted: ThemeColor::from_string("#9893a5").unwrap(),
+            fg_selected: ThemeColor::from_string("#575279").unwrap(),
+            border: ThemeColor::from_string("#f2e9e1").unwrap(),
+            border_focused: ThemeColor::from_string("#907aa9").unwrap(),
+            accent: ThemeColor::from_string("#907aa9").unwrap(),
+            color_directory: ThemeColor::from_string("#56949f").unwrap(),
+            color_journal_date: ThemeColor::from_string("#286983").unwrap(),
+            color_search_match: ThemeColor::from_string("#ea9d34").unwrap(),
+            color_tag: ThemeColor::from_string("#d7827e").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#907aa9").unwrap(),
+            code_bg: ThemeColor::from_string("#fffaf3").unwrap(),
+        }
+    }
+
+    pub fn kanagawa_wave() -> Self {
+        Theme {
+            name: "Kanagawa Wave".to_string(),
+            bg: ThemeColor::from_string("#1f1f28").unwrap(),
+            bg_panel: ThemeColor::from_string("#16161d").unwrap(),
+            bg_selected: ThemeColor::from_string("#2d4f67").unwrap(),
+            fg: ThemeColor::from_string("#dcd7ba").unwrap(),
+            fg_secondary: ThemeColor::from_string("#c8c093").unwrap(),
+            fg_muted: ThemeColor::from_string("#727169").unwrap(),
+            fg_selected: ThemeColor::from_string("#dcd7ba").unwrap(),
+            border: ThemeColor::from_string("#54546d").unwrap(),
+            border_focused: ThemeColor::from_string("#7e9cd8").unwrap(),
+            accent: ThemeColor::from_string("#7e9cd8").unwrap(),
+            color_directory: ThemeColor::from_string("#7fb4ca").unwrap(),
+            color_journal_date: ThemeColor::from_string("#7aa89f").unwrap(),
+            color_search_match: ThemeColor::from_string("#98bb6c").unwrap(),
+            color_tag: ThemeColor::from_string("#ffa066").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#7e9cd8").unwrap(),
+            code_bg: ThemeColor::from_string("#16161d").unwrap(),
+        }
+    }
+
+    /// Lotus is Kanagawa's light variant.
+    pub fn kanagawa_lotus() -> Self {
+        Theme {
+            name: "Kanagawa Lotus".to_string(),
+            bg: ThemeColor::from_string("#f2ecbc").unwrap(),
+            bg_panel: ThemeColor::from_string("#e5ddb0").unwrap(),
+            bg_selected: ThemeColor::from_string("#c9cbd1").unwrap(),
+            fg: ThemeColor::from_string("#545464").unwrap(),
+            fg_secondary: ThemeColor::from_string("#716e61").unwrap(),
+            fg_muted: ThemeColor::from_string("#8a8980").unwrap(),
+            fg_selected: ThemeColor::from_string("#545464").unwrap(),
+            border: ThemeColor::from_string("#d5cea3").unwrap(),
+            border_focused: ThemeColor::from_string("#4d699b").unwrap(),
+            accent: ThemeColor::from_string("#4d699b").unwrap(),
+            color_directory: ThemeColor::from_string("#4e8ca2").unwrap(),
+            color_journal_date: ThemeColor::from_string("#597b75").unwrap(),
+            color_search_match: ThemeColor::from_string("#6f894e").unwrap(),
+            color_tag: ThemeColor::from_string("#cc6d00").unwrap(),
+            blockquote_bar: ThemeColor::from_string("#4d699b").unwrap(),
+            code_bg: ThemeColor::from_string("#e5ddb0").unwrap(),
+        }
+    }
+
     /// Uses the terminal's 16 ANSI colors so the theme adapts to whatever
     /// palette the user has configured in their terminal emulator. Works for
     /// both light and dark terminal palettes because backgrounds and primary
@@ -557,6 +803,17 @@ mod tests {
             Theme::solarized_dark(),
             Theme::solarized_light(),
             Theme::nord(),
+            Theme::dracula(),
+            Theme::alucard(),
+            Theme::one_dark(),
+            Theme::one_light(),
+            Theme::monokai(),
+            Theme::everforest_dark(),
+            Theme::everforest_light(),
+            Theme::rose_pine(),
+            Theme::rose_pine_dawn(),
+            Theme::kanagawa_wave(),
+            Theme::kanagawa_lotus(),
             Theme::ansi(),
         ] {
             assert_ne!(
