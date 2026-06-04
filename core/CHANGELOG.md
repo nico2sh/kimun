@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.15](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.14...kimun_core-v0.2.15) - 2026-06-04
+
+### Fixed
+
+- fmt
+- code review
+- proper {} relacement
+- consistency
+- fmt and clippy
+- code review 2
+- code review
+
+### Other
+
+- docs references in code
+- drop ADR references from rustdoc
+- refresh core README against current API
+- document all public items in core (28% → 100% coverage)
+- fix unresolved intra-doc links in core
+- improve rewrite link pipeline
+- NoteDetails revamp
+- refactor the db layer
+
 ## [0.2.14](https://github.com/nico2sh/kimun/compare/kimun_core-v0.2.13...kimun_core-v0.2.14) - 2026-06-03
 
 ### Added
