@@ -330,7 +330,13 @@ impl Component for SidebarComponent {
             if let Some(list) = &mut self.list {
                 match list.handle_mouse(mouse) {
                     SearchMouse::Activated(_) => self.activate_selected_entry(tx),
-                    SearchMouse::Selected(_) | SearchMouse::Scrolled | SearchMouse::None => {}
+                    // ContentScroll* are unreachable: this host records no
+                    // content sub-region.
+                    SearchMouse::Selected(_)
+                    | SearchMouse::Scrolled
+                    | SearchMouse::ContentScrollUp
+                    | SearchMouse::ContentScrollDown
+                    | SearchMouse::None => {}
                 }
             }
             return EventState::Consumed;

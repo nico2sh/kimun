@@ -92,6 +92,15 @@ pub struct SearchList<R: SearchRow> {
     /// default) falls back to `list_rect`, so hosts that never record it
     /// keep scroll-over-the-list-only behavior.
     panel_rect: Rect,
+    /// A host-owned scrollable sub-region within the panel (e.g. an expanded
+    /// note preview). Wheel events inside it are routed back to the host as
+    /// [`SearchMouse::ContentScrollUp`]/[`ContentScrollDown`] instead of
+    /// scrolling the list — the sub-region wins over `panel_rect`. Empty (the
+    /// default) means no sub-region; hosts re-record it every render so it is
+    /// never stale.
+    ///
+    /// [`ContentScrollDown`]: SearchMouse::ContentScrollDown
+    content_rect: Rect,
     /// Load generation whose rows are currently held. When a newer generation
     /// (a requery / reload) delivers its first event, `poll` clears the stale
     /// rows before applying it — required for streamed (`Push`) sources, which
@@ -109,6 +118,11 @@ pub enum SearchMouse {
     Selected(usize),
     Activated(usize),
     Scrolled,
+    /// The wheel landed inside the host's content sub-region (see
+    /// [`SearchList::set_content_rect`]); the host owns that view's scroll,
+    /// so the engine routed the event instead of moving the list.
+    ContentScrollUp,
+    ContentScrollDown,
     None,
 }
 
@@ -176,6 +190,7 @@ impl<R: SearchRow> SearchList<R> {
             icons: b.icons,
             list_rect: Rect::default(),
             panel_rect: Rect::default(),
+            content_rect: Rect::default(),
             applied_generation: 0,
             accepted_saved_search: None,
         }
@@ -553,6 +568,22 @@ impl<R: SearchRow> SearchList<R> {
         self.panel_rect = rect;
     }
 
+    /// Record a host-owned scrollable sub-region (e.g. an expanded preview):
+    /// wheel events inside it are routed back to the host as
+    /// [`SearchMouse::ContentScrollUp`]/[`ContentScrollDown`] instead of
+    /// scrolling the list. Hosts re-record it every render (empty when the
+    /// sub-region is not drawn) so the hit-test never sees a stale rect.
+    ///
+    /// [`ContentScrollDown`]: SearchMouse::ContentScrollDown
+    pub fn set_content_rect(&mut self, rect: Rect) {
+        self.content_rect = rect;
+    }
+
+    /// The recorded content sub-region (empty when none is on screen).
+    pub fn content_rect(&self) -> Rect {
+        self.content_rect
+    }
+
     pub fn render_autocomplete(&mut self, f: &mut Frame, clamp: Rect, theme: &Theme) {
         if let Some(ac) = &mut self.autocomplete {
             ac.poll_results();
@@ -566,14 +597,29 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
+    /// Close an open autocomplete popup. [`handle_mouse`] does this for every
+    /// event it sees ("any mouse interaction dismisses the popup"); hosts that
+    /// consume a mouse event WITHOUT routing it through the engine call this
+    /// to keep that rule intact.
+    ///
+    /// [`handle_mouse`]: Self::handle_mouse
+    pub fn close_autocomplete(&mut self) {
+        if let Some(ac) = &mut self.autocomplete {
+            ac.close();
+        }
+    }
+
+    /// True when the autocomplete popup is open.
+    pub fn autocomplete_is_open(&self) -> bool {
+        self.autocomplete.as_ref().is_some_and(|ac| ac.is_open())
+    }
+
     pub fn handle_mouse(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> SearchMouse {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         use ratatui::layout::Position;
         // Any mouse interaction dismisses an open autocomplete popup (matches
         // the old modal: a click on the preview/border closes a stale popup).
-        if let Some(ac) = &mut self.autocomplete {
-            ac.close();
-        }
+        self.close_autocomplete();
         let pos = Position {
             x: m.column,
             y: m.row,
@@ -585,6 +631,16 @@ impl<R: SearchRow> SearchList<R> {
             m.kind,
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
         ) {
+            // The host's content sub-region wins over the panel bounds: a
+            // wheel inside it is the host's to handle (it scrolls its own
+            // view), so route it back instead of moving the list.
+            if !self.content_rect.is_empty() && self.content_rect.contains(pos) {
+                return if m.kind == MouseEventKind::ScrollUp {
+                    SearchMouse::ContentScrollUp
+                } else {
+                    SearchMouse::ContentScrollDown
+                };
+            }
             let bounds = if self.panel_rect.is_empty() {
                 self.list_rect
             } else {
@@ -774,6 +830,54 @@ mod tests {
         async fn load(&self, _q: &str, emit: Emit<TallRow>) {
             emit.replace(self.0.clone());
         }
+    }
+
+    /// The wheel is routed to the host (ContentScroll*) inside the recorded
+    /// content sub-region — which wins over the panel bounds — and scrolls
+    /// the list everywhere else within the panel.
+    #[tokio::test]
+    async fn wheel_in_content_rect_routes_to_host() {
+        use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+        let rows: Vec<TallRow> = (0..10)
+            .map(|i| TallRow {
+                name: format!("r{}", i),
+                height: 1,
+            })
+            .collect();
+        let mut list = SearchList::builder(TallSource(rows), noop_redraw()).build();
+        list.poll_until_idle().await;
+        let rect = |y: u16, h: u16| ratatui::layout::Rect {
+            x: 0,
+            y,
+            width: 20,
+            height: h,
+        };
+        // Panel covers rows 0..10; list draws in 0..4; content region 5..10.
+        list.set_panel_rect(rect(0, 10));
+        list.set_list_rect(rect(0, 4));
+        list.set_content_rect(rect(5, 5));
+        let wheel = |kind: MouseEventKind, row: u16| MouseEvent {
+            kind,
+            column: 2,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Inside the content region: routed to the host, list untouched.
+        let m = wheel(MouseEventKind::ScrollDown, 6);
+        assert_eq!(list.handle_mouse(&m), SearchMouse::ContentScrollDown);
+        assert_eq!(list.offset, 0, "list viewport must not move");
+        let m = wheel(MouseEventKind::ScrollUp, 6);
+        assert_eq!(list.handle_mouse(&m), SearchMouse::ContentScrollUp);
+
+        // Over the list (panel bounds, outside content): the list scrolls.
+        let m = wheel(MouseEventKind::ScrollDown, 2);
+        assert_eq!(list.handle_mouse(&m), SearchMouse::Scrolled);
+
+        // Cleared sub-region: the wheel falls back to the panel-wide scroll.
+        list.set_content_rect(ratatui::layout::Rect::default());
+        let m = wheel(MouseEventKind::ScrollDown, 6);
+        assert_eq!(list.handle_mouse(&m), SearchMouse::Scrolled);
     }
 
     #[tokio::test]
