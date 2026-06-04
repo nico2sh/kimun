@@ -178,7 +178,11 @@ fn layout_columns(visible: &[PanelKind], area: Rect) -> Vec<(PanelKind, Rect)> {
         .direction(Direction::Horizontal)
         .constraints(constraints)
         .split(area);
-    visible.iter().copied().zip(columns.iter().copied()).collect()
+    visible
+        .iter()
+        .copied()
+        .zip(columns.iter().copied())
+        .collect()
 }
 
 /// The panel whose column contains the given screen cell, if any.
