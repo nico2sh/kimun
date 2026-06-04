@@ -12,7 +12,6 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app_screen::overlay_host::OverlayHost;
 use crate::app_screen::panel_set::PanelSet;
 use crate::app_screen::{AppScreen, ScreenKind};
-use crate::components::Component;
 use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::backlinks_panel::QueryPanel;
 use crate::components::dialogs::ActiveDialog;
@@ -796,23 +795,10 @@ impl AppScreen for EditorScreen {
         }
 
         if matches!(event, InputEvent::Mouse(_)) {
-            // The sidebar gets first crack at clicks even when another panel is
-            // focused (it consumes only clicks landing in its own area).
-            if self.panels.is_visible(PanelKind::Sidebar)
-                && self
-                    .panels
-                    .sidebar_mut()
-                    .handle_input(event, tx)
-                    .is_consumed()
-            {
-                return EventState::Consumed;
-            }
-            // The Query panel swallows mouse events while focused so clicks
-            // don't fall through to the editor.
-            if self.panels.focused() == PanelKind::Query {
-                return EventState::Consumed;
-            }
-            return self.panels.editor_mut().handle_input(event, tx);
+            // `PanelSet` hit-tests the panel columns: a click focuses the
+            // panel under the cursor (one rule for every panel) and the event
+            // is forwarded to that panel for its internal behavior.
+            return self.panels.handle_mouse(event, tx);
         }
 
         // Keyboard → the focused panel. The Query panel gets first crack (its
@@ -1005,9 +991,6 @@ impl AppScreen for EditorScreen {
                 // stale completion arriving after `try_save` had
                 // already cleared and respawned could wipe the fresh
                 // handle.
-            }
-            AppEvent::FocusEditor => {
-                self.focus_editor();
             }
             AppEvent::FocusSidebar => {
                 self.focus_sidebar();
