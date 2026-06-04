@@ -241,12 +241,23 @@ async fn rebuild_vault(
     if let Some(cp) = cache_path {
         config = config.with_db_path(cp);
     }
-    kimun_core::NoteVault::new(config).await.ok().map(|mut v| {
-        if let Some(ref ip) = inbox_path {
-            v.set_inbox_path(kimun_core::nfs::VaultPath::new(ip));
+    match kimun_core::NoteVault::new(config).await {
+        Ok(mut v) => {
+            if let Some(ref ip) = inbox_path {
+                v.set_inbox_path(kimun_core::nfs::VaultPath::new(ip));
+            }
+            Some(std::sync::Arc::new(v))
         }
-        std::sync::Arc::new(v)
-    })
+        // Don't swallow the cause: since the index self-heal,
+        // opening the vault can fail on a cache probe error (e.g. the cache
+        // is locked by another kimun process). The app falls back to the
+        // no-vault start screen either way, but the reason must reach the
+        // log instead of looking like an unconfigured workspace.
+        Err(e) => {
+            tracing::error!("could not open vault at {}: {e}", workspace.display());
+            None
+        }
+    }
 }
 
 async fn switch_screen(app: &mut App, tx: &AppTx, new_screen: ScreenEvent) {

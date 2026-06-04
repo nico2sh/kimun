@@ -104,6 +104,38 @@ _Avoid_: popup, modal (names only some), dialog (names only one kind).
 The single-slot owner of the active **Overlay**; saves the opener panel's focus on open and returns it on close. The transient-surface counterpart to the **PanelSet**.
 _Avoid_: dialog manager (the superseded name), overlay stack (it is single-slot).
 
+### Indexing
+
+**NoteIndex**:
+The one core module owning the searchable index of the vault — search, suggestions, backlinks, and the index's own lifecycle (schema versioning, self-heal on open). Its interface speaks in notes, queries, and **note links**; SQLite, sqlx, transactions, and schema migrations are implementation and never cross the interface. Atomicity is carried by composite operations (apply an **IndexDiff**; rename a note together with its rewritten backlinks) rather than by exposing transactions.
+_Avoid_: db, VaultDB, database (they name the implementation, not the role)
+
+**Index self-heal**:
+On open, the **NoteIndex** silently recreates its schema when the stored index is missing, outdated, or invalid — leaving a valid but empty index that the next sync pass fills. Callers get a single readiness probe (`index_ready`): false when the index was just healed (or never filled), so fast paths like the CLI `note` command can refuse to run against an empty index. There is no public status enum.
+_Avoid_: DBStatus (the superseded public enum), force rebuild (the deleted file-deletion variant)
+
+**IndexDiff**:
+The batch of note changes — to add, to modify, to delete — that a vault sync walk produces and `NoteIndex::apply` consumes in one atomic operation. Owned by the **NoteIndex** interface: it is the currency crossing that seam, not a walker by-product.
+_Avoid_: NoteListResults (the superseded visitor type), results
+
+**LinkRewrite**:
+The one core module that rewrites every **note link** pointing at a renamed note. Three compiler-enforced stages — *scout* (one index query for the linking notes), *prepare* (read each, rewrite links in memory, take fail-closed **backups**), *commit* (write the rewritten notes, rewrite the renamed note's self-links at its new path, return the entries for the index commit) — with the caller's filesystem rename sitting between prepare and commit. Each stage consumes the previous, so running them out of order is a compile error, not a broken vault.
+_Avoid_: backlink rewriting (names one half; self-links are the other), rename helper
+
+**VaultSync**:
+The one core module that brings the **NoteIndex** in step with the vault on disk. One call runs the whole pipeline — read the cached entries, walk the subtree in parallel, diff against the cache under a validation mode, apply the **IndexDiff**, optionally streaming discovered entries to the caller as they are found. The parallel walker, its thread-state plumbing, and the async/blocking bridge are implementation and never cross the interface.
+_Avoid_: visitor, walker, indexer (each names an internal part, not the module)
+
+### Note content
+
+**Note details**:
+The one public door to whole-note extraction — title, indexable content data, heading chunks, links, rendered markdown — as `NoteDetails`: methods over a loaded note's owned text, plus borrowed-text associated functions (`*_of`) for bulk paths (indexing) that must not clone. The markdown extractor behind it is internal to the note module and is never named outside it.
+_Avoid_: content extractor (the implementation, not the door)
+
+**Scan helpers**:
+The `note::scan` module — live text analysis over editor buffer fragments: link/wikilink spans, exclusion zones (code, frontmatter, links), label tokens, URL classification. The presentation layer drives WYSIWYG behaviour with these on text being edited; they take arbitrary text fragments, not notes. Whole-note extraction belongs to **Note details** instead.
+_Avoid_: span helpers / zone helpers (each names a part), parser utilities
+
 ### Note editing
 
 **Automated edit**:

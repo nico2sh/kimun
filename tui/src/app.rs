@@ -59,12 +59,21 @@ impl App {
                 if let Some(cp) = cache_path {
                     config = config.with_db_path(cp);
                 }
-                NoteVault::new(config).await.ok().map(|mut v| {
-                    if let Some(inbox) = inbox {
-                        v.set_inbox_path(kimun_core::nfs::VaultPath::new(inbox));
+                match NoteVault::new(config).await {
+                    Ok(mut v) => {
+                        if let Some(inbox) = inbox {
+                            v.set_inbox_path(kimun_core::nfs::VaultPath::new(inbox));
+                        }
+                        Some(Arc::new(v))
                     }
-                    Arc::new(v)
-                })
+                    // See rebuild_vault in main.rs: surface the open failure
+                    // (e.g. cache probe error) instead of silently starting
+                    // as if no workspace were configured.
+                    Err(e) => {
+                        tracing::error!("could not open vault at {}: {e}", workspace.display());
+                        None
+                    }
+                }
             } else {
                 None
             }

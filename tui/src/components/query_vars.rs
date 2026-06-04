@@ -1,6 +1,6 @@
 //! Query variables: `{name}` placeholders the TUI resolves to runtime
 //! values before a query reaches core (see `CONTEXT.md` "Query variable"
-//! and `adr/0003`). Core's query language never sees these.
+//!). Core's query language never sees these.
 
 use kimun_core::nfs::VaultPath;
 use kimun_core::quote_query_term;
@@ -17,10 +17,10 @@ pub fn query_has_variables(template: &str) -> bool {
 
 /// Resolve all query variables in `template` against the open note,
 /// producing a plain query string for `vault.search_notes`. `{note}`
-/// becomes the note's clean name (matching how `<` targets are matched —
-/// see ADR 0001), quoted when it contains whitespace so a multi-word name
-/// stays a single query token. When no note is open, `{note}` resolves to
-/// the empty string.
+/// becomes the note's clean name (matching how `<` targets are
+/// matched), quoted when it contains whitespace so a multi-word name
+/// stays a single query token. When no note is open, `{note}` resolves
+/// to the empty string.
 pub fn resolve_query(template: &str, current_note: Option<&VaultPath>) -> String {
     let note_name = current_note
         .map(|p| quote_query_term(&p.get_clean_name()))

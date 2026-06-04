@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kimün Core — Note Operations Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700;9..144,900&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #0e151b;
+  --ink-2: #131d25;
+  --ink-3: #1a2630;
+  --line: #2b3b47;
+  --line-soft: #22303a;
+  --paper: #ddd6c4;
+  --paper-dim: #9aa5a3;
+  --paper-faint: #5f6f73;
+  --amber: #e8a13c;
+  --amber-soft: rgba(232, 161, 60, 0.14);
+  --teal: #5fb3a1;
+  --teal-soft: rgba(95, 179, 161, 0.12);
+  --rust: #c96f4a;
+  --blue: #6f9fc8;
+  --violet: #a08abf;
+  --mono: 'IBM Plex Mono', monospace;
+  --display: 'Fraunces', serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* blueprint grid + grain atmosphere */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(95, 179, 161, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(95, 179, 161, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+  z-index: 0;
+}
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+.wrap {
+  position: relative;
+  z-index: 1;
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 0 32px 120px;
+}
+
+/* ============ HEADER ============ */
+header {
+  padding: 56px 0 28px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.title-block .kicker {
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--teal);
+  margin-bottom: 14px;
+  animation: fade-up 0.7s ease both;
+}
+.title-block .kicker::before {
+  content: '◈ ';
+  color: var(--amber);
+}
+h1 {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: clamp(36px, 5.5vw, 64px);
+  line-height: 0.98;
+  letter-spacing: -0.015em;
+  color: var(--paper);
+  animation: fade-up 0.7s 0.08s ease both;
+}
+h1 em {
+  font-style: italic;
+  font-weight: 300;
+  color: var(--amber);
+}
+.legend {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--paper-dim);
+  animation: fade-up 0.7s 0.16s ease both;
+}
+.legend-row { display: flex; align-items: center; gap: 10px; }
+.swatch { width: 22px; height: 10px; border-radius: 2px; flex: none; }
+
+/* ============ FLOW CONTROLS ============ */
+.controls {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: linear-gradient(var(--ink) 78%, transparent);
+  padding: 20px 0 26px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.controls .label {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+  margin-right: 6px;
+}
+.flow-btn {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  background: var(--ink-2);
+  color: var(--paper-dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 16px;
+  cursor: pointer;
+  transition: all 0.22s ease;
+}
+.flow-btn:hover {
+  border-color: var(--amber);
+  color: var(--paper);
+  transform: translateY(-1px);
+}
+.flow-btn.active {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 0 24px rgba(232, 161, 60, 0.35);
+}
+.flow-btn.clear { border-style: dashed; }
+
+/* ============ FLOW NARRATION ============ */
+.flow-story {
+  display: none;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--amber);
+  background: var(--ink-2);
+  border-radius: 6px;
+  padding: 18px 22px;
+  margin-bottom: 30px;
+  animation: fade-up 0.35s ease both;
+}
+.flow-story.visible { display: block; }
+.flow-story h3 {
+  font-family: var(--display);
+  font-weight: 700;
+  font-style: italic;
+  font-size: 19px;
+  color: var(--amber);
+  margin-bottom: 10px;
+}
+.flow-story ol {
+  list-style: none;
+  counter-reset: step;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 6px;
+}
+.flow-story li {
+  counter-increment: step;
+  font-size: 12px;
+  color: var(--paper-dim);
+  background: var(--ink-3);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 5px 11px 5px 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.35;
+  transition: all 0.3s ease;
+}
+.flow-story li::before {
+  content: counter(step, decimal-leading-zero);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--paper-faint);
+  border-radius: 3px;
+  padding: 1px 5px;
+  transition: background 0.3s ease;
+}
+.flow-story li.lit {
+  opacity: 1;
+  color: var(--paper);
+  border-color: var(--amber);
+}
+.flow-story li.lit::before { background: var(--amber); }
+.flow-story li code { color: var(--teal); font-size: 12px; }
+
+/* ============ THE MAP ============ */
+.map {
+  position: relative;
+  margin-top: 8px;
+}
+svg.edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+  overflow: visible;
+}
+.edge {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.5;
+  transition: stroke 0.3s ease, opacity 0.3s ease, stroke-width 0.3s ease;
+}
+.edge-arrow { fill: var(--line); transition: fill 0.3s ease, opacity 0.3s ease; }
+.map.flow-active .edge { opacity: 0.12; }
+.map.flow-active .edge-arrow { opacity: 0.12; }
+.map.flow-active .edge.lit {
+  opacity: 1;
+  stroke: var(--amber);
+  stroke-width: 2.5;
+  stroke-dasharray: 7 5;
+  animation: march 0.7s linear infinite;
+}
+.map.flow-active .edge-arrow.lit { opacity: 1; fill: var(--amber); }
+@keyframes march { to { stroke-dashoffset: -12; } }
+
+.layer {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  gap: 22px;
+  margin-bottom: 64px;
+}
+.layer-tag {
+  position: absolute;
+  top: -28px;
+  left: 0;
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--paper-faint);
+}
+.layer-tag::after {
+  content: '';
+  display: inline-block;
+  width: 60px;
+  height: 1px;
+  background: var(--line);
+  margin-left: 12px;
+  vertical-align: middle;
+}
+.layer.consumers { grid-template-columns: repeat(3, 1fr); }
+.layer.facade { grid-template-columns: 1fr; }
+.layer.engines { grid-template-columns: repeat(4, 1fr); }
+.layer.foundation { grid-template-columns: 1.2fr 1fr; }
+.layer.substrate { grid-template-columns: 1fr 1fr; }
+
+/* ============ NODES ============ */
+.node {
+  position: relative;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 18px 20px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  animation: fade-up 0.6s ease both;
+}
+.node:nth-child(2) { animation-delay: 0.05s; }
+.node:nth-child(3) { animation-delay: 0.1s; }
+.node:nth-child(4) { animation-delay: 0.15s; }
+.node:nth-child(5) { animation-delay: 0.2s; }
+.node:hover {
+  transform: translateY(-3px);
+  border-color: var(--paper-dim);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.node.selected {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber), 0 12px 36px rgba(232, 161, 60, 0.18);
+}
+.map.flow-active .node { opacity: 0.3; filter: saturate(0.4); }
+.map.flow-active .node.lit { opacity: 1; filter: none; border-color: var(--amber); }
+
+.node .badge {
+  position: absolute;
+  top: -9px;
+  right: 14px;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.badge.b-facade { background: var(--amber); color: var(--ink); }
+.badge.b-fs { background: var(--teal); color: var(--ink); }
+.badge.b-db { background: var(--blue); color: var(--ink); }
+.badge.b-pure { background: var(--violet); color: var(--ink); }
+.badge.b-pipe { background: var(--rust); color: var(--ink); }
+.badge.b-ext { background: var(--ink-3); color: var(--paper-faint); border: 1px solid var(--line); }
+
+.node h2 {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 21px;
+  line-height: 1.1;
+  margin-bottom: 2px;
+}
+.node .path {
+  font-size: 10.5px;
+  color: var(--paper-faint);
+  margin-bottom: 10px;
+}
+.node .resp {
+  font-size: 12px;
+  color: var(--paper-dim);
+  line-height: 1.55;
+}
+.node .ops {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.node .ops span {
+  font-size: 10.5px;
+  color: var(--teal);
+  background: var(--teal-soft);
+  border-radius: 3px;
+  padding: 2px 7px;
+}
+
+.node.facade-node {
+  background: linear-gradient(135deg, var(--ink-3), var(--ink-2) 55%);
+  border-color: rgba(232, 161, 60, 0.4);
+  padding: 24px 28px;
+}
+.node.facade-node h2 { font-size: 30px; }
+.node.facade-node h2 .tld { color: var(--amber); font-style: italic; font-weight: 300; }
+.facade-cols {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+  margin-top: 16px;
+}
+.facade-col h4 {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin-bottom: 7px;
+  font-weight: 600;
+}
+.facade-col ul { list-style: none; }
+.facade-col li {
+  font-size: 11.5px;
+  color: var(--paper-dim);
+  padding: 2px 0;
+}
+.facade-col li::before { content: '· '; color: var(--paper-faint); }
+
+.node.ext {
+  background: transparent;
+  border-style: dashed;
+  cursor: default;
+}
+.node.ext:hover { transform: none; box-shadow: none; border-color: var(--line); }
+.node.ext h2 { color: var(--paper-dim); font-weight: 500; font-style: italic; }
+
+.consumers .node {
+  text-align: center;
+  padding: 13px 16px;
+}
+.consumers .node h2 { font-size: 16px; }
+.consumers .node .resp { font-size: 11px; }
+
+/* ============ DETAIL DRAWER ============ */
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(520px, 92vw);
+  height: 100vh;
+  background: var(--ink-2);
+  border-left: 1px solid var(--line);
+  box-shadow: -24px 0 64px rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  transform: translateX(105%);
+  transition: transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+  overflow-y: auto;
+  padding: 36px 34px 60px;
+}
+.drawer.open { transform: translateX(0); }
+.drawer .close {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--paper-dim);
+  font-family: var(--mono);
+  font-size: 13px;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.drawer .close:hover { border-color: var(--amber); color: var(--amber); transform: rotate(90deg); }
+.drawer .d-badge {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-weight: 600;
+  margin-bottom: 14px;
+}
+.drawer h2 {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 34px;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.drawer .d-path { font-size: 11px; color: var(--paper-faint); margin-bottom: 20px; }
+.drawer .d-desc {
+  font-size: 13px;
+  color: var(--paper-dim);
+  line-height: 1.65;
+  border-left: 2px solid var(--amber);
+  padding-left: 14px;
+  margin-bottom: 28px;
+}
+.drawer h3 {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin: 26px 0 12px;
+  font-weight: 600;
+}
+.fn-table { width: 100%; border-collapse: collapse; }
+.fn-table td {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12px;
+  vertical-align: top;
+}
+.fn-table td:first-child {
+  color: var(--teal);
+  white-space: nowrap;
+  padding-right: 16px;
+  font-weight: 500;
+}
+.fn-table td:last-child { color: var(--paper-dim); }
+.fn-table .loc {
+  display: block;
+  font-size: 10px;
+  color: var(--paper-faint);
+  margin-top: 1px;
+}
+.d-types { display: flex; flex-wrap: wrap; gap: 6px; }
+.d-types span {
+  font-size: 11.5px;
+  background: var(--ink-3);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 4px 10px;
+  color: var(--paper-dim);
+}
+.d-types span b { color: var(--paper); font-weight: 500; }
+.d-notes {
+  font-size: 12px;
+  color: var(--paper-dim);
+  line-height: 1.65;
+}
+.d-notes li { margin: 0 0 8px 18px; }
+.d-notes code { color: var(--rust); font-size: 11.5px; }
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 12, 16, 0.5);
+  backdrop-filter: blur(2px);
+  z-index: 90;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.scrim.open { opacity: 1; pointer-events: auto; }
+
+/* ============ FOOTER RULES ============ */
+.rules {
+  margin-top: 30px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 24px 28px;
+  background: var(--ink-2);
+}
+.rules h3 {
+  font-family: var(--display);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 18px;
+  color: var(--paper);
+  margin-bottom: 14px;
+}
+.rules ul {
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 32px;
+  font-size: 12px;
+  color: var(--paper-dim);
+}
+.rules li::before { content: '⌁ '; color: var(--amber); }
+.rules code { color: var(--teal); font-size: 11.5px; }
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 980px) {
+  .layer.engines { grid-template-columns: repeat(2, 1fr); }
+  .facade-cols { grid-template-columns: repeat(2, 1fr); }
+  .rules ul { grid-template-columns: 1fr; }
+}
+@media (max-width: 620px) {
+  .layer.consumers, .layer.engines, .layer.foundation, .layer.substrate { grid-template-columns: 1fr; }
+  .facade-cols { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="title-block">
+    <div class="kicker">Kimün · architecture survey · core crate</div>
+    <h1>Note Operations,<br><em>mapped.</em></h1>
+  </div>
+  <div class="legend">
+    <div class="legend-row"><div class="swatch" style="background:var(--amber)"></div> facade — public API</div>
+    <div class="legend-row"><div class="swatch" style="background:var(--rust)"></div> pipeline — orchestration</div>
+    <div class="legend-row"><div class="swatch" style="background:var(--violet)"></div> pure — no I/O</div>
+    <div class="legend-row"><div class="swatch" style="background:var(--teal)"></div> filesystem boundary</div>
+    <div class="legend-row"><div class="swatch" style="background:var(--blue)"></div> index / SQLite boundary</div>
+  </div>
+</header>
+
+<div class="controls">
+  <span class="label">Trace a flow ⟶</span>
+  <button class="flow-btn" data-flow="create">create note</button>
+  <button class="flow-btn" data-flow="rename">rename + backlinks</button>
+  <button class="flow-btn" data-flow="search">search</button>
+  <button class="flow-btn" data-flow="sync">vault sync</button>
+  <button class="flow-btn" data-flow="replace">replace in note</button>
+  <button class="flow-btn clear" data-flow="">✕ clear</button>
+</div>
+
+<div class="flow-story" id="flowStory">
+  <h3 id="flowTitle"></h3>
+  <ol id="flowSteps"></ol>
+</div>
+
+<div class="map" id="map">
+  <svg class="edges" id="edgeSvg"></svg>
+
+  <div class="layer consumers" style="margin-top: 36px;">
+    <div class="layer-tag">Consumers</div>
+    <div class="node ext" id="n-tui"><h2>TUI</h2><div class="resp">interaction &amp; presentation only — no file ops</div></div>
+    <div class="node ext" id="n-cli"><h2>CLI</h2><div class="resp">scripting &amp; automation (backups on)</div></div>
+    <div class="node ext" id="n-mcp"><h2>MCP</h2><div class="resp">agent access (backups on)</div></div>
+  </div>
+
+  <div class="layer facade">
+    <div class="layer-tag">Public API · the only door in</div>
+    <div class="node facade-node" data-detail="vault" id="n-vault">
+      <span class="badge b-facade">facade</span>
+      <h2>NoteVault <span class="tld">— lib.rs</span></h2>
+      <div class="path">core/src/lib.rs:110</div>
+      <div class="resp">Single entry point for every note operation. Holds workspace root, the index, and per-note async locks. Every public path argument is a <b>VaultPath</b> — never <code>PathBuf</code>.</div>
+      <div class="facade-cols">
+        <div class="facade-col"><h4>CRUD</h4><ul><li>create_note</li><li>load_note / get_note_text</li><li>save_note / append_to_note</li><li>delete_note · quick_note</li></ul></div>
+        <div class="facade-col"><h4>Transform</h4><ul><li>rename_note (3-stage)</li><li>replace_in_note</li><li>preview_replace</li><li>compute_replacement</li></ul></div>
+        <div class="facade-col"><h4>Query</h4><ul><li>search_notes · get_notes</li><li>get_backlinks</li><li>list_labels · label_counts</li><li>suggest_* prefix autocomplete</li></ul></div>
+        <div class="facade-col"><h4>Safety</h4><ul><li>lock_note / lock_notes</li><li>backup_if_enabled</li><li>validate_and_init</li><li>recreate_index</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer engines">
+    <div class="layer-tag">Engines · orchestration &amp; pure logic</div>
+    <div class="node" data-detail="link_rewrite" id="n-rewrite">
+      <span class="badge b-pipe">pipeline</span>
+      <h2>link_rewrite</h2>
+      <div class="path">core/src/link_rewrite.rs</div>
+      <div class="resp">Three-stage typestate pipeline for rename: scout → prepare → commit. Compiler enforces stage order.</div>
+      <div class="ops"><span>scout</span><span>prepare</span><span>commit</span></div>
+    </div>
+    <div class="node" data-detail="sync" id="n-sync">
+      <span class="badge b-pipe">pipeline</span>
+      <h2>sync</h2>
+      <div class="path">core/src/sync/mod.rs</div>
+      <div class="resp">Reconciles index against filesystem: parallel walk, diff against cache, atomic apply.</div>
+      <div class="ops"><span>VaultSync::run</span><span>IndexDiff</span></div>
+    </div>
+    <div class="node" data-detail="note" id="n-note">
+      <span class="badge b-pure">pure</span>
+      <h2>note</h2>
+      <div class="path">core/src/note/mod.rs</div>
+      <div class="resp">Content extraction — titles, hashes, heading chunks, links, labels. No I/O at all.</div>
+      <div class="ops"><span>NoteDetails</span><span>NoteLink</span><span>extract_labels</span></div>
+    </div>
+    <div class="node" data-detail="error" id="n-error">
+      <span class="badge b-pure">pure</span>
+      <h2>error</h2>
+      <div class="path">core/src/error.rs</div>
+      <div class="resp">Layered error taxonomy: VaultError at API edge, FSError + DBError below.</div>
+      <div class="ops"><span>VaultError</span><span>FSError</span><span>DBError</span></div>
+    </div>
+  </div>
+
+  <div class="layer foundation">
+    <div class="layer-tag">Foundation · the only modules that touch the world</div>
+    <div class="node" data-detail="nfs" id="n-nfs">
+      <span class="badge b-fs">filesystem</span>
+      <h2>nfs</h2>
+      <div class="path">core/src/nfs/mod.rs</div>
+      <div class="resp">Owns <b>every</b> direct <code style="color:var(--rust)">std::fs</code> / <code style="color:var(--rust)">tokio::fs</code> call in core. Home of <b>VaultPath</b>: lowercase, sanitized, cross-platform vault-relative paths. Case-insensitive resolution, O_EXCL creates, dated backups with 30-day retention.</div>
+      <div class="ops"><span>VaultPath</span><span>resolve_path_on_disk</span><span>create_note_exclusive</span><span>backup_note</span><span>purge_old_backups</span></div>
+    </div>
+    <div class="node" data-detail="index" id="n-index">
+      <span class="badge b-db">index</span>
+      <h2>index</h2>
+      <div class="path">core/src/index/mod.rs</div>
+      <div class="resp">Searchable SQLite-backed cache of the vault: notes, links, labels, FTS. Self-healing schema (v0.10) — stale or invalid DB rebuilds itself on open.</div>
+      <div class="ops"><span>NoteIndex</span><span>search</span><span>get_backlinks</span><span>apply(IndexDiff)</span></div>
+    </div>
+  </div>
+
+  <div class="layer substrate" style="margin-bottom: 20px;">
+    <div class="layer-tag">Substrate</div>
+    <div class="node ext" id="n-os"><h2>OS Filesystem</h2><div class="resp">Windows · macOS · Linux — lowest common denominator of all three</div></div>
+    <div class="node ext" id="n-sqlite"><h2>SQLite</h2><div class="resp">.kimun db · pool of 5 connections · per-op transactions</div></div>
+  </div>
+</div>
+
+<div class="rules">
+  <h3>Cartographer's notes — invariants that shape this map</h3>
+  <ul>
+    <li>All file ops live in core; the TUI never touches paths or files.</li>
+    <li>Direct filesystem calls exist <b>only</b> inside <code>nfs</code>.</li>
+    <li>Public API speaks <code>VaultPath</code>, never <code>PathBuf</code>, for vault-internal paths.</li>
+    <li>Paths are case-insensitive, lowercased, and valid on all three major OSes.</li>
+    <li>Per-note locks acquired in stable sorted order → deadlock-free read-modify-write.</li>
+    <li>Destructive ops (save / delete / replace / rename) back up pre-images when enabled.</li>
+    <li>Index is a rebuildable cache — the filesystem is always the source of truth.</li>
+    <li>Delete order: index first, filesystem second. Create order: filesystem first, index second.</li>
+  </ul>
+</div>
+
+</div><!-- /wrap -->
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <button class="close" id="drawerClose">✕</button>
+  <div id="drawerBody"></div>
+</aside>
+
+<script>
+/* ================= component detail data ================= */
+const DETAILS = {
+  vault: {
+    badge: ['facade', 'b-facade'],
+    title: 'NoteVault',
+    path: 'core/src/lib.rs:110',
+    desc: 'The facade. Every consumer — TUI, CLI, MCP — goes through here. Validates the workspace on construction, opens the index, and coordinates nfs + index so the two never drift apart. Holds a map of per-note tokio mutexes to serialize concurrent in-process writers.',
+    fns: [
+      ['new()', 'lib.rs:144', 'create vault; validate workspace; open index'],
+      ['create_note()', 'lib.rs:628', 'O_EXCL filesystem create, then index insert'],
+      ['load_note()', 'lib.rs:385', 'read text via nfs → NoteDetails'],
+      ['save_note()', 'lib.rs:720', 'per-note lock → write → index update'],
+      ['quick_note()', 'lib.rs:288', 'timestamped inbox note, retries on collision'],
+      ['delete_note()', 'lib.rs:790', 'index first, filesystem second'],
+      ['rename_note()', 'lib.rs:927', '3-stage LinkRewrite: scout → prepare → commit'],
+      ['append_to_note()', 'lib.rs:703', 'lock + read-modify-write'],
+      ['replace_in_note()', 'lib.rs:876', 'lock + regex/literal substitution + save'],
+      ['search_notes()', 'lib.rs:399', 'delegates to index.search()'],
+      ['get_backlinks()', 'lib.rs:563', 'who links to this note?'],
+      ['browse_vault()', 'lib.rs:472', 'streaming walk via VaultSync + channel'],
+      ['lock_notes()', 'lib.rs:686', 'multi-lock in sorted order — deadlock-free'],
+      ['backup_if_enabled()', 'lib.rs:659', 'pre-image backup before destructive writes'],
+    ],
+    types: [['VaultConfig', 'workspace + db path + backup flag'], ['IndexReport', 'indexing duration'], ['note_locks', 'HashMap<VaultPath, Arc<Mutex>>']],
+    notes: [
+      'Saved searches stored as TOML via <code>nfs::saved_searches</code> (list / save / delete / rename, lib.rs:571–619).',
+      'Attachments: <code>generate_attachment_path()</code> → <code>/assets/prefix_nanosecs.ext</code>, raw bytes via nfs.',
+      '<code>validate_and_init()</code> picks Full vs quick sync based on whether the index self-healed.',
+    ],
+  },
+  nfs: {
+    badge: ['filesystem boundary', 'b-fs'],
+    title: 'nfs',
+    path: 'core/src/nfs/mod.rs',
+    desc: 'The only module allowed to touch the disk. Everything physical lives here: path resolution, exclusive creates, atomic renames, backups. Also owns VaultPath — the sanitized, lowercase, cross-platform path type the whole public API is built on.',
+    fns: [
+      ['VaultPath::new()', 'nfs/mod.rs:725', 'sanitizing ctor — invalid chars become _'],
+      ['VaultPath::from_string()', 'nfs/mod.rs:743', 'validating ctor — rejects instead'],
+      ['VaultPath::flatten()', 'nfs/mod.rs:884', 'resolve .. and . slices'],
+      ['resolve_path_on_disk()', 'nfs/mod.rs:224', 'case-insensitive lookup of real file'],
+      ['check_case_conflicts()', 'nfs/mod.rs:280', 'find case-collision pairs in workspace'],
+      ['create_note_exclusive()', 'nfs/mod.rs:419', 'O_EXCL open, creates parents'],
+      ['save_note()', 'nfs/mod.rs:399', 'write text at case-resolved path'],
+      ['rename_note()', 'nfs/mod.rs:451', 'atomic rename, verifies dest empty'],
+      ['delete_note()', 'nfs/mod.rs:616', 'remove file'],
+      ['backup_note()', 'nfs/mod.rs:581', 'stream-copy to .kimun/backups/YYYY-MM-DD/'],
+      ['reserve_backup_dest()', 'nfs/mod.rs:549', 'O_EXCL reserve; time-suffix on collision'],
+      ['purge_old_backups()', 'nfs/mod.rs:516', 'sweep 30+ day dirs, max once/day/process'],
+      ['save_attachment()', 'nfs/mod.rs:386', 'raw bytes, creates parents'],
+    ],
+    types: [['VaultPath', 'lowercase vault-relative path'], ['NoteEntryData', 'path + size + mtime'], ['DirectoryEntryData', 'dir metadata'], ['LAST_PURGE', 'static purge dedup marker']],
+    notes: [
+      'Case-insensitive by design: <code>resolve_path_on_disk</code> finds <code>Note.MD</code> when asked for <code>note.md</code>.',
+      'Backups never clobber: concurrent same-second writers get time-suffixed variants.',
+      'Parallel file walker (<code>get_file_walker</code>) feeds VaultSync from a blocking thread.',
+    ],
+  },
+  index: {
+    badge: ['index boundary', 'b-db'],
+    title: 'index',
+    path: 'core/src/index/mod.rs',
+    desc: 'A searchable cache, never the source of truth. SQLite tables for notes, links, and labels plus FTS. Schema is versioned (currently 0.10) and self-healing: open a stale or corrupt DB and it silently rebuilds, then flags itself for a full resync.',
+    fns: [
+      ['NoteIndex::open()', 'index/mod.rs:129', 'self-heal schema on stale/missing/invalid'],
+      ['search()', 'index/mod.rs:296', 'query-terms parser + SQLite FTS'],
+      ['get_backlinks()', 'index/mod.rs:317', 'notes linking to a given path'],
+      ['save_note()', 'index/mod.rs:267', 'upsert note rows + links + labels'],
+      ['rename_note()', 'index/mod.rs:224', 'move rows + update victim links'],
+      ['rename_directory()', 'index/mod.rs:237', 'rename path prefix in index'],
+      ['apply()', 'index/mod.rs:213', 'atomic apply of an IndexDiff'],
+      ['mark_synced()', 'index/mod.rs:175', 'clear healed flag after full sync'],
+      ['suggest_notes_by_prefix()', 'index/mod.rs:337', 'autocomplete from notes table'],
+      ['suggest_tags_by_prefix()', 'index/mod.rs:345', 'autocomplete from labels table'],
+    ],
+    types: [['NoteIndex', 'pool of 5 SQLite connections'], ['IndexDiff', 'to_add / to_modify / to_delete'], ['schema 0.10', 'links(source) + notes(noteName) indexes']],
+    notes: [
+      'Schema history: 0.6 labels table → 0.7 dropped labels_by_name → 0.8 hashtag word-boundary → 0.9 dest_name column → 0.10 new indexes.',
+      '<code>ready()</code> returns false while healed-but-unsynced; <code>validate_and_init</code> then forces a Full sync.',
+      'Every mutation runs in its own transaction.',
+    ],
+  },
+  note: {
+    badge: ['pure logic', 'b-pure'],
+    title: 'note',
+    path: 'core/src/note/mod.rs',
+    desc: 'Content extraction with zero I/O. Given note text, it produces everything the index and UI need: title, content hash, heading-chunked sections, links, labels. Scanner utilities know what counts as a link and what is inside an exclusion zone (code blocks, HTML, frontmatter).',
+    fns: [
+      ['get_title_from_text()', 'note/mod.rs:84', 'title from first # heading'],
+      ['content_data_of()', 'note/mod.rs:90', 'title + XxHash64 content hash'],
+      ['content_chunks_of()', 'note/mod.rs:96', 'split into sections by heading'],
+      ['get_markdown_and_links()', 'note/mod.rs:129', 'rendered markdown + extracted links'],
+      ['extract_labels()', 'note/mod.rs:47', 'dedup’d lowercase hashtags'],
+      ['replace_note_links()', 'content_extractor', 'rewrite link refs in text (rename)'],
+      ['scan::link_char_spans()', 'note/mod.rs', 'wikilink + markdown link spans'],
+      ['scan::is_inside_exclusion_zone()', 'note/mod.rs', 'code / HTML / frontmatter detection'],
+      ['process_image_links()', 'note/mod.rs', 'resolve relative images to OS paths'],
+    ],
+    types: [['NoteDetails', 'raw text + metadata'], ['NoteContentData', 'title + hash, indexable'], ['ContentChunk', 'heading section'], ['NoteLink + LinkType', 'Note / Image / Url / Hashtag']],
+    notes: [
+      'Pure functions make link rewriting testable without a filesystem.',
+      'XxHash64 content hashes let sync skip unchanged notes cheaply.',
+    ],
+  },
+  link_rewrite: {
+    badge: ['pipeline', 'b-pipe'],
+    title: 'link_rewrite',
+    path: 'core/src/link_rewrite.rs',
+    desc: 'The rename engine. A typestate pipeline — LinkRewrite → Scouted → Prepared — where each stage returns the next type, so you physically cannot commit before preparing or prepare before scouting. Keeps backlinks intact when a note moves.',
+    fns: [
+      ['LinkRewrite::new()', 'link_rewrite.rs:45', 'entry point, captures from/to'],
+      ['scout()', 'link_rewrite.rs:59', 'stage 1 — ask index for victim notes'],
+      ['Scouted::prepare()', 'link_rewrite.rs:105', 'stage 2 — read victims, rewrite in memory, back up'],
+      ['Prepared::commit()', 'link_rewrite.rs:150', 'stage 3 — write victims + self-links after FS rename'],
+    ],
+    types: [['LinkRewrite', 'stage 0'], ['Scouted', 'stage 1 output'], ['Prepared', 'stage 2 output']],
+    notes: [
+      '“Victims” = notes whose links point at the renamed note.',
+      'All victims + source are locked (sorted order) before any mutation.',
+      'Backups taken in prepare, before the filesystem rename — crash-safe pre-images.',
+    ],
+  },
+  sync: {
+    badge: ['pipeline', 'b-pipe'],
+    title: 'sync',
+    path: 'core/src/sync/mod.rs',
+    desc: 'Reconciliation between disk and index. Reads the cached state, walks the filesystem in parallel on a blocking thread, computes an IndexDiff (add / modify / delete), and applies it atomically. Also powers streaming vault browsing through a channel.',
+    fns: [
+      ['VaultSync::new()', 'sync/mod.rs:32', 'create sync instance'],
+      ['VaultSync::run()', 'sync/mod.rs:46', 'read cache → parallel walk → apply diff'],
+    ],
+    types: [['VaultSync', 'orchestrator'], ['IndexDiff', 'atomic unit of change'], ['NoteListVisitor', 'builds diff during walk']],
+    notes: [
+      'Content hashes (XxHash64) decide “modified” — not just mtime.',
+      'Full vs quick validation chosen by <code>NoteVault::validate_and_init</code> based on index health.',
+    ],
+  },
+  error: {
+    badge: ['pure', 'b-pure'],
+    title: 'error',
+    path: 'core/src/error.rs',
+    desc: 'Layered error taxonomy mirroring the architecture: FSError for the filesystem boundary, DBError for the index boundary, VaultError wrapping both at the public API edge.',
+    fns: [
+      ['VaultError', 'error.rs:6', 'top-level API error'],
+      ['FSError', 'error.rs:38', 'filesystem layer'],
+      ['DBError', 'error.rs:65', 'index / SQLite layer'],
+    ],
+    types: [],
+    notes: ['Callers of NoteVault only ever see VaultError.'],
+  },
+};
+
+/* ================= edges ================= */
+const EDGES = [
+  { id: 'tui-vault',    from: 'n-tui',     to: 'n-vault' },
+  { id: 'cli-vault',    from: 'n-cli',     to: 'n-vault' },
+  { id: 'mcp-vault',    from: 'n-mcp',     to: 'n-vault' },
+  { id: 'vault-rewrite',from: 'n-vault',   to: 'n-rewrite' },
+  { id: 'vault-sync',   from: 'n-vault',   to: 'n-sync' },
+  { id: 'vault-note',   from: 'n-vault',   to: 'n-note' },
+  { id: 'vault-error',  from: 'n-vault',   to: 'n-error' },
+  { id: 'vault-nfs',    from: 'n-vault',   to: 'n-nfs', skip: true },
+  { id: 'vault-index',  from: 'n-vault',   to: 'n-index', skip: true },
+  { id: 'rewrite-nfs',  from: 'n-rewrite', to: 'n-nfs' },
+  { id: 'rewrite-index',from: 'n-rewrite', to: 'n-index' },
+  { id: 'rewrite-note', from: 'n-rewrite', to: 'n-note', lateral: true },
+  { id: 'sync-nfs',     from: 'n-sync',    to: 'n-nfs' },
+  { id: 'sync-index',   from: 'n-sync',    to: 'n-index' },
+  { id: 'nfs-os',       from: 'n-nfs',     to: 'n-os' },
+  { id: 'index-sqlite', from: 'n-index',   to: 'n-sqlite' },
+];
+
+/* ================= flows ================= */
+const FLOWS = {
+  create: {
+    title: 'create_note — filesystem first, index second',
+    nodes: ['n-vault', 'n-nfs', 'n-index', 'n-note', 'n-os', 'n-sqlite'],
+    edges: ['vault-nfs', 'vault-index', 'vault-note', 'nfs-os', 'index-sqlite'],
+    steps: [
+      '<code>NoteVault::create_note(path, text)</code>',
+      '<code>nfs::create_note_exclusive</code> — O_EXCL, parents created',
+      '<code>note</code> extracts title · hash · links · labels',
+      '<code>index.save_note</code> — insert rows + links + labels',
+    ],
+  },
+  rename: {
+    title: 'rename_note — scout → prepare → commit, backlinks survive',
+    nodes: ['n-vault', 'n-rewrite', 'n-nfs', 'n-index', 'n-note', 'n-os', 'n-sqlite'],
+    edges: ['vault-rewrite', 'rewrite-index', 'rewrite-note', 'rewrite-nfs', 'nfs-os', 'index-sqlite'],
+    steps: [
+      '<code>NoteVault::rename_note(from, to)</code>',
+      'scout: <code>index.get_backlinks(from)</code> → victims',
+      '<code>lock_notes([from, to, victims])</code> sorted order',
+      'prepare: load victims · <code>replace_note_links</code> in memory · back up all',
+      '<code>nfs::rename_note</code> — atomic move on disk',
+      'commit: write rewritten victims + self-links',
+      '<code>index.rename_note</code> — move rows, fix victim links',
+    ],
+  },
+  search: {
+    title: 'search_notes — parser then FTS, disk never touched',
+    nodes: ['n-vault', 'n-index', 'n-sqlite'],
+    edges: ['vault-index', 'index-sqlite'],
+    steps: [
+      '<code>NoteVault::search_notes(query)</code>',
+      'query-terms parser (<code>search/terms.rs</code>)',
+      'SQLite FTS over notes · links · labels',
+      'returns <code>Vec&lt;(NoteEntryData, NoteContentData)&gt;</code>',
+    ],
+  },
+  sync: {
+    title: 'vault sync — disk is truth, index catches up',
+    nodes: ['n-vault', 'n-sync', 'n-nfs', 'n-index', 'n-os', 'n-sqlite'],
+    edges: ['vault-sync', 'sync-nfs', 'sync-index', 'nfs-os', 'index-sqlite'],
+    steps: [
+      '<code>validate_and_init</code> — case-conflict check, pick Full vs quick',
+      '<code>VaultSync::run</code> reads cached index state',
+      '<code>nfs</code> parallel file walk on blocking thread',
+      'visitor builds <code>IndexDiff</code> (add / modify / delete)',
+      '<code>index.apply(diff)</code> atomically · <code>mark_synced</code>',
+    ],
+  },
+  replace: {
+    title: 'replace_in_note — locked read-modify-write with pre-image backup',
+    nodes: ['n-vault', 'n-nfs', 'n-index', 'n-note', 'n-os', 'n-sqlite'],
+    edges: ['vault-nfs', 'vault-index', 'vault-note', 'nfs-os', 'index-sqlite'],
+    steps: [
+      '<code>lock_note(path)</code> — serialize writers',
+      '<code>get_note_text</code> via nfs',
+      '<code>compute_replacement</code> — pure, regex or literal',
+      '<code>backup_if_enabled</code> — pre-image to .kimun/backups',
+      '<code>nfs::save_note</code> + <code>index.save_note</code>',
+    ],
+  },
+};
+
+/* ================= edge drawing ================= */
+const map = document.getElementById('map');
+const svg = document.getElementById('edgeSvg');
+
+function center(el, mapRect) {
+  const r = el.getBoundingClientRect();
+  return {
+    x: r.left - mapRect.left + r.width / 2,
+    top: r.top - mapRect.top,
+    bottom: r.top - mapRect.top + r.height,
+    left: r.left - mapRect.left,
+    right: r.left - mapRect.left + r.width,
+    midY: r.top - mapRect.top + r.height / 2,
+  };
+}
+
+function drawEdges() {
+  svg.innerHTML = '';
+  const mapRect = map.getBoundingClientRect();
+  svg.setAttribute('viewBox', `0 0 ${mapRect.width} ${mapRect.height}`);
+
+  for (const e of EDGES) {
+    const a = center(document.getElementById(e.from), mapRect);
+    const b = center(document.getElementById(e.to), mapRect);
+    let d, ax, ay; // arrow position
+
+    if (e.lateral) {
+      // horizontal connection between same-row siblings
+      const y = a.midY;
+      d = `M ${a.right} ${y} L ${b.left - 8} ${y}`;
+      ax = b.left - 8; ay = y;
+      svg.insertAdjacentHTML('beforeend',
+        `<path class="edge" data-edge="${e.id}" d="${d}"/>` +
+        `<polygon class="edge-arrow" data-edge="${e.id}" points="${ax},${ay - 4.5} ${ax + 8},${ay} ${ax},${ay + 4.5}"/>`);
+      continue;
+    }
+
+    // vertical curve top→bottom; "skip" edges bow outward around the middle layer
+    const x1 = e.skip ? (e.id === 'vault-nfs' ? a.left + 26 : a.right - 26) : a.x;
+    const x2 = b.x + (e.skip ? (e.id === 'vault-nfs' ? -0.18 : 0.18) * 0 : 0);
+    const y1 = a.bottom, y2 = b.top - 9;
+    const bend = e.skip ? (e.id === 'vault-nfs' ? -70 : 70) : 0;
+    const mx = (x1 + x2) / 2 + bend;
+    d = `M ${x1} ${y1} C ${mx} ${y1 + (y2 - y1) * 0.4}, ${mx} ${y1 + (y2 - y1) * 0.6}, ${x2} ${y2}`;
+    ax = x2; ay = y2;
+    svg.insertAdjacentHTML('beforeend',
+      `<path class="edge" data-edge="${e.id}" d="${d}"/>` +
+      `<polygon class="edge-arrow" data-edge="${e.id}" points="${ax - 4.5},${ay} ${ax},${ay + 8} ${ax + 4.5},${ay}"/>`);
+  }
+  // re-apply active flow highlighting after redraw
+  if (activeFlow) applyFlow(activeFlow, false);
+}
+
+/* ================= flow activation ================= */
+let activeFlow = null;
+let stepTimer = null;
+
+function applyFlow(name, animateSteps = true) {
+  const flow = FLOWS[name];
+  map.classList.add('flow-active');
+  document.querySelectorAll('.node').forEach(n => n.classList.toggle('lit', flow.nodes.includes(n.id)));
+  document.querySelectorAll('[data-edge]').forEach(p => p.classList.toggle('lit', flow.edges.includes(p.dataset.edge)));
+
+  const story = document.getElementById('flowStory');
+  story.classList.add('visible');
+  document.getElementById('flowTitle').textContent = flow.title;
+  const ol = document.getElementById('flowSteps');
+
+  if (animateSteps) {
+    ol.innerHTML = flow.steps.map(s => `<li>${s}</li>`).join('');
+    clearInterval(stepTimer);
+    const items = [...ol.children];
+    let i = 0;
+    stepTimer = setInterval(() => {
+      if (i < items.length) items[i++].classList.add('lit');
+      else clearInterval(stepTimer);
+    }, 280);
+  }
+}
+
+function clearFlow() {
+  activeFlow = null;
+  clearInterval(stepTimer);
+  map.classList.remove('flow-active');
+  document.querySelectorAll('.lit').forEach(el => el.classList.remove('lit'));
+  document.getElementById('flowStory').classList.remove('visible');
+  document.querySelectorAll('.flow-btn').forEach(b => b.classList.remove('active'));
+}
+
+document.querySelectorAll('.flow-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const name = btn.dataset.flow;
+    if (!name || activeFlow === name) { clearFlow(); return; }
+    clearFlow();
+    activeFlow = name;
+    btn.classList.add('active');
+    applyFlow(name);
+  });
+});
+
+/* ================= detail drawer ================= */
+const drawer = document.getElementById('drawer');
+const scrim = document.getElementById('scrim');
+const body = document.getElementById('drawerBody');
+
+function openDetail(key) {
+  const d = DETAILS[key];
+  if (!d) return;
+  document.querySelectorAll('.node.selected').forEach(n => n.classList.remove('selected'));
+  document.querySelector(`[data-detail="${key}"]`)?.classList.add('selected');
+
+  let html = `<span class="d-badge ${d.badge[1]}">${d.badge[0]}</span>`;
+  html += `<h2>${d.title}</h2><div class="d-path">${d.path}</div>`;
+  html += `<div class="d-desc">${d.desc}</div>`;
+  if (d.fns.length) {
+    html += `<h3>Key operations</h3><table class="fn-table">`;
+    html += d.fns.map(([fn, loc, what]) =>
+      `<tr><td>${fn}<span class="loc">${loc}</span></td><td>${what}</td></tr>`).join('');
+    html += `</table>`;
+  }
+  if (d.types.length) {
+    html += `<h3>Types</h3><div class="d-types">`;
+    html += d.types.map(([t, w]) => `<span><b>${t}</b> — ${w}</span>`).join('');
+    html += `</div>`;
+  }
+  if (d.notes.length) {
+    html += `<h3>Field notes</h3><ul class="d-notes">`;
+    html += d.notes.map(n => `<li>${n}</li>`).join('');
+    html += `</ul>`;
+  }
+  body.innerHTML = html;
+  drawer.classList.add('open');
+  scrim.classList.add('open');
+}
+
+function closeDrawer() {
+  drawer.classList.remove('open');
+  scrim.classList.remove('open');
+  document.querySelectorAll('.node.selected').forEach(n => n.classList.remove('selected'));
+}
+
+document.querySelectorAll('[data-detail]').forEach(n =>
+  n.addEventListener('click', () => openDetail(n.dataset.detail)));
+document.getElementById('drawerClose').addEventListener('click', closeDrawer);
+scrim.addEventListener('click', closeDrawer);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeDrawer(); clearFlow(); } });
+
+/* ================= init ================= */
+window.addEventListener('resize', drawEdges);
+// fonts shift layout; redraw once they're in
+document.fonts?.ready.then(drawEdges);
+drawEdges();
+</script>
+</body>
+</html>

@@ -88,8 +88,7 @@ pub struct SearchList<R: SearchRow> {
     applied_generation: u64,
     /// Set when a SavedSearch suggestion was just accepted: the search's name,
     /// for the host to pin as the saved-search breadcrumb. Read once via
-    /// [`take_accepted_saved_search`](Self::take_accepted_saved_search). See
-    /// `adr/0006`.
+    /// [`take_accepted_saved_search`](Self::take_accepted_saved_search).
     accepted_saved_search: Option<String>,
 }
 
@@ -268,7 +267,7 @@ impl<R: SearchRow> SearchList<R> {
 
     /// Take the name of a just-accepted saved search, if any. The host calls
     /// this after a `Consumed` key to learn whether to pin (or refresh) the
-    /// saved-search breadcrumb. Returns `None` once read. See `adr/0006`.
+    /// saved-search breadcrumb. Returns `None` once read.
     pub fn take_accepted_saved_search(&mut self) -> Option<String> {
         self.accepted_saved_search.take()
     }
@@ -364,7 +363,7 @@ impl<R: SearchRow> SearchList<R> {
                         // Stash any accepted SavedSearch name for the host's
                         // breadcrumb (`None` for every other kind). The host
                         // reads it on this same `Consumed`, so a plain assign
-                        // never clobbers an unread value. See `adr/0006`.
+                        // never clobbers an unread value.
                         self.accepted_saved_search = action.saved_search_name;
                         self.sync_query_from_input();
                         return KeyReaction::Consumed;
@@ -911,7 +910,7 @@ mod tests {
 
     // Accepting a SavedSearch suggestion expands the whole field to the
     // stored query AND exposes the accepted name (for the breadcrumb) via
-    // `take_accepted_saved_search`. See `adr/0006`.
+    // `take_accepted_saved_search`.
     #[tokio::test]
     async fn accepting_saved_search_expands_query_and_exposes_name() {
         struct Mem;

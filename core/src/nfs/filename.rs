@@ -23,35 +23,86 @@ pub(crate) static RX_PATH_NAME: LazyLock<Regex> =
 pub(crate) static RX_WIN_RESERVED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(WINDOWS_RESERVED_NAMES_REGEX).unwrap());
 
+/// Returns `true` if `c` is forbidden in a vault filename on any of the three
+/// supported platforms. Covers the path metacharacters (`\ / : * ? " < > |`),
+/// the markdown/link-hostile `[ ] ^ #`, and ASCII control characters. Callers
+/// in `nfs` replace such characters; the TUI rejects them.
+///
+/// ```
+/// use kimun_core::nfs::filename::is_disallowed_char;
+/// assert!(is_disallowed_char('/'));
+/// assert!(!is_disallowed_char('a'));
+/// ```
 pub fn is_disallowed_char(c: char) -> bool {
     let mut buf = [0u8; 4];
     RX_PATH_CHARS.is_match(c.encode_utf8(&mut buf))
 }
 
+/// Returns `true` if `name` is a Windows reserved device name (`CON`, `NUL`,
+/// `COM1`–`COM9`, `LPT1`–`LPT9`, …), with or without an extension. The check is
+/// case-insensitive because Windows resolves these names regardless of case,
+/// and such a file would map to a device handle rather than a real file.
+///
+/// ```
+/// use kimun_core::nfs::filename::is_windows_reserved;
+/// assert!(is_windows_reserved("CON"));
+/// assert!(is_windows_reserved("nul.txt"));
+/// assert!(!is_windows_reserved("console"));
+/// ```
 pub fn is_windows_reserved(name: &str) -> bool {
     RX_WIN_RESERVED.is_match(name)
 }
 
+/// Returns `true` if `name` begins with two or more dots (e.g. `..foo`). A
+/// single leading dot is allowed (it only marks the entry hidden); two or more
+/// risk being interpreted as parent-directory traversal.
+///
+/// ```
+/// use kimun_core::nfs::filename::has_invalid_leading_dots;
+/// assert!(has_invalid_leading_dots("..foo"));
+/// assert!(!has_invalid_leading_dots(".foo"));
+/// ```
 pub fn has_invalid_leading_dots(name: &str) -> bool {
     RX_PATH_NAME.is_match(name)
 }
 
 const MAX_FILENAME_LEN: usize = 64;
 
+/// A single way in which a candidate filename violates the cross-platform rule
+/// set. [`validate_filename`] collects every applicable reason rather than
+/// stopping at the first, so the UI can explain all the problems at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidNameReason {
+    /// The name is the empty string.
     Empty,
+    /// The name contains characters rejected by [`is_disallowed_char`]; the
+    /// vector lists each offending character, sorted and deduplicated.
     DisallowedChars(Vec<char>),
+    /// The name starts with two or more dots (see [`has_invalid_leading_dots`]).
     LeadingDots,
+    /// The name ends with a dot, which Windows silently strips.
     TrailingDot,
+    /// The name has leading or trailing whitespace, also trimmed by some
+    /// filesystems and a frequent source of silent collisions.
     LeadingOrTrailingWhitespace,
+    /// The name is a Windows reserved device name (see [`is_windows_reserved`]).
     ReservedWindowsName,
-    TooLong { actual: usize, max: usize },
+    /// The name exceeds the maximum allowed length.
+    TooLong {
+        /// The candidate's actual length, in characters.
+        actual: usize,
+        /// The maximum permitted length, in characters.
+        max: usize,
+    },
 }
 
+/// The error returned by [`validate_filename`]: the rejected `name` together
+/// with every [`InvalidNameReason`] that applies to it.
 #[derive(Debug, Clone)]
 pub struct InvalidFilenameError {
+    /// The candidate name that failed validation.
     pub name: String,
+    /// All reasons the name was rejected; never empty.
     pub reasons: Vec<InvalidNameReason>,
 }
 
@@ -85,6 +136,19 @@ impl std::fmt::Display for InvalidFilenameError {
 
 impl std::error::Error for InvalidFilenameError {}
 
+/// Validates a workspace/vault name against the full cross-platform rule set,
+/// returning every way it is invalid at once. Unlike the sanitizing path
+/// `VaultPathSlice::new`, this rejects rather than repairs: it is the TUI's
+/// gate for names the user types directly. A name passes only if it is
+/// non-empty, free of disallowed characters, not Windows-reserved, has no
+/// leading/trailing whitespace, no leading-dot-run or trailing dot, and is
+/// within the length limit.
+///
+/// ```
+/// use kimun_core::nfs::filename::validate_filename;
+/// assert!(validate_filename("my-vault").is_ok());
+/// assert!(validate_filename("bad/name").is_err());
+/// ```
 pub fn validate_filename(name: &str) -> Result<(), InvalidFilenameError> {
     let mut reasons = Vec::new();
 
