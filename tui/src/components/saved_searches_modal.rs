@@ -252,6 +252,11 @@ impl Overlay for SavedSearchesModal {
                     EventState::Consumed
                 }
                 SearchMouse::Selected(_) | SearchMouse::Scrolled => EventState::Consumed,
+                // No content sub-region is recorded by this host, so these
+                // are unreachable.
+                SearchMouse::ContentScrollUp | SearchMouse::ContentScrollDown => {
+                    EventState::Consumed
+                }
                 SearchMouse::None => EventState::NotConsumed,
             },
             InputEvent::Key(key) => match self.list.handle_key(key) {

@@ -161,6 +161,85 @@ enum ExpandState {
 }
 
 // ---------------------------------------------------------------------------
+// ContentScroll (private)
+// ---------------------------------------------------------------------------
+
+/// Scroll state shared by the expanded content views (Full mode and the
+/// half-height Context preview). The offset is either *anchored* — the
+/// Context render recomputes it from the first needle match each frame — or
+/// user-owned after a scroll. Every transition (take-over, re-anchor, clamp)
+/// lives here, so paths that should re-anchor have one decision point and
+/// the offset is never out of range between events.
+#[derive(Clone, Copy)]
+struct ContentScroll {
+    /// True while the render owns the offset (anchor on the first needle
+    /// match). The first tick that actually moves the view flips it;
+    /// re-anchoring events set it back.
+    anchored: bool,
+    /// The rendered scroll offset (first visible content line).
+    offset: usize,
+    /// Maximum offset, recorded by render from content/viewport size.
+    max: usize,
+}
+
+impl ContentScroll {
+    fn new() -> Self {
+        Self {
+            anchored: true,
+            offset: 0,
+            max: 0,
+        }
+    }
+
+    /// Back to the top, offset handed back to the auto-anchor.
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Re-arm the auto-anchor without touching the offset (the next anchored
+    /// render overwrites it).
+    fn re_anchor(&mut self) {
+        self.anchored = true;
+    }
+
+    /// One wheel/key tick up, clamped at the top. Only a tick that moves the
+    /// view takes the offset over from the anchor — a saturated no-op must
+    /// not silently disarm it.
+    fn scroll_up(&mut self) {
+        if self.offset > 0 {
+            self.offset -= 1;
+            self.anchored = false;
+        }
+    }
+
+    /// One wheel/key tick down, clamped at `max` at mutation time so the
+    /// offset is never out of range. Same no-op rule as [`scroll_up`].
+    ///
+    /// [`scroll_up`]: Self::scroll_up
+    fn scroll_down(&mut self) {
+        if self.offset < self.max {
+            self.offset += 1;
+            self.anchored = false;
+        }
+    }
+
+    /// Render-time sync: record the current max offset and clamp — a resize
+    /// can shrink the content below the held offset.
+    fn set_max(&mut self, max: usize) {
+        self.max = max;
+        self.offset = self.offset.min(max);
+    }
+
+    /// Render-time anchor: while anchored, place the offset (clamped). A
+    /// user-owned offset is left alone.
+    fn anchor_to(&mut self, offset: usize) {
+        if self.anchored {
+            self.offset = offset.min(self.max);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // QueryPanel
 // ---------------------------------------------------------------------------
 
@@ -182,21 +261,14 @@ pub struct QueryPanel {
     /// The path the `expand` state belongs to, used to detect selection changes
     /// (the engine owns the list, so we re-anchor expand on the selected row).
     expand_path: Option<VaultPath>,
-    /// Scroll offset for the expanded content view (Full takes the whole
-    /// panel; Context is the half-height preview below the list).
-    content_scroll: usize,
-    /// Maximum scroll offset (computed during render).
-    content_scroll_max: usize,
-    /// While true, the Context preview anchors itself on the first link
-    /// occurrence each frame (the auto-scroll). The first wheel event over the
-    /// preview clears it, handing the scroll position to the user; re-anchoring
-    /// (selection move, expand toggle) sets it back.
-    context_autoscroll: bool,
-    /// The Context preview's screen area, recorded each render so the wheel
-    /// can hit-test "over the preview" against it. Empty whenever the preview
-    /// is not on screen (Collapsed/Full/loading), which makes the hit-test
-    /// always miss.
-    preview_rect: Rect,
+    /// Scroll state for the expanded content views (Full takes the whole
+    /// panel; Context is the half-height preview below the list). See
+    /// [`ContentScroll`] for the anchored/user-owned life cycle.
+    scroll: ContentScroll,
+    /// The full-expand header's screen area (the fixed title line), recorded
+    /// each render so a click on it collapses the view, mirroring Enter.
+    /// Empty whenever full mode is not on screen.
+    full_header_rect: Rect,
     key_bindings: KeyBindings,
     /// Shared sender filled the first time a `tx` arrives. The engine's redraw
     /// callback reads this slot, so async loads/autocomplete wake the render
@@ -274,10 +346,8 @@ impl QueryPanel {
             saved_search: SavedSearchBreadcrumb::default(),
             expand: ExpandState::Collapsed,
             expand_path: None,
-            content_scroll: 0,
-            content_scroll_max: 0,
-            context_autoscroll: true,
-            preview_rect: Rect::default(),
+            scroll: ContentScroll::new(),
+            full_header_rect: Rect::default(),
             key_bindings,
             redraw_tx,
             follow_link_combos,
@@ -388,9 +458,11 @@ impl QueryPanel {
     fn reset_expand(&mut self) {
         self.expand = ExpandState::Collapsed;
         self.expand_path = None;
-        self.content_scroll = 0;
-        self.content_scroll_max = 0;
-        self.context_autoscroll = true;
+        self.scroll.reset();
+        // No content view is on screen anymore; drop the engine's sub-region
+        // so a wheel arriving before the next render is not routed against a
+        // stale preview rect.
+        self.list.set_content_rect(Rect::default());
     }
 
     /// Re-anchor the expand state on the currently-selected row. The Context
@@ -404,8 +476,7 @@ impl QueryPanel {
                 self.expand = ExpandState::Collapsed;
             }
             self.expand_path = sel;
-            self.content_scroll = 0;
-            self.context_autoscroll = true;
+            self.scroll.reset();
         }
     }
 
@@ -481,6 +552,7 @@ impl QueryPanel {
         // NOTE: Enter is NOT pre-checked here. It must reach the engine so an
         // open autocomplete popup can accept on Enter; only when the popup is
         // closed does the engine return `Submit`, which toggles expand below.
+        let prev_query = self.list.query().to_string();
         match self.list.handle_key(key) {
             KeyReaction::Intercepted(c) if self.follow_link_combos.contains(&c) => {
                 if let Some(path) = self.selected_path().cloned() {
@@ -496,6 +568,13 @@ impl QueryPanel {
                 let blank = self.query_is_blank();
                 self.saved_search
                     .on_query_consumed(accepted, self.list.query(), blank);
+                // A query edit moves the needle highlights, so the preview
+                // scroll goes back to the link auto-anchor — a user scroll
+                // position is stale against the new matches. (Programmatic
+                // query changes re-arm via `reset_expand`.)
+                if self.list.query() != prev_query {
+                    self.scroll.re_anchor();
+                }
                 self.sync_expand_anchor();
                 EventState::Consumed
             }
@@ -516,77 +595,70 @@ impl QueryPanel {
     /// selection keeps its screen position), the half-height Context preview
     /// when hovering over it, or, in full-expand, the content — anywhere
     /// within the panel; clicks select/activate list rows (a second click on
-    /// the selected row cycles its expand state, mirroring Enter).
+    /// the selected row cycles its expand state, mirroring Enter). The engine
+    /// owns the wheel routing: render records the content view (preview or
+    /// full) as its content sub-region, which wins over the panel bounds and
+    /// comes back as `ContentScroll*`.
     pub fn handle_mouse(
         &mut self,
         mouse: &ratatui::crossterm::event::MouseEvent,
         tx: &AppTx,
     ) -> EventState {
         use ratatui::crossterm::event::MouseEventKind;
-        use ratatui::layout::Position;
         self.ensure_redraw_tx(tx);
         self.sync_expand_anchor();
-        // Context preview: a wheel event over the preview area scrolls the
-        // preview text, not the list — and takes the scroll position over
-        // from the link auto-anchor.
-        let over_preview = self.expand == ExpandState::Context
-            && self.preview_rect.contains(Position {
-                x: mouse.column,
-                y: mouse.row,
-            });
-        match mouse.kind {
-            MouseEventKind::ScrollUp if over_preview => {
-                self.context_autoscroll = false;
-                self.content_scroll = self.content_scroll.saturating_sub(1);
+        // In full-expand the list is not rendered (its recorded rect is
+        // stale, from the last non-full frame), so clicks must not reach the
+        // engine's hit-test — they would select/activate a phantom row under
+        // the content view. The wheel still goes through: the content rect
+        // covers the whole panel in full-expand.
+        if self.is_full_expanded()
+            && !matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
+            use ratatui::crossterm::event::MouseButton;
+            use ratatui::layout::Position;
+            // These events never reach the engine, so keep the
+            // any-mouse-interaction-dismisses-autocomplete rule here.
+            self.list.close_autocomplete();
+            // A click on the header collapses the view, mirroring Enter.
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                && self.full_header_rect.contains(Position {
+                    x: mouse.column,
+                    y: mouse.row,
+                })
+            {
+                self.toggle_expand();
+            }
+            return EventState::Consumed;
+        }
+        match self.list.handle_mouse(mouse) {
+            SearchMouse::ContentScrollUp => {
+                self.scroll.scroll_up();
                 EventState::Consumed
             }
-            MouseEventKind::ScrollDown if over_preview => {
-                self.context_autoscroll = false;
-                // Increment freely; render() clamps to content_scroll_max.
-                self.content_scroll += 1;
+            SearchMouse::ContentScrollDown => {
+                self.scroll.scroll_down();
                 EventState::Consumed
             }
-            // Full-expand: the wheel scrolls the content view, not the list.
-            MouseEventKind::ScrollUp if self.is_full_expanded() => {
-                self.content_scroll = self.content_scroll.saturating_sub(1);
+            SearchMouse::Activated(_) => {
+                self.toggle_expand();
                 EventState::Consumed
             }
-            MouseEventKind::ScrollDown if self.is_full_expanded() => {
-                // Increment freely; render() clamps to content_scroll_max.
-                self.content_scroll += 1;
+            SearchMouse::Selected(_) | SearchMouse::Scrolled => {
+                self.sync_expand_anchor();
                 EventState::Consumed
             }
-            // In full-expand the list is not rendered (its recorded rect is
-            // stale, from the last non-full frame), so clicks must not reach
-            // the engine's hit-test — they would select/activate a phantom
-            // row under the content view.
-            _ if self.is_full_expanded() => EventState::Consumed,
-            // The engine hit-tests the wheel against the recorded panel rect
-            // (the whole panel — query box and preview included) and clicks
-            // against the list rect.
-            _ => match self.list.handle_mouse(mouse) {
-                SearchMouse::Activated(_) => {
-                    self.toggle_expand();
-                    EventState::Consumed
-                }
-                SearchMouse::Selected(_) | SearchMouse::Scrolled => {
-                    self.sync_expand_anchor();
-                    EventState::Consumed
-                }
-                SearchMouse::None => EventState::NotConsumed,
-            },
+            SearchMouse::None => EventState::NotConsumed,
         }
     }
 
     fn scroll_content(&mut self, key: &KeyEvent) {
         match key.code {
-            KeyCode::Up => {
-                self.content_scroll = self.content_scroll.saturating_sub(1);
-            }
-            KeyCode::Down => {
-                // Increment freely; render() clamps to content_scroll_max.
-                self.content_scroll += 1;
-            }
+            KeyCode::Up => self.scroll.scroll_up(),
+            KeyCode::Down => self.scroll.scroll_down(),
             _ => {}
         }
     }
@@ -599,14 +671,14 @@ impl QueryPanel {
         match self.expand {
             ExpandState::Collapsed => {
                 self.expand = ExpandState::Context;
-                self.context_autoscroll = true;
+                self.scroll.re_anchor();
             }
             ExpandState::Context => {
-                self.content_scroll = 0;
+                self.scroll.reset();
                 self.expand = ExpandState::Full;
             }
             ExpandState::Full => {
-                self.content_scroll = 0;
+                self.scroll.reset();
                 self.expand = ExpandState::Collapsed;
             }
         }
@@ -637,10 +709,12 @@ impl QueryPanel {
         // The whole panel is wheel-scrollable (query box and preview included);
         // recorded up front so it is fresh on every expand-state branch.
         self.list.set_panel_rect(rect);
-        // Cleared every frame; only the Context branch below records it, so
-        // the wheel's preview hit-test never sees a stale rect from a frame
-        // where the preview was not drawn.
-        self.preview_rect = Rect::default();
+        // Cleared every frame; only the branches that draw a content view
+        // (Context preview, full-expand) record it, so the engine's wheel
+        // routing never sees a stale sub-region from a frame where no
+        // content view was drawn. Same life cycle for the full-expand header.
+        self.list.set_content_rect(Rect::default());
+        self.full_header_rect = Rect::default();
 
         let border_style = theme.border_style(focused);
         let fg_muted = theme.fg_muted.to_ratatui();
@@ -715,8 +789,11 @@ impl QueryPanel {
 
         let selected_state = self.expand;
 
-        // Full mode: content takes the entire panel, no list visible.
+        // Full mode: content takes the entire panel, no list visible. The
+        // wheel scrolls the content from anywhere in the panel, so the whole
+        // panel is the engine's content sub-region.
         if selected_state == ExpandState::Full {
+            self.list.set_content_rect(rect);
             if let Some(entry) = self.list.selected_row() {
                 let entry = entry.clone();
                 let text = entry.full_text.as_deref().unwrap_or(&entry.context);
@@ -737,7 +814,9 @@ impl QueryPanel {
                     ])
                     .split(inner);
 
-                // Fixed title header.
+                // Fixed title header. Clicking it collapses the view
+                // (mirroring Enter) — record where it was drawn.
+                self.full_header_rect = parts[0];
                 f.render_widget(
                     Paragraph::new(Line::from(vec![
                         Span::styled(
@@ -782,12 +861,11 @@ impl QueryPanel {
 
                 let total_lines = lines.len();
                 let viewport = parts[2].height as usize;
-                self.content_scroll_max = total_lines.saturating_sub(viewport);
-                self.content_scroll = self.content_scroll.min(self.content_scroll_max);
+                self.scroll.set_max(total_lines.saturating_sub(viewport));
 
                 f.render_widget(
                     Paragraph::new(lines)
-                        .scroll((self.content_scroll as u16, 0))
+                        .scroll((self.scroll.offset as u16, 0))
                         .style(Style::default().bg(bg)),
                     parts[2],
                 );
@@ -839,17 +917,24 @@ impl QueryPanel {
             let text = entry.full_text.as_deref().unwrap_or(&entry.context);
             let indent = 2usize;
             let wrap_width = area.width.saturating_sub(indent as u16 + 1) as usize;
+            // Copied out before `cached_needles` borrows self; gates the
+            // link-line scan below, whose result is only consumed while the
+            // anchor owns the offset.
+            let anchored = self.scroll.anchored;
             let needles = self.cached_needles();
 
             let mut lines = Vec::new();
 
-            // Track which rendered line contains the first needle match.
+            // Track which rendered line contains the first needle match —
+            // only while anchored: a user-owned scroll never reads it, so
+            // the per-line needle scan would be wasted work.
             let mut link_line: Option<usize> = None;
 
             for line in text.lines() {
                 let wrapped = wrap_line(line, wrap_width);
                 for wline in wrapped {
-                    if link_line.is_none()
+                    if anchored
+                        && link_line.is_none()
                         && needles
                             .iter()
                             .any(|n| !n.is_empty() && find_case_insensitive(&wline, n).is_some())
@@ -866,34 +951,34 @@ impl QueryPanel {
 
             // Anchor scroll: show the link with context above. If the content
             // from the link to the end fits within the viewport, scroll back
-            // further to fill the available space.
+            // further to fill the available space. A user-owned offset is
+            // left where it is (anchor_to is a no-op), just clamped by
+            // set_max.
             let viewport = area.height as usize;
             let total = lines.len();
-            self.content_scroll_max = total.saturating_sub(viewport);
-            if self.context_autoscroll {
-                let link_pos = link_line.unwrap_or(0);
-                let lines_after_link = total.saturating_sub(link_pos);
-                self.content_scroll = if lines_after_link <= viewport {
-                    // Content from link to end fits — scroll back to fill the
-                    // viewport.
-                    self.content_scroll_max
-                } else {
-                    // More content below the link — show 2 lines of context
-                    // above.
-                    link_pos.saturating_sub(2)
-                };
-            }
-            // User-driven (wheel) scroll increments freely; clamp here.
-            self.content_scroll = self.content_scroll.min(self.content_scroll_max);
+            self.scroll.set_max(total.saturating_sub(viewport));
+            let link_pos = link_line.unwrap_or(0);
+            let lines_after_link = total.saturating_sub(link_pos);
+            self.scroll.anchor_to(if lines_after_link <= viewport {
+                // Content from link to end fits — scroll back to fill the
+                // viewport.
+                self.scroll.max
+            } else {
+                // More content below the link — show 2 lines of context
+                // above.
+                link_pos.saturating_sub(2)
+            });
 
             f.render_widget(
                 Paragraph::new(lines)
-                    .scroll((self.content_scroll as u16, 0))
+                    .scroll((self.scroll.offset as u16, 0))
                     .style(Style::default().bg(bg)),
                 area,
             );
-            // Record the preview's screen area for the wheel hit-test.
-            self.preview_rect = area;
+            // The preview is the engine's content sub-region: wheel events
+            // inside it come back as ContentScroll* instead of moving the
+            // list.
+            self.list.set_content_rect(area);
         }
 
         self.list.render_autocomplete(f, rect, theme);
@@ -1481,17 +1566,17 @@ mod tests {
         // Open the half-height Context preview and render once to record the
         // list/preview rects.
         panel.toggle_expand();
-        assert_eq!(panel.expand as u8, ExpandState::Context as u8);
+        assert!(panel.expand == ExpandState::Context);
         let theme = crate::settings::themes::Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
         terminal
             .draw(|f| panel.render(f, f.area(), &theme, true))
             .unwrap();
-        assert!(!panel.preview_rect.is_empty(), "preview rect recorded");
-        assert_eq!(panel.content_scroll, 0, "auto-anchor at the top needle");
-        assert!(panel.content_scroll_max > 0, "content overflows viewport");
+        let preview = panel.list.content_rect();
+        assert!(!preview.is_empty(), "preview rect recorded");
+        assert_eq!(panel.scroll.offset, 0, "auto-anchor at the top needle");
+        assert!(panel.scroll.max > 0, "content overflows viewport");
 
-        let preview = panel.preview_rect;
         let wheel = move |y: u16| MouseEvent {
             kind: MouseEventKind::ScrollDown,
             column: preview.x + 1,
@@ -1502,20 +1587,20 @@ mod tests {
         // Wheel over the LIST area: list scroll path, preview untouched.
         let over_list = wheel(preview.y.saturating_sub(3));
         panel.handle_mouse(&over_list, &tx);
-        assert_eq!(panel.content_scroll, 0, "list wheel must not move preview");
-        assert!(panel.context_autoscroll, "anchor stays armed");
+        assert_eq!(panel.scroll.offset, 0, "list wheel must not move preview");
+        assert!(panel.scroll.anchored, "anchor stays armed");
 
         // Wheel over the PREVIEW area: preview scrolls, anchor hands over.
         let over_preview = wheel(preview.y + 1);
         panel.handle_mouse(&over_preview, &tx);
-        assert_eq!(panel.content_scroll, 1, "preview wheel scrolls content");
-        assert!(!panel.context_autoscroll, "user owns the scroll now");
+        assert_eq!(panel.scroll.offset, 1, "preview wheel scrolls content");
+        assert!(!panel.scroll.anchored, "user owns the scroll now");
 
         // Re-render keeps the user position (no re-anchor) and clamps.
         terminal
             .draw(|f| panel.render(f, f.area(), &theme, true))
             .unwrap();
-        assert_eq!(panel.content_scroll, 1);
+        assert_eq!(panel.scroll.offset, 1);
 
         // Scrolling up past the top saturates at 0.
         let up = MouseEvent {
@@ -1526,7 +1611,188 @@ mod tests {
         };
         panel.handle_mouse(&up, &tx);
         panel.handle_mouse(&up, &tx);
-        assert_eq!(panel.content_scroll, 0);
+        assert_eq!(panel.scroll.offset, 0);
+    }
+
+    /// A wheel tick that cannot move the preview (content fits the viewport,
+    /// or already at the top) is a no-op and must NOT disarm the link
+    /// auto-anchor.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn noop_preview_wheel_keeps_autoscroll_armed() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+
+        let vault = crate::test_support::temp_vault("qp-noop-wheel").await;
+        vault.validate_and_init().await.unwrap();
+        // Short note: the preview content fits the half-height viewport.
+        vault
+            .create_note(&VaultPath::note_path_from("/short.md"), "#todo only line")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("#todo".to_string());
+        settle(&mut panel).await;
+        panel.toggle_expand();
+        let theme = crate::settings::themes::Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
+        terminal
+            .draw(|f| panel.render(f, f.area(), &theme, true))
+            .unwrap();
+        assert_eq!(panel.scroll.max, 0, "content fits the viewport");
+
+        let preview = panel.list.content_rect();
+        let down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: preview.x + 1,
+            row: preview.y + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        panel.handle_mouse(&down, &tx);
+        assert!(
+            panel.scroll.anchored,
+            "no-op wheel tick must not disarm the auto-anchor"
+        );
+    }
+
+    /// Editing the query by keystroke moves the needle highlights, so a
+    /// wheel-scrolled Context preview hands the scroll back to the
+    /// auto-anchor.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn query_keystroke_rearms_preview_autoscroll() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let vault = crate::test_support::temp_vault("qp-rearm").await;
+        vault.validate_and_init().await.unwrap();
+        let mut body = String::from("#todo first line\n");
+        for i in 0..40 {
+            body.push_str(&format!("line {}\n", i));
+        }
+        vault
+            .create_note(&VaultPath::note_path_from("/long.md"), &body)
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("#todo".to_string());
+        settle(&mut panel).await;
+        panel.toggle_expand();
+        // Simulate a user-owned scroll.
+        panel.scroll.anchored = false;
+
+        panel.handle_key(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), &tx);
+        assert_eq!(panel.active_query(), "#todox");
+        assert!(
+            panel.scroll.anchored,
+            "a query edit must re-arm the preview auto-anchor"
+        );
+    }
+
+    /// A wheel over the Context preview consumes the event without reaching
+    /// the engine, but must still dismiss an open autocomplete popup (the
+    /// any-mouse-interaction-dismisses rule).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn preview_wheel_closes_autocomplete_popup() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{
+            KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+        };
+
+        let vault = crate::test_support::temp_vault("qp-wheel-popup").await;
+        vault.validate_and_init().await.unwrap();
+        let mut body = String::from("#todo first line\n");
+        for i in 0..40 {
+            body.push_str(&format!("line {}\n", i));
+        }
+        vault
+            .create_note(&VaultPath::note_path_from("/long.md"), &body)
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("#todo".to_string());
+        settle(&mut panel).await;
+        panel.toggle_expand();
+        let theme = crate::settings::themes::Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
+        terminal
+            .draw(|f| panel.render(f, f.area(), &theme, true))
+            .unwrap();
+        let preview = panel.list.content_rect();
+        assert!(!preview.is_empty());
+
+        // Type ` #` to open the hashtag autocomplete popup (the note's #todo
+        // tag is a suggestion), draining the async suggestion load.
+        for ch in [' ', '#'] {
+            panel.handle_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &tx);
+            for _ in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                panel.list.poll();
+            }
+        }
+        assert!(panel.list.autocomplete_is_open(), "popup open after `#`");
+
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: preview.x + 1,
+            row: preview.y + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        panel.handle_mouse(&wheel, &tx);
+        assert!(
+            !panel.list.autocomplete_is_open(),
+            "wheel over the preview must dismiss the popup"
+        );
+    }
+
+    /// In full-expand, a click on the fixed title header collapses the view
+    /// (mirroring Enter); clicks elsewhere are swallowed (the list under the
+    /// content is not rendered).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn full_expand_header_click_collapses() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let vault = crate::test_support::temp_vault("qp-header-click").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/long.md"), "#todo body")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        panel.set_active_query("#todo".to_string());
+        settle(&mut panel).await;
+        // Collapsed -> Context -> Full.
+        panel.toggle_expand();
+        panel.toggle_expand();
+        assert!(panel.is_full_expanded());
+        let theme = crate::settings::themes::Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
+        terminal
+            .draw(|f| panel.render(f, f.area(), &theme, true))
+            .unwrap();
+        let header = panel.full_header_rect;
+        assert!(!header.is_empty(), "header rect recorded in full mode");
+
+        let click = |x: u16, y: u16| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // A click below the header (over the content) is swallowed.
+        panel.handle_mouse(&click(header.x + 1, header.y + 3), &tx);
+        assert!(panel.is_full_expanded(), "content click must not collapse");
+
+        // A click on the header collapses, like Enter.
+        panel.handle_mouse(&click(header.x + 1, header.y), &tx);
+        assert!(!panel.is_full_expanded());
+        assert!(panel.expand == ExpandState::Collapsed);
     }
 
     /// A static query (no `{note}`) must survive navigation: `set_note` leaves
