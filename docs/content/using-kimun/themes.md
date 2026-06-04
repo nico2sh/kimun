@@ -20,6 +20,17 @@ The following themes are included out of the box:
 - **Solarized Dark**
 - **Solarized Light**
 - **Nord**
+- **Dracula**
+- **Alucard** — Dracula's official light variant
+- **One Dark**
+- **One Light**
+- **Monokai**
+- **Everforest Dark**
+- **Everforest Light**
+- **Rosé Pine**
+- **Rosé Pine Dawn** — Rosé Pine's light variant
+- **Kanagawa Wave**
+- **Kanagawa Lotus** — Kanagawa's light variant
 - **ANSI** — adapts to your terminal's configured 16-color palette (works for both light and dark terminal themes)
 
 Switch between them via the Settings screen in the TUI, or by setting the `theme` field in your config file:
@@ -98,24 +109,24 @@ The name must match the `name` field in your `.toml` file exactly.
 
 If you save a file named `default.toml` in the themes directory, it will be loaded as an additional theme option. It does not replace the built-in default — to make it the active theme, set it in `[global]` as shown above.
 
-## Example: Rosé Pine Theme
+## Example: Ayu Dark Theme
 
 ```toml
-name = "Rosé Pine"
+name = "Ayu Dark"
 
-bg               = "#191724"
-bg_panel         = "#1f1d2e"
-bg_selected      = "#403d52"
-fg               = "#e0def4"
-fg_secondary     = "#908caa"
-fg_muted         = "#6e6a86"
-fg_selected      = "#e0def4"
-border           = "#403d52"
-border_focused   = "#c4a7e7"
-accent           = "#c4a7e7"
-color_directory    = "#9ccfd8"
-color_journal_date = "#31748f"
-color_search_match = "#f6c177"
+bg               = "#0a0e14"
+bg_panel         = "#0d1017"
+bg_selected      = "#273747"
+fg               = "#b3b1ad"
+fg_secondary     = "#6c7380"
+fg_muted         = "#4d5566"
+fg_selected      = "#b3b1ad"
+border           = "#11151c"
+border_focused   = "#e6b450"
+accent           = "#e6b450"
+color_directory    = "#39bae6"
+color_journal_date = "#95e6cb"
+color_search_match = "#c2d94c"
 ```
 
-Save this as `~/.config/kimun/themes/rose-pine.toml` and set `theme = "Rosé Pine"` in your config.
+Save this as `~/.config/kimun/themes/ayu-dark.toml` and set `theme = "Ayu Dark"` in your config.
