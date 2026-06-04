@@ -362,6 +362,8 @@ impl Overlay for NoteBrowserModal {
         f.render_widget(list_block, columns[0]);
         self.list.render(f, list_inner, theme, false);
         self.list.set_list_rect(list_inner);
+        // The whole popup is wheel-scrollable (search box and preview included).
+        self.list.set_panel_rect(popup_rect);
 
         // Authoritative preview trigger: `list.render` just polled, which is
         // where an async server-side reload lands and may auto-select a new
