@@ -174,8 +174,14 @@ pub struct SettingsScreen {
 impl SettingsScreen {
     pub fn new(settings: SharedSettings) -> Self {
         let s = settings.read().unwrap();
-        let theme = s.get_theme();
+        // Build the theme list once and resolve the active theme from it;
+        // `get_theme()` would rebuild the entire list (plus disk IO) again.
         let themes = s.theme_list();
+        let theme = themes
+            .iter()
+            .find(|t| t.name == s.theme)
+            .cloned()
+            .unwrap_or_default();
         let active_name = theme.name.clone();
         let vault_available = s.workspace_dir.is_some()
             || s.workspace_config
@@ -552,13 +558,15 @@ impl AppScreen for SettingsScreen {
                     match self.section {
                         SettingsSection::Appearance => {
                             let r = self.appearance_section.handle_input(&app_event, tx);
-                            // Live theme preview on every navigation step.
-                            let name = self.appearance_section.selected_theme_name().to_string();
-                            {
-                                let mut s = self.settings.write().unwrap();
-                                s.set_theme(name);
+                            // Live theme preview on every navigation step. Take the
+                            // theme straight from the section's already-loaded list:
+                            // `get_theme()` would re-read custom themes from disk and
+                            // rebuild every built-in on each keypress.
+                            if r.is_consumed() {
+                                let theme = self.appearance_section.selected_theme().clone();
+                                self.settings.write().unwrap().set_theme(theme.name.clone());
+                                self.theme = theme;
                             }
-                            self.theme = self.settings.read().unwrap().get_theme();
                             r
                         }
                         SettingsSection::Display => {
