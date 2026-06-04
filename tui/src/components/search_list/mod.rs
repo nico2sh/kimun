@@ -579,8 +579,11 @@ impl<R: SearchRow> SearchList<R> {
         self.content_rect = rect;
     }
 
-    /// The recorded content sub-region (empty when none is on screen).
-    pub fn content_rect(&self) -> Rect {
+    /// Test-only: the recorded content sub-region (empty when none is on
+    /// screen), so host tests can hit-test against where the preview was
+    /// drawn.
+    #[cfg(test)]
+    pub(crate) fn content_rect(&self) -> Rect {
         self.content_rect
     }
 
@@ -609,8 +612,10 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
-    /// True when the autocomplete popup is open.
-    pub fn autocomplete_is_open(&self) -> bool {
+    /// Test-only: true when the autocomplete popup is open, so host tests
+    /// can assert the any-mouse-interaction-dismisses rule.
+    #[cfg(test)]
+    pub(crate) fn autocomplete_is_open(&self) -> bool {
         self.autocomplete.as_ref().is_some_and(|ac| ac.is_open())
     }
 

@@ -455,14 +455,22 @@ impl QueryPanel {
         self.list.selected_row().map(|e| &e.path)
     }
 
+    /// Drop the engine's content sub-region and the full-expand header rect.
+    /// Every path that changes the expand state calls this: the recorded
+    /// regions describe the PREVIOUS frame's content view, and the event
+    /// loop drains queued events between renders — a mouse event arriving in
+    /// the same batch as the state change must not be routed against a rect
+    /// that no longer matches what is on screen.
+    fn clear_content_regions(&mut self) {
+        self.list.set_content_rect(Rect::default());
+        self.full_header_rect = Rect::default();
+    }
+
     fn reset_expand(&mut self) {
         self.expand = ExpandState::Collapsed;
         self.expand_path = None;
         self.scroll.reset();
-        // No content view is on screen anymore; drop the engine's sub-region
-        // so a wheel arriving before the next render is not routed against a
-        // stale preview rect.
-        self.list.set_content_rect(Rect::default());
+        self.clear_content_regions();
     }
 
     /// Re-anchor the expand state on the currently-selected row. The Context
@@ -477,6 +485,7 @@ impl QueryPanel {
             }
             self.expand_path = sel;
             self.scroll.reset();
+            self.clear_content_regions();
         }
     }
 
@@ -604,35 +613,43 @@ impl QueryPanel {
         mouse: &ratatui::crossterm::event::MouseEvent,
         tx: &AppTx,
     ) -> EventState {
-        use ratatui::crossterm::event::MouseEventKind;
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        use ratatui::layout::Position;
         self.ensure_redraw_tx(tx);
+        // Read BEFORE the sync: a selection that vanished in this same event
+        // batch collapses the expand state, but the screen still shows the
+        // full view — the event must be handled against what the user saw,
+        // not let through to the engine's stale list rect.
+        let was_full = self.is_full_expanded();
         self.sync_expand_anchor();
         // In full-expand the list is not rendered (its recorded rect is
-        // stale, from the last non-full frame), so clicks must not reach the
-        // engine's hit-test — they would select/activate a phantom row under
-        // the content view. The wheel still goes through: the content rect
-        // covers the whole panel in full-expand.
-        if self.is_full_expanded()
-            && !matches!(
-                mouse.kind,
-                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-            )
-        {
-            use ratatui::crossterm::event::MouseButton;
-            use ratatui::layout::Position;
-            // These events never reach the engine, so keep the
-            // any-mouse-interaction-dismisses-autocomplete rule here.
-            self.list.close_autocomplete();
-            // A click on the header collapses the view, mirroring Enter.
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-                && self.full_header_rect.contains(Position {
-                    x: mouse.column,
-                    y: mouse.row,
-                })
-            {
-                self.toggle_expand();
+        // stale, from the last non-full frame), so only the wheel may reach
+        // the engine — it routes via the content rect, which covers the
+        // whole panel in full-expand. Everything else is the panel's;
+        // closing the popup here keeps the any-mouse-interaction-dismisses
+        // rule for events the engine never sees.
+        if was_full {
+            match mouse.kind {
+                // Fall through to the engine below.
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {}
+                // A click on the header collapses the view, mirroring Enter.
+                // (A sync collapse above already cleared the header rect, so
+                // this cannot toggle a no-longer-full view.)
+                MouseEventKind::Down(MouseButton::Left)
+                    if self.full_header_rect.contains(Position {
+                        x: mouse.column,
+                        y: mouse.row,
+                    }) =>
+                {
+                    self.list.close_autocomplete();
+                    self.toggle_expand();
+                    return EventState::Consumed;
+                }
+                _ => {
+                    self.list.close_autocomplete();
+                    return EventState::Consumed;
+                }
             }
-            return EventState::Consumed;
         }
         match self.list.handle_mouse(mouse) {
             SearchMouse::ContentScrollUp => {
@@ -682,6 +699,7 @@ impl QueryPanel {
                 self.expand = ExpandState::Collapsed;
             }
         }
+        self.clear_content_regions();
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
@@ -1793,6 +1811,49 @@ mod tests {
         panel.handle_mouse(&click(header.x + 1, header.y), &tx);
         assert!(!panel.is_full_expanded());
         assert!(panel.expand == ExpandState::Collapsed);
+    }
+
+    /// Every expand-state change must drop the recorded content regions: the
+    /// event loop drains queued events between renders, so a mouse event in
+    /// the same batch as the toggle must not be routed against rects from
+    /// the previous frame's content view.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn toggling_expand_clears_stale_content_regions() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let vault = crate::test_support::temp_vault("qp-stale-regions").await;
+        vault.validate_and_init().await.unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/long.md"), "#todo body")
+            .await
+            .unwrap();
+        let mut panel = make_panel(vault);
+        panel.set_active_query("#todo".to_string());
+        settle(&mut panel).await;
+        let theme = crate::settings::themes::Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 30)).unwrap();
+
+        // Render in Full so both regions are recorded.
+        panel.toggle_expand();
+        panel.toggle_expand();
+        terminal
+            .draw(|f| panel.render(f, f.area(), &theme, true))
+            .unwrap();
+        assert!(!panel.list.content_rect().is_empty());
+        assert!(!panel.full_header_rect.is_empty());
+
+        // Toggle (Full -> Collapsed) WITHOUT a render in between — as when
+        // Enter and a mouse event are drained in the same batch.
+        panel.toggle_expand();
+        assert!(
+            panel.list.content_rect().is_empty(),
+            "stale content rect must not survive a state change"
+        );
+        assert!(
+            panel.full_header_rect.is_empty(),
+            "stale header rect must not survive a state change"
+        );
     }
 
     /// A static query (no `{note}`) must survive navigation: `set_note` leaves
