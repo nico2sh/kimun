@@ -159,9 +159,9 @@ impl crate::components::Component for SortDialog {
 
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
-        let fg_sel = theme.fg_selected.to_ratatui();
-        let bg_sel = theme.bg_selected.to_ratatui();
+        let gray = theme.gray.to_ratatui();
+        let fg_sel = theme.selection_fg.to_ratatui();
+        let bg_sel = theme.selection_bg.to_ratatui();
 
         for (i, &row) in self.rows.iter().enumerate() {
             let y = body.y + i as u16;
@@ -196,7 +196,7 @@ impl crate::components::Component for SortDialog {
             "  [↑↓] Move  [Space] Toggle  [Enter/Esc] Close"
         };
         f.render_widget(
-            Paragraph::new(footer).style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new(footer).style(Style::default().fg(gray).bg(bg)),
             footer_area,
         );
     }

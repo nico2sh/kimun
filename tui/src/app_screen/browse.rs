@@ -84,7 +84,7 @@ impl AppScreen for BrowseScreen {
             )
             .style(
                 Style::default()
-                    .fg(self.theme.fg_muted.to_ratatui())
+                    .fg(self.theme.gray.to_ratatui())
                     .bg(self.theme.bg.to_ratatui()),
             ),
             rows[1],

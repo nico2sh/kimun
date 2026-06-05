@@ -79,8 +79,8 @@ impl Component for ThemePicker {
             .style(theme.base_style())
             .highlight_style(
                 ratatui::style::Style::default()
-                    .fg(theme.fg_selected.to_ratatui())
-                    .bg(theme.bg_selected.to_ratatui()),
+                    .fg(theme.selection_fg.to_ratatui())
+                    .bg(theme.selection_bg.to_ratatui()),
             );
         f.render_stateful_widget(list, rect, &mut self.list_state);
     }

@@ -870,7 +870,7 @@ impl AppScreen for EditorScreen {
         let header = Block::default()
             .title("Kimün")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.to_ratatui()))
+            .border_style(Style::default().fg(theme.border_dim.to_ratatui()))
             .style(theme.base_style())
             .title_style(Style::default().fg(theme.accent.to_ratatui()));
         let header_inner = header.inner(rows[0]);
@@ -892,7 +892,7 @@ impl AppScreen for EditorScreen {
         f.render_widget(
             Paragraph::new(workspace_label)
                 .alignment(ratatui::layout::Alignment::Right)
-                .style(Style::default().fg(theme.fg_muted.to_ratatui())),
+                .style(Style::default().fg(theme.gray.to_ratatui())),
             header_cols[1],
         );
 

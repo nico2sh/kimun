@@ -538,7 +538,7 @@ impl<R: SearchRow> SearchList<R> {
         let mut state = ListState::default().with_offset(self.offset);
         state.select(self.selected);
         let list =
-            List::new(items).highlight_style(Style::default().bg(theme.bg_selected.to_ratatui()));
+            List::new(items).highlight_style(Style::default().bg(theme.selection_bg.to_ratatui()));
         f.render_stateful_widget(list, area, &mut state);
         // Read the offset back: ratatui clamps it and keeps the selection in
         // view (keyboard moves included), so the stored offset always matches

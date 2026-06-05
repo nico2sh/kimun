@@ -153,7 +153,7 @@ pub fn render(frame: &mut Frame, state: &AutocompleteState, screen: Rect, theme:
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border_focused.to_ratatui()))
+        .border_style(Style::default().fg(theme.focus_border.to_ratatui()))
         .style(theme.panel_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -223,14 +223,14 @@ fn build_row<'a>(
 
     let row_style = if is_highlighted {
         Style::default()
-            .bg(theme.bg_selected.to_ratatui())
-            .fg(theme.fg_selected.to_ratatui())
+            .bg(theme.selection_bg.to_ratatui())
+            .fg(theme.selection_fg.to_ratatui())
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.fg.to_ratatui())
     };
     let secondary_style = Style::default()
-        .fg(theme.fg_muted.to_ratatui())
+        .fg(theme.gray.to_ratatui())
         .add_modifier(Modifier::DIM);
 
     let primary_len = item.display.width();

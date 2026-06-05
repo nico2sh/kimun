@@ -131,13 +131,13 @@ impl SaveSearchDialog {
         f.render_widget(Clear, popup_area);
 
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
+        let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
         let outer_block = Block::default()
             .title(" Save search ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(fg_muted))
+            .border_style(Style::default().fg(gray))
             .style(theme.panel_style());
         let inner = outer_block.inner(popup_area);
         f.render_widget(outer_block, popup_area);
@@ -158,17 +158,17 @@ impl SaveSearchDialog {
         // Row 1: read-only query context in muted style.
         f.render_widget(
             Paragraph::new(format!("  Query: {}", self.query))
-                .style(Style::default().fg(fg_muted).bg(bg)),
+                .style(Style::default().fg(gray).bg(bg)),
             rows[1],
         );
 
-        super::render_separator(f, rows[2], fg_muted, bg);
+        super::render_separator(f, rows[2], gray, bg);
 
         // Row 3: name input with a "Name: " prefix.
         let prefix = "  Name: ";
         let prefix_len = prefix.len() as u16;
         f.render_widget(
-            Paragraph::new(prefix).style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new(prefix).style(Style::default().fg(gray).bg(bg)),
             rows[3],
         );
         self.name
@@ -183,18 +183,14 @@ impl SaveSearchDialog {
             SaveHint::SaveNewAsQuery(query) => (format!("Save new: '{query}'"), false, false),
             SaveHint::Pending => ("Save".to_string(), false, true),
         };
-        let enter_fg = if warn {
-            ratatui::style::Color::Yellow
-        } else {
-            fg
-        };
+        let enter_fg = if warn { theme.yellow.to_ratatui() } else { fg };
         super::render_confirm_hint(
             f,
             rows[5],
             &format!("  [Enter] {action}"),
             !pending,
             enter_fg,
-            fg_muted,
+            gray,
             bg,
         );
     }

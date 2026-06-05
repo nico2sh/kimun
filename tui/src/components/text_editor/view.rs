@@ -1170,11 +1170,11 @@ fn byte_offset_for_display_width(s: &str, target_width: usize) -> usize {
     s.len()
 }
 
-/// Re-style spans to apply `bg_selected` over the given rendered-column range.
+/// Re-style spans to apply `selection_bg` over the given rendered-column range.
 ///
 /// `sel_cols` is a range of rendered (screen) column offsets within the visual line.
 /// Spans that overlap the range are split at the boundaries; the overlapping portion
-/// receives `.bg(theme.bg_selected)`. Non-overlapping portions keep their original style.
+/// receives `.bg(theme.selection_bg)`. Non-overlapping portions keep their original style.
 fn apply_selection_highlight<'a>(
     spans: Vec<ratatui::text::Span<'a>>,
     sel_cols: std::ops::Range<usize>,
@@ -1184,7 +1184,7 @@ fn apply_selection_highlight<'a>(
         return spans;
     }
 
-    let highlight_bg = theme.bg_selected.to_ratatui();
+    let highlight_bg = theme.selection_bg.to_ratatui();
     let mut result = Vec::new();
     let mut col = 0usize;
 

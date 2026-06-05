@@ -113,14 +113,14 @@ impl Component for FileOpsMenuDialog {
 
         let bg = theme.bg_panel.to_ratatui();
         let fg = theme.fg.to_ratatui();
-        let fg_muted = theme.fg_muted.to_ratatui();
-        let fg_accent = theme.fg_selected.to_ratatui();
+        let gray = theme.gray.to_ratatui();
+        let fg_accent = theme.selection_fg.to_ratatui();
 
         // Row 1: path
         super::render_path_row(f, rows[1], &self.path_display, fg, bg);
 
         // Row 2: separator
-        super::render_separator(f, rows[2], fg_muted, bg);
+        super::render_separator(f, rows[2], gray, bg);
 
         // Row 3: action shortcuts — key letter highlighted, description muted
         //
@@ -160,7 +160,7 @@ impl Component for FileOpsMenuDialog {
 
         // Row 5: hint
         f.render_widget(
-            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(fg_muted).bg(bg)),
+            Paragraph::new("  [Esc] Cancel").style(Style::default().fg(gray).bg(bg)),
             rows[5],
         );
     }

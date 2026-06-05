@@ -400,7 +400,7 @@ impl Component for SidebarComponent {
         f.render_widget(
             Paragraph::new(format!("{} notes", self.note_count())).style(
                 Style::default()
-                    .fg(theme.fg_muted.to_ratatui())
+                    .fg(theme.gray.to_ratatui())
                     .bg(theme.bg_panel.to_ratatui()),
             ),
             header_inner,
