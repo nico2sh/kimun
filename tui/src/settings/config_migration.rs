@@ -561,7 +561,10 @@ mod tests {
 
         ConfigMigration::run(&mut settings).unwrap();
         let map = settings.key_bindings.to_hashmap();
-        assert_eq!(map.get(&ActionShortcuts::OpenPreferences), Some(&vec![ctrl_x]));
+        assert_eq!(
+            map.get(&ActionShortcuts::OpenPreferences),
+            Some(&vec![ctrl_x])
+        );
     }
 
     #[test]

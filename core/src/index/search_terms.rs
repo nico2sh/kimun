@@ -537,7 +537,6 @@ fn dedup_preserving_order(v: &mut Vec<String>) {
     v.retain(|x| seen.insert(x.clone()));
 }
 
-
 // ---------------------------------------------------------------------------
 // Query lexer — token spans for presentation (syntax highlighting)
 // ---------------------------------------------------------------------------
@@ -744,7 +743,6 @@ pub fn query_has_unterminated_quote(query: &str) -> bool {
         .last()
         .is_some_and(|s| s.class == QueryTokenClass::Unterminated)
 }
-
 
 #[cfg(test)]
 mod lexer_tests {
