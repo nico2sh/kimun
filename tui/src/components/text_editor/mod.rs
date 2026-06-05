@@ -679,6 +679,19 @@ impl TextEditorComponent {
         snapshot_from_backend(&self.backend, self.content_revision)
     }
 
+    /// The cursor's (row, col) without materialising a snapshot — the Nvim
+    /// path of `view_snapshot` clones every buffer line, far too heavy for
+    /// per-frame consumers that only want the position (status-bar ln/col).
+    pub fn cursor_pos(&self) -> (usize, usize) {
+        match &self.backend {
+            BackendState::Textarea(ta) => cursor_tuple(ta),
+            BackendState::Nvim(nvim) => {
+                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                snap.cursor
+            }
+        }
+    }
+
     /// Set the search needles to emphasize in the rendered buffer (the note
     /// was opened from a query result). Cleared automatically on the first
     /// edit.
@@ -1825,6 +1838,12 @@ impl TextEditorComponent {
         {
             self.wants_context_menu = true;
             return EventState::Consumed;
+        }
+        // Everything below drives the textarea backend directly; on Nvim the
+        // terminal/nvim own the mouse (only the context-menu ask above is
+        // backend-independent).
+        if !matches!(&self.backend, BackendState::Textarea(_)) {
+            return EventState::NotConsumed;
         }
         // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {

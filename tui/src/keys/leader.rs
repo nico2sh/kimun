@@ -469,6 +469,14 @@ fn insert_at(node: &mut LeaderNode, keys: &[char], action: LeaderAction) {
             action,
         };
         if let Some((_, child)) = children.iter_mut().find(|(k, _)| *k == head) {
+            if matches!(child, LeaderNode::Group { .. }) {
+                // Loud: a one-key override replacing a whole group is more
+                // often a typo (`"f"` for `"f f"`) than an intent.
+                tracing::warn!(
+                    "[leader.bind] key {head:?} replaces an entire group with \
+                     a single action — its sub-bindings are gone"
+                );
+            }
             *child = leaf;
         } else {
             children.push((head, leaf));
@@ -762,6 +770,31 @@ mod tests {
         let note = tree.children().iter().find(|(k, _)| *k == 'n').unwrap();
         let nn = note.1.children().iter().find(|(k, _)| *k == 'n').unwrap();
         assert_eq!(nn.1.label(), "new");
+    }
+
+    /// Every action reachable through the default tree must resolve through
+    /// `from_id` — catches a new leaf variant missing its `ALL` entry, which
+    /// would silently break `[leader.bind]` overrides for it.
+    #[test]
+    fn every_tree_leaf_is_id_addressable() {
+        fn walk(node: &LeaderNode, out: &mut Vec<LeaderAction>) {
+            for (_, child) in node.children() {
+                match child {
+                    LeaderNode::Leaf { action, .. } => out.push(*action),
+                    LeaderNode::Group { .. } => walk(child, out),
+                }
+            }
+        }
+        let mut leaves = Vec::new();
+        walk(&leader_tree(), &mut leaves);
+        for action in leaves {
+            assert_eq!(
+                LeaderAction::from_id(action.id()),
+                Some(action),
+                "{action:?} (id {:?}) missing from LeaderAction::ALL",
+                action.id()
+            );
+        }
     }
 
     #[test]

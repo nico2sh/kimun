@@ -587,6 +587,12 @@ fn highlight_matches<'a>(
             if start < pos {
                 continue; // overlapping with a previous needle — skip
             }
+            // Length-preserving case folds can still SHIFT char boundaries
+            // (e.g. İ + ẞ); offsets from the lowered line must land on real
+            // boundaries of the original or the slice would panic.
+            if !line.is_char_boundary(start) || !line.is_char_boundary(end) {
+                continue;
+            }
             if start > pos {
                 spans.push(Span::styled(&line[pos..start], base));
             }

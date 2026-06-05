@@ -64,6 +64,10 @@ pub struct EditorScreen {
     /// When the last git fetch was spawned — throttles the per-event
     /// subprocess (rapid navigation must not fork one `git status` per note).
     last_git_fetch: Option<std::time::Instant>,
+    /// Set once a fetch reports "no repo / no git": stop forking doomed
+    /// subprocesses for the rest of this screen's life (a workspace switch
+    /// rebuilds the screen and probes again).
+    git_unavailable: bool,
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
     /// Link-under-cursor affordance cache: `(target, backlink count once
@@ -119,6 +123,7 @@ impl EditorScreen {
             backlink_count: None,
             git_status: None,
             last_git_fetch: None,
+            git_unavailable: false,
             leader: leader_engine,
             link_meta: None,
             app_tx: None,
@@ -897,17 +902,20 @@ impl EditorScreen {
             // +vault
             LeaderAction::VaultSwitch => self.open_workspace_switcher(),
             LeaderAction::VaultReindex => {
-                self.footer.flash(
-                    {
-                        let s = self.settings.read().unwrap();
-                        let key = s
-                            .key_bindings
-                            .first_combo_for(&ActionShortcuts::OpenSettings)
-                            .unwrap_or_else(|| "OpenSettings".to_string());
-                        format!("reindex lives in Settings ({key})")
-                    },
-                    tx,
-                );
+                // Fast reindex right here — the same pipeline the Settings
+                // screen runs, result surfaced as a footer flash.
+                let vault = self.vault.clone();
+                let tx2 = tx.clone();
+                self.footer.flash("reindexing…".to_string(), tx);
+                tokio::spawn(async move {
+                    let started = std::time::Instant::now();
+                    let result = vault.index_notes(kimun_core::NotesValidation::Fast).await;
+                    let msg = match result {
+                        Ok(_) => format!("reindexed in {:.1?}", started.elapsed()),
+                        Err(e) => format!("reindex failed: {e}"),
+                    };
+                    tx2.send(AppEvent::FlashMessage(msg)).ok();
+                });
             }
             // `v c` opens the config panel (the CFG drawer); `v t` opens the
             // theme picker directly (also reachable inside CFG via `t`).
@@ -983,6 +991,9 @@ impl EditorScreen {
     /// otherwise fork a whole-tree `git status` per note open.
     fn refresh_git_status(&mut self, tx: &AppTx) {
         const GIT_FETCH_MIN_INTERVAL: Duration = Duration::from_secs(2);
+        if self.git_unavailable {
+            return;
+        }
         let now = std::time::Instant::now();
         if self
             .last_git_fetch
@@ -1501,7 +1512,7 @@ impl AppScreen for EditorScreen {
         // ln/col only when the editor buffer holds the cursor.
         let ln_col =
             (self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()).then(|| {
-                let (row, col) = self.panels.editor().view_snapshot().cursor;
+                let (row, col) = self.panels.editor().cursor_pos();
                 (row + 1, col + 1)
             });
         // Match count when the FIND drawer is the focused query context.
@@ -1586,8 +1597,18 @@ impl AppScreen for EditorScreen {
             AppEvent::BacklinkCountLoaded { path, count } if path == self.path => {
                 self.backlink_count = Some(count);
             }
+            AppEvent::FlashMessage(msg) => {
+                self.footer.flash(msg, tx);
+            }
             AppEvent::GitStatusLoaded(status) => {
-                self.git_status = status;
+                match (&self.git_status, status) {
+                    // First-ever None → not a repo (or no git): stop probing.
+                    (None, None) => self.git_unavailable = true,
+                    // Had a value, fetch failed (index.lock contention, …):
+                    // keep showing the last known state.
+                    (Some(_), None) => {}
+                    (_, some) => self.git_status = some,
+                }
             }
             AppEvent::SetEditorSearchNeedles(needles) => {
                 // Applied after the upcoming OpenPath loads the buffer —
@@ -1610,9 +1631,6 @@ impl AppScreen for EditorScreen {
                 } else {
                     self.execute_leader_action(action, tx);
                 }
-            }
-            AppEvent::OpenThemePicker => {
-                self.open_theme_picker();
             }
             AppEvent::ApplyTheme { theme, persist } => {
                 // The picker resolved the theme already — no disk re-read,

@@ -290,14 +290,13 @@ impl PanelSet {
     /// Grow/shrink the drawer by `delta` columns (leader window commands),
     /// clamped to the same bounds the divider drag enforces.
     pub fn adjust_drawer_width(&mut self, delta: i16) {
+        // Before the first render there are no rects to clamp against —
+        // skip rather than allow an unbounded grow.
+        let Some(right) = self.column_rects.iter().map(|(_, r)| r.right()).max() else {
+            return;
+        };
         let new = self.drawer_width.saturating_add_signed(delta);
-        let max_width = self
-            .column_rects
-            .iter()
-            .map(|(_, r)| r.right())
-            .max()
-            .map(|right| right.saturating_sub(RAIL_WIDTH + MIN_EDITOR_WIDTH))
-            .unwrap_or(u16::MAX);
+        let max_width = right.saturating_sub(RAIL_WIDTH + MIN_EDITOR_WIDTH);
         self.drawer_width = new.clamp(MIN_DRAWER_WIDTH, max_width.max(MIN_DRAWER_WIDTH));
     }
 

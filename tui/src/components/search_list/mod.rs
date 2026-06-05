@@ -110,6 +110,10 @@ pub struct SearchList<R: SearchRow> {
     /// for the host to pin as the saved-search breadcrumb. Read once via
     /// [`take_accepted_saved_search`](Self::take_accepted_saved_search).
     accepted_saved_search: Option<String>,
+    /// Visible position of the last left-click, so "click the selected row
+    /// again activates" only fires on a true click-click — never on a click
+    /// landing on an auto- or keyboard-made selection.
+    last_click_pos: Option<usize>,
     /// Render the query input with §9 syntax highlighting (the FIND drawer
     /// and the telescope modal; plain inputs like the sidebar filter skip it).
     highlight_query: bool,
@@ -194,6 +198,7 @@ impl<R: SearchRow> SearchList<R> {
             loader,
             input,
             highlight_query: b.highlight_query,
+            last_click_pos: None,
             autocomplete,
             intercept: b.intercept,
             icons: b.icons,
@@ -704,10 +709,13 @@ impl<R: SearchRow> SearchList<R> {
                 }
                 if let Some(pos) = hit {
                     let prev = self.selected;
+                    let prev_click = self.last_click_pos.replace(pos);
                     self.selected = Some(pos);
                     return if right_click {
                         SearchMouse::Context(pos)
-                    } else if prev == Some(pos) {
+                    } else if prev == Some(pos) && prev_click == Some(pos) {
+                        // Activate only on click-click: the row was already
+                        // selected BY A CLICK, not by auto-select or keys.
                         SearchMouse::Activated(pos)
                     } else {
                         SearchMouse::Selected(pos)

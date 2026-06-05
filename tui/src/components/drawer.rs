@@ -166,8 +166,10 @@ impl DrawerHost {
                     use ratatui::crossterm::event::KeyCode;
                     match key.code {
                         KeyCode::Char('t') | KeyCode::Enter => {
-                            tx.send(crate::components::events::AppEvent::OpenThemePicker)
-                                .ok();
+                            tx.send(crate::components::events::AppEvent::ExecuteLeaderAction(
+                                crate::keys::leader::LeaderAction::VaultTheme,
+                            ))
+                            .ok();
                             return EventState::Consumed;
                         }
                         KeyCode::Char('s') => {
