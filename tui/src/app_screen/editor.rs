@@ -305,7 +305,7 @@ impl EditorScreen {
                 }
                 self.panels.editor_mut().set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
-                if self.find_drawer_open() {
+                if self.drawer_open_on(DrawerView::Find) {
                     self.panels.query_mut().set_note(path.clone(), tx.clone());
                 }
                 // LINKS and OUTLINE reflect the open note; keep them in step.
@@ -340,7 +340,7 @@ impl EditorScreen {
         // create/rename/delete/move events, not on every note open.
         let note_parent = path.get_parent_path().0;
         if self.panels.sidebar().is_empty() {
-            self.navigate_sidebar(note_parent, tx).await;
+            self.navigate_sidebar(note_parent, tx);
         }
 
         // Abort any existing timer and spawn a fresh one for the new note.
@@ -348,11 +348,23 @@ impl EditorScreen {
         self.autosave.restart(interval, tx.clone());
     }
 
-    pub async fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
+    fn navigate_sidebar(&mut self, dir: VaultPath, tx: &AppTx) {
         // The sidebar hosts a streamed `SearchList`; (re)building its engine for
         // `dir` runs `browse_vault` inside the source and emits rows as they
         // arrive (with a redraw on each).
         self.panels.sidebar_mut().navigate(dir, tx);
+    }
+
+    /// Rebuild the sidebar listing only when it is currently showing `dir` —
+    /// used after entry create/rename/move ops so the change appears without
+    /// yanking the user away from an unrelated directory they browsed to.
+    /// Deliberately the inverse of `reveal_note_dir_in_sidebar`, which
+    /// navigates when the sidebar is NOT on the target dir.
+    fn refresh_sidebar_if_showing(&mut self, dir: &VaultPath, tx: &AppTx) {
+        if dir.is_like(self.panels.sidebar().current_dir()) {
+            let current = self.panels.sidebar().current_dir().clone();
+            self.navigate_sidebar(current, tx);
+        }
     }
 
     async fn try_save(&mut self) {
@@ -464,13 +476,8 @@ impl EditorScreen {
                 parent,
             )))
             .ok();
-        } else if from
-            .get_parent_path()
-            .0
-            .is_like(self.panels.sidebar().current_dir())
-        {
-            let dir = self.panels.sidebar().current_dir().clone();
-            self.navigate_sidebar(dir, tx).await;
+        } else {
+            self.refresh_sidebar_if_showing(&from.get_parent_path().0, tx);
         }
     }
 }
@@ -487,16 +494,9 @@ impl EditorScreen {
         self.panels.focus(PanelKind::Editor);
     }
 
-    /// Whether the drawer is open showing the FIND view (the Query panel).
-    fn find_drawer_open(&self) -> bool {
-        self.panels.is_visible(PanelKind::Drawer)
-            && self.panels.active_drawer_view() == DrawerView::Find
-    }
-
-    /// Whether the drawer is open showing the FILES view (the sidebar).
-    fn files_drawer_open(&self) -> bool {
-        self.panels.is_visible(PanelKind::Drawer)
-            && self.panels.active_drawer_view() == DrawerView::Files
+    /// Whether the drawer is open showing `view`.
+    fn drawer_open_on(&self, view: DrawerView) -> bool {
+        self.panels.is_visible(PanelKind::Drawer) && self.panels.active_drawer_view() == view
     }
 
     /// Point the sidebar at the current note's directory. Skips the engine
@@ -507,7 +507,7 @@ impl EditorScreen {
         if self.panels.sidebar().is_empty()
             || !note_parent.is_like(self.panels.sidebar().current_dir())
         {
-            self.panels.sidebar_mut().navigate(note_parent, tx);
+            self.navigate_sidebar(note_parent, tx);
         }
     }
 
@@ -517,27 +517,39 @@ impl EditorScreen {
     pub fn focus_sidebar(&mut self, tx: &AppTx) {
         if !self.panels.is_visible(PanelKind::Drawer) {
             // Routed through the host opener so the FILES view reveals the
-            // current note's directory like any other drawer open.
+            // current note's directory like any other drawer open (it also
+            // focuses the drawer).
             self.open_drawer_view(DrawerView::Files, tx);
+        } else {
+            self.panels.focus(PanelKind::Drawer);
         }
+    }
+
+    /// Switch the drawer to `view`, reveal it, and focus it. The per-view
+    /// reveal side effects live in `drawer_view_revealed` (the heavy work
+    /// that keeps the reveal in the host rather than in `PanelSet`).
+    fn open_drawer_view(&mut self, view: DrawerView, tx: &AppTx) {
+        let newly_shown = !self.drawer_open_on(view);
+        self.panels.open_drawer_view(view);
+        self.drawer_view_revealed(view, newly_shown, tx);
         self.panels.focus(PanelKind::Drawer);
     }
 
-    /// Switch the drawer to `view`, reveal it, and focus it. The FIND view,
-    /// when it becomes visible, loads the Query panel for the current note
-    /// (the heavy side effect that keeps the reveal in the host rather than
-    /// in `PanelSet`).
-    fn open_drawer_view(&mut self, view: DrawerView, tx: &AppTx) {
-        let find_newly_shown = view == DrawerView::Find && !self.find_drawer_open();
-        let files_newly_shown = view == DrawerView::Files && !self.files_drawer_open();
-        self.panels.open_drawer_view(view);
+    /// Per-view side effects to run when `view` becomes visible in the
+    /// drawer — the single table shared by every reveal path (rail/leader
+    /// opens, the Ctrl-T toggle restore) so a view cannot go stale on one
+    /// path and refresh on another. `newly_shown` gates the effects that
+    /// must not clobber state the user already has on screen (an
+    /// in-progress FIND query, a browsed sidebar directory); the rest
+    /// refresh unconditionally. Never touches focus — callers decide that.
+    fn drawer_view_revealed(&mut self, view: DrawerView, newly_shown: bool, tx: &AppTx) {
         match view {
-            DrawerView::Find if find_newly_shown => {
+            DrawerView::Find if newly_shown => {
                 self.panels
                     .query_mut()
                     .set_note(self.path.clone(), tx.clone());
             }
-            DrawerView::Files if files_newly_shown => {
+            DrawerView::Files if newly_shown => {
                 self.reveal_note_dir_in_sidebar(tx);
             }
             DrawerView::Config => {
@@ -567,7 +579,6 @@ impl EditorScreen {
             DrawerView::Outline => self.panels.outline_mut().set_note(self.path.clone(), tx),
             _ => {}
         }
-        self.panels.focus(PanelKind::Drawer);
     }
 
     /// Move focus one visible panel left, wrapping at the end.
@@ -585,23 +596,17 @@ impl EditorScreen {
     }
 
     /// Toggle the drawer (Ctrl-T): hiding it gives the full remaining width
-    /// to the editor; showing it restores the last view. A restored FIND
-    /// view re-targets the current note — it may have changed while hidden —
-    /// and a restored FILES view re-targets the current note's directory.
+    /// to the editor; showing it restores the last view. Restoring is a
+    /// fresh reveal: the restored view re-targets/refreshes via the shared
+    /// `drawer_view_revealed` table — the note (or its data) may have
+    /// changed while hidden. Unlike an explicit open, toggling never moves
+    /// focus into the drawer.
     fn toggle_drawer(&mut self, tx: &AppTx) {
         if self.panels.is_visible(PanelKind::Drawer) {
             self.panels.hide(PanelKind::Drawer);
         } else {
             self.panels.show(PanelKind::Drawer);
-            match self.panels.active_drawer_view() {
-                DrawerView::Find => {
-                    self.panels
-                        .query_mut()
-                        .set_note(self.path.clone(), tx.clone());
-                }
-                DrawerView::Files => self.reveal_note_dir_in_sidebar(tx),
-                _ => {}
-            }
+            self.drawer_view_revealed(self.panels.active_drawer_view(), true, tx);
         }
     }
 
@@ -1013,7 +1018,7 @@ impl EditorScreen {
     }
 
     fn toggle_backlinks(&mut self, tx: &AppTx) {
-        if self.find_drawer_open() {
+        if self.drawer_open_on(DrawerView::Find) {
             self.panels.hide(PanelKind::Drawer);
         } else {
             self.open_drawer_view(DrawerView::Find, tx);
@@ -1193,7 +1198,11 @@ impl AppScreen for EditorScreen {
                 Some(ActionShortcuts::OpenFileBrowser) => {
                     // Open (or switch to) the FILES view — never hides the
                     // drawer; Ctrl-T (ToggleSidebar) is the on/off switch.
+                    // Always reveal: with FILES already open this is the
+                    // "where is my note" gesture, snapping a browsed-away
+                    // sidebar back to the current note's directory.
                     self.open_drawer_view(DrawerView::Files, tx);
+                    self.reveal_note_dir_in_sidebar(tx);
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::OpenSavedSearches) => {
@@ -1699,11 +1708,7 @@ impl AppScreen for EditorScreen {
                 if let Ok((details, _)) = self.vault.journal_entry().await {
                     let path = details.path;
                     self.open_path(path.clone(), None, tx).await;
-                    let note_parent = path.get_parent_path().0;
-                    if note_parent.is_like(self.panels.sidebar().current_dir()) {
-                        let dir = self.panels.sidebar().current_dir().clone();
-                        self.navigate_sidebar(dir, tx).await;
-                    }
+                    self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
                 }
             }
             AppEvent::SavedSearchSelected { query, name } => {
@@ -1741,11 +1746,7 @@ impl AppScreen for EditorScreen {
                 self.dismiss_overlay();
                 self.open_path(path.clone(), None, tx).await;
                 self.focus_editor();
-                let note_parent = path.get_parent_path().0;
-                if note_parent.is_like(self.panels.sidebar().current_dir()) {
-                    let dir = self.panels.sidebar().current_dir().clone();
-                    self.navigate_sidebar(dir, tx).await;
-                }
+                self.refresh_sidebar_if_showing(&path.get_parent_path().0, tx);
             }
             AppEvent::EntryDeleted(path) => {
                 self.on_entry_op(path, tx).await;
@@ -1820,7 +1821,7 @@ impl AppScreen for EditorScreen {
             self.open_path(path, emphasis, tx).await;
             self.focus_editor();
         } else {
-            self.navigate_sidebar(path, tx).await;
+            self.navigate_sidebar(path, tx);
         }
         None
     }
@@ -1906,16 +1907,48 @@ mod tests {
 
         screen.path = VaultPath::new("projects").append(&VaultPath::note_path_from("plan"));
         // Sidebar left on an unrelated directory, drawer hidden.
-        screen.panels.sidebar_mut().navigate(VaultPath::new("other"), &tx);
+        screen
+            .panels
+            .sidebar_mut()
+            .navigate(VaultPath::new("other"), &tx);
         screen.panels.hide(PanelKind::Drawer);
 
         screen.open_drawer_view(DrawerView::Files, &tx);
 
-        assert!(screen
+        assert!(
+            screen
+                .panels
+                .sidebar()
+                .current_dir()
+                .is_like(&VaultPath::new("projects"))
+        );
+    }
+
+    /// With FILES already open but browsed elsewhere, the open-file-browser
+    /// shortcut is the "where is my note" gesture: it re-reveals the current
+    /// note's directory.
+    #[tokio::test]
+    async fn file_browser_shortcut_rereveals_note_dir_when_already_open() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        screen.path = VaultPath::new("projects").append(&VaultPath::note_path_from("plan"));
+        screen.open_drawer_view(DrawerView::Files, &tx);
+        // User browses away while FILES stays open.
+        screen
             .panels
-            .sidebar()
-            .current_dir()
-            .is_like(&VaultPath::new("projects")));
+            .sidebar_mut()
+            .navigate(VaultPath::new("other"), &tx);
+
+        screen.handle_input(&ctrl_key('e'), &tx);
+
+        assert!(
+            screen
+                .panels
+                .sidebar()
+                .current_dir()
+                .is_like(&VaultPath::new("projects"))
+        );
     }
 
     /// The gateway works mid-typing: with the editor focused, Ctrl-G arms
