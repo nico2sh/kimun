@@ -87,7 +87,7 @@ impl EditorScreen {
         let footer = FooterBar::new();
         let icons = s.icons();
         let sidebar = SidebarComponent::from_settings(vault.clone(), &s);
-        let backlinks_panel = QueryPanel::new(vault.clone(), kb.clone());
+        let backlinks_panel = QueryPanel::new(vault.clone(), kb.clone(), icons.clone());
         let tags = TagsPanel::new(vault.clone(), s.icons());
         let links = LinksPanel::new(vault.clone(), s.icons());
         let outline = OutlinePanel::new(vault.clone(), s.icons());

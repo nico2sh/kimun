@@ -290,8 +290,7 @@ pub struct QueryPanel {
 }
 
 impl QueryPanel {
-    pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings) -> Self {
-        let icons = Icons::new(false);
+    pub fn new(vault: Arc<NoteVault>, key_bindings: KeyBindings, icons: Icons) -> Self {
         let current_note = Arc::new(Mutex::new(VaultPath::empty()));
         // The redraw callback reads a shared slot that `set_note`/`handle_key`
         // fill once a `tx` is available (the panel is constructed before the
@@ -1379,7 +1378,7 @@ mod tests {
 
     fn make_panel(vault: Arc<NoteVault>) -> QueryPanel {
         let kb = crate::settings::AppSettings::default().key_bindings.clone();
-        QueryPanel::new(vault, kb)
+        QueryPanel::new(vault, kb, Icons::new(false))
     }
 
     /// Ctrl+Enter opens the selected result (kitty-protocol terminals) —

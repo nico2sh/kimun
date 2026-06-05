@@ -505,7 +505,11 @@ mod tests {
             &settings,
         );
         let editor = TextEditorComponent::new(settings.key_bindings.clone(), &settings);
-        let query = QueryPanel::new(vault.clone(), settings.key_bindings.clone());
+        let query = QueryPanel::new(
+            vault.clone(),
+            settings.key_bindings.clone(),
+            settings.icons(),
+        );
         let tags = crate::components::drawer_views::TagsPanel::new(vault.clone(), settings.icons());
         let links =
             crate::components::drawer_views::LinksPanel::new(vault.clone(), settings.icons());
