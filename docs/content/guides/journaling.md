@@ -79,7 +79,7 @@ The entry will be created if it doesn't exist. The date must be in `YYYY-MM-DD` 
 
 ## Browsing journal entries
 
-In the TUI sidebar, journal entries appear in reverse chronological order by default (newest first). You can change this in Configuration with `journal_sort_field` and `journal_sort_order`.
+In the FILES drawer, journal entries appear in reverse chronological order by default (newest first). You can change this in Configuration with `journal_sort_field` and `journal_sort_order`.
 
 ## Searching journal entries
 

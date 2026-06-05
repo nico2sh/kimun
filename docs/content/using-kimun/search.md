@@ -232,20 +232,20 @@ Some queries contain a `{name}` placeholder that the TUI fills in at run time, b
 
 With `spec.md` open, `<{note}` runs as `<spec` (the notes that link to `spec`). When no note is open, `{note}` resolves to an empty string.
 
-Variables are resolved wherever the query runs — both the query panel and the `Ctrl+K` search modal substitute `{note}` against the open note. Because [saved searches](#saved-searches) store the *template* (the unresolved `{note}`), a saved `<{note}` re-targets to whatever note is open each time you run it.
+Variables are resolved wherever the query runs — both the FIND drawer view and the `Ctrl+K` search modal substitute `{note}` against the open note. Because [saved searches](#saved-searches) store the *template* (the unresolved `{note}`), a saved `<{note}` re-targets to whatever note is open each time you run it.
 
 ## Saved searches
 
 A saved search stores a query under a name so you can re-run it without retyping — common filters, project views, or backlink queries. Saved searches live with the workspace and are managed from the TUI:
 
-- **Save** the current query with `Ctrl+D` — from the [query panel](@/using-kimun/tui.md#query-panel) or the `Ctrl+K` search modal — then give it a name.
+- **Save** the current query with `Ctrl+D` — from the [FIND view](@/using-kimun/tui.md#find) or the `Ctrl+K` search modal — then give it a name.
 - **Open** the Saved Searches picker with `F3` to run a saved search (`Enter`), quick-select with `1`–`9`, or remove one with `Delete`.
 
-Running a saved search loads its results in the query panel. See [Saved Searches](@/using-kimun/tui.md#saved-searches) in the TUI guide for the full workflow.
+Running a saved search loads its results in the FIND view. See [Saved Searches](@/using-kimun/tui.md#saved-searches) in the TUI guide for the full workflow.
 
 ### Running by name
 
-You can also run a saved search straight from the search field, without the picker. In the [query panel](@/using-kimun/tui.md#query-panel) or the `Ctrl+K` search modal, type `?` as the first character to autocomplete saved-search names:
+You can also run a saved search straight from the search field, without the picker. In the [FIND view](@/using-kimun/tui.md#find) or the `Ctrl+K` search modal, type `?` as the first character to autocomplete saved-search names:
 
 - Type `?` followed by part of a name (e.g. `?todo`) to filter the list; pick one with `Enter` or `Tab`. An empty `?` lists every saved search.
 - Accepting **expands the stored query into the field**, so you can tweak it before running like any other query.
