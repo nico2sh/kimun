@@ -10,7 +10,7 @@ use super::AppSettings;
 use super::workspace_config::{WorkspaceConfig, WorkspaceEntry};
 
 /// Current config version. Bump this when adding a new migration step.
-pub const CURRENT_CONFIG_VERSION: u32 = 5;
+pub const CURRENT_CONFIG_VERSION: u32 = 6;
 
 /// Runs all necessary migrations on `settings`, mutating it in place.
 /// Returns `true` if any migration was applied (caller should persist).
@@ -63,14 +63,46 @@ impl ConfigMigration {
             migrated = true;
         }
 
+        // v5 → v6: settings move from Ctrl+Shift+P (kitty chord-prefix
+        // collision) to Ctrl+,.
+        if settings.config_version < 6 {
+            Self::migrate_to_v6(settings);
+            migrated = true;
+        }
+
         // Future migrations go here, gated on config_version:
-        // if settings.config_version < 6 { ... migrated = true; }
+        // if settings.config_version < 7 { ... migrated = true; }
 
         if migrated {
             settings.config_version = CURRENT_CONFIG_VERSION;
         }
 
         Ok(migrated)
+    }
+
+    /// v5 → v6: settings move from Ctrl+Shift+P to Ctrl+, — Ctrl+Shift+P is
+    /// kitty's default hints-kitten chord prefix, which holds the screen
+    /// mid-chord and made the binding look broken there. Only applies when
+    /// the binding is still at the v5 default.
+    fn migrate_to_v6(settings: &mut AppSettings) {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::KeyCombo;
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = crate::keys::key_combo::KeyModifiers::new().and_ctrl();
+        let ctrl_shift_p = KeyCombo::new(ctrl.and_shift(), KeyStrike::KeyP);
+        let ctrl_comma = KeyCombo::new(ctrl, KeyStrike::Comma);
+
+        let mut map = settings.key_bindings.to_hashmap();
+        let at_old_default = map
+            .get(&ActionShortcuts::OpenSettings)
+            .is_some_and(|v| v.as_slice() == [ctrl_shift_p]);
+        let comma_free = !map.values().flatten().any(|c| *c == ctrl_comma);
+        if at_old_default && comma_free {
+            map.insert(ActionShortcuts::OpenSettings, vec![ctrl_comma]);
+        }
+        settings.key_bindings = KeyBindings::from_hashmap(map);
     }
 
     /// v4 → v5: swap the palette onto Ctrl-P and settings onto Ctrl+Shift+P —
@@ -455,6 +487,31 @@ mod tests {
     }
 
     #[test]
+    fn v6_moves_settings_to_ctrl_comma() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let ctrl_shift_p = KeyCombo::new(ctrl.and_shift(), KeyStrike::KeyP);
+        let ctrl_comma = KeyCombo::new(ctrl, KeyStrike::Comma);
+
+        let mut settings = AppSettings::default();
+        let mut map = std::collections::HashMap::new();
+        map.insert(ActionShortcuts::OpenSettings, vec![ctrl_shift_p]);
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+        settings.config_version = 5;
+
+        assert!(ConfigMigration::run(&mut settings).unwrap());
+        let map = settings.key_bindings.to_hashmap();
+        assert_eq!(
+            map.get(&ActionShortcuts::OpenSettings),
+            Some(&vec![ctrl_comma])
+        );
+    }
+
+    #[test]
     fn v5_swaps_palette_onto_ctrl_p() {
         use crate::keys::KeyBindings;
         use crate::keys::action_shortcuts::ActionShortcuts;
@@ -477,10 +534,13 @@ mod tests {
             map.get(&ActionShortcuts::OpenCommandPalette),
             Some(&vec![ctrl_p])
         );
+        // v6 chains after v5: settings end on Ctrl+, (kitty collision).
+        let ctrl_comma = KeyCombo::new(ctrl, KeyStrike::Comma);
         assert_eq!(
             map.get(&ActionShortcuts::OpenSettings),
-            Some(&vec![ctrl_shift_p])
+            Some(&vec![ctrl_comma])
         );
+        let _ = ctrl_shift_p;
     }
 
     #[test]

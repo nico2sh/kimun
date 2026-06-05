@@ -25,10 +25,10 @@ pub struct DocMeta {
     /// When the last git fetch was spawned — throttles the per-event
     /// subprocess (rapid navigation must not fork one `git status` per note).
     last_git_fetch: Option<std::time::Instant>,
-    /// Set once a fetch reports "no repo / no git": stop forking doomed
-    /// subprocesses for the rest of this screen's life (a workspace switch
-    /// rebuilds the screen and probes again).
-    git_unavailable: bool,
+    /// When a fetch last reported "no repo / no git" — probing backs off to
+    /// once a minute instead of once per open, but a `git init` mid-session
+    /// still gets picked up.
+    git_unavailable_since: Option<std::time::Instant>,
     /// Link-under-cursor affordance cache: `(target, backlink count once
     /// loaded)`. Refreshed when the cursor enters a different link.
     link_meta: Option<(String, Option<usize>)>,
@@ -41,7 +41,7 @@ impl DocMeta {
             backlink_count: None,
             git_status: None,
             last_git_fetch: None,
-            git_unavailable: false,
+            git_unavailable_since: None,
             link_meta: None,
         }
     }
@@ -81,10 +81,14 @@ impl DocMeta {
     /// otherwise fork a whole-tree `git status` per note open.
     pub fn refresh_git(&mut self, tx: &AppTx) {
         const GIT_FETCH_MIN_INTERVAL: Duration = Duration::from_secs(2);
-        if self.git_unavailable {
+        const GIT_UNAVAILABLE_BACKOFF: Duration = Duration::from_secs(60);
+        let now = std::time::Instant::now();
+        if self
+            .git_unavailable_since
+            .is_some_and(|t| now.duration_since(t) < GIT_UNAVAILABLE_BACKOFF)
+        {
             return;
         }
-        let now = std::time::Instant::now();
         if self
             .last_git_fetch
             .is_some_and(|t| now.duration_since(t) < GIT_FETCH_MIN_INTERVAL)
@@ -184,12 +188,17 @@ impl DocMeta {
             }
             AppEvent::GitStatusLoaded(status) => {
                 match (&self.git_status, status) {
-                    // First-ever None → not a repo (or no git): stop probing.
-                    (None, None) => self.git_unavailable = true,
+                    // No repo (or no git): back off to a slow probe.
+                    (None, None) => {
+                        self.git_unavailable_since = Some(std::time::Instant::now());
+                    }
                     // Had a value, fetch failed (index.lock contention, …):
                     // keep showing the last known state.
                     (Some(_), None) => {}
-                    (_, some) => self.git_status = some,
+                    (_, some) => {
+                        self.git_status = some;
+                        self.git_unavailable_since = None;
+                    }
                 }
                 None
             }
@@ -244,11 +253,11 @@ mod tests {
     async fn git_memoizes_unavailability_and_keeps_last_on_transient_failure() {
         let (mut dm, _dir) = meta().await;
         let current = note("/a.md");
-        // First None → unavailable: refresh_git stops spawning.
+        // First None → unavailable: probing backs off.
         dm.handle(AppEvent::GitStatusLoaded(None), &current);
-        assert!(dm.git_unavailable);
+        assert!(dm.git_unavailable_since.is_some());
         // A value followed by a failure keeps the last value.
-        dm.git_unavailable = false;
+        dm.git_unavailable_since = None;
         dm.handle(AppEvent::GitStatusLoaded(Some("git ✓".into())), &current);
         dm.handle(AppEvent::GitStatusLoaded(None), &current);
         assert_eq!(dm.git().map(String::as_str), Some("git ✓"));

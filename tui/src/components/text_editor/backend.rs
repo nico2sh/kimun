@@ -117,13 +117,16 @@ impl BackendState {
     }
 
     /// The cursor's (row, col), cheap on both backends — no line cloning.
+    /// The nvim row is clamped to the mirrored line count (the mirror can
+    /// lag the real cursor for a frame), matching the snapshot path.
     pub fn cursor(&self) -> (usize, usize) {
         match self {
-            BackendState::Textarea(ta) => {
-                let ratatui_textarea::DataCursor(r, c) = ta.cursor();
-                (r, c)
+            BackendState::Textarea(ta) => super::cursor_tuple(ta),
+            BackendState::Nvim(nvim) => {
+                let snap = nvim.snapshot();
+                let max_row = snap.lines.len().saturating_sub(1);
+                (snap.cursor.0.min(max_row), snap.cursor.1)
             }
-            BackendState::Nvim(nvim) => nvim.snapshot().cursor,
         }
     }
 

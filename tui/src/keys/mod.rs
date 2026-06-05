@@ -207,7 +207,8 @@ impl KeyBindings {
                 } else {
                     tracing::warn!(
                         "Skipping invalid key combo '{}' for action '{}': \
-                         only ctrl/alt (with optional shift) + a letter (a-z), or bare F1–F12 are supported",
+                         only ctrl/alt (with optional shift) + a letter, digit, or \
+                         punctuation key, or bare F1–F12 are supported",
                         combo,
                         action
                     );

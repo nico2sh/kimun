@@ -31,7 +31,7 @@ theme = "gruvbox_dark"
     // Verify migration marker — Phase 1 migrates straight through to the
     // current version (v3 today).
     let config_content = std::fs::read_to_string(&config_path).unwrap();
-    assert!(config_content.contains("config_version = 5"));
+    assert!(config_content.contains("config_version = 6"));
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn current_version_config_loads_without_migration() {
     // should run.
     let v3_toml = format!(
         r#"
-config_version = 5
+config_version = 6
 
 [global]
 current_workspace = "default"
@@ -122,7 +122,7 @@ created = "2024-01-15T10:30:00Z"
     let settings = AppSettings::load_from_file(config_path.clone()).unwrap();
 
     assert!(settings.workspace_config.is_some());
-    assert_eq!(settings.config_version, 5);
+    assert_eq!(settings.config_version, 6);
     assert!(settings.workspace_dir.is_none());
 }
 
@@ -158,7 +158,7 @@ created = "2026-01-01T00:00:00Z"
 
     let settings = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
 
-    assert_eq!(settings.config_version, 5);
+    assert_eq!(settings.config_version, 6);
     let new_db = tmp.path().canonicalize().unwrap().join("notes.kimuncache");
     assert!(
         new_db.exists(),
@@ -252,7 +252,7 @@ created = "2026-01-01T00:00:00Z"
 
     let _ = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
     let s = kimun_notes::settings::AppSettings::load_from_file(cfg_path.clone()).unwrap();
-    assert_eq!(s.config_version, 5);
+    assert_eq!(s.config_version, 6);
 }
 
 #[test]

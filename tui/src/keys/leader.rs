@@ -23,6 +23,7 @@ pub enum LeaderAction {
     FindTags,
     FindBacklinks,
     FindRecent,
+    FindSaved,
     FindHeadings,
     // +note
     NoteNew,
@@ -78,6 +79,7 @@ impl LeaderAction {
             LeaderAction::FindTags => "find.tags",
             LeaderAction::FindBacklinks => "find.backlinks",
             LeaderAction::FindRecent => "find.recent",
+            LeaderAction::FindSaved => "find.saved",
             LeaderAction::FindHeadings => "find.headings",
             LeaderAction::NoteNew => "note.new",
             LeaderAction::NoteDaily => "note.daily",
@@ -113,7 +115,7 @@ impl LeaderAction {
     }
 
     /// Every action, for id lookup and docs.
-    pub const ALL: [LeaderAction; 41] = [
+    pub const ALL: [LeaderAction; 42] = [
         LeaderAction::OpenDrawer(DrawerView::Files),
         LeaderAction::OpenDrawer(DrawerView::Find),
         LeaderAction::OpenDrawer(DrawerView::Tags),
@@ -125,6 +127,7 @@ impl LeaderAction {
         LeaderAction::FindTags,
         LeaderAction::FindBacklinks,
         LeaderAction::FindRecent,
+        LeaderAction::FindSaved,
         LeaderAction::FindHeadings,
         LeaderAction::NoteNew,
         LeaderAction::NoteDaily,
@@ -177,6 +180,7 @@ impl LeaderAction {
             LeaderAction::FindTags => "tags",
             LeaderAction::FindBacklinks => "backlinks",
             LeaderAction::FindRecent => "recent",
+            LeaderAction::FindSaved => "saved searches",
             LeaderAction::FindHeadings => "headings",
             LeaderAction::NoteNew => "new note",
             LeaderAction::NoteDaily => "daily",
@@ -275,6 +279,7 @@ pub fn leader_tree() -> LeaderNode {
                         ('t', leaf("tags", A::FindTags)),
                         ('b', leaf("backlinks", A::FindBacklinks)),
                         ('r', leaf("recent", A::FindRecent)),
+                        ('s', leaf("saved searches", A::FindSaved)),
                         ('h', leaf("headings", A::FindHeadings)),
                     ],
                 },
