@@ -166,6 +166,11 @@ impl LeaderAction {
         if id == "help" {
             return Some(LeaderAction::Help);
         }
+        // "vault.settings" is the stable id; accept the screen's current name
+        // as an alias.
+        if id == "vault.preferences" {
+            return Some(LeaderAction::VaultPreferences);
+        }
         Self::ALL.into_iter().find(|a| a.id() == id)
     }
 

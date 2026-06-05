@@ -249,19 +249,21 @@ function debounce(func, wait) {
     closeIcon.style.display = isOpen ? "none" : "";
   }
 
-// Close the mobile menu when a nav link is tapped
 document.addEventListener("DOMContentLoaded", function () {
+  // Close the mobile menu when a nav link is tapped
   const trees = document.querySelector("#trees");
-  if (!trees) return;
-  trees.addEventListener("click", function (e) {
-    if (e.target.closest("a") && trees.style.display === "block") {
-      burger();
-    }
-  });
-});
+  if (trees) {
+    trees.addEventListener("click", function (e) {
+      if (e.target.closest("a") && trees.style.display === "block") {
+        burger();
+      }
+    });
+  }
 
-// Scroll-spy: highlight the TOC entry for the section currently in view
-document.addEventListener("DOMContentLoaded", function () {
+  // Scroll-spy: highlight the TOC entry for the section currently in view.
+  // The observer is only a trigger; the active heading is always recomputed
+  // from scratch (last heading above the 40%-viewport line), so there is a
+  // single source of truth for "where am I".
   const tocLinks = document.querySelectorAll("#toc a");
   if (tocLinks.length === 0 || !("IntersectionObserver" in window)) return;
 
@@ -277,37 +279,25 @@ document.addEventListener("DOMContentLoaded", function () {
   if (headings.length === 0) return;
 
   let activeLink = null;
-  function setActive(link) {
+  function updateActive() {
+    const threshold = window.innerHeight * 0.4;
+    let current = null;
+    for (const h of headings) {
+      if (h.getBoundingClientRect().top <= threshold) current = h;
+      else break;
+    }
+    const link = current ? linkByAnchor.get(current.id) : null;
     if (link === activeLink) return;
     if (activeLink) activeLink.classList.remove("active");
     if (link) link.classList.add("active");
     activeLink = link;
   }
 
-  const visible = new Set();
-  const observer = new IntersectionObserver(
-    function (entries) {
-      entries.forEach(function (entry) {
-        if (entry.isIntersecting) visible.add(entry.target);
-        else visible.delete(entry.target);
-      });
-      // Highlight the topmost visible heading, or keep the last one passed
-      const topmost = headings.find(function (h) { return visible.has(h); });
-      if (topmost) {
-        setActive(linkByAnchor.get(topmost.id));
-      } else {
-        // Nothing visible: highlight the last heading above the viewport
-        let last = null;
-        for (const h of headings) {
-          if (h.getBoundingClientRect().top < 0) last = h;
-          else break;
-        }
-        if (last) setActive(linkByAnchor.get(last.id));
-      }
-    },
-    { rootMargin: "0px 0px -60% 0px" }
-  );
+  const observer = new IntersectionObserver(updateActive, {
+    rootMargin: "0px 0px -60% 0px",
+  });
   headings.forEach(function (h) { observer.observe(h); });
+  updateActive();
 });
 
 // https://aaronluna.dev/blog/add-copy-button-to-code-blocks-hugo-chroma/

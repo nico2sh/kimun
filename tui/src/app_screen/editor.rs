@@ -1346,19 +1346,26 @@ impl AppScreen for EditorScreen {
             .split(f.area());
 
         // ── Title bar (1 line): Kimün · note breadcrumb · workspace badge ──
+        // Build the badge line once; its column width comes from the same
+        // value that gets rendered, so glyph/separator tweaks can't drift.
         let workspace_badge = {
             let s = self.settings.read().unwrap();
-            s.workspace_config
-                .as_ref()
-                .map(|wc| (self.icons.workspace, wc.global.current_workspace.clone()))
+            s.workspace_config.as_ref().map(|wc| {
+                ratatui::text::Line::from(vec![
+                    ratatui::text::Span::styled(
+                        self.icons.workspace,
+                        Style::default().fg(theme.accent.to_ratatui()),
+                    ),
+                    ratatui::text::Span::styled(
+                        format!("  {}", wc.global.current_workspace),
+                        Style::default().fg(theme.gray.to_ratatui()),
+                    ),
+                ])
+            })
         };
         let workspace_label_width = workspace_badge
             .as_ref()
-            .map(|(glyph, name)| {
-                unicode_width::UnicodeWidthStr::width(*glyph)
-                    + 2
-                    + unicode_width::UnicodeWidthStr::width(name.as_str())
-            })
+            .map(ratatui::text::Line::width)
             .unwrap_or_default();
         let breadcrumb = self
             .path
@@ -1387,19 +1394,9 @@ impl AppScreen for EditorScreen {
             ])),
             title_cols[0],
         );
-        if let Some((glyph, name)) = workspace_badge {
+        if let Some(badge) = workspace_badge {
             f.render_widget(
-                Paragraph::new(ratatui::text::Line::from(vec![
-                    ratatui::text::Span::styled(
-                        glyph,
-                        Style::default().fg(theme.accent.to_ratatui()),
-                    ),
-                    ratatui::text::Span::styled(
-                        format!("  {name}"),
-                        Style::default().fg(theme.gray.to_ratatui()),
-                    ),
-                ]))
-                .alignment(ratatui::layout::Alignment::Right),
+                Paragraph::new(badge).alignment(ratatui::layout::Alignment::Right),
                 title_cols[1],
             );
         }

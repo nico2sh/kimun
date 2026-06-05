@@ -162,7 +162,9 @@ impl TryFrom<String> for ActionShortcuts {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         let action = match value.as_str() {
             "Quit" => ActionShortcuts::Quit,
-            "OpenSettings" => ActionShortcuts::OpenPreferences,
+            // "OpenSettings" is the stable on-disk name; "OpenPreferences"
+            // accepted as an alias since the screen is named Preferences now.
+            "OpenSettings" | "OpenPreferences" => ActionShortcuts::OpenPreferences,
             "SearchNotes" => ActionShortcuts::SearchNotes,
             "OpenNote" => ActionShortcuts::OpenNote,
             "NewJournal" => ActionShortcuts::NewJournal,

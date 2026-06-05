@@ -1571,22 +1571,14 @@ impl TextEditorComponent {
             }
             // Emacs-style word motions. macOS terminals (Terminal.app, Ghostty)
             // translate Option+Left/Right into `Esc b` / `Esc f` by default,
-            // which crossterm reports as Alt+b / Alt+f.
-            (KeyModifiers::ALT, KeyCode::Char('b')) => {
+            // which crossterm reports as Alt+b / Alt+f. The shifted variants
+            // arrive as the uppercase char (with SHIFT set, so `shift` holds).
+            (KeyModifiers::ALT, KeyCode::Char('b') | KeyCode::Char('B')) => {
                 cursor_move!(ta, CursorMove::WordBack, shift);
                 true
             }
-            (KeyModifiers::ALT, KeyCode::Char('f')) => {
+            (KeyModifiers::ALT, KeyCode::Char('f') | KeyCode::Char('F')) => {
                 cursor_move!(ta, CursorMove::WordForward, shift);
-                true
-            }
-            // Shifted variants arrive as the uppercase char with SHIFT set.
-            (KeyModifiers::ALT, KeyCode::Char('B')) => {
-                cursor_move!(ta, CursorMove::WordBack, true);
-                true
-            }
-            (KeyModifiers::ALT, KeyCode::Char('F')) => {
-                cursor_move!(ta, CursorMove::WordForward, true);
                 true
             }
             (KeyModifiers::SUPER, KeyCode::Left) => {

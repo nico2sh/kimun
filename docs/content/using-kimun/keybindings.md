@@ -44,7 +44,7 @@ Everything else lives behind the leader: press `Ctrl+G`, then a short sequence. 
 | `n` +note | `n n` new · `n d` daily · `n t` from template · `n r` rename · `n m` move · `n D` delete |
 | `l` +links | `l b` backlinks · `l o` outgoing · `l u` unlinked mentions |
 | `o` +open | `o f/q/t/k/l/c` open a drawer view directly (files/find/tags/links/outline/config) |
-| `g` +git | `g s` status · log/diff/sync are display-only stubs |
+| `g` +git | `g s` status · `g p` sync/push · `g l` log · `g d` diff *(log/diff/sync are display-only stubs)* |
 | `v` +vault | `v s` switch vault · `v r` reindex · `v c` config panel · `v t` theme picker · `v p` preferences |
 | `w` +window | `w z` zen · `w l`/`w h` grow/shrink drawer |
 | `m` +this note | `m t` toggle todo · `m p` preview · `m c` copy wikilink · `m y` yank path · `m r` rename |

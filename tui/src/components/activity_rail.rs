@@ -268,4 +268,13 @@ mod tests {
         rail.set_cursor(DrawerView::Outline);
         assert_eq!(rail.cursor_view(), DrawerView::Outline);
     }
+
+    #[test]
+    fn rail_labels_are_three_chars() {
+        // The render centers labels in the 5-wide inner strip; exactly three
+        // characters guarantees one column of padding on each side.
+        for (label, _) in ITEMS {
+            assert_eq!(label.len(), 3, "rail label {label:?} must be 3 chars");
+        }
+    }
 }
