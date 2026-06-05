@@ -16,6 +16,7 @@ pub mod note_browser;
 pub mod overlay;
 pub mod panel;
 pub mod query_highlight;
+pub mod query_list_panel;
 pub mod query_vars;
 pub mod rich_row;
 pub mod saved_search_breadcrumb;

@@ -1,9 +1,8 @@
-//! The phase-03 drawer views: **TAGS**, **LINKS**, and **OUTLINE**.
-//!
-//! Each is a thin panel over core's vault API, listing rows through the
-//! shared `SearchList` engine and the rich-row format. They are rebuilt on
-//! demand (`refresh`) — the same engine-per-context pattern the sidebar uses
-//! per directory.
+//! The phase-03 drawer views: **TAGS**, **LINKS**, and **OUTLINE** — each a
+//! thin adapter (`ListPanelSpec` + a `RowSource`) of the shared
+//! [`QueryListPanel`] body, over core's vault API. Rebuilt on demand
+//! (`refresh`) — the same engine-per-context pattern the sidebar uses per
+//! directory.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -20,10 +19,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::components::event_state::EventState;
-use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
+use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::panel::panel_block;
+use crate::components::query_list_panel::{ListPanelSpec, QueryListPanel};
 use crate::components::rich_row::RichRow;
-use crate::components::search_list::{Emit, Filter, KeyReaction, RowSource, SearchList, SearchRow};
+use crate::components::search_list::{Emit, RowSource, SearchRow};
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
@@ -81,90 +81,56 @@ impl RowSource<TagEntry> for TagSource {
     }
 }
 
+/// Spec: Enter / click runs the tag's query in the FIND drawer.
+pub struct TagsSpec;
+
+impl ListPanelSpec for TagsSpec {
+    type Row = TagEntry;
+    const TITLE: &'static str = "Tags";
+
+    fn submit(row: &TagEntry, tx: &AppTx) {
+        tx.send(AppEvent::RunTagQuery(row.label.clone())).ok();
+    }
+
+    fn hints() -> Vec<(String, String)> {
+        vec![("Enter".into(), "Run tag query".into())]
+    }
+}
+
 /// The TAGS drawer: every `#tag` in the vault with its note count.
-/// Enter / click runs the tag's query in the FIND drawer.
 pub struct TagsPanel {
     vault: Arc<NoteVault>,
-    icons: Icons,
-    list: Option<SearchList<TagEntry>>,
+    body: QueryListPanel<TagsSpec>,
 }
 
 impl TagsPanel {
     pub fn new(vault: Arc<NoteVault>, icons: Icons) -> Self {
         Self {
             vault,
-            icons,
-            list: None,
+            body: QueryListPanel::new(icons),
         }
     }
 
     /// (Re)load the tag list. Called when the view is opened.
     pub fn refresh(&mut self, tx: &AppTx) {
-        let source = TagSource {
-            vault: self.vault.clone(),
-        };
-        self.list = Some(
-            SearchList::builder(source, redraw_callback(tx.clone()))
-                .filter(Filter::Fuzzy)
-                .icons(self.icons.clone())
-                .build(),
+        self.body.set_source(
+            TagSource {
+                vault: self.vault.clone(),
+            },
+            tx,
         );
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        vec![("Enter".into(), "Run tag query".into())]
-    }
-
-    fn run_selected(&self, tx: &AppTx) {
-        if let Some(entry) = self.list.as_ref().and_then(|l| l.selected_row()) {
-            tx.send(AppEvent::RunTagQuery(entry.label.clone())).ok();
-        }
+        self.body.hint_shortcuts()
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        match event {
-            InputEvent::Key(key) => {
-                let Some(list) = &mut self.list else {
-                    return EventState::NotConsumed;
-                };
-                match list.handle_key(key) {
-                    KeyReaction::Submit => {
-                        self.run_selected(tx);
-                        EventState::Consumed
-                    }
-                    KeyReaction::Consumed | KeyReaction::Cancel => EventState::Consumed,
-                    KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
-                }
-            }
-            InputEvent::Mouse(mouse) => {
-                let Some(list) = &mut self.list else {
-                    return EventState::NotConsumed;
-                };
-                if let crate::components::search_list::SearchMouse::Activated(_) =
-                    list.handle_mouse(mouse)
-                {
-                    self.run_selected(tx);
-                }
-                EventState::Consumed
-            }
-            _ => EventState::NotConsumed,
-        }
+        self.body.handle_input(event, tx)
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        let block = panel_block("Tags", theme, focused);
-        let inner = block.inner(rect);
-        f.render_widget(block, rect);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(inner);
-        if let Some(list) = &mut self.list {
-            list.render_query(f, rows[0], theme, focused);
-            list.render(f, rows[1], theme, focused);
-            list.set_list_rect(rows[1]);
-            list.set_panel_rect(rect);
-        }
+        self.body.render(f, rect, theme, focused);
     }
 }
 
@@ -329,14 +295,38 @@ impl RowSource<LinkEntry> for LinksSource {
     }
 }
 
+/// Spec: Enter / click opens the entry; rows are real notes, so right-click
+/// opens the file-ops menu. No filter input — `b/o/u` are sub-view keys.
+pub struct LinksSpec;
+
+impl ListPanelSpec for LinksSpec {
+    type Row = LinkEntry;
+    const TITLE: &'static str = "Links";
+    const HAS_FILTER: bool = false;
+
+    fn submit(row: &LinkEntry, tx: &AppTx) {
+        tx.send(AppEvent::open(row.path.clone())).ok();
+    }
+
+    fn context_event(row: &LinkEntry) -> Option<AppEvent> {
+        Some(AppEvent::ShowFileOpsMenu(row.path.clone()))
+    }
+
+    fn hints() -> Vec<(String, String)> {
+        vec![
+            ("b/o/u".into(), "Sub-view".into()),
+            ("Enter".into(), "Open".into()),
+        ]
+    }
+}
+
 /// The LINKS drawer for the open note: backlinks / outgoing / unlinked
-/// mentions as sub-tabs (`b` / `o` / `u`, or ←/→). Enter opens the entry.
+/// mentions as sub-tabs (`b` / `o` / `u`, or ←/→) over the shared body.
 pub struct LinksPanel {
     vault: Arc<NoteVault>,
-    icons: Icons,
     note: VaultPath,
     tab: LinksTab,
-    list: Option<SearchList<LinkEntry>>,
+    body: QueryListPanel<LinksSpec>,
     /// Screen cell each sub-view tab was drawn into on the last render —
     /// click-to-switch hit-test (keyboard ↔ mouse parity, spec §10).
     tab_cells: Vec<(LinksTab, Rect)>,
@@ -346,19 +336,16 @@ impl LinksPanel {
     pub fn new(vault: Arc<NoteVault>, icons: Icons) -> Self {
         Self {
             vault,
-            icons,
             note: VaultPath::empty(),
             tab: LinksTab::Backlinks,
-            list: None,
+            body: QueryListPanel::new(icons),
             tab_cells: Vec::new(),
         }
     }
 
     pub fn set_note(&mut self, note: VaultPath, tx: &AppTx) {
-        if note != self.note {
+        if note != self.note || !self.body.is_loaded() {
             self.note = note;
-            self.refresh(tx);
-        } else if self.list.is_none() {
             self.refresh(tx);
         }
     }
@@ -380,79 +367,47 @@ impl LinksPanel {
     }
 
     fn refresh(&mut self, tx: &AppTx) {
-        let source = LinksSource {
-            vault: self.vault.clone(),
-            note: self.note.clone(),
-            tab: self.tab,
-        };
-        self.list = Some(
-            SearchList::builder(source, redraw_callback(tx.clone()))
-                .icons(self.icons.clone())
-                .build(),
+        self.body.set_source(
+            LinksSource {
+                vault: self.vault.clone(),
+                note: self.note.clone(),
+                tab: self.tab,
+            },
+            tx,
         );
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        vec![
-            ("b/o/u".into(), "Sub-view".into()),
-            ("Enter".into(), "Open".into()),
-        ]
-    }
-
-    fn open_selected(&self, tx: &AppTx) {
-        if let Some(entry) = self.list.as_ref().and_then(|l| l.selected_row()) {
-            tx.send(AppEvent::open(entry.path.clone())).ok();
-        }
+        self.body.hint_shortcuts()
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
+        // Tab-bar concerns first (sub-view keys / tab clicks); the rest is
+        // the shared body's.
         match event {
-            InputEvent::Key(key) => {
-                match key.code {
-                    KeyCode::Char('b') => {
-                        self.set_tab(LinksTab::Backlinks, tx);
-                        return EventState::Consumed;
-                    }
-                    KeyCode::Char('o') => {
-                        self.set_tab(LinksTab::Outgoing, tx);
-                        return EventState::Consumed;
-                    }
-                    KeyCode::Char('u') => {
-                        self.set_tab(LinksTab::Unlinked, tx);
-                        return EventState::Consumed;
-                    }
-                    KeyCode::Left => {
-                        self.set_tab(self.tab.cycled(-1), tx);
-                        return EventState::Consumed;
-                    }
-                    KeyCode::Right => {
-                        self.set_tab(self.tab.cycled(1), tx);
-                        return EventState::Consumed;
-                    }
-                    _ => {}
+            InputEvent::Key(key) => match key.code {
+                KeyCode::Char('b') => {
+                    self.set_tab(LinksTab::Backlinks, tx);
+                    return EventState::Consumed;
                 }
-                let Some(list) = &mut self.list else {
-                    return EventState::NotConsumed;
-                };
-                // The list has no filter input here (b/o/u are sub-view keys),
-                // so only navigation keys reach it.
-                match key.code {
-                    KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::PageUp
-                    | KeyCode::PageDown
-                    | KeyCode::Home
-                    | KeyCode::End => {
-                        list.handle_key(key);
-                        EventState::Consumed
-                    }
-                    KeyCode::Enter => {
-                        self.open_selected(tx);
-                        EventState::Consumed
-                    }
-                    _ => EventState::NotConsumed,
+                KeyCode::Char('o') => {
+                    self.set_tab(LinksTab::Outgoing, tx);
+                    return EventState::Consumed;
                 }
-            }
+                KeyCode::Char('u') => {
+                    self.set_tab(LinksTab::Unlinked, tx);
+                    return EventState::Consumed;
+                }
+                KeyCode::Left => {
+                    self.set_tab(self.tab.cycled(-1), tx);
+                    return EventState::Consumed;
+                }
+                KeyCode::Right => {
+                    self.set_tab(self.tab.cycled(1), tx);
+                    return EventState::Consumed;
+                }
+                _ => {}
+            },
             InputEvent::Mouse(mouse) => {
                 // A click on the tab bar switches the sub-view.
                 if matches!(
@@ -471,25 +426,10 @@ impl LinksPanel {
                     self.set_tab(tab, tx);
                     return EventState::Consumed;
                 }
-                let Some(list) = &mut self.list else {
-                    return EventState::NotConsumed;
-                };
-                match list.handle_mouse(mouse) {
-                    crate::components::search_list::SearchMouse::Activated(_) => {
-                        self.open_selected(tx);
-                    }
-                    // Right-click: link rows are real notes → context menu.
-                    crate::components::search_list::SearchMouse::Context(_) => {
-                        if let Some(entry) = list.selected_row() {
-                            tx.send(AppEvent::ShowFileOpsMenu(entry.path.clone())).ok();
-                        }
-                    }
-                    _ => {}
-                }
-                EventState::Consumed
             }
-            _ => EventState::NotConsumed,
+            _ => {}
         }
+        self.body.handle_input(event, tx)
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
@@ -531,11 +471,7 @@ impl LinksPanel {
         }
         f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
 
-        if let Some(list) = &mut self.list {
-            list.render(f, rows[1], theme, focused);
-            list.set_list_rect(rows[1]);
-            list.set_panel_rect(rect);
-        }
+        self.body.render_in(f, rows[1], rect, theme, focused);
     }
 }
 
@@ -607,27 +543,40 @@ impl RowSource<OutlineEntry> for OutlineSource {
     }
 }
 
+/// Spec: Enter / click jumps the editor to the heading.
+pub struct OutlineSpec;
+
+impl ListPanelSpec for OutlineSpec {
+    type Row = OutlineEntry;
+    const TITLE: &'static str = "Outline";
+
+    fn submit(row: &OutlineEntry, tx: &AppTx) {
+        tx.send(AppEvent::JumpToHeading(row.heading.clone())).ok();
+    }
+
+    fn hints() -> Vec<(String, String)> {
+        vec![("Enter".into(), "Jump to heading".into())]
+    }
+}
+
 /// The OUTLINE drawer: the open note's headings as an indented tree.
-/// Enter jumps the editor to the heading.
 pub struct OutlinePanel {
     vault: Arc<NoteVault>,
-    icons: Icons,
     note: VaultPath,
-    list: Option<SearchList<OutlineEntry>>,
+    body: QueryListPanel<OutlineSpec>,
 }
 
 impl OutlinePanel {
     pub fn new(vault: Arc<NoteVault>, icons: Icons) -> Self {
         Self {
             vault,
-            icons,
             note: VaultPath::empty(),
-            list: None,
+            body: QueryListPanel::new(icons),
         }
     }
 
     pub fn set_note(&mut self, note: VaultPath, tx: &AppTx) {
-        if note != self.note || self.list.is_none() {
+        if note != self.note || !self.body.is_loaded() {
             self.note = note;
             self.refresh(tx);
         }
@@ -635,72 +584,25 @@ impl OutlinePanel {
 
     /// Re-read the headings (e.g. after the buffer was saved).
     pub fn refresh(&mut self, tx: &AppTx) {
-        let source = OutlineSource {
-            vault: self.vault.clone(),
-            note: self.note.clone(),
-        };
-        self.list = Some(
-            SearchList::builder(source, redraw_callback(tx.clone()))
-                .filter(Filter::Fuzzy)
-                .icons(self.icons.clone())
-                .build(),
+        self.body.set_source(
+            OutlineSource {
+                vault: self.vault.clone(),
+                note: self.note.clone(),
+            },
+            tx,
         );
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        vec![("Enter".into(), "Jump to heading".into())]
-    }
-
-    fn jump_selected(&self, tx: &AppTx) {
-        if let Some(entry) = self.list.as_ref().and_then(|l| l.selected_row()) {
-            tx.send(AppEvent::JumpToHeading(entry.heading.clone())).ok();
-        }
+        self.body.hint_shortcuts()
     }
 
     pub fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
-        match event {
-            InputEvent::Key(key) => {
-                let Some(list) = &mut self.list else {
-                    return EventState::NotConsumed;
-                };
-                match list.handle_key(key) {
-                    KeyReaction::Submit => {
-                        self.jump_selected(tx);
-                        EventState::Consumed
-                    }
-                    KeyReaction::Consumed | KeyReaction::Cancel => EventState::Consumed,
-                    KeyReaction::Intercepted(_) | KeyReaction::Unhandled => EventState::NotConsumed,
-                }
-            }
-            InputEvent::Mouse(mouse) => {
-                let Some(list) = &mut self.list else {
-                    return EventState::NotConsumed;
-                };
-                if let crate::components::search_list::SearchMouse::Activated(_) =
-                    list.handle_mouse(mouse)
-                {
-                    self.jump_selected(tx);
-                }
-                EventState::Consumed
-            }
-            _ => EventState::NotConsumed,
-        }
+        self.body.handle_input(event, tx)
     }
 
     pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, focused: bool) {
-        let block = panel_block("Outline", theme, focused);
-        let inner = block.inner(rect);
-        f.render_widget(block, rect);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(inner);
-        if let Some(list) = &mut self.list {
-            list.render_query(f, rows[0], theme, focused);
-            list.render(f, rows[1], theme, focused);
-            list.set_list_rect(rows[1]);
-            list.set_panel_rect(rect);
-        }
+        self.body.render(f, rect, theme, focused);
     }
 }
 
@@ -708,6 +610,8 @@ impl OutlinePanel {
 mod tests {
     use super::*;
     use crate::test_support::temp_vault;
+
+    use crate::components::search_list::SearchList;
 
     /// Poll a panel's list until the async load lands.
     async fn drain<R: SearchRow + Clone + Send + Sync + 'static>(list: &mut SearchList<R>) {
@@ -733,9 +637,9 @@ mod tests {
         let mut panel = TagsPanel::new(vault, Icons::new(false));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.refresh(&tx);
-        drain(panel.list.as_mut().unwrap()).await;
+        drain(panel.body.list_mut().unwrap()).await;
 
-        let rows = panel.list.as_ref().unwrap().visible_rows();
+        let rows = panel.body.list().unwrap().visible_rows();
         let labels: Vec<(&str, usize)> = rows.iter().map(|r| (r.label.as_str(), r.count)).collect();
         // Most-used first.
         assert_eq!(labels, vec![("alpha", 2), ("beta", 1)]);
@@ -770,10 +674,10 @@ mod tests {
 
         // Backlinks of projectx → linker.
         panel.set_note(VaultPath::note_path_from("projectx"), &tx);
-        drain(panel.list.as_mut().unwrap()).await;
+        drain(panel.body.list_mut().unwrap()).await;
         let names: Vec<&str> = panel
-            .list
-            .as_ref()
+            .body
+            .list()
             .unwrap()
             .visible_rows()
             .iter()
@@ -784,10 +688,10 @@ mod tests {
         // Outgoing of linker → projectx.
         panel.set_note(VaultPath::note_path_from("linker"), &tx);
         panel.set_tab(LinksTab::Outgoing, &tx);
-        drain(panel.list.as_mut().unwrap()).await;
+        drain(panel.body.list_mut().unwrap()).await;
         let names: Vec<&str> = panel
-            .list
-            .as_ref()
+            .body
+            .list()
             .unwrap()
             .visible_rows()
             .iter()
@@ -798,10 +702,10 @@ mod tests {
         // Unlinked mentions of projectx → mentions (linker is excluded).
         panel.set_note(VaultPath::note_path_from("projectx"), &tx);
         panel.set_tab(LinksTab::Unlinked, &tx);
-        drain(panel.list.as_mut().unwrap()).await;
+        drain(panel.body.list_mut().unwrap()).await;
         let names: Vec<&str> = panel
-            .list
-            .as_ref()
+            .body
+            .list()
             .unwrap()
             .visible_rows()
             .iter()
@@ -828,9 +732,9 @@ mod tests {
         let mut panel = OutlinePanel::new(vault, Icons::new(false));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.set_note(VaultPath::note_path_from("doc"), &tx);
-        drain(panel.list.as_mut().unwrap()).await;
+        drain(panel.body.list_mut().unwrap()).await;
 
-        let rows = panel.list.as_ref().unwrap().visible_rows();
+        let rows = panel.body.list().unwrap().visible_rows();
         let headings: Vec<(&str, usize)> =
             rows.iter().map(|r| (r.heading.as_str(), r.depth)).collect();
         assert_eq!(
