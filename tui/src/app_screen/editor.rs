@@ -1346,13 +1346,20 @@ impl AppScreen for EditorScreen {
             .split(f.area());
 
         // ── Title bar (1 line): Kimün · note breadcrumb · workspace badge ──
-        let workspace_label = {
+        let workspace_badge = {
             let s = self.settings.read().unwrap();
             s.workspace_config
                 .as_ref()
-                .map(|wc| format!("{} {}", self.icons.workspace, wc.global.current_workspace))
-                .unwrap_or_default()
+                .map(|wc| (self.icons.workspace, wc.global.current_workspace.clone()))
         };
+        let workspace_label_width = workspace_badge
+            .as_ref()
+            .map(|(glyph, name)| {
+                unicode_width::UnicodeWidthStr::width(*glyph)
+                    + 2
+                    + unicode_width::UnicodeWidthStr::width(name.as_str())
+            })
+            .unwrap_or_default();
         let breadcrumb = self
             .path
             .to_string()
@@ -1362,9 +1369,7 @@ impl AppScreen for EditorScreen {
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Min(0),
-                Constraint::Length(
-                    unicode_width::UnicodeWidthStr::width(workspace_label.as_str()) as u16 + 2,
-                ),
+                Constraint::Length(workspace_label_width as u16 + 2),
             ])
             .split(rows[0]);
         f.render_widget(
@@ -1382,12 +1387,22 @@ impl AppScreen for EditorScreen {
             ])),
             title_cols[0],
         );
-        f.render_widget(
-            Paragraph::new(workspace_label)
-                .alignment(ratatui::layout::Alignment::Right)
-                .style(Style::default().fg(theme.gray.to_ratatui())),
-            title_cols[1],
-        );
+        if let Some((glyph, name)) = workspace_badge {
+            f.render_widget(
+                Paragraph::new(ratatui::text::Line::from(vec![
+                    ratatui::text::Span::styled(
+                        glyph,
+                        Style::default().fg(theme.accent.to_ratatui()),
+                    ),
+                    ratatui::text::Span::styled(
+                        format!("  {name}"),
+                        Style::default().fg(theme.gray.to_ratatui()),
+                    ),
+                ]))
+                .alignment(ratatui::layout::Alignment::Right),
+                title_cols[1],
+            );
+        }
 
         // The panels lay themselves out and render. No panel shows its
         // focused highlight while an overlay sits over them.

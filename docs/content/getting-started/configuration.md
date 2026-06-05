@@ -11,7 +11,7 @@ All of Kimün's settings live in one `config.toml`:
 - **Windows:** `%USERPROFILE%\kimun\config.toml`
 - **Anywhere else:** `kimun --config /path/to/config.toml`
 
-You rarely need to edit it by hand — Kimün creates it on first run, and the TUI's Settings screen (`Ctrl+,`) writes changes for you. This page is for when you want to get your hands dirty anyway.
+You rarely need to edit it by hand: Kimün creates it on first run, and the TUI's Settings screen (`Ctrl+,`) writes changes for you. This page is for when you want to get your hands dirty anyway.
 
 ## A Complete Config
 
@@ -51,11 +51,11 @@ Most edits are one of these:
 | Setting | What it does |
 |---|---|
 | `theme` | TUI theme name, e.g. `theme = "Nord"`. Empty = built-in default. See [Themes](@/using-kimun/themes.md). |
-| `editor_backend` | `"textarea"` (built-in editor) or `"nvim"` (embedded Neovim — see [Editor Backend](#editor-backend)). |
+| `editor_backend` | `"textarea"` (built-in editor) or `"nvim"` (embedded Neovim; see [Editor Backend](#editor-backend)). |
 | `[workspaces.<name>].path` | Where your notes live. |
 | `autosave_interval_secs` | How often unsaved changes hit disk (seconds). |
 | `use_nerd_fonts` | Fancy glyphs, if your terminal font has Nerd Font patches. |
-| `[key_bindings]` | Remap any shortcut — see [Key Bindings](#key-bindings). |
+| `[key_bindings]` | Remap any shortcut (see [Key Bindings](#key-bindings)). |
 
 Everything below is the full reference.
 
@@ -75,7 +75,7 @@ The file has five kinds of contents:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `config_version` | integer | `6` | Schema version. Managed by the config migration system — do not edit. |
+| `config_version` | integer | `6` | Schema version. Managed by the config migration system; do not edit. |
 | `cache_dir` | string | `"."` | Directory for per-workspace SQLite caches (`<workspace>.kimuncache`). Resolved relative to the config file's directory. Accepts `~`, relative, or absolute paths. |
 | `history_dir` | string | `"history"` | Directory for per-workspace history files (`<workspace>.txt`). Same path resolution as `cache_dir`. |
 | `theme` | string | `""` | Active TUI theme name (e.g. `"Nord"`). Empty string = built-in default. See [Themes](@/using-kimun/themes.md). |
@@ -107,14 +107,14 @@ current_workspace = "default"
 
 ### `[workspaces.<name>]` Sections
 
-One block per workspace. The `<name>` after the dot is the identifier you reference from `[global].current_workspace` and the TUI's workspace switcher. It also names the workspace's cache and history files (`<name>.kimuncache`, `<name>.txt`), so it must be a valid filename — see [Workspace Name Rules](#workspace-name-rules).
+One block per workspace. The `<name>` after the dot is the identifier you reference from `[global].current_workspace` and the TUI's workspace switcher. It also names the workspace's cache and history files (`<name>.kimuncache`, `<name>.txt`), so it must be a valid filename (see [Workspace Name Rules](#workspace-name-rules)).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `path` | string | **required** | Path to the notes directory for this workspace. |
 | `inbox_path` | string | `"/inbox"` | Vault-relative directory for quick-captured notes. |
 | `quick_note_path` | string | `"/"` | Vault-relative directory where `QuickNote` saves its output. Defaults to the vault root. |
-| `created` | string (RFC 3339 timestamp) | *(set by Kimün)* | Creation timestamp. Managed automatically — do not edit. |
+| `created` | string (RFC 3339 timestamp) | *(set by Kimün)* | Creation timestamp. Managed automatically; do not edit. |
 
 ```toml
 [workspaces.default]
@@ -162,7 +162,7 @@ nvim_path = "/usr/local/bin/nvim"
 
 Worth knowing:
 
-- Neovim runs as a headless embedded process (`nvim --embed`) — no terminal window opens.
+- Neovim runs as a headless embedded process (`nvim --embed`), so no terminal window opens.
 - Your personal config (`init.lua` / `init.vim`) loads normally, so keymaps and plugins work as expected.
 - **Tab** inserts 4 spaces (`expandtab` + `tabstop=4` are set automatically so indentation renders correctly in the TUI).
 - If Neovim fails to start (binary missing, crash on init), Kimün logs a warning and falls back to the built-in textarea. No drama.
@@ -226,7 +226,7 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 
 **Sorting**
 
-- `OpenSortDialog` — Open the sort dialog for the focused panel (sidebar or query panel): choose sort field (name/title), direction, and — for the sidebar — whether to group directories first. (The legacy action names `CycleSortField` and `SortReverseOrder` still parse and map to this action.)
+- `OpenSortDialog` — Open the sort dialog for the focused panel (sidebar or query panel): choose sort field (name/title), direction, and (for the sidebar) whether to group directories first. (The legacy action names `CycleSortField` and `SortReverseOrder` still parse and map to this action.)
 
 **Text editing** (only fire while the editor has focus)
 
@@ -241,7 +241,7 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 
 ### Leader Tree Overrides
 
-The leader key's sequence tree is fully remappable. `[leader.bind]` maps a key sequence (the keys *after* the gateway, space-separated) to an action id — or `"none"` to remove a binding. `[leader.labels]` renames group captions shown in the which-key panel and cheatsheet.
+The leader key's sequence tree is fully remappable. `[leader.bind]` maps a key sequence (the keys *after* the gateway, space-separated) to an action id, or `"none"` to remove a binding. `[leader.labels]` renames group captions shown in the which-key panel and cheatsheet.
 
 ```toml
 [leader.bind]
@@ -253,7 +253,7 @@ The leader key's sequence tree is fully remappable. `[leader.bind]` maps a key s
 "f" = "+search"          # rename the +find group caption
 ```
 
-Action ids follow a `group.action` scheme (`find.files`, `note.new`, `vault.theme`, `drawer.links`, …). The cheatsheet (`Ctrl+G ?`) and the command palette always reflect your overrides. Unknown ids and malformed sequences are skipped with a log warning — they never break startup. Assigning a single key that currently names a whole group replaces that group (a warning is logged), so prefer two-key sequences unless that is what you want.
+Action ids follow a `group.action` scheme (`find.files`, `note.new`, `vault.theme`, `drawer.links`, …). The cheatsheet (`Ctrl+G ?`) and the command palette always reflect your overrides. Unknown ids and malformed sequences are skipped with a log warning; they never break startup. Assigning a single key that currently names a whole group replaces that group (a warning is logged), so prefer two-key sequences unless that is what you want.
 
 ### Files Kimün Stores on Disk
 
@@ -261,7 +261,7 @@ Alongside `config.toml`, Kimün writes two more kinds of files. Both live next t
 
 | File | Default location | Purpose |
 |---|---|---|
-| `<workspace>.kimuncache` | `<config_dir>/<workspace>.kimuncache` | Per-workspace SQLite search index. Regenerable — safe to delete; Kimün rebuilds it on the next run. |
+| `<workspace>.kimuncache` | `<config_dir>/<workspace>.kimuncache` | Per-workspace SQLite search index. Regenerable and safe to delete; Kimün rebuilds it on the next run. |
 | `<workspace>.txt` | `<config_dir>/history/<workspace>.txt` | Per-workspace history of recently-opened notes. Plain text, one path per line, newest first. |
 
 Why keep these outside the workspace? They change on every note open, while your workspace is just Markdown files. Keeping them out means you can sync your notes with Syncthing, iCloud, or Git without churning through SQLite blobs and history rewrites.
@@ -270,7 +270,7 @@ Why keep these outside the workspace? They change on every note open, while your
 
 If your config still says `config_version = 2`, the next launch upgrades it automatically:
 
-1. Validates every workspace name against the rules above. If any fails, Kimün aborts the upgrade with an error listing every offending name and leaves `config.toml` at version 2 — rename them and relaunch.
+1. Validates every workspace name against the rules above. If any fails, Kimün aborts the upgrade with an error listing every offending name and leaves `config.toml` at version 2. Rename them and relaunch.
 2. Writes a backup at `config.toml.bak.v2` next to your original config, in case you want to roll back.
 3. Moves each workspace's `<workspace>/kimun.sqlite` to `<cache_dir>/<workspace>.kimuncache` (defaults to your config dir).
 4. Extracts each workspace's `last_paths` into `<history_dir>/<workspace>.txt`.

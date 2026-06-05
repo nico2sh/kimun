@@ -249,6 +249,67 @@ function debounce(func, wait) {
     closeIcon.style.display = isOpen ? "none" : "";
   }
 
+// Close the mobile menu when a nav link is tapped
+document.addEventListener("DOMContentLoaded", function () {
+  const trees = document.querySelector("#trees");
+  if (!trees) return;
+  trees.addEventListener("click", function (e) {
+    if (e.target.closest("a") && trees.style.display === "block") {
+      burger();
+    }
+  });
+});
+
+// Scroll-spy: highlight the TOC entry for the section currently in view
+document.addEventListener("DOMContentLoaded", function () {
+  const tocLinks = document.querySelectorAll("#toc a");
+  if (tocLinks.length === 0 || !("IntersectionObserver" in window)) return;
+
+  const linkByAnchor = new Map();
+  tocLinks.forEach(function (link) {
+    const hash = decodeURIComponent(new URL(link.href).hash).slice(1);
+    if (hash) linkByAnchor.set(hash, link);
+  });
+
+  const headings = Array.from(
+    document.querySelectorAll("#wrap h2[id], #wrap h3[id]")
+  ).filter(function (h) { return linkByAnchor.has(h.id); });
+  if (headings.length === 0) return;
+
+  let activeLink = null;
+  function setActive(link) {
+    if (link === activeLink) return;
+    if (activeLink) activeLink.classList.remove("active");
+    if (link) link.classList.add("active");
+    activeLink = link;
+  }
+
+  const visible = new Set();
+  const observer = new IntersectionObserver(
+    function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) visible.add(entry.target);
+        else visible.delete(entry.target);
+      });
+      // Highlight the topmost visible heading, or keep the last one passed
+      const topmost = headings.find(function (h) { return visible.has(h); });
+      if (topmost) {
+        setActive(linkByAnchor.get(topmost.id));
+      } else {
+        // Nothing visible: highlight the last heading above the viewport
+        let last = null;
+        for (const h of headings) {
+          if (h.getBoundingClientRect().top < 0) last = h;
+          else break;
+        }
+        if (last) setActive(linkByAnchor.get(last.id));
+      }
+    },
+    { rootMargin: "0px 0px -60% 0px" }
+  );
+  headings.forEach(function (h) { observer.observe(h); });
+});
+
 // https://aaronluna.dev/blog/add-copy-button-to-code-blocks-hugo-chroma/
 
 const ICON_COPY = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M3 10V3a1 1 0 0 1 1-1h7"/></svg>';

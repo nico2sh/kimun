@@ -33,11 +33,17 @@ impl PanelKind {
 /// border (`┌─ Title ────┐`) and the border colored by focus state — the one
 /// way every panel draws its frame.
 pub fn panel_block(title: &str, theme: &Theme, focused: bool) -> Block<'static> {
-    Block::default()
-        .title(format!("─ {title} "))
+    let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.border_style(focused))
-        .style(theme.base_style())
+        .style(theme.base_style());
+    if title.is_empty() {
+        // No title: keep the top border unbroken (a titled block would punch
+        // a `─  ` gap into it).
+        block
+    } else {
+        block.title(format!("─ {title} "))
+    }
 }
 
 /// The popup background: regular panel bg, or the harder shade spec §6 gives

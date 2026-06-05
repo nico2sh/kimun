@@ -115,9 +115,12 @@ table {
     border-bottom: 1px solid rgba($color, 0.12);
   }
 
-  th:first-child {
-    min-width: 10rem;
-    white-space: nowrap;
+  // Only force a wide first column where there's room; let narrow viewports reflow
+  @media (min-width: 600px) {
+    th:first-child {
+      min-width: 10rem;
+      white-space: nowrap;
+    }
   }
 
   th {
@@ -175,7 +178,7 @@ pre {
     content: attr(data-lang);
     font-style: italic;
     line-height: 1;
-    opacity:0.3;
+    opacity:0.55;
     position:absolute;
     bottom:$baseline;
     right:$baseline;
@@ -282,6 +285,10 @@ main > nav {
   padding:0;
   margin:0 0 0 $baseline;
   font-size: 80%;
+
+  a.active {
+    color: $hover-links;
+  }
 
   li {
     color:$color;
