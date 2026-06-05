@@ -309,11 +309,11 @@ impl SidebarComponent {
                         tracing::warn!("create note failed for {path}: {e}");
                         return;
                     }
-                    tx2.send(AppEvent::OpenPath(path)).ok();
+                    tx2.send(AppEvent::open(path)).ok();
                 });
             }
             other => {
-                tx.send(AppEvent::OpenPath(other.path().clone())).ok();
+                tx.send(AppEvent::open(other.path().clone())).ok();
             }
         }
     }
@@ -343,7 +343,7 @@ impl Component for SidebarComponent {
                 )
             ) && let Some(dir) = self.breadcrumb_at(mouse.column, mouse.row)
             {
-                tx.send(AppEvent::OpenPath(dir.clone())).ok();
+                tx.send(AppEvent::open(dir.clone())).ok();
                 return EventState::Consumed;
             }
             // Click-to-focus is handled centrally by `PanelSet::handle_mouse`;
@@ -640,7 +640,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenPath(p) if p.to_string().contains("alpha"))),
+                .any(|e| matches!(e, AppEvent::OpenPath { path: p, .. } if p.to_string().contains("alpha"))),
             "expected OpenPath for the activated note, got {events:?}"
         );
     }

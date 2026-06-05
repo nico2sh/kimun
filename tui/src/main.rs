@@ -438,10 +438,10 @@ async fn handle_app_message(msg: AppEvent, app: &mut App, tx: &AppTx) -> io::Res
         AppEvent::OpenScreen(screen) => {
             switch_screen(app, tx, screen).await;
         }
-        AppEvent::OpenPath(path) => {
+        AppEvent::OpenPath { path, emphasis } => {
             // We either handle the new path within the current screen, or we switch to a new screen for this path
             let unhandled = if let Some(screen) = app.current_screen.as_mut() {
-                screen.try_open_path(path, tx).await
+                screen.try_open_path(path, emphasis, tx).await
             } else {
                 Some(path)
             };

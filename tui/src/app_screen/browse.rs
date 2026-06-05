@@ -91,7 +91,12 @@ impl AppScreen for BrowseScreen {
         );
     }
 
-    async fn try_open_path(&mut self, path: VaultPath, tx: &AppTx) -> Option<VaultPath> {
+    async fn try_open_path(
+        &mut self,
+        path: VaultPath,
+        _emphasis: Option<Vec<String>>,
+        tx: &AppTx,
+    ) -> Option<VaultPath> {
         if !path.is_note() {
             self.navigate_sidebar(path, tx).await;
             return None;
@@ -149,7 +154,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let dir = VaultPath::new("subdir");
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        let result = screen.try_open_path(dir.clone(), &tx).await;
+        let result = screen.try_open_path(dir.clone(), None, &tx).await;
         assert!(result.is_none(), "dir path should be consumed");
         assert_eq!(screen.path, dir, "path should be updated");
     }
@@ -161,7 +166,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let note = VaultPath::note_path_from("test.md");
         let mut screen = BrowseScreen::new(vault, VaultPath::root(), settings);
-        let result = screen.try_open_path(note.clone(), &tx).await;
+        let result = screen.try_open_path(note.clone(), None, &tx).await;
         assert_eq!(
             result,
             Some(note),

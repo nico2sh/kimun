@@ -1,7 +1,6 @@
 //! **DocMeta** — the editor screen's async document/status state behind one
 //! interface: backlink count of the open note, throttled workspace git
-//! summary, the link-under-cursor affordance cache, and the
-//! arrive-from-query emphasis needles waiting for the next open.
+//! summary, and the link-under-cursor affordance cache.
 //!
 //! Everything here shares one shape: a spawn site, a staleness guard, and a
 //! small cache — the bug class the revamp reviews kept finding. Concentrating
@@ -33,9 +32,6 @@ pub struct DocMeta {
     /// Link-under-cursor affordance cache: `(target, backlink count once
     /// loaded)`. Refreshed when the cursor enters a different link.
     link_meta: Option<(String, Option<usize>)>,
-    /// Emphasis needles waiting for the next note open (sent by query
-    /// surfaces right before their `OpenPath`).
-    pending_search_needles: Option<Vec<String>>,
 }
 
 impl DocMeta {
@@ -47,7 +43,6 @@ impl DocMeta {
             last_git_fetch: None,
             git_unavailable: false,
             link_meta: None,
-            pending_search_needles: None,
         }
     }
 
@@ -103,20 +98,6 @@ impl DocMeta {
             let status = crate::util::git_status::fetch(root).await;
             tx2.send(AppEvent::GitStatusLoaded(status)).ok();
         });
-    }
-
-    // ── Arrive-from-query emphasis ──────────────────────────────────────
-
-    /// Buffer the needles a query surface sent ahead of its `OpenPath`.
-    pub fn set_pending_needles(&mut self, needles: Vec<String>) {
-        self.pending_search_needles = Some(needles);
-    }
-
-    /// Take the needles for the open happening NOW — they pair with this
-    /// open only; a failed open must not leak them into a later one, so the
-    /// caller takes them up front regardless of the load result.
-    pub fn take_pending_needles(&mut self) -> Option<Vec<String>> {
-        self.pending_search_needles.take()
     }
 
     // ── Link-under-cursor affordance (spec §5.2) ────────────────────────
@@ -310,14 +291,6 @@ mod tests {
         );
         // Cursor leaves: cache cleared.
         assert_eq!(dm.link_segment(None, &current, Some(&tx)), None);
-    }
-
-    #[tokio::test]
-    async fn pending_needles_are_taken_once() {
-        let (mut dm, _dir) = meta().await;
-        dm.set_pending_needles(vec!["x".into()]);
-        assert_eq!(dm.take_pending_needles(), Some(vec!["x".into()]));
-        assert_eq!(dm.take_pending_needles(), None, "consumed exactly once");
     }
 
     #[tokio::test]

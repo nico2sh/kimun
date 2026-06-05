@@ -247,7 +247,7 @@ impl EditorScreen {
             }
             Ok(mut results) if results.len() == 1 => {
                 let (entry, _) = results.remove(0);
-                self.open_path(entry.path, tx).await;
+                self.open_path(entry.path, None, tx).await;
             }
             Ok(results) => {
                 use crate::components::note_browser::link_results_provider::LinkResultsProvider;
@@ -271,7 +271,7 @@ impl EditorScreen {
         }
     }
 
-    pub async fn open_path(&mut self, path: VaultPath, tx: &AppTx) {
+    pub async fn open_path(&mut self, path: VaultPath, emphasis: Option<Vec<String>>, tx: &AppTx) {
         if !path.is_note() {
             tx.send(AppEvent::OpenScreen(ScreenEvent::OpenBrowse(
                 self.vault.clone(),
@@ -294,16 +294,13 @@ impl EditorScreen {
         });
 
         self.path = path.clone();
-        // Taken up front: they pair with THIS open only — a failed open must
-        // not leak them into a later one.
-        let pending_needles = self.doc_meta.take_pending_needles();
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
                 self.doc_meta.note_opened(&self.path, tx);
                 self.panels.editor_mut().set_text(content);
                 // Arrive-from-query emphasis: apply after the load so the
                 // buffer's new revision owns the needles.
-                if let Some(needles) = pending_needles {
+                if let Some(needles) = emphasis {
                     self.panels.editor_mut().set_search_needles(needles);
                 }
                 self.panels.editor_mut().set_redraw_tx(tx);
@@ -985,7 +982,7 @@ impl AppScreen for EditorScreen {
 
     async fn on_enter(&mut self, tx: &AppTx) {
         self.app_tx = Some(tx.clone());
-        self.open_path(self.path.clone(), tx).await;
+        self.open_path(self.path.clone(), None, tx).await;
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -1511,11 +1508,6 @@ impl AppScreen for EditorScreen {
             AppEvent::FlashMessage(msg) => {
                 self.footer.flash(msg, tx);
             }
-            AppEvent::SetEditorSearchNeedles(needles) => {
-                // Applied after the upcoming OpenPath loads the buffer —
-                // setting now would be wiped by that load's revision bump.
-                self.doc_meta.set_pending_needles(needles);
-            }
             AppEvent::ExecuteLeaderAction(action) => {
                 if self.overlays.is_open() {
                     // The palette closes itself before sending, so this is
@@ -1649,7 +1641,7 @@ impl AppScreen for EditorScreen {
                 self.dismiss_overlay();
                 if let Ok((details, _)) = self.vault.journal_entry().await {
                     let path = details.path;
-                    self.open_path(path.clone(), tx).await;
+                    self.open_path(path.clone(), None, tx).await;
                     let note_parent = path.get_parent_path().0;
                     if note_parent.is_like(self.panels.sidebar().current_dir()) {
                         let dir = self.panels.sidebar().current_dir().clone();
@@ -1690,7 +1682,7 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::EntryCreated(path) => {
                 self.dismiss_overlay();
-                self.open_path(path.clone(), tx).await;
+                self.open_path(path.clone(), None, tx).await;
                 self.focus_editor();
                 let note_parent = path.get_parent_path().0;
                 if note_parent.is_like(self.panels.sidebar().current_dir()) {
@@ -1760,10 +1752,15 @@ impl AppScreen for EditorScreen {
 
     /// The editor handles every path itself: notes open in the buffer,
     /// directories navigate the sidebar. Always consumes.
-    async fn try_open_path(&mut self, path: VaultPath, tx: &AppTx) -> Option<VaultPath> {
+    async fn try_open_path(
+        &mut self,
+        path: VaultPath,
+        emphasis: Option<Vec<String>>,
+        tx: &AppTx,
+    ) -> Option<VaultPath> {
         self.dismiss_overlay();
         if path.is_note() {
-            self.open_path(path, tx).await;
+            self.open_path(path, emphasis, tx).await;
             self.focus_editor();
         } else {
             self.navigate_sidebar(path, tx).await;

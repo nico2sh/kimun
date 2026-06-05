@@ -49,7 +49,14 @@ pub enum AppEvent {
         path: VaultPath,
         saved_revision: Option<NonZeroU64>,
     },
-    OpenPath(VaultPath),
+    /// Open a note (or directory) — `emphasis` carries the originating
+    /// query's needles when the open comes from a query result, so the
+    /// editor lights up the matched spans (spec §5.1). Use
+    /// [`AppEvent::open`] for the plain case.
+    OpenPath {
+        path: VaultPath,
+        emphasis: Option<Vec<String>>,
+    },
     FocusSidebar,
     /// Switch the drawer to the given view and reveal it (sent by the
     /// activity rail and, later, by leader paths / mouse clicks).
@@ -71,10 +78,6 @@ pub enum AppEvent {
         theme: Box<crate::settings::themes::Theme>,
         persist: bool,
     },
-    /// Carry a query's emphasis needles to the editor right before an
-    /// `OpenPath` from a query surface, so the opened note lights up its
-    /// matched spans (spec §5.1).
-    SetEditorSearchNeedles(Vec<String>),
     /// Async-loaded backlink count for the link target under the editor
     /// cursor (status line 2's `→ target · N backlinks` affordance).
     LinkTargetMeta {
@@ -217,6 +220,14 @@ pub enum AppEvent {
 impl AppEvent {
     pub fn send_input(event: InputEvent) -> Self {
         AppEvent::Input(event)
+    }
+
+    /// `OpenPath` without query emphasis — the common case.
+    pub fn open(path: kimun_core::nfs::VaultPath) -> Self {
+        AppEvent::OpenPath {
+            path,
+            emphasis: None,
+        }
     }
 }
 

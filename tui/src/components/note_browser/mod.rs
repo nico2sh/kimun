@@ -177,13 +177,11 @@ impl NoteBrowserModal {
         crate::components::query_highlight::emphasis_needles(self.list.query())
     }
 
-    /// Arriving at a note from a query result carries the query's needles to
-    /// the editor so the matched spans light up (spec §5.1).
-    fn send_emphasis(&self, tx: &AppTx) {
+    /// The emphasis payload an open from this modal carries: the query's
+    /// needles (spec §5.1), Query scope only.
+    fn emphasis(&self) -> Option<Vec<String>> {
         let needles = self.preview_needles();
-        if !needles.is_empty() {
-            tx.send(AppEvent::SetEditorSearchNeedles(needles)).ok();
-        }
+        (!needles.is_empty()).then_some(needles)
     }
 
     // ── Async preview loading ──────────────────────────────────────────────
@@ -275,13 +273,16 @@ impl NoteBrowserModal {
             let tx = tx.clone();
             tokio::spawn(async move {
                 vault.load_or_create_note(&path, None).await.ok();
-                tx.send(AppEvent::OpenPath(path)).ok();
+                tx.send(AppEvent::open(path)).ok();
             });
             return;
         }
         let path = entry.path().clone();
-        self.send_emphasis(tx);
-        tx.send(AppEvent::OpenPath(path)).ok();
+        tx.send(AppEvent::OpenPath {
+            path,
+            emphasis: self.emphasis(),
+        })
+        .ok();
     }
 
     /// The saved-search breadcrumb label for the search border, or `None` when
@@ -695,7 +696,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AppEvent::OpenPath(p) if *p == path)),
+                .any(|e| matches!(e, AppEvent::OpenPath { path: p, .. } if *p == path)),
             "expected OpenPath, got {events:?}"
         );
         assert!(
