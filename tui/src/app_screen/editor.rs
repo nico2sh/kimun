@@ -31,6 +31,7 @@ use crate::components::text_editor::TextEditorComponent;
 use crate::keys::action_shortcuts::{ActionShortcuts, TextAction};
 use crate::keys::key_event_to_combo;
 use crate::keys::key_strike::KeyStrike;
+use crate::keys::leader::{LeaderAction, LeaderEngine, LeaderOutcome};
 use crate::settings::SharedSettings;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
@@ -63,6 +64,8 @@ pub struct EditorScreen {
     /// When the last git fetch was spawned — throttles the per-event
     /// subprocess (rapid navigation must not fork one `git status` per note).
     last_git_fetch: Option<std::time::Instant>,
+    /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
+    leader: LeaderEngine,
     autosave: AutosaveTimer,
     /// The active overlay, if any. An open overlay intercepts input ahead of
     /// the panels; closing it restores focus to the panel that opened it.
@@ -106,6 +109,7 @@ impl EditorScreen {
             backlink_count: None,
             git_status: None,
             last_git_fetch: None,
+            leader: LeaderEngine::new(),
             autosave: AutosaveTimer::new(),
             overlays: OverlayHost::new(),
             autosave_task: SingleSlotTask::empty(),
@@ -427,6 +431,9 @@ impl EditorScreen {
     /// `dismiss_overlay` can return there on close. The single way the editor
     /// opens an overlay — the focus contract lives here, not at each call site.
     fn present_overlay(&mut self, overlay: Box<dyn Overlay>) {
+        // An overlay taking input must never leave a leader sequence armed —
+        // its keys would be eaten by the leader intercept.
+        self.leader.cancel();
         let opener = self.opener_focus();
         self.overlays.open(overlay, opener);
     }
@@ -571,6 +578,250 @@ impl EditorScreen {
         }
     }
 
+    /// Open the workspace switcher (SwitchWorkspace action and leader `v s`).
+    /// No-op while an overlay is open.
+    fn open_workspace_switcher(&mut self) {
+        if self.overlays.is_open() {
+            return;
+        }
+        let s = self.settings.read().unwrap();
+        let dialog = ActiveDialog::workspace_switcher(&s);
+        drop(s);
+        self.present_overlay(Box::new(dialog));
+    }
+
+    /// Open the help / cheatsheet dialog (F1 and leader `?`). No-op while an
+    /// overlay is open.
+    fn open_help(&mut self) {
+        if self.overlays.is_open() {
+            return;
+        }
+        let s = self.settings.read().unwrap();
+        let dialog = ActiveDialog::help(&s.key_bindings);
+        drop(s);
+        self.present_overlay(Box::new(dialog));
+    }
+
+    /// Open the note-browser modal over the full-text search provider
+    /// (Ctrl-K and the leader's find paths). No-op while an overlay is open.
+    fn open_search_browser(&mut self, tx: &AppTx) {
+        if self.overlays.is_open() {
+            return;
+        }
+        let s = self.settings.read().unwrap();
+        let provider = SearchNotesProvider::new(
+            self.vault.clone(),
+            s.current_last_paths(),
+            Some(self.path.clone()),
+        );
+        let modal = NoteBrowserModal::new(
+            "Note Browser",
+            provider,
+            self.vault.clone(),
+            s.key_bindings.clone(),
+            s.icons(),
+            tx.clone(),
+        );
+        drop(s);
+        self.present_overlay(Box::new(modal));
+    }
+
+    /// Open the note-browser modal over the fuzzy file finder (Ctrl-O and
+    /// the leader's `f f`). No-op while an overlay is open.
+    fn open_file_finder(&mut self, tx: &AppTx) {
+        if self.overlays.is_open() {
+            return;
+        }
+        let current_dir = self.path.get_parent_path().0;
+        let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
+        let s = self.settings.read().unwrap();
+        let modal = NoteBrowserModal::new(
+            "Find Note",
+            provider,
+            self.vault.clone(),
+            s.key_bindings.clone(),
+            s.icons(),
+            tx.clone(),
+        );
+        drop(s);
+        self.present_overlay(Box::new(modal));
+    }
+
+    /// Follow the wikilink / tag under the editor cursor (FollowLink action,
+    /// Ctrl+Enter on kitty-protocol terminals).
+    fn follow_link_at_cursor(&mut self, tx: &AppTx) {
+        use crate::components::text_editor::LinkTarget;
+        match self.panels.editor_mut().link_at_cursor() {
+            Some(LinkTarget::Note(target)) => {
+                tx.send(AppEvent::FollowLink(target)).ok();
+            }
+            Some(LinkTarget::Label(name)) => {
+                tx.send(AppEvent::FollowLabel(name)).ok();
+            }
+            None => {}
+        }
+    }
+
+    /// One key of a pending leader sequence. Esc cancels (focus returns to
+    /// the editor), Backspace steps up, chars walk the tree, a fired leaf
+    /// executes. Everything is consumed — a pending sequence owns the
+    /// keyboard.
+    fn handle_leader_key(
+        &mut self,
+        key: &ratatui::crossterm::event::KeyEvent,
+        tx: &AppTx,
+    ) -> EventState {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        match key.code {
+            KeyCode::Esc => {
+                self.leader.cancel();
+                self.focus_editor();
+            }
+            KeyCode::Backspace => {
+                self.leader.step_up();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                match self.leader.feed(c) {
+                    LeaderOutcome::Fired(action) => self.execute_leader_action(action, tx),
+                    LeaderOutcome::Invalid => {
+                        // Gentle feedback; the sequence stays pending.
+                        self.footer.flash(format!("leader: no entry for '{c}'"), tx);
+                    }
+                    _ => {}
+                }
+            }
+            // Other keys (arrows, function keys, …) are swallowed; the
+            // sequence stays pending. Ctrl-chords never reach here — the
+            // intercept in handle_input cancels and re-dispatches them.
+            _ => {}
+        }
+        tx.send(AppEvent::Redraw).ok();
+        EventState::Consumed
+    }
+
+    /// Put `text` on the system clipboard, flashing `done` on success.
+    fn copy_to_clipboard(&mut self, text: String, done: &str, tx: &AppTx) {
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+            Ok(()) => self.footer.flash(done.to_string(), tx),
+            Err(e) => self.footer.flash(format!("clipboard: {e}"), tx),
+        }
+    }
+
+    /// Execute a fired leader leaf. Stubs for surfaces that land in later
+    /// phases flash a "coming soon" notice instead of silently doing nothing.
+    fn execute_leader_action(&mut self, action: LeaderAction, tx: &AppTx) {
+        match action {
+            LeaderAction::OpenDrawer(view) => self.open_drawer_view(view, tx),
+
+            // +find — list-style leaves route to today's pickers; the
+            // telescope modal takes them over in phase 08.
+            LeaderAction::FindFiles => self.open_file_finder(tx),
+            LeaderAction::FindGrep => self.open_drawer_view(DrawerView::Find, tx),
+            LeaderAction::FindTags => self.open_drawer_view(DrawerView::Tags, tx),
+            LeaderAction::FindBacklinks => {
+                self.open_find_with_query("<{note}".to_string(), None, tx)
+            }
+            LeaderAction::FindRecent => self.open_search_browser(tx),
+            LeaderAction::FindHeadings => self.open_drawer_view(DrawerView::Outline, tx),
+
+            // +note
+            LeaderAction::NoteNew => {
+                // The FILES filter doubles as the create field (typing a new
+                // name offers "Create: …"); the telescope picker (08) gives
+                // this a dedicated door.
+                self.open_drawer_view(DrawerView::Files, tx);
+                self.footer
+                    .flash("type a name — Enter creates".to_string(), tx);
+            }
+            LeaderAction::NoteDaily => {
+                tx.send(AppEvent::OpenJournal).ok();
+            }
+            LeaderAction::NoteFromTemplate => {
+                self.footer.flash("templates — coming soon".to_string(), tx);
+            }
+            LeaderAction::NoteRename => {
+                tx.send(AppEvent::ShowRenameDialog(self.path.clone())).ok();
+            }
+            LeaderAction::NoteMove => {
+                tx.send(AppEvent::ShowMoveDialog(self.path.clone())).ok();
+            }
+            LeaderAction::NoteDelete => {
+                tx.send(AppEvent::ShowDeleteDialog(self.path.clone())).ok();
+            }
+
+            // +links
+            LeaderAction::LinksTab(tab) => {
+                self.open_drawer_view(DrawerView::Links, tx);
+                self.panels.links_mut().show_tab(tab, tx);
+            }
+            LeaderAction::LinksGraph => {
+                self.footer
+                    .flash("local graph — coming soon".to_string(), tx);
+            }
+
+            // +git/sync — status is live; the rest are display-only stubs
+            // (spec §12 keeps git interactions out of scope).
+            LeaderAction::GitStatus => {
+                self.refresh_git_status(tx);
+                let msg = self
+                    .git_status
+                    .clone()
+                    .unwrap_or_else(|| "not a git repository".to_string());
+                self.footer.flash(msg, tx);
+            }
+            LeaderAction::GitSync | LeaderAction::GitLog | LeaderAction::GitDiff => {
+                self.footer
+                    .flash("git is display-only for now".to_string(), tx);
+            }
+
+            // +vault
+            LeaderAction::VaultSwitch => self.open_workspace_switcher(),
+            LeaderAction::VaultReindex => {
+                self.footer
+                    .flash("reindex lives in Settings (Ctrl+P)".to_string(), tx);
+            }
+            LeaderAction::VaultConfig => {
+                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings))
+                    .ok();
+            }
+
+            // +window
+            LeaderAction::WindowZen => {
+                self.panels.hide(PanelKind::Drawer);
+                self.focus_editor();
+            }
+            LeaderAction::WindowSplit => {
+                self.footer
+                    .flash("editor splits — coming soon".to_string(), tx);
+            }
+            LeaderAction::WindowGrowDrawer => self.panels.adjust_drawer_width(4),
+            LeaderAction::WindowShrinkDrawer => self.panels.adjust_drawer_width(-4),
+
+            // +this note
+            LeaderAction::NoteToggleTodo => {
+                self.footer
+                    .flash("toggle todo — coming soon".to_string(), tx);
+            }
+            LeaderAction::NotePreview => {
+                self.footer
+                    .flash("preview — lands with phase 09".to_string(), tx);
+            }
+            LeaderAction::NoteCopyWikilink => {
+                let link = format!("[[{}]]", self.path.get_clean_name());
+                self.copy_to_clipboard(link, "wikilink copied", tx);
+            }
+            LeaderAction::NoteExport => {
+                self.footer.flash("export — coming soon".to_string(), tx);
+            }
+            LeaderAction::NoteYankPath => {
+                let path = self.path.to_string();
+                self.copy_to_clipboard(path, "note path copied", tx);
+            }
+
+            LeaderAction::Help => self.open_help(),
+        }
+    }
+
     /// Kick off the async loads behind status line 2: the open note's
     /// backlink count and the workspace git summary. Results return as
     /// `BacklinkCountLoaded` / `GitStatusLoaded`; stale backlink completions
@@ -673,6 +924,42 @@ impl AppScreen for EditorScreen {
         {
             return EventState::Consumed;
         }
+        // Ctrl+Enter follows the link under the cursor on kitty-protocol
+        // terminals (legacy terminals can't tell it from Enter; Ctrl+N is the
+        // always-works binding).
+        if self.editor_active()
+            && let InputEvent::Key(key) = event
+            && key.code == ratatui::crossterm::event::KeyCode::Enter
+            && key
+                .modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+        {
+            self.follow_link_at_cursor(tx);
+            return EventState::Consumed;
+        }
+
+        // A pending leader sequence owns the keyboard ahead of everything
+        // else (spec §8a) — every key is consumed until it fires or cancels.
+        // Exceptions: an overlay that opened underneath (async paths) wins,
+        // and a Ctrl-chord cancels the sequence then dispatches normally, so
+        // Ctrl-G restarts the leader and Ctrl-Q still quits mid-sequence.
+        if self.leader.is_pending()
+            && let InputEvent::Key(key) = event
+        {
+            if self.overlays.is_open() {
+                self.leader.cancel();
+            } else if matches!(key.code, ratatui::crossterm::event::KeyCode::Char(_))
+                && key
+                    .modifiers
+                    .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+            {
+                self.leader.cancel();
+                // fall through to normal dispatch below
+            } else {
+                return self.handle_leader_key(key, tx);
+            }
+        }
+
         if let InputEvent::Key(key) = event
             && let Some(combo) = key_event_to_combo(key)
         {
@@ -691,18 +978,29 @@ impl AppScreen for EditorScreen {
                     | KeyStrike::F11
                     | KeyStrike::F12
             );
-            if is_fkey
-                || ((combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
-                    && combo.key >= KeyStrike::KeyA
-                    && combo.key <= KeyStrike::KeyZ)
-            {
-                self.footer.flash(combo.to_string(), tx);
-            }
             let action = {
                 let s = self.settings.read().unwrap();
                 s.key_bindings.get_action(&combo)
             };
+            // Flash the raw chord — except for the leader gateway, whose
+            // affordance is the pending sequence (and the which-key overlay).
+            if action != Some(ActionShortcuts::Leader)
+                && (is_fkey
+                    || ((combo.modifiers.is_ctrl() || combo.modifiers.is_alt())
+                        && combo.key >= KeyStrike::KeyA
+                        && combo.key <= KeyStrike::KeyZ))
+            {
+                self.footer.flash(combo.to_string(), tx);
+            }
             match action {
+                Some(ActionShortcuts::Leader) => {
+                    // The gateway works in every context, including
+                    // mid-typing — but not while an overlay owns input.
+                    if !self.overlays.is_open() {
+                        self.leader.start();
+                    }
+                    return EventState::Consumed;
+                }
                 Some(ActionShortcuts::ToggleSidebar) => {
                     self.toggle_drawer(tx);
                     return EventState::Consumed;
@@ -727,43 +1025,16 @@ impl AppScreen for EditorScreen {
                 Some(ActionShortcuts::SearchNotes) => {
                     if self.overlays.active_kind() == Some(OverlayKind::NoteBrowser) {
                         self.dismiss_overlay();
-                    } else if !self.overlays.is_open() {
-                        let s = self.settings.read().unwrap();
-                        let provider = SearchNotesProvider::new(
-                            self.vault.clone(),
-                            s.current_last_paths(),
-                            Some(self.path.clone()),
-                        );
-                        let modal = NoteBrowserModal::new(
-                            "Note Browser",
-                            provider,
-                            self.vault.clone(),
-                            s.key_bindings.clone(),
-                            s.icons(),
-                            tx.clone(),
-                        );
-                        drop(s);
-                        self.present_overlay(Box::new(modal));
+                    } else {
+                        self.open_search_browser(tx);
                     }
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::OpenNote) => {
                     if self.overlays.active_kind() == Some(OverlayKind::NoteBrowser) {
                         self.dismiss_overlay();
-                    } else if !self.overlays.is_open() {
-                        let current_dir = self.path.get_parent_path().0;
-                        let provider = FileFinderProvider::new(self.vault.clone(), current_dir);
-                        let s = self.settings.read().unwrap();
-                        let modal = NoteBrowserModal::new(
-                            "Find Note",
-                            provider,
-                            self.vault.clone(),
-                            s.key_bindings.clone(),
-                            s.icons(),
-                            tx.clone(),
-                        );
-                        drop(s);
-                        self.present_overlay(Box::new(modal));
+                    } else {
+                        self.open_file_finder(tx);
                     }
                     return EventState::Consumed;
                 }
@@ -772,16 +1043,7 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::FollowLink) if self.editor_active() => {
-                    use crate::components::text_editor::LinkTarget;
-                    match self.panels.editor_mut().link_at_cursor() {
-                        Some(LinkTarget::Note(target)) => {
-                            tx.send(AppEvent::FollowLink(target)).ok();
-                        }
-                        Some(LinkTarget::Label(name)) => {
-                            tx.send(AppEvent::FollowLabel(name)).ok();
-                        }
-                        None => {}
-                    }
+                    self.follow_link_at_cursor(tx);
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::ToggleQueryPanel) => {
@@ -856,12 +1118,7 @@ impl AppScreen for EditorScreen {
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::SwitchWorkspace) => {
-                    if !self.overlays.is_open() {
-                        let s = self.settings.read().unwrap();
-                        let dialog = ActiveDialog::workspace_switcher(&s);
-                        drop(s);
-                        self.present_overlay(Box::new(dialog));
-                    }
+                    self.open_workspace_switcher();
                     return EventState::Consumed;
                 }
                 Some(ActionShortcuts::QuickNote) => {
@@ -885,14 +1142,8 @@ impl AppScreen for EditorScreen {
                 _ => {
                     if is_fkey {
                         // F1 opens the help modal (only when no other dialog is active).
-                        if combo.key == KeyStrike::F1
-                            && combo.modifiers.is_empty()
-                            && !self.overlays.is_open()
-                        {
-                            let s = self.settings.read().unwrap();
-                            let dialog = ActiveDialog::help(&s.key_bindings);
-                            drop(s);
-                            self.present_overlay(Box::new(dialog));
+                        if combo.key == KeyStrike::F1 && combo.modifiers.is_empty() {
+                            self.open_help();
                         }
                         // All F-keys (including F1 when a dialog is already open) are consumed
                         // and never forwarded to the embedded editor.
@@ -912,6 +1163,19 @@ impl AppScreen for EditorScreen {
             // panel under the cursor (one rule for every panel) and the event
             // is forwarded to that panel for its internal behavior.
             return self.panels.handle_mouse(event, tx);
+        }
+
+        // Bare Space leads only where it has no typing job: a focused list
+        // or the rail — never the editor or a text-input drawer view
+        // (spec §8a).
+        if self.panels.focused() != PanelKind::Editor
+            && !self.panels.drawer_is_text_input()
+            && let InputEvent::Key(key) = event
+            && key.code == ratatui::crossterm::event::KeyCode::Char(' ')
+            && key.modifiers.is_empty()
+        {
+            self.leader.start();
+            return EventState::Consumed;
         }
 
         // Tab / Shift-Tab cycle panel focus (spec §2). The focused panel gets
@@ -1373,6 +1637,100 @@ mod tests {
         let settings: SharedSettings = Arc::new(RwLock::new(AppSettings::default()));
         let screen = EditorScreen::new(vault.clone(), VaultPath::root(), settings.clone());
         (screen, vault, settings, dir)
+    }
+
+    fn key_event(code: ratatui::crossterm::event::KeyCode) -> InputEvent {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn ctrl_key(c: char) -> InputEvent {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        InputEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn chr(c: char) -> InputEvent {
+        key_event(ratatui::crossterm::event::KeyCode::Char(c))
+    }
+
+    /// Ctrl-G (leader) then `o` `f` opens the FILES drawer — the full
+    /// sequence fires with no menu drawn and no timeout wait.
+    #[tokio::test]
+    async fn leader_sequence_opens_drawer_view() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Start from a non-Files view so the switch is observable.
+        screen.panels.open_drawer_view(DrawerView::Tags);
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        assert!(screen.leader.is_pending());
+        screen.handle_input(&chr('o'), &tx);
+        screen.handle_input(&chr('f'), &tx);
+
+        assert!(!screen.leader.is_pending());
+        assert_eq!(screen.panels.active_drawer_view(), DrawerView::Files);
+        assert_eq!(screen.panels.focused(), PanelKind::Drawer);
+    }
+
+    /// The gateway works mid-typing: with the editor focused, Ctrl-G arms
+    /// the sequence and the next chars are consumed, not inserted.
+    #[tokio::test]
+    async fn leader_consumes_keys_while_editor_focused() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        screen.panels.editor_mut().set_text(String::new());
+        assert_eq!(screen.panels.focused(), PanelKind::Editor);
+
+        screen.handle_input(&ctrl_key('g'), &tx);
+        assert!(screen.leader.is_pending());
+        // 'w' is a group key; it must not land in the buffer.
+        screen.handle_input(&chr('w'), &tx);
+        screen.handle_input(&chr('z'), &tx); // zen: hides the drawer
+        assert_eq!(screen.panels.editor().get_text(), "");
+        assert!(!screen.panels.is_visible(PanelKind::Drawer));
+    }
+
+    /// Esc cancels a pending sequence and returns focus to the editor.
+    #[tokio::test]
+    async fn leader_esc_cancels_and_focuses_editor() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        screen.panels.focus(PanelKind::Rail);
+        screen.handle_input(&ctrl_key('g'), &tx);
+        screen.handle_input(&chr('f'), &tx);
+        screen.handle_input(&key_event(ratatui::crossterm::event::KeyCode::Esc), &tx);
+
+        assert!(!screen.leader.is_pending());
+        assert_eq!(screen.panels.focused(), PanelKind::Editor);
+    }
+
+    /// Space leads only where it has no typing job: it arms the sequence
+    /// from the rail, but types a space in the focused editor.
+    #[tokio::test]
+    async fn space_leads_in_lists_but_types_in_editor() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Editor focused: Space must insert a space.
+        screen.panels.editor_mut().set_text(String::new());
+        screen.handle_input(&chr(' '), &tx);
+        assert!(!screen.leader.is_pending());
+        assert_eq!(screen.panels.editor().get_text(), " ");
+
+        // Rail focused: Space arms the leader.
+        screen.panels.focus(PanelKind::Rail);
+        screen.handle_input(&chr(' '), &tx);
+        assert!(screen.leader.is_pending());
+        screen.leader.cancel();
+
+        // FIND drawer (a text input): Space must NOT lead.
+        screen.panels.open_drawer_view(DrawerView::Find);
+        screen.panels.focus(PanelKind::Drawer);
+        screen.handle_input(&chr(' '), &tx);
+        assert!(!screen.leader.is_pending());
     }
 
     #[tokio::test]

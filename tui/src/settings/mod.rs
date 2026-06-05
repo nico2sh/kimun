@@ -121,6 +121,10 @@ pub struct AppSettings {
     pub key_bindings: KeyBindings,
     #[serde(default = "default_autosave_interval")]
     pub autosave_interval_secs: u64,
+    /// Hesitation timeout (ms) before the which-key overlay reveals itself
+    /// during a pending leader sequence. Sequences typed faster never wait.
+    #[serde(default = "default_leader_timeout_ms")]
+    pub leader_timeout_ms: u64,
     #[serde(default = "default_use_nerd_fonts")]
     pub use_nerd_fonts: bool,
     #[serde(default)]
@@ -184,7 +188,12 @@ fn default_keybindings() -> KeyBindings {
         // drawer toggle lives on Ctrl-T.
         .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyR, ActionShortcuts::OpenSortDialog)
-        .add(KeyStrike::KeyG, ActionShortcuts::FollowLink)
+        // Leader gateway. Spec deviation: spec says Ctrl-K, which stays the
+        // note browser; the gateway lives on Ctrl-G (decision 2026-06-05).
+        .add(KeyStrike::KeyG, ActionShortcuts::Leader)
+        // FollowLink's always-works binding; Ctrl+Enter also follows on
+        // kitty-protocol terminals (hardcoded in the editor screen).
+        .add(KeyStrike::KeyN, ActionShortcuts::FollowLink)
         .add(KeyStrike::KeyH, ActionShortcuts::FocusSidebar)
         .add(KeyStrike::KeyL, ActionShortcuts::FocusEditor)
         .add(KeyStrike::KeyW, ActionShortcuts::QuickNote)
@@ -218,6 +227,10 @@ fn yes() -> bool {
 
 fn default_autosave_interval() -> u64 {
     5
+}
+
+fn default_leader_timeout_ms() -> u64 {
+    400
 }
 
 fn default_cache_dir() -> PathBuf {
@@ -263,6 +276,7 @@ impl Default for AppSettings {
             needs_indexing: true,
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
+            leader_timeout_ms: default_leader_timeout_ms(),
             use_nerd_fonts: false,
             editor_backend: EditorBackendSetting::Textarea,
             nvim_path: None,
@@ -483,15 +497,23 @@ impl AppSettings {
     fn merge_missing_default_bindings(&mut self) {
         let defaults = default_keybindings().to_hashmap();
         let mut current = self.key_bindings.to_hashmap();
-        let bound: std::collections::HashSet<_> = current.values().flatten().cloned().collect();
+        let mut bound: std::collections::HashSet<_> = current.values().flatten().cloned().collect();
         for (action, combos) in defaults {
             match current.entry(action) {
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(combos);
+                    // Never steal a combo the user has bound to something
+                    // else — insert only the free ones, and claim them so a
+                    // later default in this pass cannot double-bind.
+                    let free: Vec<_> = combos.into_iter().filter(|c| !bound.contains(c)).collect();
+                    if !free.is_empty() {
+                        bound.extend(free.iter().copied());
+                        e.insert(free);
+                    }
                 }
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     for combo in combos {
                         if !bound.contains(&combo) && !e.get().contains(&combo) {
+                            bound.insert(combo);
                             e.get_mut().push(combo);
                         }
                     }

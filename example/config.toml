@@ -21,11 +21,12 @@
 #   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
 #
 # ─────────────────────────────────────────────────────────────────────────────
-config_version = 3
+config_version = 4
 theme = "ANSI"
 cache_dir = "."
 history_dir = "history"
 autosave_interval_secs = 5
+leader_timeout_ms = 400
 use_nerd_fonts = true
 editor_backend = "textarea"
 default_sort_field = "name"
@@ -62,10 +63,11 @@ FocusEditor = ["ctrl&L"]
 FocusSidebar = ["ctrl&H"]
 OpenSortDialog = ["ctrl&R"]
 FileOperations = ["F2"]
-FollowLink = ["ctrl&G"]
+FollowLink = ["ctrl&N"]
 QuickNote = ["ctrl&W"]
 ToggleQueryPanel = ["ctrl&E"]
 OpenSavedSearches = ["F3"]
 SaveCurrentQuery = ["ctrl&D"]
 SwitchWorkspace = ["F4"]
 FindInBuffer = ["ctrl&F"]
+Leader = ["ctrl&G"]
