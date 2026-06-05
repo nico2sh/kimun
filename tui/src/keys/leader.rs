@@ -54,6 +54,8 @@ pub enum LeaderAction {
     NoteCopyWikilink,
     NoteExport,
     NoteYankPath,
+    /// Open the command palette.
+    Palette,
     // help
     Help,
 }
@@ -216,6 +218,7 @@ pub fn leader_tree() -> LeaderNode {
                     ],
                 },
             ),
+            ('p', leaf("command palette", A::Palette)),
             ('?', leaf("help / cheatsheet", A::Help)),
         ],
     }
@@ -386,7 +389,10 @@ mod tests {
     fn tree_matches_spec_groups() {
         let tree = leader_tree();
         let groups: Vec<char> = tree.children().iter().map(|(k, _)| *k).collect();
-        assert_eq!(groups, vec!['f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', '?']);
+        assert_eq!(
+            groups,
+            vec!['f', 'n', 'l', 'o', 'g', 'v', 'w', 'm', 'p', '?']
+        );
         // Doubled letters fire the group's most-common action.
         let mut e = LeaderEngine::new();
         e.start();

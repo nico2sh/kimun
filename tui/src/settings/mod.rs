@@ -200,6 +200,12 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyE, ActionShortcuts::ToggleQueryPanel)
         .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer);
 
+    // Command palette — the classic Ctrl+Shift+P (also leader `p`).
+    kb.batch_add()
+        .with_ctrl()
+        .with_shift()
+        .add(KeyStrike::KeyP, ActionShortcuts::OpenCommandPalette);
+
     // File operations menu (F2 — no modifier, reliable in all terminals).
     kb.batch_add()
         .add(KeyStrike::F2, ActionShortcuts::FileOperations);

@@ -110,6 +110,9 @@ pub struct SearchList<R: SearchRow> {
     /// for the host to pin as the saved-search breadcrumb. Read once via
     /// [`take_accepted_saved_search`](Self::take_accepted_saved_search).
     accepted_saved_search: Option<String>,
+    /// Render the query input with §9 syntax highlighting (the FIND drawer
+    /// and the telescope modal; plain inputs like the sidebar filter skip it).
+    highlight_query: bool,
 }
 
 /// Mouse interaction result from [`SearchList::handle_mouse`].
@@ -135,6 +138,7 @@ pub struct SearchListBuilder<R: SearchRow> {
     intercept: Vec<KeyCombo>,
     icons: Icons,
     debounce: Option<std::time::Duration>,
+    highlight_query: bool,
 }
 
 impl<R: SearchRow> SearchList<R> {
@@ -151,6 +155,7 @@ impl<R: SearchRow> SearchList<R> {
             intercept: Vec::new(),
             icons: Icons::new(false),
             debounce: None,
+            highlight_query: false,
         }
     }
 
@@ -185,6 +190,7 @@ impl<R: SearchRow> SearchList<R> {
             query: b.initial_query,
             loader,
             input,
+            highlight_query: b.highlight_query,
             autocomplete,
             intercept: b.intercept,
             icons: b.icons,
@@ -261,6 +267,12 @@ impl<R: SearchRow> SearchList<R> {
     /// Length of the visible sequence `[leading?] ++ display`.
     pub fn visible_len(&self) -> usize {
         self.leading_offset() + self.display.len()
+    }
+
+    /// Number of real matches — the visible rows minus the synthetic leading
+    /// affordance ("Create: …"), for result-count displays.
+    pub fn match_count(&self) -> usize {
+        self.display.len()
     }
 
     /// Row at visible position `pos` in `[leading?] ++ display`.
@@ -515,15 +527,16 @@ impl<R: SearchRow> SearchList<R> {
     }
 
     pub fn render_query(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
-        self.input.render(
-            f,
-            area,
-            Style::default()
-                .fg(theme.fg.to_ratatui())
-                .bg(theme.bg_panel.to_ratatui()),
-            0,
-            focused,
-        );
+        let base = Style::default()
+            .fg(theme.fg.to_ratatui())
+            .bg(theme.bg_panel.to_ratatui());
+        if self.highlight_query {
+            let line =
+                crate::components::query_highlight::highlight_line(self.input.value(), theme, base);
+            self.input.render_line(f, area, line, base, 0, focused);
+        } else {
+            self.input.render(f, area, base, 0, focused);
+        }
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme, focused: bool) {
@@ -764,6 +777,11 @@ impl<R: SearchRow> SearchListBuilder<R> {
     }
     pub fn intercept(mut self, v: Vec<KeyCombo>) -> Self {
         self.intercept = v;
+        self
+    }
+    /// Render the query input with §9 syntax highlighting.
+    pub fn highlight_query(mut self) -> Self {
+        self.highlight_query = true;
         self
     }
     pub fn icons(mut self, icons: Icons) -> Self {

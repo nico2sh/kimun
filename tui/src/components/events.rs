@@ -59,6 +59,9 @@ pub enum AppEvent {
     /// Jump the editor cursor to the first heading with this text (sent by
     /// the OUTLINE drawer).
     JumpToHeading(String),
+    /// Run a leader-tree action (sent by the command palette after it has
+    /// closed itself, so the action sees no open overlay).
+    ExecuteLeaderAction(crate::keys::leader::LeaderAction),
     /// Apply (and optionally persist) a resolved theme — sent by the theme
     /// picker: previews on selection move, persists on Enter. Carries the
     /// full `Theme` so applying never re-reads the themes directory.

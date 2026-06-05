@@ -20,9 +20,9 @@ use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, ScreenEvent, SortTarget};
 use crate::components::footer_bar::FooterBar;
-use crate::components::note_browser::NoteBrowserModal;
 use crate::components::note_browser::file_finder_provider::FileFinderProvider;
 use crate::components::note_browser::search_provider::SearchNotesProvider;
+use crate::components::note_browser::{BrowserScope, NoteBrowserModal};
 use crate::components::overlay::{Overlay, OverlayKind, OverlayMsg};
 use crate::components::panel::PanelKind;
 use crate::components::saved_searches_modal::SavedSearchesModal;
@@ -257,6 +257,7 @@ impl EditorScreen {
                 let s = self.settings.read().unwrap();
                 let modal = NoteBrowserModal::new(
                     format!("Follow: {target}"),
+                    BrowserScope::Files,
                     provider,
                     self.vault.clone(),
                     s.key_bindings.clone(),
@@ -612,6 +613,29 @@ impl EditorScreen {
         self.present_overlay(Box::new(dialog));
     }
 
+    /// Open the command palette (Ctrl+Shift+P and leader `p`). No-op while
+    /// an overlay is open.
+    fn open_command_palette(&mut self, tx: &AppTx) {
+        if self.overlays.is_open() {
+            return;
+        }
+        let (gateway, icons) = {
+            let s = self.settings.read().unwrap();
+            (
+                s.key_bindings
+                    .first_combo_for(&ActionShortcuts::Leader)
+                    .unwrap_or_else(|| "leader".to_string()),
+                s.icons(),
+            )
+        };
+        let modal = crate::components::command_palette::CommandPaletteModal::new(
+            &gateway,
+            icons,
+            tx.clone(),
+        );
+        self.present_overlay(Box::new(modal));
+    }
+
     /// Open the live theme picker (leader `v c` and the CFG rail item). The
     /// full settings screen stays on Ctrl+P. No-op while an overlay is open.
     fn open_theme_picker(&mut self) {
@@ -661,6 +685,7 @@ impl EditorScreen {
         );
         let modal = NoteBrowserModal::new(
             "Note Browser",
+            BrowserScope::Query,
             provider,
             self.vault.clone(),
             s.key_bindings.clone(),
@@ -682,6 +707,7 @@ impl EditorScreen {
         let s = self.settings.read().unwrap();
         let modal = NoteBrowserModal::new(
             "Find Note",
+            BrowserScope::Files,
             provider,
             self.vault.clone(),
             s.key_bindings.clone(),
@@ -767,7 +793,7 @@ impl EditorScreen {
             // +find — list-style leaves route to today's pickers; the
             // telescope modal takes them over in phase 08.
             LeaderAction::FindFiles => self.open_file_finder(tx),
-            LeaderAction::FindGrep => self.open_drawer_view(DrawerView::Find, tx),
+            LeaderAction::FindGrep => self.open_search_browser(tx),
             LeaderAction::FindTags => self.open_drawer_view(DrawerView::Tags, tx),
             LeaderAction::FindBacklinks => {
                 self.open_find_with_query("<{note}".to_string(), None, tx)
@@ -866,6 +892,7 @@ impl EditorScreen {
                 self.copy_to_clipboard(path, "note path copied", tx);
             }
 
+            LeaderAction::Palette => self.open_command_palette(tx),
             LeaderAction::Help => self.open_cheatsheet(),
         }
     }
@@ -1041,6 +1068,14 @@ impl AppScreen for EditorScreen {
                 self.footer.flash(combo.to_string(), tx);
             }
             match action {
+                Some(ActionShortcuts::OpenCommandPalette) => {
+                    if self.overlays.active_kind() == Some(OverlayKind::CommandPalette) {
+                        self.dismiss_overlay();
+                    } else {
+                        self.open_command_palette(tx);
+                    }
+                    return EventState::Consumed;
+                }
                 Some(ActionShortcuts::Leader) => {
                     // The gateway works in every context, including
                     // mid-typing — but not while an overlay owns input.
@@ -1443,6 +1478,15 @@ impl AppScreen for EditorScreen {
             AppEvent::GitStatusLoaded(status) => {
                 self.git_status = status;
             }
+            AppEvent::ExecuteLeaderAction(action) => {
+                if self.overlays.is_open() {
+                    // The palette closes itself before sending, so this is
+                    // unreachable from it — but never drop an action silently.
+                    tracing::warn!("ExecuteLeaderAction({action:?}) dropped: overlay open");
+                } else {
+                    self.execute_leader_action(action, tx);
+                }
+            }
             AppEvent::ApplyTheme { theme, persist } => {
                 // The picker resolved the theme already — no disk re-read,
                 // just adapt to the terminal and swap.
@@ -1595,6 +1639,7 @@ impl AppScreen for EditorScreen {
                 );
                 let modal = NoteBrowserModal::with_initial_query(
                     "Note Browser",
+                    BrowserScope::Query,
                     provider,
                     self.vault.clone(),
                     s.key_bindings.clone(),
@@ -2207,6 +2252,7 @@ mod tests {
             let provider = SearchNotesProvider::new(vault.clone(), s.current_last_paths(), None);
             let modal = NoteBrowserModal::with_initial_query(
                 "Note Browser",
+                BrowserScope::Query,
                 provider,
                 vault.clone(),
                 s.key_bindings.clone(),

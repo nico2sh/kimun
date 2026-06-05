@@ -56,12 +56,16 @@ pub enum ActionShortcuts {
     /// The leader gateway (Ctrl+G by default): starts a key sequence against
     /// the leader tree in every context, including mid-typing.
     Leader,
+    /// The command palette (Ctrl+Shift+P by default): every leader command
+    /// as a fuzzy list.
+    OpenCommandPalette,
 }
 
 impl ActionShortcuts {
     pub fn category(&self) -> ShortcutCategory {
         match self {
             ActionShortcuts::Leader
+            | ActionShortcuts::OpenCommandPalette
             | ActionShortcuts::ToggleSidebar
             | ActionShortcuts::FocusSidebar
             | ActionShortcuts::FocusEditor
@@ -108,6 +112,7 @@ impl ActionShortcuts {
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
             ActionShortcuts::FindInBuffer => "Find in note".into(),
             ActionShortcuts::Leader => "Leader menu".into(),
+            ActionShortcuts::OpenCommandPalette => "Command palette".into(),
             ActionShortcuts::Text(ta) => match ta {
                 TextAction::Bold => "Bold".into(),
                 TextAction::Italic => "Italic".into(),
@@ -145,6 +150,7 @@ impl Display for ActionShortcuts {
             ActionShortcuts::SwitchWorkspace => "SwitchWorkspace".to_string(),
             ActionShortcuts::FindInBuffer => "FindInBuffer".to_string(),
             ActionShortcuts::Leader => "Leader".to_string(),
+            ActionShortcuts::OpenCommandPalette => "OpenCommandPalette".to_string(),
         };
         write!(f, "{}", action)
     }
@@ -177,6 +183,7 @@ impl TryFrom<String> for ActionShortcuts {
             "SwitchWorkspace" => ActionShortcuts::SwitchWorkspace,
             "FindInBuffer" => ActionShortcuts::FindInBuffer,
             "Leader" => ActionShortcuts::Leader,
+            "OpenCommandPalette" => ActionShortcuts::OpenCommandPalette,
             _ => {
                 if let Some(text_action) = value.strip_prefix("TextEditor-") {
                     match TextAction::try_from(text_action.to_string()) {
