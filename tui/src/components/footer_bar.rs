@@ -1,39 +1,54 @@
+//! The two-line **status bar** pinned to the bottom of the editor screen.
+//!
+//! Line 1 — context + actions: a focus-context indicator (`⌨ EDITOR` when a
+//! text field holds the cursor, `≣ LIST` when a list/panel is focused)
+//! followed by the focused surface's key hints. There is no editing "mode";
+//! focus is the only state (spec §7).
+//!
+//! Line 2 — document state: note path and modified/saved marker. Phase 04
+//! enriches this with ln/col, backlink count, and git status.
+
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::events::{AppEvent, AppTx};
-use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
 const FLASH_DURATION: Duration = Duration::from_secs(2);
 
+/// Rows the status bar occupies.
+pub const STATUS_BAR_HEIGHT: u16 = 2;
+
+/// Document state shown on line 2.
+pub struct DocState<'a> {
+    pub path: &'a str,
+    pub dirty: bool,
+}
+
+/// Everything the status bar shows for the current frame.
+pub struct StatusContext<'a> {
+    /// Label of the focused surface (panel or overlay), e.g. `EDITOR`.
+    pub focus_label: &'a str,
+    /// True when a text field holds the cursor (`⌨`); false for lists (`≣`).
+    pub editing: bool,
+    /// Key hints for the focused surface.
+    pub hints: &'a [(String, String)],
+    /// Document state for line 2.
+    pub doc: DocState<'a>,
+}
+
 pub struct FooterBar {
     key_flash: Option<(String, Instant)>,
-    settings_key: String,
-    quit_key: String,
-    toggle_key: String,
-    right_bar_key: String,
 }
 
 impl FooterBar {
-    pub fn new(
-        settings_key: String,
-        quit_key: String,
-        toggle_key: String,
-        right_bar_key: String,
-    ) -> Self {
-        Self {
-            key_flash: None,
-            settings_key,
-            quit_key,
-            toggle_key,
-            right_bar_key,
-        }
+    pub fn new() -> Self {
+        Self { key_flash: None }
     }
 
     /// Show a key-flash message for 2 seconds. Schedules a delayed redraw so
@@ -47,15 +62,13 @@ impl FooterBar {
         });
     }
 
-    pub fn render(
-        &mut self,
-        f: &mut Frame,
-        rect: Rect,
-        theme: &Theme,
-        focus_label: &str,
-        hints: &[(String, String)],
-        icons: &Icons,
-    ) {
+    pub fn render(&mut self, f: &mut Frame, rect: Rect, theme: &Theme, ctx: &StatusContext) {
+        let StatusContext {
+            focus_label,
+            editing,
+            hints,
+            doc,
+        } = ctx;
         // Expire stale key flash
         if let Some((_, instant)) = &self.key_flash
             && instant.elapsed() >= FLASH_DURATION
@@ -63,53 +76,75 @@ impl FooterBar {
             self.key_flash = None;
         }
 
-        let footer = Block::default()
-            .title(format!(
-                "[{focus_label}]  {}: Preferences | {}: Toggle sidebar | {}: Toggle right bar | {}: Quit",
-                self.settings_key, self.toggle_key, self.right_bar_key, self.quit_key,
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border_dim.to_ratatui()))
-            .style(theme.base_style())
-            .title_style(Style::default().fg(theme.fg_secondary.to_ratatui()));
-        let footer_inner = footer.inner(rect);
-        f.render_widget(footer, rect);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(rect);
 
-        if let Some((flash, _)) = &self.key_flash {
-            let flash_line = Line::from(Span::styled(
-                flash.as_str(),
-                Style::default()
-                    .fg(theme.accent.to_ratatui())
-                    .add_modifier(Modifier::BOLD),
-            ));
-            f.render_widget(
-                Paragraph::new(flash_line).alignment(Alignment::Center),
-                footer_inner,
-            );
-            return;
-        }
-
-        // Build the hints line with the nvim mode label (empty key) styled
-        // distinctly from the regular shortcut hints.
         let secondary = Style::default().fg(theme.fg_secondary.to_ratatui());
-        let sep = Span::styled("  │  ", secondary);
-        let mut spans = vec![Span::styled(format!(" {} ", icons.info), secondary)];
-        for (i, (key, label)) in hints.iter().enumerate() {
-            if i > 0 {
-                spans.push(sep.clone());
-            }
-            if key.is_empty() {
-                // Mode / command-line label from the nvim backend — make it pop.
-                spans.push(Span::styled(
-                    format!(" {label} "),
+        let muted = Style::default().fg(theme.gray.to_ratatui());
+
+        // ── Line 1: focus context + hints (or the key flash) ────────────────
+        if let Some((flash, _)) = &self.key_flash {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    flash.as_str(),
                     Style::default()
                         .fg(theme.accent.to_ratatui())
                         .add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                spans.push(Span::styled(format!("{key}: {label}"), secondary));
+                )))
+                .alignment(Alignment::Center),
+                rows[0],
+            );
+        } else {
+            let glyph = if *editing { "⌨" } else { "≣" };
+            let mut spans = vec![Span::styled(
+                format!(" {glyph} {focus_label}  "),
+                Style::default()
+                    .fg(theme.fg_bright.to_ratatui())
+                    .add_modifier(Modifier::BOLD),
+            )];
+            let sep = Span::styled("  ", secondary);
+            for (i, (key, label)) in hints.iter().enumerate() {
+                if i > 0 {
+                    spans.push(sep.clone());
+                }
+                if key.is_empty() {
+                    // Mode / command-line label from the nvim backend — make it pop.
+                    spans.push(Span::styled(
+                        format!(" {label} "),
+                        Style::default()
+                            .fg(theme.accent.to_ratatui())
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        format!("{key} "),
+                        Style::default().fg(theme.yellow.to_ratatui()),
+                    ));
+                    spans.push(Span::styled(label.clone(), secondary));
+                }
             }
+            f.render_widget(Paragraph::new(Line::from(spans)), rows[0]);
         }
-        f.render_widget(Paragraph::new(Line::from(spans)), footer_inner);
+
+        // ── Line 2: document state ──────────────────────────────────────────
+        let state_span = if doc.dirty {
+            Span::styled("● modified", Style::default().fg(theme.yellow.to_ratatui()))
+        } else {
+            Span::styled("✓ saved", Style::default().fg(theme.green.to_ratatui()))
+        };
+        let line2 = Line::from(vec![
+            Span::styled(format!(" {} ", doc.path), muted),
+            Span::styled("· ", muted),
+            state_span,
+        ]);
+        f.render_widget(Paragraph::new(line2), rows[1]);
+    }
+}
+
+impl Default for FooterBar {
+    fn default() -> Self {
+        Self::new()
     }
 }

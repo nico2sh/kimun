@@ -91,14 +91,14 @@ impl ActionShortcuts {
             ActionShortcuts::OpenNote => "Open note".into(),
             ActionShortcuts::NewJournal => "New journal entry".into(),
             ActionShortcuts::TogglePreview => "Toggle preview".into(),
-            ActionShortcuts::ToggleSidebar => "Toggle sidebar".into(),
+            ActionShortcuts::ToggleSidebar => "Toggle drawer".into(),
             ActionShortcuts::FocusEditor => "Focus right".into(),
             ActionShortcuts::FocusSidebar => "Focus left".into(),
             ActionShortcuts::OpenSortDialog => "Sort options".into(),
             ActionShortcuts::FileOperations => "File operations".into(),
             ActionShortcuts::FollowLink => "Follow link".into(),
             ActionShortcuts::QuickNote => "Quick note".into(),
-            ActionShortcuts::ToggleQueryPanel => "Toggle query panel".into(),
+            ActionShortcuts::ToggleQueryPanel => "Toggle query drawer".into(),
             ActionShortcuts::OpenSavedSearches => "Saved searches".into(),
             ActionShortcuts::SaveCurrentQuery => "Save current query".into(),
             ActionShortcuts::SwitchWorkspace => "Switch workspace".into(),
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(ActionShortcuts::OpenNote.label(), "Open note");
         assert_eq!(ActionShortcuts::NewJournal.label(), "New journal entry");
         assert_eq!(ActionShortcuts::TogglePreview.label(), "Toggle preview");
-        assert_eq!(ActionShortcuts::ToggleSidebar.label(), "Toggle sidebar");
+        assert_eq!(ActionShortcuts::ToggleSidebar.label(), "Toggle drawer");
         assert_eq!(ActionShortcuts::FocusEditor.label(), "Focus right");
         assert_eq!(ActionShortcuts::FocusSidebar.label(), "Focus left");
         assert_eq!(ActionShortcuts::OpenSortDialog.label(), "Sort options");
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(ActionShortcuts::QuickNote.label(), "Quick note");
         assert_eq!(
             ActionShortcuts::ToggleQueryPanel.label(),
-            "Toggle query panel"
+            "Toggle query drawer"
         );
         assert_eq!(ActionShortcuts::OpenSavedSearches.label(), "Saved searches");
         assert_eq!(

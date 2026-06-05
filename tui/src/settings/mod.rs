@@ -179,6 +179,9 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyP, ActionShortcuts::OpenSettings)
         .add(KeyStrike::KeyQ, ActionShortcuts::Quit)
         .add(KeyStrike::KeyJ, ActionShortcuts::NewJournal)
+        // Drawer toggle. Deliberate spec deviation: the spec's Tier-0 puts
+        // this on Ctrl-B, but Ctrl-B stays Bold (decision 2026-06-05) — the
+        // drawer toggle lives on Ctrl-T.
         .add(KeyStrike::KeyT, ActionShortcuts::ToggleSidebar)
         .add(KeyStrike::KeyR, ActionShortcuts::OpenSortDialog)
         .add(KeyStrike::KeyG, ActionShortcuts::FollowLink)
@@ -472,13 +475,28 @@ impl AppSettings {
         }
     }
 
-    /// Fills in any actions from `default_keybindings()` that are absent in the loaded config.
-    /// Existing user-customised bindings are never overwritten.
+    /// Fills in defaults from `default_keybindings()` that are absent in the
+    /// loaded config: actions with no binding at all, plus default combos
+    /// added in newer versions (e.g. Ctrl-B for the drawer toggle) — as long
+    /// as the combo is not already bound to *any* action. Existing
+    /// user-customised bindings are never overwritten.
     fn merge_missing_default_bindings(&mut self) {
         let defaults = default_keybindings().to_hashmap();
         let mut current = self.key_bindings.to_hashmap();
+        let bound: std::collections::HashSet<_> = current.values().flatten().cloned().collect();
         for (action, combos) in defaults {
-            current.entry(action).or_insert(combos);
+            match current.entry(action) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(combos);
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    for combo in combos {
+                        if !bound.contains(&combo) && !e.get().contains(&combo) {
+                            e.get_mut().push(combo);
+                        }
+                    }
+                }
+            }
         }
         self.key_bindings = KeyBindings::from_hashmap(current);
     }
