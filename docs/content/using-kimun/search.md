@@ -96,19 +96,11 @@ lk:projects      → same (long form)
 <projects.md     → same (the .md extension is optional)
 ```
 
-Finds the notes that **link to** a given note. A note matches when its body contains a note link — a `[[wikilink]]` or a Markdown link to a vault note — pointing at the target.
+Finds the notes that **link to** a given note, via `[[wikilink]]` or Markdown link. Matching rules:
 
-The target is matched by note name, case-insensitively, by **note identity** rather than substring: `<projects` matches links to `projects` but not to `projects-archive`.
-
-A bare name matches a linked note in **any** folder. Add a path to disambiguate:
-
-```
-<projects        → links to any note named "projects" (work/projects, personal/projects)
-<work/projects   → links to work/projects only
-<proj*           → links to any note whose name starts with "proj"
-```
-
-Only links to other notes count — attachments, images, and external URLs are ignored.
+- **By note identity, not substring:** `<projects` matches links to `projects`, but not to `projects-archive`
+- **Case-insensitive,** matched by note name; a bare name matches a note in any folder, so add a path to disambiguate (`<work/projects`) and use `*` wildcards freely (`<proj*`)
+- **Only note links count:** attachments, images, and external URLs are ignored
 
 ### `>` or `fwd:` — forward links
 
@@ -118,7 +110,7 @@ fwd:projects     → same (long form)
 >projects.md     → same (the .md extension is optional)
 ```
 
-The mirror image of `<`: the notes a given note **links to**. Same matching rules — name match, case-insensitive, bare name matches any folder, a path disambiguates, `*` wildcards allowed.
+The mirror image of `<`: the notes a given note **links to**. Same matching rules as backlinks.
 
 ## Labels
 

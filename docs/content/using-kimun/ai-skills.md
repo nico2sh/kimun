@@ -3,7 +3,7 @@ title = "CLI Skill"
 weight = 21
 +++
 
-# AI Skills
+# CLI Skill
 
 Kimün ships with a ready-made **skill** for AI coding assistants. A skill is a short reference file that tells an AI agent which CLI commands are available and how to use them correctly, so it can manage your notes on your behalf without guessing.
 

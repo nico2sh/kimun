@@ -19,7 +19,7 @@ The MCP client spawns and manages the `kimun mcp` process automatically — you 
 | `replace_in_note` | Replace text in a note (literal, or a regex with `regex: true` — then `new` may use `$1`/`${name}` captures); the match must be unique unless `replace_all` is set; `preview: true` returns the result without writing (destructive) |
 | `delete_note` | Delete a note (destructive) |
 | `show_note` | Return the full markdown content of a note |
-| `search_notes` | Search with `=name`, `@heading`, `/path`, `#label`, `<note` (backlinks), `>note` (forward links), `-exclusion` operators |
+| `search_notes` | Search the vault — same [query syntax](@/using-kimun/search.md) as the TUI and CLI |
 | `list_notes` | List all notes, optionally filtered by path prefix |
 | `journal` | Append to today's (or a specific date's) journal entry |
 | `get_backlinks` | List notes that link to the given note |

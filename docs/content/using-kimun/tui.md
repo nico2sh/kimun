@@ -32,20 +32,15 @@ Kimün's terminal UI is built around a single editor screen with an activity rai
 
 ## The Leader Key
 
-Press **`Ctrl+G`** (the *leader*) and then a short key sequence to reach any command. Sequences are grouped mnemonically:
+Press **`Ctrl+G`** (the *leader*) and then a short key sequence to reach any command. Sequences are grouped mnemonically — `f` for +find, `n` for +note, `v` for +vault, and so on. A few examples:
 
-| Group | Keys | Examples |
-| ----- | ---- | -------- |
-| `f` +find | `f f` files · `f g` grep/query · `f t` tags · `f b` backlinks · `f r` recent · `f s` saved searches · `f h` headings |
-| `n` +note | `n n` new · `n d` daily · `n t` from template · `n r` rename · `n m` move · `n D` delete |
-| `l` +links | `l b` backlinks · `l o` outgoing · `l u` unlinked mentions |
-| `o` +open | `o f/q/t/k/l/c` open a drawer view directly (files/find/tags/links/outline/config) |
-| `g` +git | `g s` status · log/diff/sync are display-only stubs |
-| `v` +vault | `v s` switch vault · `v r` reindex · `v c` config panel · `v t` theme picker · `v S` settings screen |
-| `w` +window | `w z` zen · `w l`/`w h` grow/shrink drawer |
-| `m` +this note | `m t` toggle todo · `m p` preview · `m c` copy wikilink · `m y` yank path · `m r` rename |
-| `p` | command palette |
-| `?` | help / cheatsheet |
+```
+Ctrl+G f f    open the file picker
+Ctrl+G n d    open today's journal
+Ctrl+G v t    open the theme picker
+```
+
+The full group-by-group tree is on the [Keybindings cheat-sheet](@/using-kimun/keybindings.md#the-leader-tree).
 
 Hesitate mid-sequence and a **which-key** panel pops up above the status bar showing what each next key does (the delay is configurable — `leader_timeout_ms`). In **lists** (not text fields), a bare `Space` also starts a leader sequence.
 

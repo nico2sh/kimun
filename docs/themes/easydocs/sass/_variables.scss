@@ -17,7 +17,8 @@ $code_font: 400 0.9375rem/1.75 '0xProto', 'SFMono-Regular', 'Consolas', 'Liberat
 
 // UI elements
 $quote-bg: #28241E;
-$quote-border: #F9C844 4px solid;
+// Thin ▏-style bar, mirroring the app's own blockquote treatment
+$quote-border: #F9C844 1px solid;
 $quote-alert-note-color: #82BAD5;
 $quote-alert-tip-color: #5ACB5A;
 $quote-alert-important-color: #ab7df8;
