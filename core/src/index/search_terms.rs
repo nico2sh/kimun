@@ -537,6 +537,335 @@ fn dedup_preserving_order(v: &mut Vec<String>) {
     v.retain(|x| seen.insert(x.clone()));
 }
 
+
+// ---------------------------------------------------------------------------
+// Query lexer — token spans for presentation (syntax highlighting)
+// ---------------------------------------------------------------------------
+
+/// Token class of a span in a query string, for syntax highlighting. Mirrors
+/// the grammar [`QueryTermExtractor::extract_and_consume`] consumes — the two
+/// must stay in step (see the `lexer_agrees_with_parser_*` tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryTokenClass {
+    /// A leading `-` (exclusion).
+    Negation,
+    /// A field prefix: a sigil (`<` `>` `=` `@` `/` `#` `^`) or its long form
+    /// (`lk:` `fwd:` `name:` `in:` `pt:` `lb:` `or:`).
+    FieldKey,
+    /// A note-targeting value (after `<` / `>` / `=` and long forms).
+    LinkValue,
+    /// A label value (after `#` / `lb:`).
+    TagValue,
+    /// A quoted value (any field), quotes included.
+    Quoted,
+    /// A bare `YYYY-MM-DD` date term.
+    Date,
+    /// A bare numeric term.
+    Number,
+    /// A plain search term or unclassified value.
+    Term,
+    /// An opening quote with no closing quote: the parser drops everything
+    /// from here on. The one real "parse error" the lenient grammar has.
+    Unterminated,
+}
+
+/// One classified span of a query string. `range` indexes the original
+/// string (byte offsets), so spans can be styled in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryTokenSpan {
+    /// Byte range of the span in the query string.
+    pub range: std::ops::Range<usize>,
+    /// What the span is.
+    pub class: QueryTokenClass,
+}
+
+/// True if `term` looks like a `YYYY-MM-DD` date.
+fn is_date_like(term: &str) -> bool {
+    let b = term.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| matches!(i, 4 | 7) || c.is_ascii_digit())
+}
+
+/// Value class for the span after a field prefix (or a bare term).
+fn value_class(el: &ElementType, term: &str) -> QueryTokenClass {
+    match el {
+        ElementType::Label | ElementType::ExcludedLabel => QueryTokenClass::TagValue,
+        ElementType::Links
+        | ElementType::ExcludedLinks
+        | ElementType::ForwardLinks
+        | ElementType::ExcludedForwardLinks
+        | ElementType::At
+        | ElementType::ExcludedAt => QueryTokenClass::LinkValue,
+        ElementType::Term | ElementType::ExcludedTerm => {
+            if is_date_like(term) {
+                QueryTokenClass::Date
+            } else if !term.is_empty() && term.chars().all(|c| c.is_ascii_digit()) {
+                QueryTokenClass::Number
+            } else {
+                QueryTokenClass::Term
+            }
+        }
+        _ => QueryTokenClass::Term,
+    }
+}
+
+/// Lex `query` into classified spans for syntax highlighting. Whitespace is
+/// not covered by any span. The lexer follows the parser's grammar exactly:
+/// tokens split on ASCII space, a prefix is recognized at a token start, a
+/// quote is honored only at a value start, and an unterminated quote swallows
+/// the rest of the string (classified [`QueryTokenClass::Unterminated`]).
+pub fn query_token_spans(query: &str) -> Vec<QueryTokenSpan> {
+    let mut spans = Vec::new();
+    let mut pos = 0usize;
+    let len = query.len();
+
+    while pos < len {
+        // Skip whitespace at a token boundary. The parser splits on ASCII
+        // space and then `trim()`s each round, so any Unicode whitespace at
+        // a token START is discarded — while whitespace *inside* an unquoted
+        // token (e.g. a tab between letters) stays part of it, which this
+        // loop preserves because it only runs at boundaries.
+        let c = query[pos..].chars().next().expect("pos < len");
+        if c.is_whitespace() {
+            pos += c.len_utf8();
+            continue;
+        }
+        let token_start = pos;
+        let rest = &query[pos..];
+
+        // Leading `-`: exclusion for prefixes, order, or bare terms. The
+        // prefix table folds `-` into its entries; the lexer emits it as its
+        // own span so it can be styled red.
+        let (neg, after_neg) = match rest.strip_prefix('-') {
+            Some(r) => (true, r),
+            None => (false, rest),
+        };
+
+        // Field prefix (long form first, then sigil), then order forms.
+        let prefixed = prefix_table()
+            .into_iter()
+            .find_map(|(long, short, make_type)| {
+                let long = long.strip_prefix('-').unwrap_or(long);
+                let short = short.strip_prefix('-').unwrap_or(short);
+                // Only the matching polarity exists in the table twice; the
+                // stripped forms are identical, so dedupe by polarity here.
+                after_neg
+                    .strip_prefix(long)
+                    .map(|r| (make_type(), long.len(), r))
+                    .or_else(|| {
+                        after_neg
+                            .strip_prefix(short)
+                            .map(|r| (make_type(), short.len(), r))
+                    })
+            })
+            .or_else(|| {
+                let order_letter = format!("{ORDER_LETTER}:");
+                after_neg
+                    .strip_prefix(&order_letter)
+                    .map(|r| (ElementType::OrderBy { asc: !neg }, order_letter.len(), r))
+                    .or_else(|| {
+                        after_neg
+                            .strip_prefix(ORDER_CHAR)
+                            .map(|r| (ElementType::OrderBy { asc: !neg }, ORDER_CHAR.len(), r))
+                    })
+            });
+
+        let (el, prefix_len, value) = match prefixed {
+            Some((el, plen, value)) => (el, plen, value),
+            None => (
+                if neg {
+                    ElementType::ExcludedTerm
+                } else {
+                    ElementType::Term
+                },
+                0,
+                after_neg,
+            ),
+        };
+
+        let mut cursor = token_start;
+        if neg {
+            spans.push(QueryTokenSpan {
+                range: cursor..cursor + 1,
+                class: QueryTokenClass::Negation,
+            });
+            cursor += 1;
+        }
+        if prefix_len > 0 {
+            spans.push(QueryTokenSpan {
+                range: cursor..cursor + prefix_len,
+                class: QueryTokenClass::FieldKey,
+            });
+            cursor += prefix_len;
+        }
+
+        // Value: quoted (only at a value start) or up to the next space.
+        if let Some(q) = value.chars().next().filter(|c| *c == '"' || *c == '\'') {
+            match value[1..].find(q) {
+                Some(close_rel) => {
+                    let end = cursor + 1 + close_rel + 1;
+                    spans.push(QueryTokenSpan {
+                        range: cursor..end,
+                        class: QueryTokenClass::Quoted,
+                    });
+                    pos = end;
+                }
+                None => {
+                    spans.push(QueryTokenSpan {
+                        range: cursor..len,
+                        class: QueryTokenClass::Unterminated,
+                    });
+                    pos = len;
+                }
+            }
+        } else {
+            let value_end = value.find(' ').map_or(len, |i| cursor + i);
+            if value_end > cursor {
+                spans.push(QueryTokenSpan {
+                    range: cursor..value_end,
+                    class: value_class(&el, &query[cursor..value_end]),
+                });
+            }
+            pos = value_end.max(cursor + usize::from(value_end == cursor));
+        }
+    }
+    spans
+}
+
+/// True if `query` ends in an unterminated quoted value — the only real
+/// parse error the lenient grammar produces (the parser silently drops the
+/// rest of the string).
+pub fn query_has_unterminated_quote(query: &str) -> bool {
+    query_token_spans(query)
+        .last()
+        .is_some_and(|s| s.class == QueryTokenClass::Unterminated)
+}
+
+
+#[cfg(test)]
+mod lexer_tests {
+    use super::*;
+
+    fn classes(q: &str) -> Vec<(QueryTokenClass, String)> {
+        query_token_spans(q)
+            .into_iter()
+            .map(|s| (s.class, q[s.range].to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn lexes_field_prefixes_and_values() {
+        use QueryTokenClass as C;
+        assert_eq!(
+            classes("#meeting <maria fwd:plan"),
+            vec![
+                (C::FieldKey, "#".into()),
+                (C::TagValue, "meeting".into()),
+                (C::FieldKey, "<".into()),
+                (C::LinkValue, "maria".into()),
+                (C::FieldKey, "fwd:".into()),
+                (C::LinkValue, "plan".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_negation_quotes_dates_numbers() {
+        use QueryTokenClass as C;
+        assert_eq!(
+            classes(r#"-#wip "refresh token" 2026-04-01 42"#),
+            vec![
+                (C::Negation, "-".into()),
+                (C::FieldKey, "#".into()),
+                (C::TagValue, "wip".into()),
+                (C::Quoted, "\"refresh token\"".into()),
+                (C::Date, "2026-04-01".into()),
+                (C::Number, "42".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_order_directive_and_bare_negated_term() {
+        use QueryTokenClass as C;
+        assert_eq!(
+            classes("or:title -^file -draft"),
+            vec![
+                (C::FieldKey, "or:".into()),
+                (C::Term, "title".into()),
+                (C::Negation, "-".into()),
+                (C::FieldKey, "^".into()),
+                (C::Term, "file".into()),
+                (C::Negation, "-".into()),
+                (C::Term, "draft".into()),
+            ]
+        );
+    }
+
+    /// The parser trims each extraction round, so whitespace other than a
+    /// space before a token must not hide its field prefix (regression:
+    /// `a \t#x` is a label filter, not a plain term).
+    #[test]
+    fn whitespace_before_a_token_does_not_hide_its_prefix() {
+        use QueryTokenClass as C;
+        assert_eq!(
+            classes("a \t#x"),
+            vec![
+                (C::Term, "a".into()),
+                (C::FieldKey, "#".into()),
+                (C::TagValue, "x".into()),
+            ]
+        );
+        // A tab INSIDE an unquoted token stays part of it (parser doc).
+        assert_eq!(classes("a\tb"), vec![(C::Term, "a\tb".into())]);
+    }
+
+    #[test]
+    fn unterminated_quote_marks_the_tail() {
+        use QueryTokenClass as C;
+        let got = classes(r#"plan #"half open"#);
+        assert_eq!(got.last().unwrap().0, C::Unterminated);
+        assert!(query_has_unterminated_quote(r#"plan #"half open"#));
+        assert!(!query_has_unterminated_quote(r#"plan #"closed""#));
+    }
+
+    /// The lexer and the parser must agree on tokenization: every value the
+    /// parser extracts appears verbatim as a value span (not a key/negation).
+    #[test]
+    fn lexer_agrees_with_parser_on_values() {
+        let q = r#"alpha -#wip <maria "two words" pt:proj/sub or:title"#;
+        let terms = SearchTerms::from_query_string(q);
+        let spans = query_token_spans(q);
+        let values: Vec<&str> = spans
+            .iter()
+            .filter(|s| {
+                !matches!(
+                    s.class,
+                    QueryTokenClass::FieldKey | QueryTokenClass::Negation
+                )
+            })
+            .map(|s| q[s.range.clone()].trim_matches('"'))
+            .collect();
+        for term in terms
+            .terms
+            .iter()
+            .chain(terms.labels.iter())
+            .chain(terms.excluded_labels.iter())
+            .chain(terms.links.iter())
+            .chain(terms.path.iter())
+        {
+            assert!(
+                values.iter().any(|v| v.eq_ignore_ascii_case(term)),
+                "parser term {term:?} missing from lexer values {values:?}"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::expand_bare_note_prefixes;

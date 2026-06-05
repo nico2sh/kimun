@@ -322,6 +322,7 @@ impl QueryPanel {
 
         let list = SearchList::builder(source, redraw)
             .initial_query(DEFAULT_QUERY)
+            .highlight_query()
             .icons(icons.clone())
             .autocomplete(
                 Arc::new(VaultSuggestions {
@@ -364,7 +365,7 @@ impl QueryPanel {
 
     /// Number of results currently listed — the status bar's match count.
     pub fn result_count(&self) -> usize {
-        self.list.visible_len()
+        self.list.match_count()
     }
 
     pub fn set_active_query(&mut self, q: String) {
@@ -784,11 +785,22 @@ impl QueryPanel {
         // The saved-search breadcrumb (`‹ name ›` / `‹ name • edited ›`) titles
         // the query searchbox when a saved search is active.
         let search_title = self.saved_search.border_title(self.list.query(), " Query");
-        let search_block = Block::default()
+        let mut search_block = Block::default()
             .title(search_title)
             .borders(Borders::ALL)
             .border_style(border_style)
             .style(theme.panel_style());
+        // Parse problems surface as a second, red title segment — the input
+        // itself never blocks (spec §9).
+        if let Some(reason) = crate::components::query_highlight::error_reason(self.list.query()) {
+            search_block = search_block.title(
+                ratatui::text::Line::from(ratatui::text::Span::styled(
+                    format!(" ⚠ {reason} "),
+                    Style::default().fg(theme.red.to_ratatui()),
+                ))
+                .right_aligned(),
+            );
+        }
         let search_inner = search_block.inner(rows[0]);
         f.render_widget(search_block, rows[0]);
         self.list.render_query(f, search_inner, theme, focused);
