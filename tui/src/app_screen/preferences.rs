@@ -22,7 +22,9 @@ use crate::components::preferences::display_section::DisplaySection;
 use crate::components::preferences::editor_section::EditorSection;
 use crate::components::preferences::indexing_section::IndexingSection;
 use crate::components::preferences::sorting_section::SortingSection;
-use crate::components::preferences::workspaces_section::{Mode as WorkspaceMode, WorkspacesSection};
+use crate::components::preferences::workspaces_section::{
+    Mode as WorkspaceMode, WorkspacesSection,
+};
 use crate::settings::AppSettings;
 use crate::settings::SharedSettings;
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
@@ -1255,7 +1257,10 @@ mod settings_screen_tests {
         screen
             .handle_app_message(AppEvent::IndexingDone(Err("disk error".to_string())), &tx)
             .await;
-        assert!(rx.try_recv().is_err(), "no PreferencesSaved when index failed");
+        assert!(
+            rx.try_recv().is_err(),
+            "no PreferencesSaved when index failed"
+        );
         assert!(!screen.pending_save_after_index);
         assert!(matches!(
             screen.overlay,
