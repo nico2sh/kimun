@@ -42,7 +42,7 @@ fn snapshot_from_backend(
             EditorSnapshot::borrowed(ta.lines(), cursor, content_revision)
         }
         BackendState::Nvim(nvim) => {
-            let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+            let snap = nvim.snapshot();
             let lines_len = snap.lines.len();
             let cursor_row = if lines_len == 0 {
                 0
@@ -371,7 +371,7 @@ fn build_editor_host_snapshot<'a>(
     content_revision: NonZeroU64,
     cursor_screen: Option<(u16, u16)>,
 ) -> Option<EditorHostSnapshot<'a>> {
-    if !matches!(backend, BackendState::Textarea(_)) {
+    if !backend.is_textarea() {
         return None;
     }
     Some(EditorHostSnapshot {
@@ -511,7 +511,7 @@ impl TextEditorComponent {
     /// `maybe_recover_from_dead_nvim` falls back to Textarea.
     pub fn set_vault(&mut self, vault: Arc<NoteVault>) {
         self.autocomplete_vault = Some(vault.clone());
-        if matches!(self.backend, BackendState::Textarea(_)) {
+        if self.backend.is_textarea() {
             self.autocomplete = Some(AutocompleteController::new(
                 std::sync::Arc::new(crate::components::search_list::VaultSuggestions { vault }),
                 AutocompleteMode::Both,
@@ -527,7 +527,7 @@ impl TextEditorComponent {
         if self.autocomplete.is_some() {
             return;
         }
-        if !matches!(self.backend, BackendState::Textarea(_)) {
+        if !self.backend.is_textarea() {
             return;
         }
         let Some(vault) = self.autocomplete_vault.clone() else {
@@ -569,9 +569,7 @@ impl TextEditorComponent {
     /// to diff cursor position across a key event without materialising the
     /// whole buffer.
     fn textarea_cursor(&self) -> Option<(usize, usize)> {
-        let BackendState::Textarea(ta) = &self.backend else {
-            return None;
-        };
+        let ta = self.backend.as_textarea()?;
         Some(cursor_tuple(ta))
     }
 
@@ -617,7 +615,7 @@ impl TextEditorComponent {
         // promoting to the slow path. Using `char_indices().rev()` keeps
         // the walk UTF-8-safe — never slices mid-codepoint.
         if !controller.is_open() {
-            let BackendState::Textarea(ta) = &self.backend else {
+            let Some(ta) = self.backend.as_textarea() else {
                 return;
             };
             let (row, col) = cursor_tuple(ta);
@@ -683,13 +681,7 @@ impl TextEditorComponent {
     /// path of `view_snapshot` clones every buffer line, far too heavy for
     /// per-frame consumers that only want the position (status-bar ln/col).
     pub fn cursor_pos(&self) -> (usize, usize) {
-        match &self.backend {
-            BackendState::Textarea(ta) => cursor_tuple(ta),
-            BackendState::Nvim(nvim) => {
-                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
-                snap.cursor
-            }
-        }
+        self.backend.cursor()
     }
 
     /// Set the search needles to emphasize in the rendered buffer (the note
@@ -713,11 +705,8 @@ impl TextEditorComponent {
         // flag rather than persist a phantom `[+]` in the title bar.
         if text == self.get_text() {
             self.saved_content_rev = Some(self.content_revision);
-            if let BackendState::Nvim(nvim) = &self.backend {
-                nvim.snapshot
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .dirty = false;
+            if let Some(nvim) = self.backend.as_nvim() {
+                nvim.mark_clean();
             }
             return;
         }
@@ -739,15 +728,7 @@ impl TextEditorComponent {
     }
 
     pub fn get_text(&self) -> String {
-        match &self.backend {
-            BackendState::Textarea(ta) => ta.lines().join("\n"),
-            BackendState::Nvim(nvim) => nvim
-                .snapshot
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .lines
-                .join("\n"),
-        }
+        self.backend.text()
     }
 
     /// Current content revision. Bumped on every text-mutating handler;
@@ -773,11 +754,8 @@ impl TextEditorComponent {
         if rev != self.content_revision {
             return;
         }
-        if let BackendState::Nvim(nvim) = &self.backend {
-            nvim.snapshot
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .dirty = false;
+        if let Some(nvim) = self.backend.as_nvim() {
+            nvim.mark_clean();
         }
         self.saved_content_rev = Some(rev);
     }
@@ -792,11 +770,8 @@ impl TextEditorComponent {
     pub fn mark_saved(&mut self, text: String) {
         let matches = text == self.get_text();
         if matches {
-            if let BackendState::Nvim(nvim) = &self.backend {
-                nvim.snapshot
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .dirty = false;
+            if let Some(nvim) = self.backend.as_nvim() {
+                nvim.mark_clean();
             }
             self.saved_content_rev = Some(self.content_revision);
         } else {
@@ -811,12 +786,7 @@ impl TextEditorComponent {
     pub fn is_dirty(&self) -> bool {
         match &self.backend {
             BackendState::Textarea(_) => self.saved_content_rev != Some(self.content_revision),
-            BackendState::Nvim(nvim) => {
-                nvim.snapshot
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .dirty
-            }
+            BackendState::Nvim(nvim) => nvim.snapshot().dirty,
         }
     }
 
@@ -830,7 +800,7 @@ impl TextEditorComponent {
                 (row, col, line)
             }
             BackendState::Nvim(nvim) => {
-                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                let snap = nvim.snapshot();
                 let (row, col) = snap.cursor;
                 let line = snap.lines.get(row)?.to_string();
                 (row, col, line)
@@ -870,7 +840,7 @@ impl TextEditorComponent {
     /// Copy selected text to the system clipboard.
     fn copy_selection_to_clipboard(&mut self) {
         let text = {
-            let BackendState::Textarea(ta) = &self.backend else {
+            let Some(ta) = self.backend.as_textarea() else {
                 return;
             };
             match selection_text(ta) {
@@ -939,7 +909,7 @@ impl TextEditorComponent {
             self.paste_text(text, tx);
             return;
         }
-        if let BackendState::Textarea(ta) = &mut self.backend {
+        if let Some(ta) = self.backend.as_textarea_mut() {
             if ta.selection_range().is_some() {
                 ta.cut();
             }
@@ -972,7 +942,7 @@ impl TextEditorComponent {
     /// on the Nvim backend. Callers on the key path don't reconcile the
     /// autocomplete popup — `handle_input` re-syncs on any content bump.
     fn wrap_selection(&mut self, open: &str, close: &str) -> bool {
-        let BackendState::Textarea(ta) = &mut self.backend else {
+        let Some(ta) = self.backend.as_textarea_mut() else {
             return false;
         };
         let Some(((sr, sc), (er, ec))) = ta.selection_range() else {
@@ -1005,7 +975,7 @@ impl TextEditorComponent {
         if self.wrap_selection(marker, marker) {
             return;
         }
-        let BackendState::Textarea(ta) = &mut self.backend else {
+        let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
         ta.insert_str(format!("{marker}{marker}"));
@@ -1027,7 +997,7 @@ impl TextEditorComponent {
             Dedent,
         }
         let action = {
-            let BackendState::Textarea(ta) = &self.backend else {
+            let Some(ta) = self.backend.as_textarea() else {
                 return false;
             };
             if ta.selection_range().is_some() {
@@ -1074,21 +1044,21 @@ impl TextEditorComponent {
                 return true;
             }
             Action::ClearLine { chars } => {
-                let BackendState::Textarea(ta) = &mut self.backend else {
+                let Some(ta) = self.backend.as_textarea_mut() else {
                     unreachable!()
                 };
                 ta.move_cursor(CursorMove::Head);
                 ta.delete_str(chars);
             }
             Action::InsertPrefix(prefix) => {
-                let BackendState::Textarea(ta) = &mut self.backend else {
+                let Some(ta) = self.backend.as_textarea_mut() else {
                     unreachable!()
                 };
                 ta.insert_newline();
                 ta.insert_str(prefix);
             }
         }
-        let BackendState::Textarea(ta) = &self.backend else {
+        let Some(ta) = self.backend.as_textarea() else {
             unreachable!()
         };
         self.selection = ta.selection_range();
@@ -1101,7 +1071,7 @@ impl TextEditorComponent {
     /// the heading is not found, and on the Nvim backend (same policy as
     /// [`Self::indent_lines`]).
     pub fn jump_to_heading(&mut self, heading: &str) {
-        let BackendState::Textarea(ta) = &mut self.backend else {
+        let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
         // The OUTLINE entries carry the extractor-rendered heading text
@@ -1130,7 +1100,7 @@ impl TextEditorComponent {
     /// on, else `tab_length` spaces. Dedent counts a leading tab as one unit.
     /// No-op on Nvim backend.
     pub fn indent_lines(&mut self, dedent: bool) {
-        let BackendState::Textarea(ta) = &mut self.backend else {
+        let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
         let tab_len = ta.tab_length() as usize;
@@ -1266,25 +1236,7 @@ impl TextEditorComponent {
 
     /// If the Nvim process has died, fall back to a Textarea with the last known content.
     fn maybe_recover_from_dead_nvim(&mut self) {
-        use std::sync::atomic::Ordering;
-        let fallback_text = if let BackendState::Nvim(nvim) = &self.backend {
-            if nvim.is_dead.load(Ordering::SeqCst) {
-                Some(
-                    nvim.snapshot
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .lines
-                        .join("\n"),
-                )
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        if let Some(text) = fallback_text {
-            tracing::warn!("nvim process died; falling back to textarea backend");
-            self.backend = BackendState::Textarea(TextArea::from(text.lines()));
+        if self.backend.recover_from_dead_nvim() {
             // Spin up the autocomplete controller now that we're on the
             // textarea backend — set_vault was a no-op at startup when
             // we were still on Nvim.
@@ -1301,9 +1253,7 @@ impl TextEditorComponent {
         key: &ratatui::crossterm::event::KeyEvent,
         tx: &AppTx,
     ) -> Option<EventState> {
-        let BackendState::Nvim(nvim) = &self.backend else {
-            return None;
-        };
+        let nvim = self.backend.as_nvim()?;
 
         // FocusSidebar / FocusEditor shortcuts are intercepted at the
         // EditorScreen level for directional navigation.
@@ -1338,7 +1288,7 @@ impl TextEditorComponent {
             }
         } else if key.code == KeyCode::Char('Z') {
             let in_normal = {
-                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                let snap = nvim.snapshot();
                 snap.mode == NvimMode::Normal
             };
             if in_normal {
@@ -1351,7 +1301,7 @@ impl TextEditorComponent {
         // embedded nvim process.
         if key.code == KeyCode::Enter {
             let (is_cmd, cmdline) = {
-                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                let snap = nvim.snapshot();
                 let cmd = if snap.mode == NvimMode::Command {
                     snap.cmdline
                         .as_deref()
@@ -1402,7 +1352,7 @@ impl TextEditorComponent {
     /// on the Nvim backend (which has its own `/` search). Public so
     /// `EditorScreen` can route the configurable `FindInBuffer` shortcut here.
     pub fn open_or_advance_search(&mut self) {
-        if !matches!(self.backend, BackendState::Textarea(_)) {
+        if !self.backend.is_textarea() {
             return;
         }
         if self.search.is_some() {
@@ -1458,7 +1408,7 @@ impl TextEditorComponent {
     }
 
     fn close_search(&mut self) {
-        if let BackendState::Textarea(ta) = &mut self.backend {
+        if let Some(ta) = self.backend.as_textarea_mut() {
             let _ = ta.set_search_pattern("");
         }
         self.search = None;
@@ -1471,7 +1421,7 @@ impl TextEditorComponent {
         let Some(state) = self.search.as_mut() else {
             return;
         };
-        let BackendState::Textarea(ta) = &mut self.backend else {
+        let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
         if state.input.is_empty() {
@@ -1501,7 +1451,7 @@ impl TextEditorComponent {
         if state.input.is_empty() {
             return;
         }
-        let BackendState::Textarea(ta) = &mut self.backend else {
+        let Some(ta) = self.backend.as_textarea_mut() else {
             return;
         };
         let found = if backward {
@@ -1531,9 +1481,7 @@ impl TextEditorComponent {
     /// against stale cursor/pattern state if callers ever invoke without a
     /// fresh search step.
     fn compute_match_selection(&self) -> Option<((usize, usize), (usize, usize))> {
-        let BackendState::Textarea(ta) = &self.backend else {
-            return None;
-        };
+        let ta = self.backend.as_textarea()?;
         let re = ta.search_pattern()?;
         let DataCursor(row, col_chars) = ta.cursor();
         let line = ta.lines().get(row)?;
@@ -1585,7 +1533,7 @@ impl TextEditorComponent {
                 }
                 KeyCode::Char('x') => {
                     self.copy_selection_to_clipboard();
-                    let cut = if let BackendState::Textarea(ta) = &mut self.backend {
+                    let cut = if let Some(ta) = self.backend.as_textarea_mut() {
                         // `ta.cut()` returns `false` when the selection was
                         // empty / nothing to remove. Use its return value
                         // directly rather than pre-checking selection_range —
@@ -1606,7 +1554,7 @@ impl TextEditorComponent {
             }
         }
 
-        let BackendState::Textarea(ta) = &mut self.backend else {
+        let Some(ta) = self.backend.as_textarea_mut() else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
 
@@ -1799,7 +1747,7 @@ impl TextEditorComponent {
             return EventState::Consumed;
         }
 
-        let BackendState::Textarea(ta) = &mut self.backend else {
+        let Some(ta) = self.backend.as_textarea_mut() else {
             unreachable!("handle_textarea_key called with non-Textarea backend")
         };
         // `input_without_shortcuts` returns `false` for keys the textarea
@@ -1819,9 +1767,6 @@ impl TextEditorComponent {
 
     /// Handle a mouse event (Textarea backend only).
     fn handle_mouse(&mut self, mouse: &ratatui::crossterm::event::MouseEvent) -> EventState {
-        let BackendState::Textarea(_) = &self.backend else {
-            return EventState::NotConsumed;
-        };
         let r = &self.rect;
         let in_bounds = mouse.column >= r.x
             && mouse.column < r.x + r.width
@@ -1842,13 +1787,13 @@ impl TextEditorComponent {
         // Everything below drives the textarea backend directly; on Nvim the
         // terminal/nvim own the mouse (only the context-menu ask above is
         // backend-independent).
-        if !matches!(&self.backend, BackendState::Textarea(_)) {
+        if !self.backend.is_textarea() {
             return EventState::NotConsumed;
         }
         // Handle right-click clipboard copy in its own scope to avoid borrow conflicts.
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
             self.copy_selection_to_clipboard();
-            self.selection = if let BackendState::Textarea(ta) = &self.backend {
+            self.selection = if let Some(ta) = self.backend.as_textarea() {
                 ta.selection_range()
             } else {
                 None
@@ -1857,7 +1802,7 @@ impl TextEditorComponent {
             return EventState::Consumed;
         }
         // Now extract ta for remaining mouse operations.
-        let BackendState::Textarea(ta) = &mut self.backend else {
+        let Some(ta) = self.backend.as_textarea_mut() else {
             unreachable!()
         };
         match mouse.kind {
@@ -2010,7 +1955,7 @@ impl Component for TextEditorComponent {
                 {
                     match controller.handle_key(*key, &host) {
                         HandleKeyOutcome::Accepted(action) => {
-                            if let BackendState::Textarea(ta) = &mut self.backend {
+                            if let Some(ta) = self.backend.as_textarea_mut() {
                                 apply_accept_to_textarea(ta, &action);
                                 self.selection = ta.selection_range();
                             }
@@ -2117,7 +2062,7 @@ impl Component for TextEditorComponent {
             BackendState::Textarea(_) => (self.selection, None),
             BackendState::Nvim(nvim) => {
                 nvim.maybe_resize(editor_rect.width, editor_rect.height);
-                let snap = nvim.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                let snap = nvim.snapshot();
                 let visual_selection = snap.visual_selection;
                 let content_gen = snap.content_gen;
                 drop(snap);
@@ -2257,12 +2202,8 @@ impl Component for TextEditorComponent {
         use crate::keys::action_shortcuts::ActionShortcuts;
 
         // For the Nvim backend, prepend the current mode as the first "hint".
-        if let BackendState::Nvim(nvim) = &self.backend {
-            let label = nvim
-                .snapshot
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .footer_label();
+        if let Some(nvim) = self.backend.as_nvim() {
+            let label = nvim.snapshot().footer_label();
             let mut hints = vec![(String::new(), label)];
             hints.extend(
                 [
