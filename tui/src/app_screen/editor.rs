@@ -660,6 +660,23 @@ impl EditorScreen {
         self.present_overlay(Box::new(modal));
     }
 
+    /// Open the Saved Searches modal (F3 and leader `f s`). No-op while an
+    /// overlay is open.
+    fn open_saved_searches(&mut self, tx: &AppTx) {
+        if self.overlays.is_open() {
+            return;
+        }
+        let s = self.settings.read().unwrap();
+        let modal = SavedSearchesModal::new(
+            self.vault.clone(),
+            s.key_bindings.clone(),
+            s.icons(),
+            tx.clone(),
+        );
+        drop(s);
+        self.present_overlay(Box::new(modal));
+    }
+
     /// Open the live theme picker (leader `v c` and the CFG rail item). The
     /// full settings screen stays on the OpenSettings binding. No-op while an
     /// overlay is open.
@@ -823,6 +840,7 @@ impl EditorScreen {
             LeaderAction::FindBacklinks => {
                 self.open_find_with_query("<{note}".to_string(), None, tx)
             }
+            LeaderAction::FindSaved => self.open_saved_searches(tx),
             LeaderAction::FindRecent => self.open_search_browser(tx),
             LeaderAction::FindHeadings => self.open_drawer_view(DrawerView::Outline, tx),
 
@@ -1146,16 +1164,8 @@ impl AppScreen for EditorScreen {
                 Some(ActionShortcuts::OpenSavedSearches) => {
                     if self.overlays.active_kind() == Some(OverlayKind::SavedSearches) {
                         self.dismiss_overlay();
-                    } else if !self.overlays.is_open() {
-                        let s = self.settings.read().unwrap();
-                        let modal = SavedSearchesModal::new(
-                            self.vault.clone(),
-                            s.key_bindings.clone(),
-                            s.icons(),
-                            tx.clone(),
-                        );
-                        drop(s);
-                        self.present_overlay(Box::new(modal));
+                    } else {
+                        self.open_saved_searches(tx);
                     }
                     return EventState::Consumed;
                 }

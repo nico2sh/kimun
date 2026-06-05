@@ -103,8 +103,22 @@ impl KeyCombo {
     /// - a bare F-key (F1–F12, no modifier required)
     pub fn is_valid_binding(&self) -> bool {
         let is_letter_combo = (self.modifiers.is_ctrl() || self.modifiers.is_alt())
-            && self.key >= KeyStrike::KeyA
-            && self.key <= KeyStrike::KeyZ;
+            && (self.key >= KeyStrike::KeyA && self.key <= KeyStrike::KeyZ
+                || self.key >= KeyStrike::Digit0 && self.key <= KeyStrike::Digit9
+                || matches!(
+                    self.key,
+                    KeyStrike::Comma
+                        | KeyStrike::Period
+                        | KeyStrike::Slash
+                        | KeyStrike::Semicolon
+                        | KeyStrike::Quote
+                        | KeyStrike::BracketLeft
+                        | KeyStrike::BracketRight
+                        | KeyStrike::Backslash
+                        | KeyStrike::Backquote
+                        | KeyStrike::Minus
+                        | KeyStrike::Equal
+                ));
         let is_fkey = matches!(
             self.key,
             KeyStrike::F1

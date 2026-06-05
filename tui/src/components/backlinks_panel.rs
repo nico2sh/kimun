@@ -27,8 +27,9 @@ use crate::keys::key_combo::KeyCombo;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 
-/// The default query the panel runs: backlinks to the current note.
-/// Backlinks are `<` / `lk:` (`>` is now forward links).
+/// The canonical backlinks query (`<` / `lk:`; `>` is forward links). The
+/// panel no longer starts on it — the LINKS drawer owns backlinks — but any
+/// spelling of it still titles the panel "Backlinks".
 const DEFAULT_QUERY: &str = "<{note}";
 /// The long-form spelling of [`DEFAULT_QUERY`] (`lk:` is the documented
 /// synonym of `<`), recognized so it also reads as the default.
@@ -321,7 +322,6 @@ impl QueryPanel {
         intercept.extend(follow_link_combos.iter().cloned());
 
         let list = SearchList::builder(source, redraw)
-            .initial_query(DEFAULT_QUERY)
             .highlight_query()
             .icons(icons.clone())
             .autocomplete(
@@ -344,15 +344,13 @@ impl QueryPanel {
             key_bindings,
             redraw_tx,
             follow_link_combos,
-            // DEFAULT_QUERY carries no order directive → (Name, Ascending).
+            // An empty query carries no order directive → (Name, Ascending).
             order_cache: (SortField::Name, SortOrder::Ascending),
             order_cache_query: String::new(),
-            // The panel starts on DEFAULT_QUERY; the first render's
-            // query-changed gate recomputes this anyway.
-            is_default_cache: true,
+            // The panel starts empty; the first render's query-changed gate
+            // recomputes this anyway.
+            is_default_cache: false,
             needles_cache: Vec::new(),
-            // An impossible key (queries are never empty in practice, and the
-            // panel starts with DEFAULT_QUERY) so the first read computes.
             needles_cache_key: (String::new(), VaultPath::empty()),
         }
     }
@@ -787,7 +785,9 @@ impl QueryPanel {
         // spelling of the default (`<{note}`, bare `<`, `lk:`), so sorting or
         // typing a synonym still reads as "Backlinks". Memoised above — the
         // helper allocates and this runs every frame.
-        let title = if self.is_default_cache {
+        let title = if self.list.query().trim().is_empty() {
+            "Find".to_string()
+        } else if self.is_default_cache {
             format!("Backlinks ({}) {}", count, sort_indicator)
         } else {
             format!("Query ({}) {}", count, sort_indicator)
@@ -957,7 +957,40 @@ impl QueryPanel {
 
         // The engine draws the collapsed list (1 line per row, with the
         // selected-row marker handled in `to_list_item`).
-        self.list.render(f, list_area, theme, focused);
+        if self.list.query().trim().is_empty() {
+            // Empty-state: a short query-syntax primer instead of a blank
+            // list (spec §9 discoverability; the panel no longer pre-fills
+            // a backlinks query — the LINKS drawer owns those).
+            let dim = Style::default().fg(theme.gray.to_ratatui());
+            let key = Style::default().fg(theme.yellow.to_ratatui());
+            let lines = vec![
+                ratatui::text::Line::from(Span::styled("type to search the vault", dim)),
+                ratatui::text::Line::default(),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" #tag      ", key),
+                    Span::styled("label", dim),
+                ]),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" <  >      ", key),
+                    Span::styled("backlinks · links", dim),
+                ]),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" \"phrase\"  ", key),
+                    Span::styled("exact match", dim),
+                ]),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" =date     ", key),
+                    Span::styled("modified", dim),
+                ]),
+                ratatui::text::Line::from(vec![
+                    Span::styled(" ?name     ", key),
+                    Span::styled("saved search", dim),
+                ]),
+            ];
+            f.render_widget(ratatui::widgets::Paragraph::new(lines), list_area);
+        } else {
+            self.list.render(f, list_area, theme, focused);
+        }
         self.list.set_list_rect(list_area);
 
         // Divider between list and content.
@@ -1397,8 +1430,9 @@ mod tests {
         let vault = crate::test_support::temp_vault("qp_needles").await;
         vault.validate_and_init().await.unwrap();
         let mut panel = make_panel(vault);
+        panel.list.set_query(DEFAULT_QUERY);
 
-        // Default query `<{note}` resolved against "spec".
+        // Backlinks query `<{note}` resolved against "spec".
         *panel.current_note.lock().unwrap() = VaultPath::note_path_from("spec");
         assert!(panel.cached_needles().iter().any(|n| n == "spec"));
 
@@ -1987,7 +2021,10 @@ mod tests {
             .await
             .unwrap();
         let mut panel = make_panel(vault);
-        assert_eq!(panel.active_query(), DEFAULT_QUERY);
+        // The panel starts empty (LINKS owns backlinks); type the backlinks
+        // query to exercise the `{note}` re-resolution machinery.
+        assert_eq!(panel.active_query(), "");
+        panel.list.set_query(DEFAULT_QUERY);
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         panel.set_note(VaultPath::note_path_from("/target.md"), tx);
@@ -2028,6 +2065,7 @@ mod tests {
             .await
             .unwrap();
         let mut panel = make_panel(vault);
+        panel.list.set_query(DEFAULT_QUERY);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
 
         panel.set_note(VaultPath::note_path_from("/a.md"), tx.clone());

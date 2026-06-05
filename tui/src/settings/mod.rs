@@ -80,7 +80,7 @@ const CONFIG_HEADER: &str = "\
 #   Quit         = [\"ctrl&Q\"]            # Ctrl+Q
 #   SearchNotes  = [\"ctrl&K\"]            # Ctrl+K
 #   OpenNote     = [\"ctrl&O\"]            # Ctrl+O  (fuzzy file finder)
-#   OpenSettings = [\"ctrl+shift&P\"]      # Ctrl+Shift+P
+#   OpenSettings = [\"ctrl&,\"]            # Ctrl+,
 #   NewJournal   = [\"ctrl&J\"]            # Ctrl+J
 #   FileOperations = [\"F2\"]              # F2  (open file-ops menu: delete/rename/move)
 #   Leader       = [\"ctrl&G\"]            # Ctrl+G  (leader gateway: Ctrl+G f f, ...)
@@ -226,11 +226,11 @@ fn default_keybindings() -> KeyBindings {
         .add(KeyStrike::KeyE, ActionShortcuts::ToggleQueryPanel)
         .add(KeyStrike::KeyF, ActionShortcuts::FindInBuffer);
 
-    // Settings — Ctrl+Shift+P (the palette took plain Ctrl-P).
+    // Settings — the classic Ctrl+, (Ctrl+Shift+P collides with kitty's
+    // default hints-kitten chord prefix, which holds the screen mid-chord).
     kb.batch_add()
         .with_ctrl()
-        .with_shift()
-        .add(KeyStrike::KeyP, ActionShortcuts::OpenSettings);
+        .add(KeyStrike::Comma, ActionShortcuts::OpenSettings);
 
     // File operations menu (F2 — no modifier, reliable in all terminals).
     kb.batch_add()

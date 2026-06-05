@@ -21,7 +21,7 @@ use std::num::NonZeroU64;
 /// Convert `TextArea::cursor()` from the library's `DataCursor` newtype to a
 /// plain `(row, col)` tuple — the neutral interchange type shared with the
 /// Nvim backend (whose `NvimSnapshot::cursor` is already a tuple).
-fn cursor_tuple(ta: &TextArea<'_>) -> (usize, usize) {
+pub(crate) fn cursor_tuple(ta: &TextArea<'_>) -> (usize, usize) {
     let DataCursor(r, c) = ta.cursor();
     (r, c)
 }

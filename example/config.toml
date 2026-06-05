@@ -16,7 +16,7 @@
 #   Quit         = ["ctrl&Q"]            # Ctrl+Q
 #   SearchNotes  = ["ctrl&K"]            # Ctrl+K
 #   OpenNote     = ["ctrl&O"]            # Ctrl+O  (fuzzy file finder)
-#   OpenSettings = ["ctrl+shift&P"]      # Ctrl+Shift+P
+#   OpenSettings = ["ctrl&,"]            # Ctrl+,
 #   NewJournal   = ["ctrl&J"]            # Ctrl+J
 #   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
 #   Leader       = ["ctrl&G"]            # Ctrl+G  (leader gateway: Ctrl+G f f, ...)
@@ -40,7 +40,7 @@
 #   "f"   = "+search"        # rename the +find group caption
 #
 # ─────────────────────────────────────────────────────────────────────────────
-config_version = 5
+config_version = 6
 theme = "Monokai"
 cache_dir = "."
 history_dir = "history"
@@ -67,7 +67,7 @@ created = "2026-04-01T00:00:00Z"
 
 [key_bindings]
 Quit = ["ctrl&Q"]
-OpenSettings = ["ctrl+shift&P"]
+OpenSettings = ["ctrl&,"]
 SearchNotes = ["ctrl&K"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
