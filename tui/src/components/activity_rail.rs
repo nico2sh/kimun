@@ -20,14 +20,27 @@ pub const RAIL_WIDTH: u16 = 7;
 
 /// The rail items in presentation order. CFG is last and pinned to the
 /// bottom of the strip by a spacer.
-const ITEMS: [(char, &str, DrawerView); 6] = [
-    ('▤', "FILES", DrawerView::Files),
-    ('⌕', "FIND", DrawerView::Find),
-    ('#', "TAGS", DrawerView::Tags),
-    ('↩', "LINKS", DrawerView::Links),
-    ('≡', "OUTL", DrawerView::Outline),
-    ('⚙', "CFG", DrawerView::Config),
+const ITEMS: [(&str, DrawerView); 6] = [
+    ("FILES", DrawerView::Files),
+    ("FIND", DrawerView::Find),
+    ("TAGS", DrawerView::Tags),
+    ("LINKS", DrawerView::Links),
+    ("OUTL", DrawerView::Outline),
+    ("CFG", DrawerView::Config),
 ];
+
+/// The rail glyph for a drawer view, resolved through the icon set so the
+/// nerd-font / ASCII fallback policy applies to the rail like everywhere else.
+fn glyph_for(icons: &crate::settings::icons::Icons, view: DrawerView) -> &'static str {
+    match view {
+        DrawerView::Files => icons.rail_files,
+        DrawerView::Find => icons.rail_find,
+        DrawerView::Tags => icons.rail_tags,
+        DrawerView::Links => icons.rail_links,
+        DrawerView::Outline => icons.rail_outline,
+        DrawerView::Config => icons.rail_config,
+    }
+}
 
 /// Rows each rail cell occupies (glyph line + label line + gap).
 const CELL_ROWS: u16 = 3;
@@ -36,27 +49,30 @@ pub struct ActivityRail {
     /// The item the keyboard cursor sits on (the item `Enter` opens).
     cursor: usize,
     /// The row each item was drawn at on the last render, for click
-    /// hit-testing (full mouse behavior lands in Phase 03/10).
+    /// hit-testing.
     item_rows: Vec<(DrawerView, Rect)>,
+    /// Icon set resolving the rail glyphs (nerd-font / ASCII).
+    icons: crate::settings::icons::Icons,
 }
 
 impl ActivityRail {
-    pub fn new() -> Self {
+    pub fn new(icons: crate::settings::icons::Icons) -> Self {
         Self {
             cursor: 0,
             item_rows: Vec::new(),
+            icons,
         }
     }
 
     /// The drawer view under the keyboard cursor.
     pub fn cursor_view(&self) -> DrawerView {
-        ITEMS[self.cursor].2
+        ITEMS[self.cursor].1
     }
 
     /// Move the keyboard cursor onto `view` (e.g. after a click or a leader
     /// path switched the drawer), so rail navigation continues from there.
     pub fn set_cursor(&mut self, view: DrawerView) {
-        if let Some(i) = ITEMS.iter().position(|(_, _, v)| *v == view) {
+        if let Some(i) = ITEMS.iter().position(|(_, v)| *v == view) {
             self.cursor = i;
         }
     }
@@ -72,7 +88,7 @@ impl ActivityRail {
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
         vec![
             ("↑/↓".into(), "Move".into()),
-            ("Enter".into(), "Open".into()),
+            ("Enter".into(), "Open/close".into()),
         ]
     }
 
@@ -134,8 +150,8 @@ impl ActivityRail {
         // CFG (last item) is pinned to the bottom; the rest stack from the top.
         let (top_items, bottom_item) = ITEMS.split_at(ITEMS.len() - 1);
 
+        let icons = self.icons.clone();
         let draw = |idx: usize,
-                    glyph: char,
                     label: &str,
                     view: DrawerView,
                     y: u16,
@@ -144,9 +160,9 @@ impl ActivityRail {
             if y + 1 >= inner.bottom() {
                 return;
             }
+            let glyph = glyph_for(&icons, view);
             let is_active = active == Some(view);
             let is_cursor = focused && idx == self.cursor;
-            let edge = if is_active { "▎" } else { " " };
             let glyph_style = if is_active {
                 accent
             } else if is_cursor {
@@ -158,10 +174,7 @@ impl ActivityRail {
             let cell = Rect::new(inner.x, y, inner.width, 2);
             f.render_widget(
                 Paragraph::new(vec![
-                    Line::from(vec![
-                        Span::styled(edge, accent),
-                        Span::styled(format!("{glyph} "), glyph_style),
-                    ]),
+                    Line::from(Span::styled(format!(" {glyph} "), glyph_style)),
                     Line::from(Span::styled(format!(" {label}"), label_style)),
                 ]),
                 cell,
@@ -170,28 +183,33 @@ impl ActivityRail {
         };
 
         let mut y = inner.y;
-        for (i, (glyph, label, view)) in top_items.iter().enumerate() {
-            draw(i, *glyph, label, *view, y, f, &mut self.item_rows);
+        for (i, (label, view)) in top_items.iter().enumerate() {
+            draw(i, label, *view, y, f, &mut self.item_rows);
             y += CELL_ROWS;
         }
         // Bottom-pinned CFG.
-        let (glyph, label, view) = bottom_item[0];
+        let (label, view) = bottom_item[0];
         let cfg_y = inner.bottom().saturating_sub(2).max(y);
-        draw(
-            ITEMS.len() - 1,
-            glyph,
-            label,
-            view,
-            cfg_y,
-            f,
-            &mut self.item_rows,
-        );
-    }
-}
+        draw(ITEMS.len() - 1, label, view, cfg_y, f, &mut self.item_rows);
 
-impl Default for ActivityRail {
-    fn default() -> Self {
-        Self::new()
+        // The active item's marker is the rail's own left border: recolor the
+        // border segment beside the active cell green (and thicken it), so
+        // the highlight reads as part of the panel chrome rather than an
+        // extra in-cell bar.
+        if let Some((_, cell)) = self
+            .item_rows
+            .iter()
+            .find(|(view, _)| active == Some(*view))
+        {
+            let buf = f.buffer_mut();
+            for dy in 0..cell.height {
+                let pos = ratatui::layout::Position::new(rect.x, cell.y + dy);
+                if let Some(border_cell) = buf.cell_mut(pos) {
+                    border_cell.set_symbol("┃");
+                    border_cell.set_fg(theme.focus_border.to_ratatui());
+                }
+            }
+        }
     }
 }
 
@@ -205,9 +223,13 @@ mod tests {
         InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
+    fn test_rail() -> ActivityRail {
+        ActivityRail::new(crate::settings::icons::Icons::new(false))
+    }
+
     #[test]
     fn cursor_moves_and_clamps() {
-        let mut rail = ActivityRail::new();
+        let mut rail = test_rail();
         let (tx, _rx) = unbounded_channel();
         assert_eq!(rail.cursor_view(), DrawerView::Files);
 
@@ -224,7 +246,7 @@ mod tests {
 
     #[test]
     fn enter_emits_open_drawer_view() {
-        let mut rail = ActivityRail::new();
+        let mut rail = test_rail();
         let (tx, mut rx) = unbounded_channel();
         rail.handle_input(&key(KeyCode::Down), &tx);
         rail.handle_input(&key(KeyCode::Enter), &tx);
@@ -236,7 +258,7 @@ mod tests {
 
     #[test]
     fn set_cursor_tracks_view() {
-        let mut rail = ActivityRail::new();
+        let mut rail = test_rail();
         rail.set_cursor(DrawerView::Outline);
         assert_eq!(rail.cursor_view(), DrawerView::Outline);
     }

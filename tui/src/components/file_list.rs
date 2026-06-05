@@ -1,9 +1,9 @@
 use kimun_core::nfs::VaultPath;
 use kimun_core::{ResultType, SearchResult};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::ListItem;
 
+use crate::components::rich_row::RichRow;
 use crate::settings::icons::Icons;
 use crate::settings::themes::Theme;
 use crate::settings::{SortFieldSetting, SortOrderSetting};
@@ -190,51 +190,55 @@ impl FileListEntry {
     }
 
     pub fn to_list_item(&self, theme: &Theme, icons: &Icons) -> ListItem<'static> {
-        let lines: Vec<Line> = match self {
-            Self::Up { .. } => vec![Line::from(Span::styled(
-                format!("{} [UP] ..", icons.directory_up),
-                Style::default().fg(theme.gray.to_ratatui()),
-            ))],
+        match self {
+            Self::Up { .. } => RichRow::new(icons.directory_up, "[UP] ..")
+                .glyph_style(Style::default().fg(theme.gray.to_ratatui()))
+                .title_style(Style::default().fg(theme.gray.to_ratatui()))
+                .into_list_item(theme),
             Self::Note {
                 title,
                 filename,
                 journal_date,
                 ..
             } => {
-                let mut lines = vec![];
-                if let Some(date) = journal_date {
-                    lines.push(Line::from(format!("{} {}", icons.journal, title)));
-                    lines.push(Line::from(Span::styled(
-                        format!(" {}", date),
-                        Style::default().fg(theme.color_journal_date.to_ratatui()),
-                    )));
+                let glyph = if journal_date.is_some() {
+                    icons.journal
                 } else {
-                    lines.push(Line::from(format!("{} {}", icons.note, title)));
+                    icons.note
+                };
+                let mut row = RichRow::new(glyph, title.clone()).filename(filename.clone());
+                if let Some(date) = journal_date {
+                    row = row.secondary(
+                        date.clone(),
+                        Some(Style::default().fg(theme.color_journal_date.to_ratatui())),
+                    );
                 }
-                lines.push(Line::from(Span::styled(
-                    format!(" {}", filename),
-                    Style::default()
-                        .add_modifier(Modifier::ITALIC)
-                        .fg(theme.fg_secondary.to_ratatui()),
-                )));
-                lines
+                row.into_list_item(theme)
             }
-            Self::Directory { name, .. } => vec![Line::from(Span::styled(
-                format!("{} {}", icons.directory, name),
-                Style::default().fg(theme.color_directory.to_ratatui()),
-            ))],
-            Self::Attachment { filename, .. } => vec![Line::from(Span::styled(
-                format!("{} {}", icons.attachment, filename),
-                Style::default()
+            Self::Directory { name, .. } => {
+                let dir_style = Style::default().fg(theme.color_directory.to_ratatui());
+                RichRow::new(icons.directory, name.clone())
+                    .glyph_style(dir_style)
+                    .title_style(dir_style)
+                    .into_list_item(theme)
+            }
+            Self::Attachment { filename, .. } => {
+                let style = Style::default()
                     .add_modifier(Modifier::ITALIC)
-                    .fg(theme.fg_secondary.to_ratatui()),
-            ))],
-            Self::CreateNote { filename, .. } => vec![Line::from(Span::styled(
-                format!("+ Create: {}", filename),
-                Style::default().fg(theme.accent.to_ratatui()),
-            ))],
-        };
-        ListItem::new(Text::from(lines))
+                    .fg(theme.fg_secondary.to_ratatui());
+                RichRow::new(icons.attachment, filename.clone())
+                    .glyph_style(style)
+                    .title_style(style)
+                    .into_list_item(theme)
+            }
+            Self::CreateNote { filename, .. } => {
+                let style = Style::default().fg(theme.accent.to_ratatui());
+                RichRow::new("+", format!("Create: {}", filename))
+                    .glyph_style(style)
+                    .title_style(style)
+                    .into_list_item(theme)
+            }
+        }
     }
 }
 

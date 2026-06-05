@@ -63,34 +63,26 @@ pub struct BacklinkEntry {
 }
 
 impl SearchRow for BacklinkEntry {
-    fn to_list_item(&self, theme: &Theme, _icons: &Icons, selected: bool) -> ListItem<'static> {
-        let fg = theme.fg.to_ratatui();
-        let gray = theme.gray.to_ratatui();
-        let bg = theme.bg_panel.to_ratatui();
+    fn to_list_item(&self, theme: &Theme, icons: &Icons, selected: bool) -> ListItem<'static> {
+        let title_display = if self.title.is_empty() {
+            &self.filename
+        } else {
+            &self.title
+        };
         let title_style = if selected {
             Style::default()
                 .fg(theme.selection_fg.to_ratatui())
                 .bg(theme.selection_bg.to_ratatui())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(fg).bg(bg)
+            Style::default()
+                .fg(theme.fg.to_ratatui())
+                .bg(theme.bg_panel.to_ratatui())
         };
-        let title_display = if self.title.is_empty() {
-            &self.filename
-        } else {
-            &self.title
-        };
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("  {} ", title_display), title_style),
-            Span::styled(
-                format!(" {}", self.filename),
-                Style::default().fg(gray).bg(if selected {
-                    theme.selection_bg.to_ratatui()
-                } else {
-                    bg
-                }),
-            ),
-        ]))
+        crate::components::rich_row::RichRow::new(icons.note, title_display.clone())
+            .title_style(title_style)
+            .meta(self.filename.clone())
+            .into_list_item(theme)
     }
 
     fn match_text(&self) -> Option<&str> {
@@ -368,6 +360,11 @@ impl QueryPanel {
 
     pub fn active_query(&self) -> &str {
         self.list.query()
+    }
+
+    /// Number of results currently listed — the status bar's match count.
+    pub fn result_count(&self) -> usize {
+        self.list.visible_len()
     }
 
     pub fn set_active_query(&mut self, q: String) {
@@ -703,20 +700,16 @@ impl QueryPanel {
     }
 
     pub fn hint_shortcuts(&self) -> Vec<(String, String)> {
-        [
-            (ActionShortcuts::FocusSidebar, "\u{2190} editor"),
-            (ActionShortcuts::FollowLink, "open note"),
-            (ActionShortcuts::SaveCurrentQuery, "save query"),
-            (ActionShortcuts::OpenSavedSearches, "searches"),
-            (ActionShortcuts::OpenSortDialog, "sort"),
-        ]
-        .iter()
-        .filter_map(|(action, label)| {
-            self.key_bindings
-                .first_combo_for(action)
-                .map(|k| (k, label.to_string()))
-        })
-        .collect()
+        crate::components::hints::hints_for(
+            &self.key_bindings,
+            &[
+                (ActionShortcuts::FocusSidebar, "\u{2190} editor"),
+                (ActionShortcuts::FollowLink, "open note"),
+                (ActionShortcuts::SaveCurrentQuery, "save query"),
+                (ActionShortcuts::OpenSavedSearches, "searches"),
+                (ActionShortcuts::OpenSortDialog, "sort"),
+            ],
+        )
     }
 
     // ── Rendering ──────────────────────────────────────────────────────

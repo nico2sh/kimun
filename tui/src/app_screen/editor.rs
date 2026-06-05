@@ -15,7 +15,8 @@ use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::autosave_timer::AutosaveTimer;
 use crate::components::backlinks_panel::QueryPanel;
 use crate::components::dialogs::ActiveDialog;
-use crate::components::drawer::DrawerView;
+use crate::components::drawer::{DrawerHost, DrawerView};
+use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, SaveSource, ScreenEvent, SortTarget};
 use crate::components::footer_bar::FooterBar;
@@ -54,6 +55,14 @@ pub struct EditorScreen {
     panels: PanelSet,
     path: VaultPath,
     footer: FooterBar,
+    /// Backlink count of the open note (async, status line 2). `None` while
+    /// loading or unknown.
+    backlink_count: Option<usize>,
+    /// Workspace git summary (async, status line 2).
+    git_status: Option<String>,
+    /// When the last git fetch was spawned — throttles the per-event
+    /// subprocess (rapid navigation must not fork one `git status` per note).
+    last_git_fetch: Option<std::time::Instant>,
     autosave: AutosaveTimer,
     /// The active overlay, if any. An open overlay intercepts input ahead of
     /// the panels; closing it restores focus to the panel that opened it.
@@ -78,17 +87,25 @@ impl EditorScreen {
         let icons = s.icons();
         let sidebar = SidebarComponent::from_settings(vault.clone(), &s);
         let backlinks_panel = QueryPanel::new(vault.clone(), kb.clone());
+        let tags = TagsPanel::new(vault.clone(), s.icons());
+        let links = LinksPanel::new(vault.clone(), s.icons());
+        let outline = OutlinePanel::new(vault.clone(), s.icons());
+        let drawer = DrawerHost::new(sidebar, backlinks_panel, tags, links, outline);
         let mut editor = TextEditorComponent::new(kb, &s);
         editor.set_vault(vault.clone());
         drop(s);
+        let rail_icons = icons.clone();
         Self {
             settings,
             icons,
             theme,
-            panels: PanelSet::from_panels(sidebar, editor, backlinks_panel),
+            panels: PanelSet::from_panels(drawer, editor, rail_icons),
             vault,
             path,
             footer,
+            backlink_count: None,
+            git_status: None,
+            last_git_fetch: None,
             autosave: AutosaveTimer::new(),
             overlays: OverlayHost::new(),
             autosave_task: SingleSlotTask::empty(),
@@ -276,11 +293,20 @@ impl EditorScreen {
         self.path = path.clone();
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
+                self.refresh_doc_meta(tx);
                 self.panels.editor_mut().set_text(content);
                 self.panels.editor_mut().set_redraw_tx(tx);
                 tx.send(AppEvent::Redraw).ok();
                 if self.find_drawer_open() {
                     self.panels.query_mut().set_note(path.clone(), tx.clone());
+                }
+                // LINKS and OUTLINE reflect the open note; keep them in step.
+                if self.panels.is_visible(PanelKind::Drawer) {
+                    match self.panels.active_drawer_view() {
+                        DrawerView::Links => self.panels.links_mut().set_note(path.clone(), tx),
+                        DrawerView::Outline => self.panels.outline_mut().set_note(path.clone(), tx),
+                        _ => {}
+                    }
                 }
             }
             Err(e) => {
@@ -473,10 +499,16 @@ impl EditorScreen {
     fn open_drawer_view(&mut self, view: DrawerView, tx: &AppTx) {
         let find_newly_shown = view == DrawerView::Find && !self.find_drawer_open();
         self.panels.open_drawer_view(view);
-        if find_newly_shown {
-            self.panels
-                .query_mut()
-                .set_note(self.path.clone(), tx.clone());
+        match view {
+            DrawerView::Find if find_newly_shown => {
+                self.panels
+                    .query_mut()
+                    .set_note(self.path.clone(), tx.clone());
+            }
+            DrawerView::Tags => self.panels.tags_mut().refresh(tx),
+            DrawerView::Links => self.panels.links_mut().set_note(self.path.clone(), tx),
+            DrawerView::Outline => self.panels.outline_mut().set_note(self.path.clone(), tx),
+            _ => {}
         }
         self.panels.focus(PanelKind::Drawer);
     }
@@ -539,16 +571,64 @@ impl EditorScreen {
         }
     }
 
-    fn apply_saved_search(&mut self, query: String, name: String, tx: &AppTx) {
+    /// Kick off the async loads behind status line 2: the open note's
+    /// backlink count and the workspace git summary. Results return as
+    /// `BacklinkCountLoaded` / `GitStatusLoaded`; stale backlink completions
+    /// are dropped by path. Contract: this runs when a note is *opened* (and
+    /// the git half on autosave) — counts can go stale while a note stays
+    /// open and another note adds a link to it; accepted for now.
+    fn refresh_doc_meta(&mut self, tx: &AppTx) {
+        self.backlink_count = None;
+        let vault = self.vault.clone();
+        let path = self.path.clone();
+        let tx2 = tx.clone();
+        tokio::spawn(async move {
+            let count = vault
+                .get_backlinks(&path)
+                .await
+                .map(|b| b.len())
+                .unwrap_or_default();
+            tx2.send(AppEvent::BacklinkCountLoaded { path, count }).ok();
+        });
+        self.refresh_git_status(tx);
+    }
+
+    /// Spawn the workspace git summary fetch, throttled: at most one
+    /// subprocess per couple of seconds, since rapid navigation would
+    /// otherwise fork a whole-tree `git status` per note open.
+    fn refresh_git_status(&mut self, tx: &AppTx) {
+        const GIT_FETCH_MIN_INTERVAL: Duration = Duration::from_secs(2);
+        let now = std::time::Instant::now();
+        if self
+            .last_git_fetch
+            .is_some_and(|t| now.duration_since(t) < GIT_FETCH_MIN_INTERVAL)
+        {
+            return;
+        }
+        self.last_git_fetch = Some(now);
+        let root = self.vault.workspace_path().to_path_buf();
+        let tx2 = tx.clone();
+        tokio::spawn(async move {
+            let status = crate::util::git_status::fetch(root).await;
+            tx2.send(AppEvent::GitStatusLoaded(status)).ok();
+        });
+    }
+
+    /// The one path that reveals FIND with a concrete query: used by saved
+    /// searches and tag queries so they cannot drift on what "open FIND"
+    /// means.
+    fn open_find_with_query(&mut self, query: String, name: Option<String>, tx: &AppTx) {
         self.panels.open_drawer_view(DrawerView::Find);
+        self.panels.query_mut().apply_query(query, name, tx.clone());
+        self.panels.focus(PanelKind::Drawer);
+    }
+
+    fn apply_saved_search(&mut self, query: String, name: String, tx: &AppTx) {
         // The virtual backlinks entry's name should not override the
         // default "Backlinks" title — but the panel's title logic already
         // shows "Backlinks" whenever the active query is `<{note}`, so it's
         // safe to always pass the name through.
-        self.panels
-            .query_mut()
-            .apply_query(query, Some(name), tx.clone());
-        self.panels.focus(PanelKind::Drawer);
+        self.open_find_with_query(query, Some(name), tx);
     }
 
     fn toggle_backlinks(&mut self, tx: &AppTx) {
@@ -955,20 +1035,37 @@ impl AppScreen for EditorScreen {
         } else {
             match self.panels.focused() {
                 PanelKind::Editor => true,
-                // The FIND view is a query input; FILES is a list (its
-                // filter field will refine this in Phase 03).
-                PanelKind::Drawer => self.panels.active_drawer_view() == DrawerView::Find,
+                PanelKind::Drawer => self.panels.drawer_is_text_input(),
                 PanelKind::Rail => false,
             }
         };
         let path_str = self.path.to_string();
+        // ln/col only when the editor buffer holds the cursor.
+        let ln_col =
+            (self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()).then(|| {
+                let (row, col) = self.panels.editor().view_snapshot().cursor;
+                (row + 1, col + 1)
+            });
+        // Match count when the FIND drawer is the focused query context.
+        let matches = (self.panels.focused() == PanelKind::Drawer
+            && self.panels.active_drawer_view() == DrawerView::Find)
+            .then(|| self.panels.query().result_count());
+        let global_hints = {
+            let s = self.settings.read().unwrap();
+            crate::components::hints::global_hints(&s.key_bindings)
+        };
         let ctx = crate::components::footer_bar::StatusContext {
             focus_label,
             editing,
             hints: &hints,
+            global_hints: &global_hints,
             doc: crate::components::footer_bar::DocState {
                 path: &path_str,
                 dirty: self.panels.editor().is_dirty(),
+                ln_col,
+                backlinks: self.backlink_count,
+                git: self.git_status.clone(),
+                matches,
             },
         };
         self.footer.render(f, rows[2], theme, &ctx);
@@ -1003,8 +1100,33 @@ impl AppScreen for EditorScreen {
                     tx,
                 )));
             }
+            // Stale completions (for notes we've navigated away from) fall
+            // through to the catch-all and are dropped.
+            AppEvent::BacklinkCountLoaded { path, count } if path == self.path => {
+                self.backlink_count = Some(count);
+            }
+            AppEvent::GitStatusLoaded(status) => {
+                self.git_status = status;
+            }
+            // Drawer panels can't emit these under an overlay, but guard
+            // anyway: never mutate panels while an overlay owns input.
+            AppEvent::RunTagQuery(label) if !self.overlays.is_open() => {
+                self.open_find_with_query(format!("#{label}"), None, tx);
+            }
+            AppEvent::JumpToHeading(heading) if !self.overlays.is_open() => {
+                self.panels.editor_mut().jump_to_heading(&heading);
+                self.focus_editor();
+            }
             AppEvent::OpenDrawerView(view) => {
-                self.open_drawer_view(view, tx);
+                // Selecting the already-active view toggles the drawer closed
+                // (spec §3: clicking the active rail item toggles).
+                if self.panels.is_visible(PanelKind::Drawer)
+                    && self.panels.active_drawer_view() == view
+                {
+                    self.panels.hide(PanelKind::Drawer);
+                } else {
+                    self.open_drawer_view(view, tx);
+                }
             }
             AppEvent::CloseOverlay => {
                 // Dismiss-to-opener. Guarded by is_open() on purpose: a
@@ -1073,6 +1195,9 @@ impl AppScreen for EditorScreen {
                 {
                     self.panels.editor_mut().mark_saved_at_revision(rev);
                 }
+                // The write changed the working tree — refresh the git
+                // segment (throttled).
+                self.refresh_git_status(tx);
                 // `SingleSlotTask::is_in_flight()` flips to false the
                 // moment the spawned future returns (success or panic),
                 // so we don't have to clear the slot manually here —

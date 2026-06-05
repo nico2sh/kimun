@@ -54,6 +54,19 @@ pub enum AppEvent {
     /// Switch the drawer to the given view and reveal it (sent by the
     /// activity rail and, later, by leader paths / mouse clicks).
     OpenDrawerView(crate::components::drawer::DrawerView),
+    /// Run the query `#<label>` in the FIND drawer (sent by the TAGS drawer).
+    RunTagQuery(String),
+    /// Jump the editor cursor to the first heading with this text (sent by
+    /// the OUTLINE drawer).
+    JumpToHeading(String),
+    /// Async-loaded backlink count for the note at `path` (status line 2).
+    BacklinkCountLoaded {
+        path: VaultPath,
+        count: usize,
+    },
+    /// Async-loaded workspace git summary for the status bar, `None` when
+    /// the workspace is not a git repository.
+    GitStatusLoaded(Option<String>),
     /// Sent by SettingsScreen when user confirms Save. The shared settings
     /// reference already contains the updated values.
     SettingsSaved,
