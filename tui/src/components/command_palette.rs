@@ -8,11 +8,12 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, ListItem, Paragraph};
+use ratatui::widgets::{ListItem, Paragraph};
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::overlay::{Overlay, OverlayKind};
+use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
     Emit, Filter, KeyReaction, RowSource, SearchList, SearchMouse, SearchRow,
@@ -154,17 +155,16 @@ impl Overlay for CommandPaletteModal {
 
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         let popup = crate::components::centered_rect(60, 60, area);
-        f.render_widget(Clear, popup);
-        let modal_style = Style::default()
-            .fg(theme.fg.to_ratatui())
-            .bg(theme.bg_hard.to_ratatui());
-        let block = Block::default()
-            .title(" Commands ")
-            .borders(Borders::ALL)
-            .border_style(theme.border_style(true))
-            .style(modal_style);
-        let inner = block.inner(popup);
-        f.render_widget(block, popup);
+        let inner = modal_chrome(
+            f,
+            popup,
+            theme,
+            ModalSpec {
+                title: Some(" Commands "),
+                bg: ModalBg::Hard,
+                ..Default::default()
+            },
+        );
 
         let rows = Layout::default()
             .direction(Direction::Vertical)

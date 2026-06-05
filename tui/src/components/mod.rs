@@ -35,6 +35,19 @@ use crate::components::events::{AppTx, InputEvent};
 use crate::settings::themes::Theme;
 
 /// Centre a popup occupying `percent_x`% × `percent_y`% of `area`.
+/// A centered rect of fixed cell size, clamped to `r` — the counterpart to
+/// the percentage-based [`centered_rect`] for dialogs with intrinsic sizes.
+pub fn fixed_centered_rect(width: u16, height: u16, r: Rect) -> Rect {
+    let width = width.min(r.width);
+    let height = height.min(r.height);
+    Rect {
+        x: r.x + (r.width - width) / 2,
+        y: r.y + (r.height - height) / 2,
+        width,
+        height,
+    }
+}
+
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let popup_height = (area.height as u32 * percent_y as u32 / 100) as u16;
     let popup_width = (area.width as u32 * percent_x as u32 / 100) as u16;

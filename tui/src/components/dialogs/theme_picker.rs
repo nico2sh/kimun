@@ -7,11 +7,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
-use crate::components::panel::panel_block;
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -90,10 +89,16 @@ impl ThemePickerDialog {
             .min(rect.height.saturating_sub(4))
             .max(5);
         let area = super::fixed_centered_rect(width, height, rect);
-        f.render_widget(Clear, area);
-        let block = panel_block("Theme", theme, focused);
-        let inner = block.inner(area);
-        f.render_widget(block, area);
+        let inner = crate::components::panel::modal_chrome(
+            f,
+            area,
+            theme,
+            crate::components::panel::ModalSpec {
+                title: Some("─ Theme "),
+                border: Some(theme.border_style(focused)),
+                bg: crate::components::panel::ModalBg::Base,
+            },
+        );
 
         // Keep the selection in the visible window.
         let visible = inner.height as usize;

@@ -4,11 +4,12 @@ use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::keys::KeyBindings;
 use crate::keys::action_shortcuts::ShortcutCategory;
 use crate::settings::themes::Theme;
@@ -228,15 +229,16 @@ impl Component for HelpDialog {
         let outer_height = desired_height.min(max_height);
 
         let popup_area = super::fixed_centered_rect(OUTER_WIDTH, outer_height, rect);
-        f.render_widget(Clear, popup_area);
-
-        let outer_block = Block::default()
-            .title(self.title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.fg.to_ratatui()))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_area);
-        f.render_widget(outer_block, popup_area);
+        let inner = modal_chrome(
+            f,
+            popup_area,
+            theme,
+            ModalSpec {
+                title: Some(self.title),
+                border: Some(Style::default().fg(theme.fg.to_ratatui())),
+                ..Default::default()
+            },
+        );
 
         if inner.height < 2 {
             return;

@@ -5,10 +5,11 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::components::single_line_input::{InputOutcome, SingleLineInput};
 use crate::settings::themes::Theme;
 
@@ -75,19 +76,20 @@ impl QuickNoteModal {
         let height = if self.error.is_some() { 9 } else { 8 };
         let popup_area = super::fixed_centered_rect(62, height, rect);
 
-        f.render_widget(Clear, popup_area);
-
         let fg = theme.fg.to_ratatui();
         let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
 
-        let outer_block = Block::default()
-            .title(" Quick Note ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.focus_border.to_ratatui()))
-            .style(theme.panel_style());
-        let inner = outer_block.inner(popup_area);
-        f.render_widget(outer_block, popup_area);
+        let inner = modal_chrome(
+            f,
+            popup_area,
+            theme,
+            ModalSpec {
+                title: Some(" Quick Note "),
+                border: Some(Style::default().fg(theme.focus_border.to_ratatui())),
+                ..Default::default()
+            },
+        );
 
         let rows = Layout::default()
             .direction(Direction::Vertical)

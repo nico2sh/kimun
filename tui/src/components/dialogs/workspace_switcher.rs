@@ -2,10 +2,11 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx};
+use crate::components::panel::{ModalSpec, modal_chrome};
 use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
@@ -88,15 +89,16 @@ impl WorkspaceSwitcherModal {
         let width = 50u16.min(rect.width.saturating_sub(4));
         let popup = super::fixed_centered_rect(width, height, rect);
 
-        f.render_widget(Clear, popup);
-
-        let outer = Block::default()
-            .title(" Switch Workspace ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.focus_border.to_ratatui()))
-            .style(theme.panel_style());
-        let inner = outer.inner(popup);
-        f.render_widget(outer, popup);
+        let inner = modal_chrome(
+            f,
+            popup,
+            theme,
+            ModalSpec {
+                title: Some(" Switch Workspace "),
+                border: Some(Style::default().fg(theme.focus_border.to_ratatui())),
+                ..Default::default()
+            },
+        );
 
         if self.workspaces.is_empty() {
             f.render_widget(

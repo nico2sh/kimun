@@ -27,14 +27,17 @@
 #   theme             = "Gruvbox Dark"   # or any built-in / custom theme name
 #   leader_timeout_ms = 400               # hesitation before the which-key menu
 #
-# LEADER TREE OVERRIDES ([leader] section)
-# ─────────────────────────────────────────
-#   Remap, add, or remove leader sequences. Keys are the sequence AFTER the
-#   gateway; values are action ids (see the cheatsheet) or "none" to unbind.
-#   [leader]
+# LEADER TREE OVERRIDES
+# ─────────────────────
+#   Remap, add, or remove leader sequences ([leader.bind]) and rename group
+#   captions ([leader.labels]). Keys are the sequence AFTER the gateway;
+#   bind values are action ids (see the cheatsheet) or "none" to unbind.
+#   [leader.bind]
 #   "o f" = "find.files"     # remap: leader o f now opens the file picker
 #   "x"   = "note.daily"     # add:   leader x opens today's journal
 #   "g p" = "none"           # remove the git-sync stub binding
+#   [leader.labels]
+#   "f"   = "+search"        # rename the +find group caption
 #
 # ─────────────────────────────────────────────────────────────────────────────
 config_version = 5

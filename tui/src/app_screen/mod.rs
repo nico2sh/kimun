@@ -1,4 +1,5 @@
 pub mod browse;
+pub mod doc_meta;
 pub mod editor;
 pub mod overlay_host;
 pub mod panel_set;

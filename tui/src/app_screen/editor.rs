@@ -56,29 +56,14 @@ pub struct EditorScreen {
     panels: PanelSet,
     path: VaultPath,
     footer: FooterBar,
-    /// Backlink count of the open note (async, status line 2). `None` while
-    /// loading or unknown.
-    backlink_count: Option<usize>,
-    /// Workspace git summary (async, status line 2).
-    git_status: Option<String>,
-    /// When the last git fetch was spawned — throttles the per-event
-    /// subprocess (rapid navigation must not fork one `git status` per note).
-    last_git_fetch: Option<std::time::Instant>,
-    /// Set once a fetch reports "no repo / no git": stop forking doomed
-    /// subprocesses for the rest of this screen's life (a workspace switch
-    /// rebuilds the screen and probes again).
-    git_unavailable: bool,
+    /// Async document/status state: backlink count, git summary, link
+    /// affordance cache, pending emphasis needles (see `doc_meta.rs`).
+    doc_meta: crate::app_screen::doc_meta::DocMeta,
     /// The leader-key sequence state machine (Ctrl-G gateway, spec §8a).
     leader: LeaderEngine,
-    /// Link-under-cursor affordance cache: `(target, backlink count once
-    /// loaded)`. Refreshed when the cursor enters a different link.
-    link_meta: Option<(String, Option<usize>)>,
     /// App event sender, captured on enter — render-side async kicks (the
     /// link-affordance backlink fetch) need it where no `tx` is threaded.
     app_tx: Option<AppTx>,
-    /// Emphasis needles waiting for the next note open (sent by query
-    /// surfaces right before their `OpenPath`).
-    pending_search_needles: Option<Vec<String>>,
     autosave: AutosaveTimer,
     /// The active overlay, if any. An open overlay intercepts input ahead of
     /// the panels; closing it restores focus to the panel that opened it.
@@ -117,17 +102,12 @@ impl EditorScreen {
             icons,
             theme,
             panels: PanelSet::from_panels(drawer, editor, rail_icons),
+            doc_meta: crate::app_screen::doc_meta::DocMeta::new(vault.clone()),
             vault,
             path,
             footer,
-            backlink_count: None,
-            git_status: None,
-            last_git_fetch: None,
-            git_unavailable: false,
             leader: leader_engine,
-            link_meta: None,
             app_tx: None,
-            pending_search_needles: None,
             autosave: AutosaveTimer::new(),
             overlays: OverlayHost::new(),
             autosave_task: SingleSlotTask::empty(),
@@ -314,12 +294,12 @@ impl EditorScreen {
         });
 
         self.path = path.clone();
-        // Take the pending arrive-from-query needles up front: they pair with
-        // THIS open only — a failed open must not leak them into a later one.
-        let pending_needles = self.pending_search_needles.take();
+        // Taken up front: they pair with THIS open only — a failed open must
+        // not leak them into a later one.
+        let pending_needles = self.doc_meta.take_pending_needles();
         match self.vault.get_note_text(&self.path).await {
             Ok(content) => {
-                self.refresh_doc_meta(tx);
+                self.doc_meta.note_opened(&self.path, tx);
                 self.panels.editor_mut().set_text(content);
                 // Arrive-from-query emphasis: apply after the load so the
                 // buffer's new revision owns the needles.
@@ -887,10 +867,11 @@ impl EditorScreen {
             // +git/sync — status is live; the rest are display-only stubs
             // (spec §12 keeps git interactions out of scope).
             LeaderAction::GitStatus => {
-                self.refresh_git_status(tx);
+                self.doc_meta.refresh_git(tx);
                 let msg = self
-                    .git_status
-                    .clone()
+                    .doc_meta
+                    .git()
+                    .cloned()
                     .unwrap_or_else(|| "not a git repository".to_string());
                 self.footer.flash(msg, tx);
             }
@@ -970,46 +951,6 @@ impl EditorScreen {
     /// are dropped by path. Contract: this runs when a note is *opened* (and
     /// the git half on autosave) — counts can go stale while a note stays
     /// open and another note adds a link to it; accepted for now.
-    fn refresh_doc_meta(&mut self, tx: &AppTx) {
-        self.backlink_count = None;
-        let vault = self.vault.clone();
-        let path = self.path.clone();
-        let tx2 = tx.clone();
-        tokio::spawn(async move {
-            let count = vault
-                .get_backlinks(&path)
-                .await
-                .map(|b| b.len())
-                .unwrap_or_default();
-            tx2.send(AppEvent::BacklinkCountLoaded { path, count }).ok();
-        });
-        self.refresh_git_status(tx);
-    }
-
-    /// Spawn the workspace git summary fetch, throttled: at most one
-    /// subprocess per couple of seconds, since rapid navigation would
-    /// otherwise fork a whole-tree `git status` per note open.
-    fn refresh_git_status(&mut self, tx: &AppTx) {
-        const GIT_FETCH_MIN_INTERVAL: Duration = Duration::from_secs(2);
-        if self.git_unavailable {
-            return;
-        }
-        let now = std::time::Instant::now();
-        if self
-            .last_git_fetch
-            .is_some_and(|t| now.duration_since(t) < GIT_FETCH_MIN_INTERVAL)
-        {
-            return;
-        }
-        self.last_git_fetch = Some(now);
-        let root = self.vault.workspace_path().to_path_buf();
-        let tx2 = tx.clone();
-        tokio::spawn(async move {
-            let status = crate::util::git_status::fetch(root).await;
-            tx2.send(AppEvent::GitStatusLoaded(status)).ok();
-        });
-    }
-
     /// The one path that reveals FIND with a concrete query: used by saved
     /// searches and tag queries so they cannot drift on what "open FIND"
     /// means.
@@ -1470,42 +1411,9 @@ impl AppScreen for EditorScreen {
         // The backlink count loads async, cached per target.
         let link_segment = if self.panels.focused() == PanelKind::Editor && !self.overlays.is_open()
         {
-            use crate::components::text_editor::LinkTarget;
-            match self.panels.editor().link_at_cursor() {
-                Some(LinkTarget::Note(target)) => {
-                    if self.link_meta.as_ref().map(|(t, _)| t.as_str()) != Some(target.as_str()) {
-                        self.link_meta = Some((target.clone(), None));
-                        let vault = self.vault.clone();
-                        let t2 = target.clone();
-                        let tx2 = self.app_tx.clone();
-                        if let Some(tx2) = tx2 {
-                            tokio::spawn(async move {
-                                let path = kimun_core::nfs::VaultPath::note_path_from(&t2);
-                                let count = vault
-                                    .get_backlinks(&path)
-                                    .await
-                                    .map(|b| b.len())
-                                    .unwrap_or_default();
-                                tx2.send(AppEvent::LinkTargetMeta { target: t2, count })
-                                    .ok();
-                            });
-                        }
-                    }
-                    match &self.link_meta {
-                        Some((t, Some(n))) => Some(format!("→ {t} · {n} backlinks")),
-                        Some((t, None)) => Some(format!("→ {t}")),
-                        None => None,
-                    }
-                }
-                Some(LinkTarget::Label(name)) => {
-                    self.link_meta = None;
-                    Some(format!("→ #{name} · tag query"))
-                }
-                None => {
-                    self.link_meta = None;
-                    None
-                }
-            }
+            let link = self.panels.editor().link_at_cursor();
+            self.doc_meta
+                .link_segment(link.as_ref(), &self.path, self.app_tx.as_ref())
         } else {
             None
         };
@@ -1538,8 +1446,8 @@ impl AppScreen for EditorScreen {
                 path: &path_str,
                 dirty: self.panels.editor().is_dirty(),
                 ln_col,
-                backlinks: self.backlink_count,
-                git: self.git_status.clone(),
+                backlinks: self.doc_meta.backlinks(),
+                git: self.doc_meta.git().cloned(),
                 matches,
                 link: link_segment,
             },
@@ -1575,6 +1483,12 @@ impl AppScreen for EditorScreen {
             OverlayMsg::NotConsumed => {}
         }
 
+        // Async status results (backlink count, git, link meta) are
+        // DocMeta's; everything else comes back for the owned match.
+        let Some(msg) = self.doc_meta.handle(msg, &self.path) else {
+            return;
+        };
+
         match msg {
             AppEvent::ShowFileOpsMenu(path) => {
                 self.present_overlay(Box::new(ActiveDialog::file_ops_menu(path)));
@@ -1594,34 +1508,13 @@ impl AppScreen for EditorScreen {
             }
             // Stale completions (for notes we've navigated away from) fall
             // through to the catch-all and are dropped.
-            AppEvent::BacklinkCountLoaded { path, count } if path == self.path => {
-                self.backlink_count = Some(count);
-            }
             AppEvent::FlashMessage(msg) => {
                 self.footer.flash(msg, tx);
-            }
-            AppEvent::GitStatusLoaded(status) => {
-                match (&self.git_status, status) {
-                    // First-ever None → not a repo (or no git): stop probing.
-                    (None, None) => self.git_unavailable = true,
-                    // Had a value, fetch failed (index.lock contention, …):
-                    // keep showing the last known state.
-                    (Some(_), None) => {}
-                    (_, some) => self.git_status = some,
-                }
             }
             AppEvent::SetEditorSearchNeedles(needles) => {
                 // Applied after the upcoming OpenPath loads the buffer —
                 // setting now would be wiped by that load's revision bump.
-                self.pending_search_needles = Some(needles);
-            }
-            AppEvent::LinkTargetMeta { target, count } => {
-                // Only land the count if the cursor is still on that link.
-                if let Some((cached, slot)) = &mut self.link_meta
-                    && *cached == target
-                {
-                    *slot = Some(count);
-                }
+                self.doc_meta.set_pending_needles(needles);
             }
             AppEvent::ExecuteLeaderAction(action) => {
                 if self.overlays.is_open() {
@@ -1737,7 +1630,7 @@ impl AppScreen for EditorScreen {
                 }
                 // The write changed the working tree — refresh the git
                 // segment (throttled).
-                self.refresh_git_status(tx);
+                self.doc_meta.refresh_git(tx);
                 // `SingleSlotTask::is_in_flight()` flips to false the
                 // moment the spawned future returns (success or panic),
                 // so we don't have to clear the slot manually here —

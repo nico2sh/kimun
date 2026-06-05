@@ -7,13 +7,14 @@ use kimun_core::nfs::VaultPath;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::events::{AppEvent, AppTx, InputEvent, redraw_callback};
 use crate::components::file_list::FileListEntry;
 use crate::components::overlay::{Overlay, OverlayKind};
+use crate::components::panel::{ModalBg, ModalSpec, modal_chrome};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
     KeyReaction, RowSource, SearchList, SearchMouse, VaultSuggestions,
@@ -365,20 +366,21 @@ impl Overlay for NoteBrowserModal {
 
         let popup_rect = crate::components::centered_rect(75, 75, area);
 
-        // Clear the area behind the modal so the editor doesn't bleed through.
-        f.render_widget(Clear, popup_rect);
-
         // Modal chrome (spec §6): hard background, focus-green border.
         let modal_style = Style::default()
             .fg(theme.fg.to_ratatui())
             .bg(theme.bg_hard.to_ratatui());
-        let outer_block = Block::default()
-            .title(format!(" {} ", self.title))
-            .borders(Borders::ALL)
-            .border_style(theme.border_style(true))
-            .style(modal_style);
-        let inner = outer_block.inner(popup_rect);
-        f.render_widget(outer_block, popup_rect);
+        let title = format!(" {} ", self.title);
+        let inner = modal_chrome(
+            f,
+            popup_rect,
+            theme,
+            ModalSpec {
+                title: Some(&title),
+                bg: ModalBg::Hard,
+                ..Default::default()
+            },
+        );
 
         let rows = Layout::default()
             .direction(Direction::Vertical)
