@@ -30,6 +30,9 @@ pub enum HelpRow {
 
 pub struct HelpDialog {
     pub rows: Vec<HelpRow>,
+    /// Window title — distinguishes the flat F1 help from the leader-tree
+    /// cheatsheet, which share this widget.
+    title: &'static str,
     scroll: usize,
     /// Cached body height from last render, used for PageUp/PageDown page size.
     last_body_height: u16,
@@ -73,6 +76,73 @@ impl HelpDialog {
 
         Self {
             rows,
+            title: " Keyboard Shortcuts ",
+            scroll: 0,
+            last_body_height: 20,
+        }
+    }
+
+    /// The full leader-tree cheatsheet (leader `?`): every sequence in the
+    /// tree as `gateway keys → description`, grouped per top-level group,
+    /// followed by the flat Tier-0 bindings. Built from the same
+    /// `leader_tree()` the engine and the which-key overlay walk — one
+    /// source, three surfaces.
+    pub fn cheatsheet(key_bindings: &KeyBindings) -> Self {
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::leader::{LeaderNode, leader_tree};
+
+        let gateway = key_bindings
+            .first_combo_for(&ActionShortcuts::Leader)
+            .unwrap_or_else(|| "leader".to_string());
+
+        fn walk(node: &LeaderNode, prefix: &str, rows: &mut Vec<HelpRow>) {
+            for (key, child) in node.children() {
+                let keys = format!("{prefix} {key}");
+                match child {
+                    LeaderNode::Leaf { label, .. } => rows.push(HelpRow::Binding {
+                        keys,
+                        label: (*label).to_string(),
+                    }),
+                    LeaderNode::Group { .. } => walk(child, &keys, rows),
+                }
+            }
+        }
+
+        let tree = leader_tree();
+        let mut rows: Vec<HelpRow> = Vec::new();
+        for (key, child) in tree.children() {
+            match child {
+                LeaderNode::Group { label, .. } => {
+                    rows.push(HelpRow::Blank);
+                    rows.push(HelpRow::Header(format!("{gateway} {key}  {label}")));
+                    rows.push(HelpRow::Separator);
+                    walk(child, &format!("{gateway} {key}"), &mut rows);
+                }
+                LeaderNode::Leaf { label, .. } => {
+                    rows.push(HelpRow::Blank);
+                    rows.push(HelpRow::Binding {
+                        keys: format!("{gateway} {key}"),
+                        label: (*label).to_string(),
+                    });
+                }
+            }
+        }
+
+        // Tier-0: the flat always-on bindings, from the same help builder.
+        let flat = Self::new(key_bindings);
+        rows.push(HelpRow::Blank);
+        rows.push(HelpRow::Header("Always-on shortcuts".to_string()));
+        rows.push(HelpRow::Separator);
+        rows.extend(
+            flat.rows
+                .into_iter()
+                .filter(|r| matches!(r, HelpRow::Binding { .. })),
+        );
+        rows.push(HelpRow::Blank);
+
+        Self {
+            rows,
+            title: " Cheatsheet — leader keys ",
             scroll: 0,
             last_body_height: 20,
         }
@@ -145,7 +215,7 @@ impl Component for HelpDialog {
         f.render_widget(Clear, popup_area);
 
         let outer_block = Block::default()
-            .title(" Keyboard Shortcuts ")
+            .title(self.title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.fg.to_ratatui()))
             .style(theme.panel_style());

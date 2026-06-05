@@ -504,6 +504,12 @@ impl EditorScreen {
     /// (the heavy side effect that keeps the reveal in the host rather than
     /// in `PanelSet`).
     fn open_drawer_view(&mut self, view: DrawerView, tx: &AppTx) {
+        // CFG is not a drawer (yet): the rail item opens the theme picker —
+        // the same surface as leader `v c` — so the two config doors agree.
+        if view == DrawerView::Config {
+            self.open_theme_picker();
+            return;
+        }
         let find_newly_shown = view == DrawerView::Find && !self.find_drawer_open();
         self.panels.open_drawer_view(view);
         match view {
@@ -578,6 +584,22 @@ impl EditorScreen {
         }
     }
 
+    /// Schedule a redraw for when the which-key overlay should reveal: the
+    /// hesitation timeout after the sequence (re)advanced. Fluent typing
+    /// never sees the overlay; the timer redraw simply finds the sequence
+    /// already gone.
+    fn schedule_whichkey_reveal(&self, tx: &AppTx) {
+        let timeout = {
+            let s = self.settings.read().unwrap();
+            std::time::Duration::from_millis(s.leader_timeout_ms)
+        };
+        let tx2 = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(timeout + std::time::Duration::from_millis(10)).await;
+            let _ = tx2.send(AppEvent::Redraw);
+        });
+    }
+
     /// Open the workspace switcher (SwitchWorkspace action and leader `v s`).
     /// No-op while an overlay is open.
     fn open_workspace_switcher(&mut self) {
@@ -590,14 +612,37 @@ impl EditorScreen {
         self.present_overlay(Box::new(dialog));
     }
 
-    /// Open the help / cheatsheet dialog (F1 and leader `?`). No-op while an
-    /// overlay is open.
+    /// Open the live theme picker (leader `v c` and the CFG rail item). The
+    /// full settings screen stays on Ctrl+P. No-op while an overlay is open.
+    fn open_theme_picker(&mut self) {
+        if self.overlays.is_open() {
+            return;
+        }
+        let s = self.settings.read().unwrap();
+        let dialog = ActiveDialog::theme_picker(&s);
+        drop(s);
+        self.present_overlay(Box::new(dialog));
+    }
+
+    /// Open the flat key-bindings help (F1). No-op while an overlay is open.
     fn open_help(&mut self) {
         if self.overlays.is_open() {
             return;
         }
         let s = self.settings.read().unwrap();
         let dialog = ActiveDialog::help(&s.key_bindings);
+        drop(s);
+        self.present_overlay(Box::new(dialog));
+    }
+
+    /// Open the full leader-tree cheatsheet (leader `?`). No-op while an
+    /// overlay is open.
+    fn open_cheatsheet(&mut self) {
+        if self.overlays.is_open() {
+            return;
+        }
+        let s = self.settings.read().unwrap();
+        let dialog = ActiveDialog::cheatsheet(&s.key_bindings);
         drop(s);
         self.present_overlay(Box::new(dialog));
     }
@@ -678,7 +723,11 @@ impl EditorScreen {
                 self.focus_editor();
             }
             KeyCode::Backspace => {
-                self.leader.step_up();
+                let outcome = self.leader.step_up();
+                // Stepping past the root cancels — no reveal to re-arm then.
+                if outcome == LeaderOutcome::SteppedUp {
+                    self.schedule_whichkey_reveal(tx);
+                }
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 match self.leader.feed(c) {
@@ -686,7 +735,9 @@ impl EditorScreen {
                     LeaderOutcome::Invalid => {
                         // Gentle feedback; the sequence stays pending.
                         self.footer.flash(format!("leader: no entry for '{c}'"), tx);
+                        self.schedule_whichkey_reveal(tx);
                     }
+                    LeaderOutcome::Descended => self.schedule_whichkey_reveal(tx),
                     _ => {}
                 }
             }
@@ -780,10 +831,7 @@ impl EditorScreen {
                 self.footer
                     .flash("reindex lives in Settings (Ctrl+P)".to_string(), tx);
             }
-            LeaderAction::VaultConfig => {
-                tx.send(AppEvent::OpenScreen(ScreenEvent::OpenSettings))
-                    .ok();
-            }
+            LeaderAction::VaultConfig => self.open_theme_picker(),
 
             // +window
             LeaderAction::WindowZen => {
@@ -818,7 +866,7 @@ impl EditorScreen {
                 self.copy_to_clipboard(path, "note path copied", tx);
             }
 
-            LeaderAction::Help => self.open_help(),
+            LeaderAction::Help => self.open_cheatsheet(),
         }
     }
 
@@ -998,6 +1046,7 @@ impl AppScreen for EditorScreen {
                     // mid-typing — but not while an overlay owns input.
                     if !self.overlays.is_open() {
                         self.leader.start();
+                        self.schedule_whichkey_reveal(tx);
                     }
                     return EventState::Consumed;
                 }
@@ -1314,9 +1363,15 @@ impl AppScreen for EditorScreen {
         let matches = (self.panels.focused() == PanelKind::Drawer
             && self.panels.active_drawer_view() == DrawerView::Find)
             .then(|| self.panels.query().result_count());
-        let global_hints = {
+        let (global_hints, leader_timeout, gateway_label) = {
             let s = self.settings.read().unwrap();
-            crate::components::hints::global_hints(&s.key_bindings)
+            (
+                crate::components::hints::global_hints(&s.key_bindings),
+                std::time::Duration::from_millis(s.leader_timeout_ms),
+                s.key_bindings
+                    .first_combo_for(&ActionShortcuts::Leader)
+                    .unwrap_or_else(|| "leader".to_string()),
+            )
         };
         let ctx = crate::components::footer_bar::StatusContext {
             focus_label,
@@ -1333,6 +1388,22 @@ impl AppScreen for EditorScreen {
             },
         };
         self.footer.render(f, rows[2], theme, &ctx);
+
+        // which-key overlay — docked above the status bar once the user
+        // hesitates mid-sequence (spec §8b).
+        let whichkey_visible = self
+            .leader
+            .pending_since()
+            .is_some_and(|since| since.elapsed() >= leader_timeout);
+        if whichkey_visible {
+            let gateway = gateway_label;
+            let area = f.area();
+            let h = crate::components::which_key::desired_height(&self.leader, area.width)
+                .min(rows[1].height);
+            let rect =
+                ratatui::layout::Rect::new(area.x, rows[2].y.saturating_sub(h), area.width, h);
+            crate::components::which_key::render(f, rect, theme, &self.leader, &gateway);
+        }
 
         // Overlay — rendered last so it appears on top of everything.
         self.overlays.render(f, f.area(), &self.theme);
@@ -1371,6 +1442,22 @@ impl AppScreen for EditorScreen {
             }
             AppEvent::GitStatusLoaded(status) => {
                 self.git_status = status;
+            }
+            AppEvent::ApplyTheme { theme, persist } => {
+                // The picker resolved the theme already — no disk re-read,
+                // just adapt to the terminal and swap.
+                {
+                    let mut s = self.settings.write().unwrap();
+                    s.set_theme(theme.name.clone());
+                }
+                self.theme = (*theme).adapt_to_terminal();
+                if persist {
+                    let snapshot = self.settings.read().unwrap().clone();
+                    tokio::spawn(async move {
+                        snapshot.save_to_disk().ok();
+                    });
+                }
+                tx.send(AppEvent::Redraw).ok();
             }
             // Drawer panels can't emit these under an overlay, but guard
             // anyway: never mutate panels while an overlay owns input.

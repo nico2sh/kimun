@@ -59,6 +59,13 @@ pub enum AppEvent {
     /// Jump the editor cursor to the first heading with this text (sent by
     /// the OUTLINE drawer).
     JumpToHeading(String),
+    /// Apply (and optionally persist) a resolved theme — sent by the theme
+    /// picker: previews on selection move, persists on Enter. Carries the
+    /// full `Theme` so applying never re-reads the themes directory.
+    ApplyTheme {
+        theme: Box<crate::settings::themes::Theme>,
+        persist: bool,
+    },
     /// Async-loaded backlink count for the note at `path` (status line 2).
     BacklinkCountLoaded {
         path: VaultPath,
