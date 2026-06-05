@@ -1059,6 +1059,36 @@ impl TextEditorComponent {
         true
     }
 
+    /// Move the cursor to the first markdown heading line whose text equals
+    /// `heading` (any level), e.g. for the OUTLINE drawer's jump. No-op when
+    /// the heading is not found, and on the Nvim backend (same policy as
+    /// [`Self::indent_lines`]).
+    pub fn jump_to_heading(&mut self, heading: &str) {
+        let BackendState::Textarea(ta) = &mut self.backend else {
+            return;
+        };
+        // The OUTLINE entries carry the extractor-rendered heading text
+        // (inline markup resolved, closing ATX `#` dropped), so normalise
+        // both sides before comparing: strip the ATX markers and the
+        // common inline-emphasis characters.
+        fn normalise(text: &str) -> String {
+            text.trim()
+                .trim_end_matches('#')
+                .trim()
+                .replace(['*', '_', '`'], "")
+        }
+        let wanted = normalise(heading);
+        let row = ta.lines().iter().position(|l| {
+            let t = l.trim_start();
+            let stripped = t.trim_start_matches('#');
+            stripped.len() != t.len() && normalise(stripped) == wanted
+        });
+        if let Some(row) = row {
+            ta.move_cursor(CursorMove::Jump(row as u16, 0));
+            self.bump_cursor();
+        }
+    }
+
     /// Indent or dedent whole lines. Tab unit is `\t` if `hard_tab_indent` is
     /// on, else `tab_length` spaces. Dedent counts a leading tab as one unit.
     /// No-op on Nvim backend.
@@ -2033,19 +2063,38 @@ impl Component for TextEditorComponent {
             return hints;
         }
 
-        [
-            (ActionShortcuts::FocusSidebar, "\u{2190} focus left"),
-            (ActionShortcuts::FocusEditor, "focus right \u{2192}"),
-            (ActionShortcuts::FileOperations, "file ops"),
-            (ActionShortcuts::FindInBuffer, "find"),
-        ]
-        .iter()
-        .filter_map(|(action, label)| {
-            self.key_bindings
-                .first_combo_for(action)
-                .map(|k| (k, label.to_string()))
-        })
-        .collect()
+        // Cursor-context hints come first: what the cursor is on decides the
+        // most relevant action (spec §5.2).
+        let mut hints: Vec<(String, String)> = Vec::new();
+        match self.link_at_cursor() {
+            Some(LinkTarget::Note(_)) => {
+                if let Some(k) = self
+                    .key_bindings
+                    .first_combo_for(&ActionShortcuts::FollowLink)
+                {
+                    hints.push((k, "follow link".to_string()));
+                }
+            }
+            Some(LinkTarget::Label(_)) => {
+                if let Some(k) = self
+                    .key_bindings
+                    .first_combo_for(&ActionShortcuts::FollowLink)
+                {
+                    hints.push((k, "browse tag".to_string()));
+                }
+            }
+            None => {}
+        }
+        hints.extend(crate::components::hints::hints_for(
+            &self.key_bindings,
+            &[
+                (ActionShortcuts::FocusSidebar, "\u{2190} focus left"),
+                (ActionShortcuts::FocusEditor, "focus right \u{2192}"),
+                (ActionShortcuts::FileOperations, "file ops"),
+                (ActionShortcuts::FindInBuffer, "find"),
+            ],
+        ));
+        hints
     }
 }
 
@@ -2503,6 +2552,23 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> ratatui::crossterm::event::KeyEvent {
         ratatui::crossterm::event::KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn jump_to_heading_moves_cursor_to_heading_line() {
+        let settings = crate::settings::AppSettings::default();
+        let mut ed = TextEditorComponent::new(settings.key_bindings.clone(), &settings);
+        ed.set_text("intro\n# Top\nbody\n## Sub One\nmore\n".to_string());
+
+        ed.jump_to_heading("Sub One");
+        assert_eq!(ed.view_snapshot().cursor.0, 3);
+
+        ed.jump_to_heading("Top");
+        assert_eq!(ed.view_snapshot().cursor.0, 1);
+
+        // Unknown heading: cursor stays.
+        ed.jump_to_heading("Nope");
+        assert_eq!(ed.view_snapshot().cursor.0, 1);
     }
 
     #[test]

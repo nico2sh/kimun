@@ -216,14 +216,14 @@ pub struct PanelSet {
 
 impl PanelSet {
     pub fn from_panels(
-        sidebar: SidebarComponent,
+        drawer: DrawerHost,
         editor: TextEditorComponent,
-        query: QueryPanel,
+        icons: crate::settings::icons::Icons,
     ) -> Self {
         Self {
             order: PanelOrder::new(),
-            rail: ActivityRail::new(),
-            drawer: DrawerHost::new(sidebar, query),
+            rail: ActivityRail::new(icons),
+            drawer,
             editor,
             drawer_width: DEFAULT_DRAWER_WIDTH,
             dragging_divider: false,
@@ -281,6 +281,12 @@ impl PanelSet {
         self.drawer.active_view()
     }
 
+    /// Whether the drawer's active view is a text-input context (status-bar
+    /// ⌨/≣ indicator).
+    pub fn drawer_is_text_input(&self) -> bool {
+        self.drawer.is_text_input()
+    }
+
     /// Switch the drawer to `view` and reveal it. Keeps the rail cursor in
     /// step so keyboard navigation continues from the active item.
     pub fn open_drawer_view(&mut self, view: DrawerView) {
@@ -308,6 +314,15 @@ impl PanelSet {
     }
     pub fn query_mut(&mut self) -> &mut QueryPanel {
         self.drawer.query_mut()
+    }
+    pub fn tags_mut(&mut self) -> &mut crate::components::drawer_views::TagsPanel {
+        self.drawer.tags_mut()
+    }
+    pub fn links_mut(&mut self) -> &mut crate::components::drawer_views::LinksPanel {
+        self.drawer.links_mut()
+    }
+    pub fn outline_mut(&mut self) -> &mut crate::components::drawer_views::OutlinePanel {
+        self.drawer.outline_mut()
     }
 
     // ── Routing ────────────────────────────────────────────────────────────
@@ -474,8 +489,13 @@ mod tests {
             &settings,
         );
         let editor = TextEditorComponent::new(settings.key_bindings.clone(), &settings);
-        let query = QueryPanel::new(vault, settings.key_bindings.clone());
-        PanelSet::from_panels(sidebar, editor, query)
+        let query = QueryPanel::new(vault.clone(), settings.key_bindings.clone());
+        let tags = crate::components::drawer_views::TagsPanel::new(vault.clone(), settings.icons());
+        let links =
+            crate::components::drawer_views::LinksPanel::new(vault.clone(), settings.icons());
+        let outline = crate::components::drawer_views::OutlinePanel::new(vault, settings.icons());
+        let drawer = DrawerHost::new(sidebar, query, tags, links, outline);
+        PanelSet::from_panels(drawer, editor, settings.icons())
     }
 
     /// Lay the visible panels out over a fixed area, as a render would.
