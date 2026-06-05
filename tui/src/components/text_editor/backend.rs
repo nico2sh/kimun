@@ -78,6 +78,68 @@ pub enum BackendState {
 }
 
 impl BackendState {
+    /// Whether the textarea backend is active — the named form of the
+    /// structural guard, for sites that only need the yes/no.
+    pub fn is_textarea(&self) -> bool {
+        matches!(self, BackendState::Textarea(_))
+    }
+
+    /// The textarea, when it is the active backend. Textarea-only features
+    /// (autocomplete, smart edits, mouse selection) guard on this.
+    pub fn as_textarea(&self) -> Option<&TextArea<'static>> {
+        match self {
+            BackendState::Textarea(ta) => Some(ta),
+            BackendState::Nvim(_) => None,
+        }
+    }
+
+    pub fn as_textarea_mut(&mut self) -> Option<&mut TextArea<'static>> {
+        match self {
+            BackendState::Textarea(ta) => Some(ta),
+            BackendState::Nvim(_) => None,
+        }
+    }
+
+    /// The nvim backend, when it is the active one.
+    pub fn as_nvim(&self) -> Option<&NvimBackend> {
+        match self {
+            BackendState::Textarea(_) => None,
+            BackendState::Nvim(nvim) => Some(nvim),
+        }
+    }
+
+    /// The whole buffer as one string, whichever backend holds it.
+    pub fn text(&self) -> String {
+        match self {
+            BackendState::Textarea(ta) => ta.lines().join("\n"),
+            BackendState::Nvim(nvim) => nvim.snapshot().lines.join("\n"),
+        }
+    }
+
+    /// The cursor's (row, col), cheap on both backends — no line cloning.
+    pub fn cursor(&self) -> (usize, usize) {
+        match self {
+            BackendState::Textarea(ta) => {
+                let ratatui_textarea::DataCursor(r, c) = ta.cursor();
+                (r, c)
+            }
+            BackendState::Nvim(nvim) => nvim.snapshot().cursor,
+        }
+    }
+
+    /// If the nvim backend's process has died, replace it with a textarea
+    /// holding the last mirrored buffer, and report that it happened so the
+    /// host can re-arm textarea-only features.
+    pub fn recover_from_dead_nvim(&mut self) -> bool {
+        let fallback_text = match self.as_nvim() {
+            Some(nvim) if nvim.is_dead() => nvim.snapshot().lines.join("\n"),
+            _ => return false,
+        };
+        tracing::warn!("nvim process died; falling back to textarea backend");
+        *self = BackendState::Textarea(TextArea::from(fallback_text.lines()));
+        true
+    }
+
     pub fn from_settings(
         editor_backend: &EditorBackendSetting,
         nvim_path: Option<&PathBuf>,
@@ -99,9 +161,9 @@ impl BackendState {
 // ---------------------------------------------------------------------------
 
 pub struct NvimBackend {
-    pub nvim: NvimClient,
-    pub snapshot: Arc<Mutex<NvimSnapshot>>,
-    pub is_dead: Arc<AtomicBool>,
+    nvim: NvimClient,
+    snapshot: Arc<Mutex<NvimSnapshot>>,
+    is_dead: Arc<AtomicBool>,
     /// Set while a `buf_set_lines` call spawned by `set_text` is in flight.
     /// The refresh task skips line/dirty updates while this is `true` to avoid
     /// overwriting the pre-populated snapshot with stale nvim state.
@@ -115,7 +177,7 @@ pub struct NvimBackend {
     pending_key_rx: Mutex<Option<tokio::sync::watch::Receiver<u64>>>,
     /// Tracks the last size passed to `ui_attach`/`ui_try_resize` so we only
     /// send a resize RPC when the terminal rect actually changes.
-    pub last_ui_size: Mutex<(u16, u16)>,
+    last_ui_size: Mutex<(u16, u16)>,
     io_handle: tokio::task::JoinHandle<Result<(), Box<LoopError>>>,
     child: Option<tokio::process::Child>,
 }
@@ -132,6 +194,23 @@ impl Drop for NvimBackend {
 }
 
 impl NvimBackend {
+    /// Locked view of the mirrored nvim state (cursor, lines, mode, dirty…).
+    /// Poison-recovering: a panicked refresh task never wedges the UI.
+    pub fn snapshot(&self) -> std::sync::MutexGuard<'_, NvimSnapshot> {
+        self.snapshot.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Whether the nvim process / IO loop has died (the host falls back to
+    /// the textarea backend when it has).
+    pub fn is_dead(&self) -> bool {
+        self.is_dead.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Clear the mirrored dirty flag — the buffer was just persisted.
+    pub fn mark_clean(&self) {
+        self.snapshot().dirty = false;
+    }
+
     pub fn new(nvim_path: Option<&PathBuf>) -> Result<Self, String> {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(Self::new_async(nvim_path))
