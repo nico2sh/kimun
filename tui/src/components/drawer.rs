@@ -5,7 +5,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::components::Component;
@@ -43,6 +43,17 @@ impl DrawerView {
     }
 }
 
+/// What the CFG drawer view displays — resolved by the host screen when the
+/// view opens (the drawer itself holds no settings handle).
+#[derive(Default, Clone)]
+pub struct ConfigInfo {
+    pub theme_name: String,
+    pub leader_key: String,
+    pub settings_key: String,
+    pub leader_timeout_ms: u64,
+    pub config_path: String,
+}
+
 /// Hosts the drawer views. FILES and FIND are the ported existing panels
 /// (file browser and Query panel); TAGS, LINKS, and OUTLINE are the
 /// phase-03 panels; CFG is a placeholder until the settings drawer lands.
@@ -53,6 +64,8 @@ pub struct DrawerHost {
     tags: TagsPanel,
     links: LinksPanel,
     outline: OutlinePanel,
+    /// CFG view contents, refreshed by the host when the view opens.
+    config_info: ConfigInfo,
 }
 
 impl DrawerHost {
@@ -70,7 +83,13 @@ impl DrawerHost {
             tags,
             links,
             outline,
+            config_info: ConfigInfo::default(),
         }
+    }
+
+    /// Refresh what the CFG view shows (called when the view opens).
+    pub fn set_config_info(&mut self, info: ConfigInfo) {
+        self.config_info = info;
     }
 
     pub fn active_view(&self) -> DrawerView {
@@ -120,7 +139,10 @@ impl DrawerHost {
             DrawerView::Tags => self.tags.hint_shortcuts(),
             DrawerView::Links => self.links.hint_shortcuts(),
             DrawerView::Outline => self.outline.hint_shortcuts(),
-            DrawerView::Config => Vec::new(),
+            DrawerView::Config => vec![
+                ("t/⏎".into(), "Theme picker".into()),
+                ("s".into(), "Settings".into()),
+            ],
         }
     }
 
@@ -139,7 +161,29 @@ impl DrawerHost {
             DrawerView::Tags => self.tags.handle_input(event, tx),
             DrawerView::Links => self.links.handle_input(event, tx),
             DrawerView::Outline => self.outline.handle_input(event, tx),
-            DrawerView::Config => EventState::NotConsumed,
+            DrawerView::Config => {
+                if let InputEvent::Key(key) = event {
+                    use ratatui::crossterm::event::KeyCode;
+                    match key.code {
+                        KeyCode::Char('t') | KeyCode::Enter => {
+                            tx.send(crate::components::events::AppEvent::ExecuteLeaderAction(
+                                crate::keys::leader::LeaderAction::VaultConfig,
+                            ))
+                            .ok();
+                            return EventState::Consumed;
+                        }
+                        KeyCode::Char('s') => {
+                            tx.send(crate::components::events::AppEvent::OpenScreen(
+                                crate::components::events::ScreenEvent::OpenSettings,
+                            ))
+                            .ok();
+                            return EventState::Consumed;
+                        }
+                        _ => {}
+                    }
+                }
+                EventState::NotConsumed
+            }
         }
     }
 
@@ -166,19 +210,47 @@ impl DrawerHost {
             DrawerView::Tags => self.tags.render(f, rect, theme, focused),
             DrawerView::Links => self.links.render(f, rect, theme, focused),
             DrawerView::Outline => self.outline.render(f, rect, theme, focused),
-            view => {
-                // CFG placeholder until the settings drawer lands (Phase 06).
-                let block = panel_block(view.label(), theme, focused);
+            DrawerView::Config => {
+                let block = panel_block("Config", theme, focused);
                 let inner = block.inner(rect);
                 f.render_widget(block, rect);
-                f.render_widget(
-                    Paragraph::new(format!("{} — coming soon", view.label())).style(
-                        Style::default()
-                            .fg(theme.gray.to_ratatui())
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                    inner,
-                );
+                let info = &self.config_info;
+                let label = Style::default().fg(theme.gray.to_ratatui());
+                let value = Style::default().fg(theme.fg.to_ratatui());
+                let keycap = Style::default().fg(theme.yellow.to_ratatui());
+                let lines = vec![
+                    ratatui::text::Line::from(vec![
+                        ratatui::text::Span::styled(" theme    ", label),
+                        ratatui::text::Span::styled(info.theme_name.clone(), value),
+                    ]),
+                    ratatui::text::Line::from(vec![
+                        ratatui::text::Span::styled(" leader   ", label),
+                        ratatui::text::Span::styled(info.leader_key.clone(), value),
+                    ]),
+                    ratatui::text::Line::from(vec![
+                        ratatui::text::Span::styled(" settings ", label),
+                        ratatui::text::Span::styled(info.settings_key.clone(), value),
+                    ]),
+                    ratatui::text::Line::from(vec![
+                        ratatui::text::Span::styled(" timeout  ", label),
+                        ratatui::text::Span::styled(
+                            format!("{} ms (which-key reveal)", info.leader_timeout_ms),
+                            value,
+                        ),
+                    ]),
+                    ratatui::text::Line::from(vec![
+                        ratatui::text::Span::styled(" config   ", label),
+                        ratatui::text::Span::styled(info.config_path.clone(), value),
+                    ]),
+                    ratatui::text::Line::default(),
+                    ratatui::text::Line::from(vec![
+                        ratatui::text::Span::styled(" t ", keycap),
+                        ratatui::text::Span::styled("theme picker   ", label),
+                        ratatui::text::Span::styled(" s ", keycap),
+                        ratatui::text::Span::styled("settings screen", label),
+                    ]),
+                ];
+                f.render_widget(Paragraph::new(lines), inner);
             }
         }
     }

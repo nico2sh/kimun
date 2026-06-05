@@ -338,6 +338,9 @@ impl PanelSet {
     pub fn outline_mut(&mut self) -> &mut crate::components::drawer_views::OutlinePanel {
         self.drawer.outline_mut()
     }
+    pub fn drawer_set_config_info(&mut self, info: crate::components::drawer::ConfigInfo) {
+        self.drawer.set_config_info(info);
+    }
 
     // ── Routing ────────────────────────────────────────────────────────────
 

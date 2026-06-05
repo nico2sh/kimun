@@ -10,7 +10,7 @@ use super::AppSettings;
 use super::workspace_config::{WorkspaceConfig, WorkspaceEntry};
 
 /// Current config version. Bump this when adding a new migration step.
-pub const CURRENT_CONFIG_VERSION: u32 = 4;
+pub const CURRENT_CONFIG_VERSION: u32 = 5;
 
 /// Runs all necessary migrations on `settings`, mutating it in place.
 /// Returns `true` if any migration was applied (caller should persist).
@@ -56,14 +56,49 @@ impl ConfigMigration {
             migrated = true;
         }
 
+        // v4 → v5: Ctrl-P becomes the command palette; settings move to
+        // Ctrl+Shift+P.
+        if settings.config_version < 5 {
+            Self::migrate_to_v5(settings);
+            migrated = true;
+        }
+
         // Future migrations go here, gated on config_version:
-        // if settings.config_version < 5 { ... migrated = true; }
+        // if settings.config_version < 6 { ... migrated = true; }
 
         if migrated {
             settings.config_version = CURRENT_CONFIG_VERSION;
         }
 
         Ok(migrated)
+    }
+
+    /// v4 → v5: swap the palette onto Ctrl-P and settings onto Ctrl+Shift+P —
+    /// only for bindings still at their previous defaults; customised ones
+    /// are left untouched.
+    fn migrate_to_v5(settings: &mut AppSettings) {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::KeyCombo;
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = crate::keys::key_combo::KeyModifiers::new().and_ctrl();
+        let ctrl_shift = ctrl.and_shift();
+        let ctrl_p = KeyCombo::new(ctrl, KeyStrike::KeyP);
+        let ctrl_shift_p = KeyCombo::new(ctrl_shift, KeyStrike::KeyP);
+
+        let mut map = settings.key_bindings.to_hashmap();
+        let settings_is_old_default = map
+            .get(&ActionShortcuts::OpenSettings)
+            .is_some_and(|v| v.as_slice() == [ctrl_p]);
+        let palette_unset_or_old_default = map
+            .get(&ActionShortcuts::OpenCommandPalette)
+            .is_none_or(|v| v.is_empty() || v.as_slice() == [ctrl_shift_p]);
+        if settings_is_old_default && palette_unset_or_old_default {
+            map.insert(ActionShortcuts::OpenSettings, vec![ctrl_shift_p]);
+            map.insert(ActionShortcuts::OpenCommandPalette, vec![ctrl_p]);
+        }
+        settings.key_bindings = KeyBindings::from_hashmap(map);
     }
 
     /// v3 → v4: move Ctrl-G from FollowLink to the new Leader gateway —
@@ -417,6 +452,56 @@ mod tests {
         assert_eq!(map.get(&ActionShortcuts::Leader), Some(&vec![ctrl_g]));
         assert_eq!(map.get(&ActionShortcuts::FollowLink), Some(&vec![ctrl_n]));
         assert_eq!(settings.config_version, CURRENT_CONFIG_VERSION);
+    }
+
+    #[test]
+    fn v5_swaps_palette_onto_ctrl_p() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let ctrl_p = KeyCombo::new(ctrl, KeyStrike::KeyP);
+        let ctrl_shift_p = KeyCombo::new(ctrl.and_shift(), KeyStrike::KeyP);
+
+        let mut settings = AppSettings::default();
+        let mut map = std::collections::HashMap::new();
+        map.insert(ActionShortcuts::OpenSettings, vec![ctrl_p]);
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+        settings.config_version = 4;
+
+        assert!(ConfigMigration::run(&mut settings).unwrap());
+        let map = settings.key_bindings.to_hashmap();
+        assert_eq!(
+            map.get(&ActionShortcuts::OpenCommandPalette),
+            Some(&vec![ctrl_p])
+        );
+        assert_eq!(
+            map.get(&ActionShortcuts::OpenSettings),
+            Some(&vec![ctrl_shift_p])
+        );
+    }
+
+    #[test]
+    fn v5_leaves_customised_settings_binding_alone() {
+        use crate::keys::KeyBindings;
+        use crate::keys::action_shortcuts::ActionShortcuts;
+        use crate::keys::key_combo::{KeyCombo, KeyModifiers};
+        use crate::keys::key_strike::KeyStrike;
+
+        let ctrl = KeyModifiers::new().and_ctrl();
+        let ctrl_x = KeyCombo::new(ctrl, KeyStrike::KeyX);
+
+        let mut settings = AppSettings::default();
+        let mut map = std::collections::HashMap::new();
+        map.insert(ActionShortcuts::OpenSettings, vec![ctrl_x]);
+        settings.key_bindings = KeyBindings::from_hashmap(map);
+        settings.config_version = 4;
+
+        ConfigMigration::run(&mut settings).unwrap();
+        let map = settings.key_bindings.to_hashmap();
+        assert_eq!(map.get(&ActionShortcuts::OpenSettings), Some(&vec![ctrl_x]));
     }
 
     #[test]

@@ -21,7 +21,7 @@
 #   FileOperations = ["F2"]              # F2  (open file-ops menu: delete/rename/move)
 #
 # ─────────────────────────────────────────────────────────────────────────────
-config_version = 4
+config_version = 5
 theme = "ANSI"
 cache_dir = "."
 history_dir = "history"
@@ -48,7 +48,7 @@ created = "2026-04-01T00:00:00Z"
 
 [key_bindings]
 Quit = ["ctrl&Q"]
-OpenSettings = ["ctrl&P"]
+OpenSettings = ["ctrl+shift&P"]
 SearchNotes = ["ctrl&K"]
 OpenNote = ["ctrl&O"]
 NewJournal = ["ctrl&J"]
@@ -71,4 +71,4 @@ SaveCurrentQuery = ["ctrl&D"]
 SwitchWorkspace = ["F4"]
 FindInBuffer = ["ctrl&F"]
 Leader = ["ctrl&G"]
-OpenCommandPalette = ["ctrl+shift&P"]
+OpenCommandPalette = ["ctrl&P"]

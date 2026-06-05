@@ -120,6 +120,9 @@ pub struct SearchList<R: SearchRow> {
 pub enum SearchMouse {
     Selected(usize),
     Activated(usize),
+    /// Right-click on a row: selected, and the host should open its context
+    /// menu for it.
+    Context(usize),
     Scrolled,
     /// The wheel landed inside the host's content sub-region (see
     /// [`SearchList::set_content_rect`]); the host owns that view's scroll,
@@ -679,7 +682,8 @@ impl<R: SearchRow> SearchList<R> {
             return SearchMouse::None;
         }
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) if m.row >= r.y => {
+            MouseEventKind::Down(MouseButton::Left | MouseButton::Right) if m.row >= r.y => {
+                let right_click = matches!(m.kind, MouseEventKind::Down(MouseButton::Right));
                 let target_visual = m.row - r.y; // 0-based visual offset; row 0 = first item
                 let mut acc: u16 = 0;
                 let mut hit: Option<usize> = None;
@@ -701,7 +705,9 @@ impl<R: SearchRow> SearchList<R> {
                 if let Some(pos) = hit {
                     let prev = self.selected;
                     self.selected = Some(pos);
-                    return if prev == Some(pos) {
+                    return if right_click {
+                        SearchMouse::Context(pos)
+                    } else if prev == Some(pos) {
                         SearchMouse::Activated(pos)
                     } else {
                         SearchMouse::Selected(pos)

@@ -105,6 +105,30 @@ fn push_with_variables(
     }
 }
 
+/// The lowercase emphasis needles a query implies: its plain text terms,
+/// labels in their in-body `#tag` form, and link targets — what a result's
+/// content actually matched on. Shared by the telescope preview and the
+/// editor's arrive-from-query emphasis.
+pub fn emphasis_needles(query: &str) -> Vec<String> {
+    let terms = kimun_core::SearchTerms::from_query_string(query);
+    let mut needles: Vec<String> = terms
+        .terms
+        .iter()
+        .map(|t| t.to_lowercase())
+        .chain(
+            terms
+                .labels
+                .iter()
+                .map(|l| format!("#{}", l.to_lowercase())),
+        )
+        .chain(terms.links.iter().map(|l| l.to_lowercase()))
+        .chain(terms.forward_links.iter().map(|l| l.to_lowercase()))
+        .filter(|t| !t.is_empty() && !t.contains('{'))
+        .collect();
+    needles.dedup();
+    needles
+}
+
 /// The one-line reason for the query's parse problem, if any — surfaced in
 /// the FIND header. The lenient grammar's only real error is an unterminated
 /// quote.

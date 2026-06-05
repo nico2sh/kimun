@@ -69,6 +69,16 @@ pub enum AppEvent {
         theme: Box<crate::settings::themes::Theme>,
         persist: bool,
     },
+    /// Carry a query's emphasis needles to the editor right before an
+    /// `OpenPath` from a query surface, so the opened note lights up its
+    /// matched spans (spec §5.1).
+    SetEditorSearchNeedles(Vec<String>),
+    /// Async-loaded backlink count for the link target under the editor
+    /// cursor (status line 2's `→ target · N backlinks` affordance).
+    LinkTargetMeta {
+        target: String,
+        count: usize,
+    },
     /// Async-loaded backlink count for the note at `path` (status line 2).
     BacklinkCountLoaded {
         path: VaultPath,

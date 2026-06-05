@@ -516,14 +516,15 @@ mod tests {
     #[test]
     fn settings_keybinding_sends_open_settings() {
         let settings = AppSettings::default();
+        // Settings live on Ctrl+Shift+P (Ctrl+P is the command palette).
         let key = KeyEvent {
             code: KeyCode::Char('p'),
-            modifiers: KeyModifiers::CONTROL,
+            modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         };
 
-        let combo = key_event_to_combo(&key).expect("Ctrl+P should produce a combo");
+        let combo = key_event_to_combo(&key).expect("Ctrl+Shift+P should produce a combo");
         let action = settings.key_bindings.get_action(&combo);
         assert_eq!(action, Some(ActionShortcuts::OpenSettings));
 
