@@ -11,7 +11,7 @@ A workspace is a notes directory with its own isolated search index. Work notes 
 - **personal** — journal, ideas, todo lists
 - **archive** — old notes you want to keep but not trip over
 
-The active workspace determines what you see and search. Switch instantly from the CLI or the TUI's Settings screen.
+The active workspace determines what you see and search. Switch instantly from the CLI or the TUI's Preferences screen.
 
 Under the hood, each workspace's index lives next to your `config.toml` as `<workspace>.kimuncache` (regenerable; safe to delete), paired with a `<workspace>.txt` history file under `<config_dir>/history/`. Both locations are configurable — see [Configuration](@/getting-started/configuration.md#files-kimun-stores-on-disk).
 
@@ -100,6 +100,6 @@ No manual action needed — unless an existing workspace name violates the [name
 Two ways to switch the active workspace, same result:
 
 - **CLI:** `kimun workspace use <name>`
-- **TUI:** Settings screen (`Ctrl+,`) → pick from the workspace list
+- **TUI:** Preferences screen (`Ctrl+,`) → pick from the workspace list
 
 Both write the same `config.toml`, so changes in one are immediately visible in the other.

@@ -102,7 +102,7 @@ impl WorkspaceSwitcherModal {
 
         if self.workspaces.is_empty() {
             f.render_widget(
-                Paragraph::new("  No workspaces configured.\n  Use Settings to create one.")
+                Paragraph::new("  No workspaces configured.\n  Use Preferences to create one.")
                     .style(Style::default().fg(gray).bg(bg)),
                 inner,
             );

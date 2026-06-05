@@ -92,14 +92,14 @@ pub enum AppEvent {
     /// Async-loaded workspace git summary for the status bar, `None` when
     /// the workspace is not a git repository.
     GitStatusLoaded(Option<String>),
-    /// Sent by SettingsScreen when user confirms Save. The shared settings
+    /// Sent by PreferencesScreen when user confirms Save. The shared settings
     /// reference already contains the updated values.
-    SettingsSaved,
-    /// Sent by SettingsScreen when user discards or closes unchanged.
-    CloseSettings,
-    /// Sent by VaultSection; SettingsScreen::handle_app_message intercepts.
+    PreferencesSaved,
+    /// Sent by PreferencesScreen when user discards or closes unchanged.
+    ClosePreferences,
+    /// Sent by VaultSection; PreferencesScreen::handle_app_message intercepts.
     OpenFileBrowser,
-    /// Sent by IndexingSection; SettingsScreen intercepts.
+    /// Sent by IndexingSection; PreferencesScreen intercepts.
     TriggerFastReindex,
     TriggerFullReindex,
     /// Sent by indexing tokio task on completion.
@@ -247,9 +247,9 @@ pub enum InputEvent {
 #[derive(Debug, Clone)]
 pub enum ScreenEvent {
     Start,
-    OpenSettings,
+    OpenPreferences,
     /// Open the settings screen with an error overlay already shown.
-    OpenSettingsWithError(String),
+    OpenPreferencesWithError(String),
     /// Navigate to the editor for the given vault root path.
     OpenEditor(Arc<NoteVault>, VaultPath),
     /// Navigate to the browse screen for the given vault root and directory path.

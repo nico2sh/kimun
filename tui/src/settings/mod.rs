@@ -230,7 +230,7 @@ fn default_keybindings() -> KeyBindings {
     // default hints-kitten chord prefix, which holds the screen mid-chord).
     kb.batch_add()
         .with_ctrl()
-        .add(KeyStrike::Comma, ActionShortcuts::OpenSettings);
+        .add(KeyStrike::Comma, ActionShortcuts::OpenPreferences);
 
     // File operations menu (F2 — no modifier, reliable in all terminals).
     kb.batch_add()

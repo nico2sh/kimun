@@ -11,7 +11,7 @@ All of Kimün's settings live in one `config.toml`:
 - **Windows:** `%USERPROFILE%\kimun\config.toml`
 - **Anywhere else:** `kimun --config /path/to/config.toml`
 
-You rarely need to edit it by hand: Kimün creates it on first run, and the TUI's Settings screen (`Ctrl+,`) writes changes for you. This page is for when you want to get your hands dirty anyway.
+You rarely need to edit it by hand: Kimün creates it on first run, and the TUI's Preferences screen (`Ctrl+,`) writes changes for you. This page is for when you want to get your hands dirty anyway.
 
 ## A Complete Config
 
@@ -205,7 +205,7 @@ Use these names exactly as shown. For the default shortcuts each one ships with,
 - `Quit` — Exit Kimün
 - `Leader` — The leader gateway (default `Ctrl+G`) — starts a key sequence; see the [leader key](@/using-kimun/tui.md#the-leader-key)
 - `OpenCommandPalette` — The command palette (default `Ctrl+P`)
-- `OpenSettings` — Open the settings screen (default `Ctrl+,`)
+- `OpenSettings` — Open the Preferences screen (default `Ctrl+,`)
 - `ToggleSidebar` — Show/hide the drawer (default `Ctrl+T`)
 - `ToggleBacklinks` — Open the FIND drawer view (default `Ctrl+E`)
 - `TogglePreview` — Show/hide the preview pane

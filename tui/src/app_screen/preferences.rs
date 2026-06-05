@@ -17,12 +17,12 @@ use crate::components::events::{AppEvent, AppTx, InputEvent};
 use crate::components::indexing::{
     IndexingProgressState, fixed_centered_rect, render_indexing_overlay, spawn_running,
 };
-use crate::components::settings::appearance_section::AppearanceSection;
-use crate::components::settings::display_section::DisplaySection;
-use crate::components::settings::editor_section::EditorSection;
-use crate::components::settings::indexing_section::IndexingSection;
-use crate::components::settings::sorting_section::SortingSection;
-use crate::components::settings::workspaces_section::{Mode as WorkspaceMode, WorkspacesSection};
+use crate::components::preferences::appearance_section::AppearanceSection;
+use crate::components::preferences::display_section::DisplaySection;
+use crate::components::preferences::editor_section::EditorSection;
+use crate::components::preferences::indexing_section::IndexingSection;
+use crate::components::preferences::sorting_section::SortingSection;
+use crate::components::preferences::workspaces_section::{Mode as WorkspaceMode, WorkspacesSection};
 use crate::settings::AppSettings;
 use crate::settings::SharedSettings;
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
@@ -136,7 +136,7 @@ pub enum Overlay {
 // ── Section / Focus enums ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum SettingsSection {
+enum PreferencesSection {
     Workspaces,
     Appearance,
     Display,
@@ -146,19 +146,19 @@ enum SettingsSection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum SettingsFocus {
+enum PreferencesFocus {
     Sidebar,
     Content,
 }
 
-// ── SettingsScreen ────────────────────────────────────────────────────────────
+// ── PreferencesScreen ────────────────────────────────────────────────────────────
 
-pub struct SettingsScreen {
+pub struct PreferencesScreen {
     pub settings: SharedSettings,
     pub initial_settings: AppSettings,
     pub theme: Theme,
-    section: SettingsSection,
-    focus: SettingsFocus,
+    section: PreferencesSection,
+    focus: PreferencesFocus,
     appearance_section: AppearanceSection,
     display_section: DisplaySection,
     sorting_section: SortingSection,
@@ -171,7 +171,7 @@ pub struct SettingsScreen {
     throbber_state: ThrobberState,
 }
 
-impl SettingsScreen {
+impl PreferencesScreen {
     pub fn new(settings: SharedSettings) -> Self {
         let s = settings.read().unwrap();
         // Build the theme list once and resolve the active theme from it;
@@ -210,8 +210,8 @@ impl SettingsScreen {
             settings,
             initial_settings,
             theme,
-            section: SettingsSection::Workspaces,
-            focus: SettingsFocus::Sidebar,
+            section: PreferencesSection::Workspaces,
+            focus: PreferencesFocus::Sidebar,
             overlay: Overlay::None,
             pending_save_after_index: false,
             throbber_state: ThrobberState::default(),
@@ -271,7 +271,7 @@ impl SettingsScreen {
         } else {
             s.save_to_disk().ok();
             drop(s);
-            tx.send(AppEvent::SettingsSaved).ok();
+            tx.send(AppEvent::PreferencesSaved).ok();
         }
     }
 
@@ -332,9 +332,9 @@ impl SettingsScreen {
 // ── AppScreen impl ────────────────────────────────────────────────────────────
 
 #[async_trait]
-impl AppScreen for SettingsScreen {
+impl AppScreen for PreferencesScreen {
     fn get_kind(&self) -> ScreenKind {
-        ScreenKind::Settings
+        ScreenKind::Preferences
     }
 
     fn handle_input(&mut self, event: &InputEvent, tx: &AppTx) -> EventState {
@@ -465,7 +465,7 @@ impl AppScreen for SettingsScreen {
                             self.overlay = Overlay::None;
                             self.do_save(tx);
                         } else {
-                            tx.send(AppEvent::CloseSettings).ok();
+                            tx.send(AppEvent::ClosePreferences).ok();
                         }
                     }
                     _ => {}
@@ -509,7 +509,7 @@ impl AppScreen for SettingsScreen {
             KeyCode::Esc => {
                 let changed = *self.settings.read().unwrap() != self.initial_settings;
                 if !changed {
-                    tx.send(AppEvent::CloseSettings).ok();
+                    tx.send(AppEvent::ClosePreferences).ok();
                 } else {
                     self.overlay = Overlay::ConfirmSave {
                         focused_button: SaveButton::Save,
@@ -519,45 +519,45 @@ impl AppScreen for SettingsScreen {
             }
             KeyCode::Tab => {
                 self.focus = match self.focus {
-                    SettingsFocus::Sidebar => SettingsFocus::Content,
-                    SettingsFocus::Content => SettingsFocus::Sidebar,
+                    PreferencesFocus::Sidebar => PreferencesFocus::Content,
+                    PreferencesFocus::Content => PreferencesFocus::Sidebar,
                 };
                 EventState::Consumed
             }
             _ => match self.focus {
-                SettingsFocus::Sidebar => match key.code {
+                PreferencesFocus::Sidebar => match key.code {
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.section = match self.section {
-                            SettingsSection::Workspaces => SettingsSection::Appearance,
-                            SettingsSection::Appearance => SettingsSection::Display,
-                            SettingsSection::Display => SettingsSection::Sorting,
-                            SettingsSection::Sorting => SettingsSection::Indexing,
-                            SettingsSection::Indexing => SettingsSection::Editor,
-                            SettingsSection::Editor => SettingsSection::Workspaces,
+                            PreferencesSection::Workspaces => PreferencesSection::Appearance,
+                            PreferencesSection::Appearance => PreferencesSection::Display,
+                            PreferencesSection::Display => PreferencesSection::Sorting,
+                            PreferencesSection::Sorting => PreferencesSection::Indexing,
+                            PreferencesSection::Indexing => PreferencesSection::Editor,
+                            PreferencesSection::Editor => PreferencesSection::Workspaces,
                         };
                         EventState::Consumed
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.section = match self.section {
-                            SettingsSection::Workspaces => SettingsSection::Editor,
-                            SettingsSection::Appearance => SettingsSection::Workspaces,
-                            SettingsSection::Display => SettingsSection::Appearance,
-                            SettingsSection::Sorting => SettingsSection::Display,
-                            SettingsSection::Indexing => SettingsSection::Sorting,
-                            SettingsSection::Editor => SettingsSection::Indexing,
+                            PreferencesSection::Workspaces => PreferencesSection::Editor,
+                            PreferencesSection::Appearance => PreferencesSection::Workspaces,
+                            PreferencesSection::Display => PreferencesSection::Appearance,
+                            PreferencesSection::Sorting => PreferencesSection::Display,
+                            PreferencesSection::Indexing => PreferencesSection::Sorting,
+                            PreferencesSection::Editor => PreferencesSection::Indexing,
                         };
                         EventState::Consumed
                     }
                     KeyCode::Enter => {
-                        self.focus = SettingsFocus::Content;
+                        self.focus = PreferencesFocus::Content;
                         EventState::Consumed
                     }
                     _ => EventState::NotConsumed,
                 },
-                SettingsFocus::Content => {
+                PreferencesFocus::Content => {
                     let app_event = InputEvent::Key(*key);
                     match self.section {
-                        SettingsSection::Appearance => {
+                        PreferencesSection::Appearance => {
                             let r = self.appearance_section.handle_input(&app_event, tx);
                             // Live theme preview on every navigation step. Take the
                             // theme straight from the section's already-loaded list:
@@ -570,13 +570,13 @@ impl AppScreen for SettingsScreen {
                             }
                             r
                         }
-                        SettingsSection::Display => {
+                        PreferencesSection::Display => {
                             let r = self.display_section.handle_input(&app_event, tx);
                             self.settings.write().unwrap().use_nerd_fonts =
                                 self.display_section.use_nerd_fonts;
                             r
                         }
-                        SettingsSection::Sorting => {
+                        PreferencesSection::Sorting => {
                             let r = self.sorting_section.handle_input(&app_event, tx);
                             {
                                 let mut s = self.settings.write().unwrap();
@@ -587,7 +587,7 @@ impl AppScreen for SettingsScreen {
                             }
                             r
                         }
-                        SettingsSection::Workspaces => {
+                        PreferencesSection::Workspaces => {
                             // Capture pre-action state for rename/delete
                             let pre_mode = self.workspaces_section.mode().clone();
                             let pre_selected = self
@@ -688,10 +688,10 @@ impl AppScreen for SettingsScreen {
 
                             r
                         }
-                        SettingsSection::Indexing => {
+                        PreferencesSection::Indexing => {
                             self.indexing_section.handle_input(&app_event, tx)
                         }
-                        SettingsSection::Editor => {
+                        PreferencesSection::Editor => {
                             let r = self.editor_section.handle_input(&app_event, tx);
                             self.settings.write().unwrap().autosave_interval_secs =
                                 self.editor_section.autosave_interval_secs;
@@ -762,7 +762,7 @@ impl AppScreen for SettingsScreen {
                     if self.pending_save_after_index {
                         self.pending_save_after_index = false;
                         self.settings.read().unwrap().save_to_disk().ok();
-                        tx.send(AppEvent::SettingsSaved).ok();
+                        tx.send(AppEvent::PreferencesSaved).ok();
                     } else {
                         self.overlay =
                             Overlay::IndexingProgress(IndexingProgressState::Done(duration));
@@ -791,7 +791,7 @@ impl AppScreen for SettingsScreen {
             .split(f.area());
 
         let header = Block::default()
-            .title("Settings")
+            .title("Preferences")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border_dim.to_ratatui()))
             .style(theme.base_style())
@@ -814,14 +814,14 @@ impl AppScreen for SettingsScreen {
             .split(rows[1]);
 
         // Sidebar navigation
-        let sidebar_focused = self.focus == SettingsFocus::Sidebar;
+        let sidebar_focused = self.focus == PreferencesFocus::Sidebar;
         let active_idx = match self.section {
-            SettingsSection::Workspaces => 0,
-            SettingsSection::Appearance => 1,
-            SettingsSection::Display => 2,
-            SettingsSection::Sorting => 3,
-            SettingsSection::Indexing => 4,
-            SettingsSection::Editor => 5,
+            PreferencesSection::Workspaces => 0,
+            PreferencesSection::Appearance => 1,
+            PreferencesSection::Display => 2,
+            PreferencesSection::Sorting => 3,
+            PreferencesSection::Indexing => 4,
+            PreferencesSection::Editor => 5,
         };
         let items: Vec<ListItem> = [
             "Workspaces",
@@ -852,29 +852,29 @@ impl AppScreen for SettingsScreen {
         f.render_widget(sidebar_list, cols[0]);
 
         // Content panel
-        let content_focused = self.focus == SettingsFocus::Content;
+        let content_focused = self.focus == PreferencesFocus::Content;
         match self.section {
-            SettingsSection::Appearance => {
+            PreferencesSection::Appearance => {
                 self.appearance_section
                     .render(f, cols[1], &theme, content_focused)
             }
-            SettingsSection::Display => {
+            PreferencesSection::Display => {
                 self.display_section
                     .render(f, cols[1], &theme, content_focused)
             }
-            SettingsSection::Sorting => {
+            PreferencesSection::Sorting => {
                 self.sorting_section
                     .render(f, cols[1], &theme, content_focused)
             }
-            SettingsSection::Workspaces => {
+            PreferencesSection::Workspaces => {
                 self.workspaces_section
                     .render(f, cols[1], &theme, content_focused)
             }
-            SettingsSection::Indexing => {
+            PreferencesSection::Indexing => {
                 self.indexing_section
                     .render(f, cols[1], &theme, content_focused)
             }
-            SettingsSection::Editor => {
+            PreferencesSection::Editor => {
                 self.editor_section
                     .render(f, cols[1], &theme, content_focused)
             }
@@ -884,7 +884,7 @@ impl AppScreen for SettingsScreen {
     }
 }
 
-impl SettingsScreen {
+impl PreferencesScreen {
     fn render_overlay(&mut self, f: &mut Frame, theme: &Theme) {
         match &mut self.overlay {
             Overlay::None => {}
@@ -977,7 +977,7 @@ impl SettingsScreen {
                 let area = fixed_centered_rect(44, 6, f.area());
                 f.render_widget(Clear, area);
                 let block = Block::default()
-                    .title("Save Settings?")
+                    .title("Save Preferences?")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(theme.accent.to_ratatui()))
                     .style(theme.base_style());
@@ -1141,8 +1141,8 @@ mod settings_screen_tests {
         Arc::new(RwLock::new(AppSettings::default()))
     }
 
-    fn make_screen() -> SettingsScreen {
-        SettingsScreen::new(shared_defaults())
+    fn make_screen() -> PreferencesScreen {
+        PreferencesScreen::new(shared_defaults())
     }
 
     #[test]
@@ -1151,7 +1151,7 @@ mod settings_screen_tests {
         let mut screen = make_screen();
         screen.handle_input(&key(KeyCode::Esc), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppEvent::CloseSettings));
+        assert!(matches!(msg, AppEvent::ClosePreferences));
     }
 
     #[test]
@@ -1182,7 +1182,7 @@ mod settings_screen_tests {
         };
         screen.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppEvent::CloseSettings));
+        assert!(matches!(msg, AppEvent::ClosePreferences));
     }
 
     #[test]
@@ -1199,7 +1199,7 @@ mod settings_screen_tests {
         };
         screen.handle_input(&key(KeyCode::Enter), &tx);
         let msg = rx.try_recv().expect("expected message");
-        assert!(matches!(msg, AppEvent::SettingsSaved));
+        assert!(matches!(msg, AppEvent::PreferencesSaved));
         assert!(rx.try_recv().is_err());
     }
 
@@ -1209,7 +1209,7 @@ mod settings_screen_tests {
         let mut settings = AppSettings::default();
         settings.set_workspace(&PathBuf::from("/original/path"));
         let shared = Arc::new(RwLock::new(settings));
-        let mut screen = SettingsScreen::new(shared);
+        let mut screen = PreferencesScreen::new(shared);
         screen
             .settings
             .write()
@@ -1238,8 +1238,8 @@ mod settings_screen_tests {
         screen
             .handle_app_message(AppEvent::IndexingDone(Ok(Duration::from_secs(1))), &tx)
             .await;
-        let msg = rx.try_recv().expect("expected SettingsSaved");
-        assert!(matches!(msg, AppEvent::SettingsSaved));
+        let msg = rx.try_recv().expect("expected PreferencesSaved");
+        assert!(matches!(msg, AppEvent::PreferencesSaved));
         assert!(!screen.pending_save_after_index);
     }
 
@@ -1255,7 +1255,7 @@ mod settings_screen_tests {
         screen
             .handle_app_message(AppEvent::IndexingDone(Err("disk error".to_string())), &tx)
             .await;
-        assert!(rx.try_recv().is_err(), "no SettingsSaved when index failed");
+        assert!(rx.try_recv().is_err(), "no PreferencesSaved when index failed");
         assert!(!screen.pending_save_after_index);
         assert!(matches!(
             screen.overlay,
@@ -1312,7 +1312,7 @@ mod settings_screen_tests {
     #[test]
     fn new_with_error_sets_vault_conflict_overlay_with_message() {
         let screen =
-            SettingsScreen::new_with_error(shared_defaults(), "test error msg".to_string());
+            PreferencesScreen::new_with_error(shared_defaults(), "test error msg".to_string());
         match screen.overlay {
             Overlay::VaultConflict(ref msg) => {
                 assert_eq!(msg, "test error msg");

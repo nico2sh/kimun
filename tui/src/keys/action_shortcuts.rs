@@ -27,7 +27,7 @@ impl Display for ShortcutCategory {
 #[serde(try_from = "String", into = "String")]
 pub enum ActionShortcuts {
     Quit,
-    OpenSettings,
+    OpenPreferences,
     SearchNotes,
     OpenNote,
     NewJournal,
@@ -86,7 +86,7 @@ impl ActionShortcuts {
             ActionShortcuts::Text(_) => ShortcutCategory::TextEditing,
 
             ActionShortcuts::Quit
-            | ActionShortcuts::OpenSettings
+            | ActionShortcuts::OpenPreferences
             | ActionShortcuts::TogglePreview => ShortcutCategory::Other,
         }
     }
@@ -94,7 +94,7 @@ impl ActionShortcuts {
     pub fn label(&self) -> String {
         match self {
             ActionShortcuts::Quit => "Quit".into(),
-            ActionShortcuts::OpenSettings => "Settings".into(),
+            ActionShortcuts::OpenPreferences => "Preferences".into(),
             ActionShortcuts::SearchNotes => "Search notes".into(),
             ActionShortcuts::OpenNote => "Open note".into(),
             ActionShortcuts::NewJournal => "New journal entry".into(),
@@ -131,7 +131,7 @@ impl Display for ActionShortcuts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let action = match self {
             ActionShortcuts::Quit => "Quit".to_string(),
-            ActionShortcuts::OpenSettings => "OpenSettings".to_string(),
+            ActionShortcuts::OpenPreferences => "OpenSettings".to_string(),
             ActionShortcuts::SearchNotes => "SearchNotes".to_string(),
             ActionShortcuts::OpenNote => "OpenNote".to_string(),
             ActionShortcuts::NewJournal => "NewJournal".to_string(),
@@ -162,7 +162,7 @@ impl TryFrom<String> for ActionShortcuts {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         let action = match value.as_str() {
             "Quit" => ActionShortcuts::Quit,
-            "OpenSettings" => ActionShortcuts::OpenSettings,
+            "OpenSettings" => ActionShortcuts::OpenPreferences,
             "SearchNotes" => ActionShortcuts::SearchNotes,
             "OpenNote" => ActionShortcuts::OpenNote,
             "NewJournal" => ActionShortcuts::NewJournal,
@@ -299,7 +299,7 @@ mod tests {
 
         assert_eq!(ActionShortcuts::Quit.category(), ShortcutCategory::Other);
         assert_eq!(
-            ActionShortcuts::OpenSettings.category(),
+            ActionShortcuts::OpenPreferences.category(),
             ShortcutCategory::Other
         );
         assert_eq!(
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn action_shortcuts_labels() {
         assert_eq!(ActionShortcuts::Quit.label(), "Quit");
-        assert_eq!(ActionShortcuts::OpenSettings.label(), "Settings");
+        assert_eq!(ActionShortcuts::OpenPreferences.label(), "Preferences");
         assert_eq!(ActionShortcuts::SearchNotes.label(), "Search notes");
         assert_eq!(ActionShortcuts::OpenNote.label(), "Open note");
         assert_eq!(ActionShortcuts::NewJournal.label(), "New journal entry");

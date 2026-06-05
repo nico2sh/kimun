@@ -33,7 +33,7 @@ kimun workspace init --name default /path/to/notes
 ```sh
 kimun
 ```
-Then configure your workspace through the Settings screen.
+Then configure your workspace through the Preferences screen.
 
 Legacy single-workspace configurations are automatically migrated to multi-workspace format.
 
