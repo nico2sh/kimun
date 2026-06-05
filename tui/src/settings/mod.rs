@@ -91,6 +91,18 @@ const CONFIG_HEADER: &str = "\
 #   theme             = \"Gruvbox Dark\"   # or any built-in / custom theme name
 #   leader_timeout_ms = 400               # hesitation before the which-key menu
 #
+# LEADER TREE OVERRIDES
+# ─────────────────────
+#   Remap, add, or remove leader sequences ([leader.bind]) and rename group
+#   captions ([leader.labels]). Keys are the sequence AFTER the gateway;
+#   bind values are action ids (see the cheatsheet) or \"none\" to unbind.
+#   [leader.bind]
+#   \"o f\" = \"find.files\"     # remap: leader o f now opens the file picker
+#   \"x\"   = \"note.daily\"     # add:   leader x opens today's journal
+#   \"g p\" = \"none\"           # remove the git-sync stub binding
+#   [leader.labels]
+#   \"f\"   = \"+search\"        # rename the +find group caption
+#
 # ─────────────────────────────────────────────────────────────────────────────
 ";
 
@@ -132,6 +144,11 @@ pub struct AppSettings {
     /// during a pending leader sequence. Sequences typed faster never wait.
     #[serde(default = "default_leader_timeout_ms")]
     pub leader_timeout_ms: u64,
+    /// Leader-tree customization: `[leader.bind]` sequence→action-id
+    /// overrides and `[leader.labels]` group captions. Applied over the
+    /// built-in tree.
+    #[serde(default)]
+    pub leader: LeaderConfig,
     #[serde(default = "default_use_nerd_fonts")]
     pub use_nerd_fonts: bool,
     #[serde(default)]
@@ -248,6 +265,41 @@ fn default_leader_timeout_ms() -> u64 {
     400
 }
 
+/// The `[leader]` config section: binding overrides + group captions.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LeaderConfig {
+    /// `[leader.bind]`: sequence (after the gateway, e.g. `"o f"` / `"x"`) →
+    /// action id (see the cheatsheet) or `"none"` to unbind.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub bind: std::collections::BTreeMap<String, String>,
+    /// `[leader.labels]`: group sequence (e.g. `"f"`) → caption shown in the
+    /// which-key overlay and cheatsheet.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, String>,
+}
+
+impl AppSettings {
+    /// The leader tree with this config's `[leader]` overrides applied — the
+    /// ONE constructor every surface (engine, which-key, cheatsheet, palette)
+    /// must use, so they can never disagree.
+    pub fn leader_tree(&self) -> crate::keys::leader::LeaderNode {
+        let tree = crate::keys::leader::apply_overrides(
+            crate::keys::leader::leader_tree(),
+            self.leader
+                .bind
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        );
+        crate::keys::leader::apply_labels(
+            tree,
+            self.leader
+                .labels
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        )
+    }
+}
+
 fn default_cache_dir() -> PathBuf {
     PathBuf::from(".")
 }
@@ -292,6 +344,7 @@ impl Default for AppSettings {
             key_bindings: default_keybindings(),
             autosave_interval_secs: default_autosave_interval(),
             leader_timeout_ms: default_leader_timeout_ms(),
+            leader: LeaderConfig::default(),
             use_nerd_fonts: false,
             editor_backend: EditorBackendSetting::Textarea,
             nvim_path: None,

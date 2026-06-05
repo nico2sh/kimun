@@ -27,6 +27,15 @@
 #   theme             = "Gruvbox Dark"   # or any built-in / custom theme name
 #   leader_timeout_ms = 400               # hesitation before the which-key menu
 #
+# LEADER TREE OVERRIDES ([leader] section)
+# ─────────────────────────────────────────
+#   Remap, add, or remove leader sequences. Keys are the sequence AFTER the
+#   gateway; values are action ids (see the cheatsheet) or "none" to unbind.
+#   [leader]
+#   "o f" = "find.files"     # remap: leader o f now opens the file picker
+#   "x"   = "note.daily"     # add:   leader x opens today's journal
+#   "g p" = "none"           # remove the git-sync stub binding
+#
 # ─────────────────────────────────────────────────────────────────────────────
 config_version = 5
 theme = "Monokai"
@@ -79,3 +88,5 @@ SwitchWorkspace = ["F4"]
 FindInBuffer = ["ctrl&F"]
 Leader = ["ctrl&G"]
 OpenCommandPalette = ["ctrl&P"]
+
+[leader]
